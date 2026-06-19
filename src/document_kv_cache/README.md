@@ -40,7 +40,7 @@ functions, and wrappers are retired one PR slice at a time.
 - `databricks_job.py` emits the full V1 benchmark Databricks run payload.
 - `databricks_runs.py` submits, checks, and summarizes generated Databricks run
   payloads using environment-provided credentials.
-- `databricks_storage_benchmark_job.py` emits standalone storage-reader
+- `databricks_storage_benchmark_job.py` owns standalone storage-reader
   benchmark run payloads.
 - `databricks_vllm_smoke_job.py` owns standalone Qwen3/vLLM smoke run payloads.
 - `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and NIAH

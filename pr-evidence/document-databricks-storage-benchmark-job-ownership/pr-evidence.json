@@ -1,0 +1,58 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the Databricks storage benchmark job ownership inversion and found reverse-wrapper compatibility gaps. The wrapper now uses cloned document functions with an isolated globals dictionary, preserves legacy validator and private cluster-helper monkeypatch behavior, uses an honest legacy config subclass for direct construction and pickle support, preserves slotted layout, and has final re-review approval with no remaining findings.",
+  "issues": [
+    {
+      "resolution": "Changed the legacy wrapper to run cloned document functions with an isolated globals dictionary rather than mutating document module globals during the call.",
+      "severity": "P2",
+      "summary": "Document-namespace monkeypatches could leak into legacy calls."
+    },
+    {
+      "resolution": "Kept a legacy config subclass whose __post_init__ resolves legacy module globals for UC-root validation and StorageBenchmarkConfig construction.",
+      "severity": "P2",
+      "summary": "Legacy-side validator monkeypatches were not observed by direct legacy config construction."
+    },
+    {
+      "resolution": "Overlaid the legacy private cluster helper into the isolated namespace and added regression coverage.",
+      "severity": "P2",
+      "summary": "Legacy private cluster-helper monkeypatches were not observed by legacy payload building."
+    },
+    {
+      "resolution": "Kept the legacy config subclass under the legacy module path, added pickle coverage, and declared __slots__ = () to preserve the old slotted layout.",
+      "severity": "P3",
+      "summary": "The compatibility config subclass initially had a misleading module identity and a non-slotted instance layout."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document Databricks storage benchmark job implementation ownership",
+    "legacy Databricks storage benchmark job compatibility wrapper",
+    "document storage UC-root predicate re-export",
+    "legacy module execution and helper monkeypatch migration hooks",
+    "public package compatibility tests",
+    "document and legacy package README migration notes",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_storage_benchmark_job.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/databricks_storage_benchmark_job.py src/restaurant_kv_serving/databricks_storage_benchmark_job.py src/document_kv_cache/storage.py tests/test_databricks_storage_benchmark_job.py tests/test_public_package.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry build",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review and re-review after resolving all compatibility findings"
+  ],
+  "what_changed": [
+    "Moved the Databricks storage benchmark job implementation into document_kv_cache.databricks_storage_benchmark_job.",
+    "Turned restaurant_kv_serving.databricks_storage_benchmark_job into a compatibility wrapper over the document module.",
+    "Preserved legacy module execution, direct writer monkeypatch behavior, public and private helper monkeypatch behavior, pickle support, slotted config layout, and the previous legacy star-import surface.",
+    "Added document_kv_cache.storage.is_real_uc_volume_root to the document storage public surface.",
+    "Recorded document ownership in public package tests and package READMEs."
+  ],
+  "why": "The generalized package should own the Databricks storage benchmark job entry point because storage-reader evidence is part of the V1 memory, disk, and Unity Catalog support story. Keeping legacy compatibility makes this an incremental, behavior-preserving step toward retiring restaurant-specific implementation ownership."
+}

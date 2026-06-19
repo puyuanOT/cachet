@@ -567,8 +567,18 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         is restaurant_kv_serving.build_databricks_engine_probe_matrix_run_submit_payload
     )
     assert (
-        databricks_storage_benchmark_job.DatabricksStorageBenchmarkJobConfig
-        is restaurant_kv_serving.DatabricksStorageBenchmarkJobConfig
+        issubclass(
+            restaurant_kv_serving.DatabricksStorageBenchmarkJobConfig,
+            databricks_storage_benchmark_job.DatabricksStorageBenchmarkJobConfig,
+        )
+    )
+    assert (
+        databricks_storage_benchmark_job.DatabricksStorageBenchmarkJobConfig.__module__
+        == "document_kv_cache.databricks_storage_benchmark_job"
+    )
+    assert (
+        restaurant_kv_serving.DatabricksStorageBenchmarkJobConfig.__module__
+        == "restaurant_kv_serving.databricks_storage_benchmark_job"
     )
     assert (
         databricks_vllm_smoke_job.DatabricksVLLMSmokeJobConfig
@@ -583,6 +593,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         is restaurant_kv_serving.evaluate_release_storage_benchmark_evidence
     )
     assert storage_benchmark.RELEASE_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.RELEASE_STORAGE_BENCHMARK_READERS
+    assert storage.is_real_uc_volume_root("/Volumes/catalog/schema/volume") is True
     assert "scheduler" not in document_kv_cache._PUBLIC_SUBMODULES
 
 
