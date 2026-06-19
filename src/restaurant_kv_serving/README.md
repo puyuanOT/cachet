@@ -22,7 +22,7 @@ migration.
 - `workflow.py` coordinates source documents, optional training, cache generation, method labels such as vanilla prefill or KV Packet, manifest registration, materialization, and engine-ready serving preparation.
 - `serving_env.py` records pinned one-engine-per-environment install profiles for vLLM and SGLang helpers.
 - `benchmarks.py` is a compatibility wrapper over `document_kv_cache.benchmarks`, which owns the V1 dataset specs, deterministic prompt/context builders, and quality/latency schema for comparing baseline prefill against document KV-cache reuse.
-- `dataset_prep.py` canonicalizes Biography, HotpotQA, MusiQue, and NIAH records into the JSONL schema consumed by `benchmark_runner.py`, including synthetic NIAH generation.
+- `dataset_prep.py` is a compatibility wrapper over `document_kv_cache.dataset_prep`, which owns Biography, HotpotQA, MusiQue, and NIAH normalization into the JSONL schema consumed by `benchmark_runner.py`, including synthetic NIAH generation.
 - `benchmark_plan.py` emits reproducible dataset-preparation and benchmark-runner command plans for AWS g5/Qwen3 V1 jobs.
 - `benchmark_plan_executor.py` executes a benchmark plan JSON command sequence, primarily for managed job runners.
 - `databricks_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script that invokes `benchmark_plan_executor.py`.
