@@ -1,0 +1,40 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the serving-environment profile slice for public API drift, install-profile overclaiming, Poetry/resolver boundary regressions, missing tests/docs, and evidence/governance issues; it reported no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/serving_env.py",
+    "src/document_kv_cache/serving_env.py",
+    "src/restaurant_kv_serving/vllm_smoke.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_serving_env.py",
+    "tests/test_vllm_smoke.py",
+    "tests/test_public_package.py",
+    "README.md",
+    "src/document_kv_cache/README.md",
+    "src/restaurant_kv_serving/README.md",
+    "pr-evidence/serving-environment-profiles/README.md"
+  ],
+  "verification": [
+    "python -m py_compile src/restaurant_kv_serving/serving_env.py src/document_kv_cache/serving_env.py src/restaurant_kv_serving/vllm_smoke.py",
+    "poetry run pytest tests/test_serving_env.py tests/test_vllm_smoke.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry install --dry-run -E test",
+    "poetry install --dry-run -E databricks",
+    "python -m pip install --dry-run --ignore-installed 'transformers==5.12.1' 'huggingface-hub==1.20.1' 'tokenizers==0.22.2' 'numpy==2.4.6' 'fastapi[standard]==0.137.2' 'prometheus-fastapi-instrumentator==8.0.0'",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added a shared serving_env profile module for pinned one-engine-per-environment vLLM and SGLang install metadata.",
+    "Refactored the Databricks vLLM smoke helper to consume the shared vLLM profile while preserving its existing compatibility constants.",
+    "Published the serving_env wrapper and root exports through document_kv_cache, with tests and documentation for the isolated serving-engine boundary."
+  ],
+  "why": "The serving helpers need a single source of truth for backend install profiles without pulling incompatible vLLM/SGLang runtime stacks into the core Poetry resolver."
+}

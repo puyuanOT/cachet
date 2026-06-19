@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 focused review initially found that the governance test only checked substrings and did not enforce the exact CI command order. The test was tightened to assert the exact ordered run-command list, and follow-up review returned no remaining findings.",
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "GitHub Actions CI workflow",
+    "workflow documentation",
+    "project governance tests"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py -q",
+    "poetry check",
+    "poetry install --dry-run",
+    "poetry install --dry-run --extras databricks --extras test",
+    "poetry run pytest -q",
+    "poetry build",
+    "python -m py_compile tests/test_project_governance.py",
+    "GPT-5.5 focused review",
+    "GPT-5.5 follow-up review after resolving the governance-test finding",
+    "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-json pr-evidence/ci-metadata-dependency-gates/pr-evidence.json --output-json pr-evidence/ci-metadata-dependency-gates/pr-evidence-validation.json"
+  ],
+  "what_changed": [
+    "Added CI steps that run poetry check before package installation, tests, and build.",
+    "Added CI dependency-resolution dry runs for the base dependency set and the optional databricks plus test dependency set.",
+    "Updated workflow documentation to describe the metadata and dependency-resolution gates.",
+    "Tightened the governance test to assert the exact ordered CI run-command list."
+  ],
+  "why": "The open-source package should fail CI when package metadata is invalid or optional dependency groups no longer resolve, before spending CI time on install, tests, or build.",
+  "issues": []
+}

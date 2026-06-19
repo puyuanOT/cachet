@@ -1,24 +1,76 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core==2.4.1"]
+build-backend = "poetry.core.masonry.api"
 
 [project]
-name = "restaurant-kv-serving"
-version = "0.1.0"
-description = "Cache orchestration and materialization for restaurant KV serving."
-requires-python = ">=3.10"
-dependencies = [
-  "numpy>=1.24",
+name = "document-kv-cache"
+version = "0.2.0"
+description = "Document KV-cache orchestration and materialization for long-context LLM serving."
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+authors = [
+  { name = "OpenTable Data Science" },
+]
+keywords = ["kv-cache", "llm-serving", "long-context", "vllm", "sglang", "databricks"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
 [project.optional-dependencies]
-databricks = ["pyspark>=3.5", "databricks-sdk>=0.28"]
-test = ["pytest>=8.0"]
+databricks = [
+  "pyspark==4.1.2",
+  "databricks-sdk==0.118.0",
+]
+test = [
+  "pytest==9.1.0",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.scripts]
+document-kv-benchmark-plan = "document_kv_cache.benchmark_plan:main"
+document-kv-run-benchmark-plan = "document_kv_cache.benchmark_plan_executor:main"
+document-kv-databricks-job = "document_kv_cache.databricks_job:main"
+document-kv-databricks-runs = "document_kv_cache.databricks_runs:main"
+document-kv-storage-benchmark = "document_kv_cache.storage_benchmark:main"
+document-kv-storage-benchmark-databricks-job = "document_kv_cache.databricks_storage_benchmark_job:main"
+document-kv-templates = "document_kv_cache.template_resources:main"
+document-kv-release-evidence = "document_kv_cache.release_evidence:main"
+document-kv-release-bundle = "document_kv_cache.release_bundle:main"
+document-kv-pr-evidence = "document_kv_cache.pr_evidence:main"
+document-kv-engine-probe = "document_kv_cache.engine_probe:main"
+document-kv-engine-probe-databricks-job = "document_kv_cache.databricks_engine_probe_job:main"
+document-kv-vllm-smoke = "document_kv_cache.vllm_smoke:main"
+document-kv-vllm-smoke-databricks-job = "document_kv_cache.databricks_vllm_smoke_job:main"
+restaurant-kv-benchmark-plan = "restaurant_kv_serving.benchmark_plan:main"
+restaurant-kv-run-benchmark-plan = "restaurant_kv_serving.benchmark_plan_executor:main"
+restaurant-kv-databricks-job = "restaurant_kv_serving.databricks_job:main"
+restaurant-kv-databricks-runs = "restaurant_kv_serving.databricks_runs:main"
+restaurant-kv-storage-benchmark = "restaurant_kv_serving.storage_benchmark:main"
+restaurant-kv-storage-benchmark-databricks-job = "restaurant_kv_serving.databricks_storage_benchmark_job:main"
+restaurant-kv-release-evidence = "restaurant_kv_serving.release_evidence:main"
+restaurant-kv-release-bundle = "restaurant_kv_serving.release_bundle:main"
+restaurant-kv-pr-evidence = "restaurant_kv_serving.pr_evidence:main"
+restaurant-kv-engine-probe = "restaurant_kv_serving.engine_probe:main"
+restaurant-kv-engine-probe-databricks-job = "restaurant_kv_serving.databricks_engine_probe_job:main"
+restaurant-kv-vllm-smoke = "restaurant_kv_serving.vllm_smoke:main"
+restaurant-kv-vllm-smoke-databricks-job = "restaurant_kv_serving.databricks_vllm_smoke_job:main"
+
+[tool.poetry]
+packages = [
+  { include = "document_kv_cache", from = "src" },
+  { include = "restaurant_kv_serving", from = "src" },
+]
+include = [
+  { path = "src/document_kv_cache/py.typed", format = ["sdist", "wheel"] },
+  { path = "src/restaurant_kv_serving/py.typed", format = ["sdist", "wheel"] },
+  { path = "src/document_kv_cache/templates/**/*.yml", format = ["sdist", "wheel"] },
+  { path = "src/document_kv_cache/templates/**/*.md", format = ["sdist", "wheel"] },
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-

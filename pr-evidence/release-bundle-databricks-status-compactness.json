@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review found no bugs, regressions, or security issues; it confirmed the guard rejects top-level response payloads while keeping root status records and compact get --summary wrappers accepted.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py",
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_databricks_runs.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review clean"
+  ],
+  "what_changed": [
+    "Rejected raw Databricks Jobs API responses in release-bundle run-status sidecars.",
+    "Preserved support for compact root status records and databricks_runs get --summary wrappers while refusing top-level response payloads.",
+    "Added a regression test with a token-bearing fake response and documented that --include-response is not release-bundle safe."
+  ],
+  "why": "Release bundles need successful Databricks job provenance without accidentally archiving task parameters or workspace metadata from raw Jobs API responses."
+}

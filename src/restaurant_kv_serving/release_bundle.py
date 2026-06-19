@@ -1,0 +1,1086 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import re
+import zipfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from restaurant_kv_serving.release_evidence import (
+    RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
+    RELEASE_EVIDENCE_RECORD_TYPE,
+    REQUIRED_ENGINE_PROBE_BACKENDS,
+    evaluate_release_evidence,
+)
+from restaurant_kv_serving.benchmark_plan_executor import (
+    BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
+    BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
+)
+from restaurant_kv_serving.databricks_runs import (
+    DATABRICKS_RUN_STATUS_RECORD_TYPE,
+    DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
+)
+from restaurant_kv_serving.pr_evidence import PR_EVIDENCE_RECORD_TYPE, evaluate_pr_evidence_record
+from restaurant_kv_serving.storage import local_path
+
+
+RELEASE_BUNDLE_RECORD_TYPE = "document_kv.release_bundle.v1"
+RELEASE_BUNDLE_MANIFEST_FILENAME = "manifest.json"
+RELEASE_BUNDLE_PACKAGE_NAME = "document-kv-cache"
+RELEASE_BUNDLE_ARTIFACT_ROLES = (
+    "v1_benchmark",
+    "storage_benchmark",
+    "engine_probe",
+    "release_evidence",
+    "preflight",
+    "plan_execution",
+    "databricks_run_status",
+    "package_wheel",
+    "pr_evidence",
+)
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_WHEEL_FILENAME_RE = re.compile(
+    r"^(?P<distribution>[A-Za-z0-9_.]+)-"
+    r"(?P<version>[A-Za-z0-9_.!+]+)"
+    r"(?:-(?P<build>[0-9][A-Za-z0-9_.]*))?"
+    r"-(?P<python_tag>[A-Za-z0-9_.]+)"
+    r"-(?P<abi_tag>[A-Za-z0-9_.]+)"
+    r"-(?P<platform_tag>[A-Za-z0-9_.]+)\.whl$"
+)
+_DATABRICKS_RUN_STATUS_WRAPPER_KEYS = frozenset({"ok", "action", "summary"})
+_DATABRICKS_RUN_STATUS_KEYS = frozenset(
+    {
+        "record_type",
+        "run_id",
+        "run_name",
+        "run_page_url",
+        "life_cycle_state",
+        "result_state",
+        "state_message",
+        "start_time",
+        "end_time",
+        "terminal",
+        "succeeded",
+        "active_task_key",
+        "task_count",
+        "tasks",
+        "cluster_id",
+        "submit_payload",
+    }
+)
+_DATABRICKS_RUN_STATUS_TASK_KEYS = frozenset(
+    {
+        "task_key",
+        "run_id",
+        "life_cycle_state",
+        "result_state",
+        "state_message",
+        "cluster_id",
+        "start_time",
+        "end_time",
+    }
+)
+_DATABRICKS_SUBMIT_PAYLOAD_KEYS = frozenset(
+    {
+        "record_type",
+        "source_path",
+        "sha256",
+        "run_name",
+        "task_count",
+        "task_keys",
+        "tasks",
+        "node_type_ids",
+        "driver_node_type_ids",
+        "spark_versions",
+        "data_security_modes",
+        "single_node",
+        "aws_g5_node_type",
+    }
+)
+_DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS = frozenset(
+    {
+        "task_key",
+        "node_type_id",
+        "driver_node_type_id",
+        "spark_version",
+        "data_security_mode",
+        "num_workers",
+        "single_node",
+        "purpose",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedReleaseBundleArtifact:
+    role: str
+    source_path: str
+    index: int
+    payload: bytes
+    record: Mapping[str, Any] | None
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseBundleArtifact:
+    role: str
+    source_path: str
+    bundled_path: str
+    size_bytes: int
+    sha256: str
+    record_type: str | None = None
+    backend: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.role not in RELEASE_BUNDLE_ARTIFACT_ROLES:
+            raise ValueError(f"Unsupported release bundle artifact role {self.role!r}")
+        for field_name in ("source_path", "bundled_path", "sha256"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field_name} must be non-empty")
+        if not _SHA256_HEX_RE.fullmatch(self.sha256):
+            raise ValueError("sha256 must be a 64-character lowercase hex digest")
+        if type(self.size_bytes) is not int or self.size_bytes < 0:
+            raise ValueError("size_bytes must be a non-negative integer")
+        if self.record_type is not None and (not isinstance(self.record_type, str) or not self.record_type):
+            raise ValueError("record_type must be non-empty when provided")
+        if self.backend is not None and self.role != "engine_probe":
+            raise ValueError("backend can only be set for engine_probe artifacts")
+        if self.backend is not None and self.backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
+            raise ValueError(f"Unsupported artifact backend {self.backend!r}")
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseBundle:
+    output_dir: str
+    manifest_path: str
+    artifacts: tuple[ReleaseBundleArtifact, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.output_dir, str) or not self.output_dir:
+            raise ValueError("output_dir must be non-empty")
+        if not isinstance(self.manifest_path, str) or not self.manifest_path:
+            raise ValueError("manifest_path must be non-empty")
+        if any(not isinstance(artifact, ReleaseBundleArtifact) for artifact in self.artifacts):
+            raise TypeError("artifacts entries must be ReleaseBundleArtifact")
+        object.__setattr__(self, "artifacts", tuple(self.artifacts))
+
+
+def build_release_bundle(
+    *,
+    v1_benchmark_json: str | Path,
+    storage_benchmark_json: str | Path,
+    output_dir: str | Path,
+    engine_probe_jsons: Sequence[str | Path] = (),
+    release_evidence_json: str | Path | None = None,
+    preflight_json: str | Path | None = None,
+    plan_execution_jsons: Sequence[str | Path] = (),
+    databricks_run_status_jsons: Sequence[str | Path] = (),
+    package_wheel: str | Path | None = None,
+    pr_evidence_jsons: Sequence[str | Path] = (),
+    overwrite: bool = False,
+) -> ReleaseBundle:
+    bundle_dir = local_path(str(output_dir))
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME
+    if manifest_path.exists() and not overwrite:
+        raise FileExistsError(f"Release bundle manifest already exists: {manifest_path}")
+    sources = _release_bundle_sources(
+        v1_benchmark_json=v1_benchmark_json,
+        storage_benchmark_json=storage_benchmark_json,
+        engine_probe_jsons=engine_probe_jsons,
+        release_evidence_json=release_evidence_json,
+        preflight_json=preflight_json,
+        plan_execution_jsons=plan_execution_jsons,
+        databricks_run_status_jsons=databricks_run_status_jsons,
+        package_wheel=package_wheel,
+        pr_evidence_jsons=pr_evidence_jsons,
+    )
+    prepared_artifacts = tuple(
+        _prepare_release_bundle_artifact(role=role, source_path=source_path, index=index)
+        for index, (role, source_path) in enumerate(sources)
+    )
+    _validate_release_bundle_inputs(prepared_artifacts)
+    _preflight_release_bundle_destinations(
+        prepared_artifacts=prepared_artifacts,
+        bundle_dir=bundle_dir,
+        overwrite=overwrite,
+    )
+    artifacts = tuple(
+        _copy_release_bundle_artifact(
+            prepared=prepared,
+            bundle_dir=bundle_dir,
+            overwrite=overwrite,
+        )
+        for prepared in prepared_artifacts
+    )
+    bundle = ReleaseBundle(
+        output_dir=str(bundle_dir),
+        manifest_path=str(manifest_path),
+        artifacts=artifacts,
+    )
+    write_release_bundle_manifest_json(bundle, manifest_path)
+    return bundle
+
+
+def release_bundle_to_record(bundle: ReleaseBundle) -> dict[str, Any]:
+    return {
+        "record_type": RELEASE_BUNDLE_RECORD_TYPE,
+        "ok": True,
+        "output_dir": bundle.output_dir,
+        "manifest_path": bundle.manifest_path,
+        "artifact_count": len(bundle.artifacts),
+        "artifacts": [_artifact_to_record(artifact) for artifact in bundle.artifacts],
+    }
+
+
+def write_release_bundle_manifest_json(bundle: ReleaseBundle, path: str | Path) -> None:
+    output_path = local_path(str(path))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(release_bundle_to_record(bundle), indent=2, sort_keys=True) + "\n")
+
+
+def _release_bundle_sources(
+    *,
+    v1_benchmark_json: str | Path,
+    storage_benchmark_json: str | Path,
+    engine_probe_jsons: Sequence[str | Path],
+    release_evidence_json: str | Path | None,
+    preflight_json: str | Path | None,
+    plan_execution_jsons: Sequence[str | Path],
+    databricks_run_status_jsons: Sequence[str | Path],
+    package_wheel: str | Path | None,
+    pr_evidence_jsons: Sequence[str | Path],
+) -> tuple[tuple[str, str | Path], ...]:
+    sources: list[tuple[str, str | Path]] = [
+        ("v1_benchmark", v1_benchmark_json),
+        ("storage_benchmark", storage_benchmark_json),
+    ]
+    sources.extend(("engine_probe", path) for path in engine_probe_jsons)
+    if release_evidence_json is not None:
+        sources.append(("release_evidence", release_evidence_json))
+    if preflight_json is not None:
+        sources.append(("preflight", preflight_json))
+    sources.extend(("plan_execution", path) for path in plan_execution_jsons)
+    sources.extend(("databricks_run_status", path) for path in databricks_run_status_jsons)
+    if package_wheel is not None:
+        sources.append(("package_wheel", package_wheel))
+    sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
+    return tuple(sources)
+
+
+def _copy_release_bundle_artifact(
+    *,
+    prepared: _PreparedReleaseBundleArtifact,
+    bundle_dir: Path,
+    overwrite: bool,
+) -> ReleaseBundleArtifact:
+    local_source_path = local_path(prepared.source_path)
+    destination = _bundle_destination(bundle_dir, prepared)
+    if destination.exists() and not overwrite and not _same_path(local_source_path, destination):
+        raise FileExistsError(f"Release bundle artifact already exists: {destination}")
+    if not _same_path(local_source_path, destination):
+        destination.write_bytes(prepared.payload)
+    return ReleaseBundleArtifact(
+        role=prepared.role,
+        source_path=prepared.source_path,
+        bundled_path=destination.relative_to(bundle_dir).as_posix(),
+        size_bytes=len(prepared.payload),
+        sha256=hashlib.sha256(prepared.payload).hexdigest(),
+        record_type=_artifact_record_type(prepared),
+        backend=(
+            _optional_backend(prepared.record.get("backend"))
+            if prepared.role == "engine_probe" and prepared.record is not None
+            else None
+        ),
+    )
+
+
+def _prepare_release_bundle_artifact(
+    *,
+    role: str,
+    source_path: str | Path,
+    index: int,
+) -> _PreparedReleaseBundleArtifact:
+    source_path_text = str(source_path)
+    payload = local_path(source_path_text).read_bytes()
+    return _PreparedReleaseBundleArtifact(
+        role=role,
+        source_path=source_path_text,
+        index=index,
+        payload=payload,
+        record=_artifact_record(role, payload, source_path_text),
+    )
+
+
+def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleArtifact]) -> None:
+    v1_record = _single_record_for_role(artifacts, "v1_benchmark")
+    storage_record = _single_record_for_role(artifacts, "storage_benchmark")
+    engine_probe_records = tuple(artifact.record for artifact in artifacts if artifact.role == "engine_probe")
+    evidence = evaluate_release_evidence(
+        v1_record,
+        storage_record,
+        engine_probe_records=engine_probe_records,
+    )
+    release_input_artifacts = tuple(
+        artifact
+        for artifact in artifacts
+        if artifact.role in ("v1_benchmark", "storage_benchmark", "engine_probe")
+    )
+    issues = list(evidence.issues)
+    for artifact in artifacts:
+        if artifact.role == "release_evidence":
+            if artifact.record is None:
+                issues.append("release evidence sidecar must be JSON")
+                continue
+            issues.extend(_release_evidence_sidecar_issues(artifact.record, release_input_artifacts))
+        elif artifact.role == "preflight":
+            if artifact.record is None:
+                issues.append("preflight sidecar must be JSON")
+                continue
+            issues.extend(_preflight_sidecar_issues(artifact.record, release_input_artifacts))
+        elif artifact.role == "pr_evidence":
+            if artifact.record is None:
+                issues.append("PR evidence sidecar must be JSON")
+                continue
+            issues.extend(_pr_evidence_sidecar_issues(artifact.record))
+        elif artifact.role == "plan_execution":
+            if artifact.record is None:
+                issues.append("benchmark plan execution sidecar must be JSON")
+                continue
+            issues.extend(_plan_execution_sidecar_issues(artifact.record))
+        elif artifact.role == "databricks_run_status":
+            if artifact.record is None:
+                issues.append("Databricks run status sidecar must be JSON")
+                continue
+            issues.extend(_databricks_run_status_sidecar_issues(artifact.record))
+        elif artifact.role == "package_wheel":
+            issues.extend(_package_wheel_issues(artifact.source_path, artifact.payload))
+    if issues:
+        raise ValueError(f"Release bundle inputs are not release-ready: {'; '.join(issues)}")
+
+
+def _single_record_for_role(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+    role: str,
+) -> Mapping[str, Any]:
+    matches = [artifact.record for artifact in artifacts if artifact.role == role]
+    if len(matches) != 1:
+        raise ValueError(f"Release bundle requires exactly one {role} artifact")
+    return matches[0]
+
+
+def _release_evidence_sidecar_issues(
+    record: Mapping[str, Any],
+    release_input_artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    if record.get("record_type") != RELEASE_EVIDENCE_RECORD_TYPE:
+        issues.append(f"release evidence sidecar record_type must be {RELEASE_EVIDENCE_RECORD_TYPE!r}")
+    if record.get("ok") is not True:
+        issues.append("release evidence sidecar ok must be true")
+    if record.get("v1_benchmark_ok") is not True:
+        issues.append("release evidence sidecar v1_benchmark_ok must be true")
+    if record.get("storage_benchmark_ok") is not True:
+        issues.append("release evidence sidecar storage_benchmark_ok must be true")
+    if not _matches_required_backend_set(record.get("engine_probe_backends")):
+        issues.append("release evidence sidecar engine_probe_backends must match required backends")
+    for field_name in (
+        "missing_engine_probe_backends",
+        "duplicate_engine_probe_backends",
+        "invalid_engine_probe_records",
+        "issues",
+    ):
+        if record.get(field_name) not in ([], ()):
+            issues.append(f"release evidence sidecar {field_name} must be empty")
+    if not _matches_expected_records(record.get("artifact_sources"), _expected_artifact_sources(release_input_artifacts)):
+        issues.append("release evidence sidecar artifact_sources must match bundled release inputs")
+    return tuple(issues)
+
+
+def _preflight_sidecar_issues(
+    record: Mapping[str, Any],
+    release_input_artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    if record.get("record_type") != RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE:
+        issues.append(f"preflight sidecar record_type must be {RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE!r}")
+    if record.get("ok") is not True:
+        issues.append("preflight sidecar ok must be true")
+    if not _matches_required_backend_set(record.get("required_engine_probe_backends")):
+        issues.append("preflight sidecar required_engine_probe_backends must match required backends")
+    for field_name in (
+        "missing_paths",
+        "unreadable_paths",
+        "missing_engine_probe_backends",
+        "issues",
+    ):
+        if record.get(field_name) not in ([], ()):
+            issues.append(f"preflight sidecar {field_name} must be empty")
+    if not _matches_expected_records(record.get("input_files"), _expected_input_files(release_input_artifacts)):
+        issues.append("preflight sidecar input_files must match bundled release inputs")
+    return tuple(issues)
+
+
+def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    evidence = evaluate_pr_evidence_record(record)
+    issues = list(evidence.issues)
+    if record.get("record_type") != PR_EVIDENCE_RECORD_TYPE:
+        issues.append(f"PR evidence sidecar record_type must be {PR_EVIDENCE_RECORD_TYPE!r}")
+    if record.get("ok") is not True:
+        issues.append("PR evidence sidecar ok must be true")
+    if evidence.gpt55_review_completed is not True:
+        issues.append("PR evidence sidecar GPT-5.5 review must be completed")
+    if evidence.refactor_skill_applied is not True:
+        issues.append("PR evidence sidecar Refactor skill must be applied")
+    return _dedupe_strings(issues)
+
+
+def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    if record.get("record_type") != BENCHMARK_PLAN_EXECUTION_RECORD_TYPE:
+        issues.append(f"benchmark plan execution sidecar record_type must be {BENCHMARK_PLAN_EXECUTION_RECORD_TYPE!r}")
+    if record.get("ok") is not True:
+        issues.append("benchmark plan execution sidecar ok must be true")
+    commands = record.get("commands")
+    if not isinstance(commands, Sequence) or isinstance(commands, (str, bytes, bytearray)) or not commands:
+        issues.append("benchmark plan execution sidecar commands must be a non-empty array")
+    else:
+        issues.extend(_plan_execution_command_issues(commands))
+    plan_source = record.get("plan_source")
+    if not isinstance(plan_source, Mapping):
+        issues.append("benchmark plan execution sidecar plan_source must be an object")
+    else:
+        issues.extend(_plan_source_issues(plan_source))
+    return _dedupe_strings(issues)
+
+
+def _plan_execution_command_issues(commands: Sequence[Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    for index, command in enumerate(commands):
+        if not isinstance(command, Mapping):
+            issues.append(f"benchmark plan execution sidecar commands[{index}] must be an object")
+            continue
+        if type(command.get("returncode")) is not int or command["returncode"] != 0:
+            issues.append(f"benchmark plan execution sidecar commands[{index}].returncode must be 0")
+        if command.get("error") is not None:
+            issues.append(f"benchmark plan execution sidecar commands[{index}].error must be null")
+    return tuple(issues)
+
+
+def _plan_source_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    if record.get("record_type") != BENCHMARK_PLAN_SOURCE_RECORD_TYPE:
+        issues.append(f"benchmark plan execution sidecar plan_source.record_type must be {BENCHMARK_PLAN_SOURCE_RECORD_TYPE!r}")
+    for field_name in ("path", "driver_path"):
+        if not isinstance(record.get(field_name), str) or not record[field_name]:
+            issues.append(f"benchmark plan execution sidecar plan_source.{field_name} must be non-empty")
+    if type(record.get("size_bytes")) is not int or record["size_bytes"] <= 0:
+        issues.append("benchmark plan execution sidecar plan_source.size_bytes must be a positive integer")
+    if not isinstance(record.get("sha256"), str) or not _SHA256_HEX_RE.fullmatch(record["sha256"]):
+        issues.append("benchmark plan execution sidecar plan_source.sha256 must be a 64-character lowercase hex digest")
+    if "command_count" in record and (type(record["command_count"]) is not int or record["command_count"] <= 0):
+        issues.append("benchmark plan execution sidecar plan_source.command_count must be a positive integer when present")
+    return tuple(issues)
+
+
+def _databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    status_record = _databricks_run_status_record(record)
+    issues: list[str] = []
+    if "response" in record:
+        issues.append("Databricks run status sidecar must not include the raw Jobs API response")
+    issues.extend(_databricks_run_status_container_key_issues(record))
+    issues.extend(_databricks_run_status_wrapper_field_issues(record))
+    if status_record is None:
+        issues.append("Databricks run status sidecar must be a status record or databricks_runs get --summary output")
+        return _dedupe_strings(issues)
+    issues.extend(_unexpected_keys(status_record, _DATABRICKS_RUN_STATUS_KEYS, "Databricks run status sidecar summary"))
+    issues.extend(_databricks_run_status_field_issues(status_record))
+    if status_record.get("record_type") != DATABRICKS_RUN_STATUS_RECORD_TYPE:
+        issues.append(f"Databricks run status sidecar record_type must be {DATABRICKS_RUN_STATUS_RECORD_TYPE!r}")
+    if status_record.get("terminal") is not True:
+        issues.append("Databricks run status sidecar terminal must be true")
+    if status_record.get("succeeded") is not True:
+        issues.append("Databricks run status sidecar succeeded must be true")
+    if status_record.get("life_cycle_state") != "TERMINATED":
+        issues.append("Databricks run status sidecar life_cycle_state must be 'TERMINATED'")
+    if status_record.get("result_state") != "SUCCESS":
+        issues.append("Databricks run status sidecar result_state must be 'SUCCESS'")
+    run_id = status_record.get("run_id")
+    if not ((type(run_id) is int and run_id >= 0) or (isinstance(run_id, str) and run_id)):
+        issues.append("Databricks run status sidecar run_id must be a non-negative integer or non-empty string")
+    task_count = status_record.get("task_count")
+    tasks = status_record.get("tasks")
+    if type(task_count) is not int or task_count <= 0:
+        issues.append("Databricks run status sidecar task_count must be a positive integer")
+    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)) or not tasks:
+        issues.append("Databricks run status sidecar tasks must be a non-empty array")
+    else:
+        if type(task_count) is int and task_count > 0 and len(tasks) != task_count:
+            issues.append("Databricks run status sidecar task_count must match tasks length")
+        issues.extend(_databricks_run_status_task_issues(tasks))
+    submit_payload = status_record.get("submit_payload")
+    if not isinstance(submit_payload, Mapping):
+        issues.append("Databricks run status sidecar submit_payload must be an object")
+    else:
+        issues.extend(_databricks_submit_payload_sidecar_issues(submit_payload, tasks=tasks))
+    return _dedupe_strings(issues)
+
+
+def _databricks_run_status_record(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
+        return record
+    summary = record.get("summary")
+    if (
+        record.get("ok") is True
+        and summary is not None
+        and isinstance(summary, Mapping)
+        and summary.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE
+    ):
+        return summary
+    return None
+
+
+def _databricks_run_status_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    for index, task in enumerate(tasks):
+        if not isinstance(task, Mapping):
+            issues.append(f"Databricks run status sidecar tasks[{index}] must be an object")
+            continue
+        issues.extend(
+            _unexpected_keys(task, _DATABRICKS_RUN_STATUS_TASK_KEYS, f"Databricks run status sidecar tasks[{index}]")
+        )
+        issues.extend(_databricks_run_status_task_field_issues(task, index=index))
+        if not isinstance(task.get("task_key"), str) or not task["task_key"]:
+            issues.append(f"Databricks run status sidecar tasks[{index}].task_key must be non-empty")
+        if task.get("life_cycle_state") != "TERMINATED":
+            issues.append(f"Databricks run status sidecar tasks[{index}].life_cycle_state must be 'TERMINATED'")
+        if task.get("result_state") != "SUCCESS":
+            issues.append(f"Databricks run status sidecar tasks[{index}].result_state must be 'SUCCESS'")
+    return tuple(issues)
+
+
+def _databricks_submit_payload_sidecar_issues(
+    record: Mapping[str, Any],
+    *,
+    tasks: Any,
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _DATABRICKS_SUBMIT_PAYLOAD_KEYS, "Databricks run status sidecar submit_payload"))
+    issues.extend(_databricks_submit_payload_field_issues(record))
+    if record.get("record_type") != DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE:
+        issues.append(
+            f"Databricks run status sidecar submit_payload.record_type must be {DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE!r}"
+        )
+    source_path = record.get("source_path")
+    if not isinstance(source_path, str) or not source_path:
+        issues.append("Databricks run status sidecar submit_payload.source_path must be non-empty")
+    if not isinstance(record.get("sha256"), str) or not _SHA256_HEX_RE.fullmatch(record["sha256"]):
+        issues.append("Databricks run status sidecar submit_payload.sha256 must be a 64-character lowercase hex digest")
+    if record.get("single_node") is not True:
+        issues.append("Databricks run status sidecar submit_payload.single_node must be true")
+    if record.get("aws_g5_node_type") is not True:
+        issues.append("Databricks run status sidecar submit_payload.aws_g5_node_type must be true")
+    task_count = record.get("task_count")
+    payload_tasks = record.get("tasks")
+    if type(task_count) is not int or task_count <= 0:
+        issues.append("Databricks run status sidecar submit_payload.task_count must be a positive integer")
+    if not isinstance(payload_tasks, Sequence) or isinstance(payload_tasks, (str, bytes, bytearray)) or not payload_tasks:
+        issues.append("Databricks run status sidecar submit_payload.tasks must be a non-empty array")
+    else:
+        if type(task_count) is int and task_count > 0 and len(payload_tasks) != task_count:
+            issues.append("Databricks run status sidecar submit_payload.task_count must match tasks length")
+        issues.extend(_databricks_submit_payload_task_issues(payload_tasks))
+    data_security_modes = record.get("data_security_modes")
+    if not isinstance(data_security_modes, Sequence) or isinstance(data_security_modes, (str, bytes, bytearray)):
+        issues.append("Databricks run status sidecar submit_payload.data_security_modes must be an array")
+    elif "SINGLE_USER" not in data_security_modes:
+        issues.append("Databricks run status sidecar submit_payload.data_security_modes must include SINGLE_USER")
+    if isinstance(tasks, Sequence) and not isinstance(tasks, (str, bytes, bytearray)):
+        status_task_keys = _task_key_list(tasks)
+        payload_task_keys = _task_key_list(record.get("tasks"))
+        if not status_task_keys:
+            issues.append("Databricks run status sidecar tasks must include task keys")
+        if not payload_task_keys:
+            issues.append("Databricks run status sidecar submit_payload.tasks must include task keys")
+        if status_task_keys and payload_task_keys and status_task_keys != payload_task_keys:
+            issues.append("Databricks run status sidecar submit_payload.task_keys must match status task keys")
+    if isinstance(record.get("task_keys"), Sequence) and not isinstance(record.get("task_keys"), (str, bytes, bytearray)):
+        declared_task_keys = [key for key in record["task_keys"] if isinstance(key, str) and key]
+        payload_task_keys = _task_key_list(record.get("tasks"))
+        if declared_task_keys != payload_task_keys:
+            issues.append("Databricks run status sidecar submit_payload.task_keys must match submit_payload.tasks")
+    return tuple(issues)
+
+
+def _databricks_submit_payload_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    for index, task in enumerate(tasks):
+        if not isinstance(task, Mapping):
+            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}] must be an object")
+            continue
+        issues.extend(
+            _unexpected_keys(
+                task,
+                _DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS,
+                f"Databricks run status sidecar submit_payload.tasks[{index}]",
+            )
+        )
+        issues.extend(_databricks_submit_payload_task_field_issues(task, index=index))
+        if not isinstance(task.get("task_key"), str) or not task["task_key"]:
+            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].task_key must be non-empty")
+        for field_name in ("node_type_id", "driver_node_type_id"):
+            value = task.get(field_name)
+            if not isinstance(value, str) or not value.startswith("g5."):
+                issues.append(
+                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g5 node type"
+                )
+        if task.get("single_node") is not True:
+            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].single_node must be true")
+        if task.get("data_security_mode") != "SINGLE_USER":
+            issues.append(
+                f"Databricks run status sidecar submit_payload.tasks[{index}].data_security_mode must be 'SINGLE_USER'"
+            )
+    return tuple(issues)
+
+
+def _databricks_run_status_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(_required_str_field(record, "record_type", "Databricks run status sidecar"))
+    issues.extend(_run_id_field_issues(record, "run_id", "Databricks run status sidecar"))
+    for field_name in ("run_name", "run_page_url", "state_message", "active_task_key", "cluster_id"):
+        issues.extend(_optional_str_field(record, field_name, "Databricks run status sidecar"))
+    for field_name in ("life_cycle_state", "result_state"):
+        issues.extend(_required_str_field(record, field_name, "Databricks run status sidecar"))
+    for field_name in ("start_time", "end_time"):
+        issues.extend(_optional_int_field(record, field_name, "Databricks run status sidecar"))
+    for field_name in ("terminal", "succeeded"):
+        issues.extend(_bool_field(record, field_name, "Databricks run status sidecar"))
+    return tuple(issues)
+
+
+def _databricks_run_status_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
+    label = f"Databricks run status sidecar tasks[{index}]"
+    issues: list[str] = []
+    issues.extend(_required_str_field(task, "task_key", label))
+    issues.extend(_run_id_field_issues(task, "run_id", label))
+    for field_name in ("life_cycle_state", "result_state"):
+        issues.extend(_required_str_field(task, field_name, label))
+    for field_name in ("state_message", "cluster_id"):
+        issues.extend(_optional_str_field(task, field_name, label))
+    for field_name in ("start_time", "end_time"):
+        issues.extend(_optional_int_field(task, field_name, label))
+    return tuple(issues)
+
+
+def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    for field_name in ("record_type", "source_path"):
+        issues.extend(_required_str_field(record, field_name, "Databricks run status sidecar submit_payload"))
+    issues.extend(_optional_str_field(record, "run_name", "Databricks run status sidecar submit_payload"))
+    for field_name in ("task_keys", "node_type_ids", "driver_node_type_ids", "spark_versions", "data_security_modes"):
+        issues.extend(_list_of_strings_field(record, field_name, "Databricks run status sidecar submit_payload"))
+    for field_name in ("single_node", "aws_g5_node_type"):
+        issues.extend(_bool_field(record, field_name, "Databricks run status sidecar submit_payload"))
+    return tuple(issues)
+
+
+def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
+    label = f"Databricks run status sidecar submit_payload.tasks[{index}]"
+    issues: list[str] = []
+    for field_name in ("task_key", "node_type_id", "driver_node_type_id", "spark_version", "data_security_mode"):
+        issues.extend(_required_str_field(task, field_name, label))
+    issues.extend(_optional_str_field(task, "purpose", label))
+    if type(task.get("num_workers")) is not int:
+        issues.append(f"{label}.num_workers must be an integer")
+    issues.extend(_bool_field(task, "single_node", label))
+    return tuple(issues)
+
+
+def _databricks_run_status_container_key_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
+        return ()
+    return _unexpected_keys(record, _DATABRICKS_RUN_STATUS_WRAPPER_KEYS, "Databricks run status sidecar wrapper")
+
+
+def _databricks_run_status_wrapper_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
+        return ()
+    issues: list[str] = []
+    if record.get("ok") is not True:
+        issues.append("Databricks run status sidecar wrapper.ok must be true")
+    if record.get("action") != "get":
+        issues.append("Databricks run status sidecar wrapper.action must be 'get'")
+    if not isinstance(record.get("summary"), Mapping):
+        issues.append("Databricks run status sidecar wrapper.summary must be an object")
+    return tuple(issues)
+
+
+def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
+    unexpected = sorted(str(key) for key in record if key not in allowed_keys)
+    if not unexpected:
+        return ()
+    return (f"{label} has unsupported keys: {unexpected}",)
+
+
+def _required_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if isinstance(value, str) and value:
+        return ()
+    return (f"{label}.{field_name} must be a non-empty string",)
+
+
+def _optional_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if value is None or isinstance(value, str):
+        return ()
+    return (f"{label}.{field_name} must be a string or null",)
+
+
+def _optional_int_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if value is None or type(value) is int:
+        return ()
+    return (f"{label}.{field_name} must be an integer or null",)
+
+
+def _bool_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    if type(record.get(field_name)) is bool:
+        return ()
+    return (f"{label}.{field_name} must be boolean",)
+
+
+def _run_id_field_issues(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if (type(value) is int and value >= 0) or (isinstance(value, str) and value):
+        return ()
+    return (f"{label}.{field_name} must be a non-negative integer or non-empty string",)
+
+
+def _list_of_strings_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and all(
+        isinstance(item, str) and item for item in value
+    ):
+        return ()
+    return (f"{label}.{field_name} must be an array of non-empty strings",)
+
+
+def _task_key_list(tasks: Any) -> list[str]:
+    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)):
+        return []
+    return [
+        task["task_key"]
+        for task in tasks
+        if isinstance(task, Mapping) and isinstance(task.get("task_key"), str) and task["task_key"]
+    ]
+
+
+def _package_wheel_issues(source_path: str, payload: bytes) -> tuple[str, ...]:
+    issues: list[str] = []
+    filename = Path(source_path).name
+    filename_match = _WHEEL_FILENAME_RE.fullmatch(filename)
+    if Path(filename).suffix != ".whl":
+        issues.append("package wheel artifact source_path must end with .whl")
+    elif filename_match is None:
+        issues.append("package wheel artifact source_path must use a valid wheel filename")
+    if not payload:
+        issues.append("package wheel artifact must be non-empty")
+    else:
+        issues.extend(_wheel_zip_payload_issues(payload, filename_match=filename_match))
+    return tuple(issues)
+
+
+def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] | None) -> tuple[str, ...]:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
+            corrupt_member = wheel_zip.testzip()
+            if corrupt_member is not None:
+                return (f"package wheel artifact zip member {corrupt_member!r} is corrupt",)
+            names = wheel_zip.namelist()
+            dist_info_prefixes = tuple(sorted(_root_dist_info_prefixes(names)))
+            metadata_names = tuple(name for name in names if _is_root_dist_info_file(name, "METADATA"))
+            wheel_names = tuple(name for name in names if _is_root_dist_info_file(name, "WHEEL"))
+    except zipfile.BadZipFile:
+        return ("package wheel artifact must be a valid wheel zip payload",)
+    if len(dist_info_prefixes) != 1:
+        return ("package wheel artifact must contain exactly one root-level .dist-info directory",)
+    dist_info_issues = _wheel_dist_info_prefix_issues(dist_info_prefixes[0], filename_match=filename_match)
+    if dist_info_issues:
+        return dist_info_issues
+    if len(wheel_names) != 1:
+        return ("package wheel artifact must contain .dist-info/WHEEL metadata",)
+    if len(metadata_names) != 1:
+        return ("package wheel artifact must contain exactly one .dist-info/METADATA file",)
+    with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
+        metadata_payload = wheel_zip.read(metadata_names[0])
+    return _wheel_metadata_issues(metadata_payload)
+
+
+def _root_dist_info_prefixes(names: Sequence[str]) -> set[str]:
+    prefixes = set()
+    for name in names:
+        first, separator, rest = name.partition("/")
+        if separator and first.endswith(".dist-info") and rest:
+            prefixes.add(first)
+    return prefixes
+
+
+def _is_root_dist_info_file(name: str, filename: str) -> bool:
+    first, separator, rest = name.partition("/")
+    return bool(separator and first.endswith(".dist-info") and rest == filename)
+
+
+def _wheel_dist_info_prefix_issues(prefix: str, *, filename_match: re.Match[str] | None) -> tuple[str, ...]:
+    if filename_match is None:
+        return ()
+    expected_prefix = f"{filename_match.group('distribution')}-{filename_match.group('version')}.dist-info"
+    if prefix != expected_prefix:
+        return ("package wheel artifact .dist-info directory must match wheel filename distribution and version",)
+    return ()
+
+
+def _wheel_metadata_issues(payload: bytes) -> tuple[str, ...]:
+    try:
+        metadata = _metadata_headers(payload.decode("utf-8"))
+    except UnicodeDecodeError:
+        return ("package wheel artifact METADATA must be UTF-8 text",)
+    name = metadata.get("name")
+    version = metadata.get("version")
+    if name != RELEASE_BUNDLE_PACKAGE_NAME:
+        return (f"package wheel artifact METADATA Name must be {RELEASE_BUNDLE_PACKAGE_NAME!r}",)
+    if not version:
+        return ("package wheel artifact METADATA Version must be non-empty",)
+    return ()
+
+
+def _metadata_headers(text: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        if raw_line == "":
+            break
+        if raw_line[0].isspace() or ":" not in raw_line:
+            continue
+        name, value = raw_line.split(":", 1)
+        headers[name.strip().lower()] = value.strip()
+    return headers
+
+
+def _preflight_release_bundle_destinations(
+    *,
+    prepared_artifacts: Sequence[_PreparedReleaseBundleArtifact],
+    bundle_dir: Path,
+    overwrite: bool,
+) -> None:
+    destinations: dict[Path, str] = {}
+    for prepared in prepared_artifacts:
+        local_source_path = local_path(prepared.source_path)
+        destination = _bundle_destination(bundle_dir, prepared)
+        if destination in destinations:
+            raise FileExistsError(
+                f"Release bundle artifacts would collide at {destination}: "
+                f"{destinations[destination]!r} and {prepared.source_path!r}"
+            )
+        destinations[destination] = prepared.source_path
+        if destination.exists() and not overwrite and not _same_path(local_source_path, destination):
+            raise FileExistsError(f"Release bundle artifact already exists: {destination}")
+
+
+def _bundle_destination(bundle_dir: Path, prepared: _PreparedReleaseBundleArtifact) -> Path:
+    return bundle_dir / _artifact_filename(prepared)
+
+
+def _expected_artifact_sources(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> tuple[dict[str, Any], ...]:
+    return tuple(_artifact_source_identity(artifact) for artifact in artifacts)
+
+
+def _artifact_source_identity(artifact: _PreparedReleaseBundleArtifact) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "role": artifact.role,
+        "path": artifact.source_path,
+    }
+    if (record_type := _artifact_record_type(artifact)) is not None:
+        identity["record_type"] = record_type
+    if (
+        artifact.role == "engine_probe"
+        and artifact.record is not None
+        and (backend := _optional_backend(artifact.record.get("backend"))) is not None
+    ):
+        identity["backend"] = backend
+    return identity
+
+
+def _expected_input_files(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> tuple[dict[str, Any], ...]:
+    input_files = []
+    for artifact in artifacts:
+        identity = _artifact_source_identity(artifact)
+        input_files.append(
+            {
+                "role": identity["role"],
+                "path": identity["path"],
+                "exists": True,
+                "readable_json": True,
+                **{key: value for key, value in identity.items() if key in ("record_type", "backend")},
+            }
+        )
+    return tuple(input_files)
+
+
+def _matches_expected_records(actual: Any, expected: Sequence[Mapping[str, Any]]) -> bool:
+    if not isinstance(actual, Sequence) or isinstance(actual, (str, bytes, bytearray)):
+        return False
+    if len(actual) != len(expected):
+        return False
+    return all(isinstance(item, Mapping) and _record_contains(item, expected_item) for item, expected_item in zip(actual, expected))
+
+
+def _record_contains(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    return all(actual.get(key) == value for key, value in expected.items())
+
+
+def _artifact_record(role: str, payload: bytes, source_path: str) -> Mapping[str, Any] | None:
+    if role == "package_wheel":
+        return None
+    return _read_json_object(payload, source_path)
+
+
+def _artifact_record_type(artifact: _PreparedReleaseBundleArtifact) -> str | None:
+    if artifact.record is None:
+        return None
+    if artifact.role == "databricks_run_status":
+        status_record = _databricks_run_status_record(artifact.record)
+        return _optional_str(status_record.get("record_type")) if status_record is not None else None
+    return _optional_str(artifact.record.get("record_type"))
+
+
+def _read_json_object(payload: bytes, source_path: str) -> Mapping[str, Any]:
+    try:
+        record = json.loads(payload.decode("utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Release bundle artifact {source_path!r} must be readable UTF-8 JSON") from exc
+    if not isinstance(record, Mapping):
+        raise ValueError(f"Release bundle artifact {source_path!r} JSON root must be an object")
+    return record
+
+
+def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
+    role = prepared.role
+    record = prepared.record
+    index = prepared.index
+    if role == "engine_probe":
+        backend = _optional_backend(record.get("backend")) if record is not None else None
+        backend = backend or f"record_{index + 1:02d}"
+        return f"engine_probe_{index + 1:02d}_{backend}.json"
+    if role == "v1_benchmark":
+        return "v1_benchmark.json"
+    if role == "storage_benchmark":
+        return "storage_benchmark.json"
+    if role == "release_evidence":
+        return "release_evidence.json"
+    if role == "preflight":
+        return "release_inputs.json"
+    if role == "plan_execution":
+        return f"plan_execution_{index + 1:02d}.json"
+    if role == "databricks_run_status":
+        return f"databricks_run_status_{index + 1:02d}.json"
+    if role == "package_wheel":
+        return Path(prepared.source_path).name
+    if role == "pr_evidence":
+        return f"pr_evidence_{index + 1:02d}.json"
+    raise ValueError(f"Unsupported release bundle artifact role {role!r}")
+
+
+def _artifact_to_record(artifact: ReleaseBundleArtifact) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "role": artifact.role,
+        "source_path": artifact.source_path,
+        "bundled_path": artifact.bundled_path,
+        "size_bytes": artifact.size_bytes,
+        "sha256": artifact.sha256,
+    }
+    if artifact.record_type is not None:
+        record["record_type"] = artifact.record_type
+    if artifact.backend is not None:
+        record["backend"] = artifact.backend
+    return record
+
+
+def _optional_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_backend(value: Any) -> str | None:
+    backend = _optional_str(value)
+    return backend if backend in REQUIRED_ENGINE_PROBE_BACKENDS else None
+
+
+def _matches_required_backend_set(value: Any) -> bool:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return False
+    return len(value) == len(REQUIRED_ENGINE_PROBE_BACKENDS) and set(value) == set(REQUIRED_ENGINE_PROBE_BACKENDS)
+
+
+def _dedupe_strings(values: Sequence[str]) -> tuple[str, ...]:
+    deduped = []
+    for value in values:
+        if value not in deduped:
+            deduped.append(value)
+    return tuple(deduped)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return False
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Build a checksummed Document KV release evidence bundle.")
+    parser.add_argument("--v1-benchmark-json", required=True)
+    parser.add_argument("--storage-benchmark-json", required=True)
+    parser.add_argument("--engine-probe-json", action="append", default=[])
+    parser.add_argument("--release-evidence-json")
+    parser.add_argument("--preflight-json")
+    parser.add_argument("--plan-execution-json", action="append", default=[])
+    parser.add_argument("--databricks-run-status-json", action="append", default=[])
+    parser.add_argument("--package-wheel")
+    parser.add_argument("--pr-evidence-json", action="append", default=[])
+    parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--output-json")
+    parser.add_argument("--overwrite", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    bundle = build_release_bundle(
+        v1_benchmark_json=args.v1_benchmark_json,
+        storage_benchmark_json=args.storage_benchmark_json,
+        engine_probe_jsons=args.engine_probe_json,
+        release_evidence_json=args.release_evidence_json,
+        preflight_json=args.preflight_json,
+        plan_execution_jsons=args.plan_execution_json,
+        databricks_run_status_jsons=args.databricks_run_status_json,
+        package_wheel=args.package_wheel,
+        pr_evidence_jsons=args.pr_evidence_json,
+        output_dir=args.output_dir,
+        overwrite=args.overwrite,
+    )
+    if args.output_json:
+        write_release_bundle_manifest_json(bundle, args.output_json)
+    else:
+        print(json.dumps(release_bundle_to_record(bundle), indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

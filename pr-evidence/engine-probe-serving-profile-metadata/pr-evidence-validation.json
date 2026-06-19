@@ -1,0 +1,41 @@
+{
+  "files": {
+    "pr-evidence/engine-probe-serving-profile-metadata/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 found that release evidence could accept a probe whose runtime engine_version did not match the pinned serving profile. The fix now requires engine_version plus serving package/version metadata to match the backend profile; GPT-5.5 follow-up review was clean.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "engine-probe metadata",
+        "release evidence validation",
+        "release bundle fixtures",
+        "public package exports",
+        "documentation"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_engine_probe.py tests/test_release_evidence.py tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "python -m py_compile src/restaurant_kv_serving/engine_probe.py src/restaurant_kv_serving/release_evidence.py src/document_kv_cache/engine_probe.py src/restaurant_kv_serving/__init__.py tests/test_engine_probe.py tests/test_release_evidence.py tests/test_release_bundle.py tests/test_public_package.py",
+        "poetry build",
+        "poetry install --dry-run --extras databricks --extras test",
+        "poetry install --dry-run",
+        "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-json pr-evidence/engine-probe-serving-profile-metadata/pr-evidence.json --output-json pr-evidence/engine-probe-serving-profile-metadata/pr-evidence-validation.json",
+        "GPT-5.5 focused review and clean follow-up review"
+      ],
+      "what_changed": [
+        "Stamped engine probe records with serving-engine package and version metadata from the backend serving profile.",
+        "Exported the new metadata keys through document_kv_cache and restaurant_kv_serving public surfaces.",
+        "Made release evidence reject native probes whose serving metadata or runtime engine_version does not match the pinned backend profile.",
+        "Updated release bundle and release evidence fixtures plus docs for the stricter release contract."
+      ],
+      "why": "Release evidence should prove that native vLLM/SGLang connector probes exercised the pinned serving-engine profile instead of accepting arbitrary or stale runtime versions."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

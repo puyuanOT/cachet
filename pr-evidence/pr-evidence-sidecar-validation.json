@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Initial GPT-5.5 review found invalid UTF-8 sidecars could raise instead of returning failed evidence. I caught UnicodeDecodeError, added the b'\\xff' regression, reran focused/full tests and build, and re-review returned clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/pr_evidence.py",
+    "src/document_kv_cache/pr_evidence.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "tests/test_pr_evidence.py",
+    "tests/test_public_package.py",
+    "pr-evidence/README.md",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_pr_evidence.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review found invalid UTF-8 handling gap; fixed with regression test and re-review returned clean"
+  ],
+  "what_changed": [
+    "Added public PR evidence file and directory validation helpers.",
+    "Added a repository gate that validates checked-in pr-evidence JSON sidecars.",
+    "Exposed the helpers through document_kv_cache and legacy root exports."
+  ],
+  "why": "PR and release traceability sidecars should be machine-checkable before they are attached to release bundles or used as governance evidence."
+}

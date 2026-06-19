@@ -1,0 +1,53 @@
+bundle:
+  name: document-kv-vllm-smoke
+
+variables:
+  runner_python_file:
+    description: Cluster-visible Python runner script URI for the vLLM smoke task.
+  benchmark_id:
+    description: Benchmark id written into vLLM smoke metadata and benchmark output.
+  output_dir:
+    description: Cluster-visible output directory for vLLM smoke artifacts.
+  wheel_uri:
+    description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
+  node_type_id:
+    default: g5.4xlarge
+    description: AWS g5 node type for the single-node GPU smoke.
+  spark_version:
+    default: 15.4.x-gpu-ml-scala2.12
+    description: Databricks GPU ML runtime version.
+  single_user_name:
+    default: ${workspace.current_user.userName}
+    description: Databricks user or service principal for SINGLE_USER cluster access.
+
+resources:
+  jobs:
+    document_kv_vllm_smoke:
+      name: document-kv-vllm-smoke
+      tasks:
+        - task_key: document_kv_vllm_smoke
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            driver_node_type_id: ${var.node_type_id}
+            data_security_mode: SINGLE_USER
+            single_user_name: ${var.single_user_name}
+            num_workers: 0
+            spark_conf:
+              spark.master: local[*]
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+              purpose: document-kv-vllm-smoke
+            aws_attributes:
+              availability: ON_DEMAND
+              zone_id: auto
+          libraries:
+            - whl: ${var.wheel_uri}
+          spark_python_task:
+            python_file: ${var.runner_python_file}
+            parameters:
+              - --benchmark-id
+              - ${var.benchmark_id}
+              - --output-dir
+              - ${var.output_dir}

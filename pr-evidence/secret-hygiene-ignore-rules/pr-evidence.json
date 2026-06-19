@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 focused review found no blocking or non-blocking issues. A residual risk about testing actual gitignore behavior was addressed with a git check-ignore governance test.",
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "repository hygiene",
+    "contribution documentation",
+    "governance tests"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "python -m py_compile tests/test_project_governance.py",
+    "poetry check",
+    "GPT-5.5 focused review",
+    "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-json pr-evidence/secret-hygiene-ignore-rules/pr-evidence.json --output-json pr-evidence/secret-hygiene-ignore-rules/pr-evidence-validation.json"
+  ],
+  "what_changed": [
+    "Extended .gitignore to cover local env files, PEM/key/secret files, logs, temp files, and common generated test/build artifacts.",
+    "Documented that Databricks tokens, OpenAI keys, private keys, and service credentials must stay in environment variables or secret stores and out of benchmark/release/PR evidence.",
+    "Added governance tests for required ignore patterns and git check-ignore behavior."
+  ],
+  "why": "Open-source readiness requires strong local secret hygiene because contributors may run Databricks, OpenAI, and private-key workflows while producing benchmark and release artifacts.",
+  "issues": []
+}

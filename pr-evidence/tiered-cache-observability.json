@@ -1,0 +1,38 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 re-reviewed tiered-cache observability and schema v2 handoff changes; final result was Clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/cache.py",
+    "src/document_kv_cache/cache.py",
+    "src/restaurant_kv_serving/materializer.py",
+    "src/restaurant_kv_serving/engine.py",
+    "src/restaurant_kv_serving/engine_adapters.py",
+    "src/restaurant_kv_serving/engine_probe.py",
+    "databricks/engine-probe/databricks.yml",
+    "src/document_kv_cache/templates/databricks/engine-probe/databricks.yml",
+    "README.md",
+    "tests/test_cache.py",
+    "tests/test_planner_materializer.py",
+    "tests/test_engine.py",
+    "tests/test_engine_adapters.py",
+    "tests/test_databricks_job.py",
+    "tests/test_public_package.py"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_databricks_job.py tests/test_template_resources.py tests/test_engine_adapters.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review clean after resolving materializer, handoff serialization, local_disk coverage, and schema-version findings"
+  ],
+  "what_changed": [
+    "Added measured per-segment cache-tier attribution across materialization, engine-ready requests, and schema-v2 engine handoff records.",
+    "Propagated cache_tier into engine injection plans and copy actions, plus docs/templates for the new handoff schema."
+  ],
+  "why": "Serving benchmarks and adapters need to attribute materialization latency to cpu, local_disk, or cold_storage for every KV segment without losing that data at the engine boundary."
+}

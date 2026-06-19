@@ -3,8 +3,25 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
 dist/
 build/
 *.egg-info/
 .DS_Store
 
+# Local credentials and machine-specific environment files.
+.env
+.env.*
+!.env.example
+.envrc
+*.pem
+*.key
+*.secret
+*.secrets
+
+# Local run outputs.
+*.log
+*.tmp

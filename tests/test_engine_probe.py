@@ -1,0 +1,435 @@
+import json
+from textwrap import dedent, indent
+
+import pytest
+
+import document_kv_cache.engine_probe as public_engine_probe
+from document_kv_cache.admission import AdmissionQueue
+from document_kv_cache.cache import ChunkCache
+from document_kv_cache.engine_adapters import (
+    EngineKVConnectorProbeResult,
+    PayloadMode,
+    ServingBackend,
+    build_engine_adapter_request,
+    engine_kv_connector_probe_result_to_record,
+    validate_engine_kv_connector_probe_record,
+    vllm_adapter_spec,
+    write_engine_adapter_request_json,
+)
+from document_kv_cache.engine_protocol import KVLayout
+from document_kv_cache.engine_probe import (
+    ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND,
+    ENGINE_KV_PROBE_METADATA_HANDOFF_JSON,
+    ENGINE_KV_PROBE_METADATA_PAYLOAD_URI,
+    ENGINE_KV_PROBE_METADATA_PROBE_FACTORY,
+    ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
+    ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
+    EngineKVProbeConfig,
+    read_engine_adapter_payload,
+    run_engine_kv_connector_probe,
+)
+from document_kv_cache.kvpack import PackChunk, write_kvpack
+from document_kv_cache.manifest import InMemoryManifestStore
+from document_kv_cache.materializer import KVMaterializer
+from document_kv_cache.models import DocumentChunkType, DocumentKVRequest, KVCacheKey
+from document_kv_cache.planner import CachePlanner
+from document_kv_cache.service import DocumentKVService
+from document_kv_cache.serving_env import serving_environment_profile
+from document_kv_cache.storage import DiskRangeReader
+
+
+BYTES_PER_TOKEN = 4
+LAYOUT_VERSION = "toy-engine-probe-v1"
+STATIC_TOKEN_COUNT = 2
+CHUNK_TOKEN_COUNT = 3
+STATIC_PAYLOAD = b"s" * (STATIC_TOKEN_COUNT * BYTES_PER_TOKEN)
+CHUNK_PAYLOAD = b"c" * (CHUNK_TOKEN_COUNT * BYTES_PER_TOKEN)
+
+
+def key(chunk_type: DocumentChunkType, chunk_id: str) -> KVCacheKey:
+    return KVCacheKey.for_document(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+        chunk_type=chunk_type,
+        chunk_id=chunk_id,
+    )
+
+
+def layout() -> KVLayout:
+    return KVLayout(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        layout_version=LAYOUT_VERSION,
+        dtype="int8",
+        num_layers=1,
+        block_size=2,
+        bytes_per_token=BYTES_PER_TOKEN,
+    )
+
+
+def service(tmp_path) -> DocumentKVService:
+    refs = write_kvpack(
+        tmp_path / "engine-probe.kvpack",
+        [
+            PackChunk(
+                key(DocumentChunkType.DOCUMENT_STATIC, "static"),
+                STATIC_PAYLOAD,
+                STATIC_TOKEN_COUNT,
+                "int8",
+                LAYOUT_VERSION,
+            ),
+            PackChunk(
+                key(DocumentChunkType.DOCUMENT_CHUNK, "section-1"),
+                CHUNK_PAYLOAD,
+                CHUNK_TOKEN_COUNT,
+                "int8",
+                LAYOUT_VERSION,
+            ),
+        ],
+        align_bytes=1,
+    )
+    return DocumentKVService(
+        planner=CachePlanner(InMemoryManifestStore(refs)),
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=1024), reader=DiskRangeReader()),
+        admission_queue=AdmissionQueue(max_pending_gpu_bytes=4096),
+    )
+
+
+def request() -> DocumentKVRequest:
+    return DocumentKVRequest(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_chunks={"doc-a": ["section-1"]},
+    )
+
+
+def write_handoff_and_payload(tmp_path, *, segmented: bool = True) -> tuple[object, object]:
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout(), segmented=segmented)
+    payload = b"".join(ready.payload) if isinstance(ready.payload, tuple) else ready.payload
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload)
+    handoff_path = write_engine_adapter_request_json(
+        build_engine_adapter_request(ready, spec=vllm_adapter_spec()),
+        tmp_path / "handoff.json",
+        payload_uri=f"disk:{payload_path}",
+    )
+    return handoff_path, payload_path
+
+
+def write_probe_factory_module(
+    tmp_path,
+    monkeypatch,
+    *,
+    module_name: str,
+    engine_version: str | None,
+    native_probe: bool = True,
+) -> str:
+    module_path = tmp_path / f"{module_name}.py"
+    if engine_version is None:
+        factory_body = "return probe"
+    else:
+        factory_body = dedent(
+            f"""
+            return EngineKVProbeFactoryResult(
+                probe=probe,
+                engine_version={engine_version!r},
+                native_probe={native_probe!r},
+                metadata={{"probe.request_id": context.plan.request_id}},
+            )
+            """
+        ).strip()
+    module_text = (
+        dedent(
+            """
+            from document_kv_cache.engine_probe import EngineKVProbeFactoryResult
+
+            class Probe:
+                def reserve_kv_blocks(self, action):
+                    return {"request_id": action.request_id, "blocks": action.total_blocks}
+
+                def import_kv_segment(self, reservation, action, payload):
+                    if payload.nbytes != action.source_byte_length:
+                        raise AssertionError("wrong slice length")
+
+                def bind_kv_handle(self, reservation, action):
+                    if reservation["request_id"] != action.request_id:
+                        raise AssertionError("wrong reservation")
+
+                def release_kv_blocks(self, reservation, action):
+                    if reservation["request_id"] != action.request_id:
+                        raise AssertionError("wrong release")
+
+            def build_probe(context):
+                probe = Probe()
+            """
+        )
+        + indent(factory_body, "    ")
+        + "\n"
+    )
+    module_path.write_text(module_text, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return f"{module_name}:build_probe"
+
+
+def test_run_engine_kv_connector_probe_writes_native_release_record(tmp_path, monkeypatch):
+    handoff_path, payload_path = write_handoff_and_payload(tmp_path, segmented=True)
+    output_path = tmp_path / "probe-record.json"
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="native_probe_factory_success",
+        engine_version="vllm-native-test",
+    )
+
+    result = run_engine_kv_connector_probe(
+        EngineKVProbeConfig(
+            handoff_json=handoff_path,
+            probe_factory=probe_factory,
+            output_json=output_path,
+            expected_backend=ServingBackend.VLLM,
+            metadata={
+                "caller": "release-ci",
+                ENGINE_KV_PROBE_METADATA_PROBE_FACTORY: "spoofed.factory:path",
+            },
+        )
+    )
+
+    record = engine_kv_connector_probe_result_to_record(result)
+    profile = serving_environment_profile(ServingBackend.VLLM)
+    assert record["backend"] == "vllm"
+    assert record["engine_version"] == "vllm-native-test"
+    assert record["payload_mode"] == "segmented"
+    assert record["copied_segments"] == 2
+    assert record["copied_tokens"] == STATIC_TOKEN_COUNT + CHUNK_TOKEN_COUNT
+    assert record["copied_bytes"] == len(STATIC_PAYLOAD) + len(CHUNK_PAYLOAD)
+    assert record["metadata"] == {
+        ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND: "vllm",
+        ENGINE_KV_PROBE_METADATA_HANDOFF_JSON: str(handoff_path),
+        ENGINE_KV_PROBE_METADATA_PAYLOAD_URI: f"disk:{payload_path}",
+        ENGINE_KV_PROBE_METADATA_PROBE_FACTORY: probe_factory,
+        ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE: profile.engine_package,
+        ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION: profile.engine_version,
+        "caller": "release-ci",
+        "probe.request_id": "req-1",
+    }
+    validate_engine_kv_connector_probe_record(record, expected_backend="vllm")
+    assert json.loads(output_path.read_text(encoding="utf-8")) == record
+
+
+def test_run_engine_kv_connector_probe_rejects_native_engine_version_override(
+    tmp_path,
+    monkeypatch,
+):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=True)
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="native_probe_factory_engine_version_spoof",
+        engine_version="vllm-native-test",
+    )
+
+    with pytest.raises(ValueError, match="engine_version override"):
+        run_engine_kv_connector_probe(
+            EngineKVProbeConfig(
+                handoff_json=handoff_path,
+                probe_factory=probe_factory,
+                expected_backend=ServingBackend.VLLM,
+                engine_version="caller-spoofed-vllm",
+            )
+        )
+
+
+def test_run_engine_kv_connector_probe_owns_expected_backend_metadata_without_config(
+    tmp_path,
+    monkeypatch,
+):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=True)
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="native_probe_factory_backend_spoof",
+        engine_version="vllm-native-test",
+    )
+
+    result = run_engine_kv_connector_probe(
+        EngineKVProbeConfig(
+            handoff_json=handoff_path,
+            probe_factory=probe_factory,
+            metadata={
+                ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND: "sglang",
+            },
+        )
+    )
+
+    record = engine_kv_connector_probe_result_to_record(result)
+    profile = serving_environment_profile(ServingBackend.VLLM)
+    assert record["backend"] == "vllm"
+    assert record["metadata"][ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND] == "vllm"
+    assert (
+        record["metadata"][ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE]
+        == profile.engine_package
+    )
+    assert (
+        record["metadata"][ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION]
+        == profile.engine_version
+    )
+
+
+def test_run_engine_kv_connector_probe_requires_engine_version_for_native_probe(tmp_path, monkeypatch):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=True)
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="native_probe_factory_missing_version",
+        engine_version=None,
+    )
+
+    with pytest.raises(ValueError, match="engine_version"):
+        run_engine_kv_connector_probe(
+            EngineKVProbeConfig(
+                handoff_json=handoff_path,
+                probe_factory=probe_factory,
+                expected_backend="vllm",
+            )
+        )
+
+
+def test_run_engine_kv_connector_probe_allows_debug_non_native_probe_with_explicit_version(tmp_path, monkeypatch):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=False)
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="debug_probe_factory",
+        engine_version=None,
+    )
+
+    result = run_engine_kv_connector_probe(
+        EngineKVProbeConfig(
+            handoff_json=handoff_path,
+            probe_factory=probe_factory,
+            expected_backend="vllm",
+            engine_version="debug-adapter",
+            native_probe=False,
+        )
+    )
+
+    record = engine_kv_connector_probe_result_to_record(result)
+    assert record["native_probe"] is False
+    assert record["payload_mode"] == PayloadMode.MERGED.value
+    assert record["metadata"][ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND] == "vllm"
+    assert record["metadata"][ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE] == "vllm"
+    assert (
+        record["metadata"][ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION]
+        == serving_environment_profile(ServingBackend.VLLM).engine_version
+    )
+    with pytest.raises(ValueError, match="native_probe=true"):
+        validate_engine_kv_connector_probe_record(record)
+
+
+def test_factory_result_can_force_non_native_probe_record(tmp_path, monkeypatch):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=False)
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="factory_forced_debug_probe",
+        engine_version="debug-adapter",
+        native_probe=False,
+    )
+
+    result = run_engine_kv_connector_probe(
+        EngineKVProbeConfig(
+            handoff_json=handoff_path,
+            probe_factory=probe_factory,
+            expected_backend="vllm",
+        )
+    )
+
+    record = engine_kv_connector_probe_result_to_record(result)
+    assert record["native_probe"] is False
+    with pytest.raises(ValueError, match="native_probe=true"):
+        validate_engine_kv_connector_probe_record(record)
+
+
+def test_read_engine_adapter_payload_validates_local_uri_and_size(tmp_path):
+    payload_path = tmp_path / "payload.kv"
+    payload_path.write_bytes(b"payload")
+
+    assert read_engine_adapter_payload(f"disk:{payload_path}", expected_bytes=7) == b"payload"
+    assert read_engine_adapter_payload(str(payload_path), expected_bytes=7) == b"payload"
+    with pytest.raises(ValueError, match="expected 8"):
+        read_engine_adapter_payload(str(payload_path), expected_bytes=8)
+    with pytest.raises(ValueError, match="absolute path"):
+        read_engine_adapter_payload("relative.kv")
+    with pytest.raises(ValueError, match="absolute paths"):
+        read_engine_adapter_payload("disk:relative.kv")
+    with pytest.raises(ValueError, match="absolute paths"):
+        read_engine_adapter_payload("file:relative.kv")
+    with pytest.raises(ValueError, match="dbfs:/"):
+        read_engine_adapter_payload("dbfs:relative.kv")
+    with pytest.raises(ValueError, match="disk:"):
+        read_engine_adapter_payload("s3://bucket/payload.kv")
+    with pytest.raises(ValueError, match="cannot contain"):
+        read_engine_adapter_payload("dbfs:/../etc/passwd")
+    with pytest.raises(ValueError, match="cannot contain"):
+        read_engine_adapter_payload("uc-volume:/../../etc/passwd")
+    with pytest.raises(ValueError, match="cannot contain"):
+        read_engine_adapter_payload("/Volumes/catalog/schema/volume/../secret.kv")
+
+
+def test_public_engine_probe_main_respects_document_namespace_hooks(monkeypatch, tmp_path):
+    output_path = tmp_path / "probe.json"
+    calls = {}
+
+    def fake_run(config):
+        calls["config"] = config
+        return EngineKVConnectorProbeResult(
+            backend=ServingBackend.VLLM,
+            request_id="req-main",
+            total_blocks=1,
+            copied_segments=1,
+            copied_tokens=1,
+            copied_bytes=4,
+            bound=True,
+            released=True,
+            model_id="qwen3:4b-instruct",
+                layout_version=LAYOUT_VERSION,
+            layout=layout(),
+            payload_mode=PayloadMode.MERGED,
+            connector_package="vllm",
+            engine_version="vllm-native-test",
+            metadata={"source": "public-hook"},
+        )
+
+    def fake_write(result, path):
+        calls["record"] = engine_kv_connector_probe_result_to_record(result)
+        calls["path"] = str(path)
+
+    monkeypatch.setattr(public_engine_probe, "run_engine_kv_connector_probe", fake_run)
+    monkeypatch.setattr(public_engine_probe, "write_engine_kv_connector_probe_result_json", fake_write)
+
+    exit_code = public_engine_probe.main(
+        [
+            "--handoff-json",
+            str(tmp_path / "handoff.json"),
+            "--probe-factory",
+            "some.module:factory",
+            "--output-json",
+            str(output_path),
+            "--expected-backend",
+            "vllm",
+            "--metadata",
+            "caller=test",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls["config"].handoff_json == tmp_path / "handoff.json"
+    assert calls["config"].probe_factory == "some.module:factory"
+    assert calls["config"].metadata == {"caller": "test"}
+    assert calls["path"] == str(output_path)
+    assert calls["record"]["metadata"] == {"source": "public-hook"}

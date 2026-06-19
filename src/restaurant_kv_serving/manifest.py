@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Protocol
 
-from restaurant_kv_serving.models import ChunkRef, ChunkType, KVCacheKey
+from restaurant_kv_serving.models import CacheChunkType, ChunkRef, KVCacheKey, chunk_type_sort_order
 
 
 class ManifestStore(Protocol):
@@ -11,12 +11,14 @@ class ManifestStore(Protocol):
 
     def put_many(self, refs: Iterable[ChunkRef]) -> None: ...
 
+    def keys_for_document(self, document_id: str, chunk_type: CacheChunkType | None = None) -> list[KVCacheKey]: ...
+
 
 class InMemoryManifestStore:
     """Small test/dev manifest implementation.
 
     Production should back this with a Delta table keyed by model/lora/template,
-    restaurant id, chunk type, and chunk id.
+    document id, chunk type, and chunk id.
     """
 
     def __init__(self, refs: Iterable[ChunkRef] = ()) -> None:
@@ -33,9 +35,14 @@ class InMemoryManifestStore:
         for ref in refs:
             self._refs[ref.key] = ref
 
-    def keys_for_restaurant(self, restaurant_id: str, chunk_type: ChunkType | None = None) -> list[KVCacheKey]:
-        keys = [key for key in self._refs if key.restaurant_id == restaurant_id]
+    def keys_for_document(self, document_id: str, chunk_type: CacheChunkType | None = None) -> list[KVCacheKey]:
+        keys = [key for key in self._refs if key.document_id == document_id]
         if chunk_type is not None:
             keys = [key for key in keys if key.chunk_type == chunk_type]
-        return sorted(keys, key=lambda item: (item.chunk_type.value, item.chunk_id))
+        return sorted(
+            keys,
+            key=lambda item: (chunk_type_sort_order(item.chunk_type), item.chunk_type.value, item.chunk_id),
+        )
 
+    def keys_for_restaurant(self, restaurant_id: str, chunk_type: CacheChunkType | None = None) -> list[KVCacheKey]:
+        return self.keys_for_document(restaurant_id, chunk_type)

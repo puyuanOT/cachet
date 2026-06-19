@@ -1,0 +1,35 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 focused review returned no findings for the PEP 561 marker files, package include metadata, README note, or marker tests.",
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "typed package distribution",
+    "package include metadata",
+    "public package documentation",
+    "governance tests"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py tests/test_public_package.py -q",
+    "poetry build",
+    "Built wheel zip inspection confirmed document_kv_cache/py.typed and restaurant_kv_serving/py.typed are present.",
+    "poetry check",
+    "poetry install --dry-run",
+    "poetry install --dry-run --extras databricks --extras test",
+    "poetry run pytest -q",
+    "python -m py_compile tests/test_project_governance.py tests/test_public_package.py",
+    "GPT-5.5 focused review",
+    "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-json pr-evidence/pep561-typed-package-markers/pr-evidence.json --output-json pr-evidence/pep561-typed-package-markers/pr-evidence-validation.json"
+  ],
+  "what_changed": [
+    "Added py.typed markers to document_kv_cache and restaurant_kv_serving.",
+    "Included both marker files explicitly in sdist and wheel artifacts.",
+    "Documented that installed wheels expose inline type annotations.",
+    "Added tests that require both marker files and package include metadata."
+  ],
+  "why": "Open-source users should be able to consume the package's inline type annotations from installed distributions while legacy imports remain typed during migration.",
+  "issues": []
+}

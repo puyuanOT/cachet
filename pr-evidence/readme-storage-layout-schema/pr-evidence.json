@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found the first governance assertion too loose because it only checked the whole Logical Model section. The test now extracts the fenced manifest table containing `Manifest table:` and asserts `storage_layout` appears immediately after `layout_version`; the final GPT-5.5 pass found no remaining issues.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "root README manifest schema documentation",
+    "repository documentation governance tests",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_readme_manifest_schema_mentions_storage_layout tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added storage_layout to the README manifest table next to layout_version.",
+    "Added a governance test that extracts the README manifest table fenced block and verifies storage_layout is present in the schema.",
+    "Resolved GPT-5.5 review feedback by tightening the test to the actual manifest table block."
+  ],
+  "why": "Keep user-facing storage schema documentation aligned with persisted PackChunk and ChunkRef metadata so engine adapters can rely on documented storage-layout compatibility checks."
+}

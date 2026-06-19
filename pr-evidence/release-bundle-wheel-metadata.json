@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Initial review found nested .dist-info paths could pass and build tags were too permissive. I changed filename parsing to require numeric-leading build tags, required a single root-level .dist-info directory matching filename distribution/version, added tests for the invalid shapes, reran full tests/build and a real-wheel smoke, and re-review returned clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py",
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "Real built wheel returned no _package_wheel_issues",
+    "GPT-5.5 review clean after resolving nested .dist-info and build-tag findings"
+  ],
+  "what_changed": [
+    "Tightened release-bundle package wheel provenance validation.",
+    "Required valid wheel filename grammar, root-level filename-matching .dist-info metadata, Name: document-kv-cache, and non-empty Version.",
+    "Added regression coverage for invalid build tags, nested .dist-info, mismatched .dist-info versions, wrong package names, and missing metadata versions."
+  ],
+  "why": "Release bundles should prove the tested wheel is the document-kv-cache package under review, not just any wheel-shaped zip file."
+}

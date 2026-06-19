@@ -1,0 +1,35 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 focused review returned no findings for the PEP 621 metadata, optional dependency, script, and governance-test changes.",
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "packaging metadata",
+    "console scripts",
+    "dependency governance tests",
+    "public package metadata tests"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py tests/test_public_package.py -q",
+    "poetry check",
+    "poetry install --dry-run --extras databricks --extras test",
+    "poetry build",
+    "poetry install --dry-run",
+    "poetry run pytest -q",
+    "python -m py_compile tests/test_project_governance.py tests/test_public_package.py",
+    "Inspected built wheel METADATA for name/version/requires-python/extras/Requires-Dist pins and entry_points.txt for document-kv and restaurant-kv script aliases.",
+    "GPT-5.5 focused review",
+    "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-json pr-evidence/pep621-packaging-metadata/pr-evidence.json --output-json pr-evidence/pep621-packaging-metadata/pr-evidence-validation.json"
+  ],
+  "what_changed": [
+    "Moved package name, version, description, readme, authors, keywords, classifiers, Python requirement, optional dependencies, and console scripts to PEP 621 project tables.",
+    "Kept Poetry-specific package/include configuration under tool.poetry for the src layout and bundled Databricks templates.",
+    "Updated governance tests to collect exact pins from project optional dependencies and reject deprecated tool.poetry metadata, dependency, extras, and script tables.",
+    "Updated public package metadata tests to validate project metadata and project script aliases."
+  ],
+  "why": "Open-source packaging should publish standard PEP 621 metadata without Poetry deprecation warnings while preserving exact dependency pins and existing document/legacy console scripts.",
+  "issues": []
+}

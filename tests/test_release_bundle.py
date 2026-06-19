@@ -1,0 +1,1089 @@
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import zipfile
+from pathlib import Path
+
+import pytest
+
+import document_kv_cache.release_bundle as public_release_bundle
+import restaurant_kv_serving.release_bundle as legacy_release_bundle
+from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_plan_executor import (
+    BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
+    BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
+)
+from document_kv_cache.databricks_runs import (
+    DATABRICKS_RUN_STATUS_RECORD_TYPE,
+    DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
+)
+from document_kv_cache.engine_adapters import EngineKVConnectorProbeResult, PayloadMode, ServingBackend
+from document_kv_cache.engine_adapters import engine_kv_connector_probe_result_to_record
+from document_kv_cache.engine_probe import (
+    ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
+    ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
+)
+from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.release_bundle import (
+    RELEASE_BUNDLE_MANIFEST_FILENAME,
+    RELEASE_BUNDLE_RECORD_TYPE,
+    ReleaseBundle,
+    ReleaseBundleArtifact,
+    build_release_bundle,
+    release_bundle_to_record,
+)
+from document_kv_cache.release_evidence import (
+    evaluate_release_evidence_files,
+    inspect_release_evidence_input_files,
+    write_release_evidence_input_status_json,
+    write_release_evidence_json,
+)
+from document_kv_cache.serving_env import serving_environment_profile
+from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_build_release_bundle_copies_artifacts_and_writes_checksummed_manifest(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        release_evidence_json=artifacts["evidence"],
+        preflight_json=artifacts["preflight"],
+        output_dir=bundle_dir,
+    )
+    record = json.loads((bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+    assert record == release_bundle_to_record(bundle)
+    assert record["record_type"] == RELEASE_BUNDLE_RECORD_TYPE
+    assert record["ok"] is True
+    assert record["artifact_count"] == 6
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "storage_benchmark",
+        "engine_probe",
+        "engine_probe",
+        "release_evidence",
+        "preflight",
+    ]
+    assert [artifact.get("backend") for artifact in record["artifacts"][2:4]] == ["vllm", "sglang"]
+
+    for artifact in record["artifacts"]:
+        source_payload = Path(artifact["source_path"]).read_bytes()
+        bundled_payload = (bundle_dir / artifact["bundled_path"]).read_bytes()
+        assert bundled_payload == source_payload
+        assert artifact["size_bytes"] == len(source_payload)
+        assert artifact["sha256"] == hashlib.sha256(source_payload).hexdigest()
+
+
+def test_build_release_bundle_plan_execution_stays_out_of_release_sidecar_matching(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        release_evidence_json=artifacts["evidence"],
+        preflight_json=artifacts["preflight"],
+        plan_execution_jsons=(plan_execution,),
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "storage_benchmark",
+        "engine_probe",
+        "engine_probe",
+        "release_evidence",
+        "preflight",
+        "plan_execution",
+    ]
+    assert record["artifacts"][-1]["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
+
+
+def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_matching(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    run_status = _write_json(source_dir / "databricks-run-status.json", _databricks_run_status_cli_record(succeeded=True))
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        release_evidence_json=artifacts["evidence"],
+        preflight_json=artifacts["preflight"],
+        databricks_run_status_jsons=(run_status,),
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "storage_benchmark",
+        "engine_probe",
+        "engine_probe",
+        "release_evidence",
+        "preflight",
+        "databricks_run_status",
+    ]
+    status_artifact = record["artifacts"][-1]
+    assert status_artifact["record_type"] == DATABRICKS_RUN_STATUS_RECORD_TYPE
+    assert status_artifact["bundled_path"] == "databricks_run_status_07.json"
+    bundled_record = json.loads((bundle_dir / status_artifact["bundled_path"]).read_text(encoding="utf-8"))
+    assert bundled_record["summary"]["succeeded"] is True
+
+
+def test_build_release_bundle_can_include_package_wheel_and_pr_evidence(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
+    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
+    pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        plan_execution_jsons=(plan_execution,),
+        package_wheel=package_wheel,
+        pr_evidence_jsons=(pr_evidence,),
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "storage_benchmark",
+        "engine_probe",
+        "engine_probe",
+        "plan_execution",
+        "package_wheel",
+        "pr_evidence",
+    ]
+    execution_artifact = record["artifacts"][4]
+    wheel_artifact = record["artifacts"][5]
+    pr_artifact = record["artifacts"][6]
+    assert execution_artifact["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
+    assert json.loads((bundle_dir / execution_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+    assert wheel_artifact["bundled_path"] == package_wheel.name
+    assert "record_type" not in wheel_artifact
+    assert (bundle_dir / wheel_artifact["bundled_path"]).read_bytes() == package_wheel.read_bytes()
+    assert pr_artifact["record_type"] == "document_kv.pr_evidence.v1"
+    assert json.loads((bundle_dir / pr_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_build_release_bundle_rejects_invalid_package_wheel_or_pr_evidence(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    bad_wheel = tmp_path / "not-a-wheel.txt"
+    bad_wheel.write_bytes(b"not a wheel")
+    failed_pr_evidence = _write_json(tmp_path / "failed-pr-evidence.json", _pr_evidence_record(ok=False))
+    unresolved_review_pr_evidence_record = _pr_evidence_record(ok=True)
+    unresolved_review_pr_evidence_record["gpt55_review_outcome"] = "findings_resolved"
+    unresolved_review_pr_evidence_record["gpt55_review_findings_resolved"] = False
+    unresolved_review_pr_evidence = _write_json(
+        tmp_path / "unresolved-review-pr-evidence.json",
+        unresolved_review_pr_evidence_record,
+    )
+    failed_plan_execution = _write_json(tmp_path / "failed-plan-execution.json", _plan_execution_record(ok=False))
+    failed_run_status = _write_json(
+        tmp_path / "failed-databricks-run-status.json",
+        _databricks_run_status_record(succeeded=False),
+    )
+    raw_response_run_status = _write_json(
+        tmp_path / "raw-response-databricks-run-status.json",
+        {
+            **_databricks_run_status_cli_record(succeeded=True),
+            "response": {"tasks": [{"notebook_task": {"base_parameters": {"token": "do-not-bundle-me"}}}]},
+        },
+    )
+    missing_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
+    missing_submit_payload_status_record.pop("submit_payload")
+    missing_submit_payload_status = _write_json(
+        tmp_path / "missing-submit-payload-databricks-run-status.json",
+        missing_submit_payload_status_record,
+    )
+    non_g5_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
+    non_g5_submit_payload_status_record["submit_payload"]["aws_g5_node_type"] = False
+    non_g5_submit_payload_status_record["submit_payload"]["tasks"][0]["node_type_id"] = "g6.4xlarge"
+    non_g5_submit_payload_status = _write_json(
+        tmp_path / "non-g5-submit-payload-databricks-run-status.json",
+        non_g5_submit_payload_status_record,
+    )
+    empty_tasks_status_record = _databricks_run_status_record(succeeded=True)
+    empty_tasks_status_record["task_count"] = 0
+    empty_tasks_status_record["tasks"] = []
+    empty_tasks_status = _write_json(
+        tmp_path / "empty-tasks-databricks-run-status.json",
+        empty_tasks_status_record,
+    )
+    nested_raw_status_record = _databricks_run_status_cli_record(succeeded=True)
+    nested_raw_status_record["summary"]["tasks"][0]["notebook_task"] = {
+        "base_parameters": {"token": "do-not-bundle-me"}
+    }
+    nested_raw_status_record["summary"]["submit_payload"]["tasks"][0]["new_cluster"] = {
+        "spark_conf": {"spark.secret": "do-not-bundle-me"}
+    }
+    nested_raw_status = _write_json(
+        tmp_path / "nested-raw-databricks-run-status.json",
+        nested_raw_status_record,
+    )
+    raw_object_in_allowed_field_record = _databricks_run_status_cli_record(succeeded=True)
+    raw_object_in_allowed_field_record["summary"]["state_message"] = {
+        "response": {"token": "do-not-bundle-me"}
+    }
+    raw_object_in_allowed_field_record["summary"]["tasks"][0]["state_message"] = {
+        "notebook_task": {"base_parameters": {"token": "do-not-bundle-me"}}
+    }
+    raw_object_in_allowed_field_record["summary"]["submit_payload"]["run_name"] = {
+        "raw_payload": {"token": "do-not-bundle-me"}
+    }
+    raw_object_in_allowed_field = _write_json(
+        tmp_path / "raw-object-in-allowed-field-databricks-run-status.json",
+        raw_object_in_allowed_field_record,
+    )
+    raw_object_in_wrapper_action_record = _databricks_run_status_cli_record(succeeded=True)
+    raw_object_in_wrapper_action_record["action"] = {"response": {"token": "do-not-bundle-me"}}
+    raw_object_in_wrapper_action = _write_json(
+        tmp_path / "raw-object-in-wrapper-action-databricks-run-status.json",
+        raw_object_in_wrapper_action_record,
+    )
+
+    with pytest.raises(ValueError, match="package wheel artifact source_path"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=bad_wheel,
+            output_dir=tmp_path / "bad-wheel-bundle",
+        )
+
+    invalid_named_wheel = _write_wheel(tmp_path / "package_wheel.whl")
+    with pytest.raises(ValueError, match="valid wheel filename"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=invalid_named_wheel,
+            output_dir=tmp_path / "bad-wheel-name-bundle",
+        )
+
+    invalid_build_tag_wheel = _write_wheel(tmp_path / "document_kv_cache-0.2.0-build-py3-none-any.whl")
+    with pytest.raises(ValueError, match="valid wheel filename"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=invalid_build_tag_wheel,
+            output_dir=tmp_path / "bad-wheel-build-tag-bundle",
+        )
+
+    valid_named_bad_payload = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    valid_named_bad_payload.write_bytes(b"PK\x03\x04not a valid zip")
+    with pytest.raises(ValueError, match="valid wheel zip payload"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=valid_named_bad_payload,
+            output_dir=tmp_path / "bad-wheel-payload-bundle",
+        )
+
+    nested_dist_info_wheel = _write_wheel(
+        tmp_path / "nested-dist-info-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        dist_info_prefix="nested/document_kv_cache-0.2.0.dist-info",
+    )
+    with pytest.raises(ValueError, match="root-level .dist-info"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=nested_dist_info_wheel,
+            output_dir=tmp_path / "bad-wheel-nested-dist-info-bundle",
+        )
+
+    mismatched_dist_info_wheel = _write_wheel(
+        tmp_path / "mismatched-dist-info-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        dist_info_prefix="document_kv_cache-0.2.1.dist-info",
+    )
+    with pytest.raises(ValueError, match="match wheel filename"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=mismatched_dist_info_wheel,
+            output_dir=tmp_path / "bad-wheel-dist-info-version-bundle",
+        )
+
+    wrong_name_wheel = _write_wheel(
+        tmp_path / "wrong-name-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        metadata_name="other-package",
+    )
+    with pytest.raises(ValueError, match="METADATA Name"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=wrong_name_wheel,
+            output_dir=tmp_path / "bad-wheel-metadata-name-bundle",
+        )
+
+    missing_version_wheel = _write_wheel(
+        tmp_path / "missing-version-wheel" / "document_kv_cache-0.2.1-py3-none-any.whl",
+        metadata_version=None,
+        dist_info_prefix="document_kv_cache-0.2.1.dist-info",
+    )
+    with pytest.raises(ValueError, match="METADATA Version"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            package_wheel=missing_version_wheel,
+            output_dir=tmp_path / "bad-wheel-metadata-version-bundle",
+        )
+
+    with pytest.raises(ValueError, match="PR evidence sidecar ok"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            pr_evidence_jsons=(failed_pr_evidence,),
+            output_dir=tmp_path / "bad-pr-evidence-bundle",
+        )
+
+    with pytest.raises(ValueError, match="GPT-5.5 findings must be resolved"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            pr_evidence_jsons=(unresolved_review_pr_evidence,),
+            output_dir=tmp_path / "unresolved-review-pr-evidence-bundle",
+        )
+
+    with pytest.raises(ValueError, match="benchmark plan execution sidecar ok"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            plan_execution_jsons=(failed_plan_execution,),
+            output_dir=tmp_path / "bad-plan-execution-bundle",
+        )
+
+    bad_returncode_record = _plan_execution_record(ok=True)
+    bad_returncode_record["commands"][0]["returncode"] = False
+    bad_returncode_path = _write_json(tmp_path / "bad-plan-returncode.json", bad_returncode_record)
+    with pytest.raises(ValueError, match=r"commands\[0\]\.returncode"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            plan_execution_jsons=(bad_returncode_path,),
+            output_dir=tmp_path / "bad-plan-returncode-bundle",
+        )
+
+    with pytest.raises(ValueError, match="Databricks run status sidecar succeeded"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(failed_run_status,),
+            output_dir=tmp_path / "bad-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="raw Jobs API response"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(raw_response_run_status,),
+            output_dir=tmp_path / "raw-response-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="submit_payload must be an object"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(missing_submit_payload_status,),
+            output_dir=tmp_path / "missing-submit-payload-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="aws_g5_node_type"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(non_g5_submit_payload_status,),
+            output_dir=tmp_path / "non-g5-submit-payload-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="tasks must be a non-empty array"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(empty_tasks_status,),
+            output_dir=tmp_path / "empty-tasks-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="unsupported keys"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(nested_raw_status,),
+            output_dir=tmp_path / "nested-raw-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="state_message must be a string or null"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(raw_object_in_allowed_field,),
+            output_dir=tmp_path / "raw-object-in-allowed-field-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="wrapper.action must be 'get'"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            databricks_run_status_jsons=(raw_object_in_wrapper_action,),
+            output_dir=tmp_path / "raw-object-in-wrapper-action-databricks-status-bundle",
+        )
+
+
+def test_build_release_bundle_rejects_existing_outputs_without_overwrite(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    bundle_dir = tmp_path / "bundle"
+
+    build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        output_dir=bundle_dir,
+    )
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            output_dir=bundle_dir,
+        )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        output_dir=bundle_dir,
+        overwrite=True,
+    )
+
+    assert len(bundle.artifacts) == 4
+
+
+def test_build_release_bundle_rejects_inputs_that_fail_release_evidence_validation(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    bad_v1_record = _v1_record(ok=True)
+    bad_v1_record["record_type"] = "document_kv.benchmark_summary.v1"
+    _write_json(Path(artifacts["v1"]), bad_v1_record)
+
+    with pytest.raises(ValueError, match="v1 benchmark record_type"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            output_dir=tmp_path / "bundle",
+        )
+
+    assert not (tmp_path / "bundle" / RELEASE_BUNDLE_MANIFEST_FILENAME).exists()
+
+
+def test_build_release_bundle_rejects_failed_release_evidence_or_preflight_sidecars(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    failed_evidence_path = _write_json(
+        tmp_path / "failed-evidence.json",
+        {
+            "record_type": "document_kv.release_evidence.v1",
+            "ok": False,
+            "v1_benchmark_ok": True,
+            "storage_benchmark_ok": True,
+            "engine_probe_backends": ["vllm", "sglang"],
+            "missing_engine_probe_backends": [],
+            "duplicate_engine_probe_backends": [],
+            "invalid_engine_probe_records": [],
+            "issues": ["not ready"],
+        },
+    )
+    failed_preflight_path = _write_json(
+        tmp_path / "failed-preflight.json",
+        {
+            "record_type": "document_kv.release_evidence_inputs.v1",
+            "ok": False,
+            "required_engine_probe_backends": ["vllm", "sglang"],
+            "missing_paths": ["missing.json"],
+            "unreadable_paths": [],
+            "missing_engine_probe_backends": [],
+            "issues": ["missing input paths: missing.json"],
+        },
+    )
+
+    with pytest.raises(ValueError, match="release evidence sidecar ok must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            release_evidence_json=failed_evidence_path,
+            output_dir=tmp_path / "evidence-bundle",
+        )
+
+    with pytest.raises(ValueError, match="preflight sidecar ok must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            preflight_json=failed_preflight_path,
+            output_dir=tmp_path / "preflight-bundle",
+        )
+
+
+def test_build_release_bundle_rejects_stale_release_evidence_or_preflight_sidecars(tmp_path):
+    current_artifacts = _write_release_ready_artifacts(tmp_path / "current")
+    stale_artifacts = _write_release_ready_artifacts(tmp_path / "stale")
+
+    with pytest.raises(ValueError, match="artifact_sources must match"):
+        build_release_bundle(
+            v1_benchmark_json=current_artifacts["v1"],
+            storage_benchmark_json=current_artifacts["storage"],
+            engine_probe_jsons=(current_artifacts["vllm"], current_artifacts["sglang"]),
+            release_evidence_json=stale_artifacts["evidence"],
+            output_dir=tmp_path / "stale-evidence-bundle",
+        )
+
+    with pytest.raises(ValueError, match="input_files must match"):
+        build_release_bundle(
+            v1_benchmark_json=current_artifacts["v1"],
+            storage_benchmark_json=current_artifacts["storage"],
+            engine_probe_jsons=(current_artifacts["vllm"], current_artifacts["sglang"]),
+            preflight_json=stale_artifacts["preflight"],
+            output_dir=tmp_path / "stale-preflight-bundle",
+        )
+
+
+def test_build_release_bundle_preflights_output_collisions_before_copying(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    bundle_dir = tmp_path / "bundle"
+    bundle_dir.mkdir()
+    (bundle_dir / "storage_benchmark.json").write_text("existing", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="storage_benchmark.json"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            output_dir=bundle_dir,
+        )
+
+    assert not (bundle_dir / "v1_benchmark.json").exists()
+    assert not (bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME).exists()
+
+
+def test_release_bundle_rejects_non_object_json_artifacts(tmp_path):
+    v1_path = tmp_path / "v1.json"
+    storage_path = _write_record(tmp_path / "storage.json", "document_kv.storage_benchmark.v1")
+    v1_path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="JSON root must be an object"):
+        build_release_bundle(
+            v1_benchmark_json=v1_path,
+            storage_benchmark_json=storage_path,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_release_bundle_dataclasses_validate_json_safe_schema():
+    artifact = ReleaseBundleArtifact(
+        role="engine_probe",
+        source_path="vllm.json",
+        bundled_path="engine_probe_01_vllm.json",
+        size_bytes=128,
+        sha256="a" * 64,
+        backend="vllm",
+    )
+    bundle = ReleaseBundle(
+        output_dir="/tmp/bundle",
+        manifest_path="/tmp/bundle/manifest.json",
+        artifacts=[artifact],
+    )
+
+    assert bundle.artifacts == (artifact,)
+
+    with pytest.raises(ValueError, match="Unsupported release bundle artifact role"):
+        ReleaseBundleArtifact(role="dataset", source_path="x", bundled_path="x", size_bytes=1, sha256="a")
+    with pytest.raises(ValueError, match="source_path"):
+        ReleaseBundleArtifact(role="v1_benchmark", source_path="", bundled_path="x", size_bytes=1, sha256="a")
+    with pytest.raises(ValueError, match="sha256"):
+        ReleaseBundleArtifact(role="v1_benchmark", source_path="x", bundled_path="x", size_bytes=1, sha256="a")
+    with pytest.raises(ValueError, match="size_bytes"):
+        ReleaseBundleArtifact(role="v1_benchmark", source_path="x", bundled_path="x", size_bytes=-1, sha256="a" * 64)
+    with pytest.raises(ValueError, match="backend can only"):
+        ReleaseBundleArtifact(
+            role="v1_benchmark",
+            source_path="x",
+            bundled_path="x",
+            size_bytes=1,
+            sha256="a" * 64,
+            backend="vllm",
+        )
+    with pytest.raises(TypeError, match="artifacts"):
+        ReleaseBundle(output_dir="/tmp/bundle", manifest_path="/tmp/bundle/manifest.json", artifacts=(object(),))
+
+
+def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    output_json = tmp_path / "bundle-record.json"
+    bundle_dir = tmp_path / "bundle"
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "document_kv_cache.release_bundle",
+            "--v1-benchmark-json",
+            str(artifacts["v1"]),
+            "--storage-benchmark-json",
+            str(artifacts["storage"]),
+            "--engine-probe-json",
+            str(artifacts["vllm"]),
+            "--engine-probe-json",
+            str(artifacts["sglang"]),
+            "--output-dir",
+            str(bundle_dir),
+            "--output-json",
+            str(output_json),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == ""
+    assert json.loads(output_json.read_text(encoding="utf-8")) == json.loads(
+        (bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME).read_text(encoding="utf-8")
+    )
+
+
+def test_public_release_bundle_cli_rejects_unresolved_pr_evidence(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    unresolved_review_pr_evidence_record = _pr_evidence_record(ok=True)
+    unresolved_review_pr_evidence_record["gpt55_review_outcome"] = "findings_resolved"
+    unresolved_review_pr_evidence_record["gpt55_review_findings_resolved"] = False
+    unresolved_review_pr_evidence = _write_json(
+        tmp_path / "unresolved-review-pr-evidence.json",
+        unresolved_review_pr_evidence_record,
+    )
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "document_kv_cache.release_bundle",
+            "--v1-benchmark-json",
+            str(artifacts["v1"]),
+            "--storage-benchmark-json",
+            str(artifacts["storage"]),
+            "--engine-probe-json",
+            str(artifacts["vllm"]),
+            "--engine-probe-json",
+            str(artifacts["sglang"]),
+            "--pr-evidence-json",
+            str(unresolved_review_pr_evidence),
+            "--output-dir",
+            str(tmp_path / "bundle"),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "GPT-5.5 findings must be resolved" in completed.stderr
+    assert not (tmp_path / "bundle" / RELEASE_BUNDLE_MANIFEST_FILENAME).exists()
+
+
+def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsys, tmp_path):
+    original_builder = legacy_release_bundle.build_release_bundle
+    original_serializer = legacy_release_bundle.release_bundle_to_record
+    original_writer = legacy_release_bundle.write_release_bundle_manifest_json
+    fake_bundle = ReleaseBundle(
+        output_dir=str(tmp_path / "bundle"),
+        manifest_path=str(tmp_path / "bundle" / "manifest.json"),
+        artifacts=(),
+    )
+
+    def fake_builder(**kwargs):
+        assert kwargs["output_dir"] == str(tmp_path / "bundle")
+        return fake_bundle
+
+    def fake_serializer(bundle):
+        assert bundle is fake_bundle
+        return {"record_type": "fake-bundle"}
+
+    monkeypatch.setattr(public_release_bundle, "build_release_bundle", fake_builder)
+    monkeypatch.setattr(public_release_bundle, "release_bundle_to_record", fake_serializer)
+
+    assert public_release_bundle.main(
+        [
+            "--v1-benchmark-json",
+            "v1.json",
+            "--storage-benchmark-json",
+            "storage.json",
+            "--output-dir",
+            str(tmp_path / "bundle"),
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out) == {"record_type": "fake-bundle"}
+    assert legacy_release_bundle.build_release_bundle is original_builder
+    assert legacy_release_bundle.release_bundle_to_record is original_serializer
+    assert legacy_release_bundle.write_release_bundle_manifest_json is original_writer
+
+
+def _write_record(path: Path, record_type: str, *, backend: str | None = None) -> Path:
+    record = {
+        "record_type": record_type,
+        "payload": path.stem,
+    }
+    if backend is not None:
+        record["backend"] = backend
+    path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_release_ready_artifacts(source_dir: Path) -> dict[str, Path]:
+    source_dir.mkdir(parents=True, exist_ok=True)
+    paths = {
+        "v1": _write_json(source_dir / "v1.json", _v1_record(ok=True)),
+        "storage": _write_json(source_dir / "storage.json", _storage_record(ok=True)),
+        "vllm": _write_json(source_dir / "vllm-probe.json", _probe_record(ServingBackend.VLLM)),
+        "sglang": _write_json(source_dir / "sglang-probe.json", _probe_record(ServingBackend.SGLANG)),
+    }
+    evidence = evaluate_release_evidence_files(
+        v1_benchmark_json=paths["v1"],
+        storage_benchmark_json=paths["storage"],
+        engine_probe_jsons=(paths["vllm"], paths["sglang"]),
+    )
+    status = inspect_release_evidence_input_files(
+        v1_benchmark_json=paths["v1"],
+        storage_benchmark_json=paths["storage"],
+        engine_probe_jsons=(paths["vllm"], paths["sglang"]),
+    )
+    paths["evidence"] = source_dir / "release-evidence.json"
+    paths["preflight"] = source_dir / "release-inputs.json"
+    write_release_evidence_json(evidence, paths["evidence"])
+    write_release_evidence_input_status_json(status, paths["preflight"])
+    return paths
+
+
+def _v1_record(*, ok: bool):
+    datasets = ("biography", "hotpotqa", "musique", "niah")
+    arms = ("baseline_prefill", "document_kv_cache")
+    return {
+        "record_type": BENCHMARK_RUN_RECORD_TYPE,
+        "suite": {
+            "hardware_target": "aws-g5",
+            "model_id": "qwen3:4b-instruct",
+        },
+        "measurements": [
+            {
+                "example_id": f"{dataset}-1",
+                "dataset": dataset,
+                "arm_id": arm,
+                "prompt_tokens": 1024,
+                "completion_tokens": 16,
+                "ttft_seconds": 1.0,
+                "time_to_completion_seconds": 2.0,
+                "answer_found": True,
+                "error": None,
+            }
+            for dataset in datasets
+            for arm in arms
+        ],
+        "report_rows": [
+            {
+                "dataset": dataset,
+                "arm_id": arm,
+                "requests": 1,
+                "errors": 0,
+                "ttft": {"p50": 1.0, "p95": 1.0},
+                "time_to_completion": {"p50": 2.0, "p95": 2.0},
+                "answer_found_rate": 1.0,
+            }
+            for dataset in datasets
+            for arm in arms
+        ],
+        "comparisons": [
+            {
+                "dataset": dataset,
+                "baseline_arm_id": "baseline_prefill",
+                "cache_arm_id": "document_kv_cache",
+                "ttft_speedup": 2.0,
+                "time_to_completion_speedup": 2.0,
+                "exact_match_delta": 0.0,
+                "answer_found_delta": 0.0,
+            }
+            for dataset in datasets
+        ],
+        "v1_evidence": {
+            "ok": ok,
+            "required_datasets": list(datasets),
+            "missing_report_rows": [],
+            "missing_comparisons": [],
+            "comparisons_without_metrics": [],
+            "rows_without_successful_requests": [],
+            "rows_without_latency": [],
+            "rows_without_quality": [],
+            "unexpected_datasets": [],
+            "issues": [] if ok else ["missing report rows: hotpotqa:baseline_prefill"],
+        },
+    }
+
+
+def _storage_record(*, ok: bool):
+    readers = ("memory", "disk", "unity_catalog")
+    return {
+        "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
+        "readers": list(readers),
+        "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        "results": [
+            {
+                "reader_id": reader,
+                "total_reads": 4,
+                "total_bytes": 4096,
+                "parallelism": 2,
+                "wall_seconds": 0.01,
+                "errors": 0,
+                "latency_p50_seconds": 0.001,
+                "latency_p95_seconds": 0.002,
+                "throughput_bytes_per_second": 1024.0,
+            }
+            for reader in readers
+        ],
+        "uc_volume_is_real": True,
+        "release_storage_evidence": {
+            "ok": ok,
+            "required_readers": list(readers),
+            "missing_readers": [],
+            "readers_with_errors": [],
+            "readers_without_latency": [],
+            "readers_without_throughput": [],
+            "require_real_uc_volume": True,
+            "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "uc_volume_is_real": True,
+            "issues": [] if ok else ["missing storage readers: unity_catalog"],
+        },
+    }
+
+
+def _probe_record(backend: ServingBackend):
+    layout = layout_for_model("qwen3:4b-instruct")
+    profile = serving_environment_profile(backend)
+    return engine_kv_connector_probe_result_to_record(
+        EngineKVConnectorProbeResult(
+            backend=backend,
+            request_id=f"{backend.value}-probe",
+            total_blocks=1,
+            copied_segments=1,
+            copied_tokens=1,
+            copied_bytes=layout.bytes_per_token,
+            bound=True,
+            released=True,
+            model_id="qwen3:4b-instruct",
+            layout_version="qwen3-v1",
+            layout=layout,
+            payload_mode=PayloadMode.MERGED,
+            connector_package=backend.value,
+            engine_version=profile.engine_version,
+            metadata={
+                ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE: profile.engine_package,
+                ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION: profile.engine_version,
+            },
+        )
+    )
+
+
+def _write_json(path: Path, record) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def _write_wheel(
+    path: Path,
+    *,
+    metadata_name: str = "document-kv-cache",
+    metadata_version: str | None = "0.2.0",
+    dist_info_prefix: str = "document_kv_cache-0.2.0.dist-info",
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_lines = [f"Name: {metadata_name}"]
+    if metadata_version is not None:
+        metadata_lines.append(f"Version: {metadata_version}")
+    metadata_lines.append("")
+    with zipfile.ZipFile(path, "w") as wheel_zip:
+        wheel_zip.writestr("document_kv_cache/__init__.py", "")
+        wheel_zip.writestr(
+            f"{dist_info_prefix}/WHEEL",
+            "\n".join(
+                [
+                    "Wheel-Version: 1.0",
+                    "Generator: document-kv-cache test fixture",
+                    "Root-Is-Purelib: true",
+                    "Tag: py3-none-any",
+                    "",
+                ]
+            ),
+        )
+        wheel_zip.writestr(f"{dist_info_prefix}/METADATA", "\n".join(metadata_lines))
+        wheel_zip.writestr(f"{dist_info_prefix}/RECORD", "")
+    return path
+
+
+def _pr_evidence_record(*, ok: bool):
+    return {
+        "record_type": "document_kv.pr_evidence.v1",
+        "ok": ok,
+        "what_changed": ["release provenance"],
+        "why": "release bundles should be auditable",
+        "scope": ["release_bundle.py"],
+        "verification": ["pytest"],
+        "refactor_skill_applied": True,
+        "gpt55_review_completed": True,
+        "gpt55_review_findings_resolved": True,
+        "gpt55_review_outcome": "clean",
+        "gpt55_review_summary": "clean" if ok else "",
+        "issues": [] if ok else ["missing review summary"],
+    }
+
+
+def _plan_execution_record(*, ok: bool):
+    return {
+        "record_type": BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
+        "ok": ok,
+        "plan_source": {
+            "record_type": BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
+            "path": "dbfs:/benchmarks/v1-plan.json",
+            "driver_path": "/dbfs/benchmarks/v1-plan.json",
+            "size_bytes": 512,
+            "sha256": "a" * 64,
+            "suite_id": "v1-suite",
+            "model_id": "qwen3:4b-instruct",
+            "hardware_target": "aws-g5",
+            "command_count": 1,
+        },
+        "commands": [
+            {
+                "name": "run-benchmark",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_runner"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            }
+        ],
+    }
+
+
+def _databricks_run_status_cli_record(*, succeeded: bool):
+    return {
+        "ok": True,
+        "action": "get",
+        "summary": _databricks_run_status_record(succeeded=succeeded),
+    }
+
+
+def _databricks_run_status_record(*, succeeded: bool):
+    life_cycle_state = "TERMINATED" if succeeded else "RUNNING"
+    result_state = "SUCCESS" if succeeded else None
+    return {
+        "record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE,
+        "run_id": 123,
+        "run_name": "document-kv-v1",
+        "run_page_url": "https://dbc.example/#job/123",
+        "life_cycle_state": life_cycle_state,
+        "result_state": result_state,
+        "state_message": None,
+        "start_time": 1000,
+        "end_time": 2000 if succeeded else None,
+        "terminal": succeeded,
+        "succeeded": succeeded,
+        "active_task_key": None if succeeded else "benchmark",
+        "task_count": 1,
+        "tasks": [
+            {
+                "task_key": "run-benchmark",
+                "run_id": 124,
+                "life_cycle_state": life_cycle_state,
+                "result_state": result_state,
+                "state_message": None,
+                "cluster_id": "cluster-123",
+                "start_time": 1001,
+                "end_time": 2000 if succeeded else None,
+            }
+        ],
+        "cluster_id": "cluster-123",
+        "submit_payload": _databricks_run_submit_payload_record(),
+    }
+
+
+def _databricks_run_submit_payload_record():
+    return {
+        "record_type": DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
+        "source_path": "/Volumes/catalog/schema/volume/databricks-run-submit.json",
+        "sha256": "a" * 64,
+        "run_name": "document-kv-v1",
+        "task_count": 1,
+        "task_keys": ["run-benchmark"],
+        "tasks": [
+            {
+                "task_key": "run-benchmark",
+                "node_type_id": "g5.4xlarge",
+                "driver_node_type_id": "g5.4xlarge",
+                "spark_version": "15.4.x-gpu-ml-scala2.12",
+                "data_security_mode": "SINGLE_USER",
+                "num_workers": 0,
+                "single_node": True,
+                "purpose": "document-kv-benchmark",
+            }
+        ],
+        "node_type_ids": ["g5.4xlarge"],
+        "driver_node_type_ids": ["g5.4xlarge"],
+        "spark_versions": ["15.4.x-gpu-ml-scala2.12"],
+        "data_security_modes": ["SINGLE_USER"],
+        "single_node": True,
+        "aws_g5_node_type": True,
+    }

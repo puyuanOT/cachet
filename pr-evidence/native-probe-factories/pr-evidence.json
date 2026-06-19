@@ -1,0 +1,27 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found a string-backend mismatch AttributeError risk; patched context backend normalization and added factory-loader/string-backend tests.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/native_probe_factories.py",
+    "src/document_kv_cache/native_probe_factories.py",
+    "tests/test_native_probe_factories.py",
+    "src/document_kv_cache/__init__.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_native_probe_factories.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added fail-closed built-in vLLM/SGLang native probe factory paths and diagnostics."
+  ],
+  "why": "Release planning needs stable public factory targets while preserving evidence integrity until backend-native block-manager adapters exist."
+}

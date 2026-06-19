@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Initial GPT-5.5 review found validate-json wrapper hooks skipped evaluate_pr_evidence_record and empty validation summaries could report ok. I added the hook, made empty summaries fail, added regressions, reran focused/full tests and build, and re-review returned clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/pr_evidence.py",
+    "src/document_kv_cache/pr_evidence.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "tests/test_pr_evidence.py",
+    "tests/test_public_package.py",
+    "pr-evidence/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_pr_evidence.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review found wrapper-hook and empty-summary findings; both fixed and re-review returned clean"
+  ],
+  "what_changed": [
+    "Added validation mode to document-kv-pr-evidence for PR sidecar files and directories.",
+    "Added a document_kv.pr_evidence_validation.v1 summary record with per-file PR evidence records.",
+    "Preserved document wrapper hook compatibility for validation helpers."
+  ],
+  "why": "Operators and CI need a direct command to validate PR evidence sidecars before attaching them to release bundles or review packages."
+}

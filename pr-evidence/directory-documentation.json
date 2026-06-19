@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed pr-evidence/README.md against the directory documentation governance test and found no actionable issues.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "directory-documentation",
+    "pr-evidence"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review completed; no findings"
+  ],
+  "what_changed": [
+    "Documented the PR evidence sidecar directory"
+  ],
+  "why": "The repository requires every folder to explain its architecture or purpose; adding PR evidence artifacts introduced a new folder that needed explicit documentation."
+}

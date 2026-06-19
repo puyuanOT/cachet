@@ -1,0 +1,614 @@
+import json
+
+import pytest
+
+import document_kv_cache.benchmark_runner as public_benchmark_runner
+import restaurant_kv_serving.benchmark_runner as legacy_benchmark_runner
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RUN_RECORD_TYPE,
+    BenchmarkEngineRequest,
+    BenchmarkGeneration,
+    OpenAICompatibleBenchmarkConfig,
+    benchmark_run_result_to_record,
+    default_benchmark_arms,
+    load_benchmark_jsonl,
+    load_v1_jsonl_suite,
+    run_benchmark_suite,
+    run_openai_compatible_v1_benchmark,
+)
+from document_kv_cache.benchmarks import (
+    BASELINE_PREFILL_ARM,
+    CACHE_REUSE_ARM,
+    BenchmarkArm,
+    BenchmarkExample,
+    BenchmarkSuite,
+)
+from document_kv_cache.workflow import SourceDocument
+
+
+class RecordingEngine:
+    def __init__(self, *, output: str = "Ada Lovelace", fail: bool = False) -> None:
+        self.output = output
+        self.fail = fail
+        self.requests: list[BenchmarkEngineRequest] = []
+
+    def generate(self, request: BenchmarkEngineRequest) -> BenchmarkGeneration:
+        self.requests.append(request)
+        if self.fail:
+            raise RuntimeError("engine unavailable")
+        return BenchmarkGeneration(
+            output_text=self.output,
+            prompt_tokens=len(request.prompt_text.split()),
+            completion_tokens=len(self.output.split()),
+            ttft_seconds=1.0 if request.arm.uses_cache else 4.0,
+            time_to_completion_seconds=3.0 if request.arm.uses_cache else 8.0,
+            metadata={"arm": request.arm.arm_id},
+        )
+
+
+def example(dataset: str = "biography") -> BenchmarkExample:
+    return BenchmarkExample(
+        example_id=f"{dataset}-1",
+        dataset=dataset,
+        documents=(
+            SourceDocument.from_texts(
+                document_id="doc-1",
+                static_text="Ada Lovelace biography",
+                chunks={"p1": "Lovelace wrote notes on the Analytical Engine."},
+            ),
+        ),
+        query="Who wrote notes on the Analytical Engine?",
+        expected_answer="Ada Lovelace",
+    )
+
+
+def test_run_benchmark_suite_records_baseline_and_cache_measurements():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    baseline = RecordingEngine()
+    cache = RecordingEngine()
+
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: baseline,
+            CACHE_REUSE_ARM: cache,
+        },
+    )
+
+    assert [measurement.arm_id for measurement in result.measurements] == [
+        BASELINE_PREFILL_ARM,
+        CACHE_REUSE_ARM,
+    ]
+    assert result.report_rows[0].requests == 1
+    assert result.comparisons[0].ttft_speedup == pytest.approx(4.0)
+    assert baseline.requests[0].logical_prompt_text == cache.requests[0].logical_prompt_text
+    assert baseline.requests[0].prompt_text == baseline.requests[0].logical_prompt_text
+    assert cache.requests[0].prompt_text == cache.requests[0].cache_suffix_text
+    assert cache.requests[0].cache_prefix_text + cache.requests[0].cache_suffix_text == baseline.requests[0].logical_prompt_text
+    assert cache.requests[0].model_id == "qwen3:4b-instruct"
+    assert cache.requests[0].hardware_target == "aws-g5"
+
+
+def test_run_benchmark_suite_records_engine_errors_without_aborting():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: RecordingEngine(fail=True),
+        },
+    )
+    cache_measurement = next(measurement for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM)
+
+    assert cache_measurement.error == "engine unavailable"
+    assert cache_measurement.metadata == {"error_type": "RuntimeError"}
+    assert result.comparisons[0].ttft_speedup is None
+
+
+def test_benchmark_run_result_to_record_serializes_latency_quality_and_comparison():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(output="Charles Babbage"),
+            CACHE_REUSE_ARM: RecordingEngine(),
+        },
+    )
+
+    record = benchmark_run_result_to_record(result)
+
+    assert record["record_type"] == BENCHMARK_RUN_RECORD_TYPE
+    assert record["suite"] == {
+        "suite_id": "v1-smoke",
+        "model_id": "qwen3:4b-instruct",
+        "hardware_target": "aws-g5",
+        "datasets": ["biography", "hotpotqa", "musique", "niah"],
+        "examples": 1,
+    }
+    assert record["measurements"][0]["exact_match"] is False
+    assert record["measurements"][1]["answer_found"] is True
+    assert record["report_rows"][0]["ttft"]["p50"] == pytest.approx(4.0)
+    assert record["comparisons"][0]["ttft_speedup"] == pytest.approx(4.0)
+    assert record["v1_evidence"]["ok"] is False
+    assert record["v1_evidence"]["required_datasets"] == ["biography", "hotpotqa", "musique", "niah"]
+    assert "hotpotqa:baseline_prefill" in record["v1_evidence"]["missing_report_rows"]
+    assert "hotpotqa" in record["v1_evidence"]["missing_comparisons"]
+    assert record["v1_evidence"]["comparisons_without_metrics"] == []
+
+
+def test_benchmark_run_result_to_record_uses_result_arm_ids_for_v1_evidence():
+    suite = BenchmarkSuite(suite_id="v1-custom", examples=(example(),))
+    arms = (
+        BenchmarkArm(arm_id="full_prefill", uses_cache=False, description="baseline"),
+        BenchmarkArm(arm_id="kv_reuse", uses_cache=True, description="cache"),
+    )
+
+    result = run_benchmark_suite(
+        suite,
+        {
+            "full_prefill": RecordingEngine(),
+            "kv_reuse": RecordingEngine(),
+        },
+        arms=arms,
+    )
+
+    record = benchmark_run_result_to_record(result)
+
+    assert record["comparisons"][0]["baseline_arm_id"] == "full_prefill"
+    assert record["comparisons"][0]["cache_arm_id"] == "kv_reuse"
+    assert record["v1_evidence"]["baseline_arm_id"] == "full_prefill"
+    assert record["v1_evidence"]["cache_arm_id"] == "kv_reuse"
+    assert "biography:full_prefill" not in record["v1_evidence"]["missing_report_rows"]
+    assert "biography:kv_reuse" not in record["v1_evidence"]["missing_report_rows"]
+    assert "hotpotqa:full_prefill" in record["v1_evidence"]["missing_report_rows"]
+    assert all("baseline_prefill" not in row for row in record["v1_evidence"]["missing_report_rows"])
+
+
+def test_run_openai_compatible_v1_benchmark_uses_factory_for_baseline_and_cache(tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(
+        json.dumps({"query": "Who wrote notes?", "documents": ["Ada wrote notes."], "answer": "Ada Lovelace"})
+        + "\n",
+        encoding="utf-8",
+    )
+    built: list[tuple[str, str | None, bool]] = []
+
+    def factory(arm, config):
+        built.append((arm.arm_id, config.cache_base_url, config.cache_runtime_prompt))
+        return RecordingEngine()
+
+    result = run_openai_compatible_v1_benchmark(
+        OpenAICompatibleBenchmarkConfig(
+            suite_id="v1-openai",
+            dataset_paths={"biography": path},
+            base_url="http://baseline",
+            cache_base_url="http://cache",
+            cache_runtime_prompt=True,
+            repeats=2,
+        ),
+        engine_factory=factory,
+    )
+
+    assert built == [
+        (BASELINE_PREFILL_ARM, "http://cache", True),
+        (CACHE_REUSE_ARM, "http://cache", True),
+    ]
+    assert len(result.measurements) == 4
+    assert {measurement.dataset for measurement in result.measurements} == {"biography"}
+    cache_measurement = next(measurement for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM)
+    baseline_measurement = next(
+        measurement for measurement in result.measurements if measurement.arm_id == BASELINE_PREFILL_ARM
+    )
+    assert cache_measurement.prompt_tokens < baseline_measurement.prompt_tokens
+
+
+def test_openai_compatible_benchmark_config_validates_dataset_paths():
+    with pytest.raises(ValueError, match="dataset_paths"):
+        OpenAICompatibleBenchmarkConfig(suite_id="v1", dataset_paths={}, base_url="http://server")
+
+    with pytest.raises(ValueError, match="Unsupported V1 dataset"):
+        OpenAICompatibleBenchmarkConfig(
+            suite_id="v1",
+            dataset_paths={"natural-questions": "nq.jsonl"},
+            base_url="http://server",
+        )
+
+
+def test_openai_compatible_benchmark_config_rejects_empty_limit_and_unsafe_runtime_prompt():
+    with pytest.raises(ValueError, match="limit_per_dataset"):
+        OpenAICompatibleBenchmarkConfig(
+            suite_id="v1",
+            dataset_paths={"biography": "biography.jsonl"},
+            base_url="http://server",
+            limit_per_dataset=0,
+        )
+
+    with pytest.raises(ValueError, match="cache_runtime_prompt requires cache_base_url"):
+        OpenAICompatibleBenchmarkConfig(
+            suite_id="v1",
+            dataset_paths={"biography": "biography.jsonl"},
+            base_url="http://server",
+            cache_runtime_prompt=True,
+        )
+
+
+def test_openai_compatible_engine_normalizes_openai_v1_base_url_for_default_endpoint():
+    config = OpenAICompatibleBenchmarkConfig(
+        suite_id="v1",
+        dataset_paths={"biography": "biography.jsonl"},
+        base_url="http://server/v1",
+    )
+
+    engine = legacy_benchmark_runner._openai_compatible_engine(default_benchmark_arms()[0], config)
+
+    assert engine.config.base_url == "http://server"
+    assert engine.config.endpoint == "/v1/completions"
+
+
+def test_openai_compatible_engine_appends_custom_endpoint_to_exact_base_url():
+    config = OpenAICompatibleBenchmarkConfig(
+        suite_id="v1",
+        dataset_paths={"biography": "biography.jsonl"},
+        base_url="http://server/v1",
+        endpoint="/completions",
+    )
+
+    engine = legacy_benchmark_runner._openai_compatible_engine(default_benchmark_arms()[0], config)
+
+    assert engine.config.base_url == "http://server/v1"
+    assert engine.config.endpoint == "/completions"
+
+
+def test_main_writes_v1_benchmark_json(monkeypatch, tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(json.dumps({"query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n")
+    output_path = tmp_path / "result.json"
+
+    def fake_run(config):
+        assert config.dataset_paths == {"biography": path}
+        assert config.base_url == "http://server"
+        assert config.cache_base_url == "http://cache"
+        assert config.cache_runtime_prompt
+        return run_benchmark_suite(
+            BenchmarkSuite(suite_id=config.suite_id, examples=(example(),)),
+            {
+                BASELINE_PREFILL_ARM: RecordingEngine(),
+                CACHE_REUSE_ARM: RecordingEngine(),
+            },
+        )
+
+    monkeypatch.setattr("restaurant_kv_serving.benchmark_runner.run_openai_compatible_v1_benchmark", fake_run)
+
+    exit_code = legacy_benchmark_runner.main(
+        [
+            "--dataset",
+            f"biography={path}",
+            "--base-url",
+            "http://server",
+            "--cache-base-url",
+            "http://cache",
+            "--cache-runtime-prompt",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["record_type"] == BENCHMARK_RUN_RECORD_TYPE
+    assert record["suite"]["suite_id"] == "v1-openai-compatible"
+    assert [row["arm_id"] for row in record["report_rows"]] == [BASELINE_PREFILL_ARM, CACHE_REUSE_ARM]
+
+
+def test_main_accepts_file_uri_dataset_and_output_paths(monkeypatch, tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(json.dumps({"query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n")
+    output_path = tmp_path / "nested" / "result.json"
+
+    def fake_run(config):
+        assert config.dataset_paths == {"biography": path}
+        return run_benchmark_suite(
+            BenchmarkSuite(suite_id=config.suite_id, examples=(example(),)),
+            {
+                BASELINE_PREFILL_ARM: RecordingEngine(),
+                CACHE_REUSE_ARM: RecordingEngine(),
+            },
+        )
+
+    monkeypatch.setattr("restaurant_kv_serving.benchmark_runner.run_openai_compatible_v1_benchmark", fake_run)
+
+    exit_code = legacy_benchmark_runner.main(
+        [
+            "--dataset",
+            f"biography=file:{path}",
+            "--base-url",
+            "http://server",
+            "--output-json",
+            f"file:{output_path}",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(output_path.read_text(encoding="utf-8"))["suite"]["suite_id"] == "v1-openai-compatible"
+
+
+def test_public_benchmark_runner_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(json.dumps({"query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n")
+    output_path = tmp_path / "public-result.json"
+    original_legacy_run = legacy_benchmark_runner.run_openai_compatible_v1_benchmark
+
+    def fake_run(config):
+        assert config.dataset_paths == {"biography": path}
+        return run_benchmark_suite(
+            BenchmarkSuite(suite_id=config.suite_id, examples=(example(),)),
+            {
+                BASELINE_PREFILL_ARM: RecordingEngine(),
+                CACHE_REUSE_ARM: RecordingEngine(),
+            },
+        )
+
+    monkeypatch.setattr(public_benchmark_runner, "run_openai_compatible_v1_benchmark", fake_run)
+
+    exit_code = public_benchmark_runner.main(
+        [
+            "--dataset",
+            f"biography={path}",
+            "--base-url",
+            "http://server",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(output_path.read_text(encoding="utf-8"))["suite"]["suite_id"] == "v1-openai-compatible"
+    assert legacy_benchmark_runner.run_openai_compatible_v1_benchmark is original_legacy_run
+
+
+def test_public_benchmark_runner_main_restores_legacy_hook_after_error(monkeypatch, tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(json.dumps({"query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n")
+    original_legacy_run = legacy_benchmark_runner.run_openai_compatible_v1_benchmark
+
+    def fake_run(config):
+        raise RuntimeError("public hook failed")
+
+    monkeypatch.setattr(public_benchmark_runner, "run_openai_compatible_v1_benchmark", fake_run)
+
+    exit_code = public_benchmark_runner.main(
+        [
+            "--dataset",
+            f"biography={path}",
+            "--base-url",
+            "http://server",
+        ]
+    )
+
+    assert exit_code == 1
+    assert legacy_benchmark_runner.run_openai_compatible_v1_benchmark is original_legacy_run
+
+
+def test_run_benchmark_suite_requires_one_engine_per_arm():
+    with pytest.raises(ValueError, match="Missing benchmark engines"):
+        run_benchmark_suite(BenchmarkSuite(suite_id="v1", examples=(example(),)), {})
+
+
+def test_run_benchmark_suite_supports_repeats_and_seeded_shuffle():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    baseline = RecordingEngine()
+    cache = RecordingEngine()
+
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: baseline,
+            CACHE_REUSE_ARM: cache,
+        },
+        repeats=3,
+        shuffle=True,
+        seed=7,
+    )
+
+    assert len(result.measurements) == 6
+    assert sum(1 for measurement in result.measurements if measurement.arm_id == BASELINE_PREFILL_ARM) == 3
+    assert sum(1 for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM) == 3
+
+
+def test_run_benchmark_suite_rejects_non_positive_repeats():
+    with pytest.raises(ValueError, match="repeats"):
+        run_benchmark_suite(
+            BenchmarkSuite(suite_id="v1", examples=(example(),)),
+            {
+                BASELINE_PREFILL_ARM: RecordingEngine(),
+                CACHE_REUSE_ARM: RecordingEngine(),
+            },
+            repeats=0,
+        )
+
+
+def test_run_benchmark_suite_rejects_duplicate_arm_ids():
+    duplicate_arms = (
+        BenchmarkArm(arm_id="same", uses_cache=False, description="baseline"),
+        BenchmarkArm(arm_id="same", uses_cache=True, description="cache"),
+    )
+
+    with pytest.raises(ValueError, match="Duplicate benchmark arm ids"):
+        run_benchmark_suite(
+            BenchmarkSuite(suite_id="v1", examples=(example(),)),
+            {"same": RecordingEngine()},
+            arms=duplicate_arms,
+        )
+
+
+def test_default_benchmark_arms_are_baseline_then_cache():
+    arms = default_benchmark_arms()
+
+    assert [arm.arm_id for arm in arms] == [BASELINE_PREFILL_ARM, CACHE_REUSE_ARM]
+    assert [arm.uses_cache for arm in arms] == [False, True]
+
+
+def test_load_benchmark_jsonl_accepts_canonical_schema(tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "example_id": "bio-1",
+                "dataset": "biography",
+                "query": "Who wrote notes?",
+                "expected_answer": "Ada Lovelace",
+                "documents": [
+                    {
+                        "document_id": "ada",
+                        "title": "Ada",
+                        "static_text": "Biography",
+                        "chunks": [
+                            {"chunk_id": "p1", "text": "Notes", "metadata": {"source": 1}},
+                            "String chunk",
+                        ],
+                    }
+                ],
+                "metadata": {"split": "dev"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_benchmark_jsonl(path)
+
+    assert loaded[0].example_id == "bio-1"
+    assert loaded[0].dataset == "biography"
+    assert loaded[0].metadata == {"split": "dev"}
+    assert loaded[0].documents[0].metadata["title"] == "Ada"
+    assert [chunk.chunk_id for chunk in loaded[0].documents[0].chunks] == ["static", "p1", "chunk-1"]
+    assert loaded[0].documents[0].chunks[1].metadata == {"source": "1"}
+
+
+def test_load_benchmark_jsonl_accepts_dataset_default_and_static_only_documents(tmp_path):
+    path = tmp_path / "niah.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "needle-1",
+                "question": "What is the needle?",
+                "target": "blue lantern",
+                "documents": [{"id": "haystack", "static_text": "The needle is blue lantern."}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_benchmark_jsonl(path, dataset="niah")
+
+    assert loaded[0].example_id == "needle-1"
+    assert loaded[0].dataset == "niah"
+    assert loaded[0].expected_answer == "blue lantern"
+    assert loaded[0].documents[0].chunks[0].chunk_id == "static"
+
+
+def test_load_v1_jsonl_suite_combines_dataset_files(tmp_path):
+    bio_path = tmp_path / "biography.jsonl"
+    hotpot_path = tmp_path / "hotpotqa.jsonl"
+    bio_path.write_text(
+        json.dumps({"query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n",
+        encoding="utf-8",
+    )
+    hotpot_path.write_text(
+        json.dumps({"query": "Hotpot?", "documents": [{"text": "Hotpot context"}], "answer": "Hotpot"}) + "\n",
+        encoding="utf-8",
+    )
+
+    suite = load_v1_jsonl_suite(
+        suite_id="v1-jsonl",
+        paths={"biography": bio_path, "hotpotqa": hotpot_path},
+        limit_per_dataset=1,
+    )
+
+    assert suite.datasets == ("biography", "hotpotqa")
+    assert [example.dataset for example in suite.examples] == ["biography", "hotpotqa"]
+    assert [example.example_id for example in suite.examples] == ["biography-1", "hotpotqa-1"]
+
+
+def test_load_v1_jsonl_suite_rejects_dataset_mismatch(tmp_path):
+    path = tmp_path / "hotpotqa.jsonl"
+    path.write_text(
+        json.dumps({"dataset": "biography", "query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="does not match expected dataset"):
+        load_v1_jsonl_suite(suite_id="v1-jsonl", paths={"hotpotqa": path})
+
+
+def test_load_v1_jsonl_suite_rejects_empty_suite(tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="at least one example"):
+        load_v1_jsonl_suite(suite_id="v1-jsonl", paths={"biography": path})
+
+
+def test_load_v1_jsonl_suite_rejects_empty_requested_dataset(tmp_path):
+    bio_path = tmp_path / "biography.jsonl"
+    hotpot_path = tmp_path / "hotpotqa.jsonl"
+    bio_path.write_text(json.dumps({"query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n")
+    hotpot_path.write_text("")
+
+    with pytest.raises(ValueError, match="hotpotqa"):
+        load_v1_jsonl_suite(suite_id="v1-jsonl", paths={"biography": bio_path, "hotpotqa": hotpot_path})
+
+
+def test_load_benchmark_jsonl_accepts_hotpotqa_context_pairs(tmp_path):
+    path = tmp_path / "hotpotqa.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "question": "Who wrote notes?",
+                "answer": "Ada Lovelace",
+                "context": [["Ada", ["Ada was a writer.", "She wrote notes."]]],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_benchmark_jsonl(path, dataset="hotpotqa")
+
+    assert loaded[0].dataset == "hotpotqa"
+    assert loaded[0].documents[0].document_id == "Ada"
+    assert loaded[0].documents[0].metadata["title"] == "Ada"
+    assert [chunk.text for chunk in loaded[0].documents[0].chunks] == ["Ada was a writer.", "She wrote notes."]
+
+
+def test_load_benchmark_jsonl_accepts_musique_paragraphs(tmp_path):
+    path = tmp_path / "musique.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "question": "Where?",
+                "answer": "Paris",
+                "paragraphs": [
+                    {"idx": 0, "title": "France", "paragraph_text": "Paris is in France."},
+                    {"id": "p2", "paragraph_text": "Berlin is in Germany."},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_benchmark_jsonl(path, dataset="musique")
+
+    assert loaded[0].dataset == "musique"
+    assert [document.document_id for document in loaded[0].documents] == ["France", "p2"]
+    assert loaded[0].documents[0].chunks[0].text == "Paris is in France."
+
+
+def test_load_benchmark_jsonl_validates_records(tmp_path):
+    path = tmp_path / "bad.jsonl"
+    path.write_text(json.dumps({"dataset": "unknown", "query": "Bad?", "documents": ["x"]}) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unsupported V1 dataset"):
+        load_benchmark_jsonl(path)

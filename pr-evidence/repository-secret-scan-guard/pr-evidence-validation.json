@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/repository-secret-scan-guard/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 focused review returned no blocking findings. A residual suggestion to add positive regex coverage was addressed by adding representative credential-shape tests, and follow-up review returned no blocking findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "project governance tests",
+        "repository secret hygiene"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_project_governance.py::test_repository_text_files_do_not_contain_committed_credentials -q",
+        "poetry run pytest tests/test_project_governance.py::test_repository_text_files_do_not_contain_committed_credentials tests/test_project_governance.py::test_secret_patterns_match_representative_credential_shapes -q",
+        "poetry run pytest tests/test_project_governance.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry build",
+        "python -m py_compile tests/test_project_governance.py",
+        "GPT-5.5 focused review",
+        "GPT-5.5 follow-up review after adding positive regex coverage",
+        "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-json pr-evidence/repository-secret-scan-guard/pr-evidence.json --output-json pr-evidence/repository-secret-scan-guard/pr-evidence-validation.json"
+      ],
+      "what_changed": [
+        "Added a repository text-file iterator that skips generated and tooling directories.",
+        "Added credential-pattern regexes for Databricks PATs, GitHub PATs, LangSmith tokens, OpenAI API keys, and PEM private-key headers.",
+        "Added a governance test that fails with path and line information when committed text matches a credential pattern.",
+        "Added representative positive tests for each credential-pattern regex without embedding contiguous real-looking secrets in the source file."
+      ],
+      "why": "The package should not accidentally ship benchmark credentials, workspace tokens, or private-key material in source, documentation, workflows, or PR evidence."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

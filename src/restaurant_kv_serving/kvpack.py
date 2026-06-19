@@ -5,7 +5,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from restaurant_kv_serving.engine_protocol import (
+    KVStorageLayout,
+    kv_storage_layout_from_value,
+)
 from restaurant_kv_serving.models import ChunkRef, KVCacheKey
+from restaurant_kv_serving.storage import DiskRangeReader, local_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,27 +20,46 @@ class PackChunk:
     token_count: int
     dtype: str
     layout_version: str
+    storage_layout: KVStorageLayout | str = KVStorageLayout.SEPARATE_KEY_VALUE
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "storage_layout",
+            kv_storage_layout_from_value(self.storage_layout, field_name="storage_layout"),
+        )
+        try:
+            payload = _coerce_payload(self.payload)
+        except TypeError as exc:
+            raise ValueError("payload must be bytes-like") from exc
+        object.__setattr__(self, "payload", payload)
+        if not payload:
+            raise ValueError("payload must be non-empty")
+        if type(self.token_count) is not int:
+            raise ValueError("token_count must be an integer")
+        if self.token_count <= 0:
+            raise ValueError("token_count must be positive")
+        if not isinstance(self.dtype, str) or not self.dtype:
+            raise ValueError("dtype must be non-empty")
+        if not isinstance(self.layout_version, str) or not self.layout_version:
+            raise ValueError("layout_version must be non-empty")
 
 
-class LocalRangeReader:
-    def read(self, ref: ChunkRef) -> bytes:
-        path = _local_path(ref.shard_uri)
-        with path.open("rb") as handle:
-            handle.seek(ref.byte_offset)
-            payload = handle.read(ref.byte_length)
-        checksum = hashlib.sha256(payload).hexdigest()
-        if checksum != ref.checksum:
-            raise ValueError(f"Checksum mismatch for {ref.key.storage_key()}: expected {ref.checksum}, got {checksum}")
-        return payload
+LocalRangeReader = DiskRangeReader
 
 
 def write_kvpack(path: str | Path, chunks: Iterable[PackChunk], *, align_bytes: int = 4096) -> list[ChunkRef]:
-    target = _local_path(str(path))
+    if type(align_bytes) is not int:
+        raise ValueError("align_bytes must be an integer")
+    if align_bytes <= 0:
+        raise ValueError("align_bytes must be positive")
+    chunk_sequence = tuple(chunks)
+    target = local_path(str(path))
     target.parent.mkdir(parents=True, exist_ok=True)
     refs: list[ChunkRef] = []
     offset = 0
     with target.open("wb") as handle:
-        for chunk in chunks:
+        for chunk in chunk_sequence:
             if align_bytes > 1:
                 padding = (-offset) % align_bytes
                 if padding:
@@ -54,16 +78,17 @@ def write_kvpack(path: str | Path, chunks: Iterable[PackChunk], *, align_bytes: 
                     dtype=chunk.dtype,
                     layout_version=chunk.layout_version,
                     checksum=checksum,
+                    storage_layout=chunk.storage_layout,
                 )
             )
             offset += len(payload)
     return refs
 
 
-def _local_path(uri: str) -> Path:
-    if uri.startswith("file:"):
-        return Path(uri[len("file:") :])
-    if uri.startswith("dbfs:/"):
-        return Path("/dbfs") / uri[len("dbfs:/") :].lstrip("/")
-    return Path(uri)
+def _coerce_payload(payload: object) -> bytes:
+    if isinstance(payload, bytes):
+        return payload
+    return memoryview(payload).tobytes()
 
+
+_local_path = local_path

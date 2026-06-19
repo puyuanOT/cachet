@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 found one matrix release-safe CLI flag issue; after patch and regression tests, re-review reported no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/databricks_engine_probe_job.py",
+    "src/document_kv_cache/databricks_engine_probe_job.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "tests/test_databricks_engine_probe_job.py",
+    "tests/test_public_package.py",
+    "README.md",
+    "databricks/engine-probe/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_databricks_engine_probe_job.py tests/test_public_package.py tests/test_project_governance.py (38 passed)",
+    "poetry run pytest -q (485 passed)",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added a release-safe Databricks engine-probe matrix submit payload for paired native vLLM and SGLang block-manager probes.",
+    "Rejected ambiguous single-target debug CLI flags when --backend-config-json is used."
+  ],
+  "why": "V1 release evidence needs an operator-safe way to run connector action descriptor validation against both native engine block managers without proprietary serving infrastructure."
+}

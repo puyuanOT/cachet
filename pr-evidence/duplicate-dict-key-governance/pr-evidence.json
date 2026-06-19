@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that literal **{...} dict unpacks bypassed the duplicate-key guard. The scanner now flattens literal unpacked dicts in source order, ignores dynamic unpacks, and avoids duplicate diagnostics for nested literal dict nodes that were already flattened. Final GPT-5.5 review was clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "repository governance tests",
+    "source schema hygiene",
+    "PR evidence and release evidence maintainability"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_duplicate_literal_dict_key_scanner_reports_silent_overwrites tests/test_project_governance.py::test_python_source_files_do_not_repeat_literal_dict_keys -q",
+    "poetry run pytest tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added an AST-based governance helper that reports duplicate literal dictionary keys before Python can silently keep the last value.",
+    "Included literal **{...} dict unpack keys in source-order duplicate detection while ignoring dynamic keys and dynamic unpacks.",
+    "Added regressions for ordinary duplicate literal keys, duplicate integer keys, literal unpack duplicates, dynamic unpack ignore behavior, and one-report diagnostics for duplicates inside literal unpack dicts.",
+    "Added a repository-wide source scan over src/ and tests/ so JSON/evidence schema helpers cannot accidentally repeat literal fields."
+  ],
+  "why": "Release, PR, and Databricks evidence records are schema-heavy dictionaries; catching duplicate literal keys in source keeps the open-source package from shipping silent overwritten fields in its evidence and benchmark contracts."
+}
