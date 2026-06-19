@@ -1,7 +1,13 @@
 # Contributing
 
 Document KV Cache is developed through small, reviewable pull requests. Direct
-pushes to `main` are not part of the project workflow.
+pushes to `main` are not part of the project workflow. Before release
+publication, repository maintainers must apply `.github/main-branch-protection.json`
+to the `main` branch so GitHub requires pull requests, one approving review,
+resolved conversations, an up-to-date `Test and build` status check, linear
+history, and blocks force-pushes or branch deletion. If GitHub rejects that
+payload for a private repository, make the repository public or upgrade the
+owner plan before treating the release workflow as enforced.
 
 Each PR should include:
 

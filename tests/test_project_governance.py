@@ -1,4 +1,5 @@
 import ast
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -502,6 +503,10 @@ def test_contributing_doc_records_required_pr_workflow():
     compact_text = " ".join(text.split())
 
     assert "Direct pushes to `main`" in compact_text
+    assert ".github/main-branch-protection.json" in text
+    assert "one approving review" in text
+    assert "Test and build" in text
+    assert "force-pushes" in text
     assert "pull requests" in text
     assert "Refactor skill" in text
     assert "GPT-5.5 review" in text
@@ -578,6 +583,44 @@ def test_pull_request_template_captures_traceability_and_review_gates():
         "no-cache prefill baseline",
     ):
         assert required in text
+
+
+def test_github_main_branch_protection_payload_requires_pr_review_and_ci():
+    payload = json.loads((REPO_ROOT / ".github" / "main-branch-protection.json").read_text(encoding="utf-8"))
+    ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    ci_job_names = re.findall(r"^    name: (.+)$", ci_text, flags=re.MULTILINE)
+
+    assert ci_job_names == ["Test and build"]
+    assert len(ci_job_names) == len(set(ci_job_names))
+    assert payload["enforce_admins"] is True
+    assert payload["required_linear_history"] is True
+    assert payload["required_conversation_resolution"] is True
+    assert payload["allow_force_pushes"] is False
+    assert payload["allow_deletions"] is False
+    assert payload["restrictions"] is None
+    assert payload["required_status_checks"] == {
+        "strict": True,
+        "contexts": ["Test and build"],
+    }
+    assert payload["required_pull_request_reviews"] == {
+        "dismiss_stale_reviews": True,
+        "require_code_owner_reviews": False,
+        "require_last_push_approval": True,
+        "required_approving_review_count": 1,
+    }
+
+
+def test_github_docs_explain_branch_protection_application_and_plan_limit():
+    text = (REPO_ROOT / ".github" / "README.md").read_text(encoding="utf-8")
+    compact_text = " ".join(text.split())
+
+    assert "`main-branch-protection.json`" in text
+    assert "/branches/main/protection" in text
+    assert "--data @.github/main-branch-protection.json" in text
+    assert "Test and build" in text
+    assert "direct pushes to `main` remain a process violation" in compact_text
+    assert "private-repository branch protection" in text
+    assert "squash or rebase merging enabled" in compact_text
 
 
 def test_github_ci_workflow_runs_pr_quality_gate():
