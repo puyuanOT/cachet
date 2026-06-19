@@ -427,6 +427,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     pr_evidence = modules["pr_evidence"]
     serving_env = modules["serving_env"]
     legacy_benchmarks = importlib.import_module("restaurant_kv_serving.benchmarks")
+    legacy_benchmark_runner = importlib.import_module("restaurant_kv_serving.benchmark_runner")
     legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
@@ -445,6 +446,49 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert legacy_benchmarks.BenchmarkExample is benchmarks.BenchmarkExample
     assert legacy_benchmarks.SourceDocument is document_kv_cache.SourceDocument
     assert restaurant_kv_serving.BenchmarkExample is benchmarks.BenchmarkExample
+    assert benchmark_runner.BenchmarkGeneration.__module__ == "document_kv_cache.benchmark_runner"
+    assert set(benchmark_runner.__all__) < set(legacy_benchmark_runner.__all__)
+    assert set(legacy_benchmark_runner.__all__) - set(benchmark_runner.__all__) == {
+        "Any",
+        "BASELINE_PREFILL_ARM",
+        "BenchmarkArm",
+        "BenchmarkComparison",
+        "BenchmarkExample",
+        "BenchmarkPromptParts",
+        "BenchmarkReportRow",
+        "BenchmarkSuite",
+        "CACHE_REUSE_ARM",
+        "Callable",
+        "DEFAULT_HARDWARE_TARGET",
+        "DEFAULT_V1_MODEL_ID",
+        "DocumentChunkType",
+        "InferenceMeasurement",
+        "Iterable",
+        "Literal",
+        "Mapping",
+        "Path",
+        "Protocol",
+        "Sequence",
+        "SourceChunk",
+        "SourceDocument",
+        "argparse",
+        "baseline_prefill_arm",
+        "build_prompt_parts",
+        "compare_to_baseline",
+        "dataclass",
+        "document_kv_cache_arm",
+        "evaluate_v1_benchmark_evidence",
+        "field",
+        "json",
+        "local_path",
+        "random",
+        "summarize_measurements",
+        "validate_v1_dataset",
+    }
+    assert "local_path" not in benchmark_runner.__all__
+    assert legacy_benchmark_runner.BenchmarkGeneration is benchmark_runner.BenchmarkGeneration
+    assert legacy_benchmark_runner._openai_compatible_engine is benchmark_runner._openai_compatible_engine
+    assert legacy_benchmark_runner.SourceDocument is document_kv_cache.SourceDocument
     assert benchmark_runner.BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
     assert dataset_prep.convert_v1_jsonl.__module__ == "document_kv_cache.dataset_prep"
     assert set(dataset_prep.__all__) < set(legacy_dataset_prep.__all__)

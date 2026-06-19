@@ -29,7 +29,7 @@ migration.
 - `databricks_storage_benchmark_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script for standalone storage-reader evidence.
 - `databricks_engine_probe_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script for native vLLM/SGLang engine-probe evidence.
 - `databricks_runs.py` submits generated Databricks payloads and checks run state using only `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables.
-- `benchmark_runner.py` loads canonical V1 JSONL examples, runs caller-provided or OpenAI-compatible vLLM/SGLang benchmark engines, and emits JSON measurement, summary, and comparison records.
+- `benchmark_runner.py` is a compatibility wrapper over `document_kv_cache.benchmark_runner`, which owns canonical V1 JSONL loading, caller-provided or OpenAI-compatible vLLM/SGLang benchmark execution, and JSON measurement, summary, and comparison records.
 - `release_evidence.py` validates collected V1 benchmark, storage benchmark, and native vLLM/SGLang probe JSON artifacts before a release is called complete, and records the input artifact sources in the final release-evidence JSON.
 - `openai_compatible.py` provides a thin streaming completion engine for vLLM/SGLang OpenAI-compatible API servers.
 - `live_server.py` runs a one-request live smoke check against an existing OpenAI-compatible vLLM/SGLang endpoint and prints a JSON latency/quality record.

@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the benchmark-runner ownership inversion, legacy wrapper export surface, _openai_compatible_engine compatibility, CLI help under both module paths, import-cycle behavior around document_kv_cache.openai_compatible, and the legacy monkeypatch bridge into document-owned main(). It found no issues and verified python -m pytest -q passed.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document benchmark-runner implementation ownership",
+    "legacy benchmark-runner compatibility wrapper",
+    "public package compatibility tests",
+    "document and legacy package README migration notes",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_benchmark_runner.py tests/test_public_package.py tests/test_openai_compatible.py tests/test_live_server.py -q",
+    "python -m py_compile src/document_kv_cache/benchmark_runner.py src/restaurant_kv_serving/benchmark_runner.py tests/test_benchmark_runner.py tests/test_public_package.py",
+    "poetry run pytest tests/test_benchmark_runner.py tests/test_public_package.py tests/test_benchmark_plan.py tests/test_benchmark_plan_executor.py tests/test_openai_compatible.py tests/test_live_server.py tests/test_vllm_smoke.py tests/test_release_evidence.py tests/test_project_governance.py::test_legacy_restaurant_imports_in_tests_are_explicitly_scoped -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry build",
+    "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json /tmp/pr-evidence-document-benchmark-runner-ownership-validation.json"
+  ],
+  "what_changed": [
+    "Moved the V1 benchmark-runner implementation into document_kv_cache.benchmark_runner.",
+    "Turned restaurant_kv_serving.benchmark_runner into a compatibility wrapper over the document benchmark-runner module.",
+    "Kept document_kv_cache.benchmark_runner.__all__ curated while preserving the legacy wrapper's broader historical import surface and _openai_compatible_engine access.",
+    "Updated package READMEs and public-package tests to record the new implementation boundary."
+  ],
+  "why": "The generalized package should own baseline-vs-cache benchmark execution directly because it is part of the public V1 release workflow for arbitrary documents. This is a behavior-preserving migration step toward retiring restaurant-specific implementation ownership."
+}
