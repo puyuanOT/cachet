@@ -667,6 +667,10 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "OpenAICompatibleEngineConfig",
         "OpenAICompatibleCompletionEngine",
     ]
+    legacy_openai_compatible = importlib.import_module("restaurant_kv_serving.openai_compatible")
+    assert openai_compatible.OpenAICompatibleCompletionEngine.__module__ == "document_kv_cache.openai_compatible"
+    assert legacy_openai_compatible.OpenAICompatibleCompletionEngine is openai_compatible.OpenAICompatibleCompletionEngine
+    assert set(openai_compatible.__all__) < set(legacy_openai_compatible.__all__)
     assert "urlopen" not in dir(openai_compatible)
     assert pr_evidence.__all__ == [
         "PR_EVIDENCE_RECORD_TYPE",

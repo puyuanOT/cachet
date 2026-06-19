@@ -1,0 +1,41 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the OpenAI-compatible ownership inversion and found one P2 compatibility issue: legacy callers patching restaurant_kv_serving.openai_compatible.urlopen would no longer intercept HTTP calls. The issue was fixed by adding a document-owned _active_urlopen() resolver that honors patched legacy urlopen before the document _urlopen hook, with regression coverage for both hooks. Re-review found no issues.",
+  "issues": [
+    {
+      "resolution": "Added _active_urlopen() in document_kv_cache.openai_compatible and restored legacy urlopen monkeypatch coverage while preserving the new document hook.",
+      "severity": "P2",
+      "summary": "Legacy urlopen monkeypatch compatibility was broken by moving the engine implementation into the document module."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document OpenAI-compatible implementation ownership",
+    "legacy OpenAI-compatible compatibility wrapper",
+    "legacy transport monkeypatch migration hook",
+    "public package compatibility tests",
+    "document and legacy package README migration notes",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_openai_compatible.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/openai_compatible.py src/restaurant_kv_serving/openai_compatible.py",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry build",
+    "repository secret-pattern scan over README.md CONTRIBUTING.md pyproject.toml src tests databricks pr-evidence .github; only intentional fake LangSmith fixtures were reported"
+  ],
+  "what_changed": [
+    "Moved the OpenAI-compatible completion engine implementation into document_kv_cache.openai_compatible.",
+    "Turned restaurant_kv_serving.openai_compatible into a compatibility wrapper over the document module.",
+    "Kept the public document __all__ curated while preserving the legacy wrapper's broader historical import surface.",
+    "Preserved legacy urlopen monkeypatch behavior through a migration resolver and added regression tests.",
+    "Updated package READMEs and public-package tests to record the new implementation boundary."
+  ],
+  "why": "The generalized package should own serving-platform benchmark integration directly because it is part of the public V1 workflow for arbitrary documents and external vLLM/SGLang OpenAI-compatible servers. This is a behavior-preserving migration step toward retiring restaurant-specific implementation ownership."
+}
