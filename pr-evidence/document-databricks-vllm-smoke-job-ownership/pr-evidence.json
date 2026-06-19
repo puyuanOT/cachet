@@ -1,0 +1,46 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the Databricks vLLM smoke job ownership inversion and initially found no behavioral regressions beyond suggested guardrails. Follow-up review of the reverse-wrapper pattern found that document-namespace monkeypatches, including private helper monkeypatches, could leak into legacy calls. The wrapper now executes cloned document functions against an isolated globals dictionary, and regression tests cover public hook isolation, private helper isolation, exception-path restoration, and legacy star-import behavior.",
+  "issues": [
+    {
+      "resolution": "Changed the legacy wrapper to run cloned document functions with an isolated globals dictionary rather than mutating document module globals during the call.",
+      "severity": "P2",
+      "summary": "Document-namespace public and private monkeypatches could leak into legacy calls."
+    },
+    {
+      "resolution": "Added tests for exception-path restoration and actual star-import behavior.",
+      "severity": "P3",
+      "summary": "Legacy compatibility guardrails needed stronger coverage."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document Databricks vLLM smoke job implementation ownership",
+    "legacy Databricks vLLM smoke job compatibility wrapper",
+    "legacy module execution and helper monkeypatch migration hooks",
+    "public package compatibility tests",
+    "document package README migration note",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_vllm_smoke_job.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/databricks_vllm_smoke_job.py src/restaurant_kv_serving/databricks_vllm_smoke_job.py tests/test_databricks_vllm_smoke_job.py tests/test_public_package.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry build",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review and re-review after resolving legacy/document monkeypatch isolation findings"
+  ],
+  "what_changed": [
+    "Moved the Databricks vLLM smoke job implementation into document_kv_cache.databricks_vllm_smoke_job.",
+    "Turned restaurant_kv_serving.databricks_vllm_smoke_job into a compatibility wrapper over the document module.",
+    "Preserved legacy module execution, direct writer monkeypatch behavior, exception-path hook restoration, document/legacy monkeypatch isolation, and the previous legacy star-import surface.",
+    "Recorded document ownership in the public package tests and document package README."
+  ],
+  "why": "The generalized package should own the Databricks job entry point that launches the self-contained Qwen3/vLLM smoke path. Keeping legacy compatibility makes this an incremental, behavior-preserving step toward retiring restaurant-specific implementation ownership."
+}

@@ -575,6 +575,10 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         is restaurant_kv_serving.DatabricksVLLMSmokeJobConfig
     )
     assert (
+        databricks_vllm_smoke_job.DatabricksVLLMSmokeJobConfig.__module__
+        == "document_kv_cache.databricks_vllm_smoke_job"
+    )
+    assert (
         storage_benchmark.evaluate_release_storage_benchmark_evidence
         is restaurant_kv_serving.evaluate_release_storage_benchmark_evidence
     )
