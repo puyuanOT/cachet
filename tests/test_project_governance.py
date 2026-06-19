@@ -128,6 +128,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     },
     "tests/test_public_package.py": {
         "restaurant_kv_serving",
+        "restaurant_kv_serving.benchmarks",
     },
     "tests/test_release_evidence.py": {
         "restaurant_kv_serving.release_evidence",

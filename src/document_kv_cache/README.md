@@ -1,10 +1,9 @@
 # `document_kv_cache`
 
 This is the public import package for Document KV Cache. It provides
-document-namespaced modules while delegating implementation to the legacy
-`restaurant_kv_serving` package during migration, so new code can import
-document-generic APIs while older Databricks jobs and tests continue to run
-unchanged.
+document-namespaced modules and is becoming the implementation owner one module
+at a time while older Databricks jobs and tests continue to import the legacy
+`restaurant_kv_serving` compatibility package.
 
 Public submodules such as `document_kv_cache.benchmark_plan`,
 `document_kv_cache.storage`, `document_kv_cache.storage_benchmark`, and
@@ -20,11 +19,11 @@ but are not advertised by root star imports.
 
 ## Public Module Map
 
-Most files in this package are thin public wrappers over the implementation
+Some files in this package are still thin public wrappers over implementation
 modules in `restaurant_kv_serving`. They intentionally keep module import paths
-and CLI targets under the document-generic namespace. Exported classes and
-functions still come from the implementation package during migration, so
-tracebacks may include `restaurant_kv_serving` frames.
+and CLI targets under the document-generic namespace while the migration is
+incremental. Document-owned modules now define their own exported classes and
+functions, and wrappers are retired one PR slice at a time.
 
 - `admission.py` exposes pending GPU-memory admission controls.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
@@ -33,7 +32,7 @@ tracebacks may include `restaurant_kv_serving` frames.
   job runners and records source-plan SHA-256 provenance.
 - `benchmark_runner.py` executes baseline and cache arms against caller-provided
   or OpenAI-compatible engines.
-- `benchmarks.py` defines V1 dataset specs, prompt partitioning, measurements,
+- `benchmarks.py` owns V1 dataset specs, prompt partitioning, measurements,
   summaries, and baseline comparisons.
 - `cache.py` exposes CPU and local-disk cache tiers.
 - `databricks_engine_probe_job.py` emits a Databricks run payload for native

@@ -1,8 +1,9 @@
 """Public package facade for Document KV Cache.
 
-The implementation still lives in :mod:`restaurant_kv_serving` while existing
-Databricks jobs migrate. This facade gives new users the document-generic import
-path and console script targets without duplicating implementation modules.
+New document-owned modules are landing here incrementally while existing
+Databricks jobs migrate from :mod:`restaurant_kv_serving`. This facade gives new
+users the document-generic import path and console script targets, while legacy
+restaurant-specific names remain available as compatibility aliases.
 """
 
 from __future__ import annotations
