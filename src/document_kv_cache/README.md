@@ -30,8 +30,8 @@ functions, and wrappers are retired one PR slice at a time.
   native engine-probe, and release-evidence command plans.
 - `benchmark_plan_executor.py` runs command-plan JSON files for local or managed
   job runners and records source-plan SHA-256 provenance.
-- `benchmark_runner.py` executes baseline and cache arms against caller-provided
-  or OpenAI-compatible engines.
+- `benchmark_runner.py` owns baseline and cache-arm execution against
+  caller-provided or OpenAI-compatible engines.
 - `benchmarks.py` owns V1 dataset specs, prompt partitioning, measurements,
   summaries, and baseline comparisons.
 - `cache.py` exposes CPU and local-disk cache tiers.
