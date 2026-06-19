@@ -34,7 +34,7 @@ migration.
 - `openai_compatible.py` is a compatibility wrapper over `document_kv_cache.openai_compatible`, which owns the thin streaming completion engine for vLLM/SGLang OpenAI-compatible API servers.
 - `live_server.py` is a compatibility wrapper over `document_kv_cache.live_server`, which owns the one-request live smoke check against an existing OpenAI-compatible vLLM/SGLang endpoint and prints a JSON latency/quality record.
 - `storage_benchmark.py` writes a synthetic packed shard and reports Memory, Disk, and Unity Catalog reader latency/throughput plus selected-reader and strict release machine-checkable evidence under configurable parallel read load.
-- `vllm_smoke.py` creates an isolated Databricks-local vLLM environment, starts Qwen3 4B Instruct, and runs a tiny V1 Biography/HotpotQA/MusiQue/NIAH smoke through the OpenAI-compatible benchmark runner.
+- `vllm_smoke.py` is a compatibility wrapper over `document_kv_cache.vllm_smoke`, which owns the isolated Databricks-local vLLM environment, starts Qwen3 4B Instruct, and runs a tiny V1 Biography/HotpotQA/MusiQue/NIAH smoke through the OpenAI-compatible benchmark runner.
 
 `openai_compatible.py` posts full logical prompts by default, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers and platform-managed prefix caching. Its `prompt_text_mode="runtime"` option is only for a KV-aware adapter or proxy that binds cached prefixes out of band and expects the runtime suffix in the `prompt` field.
 

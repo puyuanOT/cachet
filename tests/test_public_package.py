@@ -431,6 +431,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     legacy_benchmark_runner = importlib.import_module("restaurant_kv_serving.benchmark_runner")
     legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
     legacy_live_server = importlib.import_module("restaurant_kv_serving.live_server")
+    legacy_vllm_smoke = importlib.import_module("restaurant_kv_serving.vllm_smoke")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
@@ -547,6 +548,11 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert storage_benchmark.evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
     assert template_resources.PACKAGED_TEMPLATE_PACKAGE == "document_kv_cache.templates"
     assert vllm_smoke.SERVED_MODEL_NAME == "qwen3:4b-instruct"
+    assert vllm_smoke.VLLMSmokeBenchmarkConfig.__module__ == "document_kv_cache.vllm_smoke"
+    assert set(vllm_smoke.__all__) < set(legacy_vllm_smoke.__all__)
+    assert legacy_vllm_smoke.VLLMSmokeBenchmarkConfig is vllm_smoke.VLLMSmokeBenchmarkConfig
+    assert legacy_vllm_smoke.run_vllm_smoke_benchmark is not vllm_smoke.run_vllm_smoke_benchmark
+    assert "run" not in vllm_smoke.__all__
     assert databricks_runs.DatabricksWorkspaceConfig is restaurant_kv_serving.DatabricksWorkspaceConfig
     assert (
         databricks_engine_probe_job.DatabricksEngineProbeJobConfig

@@ -133,6 +133,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.dataset_prep",
         "restaurant_kv_serving.live_server",
         "restaurant_kv_serving.openai_compatible",
+        "restaurant_kv_serving.vllm_smoke",
     },
     "tests/test_release_evidence.py": {
         "restaurant_kv_serving.release_evidence",

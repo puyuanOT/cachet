@@ -80,7 +80,7 @@ functions, and wrappers are retired one PR slice at a time.
   readers.
 - `storage_benchmark.py` measures storage-reader latency and throughput.
 - `template_resources.py` lists and extracts packaged templates.
-- `vllm_smoke.py` runs the self-contained Qwen3/vLLM Databricks smoke.
+- `vllm_smoke.py` owns the self-contained Qwen3/vLLM Databricks smoke.
 - `workflow.py` coordinates optional training, cache generation, manifest
   registration, materialization, and serving preparation.
 

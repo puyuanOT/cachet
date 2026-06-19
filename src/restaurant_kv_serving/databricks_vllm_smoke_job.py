@@ -14,7 +14,7 @@ from restaurant_kv_serving.databricks_job import (
     DatabricksSingleNodeG5ClusterConfig,
     build_single_node_g5_cluster,
 )
-from restaurant_kv_serving.vllm_smoke import (
+from document_kv_cache.vllm_smoke import (
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
