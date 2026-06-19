@@ -1,3 +1,5 @@
+"""Compatibility wrapper for :mod:`document_kv_cache.databricks_job`."""
+
 from __future__ import annotations
 
 import argparse
@@ -5,38 +7,55 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
+from types import FunctionType
 from typing import Any
 
+from document_kv_cache._reexport import reexport_public
 
-DEFAULT_AWS_G5_NODE_TYPE = "g5.4xlarge"
-DEFAULT_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
-DEFAULT_DATABRICKS_RUN_NAME = "document-kv-v1-benchmark"
-DEFAULT_DATABRICKS_TASK_KEY = "document_kv_v1_benchmark"
-DEFAULT_DATABRICKS_DATA_SECURITY_MODE = "SINGLE_USER"
-DEDICATED_DATABRICKS_DATA_SECURITY_MODE = "DATA_SECURITY_MODE_DEDICATED"
-SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
-    {DEFAULT_DATABRICKS_DATA_SECURITY_MODE, DEDICATED_DATABRICKS_DATA_SECURITY_MODE}
+import document_kv_cache.databricks_job as _document_module
+
+__all__ = reexport_public(
+    "document_kv_cache.databricks_job",
+    (
+        "DEFAULT_AWS_G5_NODE_TYPE",
+        "DEFAULT_DATABRICKS_SPARK_VERSION",
+        "DEFAULT_DATABRICKS_RUN_NAME",
+        "DEFAULT_DATABRICKS_TASK_KEY",
+        "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
+        "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
+        "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
+    ),
+    globals(),
 )
-RESERVED_SINGLE_NODE_G5_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
-RUNNER_SCRIPT = """from document_kv_cache.benchmark_plan_executor import main
 
-if __name__ == "__main__":
-    exit_code = main()
-    if exit_code:
-        raise SystemExit(exit_code)
-"""
+__all__ += [
+    "RESERVED_SINGLE_NODE_G5_TAG_KEYS",
+    "RUNNER_SCRIPT",
+    "DatabricksSingleNodeG5ClusterConfig",
+    "DatabricksBenchmarkJobConfig",
+    "validate_aws_g5_node_type",
+    "build_single_node_g5_cluster",
+    "build_databricks_run_submit_payload",
+    "write_databricks_run_submit_json",
+    "write_databricks_runner_script",
+    "main",
+    "argparse",
+    "json",
+    "Mapping",
+    "Sequence",
+    "dataclass",
+    "field",
+    "Path",
+    "Any",
+]
+
+RESERVED_SINGLE_NODE_G5_TAG_KEYS = _document_module.RESERVED_SINGLE_NODE_G5_TAG_KEYS
+RUNNER_SCRIPT = _document_module.RUNNER_SCRIPT
 
 
-@dataclass(frozen=True, slots=True)
-class DatabricksSingleNodeG5ClusterConfig:
-    purpose: str
-    node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
-    spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
-    data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
-    single_user_name: str | None = None
-    availability: str = "ON_DEMAND"
-    zone_id: str = "auto"
-    custom_tags: Mapping[str, str] = field(default_factory=dict)
+class DatabricksSingleNodeG5ClusterConfig(_document_module.DatabricksSingleNodeG5ClusterConfig):
+    __slots__ = ()
 
     def __post_init__(self) -> None:
         if not self.purpose:
@@ -59,21 +78,8 @@ class DatabricksSingleNodeG5ClusterConfig:
             raise ValueError(f"custom_tags cannot override reserved tags: {sorted(reserved_tags)!r}")
 
 
-@dataclass(frozen=True, slots=True)
-class DatabricksBenchmarkJobConfig:
-    plan_json_uri: str
-    runner_python_file: str
-    run_name: str = DEFAULT_DATABRICKS_RUN_NAME
-    task_key: str = DEFAULT_DATABRICKS_TASK_KEY
-    node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
-    spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
-    data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
-    single_user_name: str | None = None
-    wheel_uri: str | None = None
-    execution_result_json_uri: str | None = None
-    availability: str = "ON_DEMAND"
-    zone_id: str = "auto"
-    custom_tags: Mapping[str, str] = field(default_factory=dict)
+class DatabricksBenchmarkJobConfig(_document_module.DatabricksBenchmarkJobConfig):
+    __slots__ = ()
 
     def __post_init__(self) -> None:
         if not self.plan_json_uri:
@@ -92,133 +98,106 @@ class DatabricksBenchmarkJobConfig:
 
 
 def validate_aws_g5_node_type(node_type_id: str) -> None:
-    if not node_type_id:
-        raise ValueError("node_type_id must be non-empty")
-    if not node_type_id.lower().startswith("g5."):
-        raise ValueError(f"node_type_id must be an AWS g5 Databricks node type, got {node_type_id!r}")
+    return _call_document_function("validate_aws_g5_node_type", node_type_id)
 
 
 def build_databricks_run_submit_payload(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
-    task: dict[str, Any] = {
-        "task_key": config.task_key,
-        "new_cluster": _single_node_g5_cluster(config),
-        "spark_python_task": {
-            "python_file": config.runner_python_file,
-            "parameters": _runner_parameters(config),
-        },
-    }
-    if config.wheel_uri is not None:
-        task["libraries"] = [{"whl": config.wheel_uri}]
-    return {
-        "run_name": config.run_name,
-        "tasks": [task],
-    }
+    return _call_document_function("build_databricks_run_submit_payload", config)
 
 
 def write_databricks_run_submit_json(config: DatabricksBenchmarkJobConfig, path: str | Path) -> None:
-    Path(path).write_text(json.dumps(build_databricks_run_submit_payload(config), indent=2, sort_keys=True) + "\n")
+    return _call_document_function("write_databricks_run_submit_json", config, path)
 
 
 def write_databricks_runner_script(path: str | Path) -> None:
-    Path(path).write_text(RUNNER_SCRIPT, encoding="utf-8")
+    return _call_document_function("write_databricks_runner_script", path)
 
 
 def build_single_node_g5_cluster(config: DatabricksSingleNodeG5ClusterConfig) -> dict[str, Any]:
-    tags = {
-        "ResourceClass": "SingleNode",
-        "purpose": config.purpose,
-        **dict(config.custom_tags),
-    }
-    cluster = {
-        "spark_version": config.spark_version,
-        "node_type_id": config.node_type_id,
-        "driver_node_type_id": config.node_type_id,
-        "data_security_mode": config.data_security_mode,
-        "num_workers": 0,
-        "spark_conf": {
-            "spark.master": "local[*]",
-            "spark.databricks.cluster.profile": "singleNode",
-        },
-        "custom_tags": tags,
-        "aws_attributes": {
-            "availability": config.availability,
-            "zone_id": config.zone_id,
-        },
-    }
-    if _is_single_user_mode(config.data_security_mode):
-        cluster["single_user_name"] = config.single_user_name
-    return cluster
+    return _call_document_function("build_single_node_g5_cluster", config)
 
 
 def _single_node_g5_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
-    return build_single_node_g5_cluster(_cluster_config_from_benchmark_job(config))
+    return _call_document_function("_single_node_g5_cluster", config)
 
 
 def _cluster_config_from_benchmark_job(config: DatabricksBenchmarkJobConfig) -> DatabricksSingleNodeG5ClusterConfig:
-    return DatabricksSingleNodeG5ClusterConfig(
-        purpose="document-kv-v1-benchmark",
-        node_type_id=config.node_type_id,
-        spark_version=config.spark_version,
-        data_security_mode=config.data_security_mode,
-        single_user_name=config.single_user_name,
-        availability=config.availability,
-        zone_id=config.zone_id,
-        custom_tags=config.custom_tags,
-    )
+    return _call_document_function("_cluster_config_from_benchmark_job", config)
 
 
 def _is_single_user_mode(data_security_mode: str) -> bool:
-    return data_security_mode.upper() in SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
+    return _call_document_function("_is_single_user_mode", data_security_mode)
 
 
 def _runner_parameters(config: DatabricksBenchmarkJobConfig) -> list[str]:
-    parameters = ["--plan-json", config.plan_json_uri]
-    if config.execution_result_json_uri is not None:
-        parameters.extend(["--result-json", config.execution_result_json_uri])
-    return parameters
+    return _call_document_function("_runner_parameters", config)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Emit a Databricks runs/submit payload for a V1 AWS g5 benchmark.")
-    parser.add_argument("--plan-json-uri", required=True, help="Cluster-visible plan JSON path or URI.")
-    parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
-    parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_RUN_NAME)
-    parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_TASK_KEY)
-    parser.add_argument("--node-type-id", default=DEFAULT_AWS_G5_NODE_TYPE)
-    parser.add_argument("--spark-version", default=DEFAULT_DATABRICKS_SPARK_VERSION)
-    parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
-    parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
-    parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
-    parser.add_argument("--execution-result-json-uri", help="Optional cluster-visible execution summary output path.")
-    parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
-    parser.add_argument("--runner-script-output", help="Write the tiny benchmark plan runner script to this path.")
-    args = parser.parse_args(argv)
+    return _call_document_function("main", argv)
 
-    try:
-        config = DatabricksBenchmarkJobConfig(
-            plan_json_uri=args.plan_json_uri,
-            runner_python_file=args.runner_python_file,
-            run_name=args.run_name,
-            task_key=args.task_key,
-            node_type_id=args.node_type_id,
-            spark_version=args.spark_version,
-            data_security_mode=args.data_security_mode,
-            single_user_name=args.single_user_name,
-            wheel_uri=args.wheel_uri,
-            execution_result_json_uri=args.execution_result_json_uri,
-        )
-        if args.runner_script_output:
-            write_databricks_runner_script(args.runner_script_output)
-        payload = build_databricks_run_submit_payload(config)
-        if args.output_json:
-            Path(args.output_json).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-        else:
-            print(json.dumps(payload, indent=2, sort_keys=True))
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
-        return 1
-    return 0
+
+_DEFAULT_COMPAT_FUNCTIONS = {
+    "validate_aws_g5_node_type": validate_aws_g5_node_type,
+    "build_databricks_run_submit_payload": build_databricks_run_submit_payload,
+    "write_databricks_run_submit_json": write_databricks_run_submit_json,
+    "write_databricks_runner_script": write_databricks_runner_script,
+    "build_single_node_g5_cluster": build_single_node_g5_cluster,
+    "_single_node_g5_cluster": _single_node_g5_cluster,
+    "_cluster_config_from_benchmark_job": _cluster_config_from_benchmark_job,
+    "_is_single_user_mode": _is_single_user_mode,
+    "_runner_parameters": _runner_parameters,
+    "main": main,
+}
+_DOCUMENT_DEFAULTS = {
+    name: value
+    for name, value in vars(_document_module).items()
+    if not name.startswith("__")
+}
+_PATCH_LOCK = RLock()
+_LEGACY_PATCH_NAMES = tuple(name for name in _DOCUMENT_DEFAULTS if name in globals())
+
+
+def _call_document_function(name: str, *args, **kwargs):
+    with _PATCH_LOCK:
+        return _isolated_document_namespace()[name](*args, **kwargs)
+
+
+def _document_global_for_legacy(name: str):
+    if name not in globals():
+        return _DOCUMENT_DEFAULTS[name]
+    current = globals()[name]
+    if _DEFAULT_COMPAT_FUNCTIONS.get(name) is current:
+        return _DOCUMENT_DEFAULTS[name]
+    return current
+
+
+def _isolated_document_namespace() -> dict[str, Any]:
+    namespace = dict(_DOCUMENT_DEFAULTS)
+    for name in _LEGACY_PATCH_NAMES:
+        if name in namespace:
+            namespace[name] = _document_global_for_legacy(name)
+    for name, value in tuple(namespace.items()):
+        if _is_document_function(value):
+            namespace[name] = _clone_document_function(value, namespace)
+    return namespace
+
+
+def _is_document_function(value: Any) -> bool:
+    return isinstance(value, FunctionType) and value.__globals__ is vars(_document_module)
+
+
+def _clone_document_function(function: FunctionType, namespace: dict[str, Any]) -> FunctionType:
+    clone = FunctionType(function.__code__, namespace, function.__name__, function.__defaults__, function.__closure__)
+    clone.__kwdefaults__ = function.__kwdefaults__
+    clone.__annotations__ = dict(function.__annotations__)
+    clone.__doc__ = function.__doc__
+    clone.__module__ = function.__module__
+    return clone
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
+
+
+del reexport_public
