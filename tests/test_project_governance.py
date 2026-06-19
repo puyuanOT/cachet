@@ -131,6 +131,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.benchmark_runner",
         "restaurant_kv_serving.benchmarks",
         "restaurant_kv_serving.dataset_prep",
+        "restaurant_kv_serving.openai_compatible",
     },
     "tests/test_release_evidence.py": {
         "restaurant_kv_serving.release_evidence",

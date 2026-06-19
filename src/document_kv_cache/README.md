@@ -63,7 +63,7 @@ functions, and wrappers are retired one PR slice at a time.
   materialization plans.
 - `native_probe_factories.py` exposes reserved vLLM/SGLang native probe factory
   paths plus fail-closed backend environment diagnostics.
-- `openai_compatible.py` provides the stdlib-only streaming benchmark engine for
+- `openai_compatible.py` owns the stdlib-only streaming benchmark engine for
   vLLM/SGLang OpenAI-compatible APIs.
 - `planner.py` orders manifest chunks for runtime requests.
 - `pr_evidence.py` emits and validates machine-checkable PR traceability,
