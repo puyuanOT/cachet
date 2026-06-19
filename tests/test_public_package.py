@@ -422,6 +422,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     databricks_engine_probe_job = modules["databricks_engine_probe_job"]
     databricks_storage_benchmark_job = modules["databricks_storage_benchmark_job"]
     databricks_vllm_smoke_job = modules["databricks_vllm_smoke_job"]
+    live_server = modules["live_server"]
     release_bundle = modules["release_bundle"]
     release_evidence = modules["release_evidence"]
     pr_evidence = modules["pr_evidence"]
@@ -429,6 +430,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     legacy_benchmarks = importlib.import_module("restaurant_kv_serving.benchmarks")
     legacy_benchmark_runner = importlib.import_module("restaurant_kv_serving.benchmark_runner")
     legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
+    legacy_live_server = importlib.import_module("restaurant_kv_serving.live_server")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
@@ -508,6 +510,11 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert legacy_dataset_prep.local_path is dataset_prep.local_path
     assert legacy_dataset_prep.validate_v1_dataset is dataset_prep.validate_v1_dataset
     assert dataset_prep.convert_v1_jsonl is restaurant_kv_serving.convert_v1_jsonl
+    assert live_server.LiveServerCheckConfig.__module__ == "document_kv_cache.live_server"
+    assert set(live_server.__all__) < set(legacy_live_server.__all__)
+    assert legacy_live_server.LiveServerCheckConfig is live_server.LiveServerCheckConfig
+    assert legacy_live_server.run_openai_compatible_live_check is live_server.run_openai_compatible_live_check
+    assert "argparse" not in live_server.__all__
     assert engine_adapters.vllm_adapter_spec is restaurant_kv_serving.vllm_adapter_spec
     assert engine_probe.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
     assert engine_probe.run_engine_kv_connector_probe is restaurant_kv_serving.run_engine_kv_connector_probe

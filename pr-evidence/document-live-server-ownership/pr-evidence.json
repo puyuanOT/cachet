@@ -1,0 +1,40 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the live-server ownership inversion and found one P2 compatibility issue: legacy callers patching implementation globals such as restaurant_kv_serving.live_server.OpenAICompatibleCompletionEngine would no longer affect legacy main(). The issue was fixed by bridging all historical legacy compatibility exports except main into document_kv_cache.live_server while legacy main() runs, with regression coverage for a legacy-patched engine class. Re-review found no issues.",
+  "issues": [
+    {
+      "resolution": "Expanded the legacy main bridge to project all compatibility exports except main into document_kv_cache.live_server during legacy main() execution and added a regression for a legacy-patched OpenAICompatibleCompletionEngine.",
+      "severity": "P2",
+      "summary": "Legacy live_server.main() monkeypatch compatibility was incomplete for implementation globals after moving the live-server implementation into the document module."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document live-server implementation ownership",
+    "legacy live-server compatibility wrapper",
+    "legacy CLI monkeypatch migration bridge",
+    "public package compatibility tests",
+    "document and legacy package README migration notes",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_live_server.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/live_server.py src/restaurant_kv_serving/live_server.py tests/test_live_server.py tests/test_public_package.py",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "GPT-5.5 review found one legacy monkeypatch compatibility issue; the issue was fixed and re-review returned no findings"
+  ],
+  "what_changed": [
+    "Moved the live OpenAI-compatible smoke-check implementation into document_kv_cache.live_server.",
+    "Turned restaurant_kv_serving.live_server into a compatibility wrapper over the document module.",
+    "Kept the public document __all__ curated while preserving the legacy wrapper's broader historical import surface.",
+    "Preserved legacy main() monkeypatch behavior for implementation globals through a broad compatibility bridge.",
+    "Updated package READMEs and public-package tests to record the new implementation boundary."
+  ],
+  "why": "The generalized package should own live serving smoke checks directly because they validate established vLLM/SGLang OpenAI-compatible endpoints for arbitrary documents. This is a behavior-preserving migration step toward retiring restaurant-specific implementation ownership."
+}

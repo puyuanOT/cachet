@@ -129,3 +129,54 @@ def test_public_live_server_main_respects_document_namespace_monkeypatch(monkeyp
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {"ok": True, "source": "public-hook"}
     assert legacy_live_server.run_openai_compatible_live_check is original_legacy_run
+
+
+def test_legacy_live_server_main_respects_legacy_namespace_monkeypatch(monkeypatch, capsys):
+    original_public_run = public_live_server.run_openai_compatible_live_check
+
+    def fake_run(config):
+        assert config.base_url == "http://localhost:8000"
+        return SimpleNamespace(ok=True, to_record=lambda: {"ok": True, "source": "legacy-hook"})
+
+    monkeypatch.setattr(legacy_live_server, "run_openai_compatible_live_check", fake_run)
+
+    exit_code = legacy_live_server.main(["--base-url", "http://localhost:8000"])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "source": "legacy-hook"}
+    assert public_live_server.run_openai_compatible_live_check is original_public_run
+
+
+def test_legacy_live_server_main_respects_legacy_engine_class_monkeypatch(monkeypatch, capsys):
+    original_public_engine = public_live_server.OpenAICompatibleCompletionEngine
+
+    class FakeCompletionEngine:
+        def __init__(self, config):
+            self.config = config
+
+        def generate(self, request):
+            return BenchmarkGeneration(
+                output_text=f"The code is {DEFAULT_LIVE_CHECK_ANSWER}.",
+                prompt_tokens=10,
+                completion_tokens=4,
+                ttft_seconds=0.1,
+                time_to_completion_seconds=0.2,
+                metadata={"engine": "legacy-patched"},
+            )
+
+    monkeypatch.setattr(legacy_live_server, "OpenAICompatibleCompletionEngine", FakeCompletionEngine)
+
+    exit_code = legacy_live_server.main(["--base-url", "http://localhost:8000"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["metadata"] == {"engine": "legacy-patched"}
+    assert public_live_server.OpenAICompatibleCompletionEngine is original_public_engine
+
+
+def test_legacy_live_server_reexports_document_owned_types():
+    assert LiveServerCheckConfig.__module__ == "document_kv_cache.live_server"
+    assert legacy_live_server.LiveServerCheckConfig is LiveServerCheckConfig
+    assert legacy_live_server.build_live_server_check_request is build_live_server_check_request
+    assert set(public_live_server.__all__) < set(legacy_live_server.__all__)

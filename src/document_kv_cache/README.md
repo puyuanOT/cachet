@@ -53,7 +53,7 @@ functions, and wrappers are retired one PR slice at a time.
 - `engine_protocol.py` defines validated KV layout, segment, and handle data
   structures.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
-- `live_server.py` runs a one-request live smoke check against an existing
+- `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.
 - `materializer.py` loads planned chunks into merged or segmented payloads.

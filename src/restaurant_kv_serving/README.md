@@ -32,7 +32,7 @@ migration.
 - `benchmark_runner.py` is a compatibility wrapper over `document_kv_cache.benchmark_runner`, which owns canonical V1 JSONL loading, caller-provided or OpenAI-compatible vLLM/SGLang benchmark execution, and JSON measurement, summary, and comparison records.
 - `release_evidence.py` validates collected V1 benchmark, storage benchmark, and native vLLM/SGLang probe JSON artifacts before a release is called complete, and records the input artifact sources in the final release-evidence JSON.
 - `openai_compatible.py` is a compatibility wrapper over `document_kv_cache.openai_compatible`, which owns the thin streaming completion engine for vLLM/SGLang OpenAI-compatible API servers.
-- `live_server.py` runs a one-request live smoke check against an existing OpenAI-compatible vLLM/SGLang endpoint and prints a JSON latency/quality record.
+- `live_server.py` is a compatibility wrapper over `document_kv_cache.live_server`, which owns the one-request live smoke check against an existing OpenAI-compatible vLLM/SGLang endpoint and prints a JSON latency/quality record.
 - `storage_benchmark.py` writes a synthetic packed shard and reports Memory, Disk, and Unity Catalog reader latency/throughput plus selected-reader and strict release machine-checkable evidence under configurable parallel read load.
 - `vllm_smoke.py` creates an isolated Databricks-local vLLM environment, starts Qwen3 4B Instruct, and runs a tiny V1 Biography/HotpotQA/MusiQue/NIAH smoke through the OpenAI-compatible benchmark runner.
 
