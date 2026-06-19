@@ -1,9 +1,9 @@
 # `restaurant_kv_serving`
 
-This package contains the current implementation of the document KV-cache
-orchestration primitives. New code should import `document_kv_cache`, which is a
-public facade over these modules. This package remains available for existing
-Databricks jobs and tests during migration.
+This package contains migration shims plus implementation modules that have not
+yet moved to `document_kv_cache`. New code should import `document_kv_cache`.
+This package remains available for existing Databricks jobs and tests during
+migration.
 
 - `models.py` defines cache keys, chunk references, document requests, and materialization plans.
 - `manifest.py` defines manifest lookup interfaces and an in-memory implementation for tests.
@@ -21,7 +21,7 @@ Databricks jobs and tests during migration.
 - `service.py` combines planning, materialization, and admission for serving integrations.
 - `workflow.py` coordinates source documents, optional training, cache generation, method labels such as vanilla prefill or KV Packet, manifest registration, materialization, and engine-ready serving preparation.
 - `serving_env.py` records pinned one-engine-per-environment install profiles for vLLM and SGLang helpers.
-- `benchmarks.py` defines the V1 dataset specs, deterministic prompt/context builders, and quality/latency schema for comparing baseline prefill against document KV-cache reuse.
+- `benchmarks.py` is a compatibility wrapper over `document_kv_cache.benchmarks`, which owns the V1 dataset specs, deterministic prompt/context builders, and quality/latency schema for comparing baseline prefill against document KV-cache reuse.
 - `dataset_prep.py` canonicalizes Biography, HotpotQA, MusiQue, and NIAH records into the JSONL schema consumed by `benchmark_runner.py`, including synthetic NIAH generation.
 - `benchmark_plan.py` emits reproducible dataset-preparation and benchmark-runner command plans for AWS g5/Qwen3 V1 jobs.
 - `benchmark_plan_executor.py` executes a benchmark plan JSON command sequence, primarily for managed job runners.

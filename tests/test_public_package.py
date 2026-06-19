@@ -408,6 +408,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     }
     benchmark_plan = modules["benchmark_plan"]
     benchmark_runner = modules["benchmark_runner"]
+    benchmarks = modules["benchmarks"]
     admission = modules["admission"]
     dataset_prep = modules["dataset_prep"]
     engine_adapters = modules["engine_adapters"]
@@ -425,6 +426,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     release_evidence = modules["release_evidence"]
     pr_evidence = modules["pr_evidence"]
     serving_env = modules["serving_env"]
+    legacy_benchmarks = importlib.import_module("restaurant_kv_serving.benchmarks")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
@@ -434,6 +436,14 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert benchmark_plan.ReleaseBundlePlanConfig is restaurant_kv_serving.ReleaseBundlePlanConfig
     assert benchmark_plan.ReleaseEvidencePlanConfig is restaurant_kv_serving.ReleaseEvidencePlanConfig
     assert benchmark_plan.StorageBenchmarkPlanConfig is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert benchmarks.BenchmarkExample.__module__ == "document_kv_cache.benchmarks"
+    assert set(benchmarks.__all__) < set(legacy_benchmarks.__all__)
+    assert set(legacy_benchmarks.__all__) - set(benchmarks.__all__) == {"SourceDocument"}
+    assert "SourceDocument" not in benchmarks.__all__
+    assert "_format_document" not in benchmarks.__all__
+    assert legacy_benchmarks.BenchmarkExample is benchmarks.BenchmarkExample
+    assert legacy_benchmarks.SourceDocument is document_kv_cache.SourceDocument
+    assert restaurant_kv_serving.BenchmarkExample is benchmarks.BenchmarkExample
     assert benchmark_runner.BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
     assert dataset_prep.convert_v1_jsonl is restaurant_kv_serving.convert_v1_jsonl
     assert engine_adapters.vllm_adapter_spec is restaurant_kv_serving.vllm_adapter_spec
