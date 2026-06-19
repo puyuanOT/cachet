@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found two low-severity governance issues: the branch-protection test did not tie the required status-check string to the actual workflow job name, and the README omitted the required-linear-history merge-setting prerequisite. The test now extracts and verifies the unique workflow job name, and the README documents that squash or rebase merging must stay enabled before applying the payload. Final GPT-5.5 review found no remaining findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "GitHub main branch protection payload",
+    "repository workflow documentation",
+    "contributing workflow documentation",
+    "repository governance tests",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_github_main_branch_protection_payload_requires_pr_review_and_ci tests/test_project_governance.py::test_github_docs_explain_branch_protection_application_and_plan_limit -q",
+    "python -m json.tool .github/main-branch-protection.json >/tmp/main-branch-protection.pretty.json && python -m py_compile tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry build",
+    "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json /tmp/pr-evidence-main-protection-validation.json"
+  ],
+  "what_changed": [
+    "Added .github/main-branch-protection.json with an operator-ready GitHub branch protection payload for main.",
+    "Documented how to apply the payload and noted the private-repository branch-protection plan limitation observed during setup.",
+    "Updated CONTRIBUTING.md so release maintainers know branch protection must be active before treating the workflow as enforced.",
+    "Added governance tests that validate the payload, its PR-review and CI requirements, and the documentation."
+  ],
+  "why": "Make the GitHub-hosted package workflow enforceable and auditable: direct pushes to main should be blocked before release publication, while the repository records the exact payload and setup prerequisites."
+}
