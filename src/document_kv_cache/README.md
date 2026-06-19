@@ -43,7 +43,8 @@ functions, and wrappers are retired one PR slice at a time.
 - `databricks_storage_benchmark_job.py` emits standalone storage-reader
   benchmark run payloads.
 - `databricks_vllm_smoke_job.py` emits standalone Qwen3/vLLM smoke run payloads.
-- `dataset_prep.py` normalizes Biography, HotpotQA, MusiQue, and NIAH data.
+- `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and NIAH
+  normalization into canonical benchmark JSONL.
 - `engine.py` builds engine-ready payload handles from materialized KV.
 - `engine_adapters.py` defines the external vLLM/SGLang adapter handoff and
   native-probe descriptor contracts.

@@ -427,6 +427,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     pr_evidence = modules["pr_evidence"]
     serving_env = modules["serving_env"]
     legacy_benchmarks = importlib.import_module("restaurant_kv_serving.benchmarks")
+    legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
@@ -445,6 +446,23 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert legacy_benchmarks.SourceDocument is document_kv_cache.SourceDocument
     assert restaurant_kv_serving.BenchmarkExample is benchmarks.BenchmarkExample
     assert benchmark_runner.BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
+    assert dataset_prep.convert_v1_jsonl.__module__ == "document_kv_cache.dataset_prep"
+    assert set(dataset_prep.__all__) < set(legacy_dataset_prep.__all__)
+    assert set(legacy_dataset_prep.__all__) - set(dataset_prep.__all__) == {
+        "Any",
+        "Iterable",
+        "Mapping",
+        "Path",
+        "Sequence",
+        "argparse",
+        "json",
+        "local_path",
+        "validate_v1_dataset",
+    }
+    assert "local_path" not in dataset_prep.__all__
+    assert legacy_dataset_prep.convert_v1_jsonl is dataset_prep.convert_v1_jsonl
+    assert legacy_dataset_prep.local_path is dataset_prep.local_path
+    assert legacy_dataset_prep.validate_v1_dataset is dataset_prep.validate_v1_dataset
     assert dataset_prep.convert_v1_jsonl is restaurant_kv_serving.convert_v1_jsonl
     assert engine_adapters.vllm_adapter_spec is restaurant_kv_serving.vllm_adapter_spec
     assert engine_probe.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
