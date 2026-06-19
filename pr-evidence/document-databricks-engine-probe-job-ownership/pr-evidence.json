@@ -1,0 +1,42 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the Databricks engine-probe job ownership inversion and found no code-level behavioral regressions. The only finding was the intentionally pending PR-evidence sidecar, which is now marked complete. Review specifically checked document and legacy monkeypatch isolation, direct config construction, matrix target parsing, release-safe validation, legacy __all__/star-import compatibility, pickle/slotted behavior, and recursion/leak risks.",
+  "issues": [
+    {
+      "resolution": "Recorded the completed GPT-5.5 review outcome and reran the PR-evidence validation gate.",
+      "severity": "P1",
+      "summary": "The new PR-evidence sidecar was still marked pending, causing the full repository PR-evidence gate to fail."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document Databricks engine-probe job implementation ownership",
+    "legacy Databricks engine-probe job compatibility wrapper",
+    "legacy module execution and helper monkeypatch migration hooks",
+    "public package compatibility tests",
+    "legacy package README migration note",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_engine_probe_job.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/databricks_engine_probe_job.py src/restaurant_kv_serving/databricks_engine_probe_job.py tests/test_databricks_engine_probe_job.py tests/test_public_package.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "poetry check",
+    "poetry build",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review of the ownership migration with no code-level findings"
+  ],
+  "what_changed": [
+    "Moved the Databricks native engine-probe job implementation into document_kv_cache.databricks_engine_probe_job.",
+    "Turned restaurant_kv_serving.databricks_engine_probe_job into a compatibility wrapper over the document module.",
+    "Preserved legacy module execution, direct writer monkeypatch behavior, public and private helper monkeypatch behavior, pickle support, slotted config layout, and the previous legacy star-import surface.",
+    "Recorded document ownership in public package tests and the legacy package README."
+  ],
+  "why": "The generalized package should own the Databricks job entry point that emits native vLLM/SGLang engine-probe evidence. Keeping legacy compatibility makes this an incremental, behavior-preserving step toward retiring restaurant-specific implementation ownership."
+}
