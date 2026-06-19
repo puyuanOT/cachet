@@ -14,6 +14,7 @@ __all__ = reexport_public(
         "RoutedRangeReader",
         "local_path",
         "unity_catalog_volume_path",
+        "is_real_uc_volume_root",
     ),
     globals(),
 )

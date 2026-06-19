@@ -26,7 +26,7 @@ migration.
 - `benchmark_plan.py` emits reproducible dataset-preparation and benchmark-runner command plans for AWS g5/Qwen3 V1 jobs.
 - `benchmark_plan_executor.py` executes a benchmark plan JSON command sequence, primarily for managed job runners.
 - `databricks_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script that invokes `benchmark_plan_executor.py`.
-- `databricks_storage_benchmark_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script for standalone storage-reader evidence.
+- `databricks_storage_benchmark_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks storage-reader job payload helper.
 - `databricks_engine_probe_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script for native vLLM/SGLang engine-probe evidence.
 - `databricks_runs.py` submits generated Databricks payloads and checks run state using only `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables.
 - `benchmark_runner.py` is a compatibility wrapper over `document_kv_cache.benchmark_runner`, which owns canonical V1 JSONL loading, caller-provided or OpenAI-compatible vLLM/SGLang benchmark execution, and JSON measurement, summary, and comparison records.
