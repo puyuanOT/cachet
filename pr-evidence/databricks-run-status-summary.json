@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Initial review found P2 raw Jobs API payload persisted by get --summary and P3 missing package-root exports. I changed summary mode to omit the raw response unless --include-response is explicit, exported DATABRICKS_RUN_STATUS_RECORD_TYPE and summarize_databricks_run from the root facade, added regression tests, reran full tests/build, and re-review returned clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/databricks_runs.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "src/document_kv_cache/databricks_runs.py",
+    "tests/test_databricks_runs.py",
+    "tests/test_public_package.py",
+    "README.md",
+    "src/restaurant_kv_serving/README.md",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_databricks_runs.py tests/test_public_package.py",
+    "poetry run pytest -q tests/test_databricks_runs.py tests/test_databricks_job.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review clean after resolving P2 summary raw-response leakage and P3 package-root export findings"
+  ],
+  "what_changed": [
+    "Added compact Databricks Jobs run status summaries for managed benchmark/release automation.",
+    "Exposed a document_kv.databricks_run_status.v1 record with run/task lifecycle states, result state, active task key, cluster ids, timing, and success/terminal flags.",
+    "Made databricks_runs get --summary emit a summary-only artifact by default, with --include-response as the explicit raw Jobs API debug path.",
+    "Exported the run-status helper and record constant through the document_kv_cache package facade."
+  ],
+  "why": "Release automation needs a stable, compact, sanitized summary of Databricks job progress and completion before collecting benchmark, storage, engine-probe, and bundle artifacts."
+}

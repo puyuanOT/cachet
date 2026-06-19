@@ -1,0 +1,27 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found custom connector packages, mixed-case metadata, and pre-probe validation gaps; all were patched, covered by regression tests, and final re-review found no actionable issues.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "engine-adapters",
+    "serving-boundary",
+    "tests"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review completed; findings resolved and re-review clean"
+  ],
+  "what_changed": [
+    "Hardened serving backend boundaries to accept only vLLM and SGLang connectors",
+    "Normalized backend and payload-mode strings at adapter dataclass and record boundaries",
+    "Rejected mismatched connector package metadata before native probe side effects"
+  ],
+  "why": "The package must integrate with established serving engines rather than custom solvers; handoff and probe artifacts should not be able to describe a custom connector under a vLLM or SGLang backend."
+}

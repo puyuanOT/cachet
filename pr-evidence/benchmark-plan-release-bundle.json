@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed release-bundle planning support, found path/probe validation gaps, all were patched, and final re-review returned no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/benchmark_plan.py",
+    "src/document_kv_cache/benchmark_plan.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "tests/test_benchmark_plan.py",
+    "tests/test_public_package.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmark_plan.py tests/test_public_package.py (50 passed)",
+    "poetry run pytest -q (465 passed)",
+    "poetry build (succeeded)",
+    "PYTHONPATH=src CLI smokes rejected underspecified, duplicate, alias, and plan-output artifact path collisions"
+  ],
+  "what_changed": [
+    "Added benchmark-plan support for scheduling document-kv release bundle assembly after release evidence validation, including public ReleaseBundlePlanConfig exports, CLI flags, path-collision guardrails, tests, and README usage."
+  ],
+  "why": "The V1 release workflow needs one reproducible plan to prepare datasets, run benchmark/storage/native probe evidence, validate release evidence, and build the checksummed handoff bundle from the same artifact paths."
+}

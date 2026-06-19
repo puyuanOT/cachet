@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 from restaurant_kv_serving.manifest import ManifestStore
-from restaurant_kv_serving.models import ChunkType, KVCacheKey, MaterializationPlan, PlanSegment, RestaurantKVRequest
+from restaurant_kv_serving.models import (
+    DocumentKVRequest,
+    KVCacheKey,
+    MaterializationPlan,
+    PlanSegment,
+    RestaurantKVRequest,
+    chunk_types_for_request,
+)
+
+
+CacheRequest = DocumentKVRequest | RestaurantKVRequest
 
 
 class CachePlanner:
     def __init__(self, manifest: ManifestStore) -> None:
         self._manifest = manifest
 
-    def build_plan(self, request: RestaurantKVRequest) -> MaterializationPlan:
+    def build_plan(self, request: CacheRequest) -> MaterializationPlan:
         segments: list[PlanSegment] = []
         token_cursor = 0
         byte_cursor = 0
@@ -20,39 +30,41 @@ class CachePlanner:
             token_cursor += ref.token_count
             byte_cursor += ref.byte_length
 
+        chunk_types = chunk_types_for_request(request)
+
         if request.task_prefix_id:
             add(
-                KVCacheKey(
+                KVCacheKey.for_document(
                     model_id=request.model_id,
                     lora_id=request.lora_id,
                     prompt_template_version=request.prompt_template_version,
-                    restaurant_id="_task",
-                    chunk_type=ChunkType.TASK_PREFIX,
+                    document_id="_task",
+                    chunk_type=chunk_types.task_prefix,
                     chunk_id=request.task_prefix_id,
                 )
             )
 
-        for restaurant_id, review_ids in request.restaurant_reviews.items():
+        for document_id, chunk_ids in request.document_chunks.items():
             if request.include_static:
                 add(
-                    KVCacheKey(
+                    KVCacheKey.for_document(
                         model_id=request.model_id,
                         lora_id=request.lora_id,
                         prompt_template_version=request.prompt_template_version,
-                        restaurant_id=restaurant_id,
-                        chunk_type=ChunkType.RESTAURANT_STATIC,
+                        document_id=document_id,
+                        chunk_type=chunk_types.static,
                         chunk_id="static",
                     )
                 )
-            for review_id in review_ids:
+            for chunk_id in chunk_ids:
                 add(
-                    KVCacheKey(
+                    KVCacheKey.for_document(
                         model_id=request.model_id,
                         lora_id=request.lora_id,
                         prompt_template_version=request.prompt_template_version,
-                        restaurant_id=restaurant_id,
-                        chunk_type=ChunkType.REVIEW,
-                        chunk_id=str(review_id),
+                        document_id=document_id,
+                        chunk_type=chunk_types.content,
+                        chunk_id=str(chunk_id),
                     )
                 )
 
@@ -61,6 +73,5 @@ class CachePlanner:
             segments=tuple(segments),
             total_tokens=token_cursor,
             total_bytes=byte_cursor,
-            selected_restaurants=tuple(request.restaurant_reviews.keys()),
+            selected_document_ids=request.selected_document_ids,
         )
-

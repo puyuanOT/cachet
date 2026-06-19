@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed benchmark executor provenance, flagged plan mutation and wrapper-hook compatibility issues, and reported Clean after fixes.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/benchmark_plan_executor.py",
+    "src/document_kv_cache/benchmark_plan_executor.py",
+    "tests/test_benchmark_plan_executor.py",
+    "README.md",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmark_plan_executor.py tests/test_databricks_job.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review clean after resolving plan mutation and public-wrapper hook findings"
+  ],
+  "what_changed": [
+    "Added benchmark plan execution and source-provenance record types to command-plan execution summaries.",
+    "Recorded plan path, driver path, byte size, SHA-256, suite/model/hardware fields, and command count for local and Databricks-managed benchmark plan runs.",
+    "Ensured the CLI hashes the exact plan payload used for execution while preserving public-wrapper monkeypatch compatibility for the JSON-plan executor."
+  ],
+  "why": "Release operators need to prove which benchmark plan JSON a managed AWS g5 Databricks run executed before collecting benchmark, storage, and engine-probe evidence."
+}

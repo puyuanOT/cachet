@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 found that release_safe target files were not self-enforcing; I added envelope parsing/honoring and regressions, and re-review returned no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/benchmark_plan.py",
+    "src/restaurant_kv_serving/databricks_engine_probe_job.py",
+    "src/document_kv_cache/benchmark_plan.py",
+    "src/document_kv_cache/databricks_engine_probe_job.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "tests/test_benchmark_plan.py",
+    "tests/test_databricks_engine_probe_job.py",
+    "tests/test_public_package.py",
+    "README.md",
+    "databricks/engine-probe/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmark_plan.py tests/test_databricks_engine_probe_job.py tests/test_public_package.py tests/test_project_governance.py (94 passed)",
+    "python -m py_compile src/restaurant_kv_serving/benchmark_plan.py src/restaurant_kv_serving/databricks_engine_probe_job.py src/document_kv_cache/benchmark_plan.py src/document_kv_cache/databricks_engine_probe_job.py tests/test_benchmark_plan.py tests/test_databricks_engine_probe_job.py tests/test_public_package.py",
+    "poetry run pytest -q (492 passed)",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added benchmark-plan engine-probe target JSON artifacts that feed Databricks paired native probe jobs.",
+    "Preserved payload URI, debug flags, and metadata in Databricks engine-probe targets, with release-safe self-enforcing envelopes."
+  ],
+  "why": "V1 release operators need the same planned native vLLM/SGLang probe artifacts to drive managed AWS g5 Databricks probe jobs and release evidence without duplicate hand-written configs."
+}

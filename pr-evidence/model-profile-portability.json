@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found missing direct-constructor type validation and non-object record handling; both were patched, covered by tests, and the re-review reported no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "model_profiles",
+    "public-api",
+    "docs",
+    "tests"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_model_profiles.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review completed; initial findings resolved and re-review clean"
+  ],
+  "what_changed": [
+    "Added portable ModelProfileDefinition JSON artifacts for future model profiles",
+    "Exposed model profile artifact helpers through document_kv_cache and legacy root exports",
+    "Tightened KVModelProfile and model profile record validation"
+  ],
+  "why": "Future Qwen3.5, MiniMax, and adapter-trained KV Packet integrations need model attention geometry to travel with external model bundles without hardcoding every profile in the package."
+}

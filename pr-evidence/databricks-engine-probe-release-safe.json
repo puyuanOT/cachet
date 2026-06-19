@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the release-safe engine-probe helper, tests, and docs; it reported no findings and confirmed debug defaults, helper-local --release-safe behavior, bundle-template safety, and public-wrapper compatibility.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/databricks_engine_probe_job.py",
+    "tests/test_databricks_engine_probe_job.py",
+    "README.md",
+    "databricks/README.md",
+    "src/restaurant_kv_serving/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_databricks_engine_probe_job.py tests/test_databricks_job.py tests/test_public_package.py tests/test_project_governance.py (43 passed)",
+    "poetry run pytest -q (468 passed)",
+    "poetry build (succeeded)",
+    "GPT-5.5 PR review returned no findings and manually confirmed release-safe payloads omit debug/runtime-only flags"
+  ],
+  "what_changed": [
+    "Added release-safe validation to the Databricks native engine-probe runs/submit helper so release-evidence job payload generation rejects debug-only engine_version overrides and non-native probe mode while preserving default adapter-debug behavior.",
+    "Documented release-safe Databricks engine-probe usage in the root, Databricks, and legacy module READMEs and covered the new guard with focused public-wrapper tests."
+  ],
+  "why": "Native vLLM/SGLang probe evidence must come from real engine block managers with real engine versions; release job payloads should fail before submission when debug-only probe options would produce non-releaseable records."
+}

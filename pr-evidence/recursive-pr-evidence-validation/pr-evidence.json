@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that validation-summary records were skipped by record_type alone, then found an ok:true empty-files summary could still be skipped. The validator now skips only valid non-empty validation summaries whose nested PR evidence records evaluate cleanly; invalid summaries fall through as failed sidecars. Final GPT-5.5 review found no remaining issues.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "PR evidence directory validation",
+    "PR evidence CLI behavior",
+    "repository PR evidence governance tests",
+    "PR evidence documentation"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_pr_evidence.py -q",
+    "PYTHONPATH=src python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json /tmp/pr-evidence-recursive-validation.json",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Made evaluate_pr_evidence_directory recursively discover PR evidence sidecars by default.",
+    "Skipped only structurally valid, ok:true PR evidence validation summary records, while malformed or failed summaries remain validation failures.",
+    "Added regression tests for nested PR evidence sidecars, explicit recursive=False behavior, valid validation-summary skipping, invalid validation summaries, and empty ok:true summaries.",
+    "Documented recursive directory validation behavior in pr-evidence/README.md."
+  ],
+  "why": "New PR slices store evidence in per-slice subdirectories, so the repository governance gate must validate nested traceability sidecars instead of only top-level pr-evidence JSON files."
+}

@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Initial review found that the documented databricks_runs get --summary wrapper would be rejected by release_bundle, so I normalized wrapper and root status shapes and updated tests/docs. Re-review then found a misplaced helper had made a CLI test unreachable; I moved the helper back to fixtures, reran exact/focused/full tests plus build, and final review returned clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "README.md",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py::test_public_release_bundle_cli_writes_manifest_and_output_json tests/test_release_bundle.py",
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_databricks_runs.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review clean after resolving wrapper-shape and test-regression findings"
+  ],
+  "what_changed": [
+    "Added repeatable Databricks run-status sidecars to release bundles.",
+    "Validated compact document_kv.databricks_run_status.v1 records, including actual databricks_runs get --summary wrapper outputs, before bundling.",
+    "Kept Databricks status sidecars out of strict release-evidence and preflight input matching while preserving semantic record_type provenance in the bundle manifest."
+  ],
+  "why": "Release bundles should carry auditable proof that Databricks-managed benchmark and probe jobs reached successful terminal states without requiring operators to persist full Jobs API payloads."
+}

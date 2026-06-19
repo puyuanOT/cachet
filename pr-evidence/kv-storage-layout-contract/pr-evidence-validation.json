@@ -1,0 +1,42 @@
+{
+  "files": {
+    "pr-evidence/kv-storage-layout-contract/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 found missing persisted storage-layout binding, incomplete V1 Qwen3 release validation, unclear byte-order docs, and synthetic qwen3-v1 misuse. The slice now persists storage_layout on PackChunk/ChunkRef, validates it in workflow and engine handoff paths, enforces qwen3-v1 shared K/V storage, moves synthetic benchmarks/tests to non-Qwen layout labels, clarifies README semantics, and final GPT-5.5 review was clean.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "engine protocol layout metadata",
+        "persisted chunk and manifest metadata",
+        "engine adapter handoff and probe validation",
+        "release evidence validation",
+        "workflow/cache generation contract",
+        "public document namespace exports",
+        "README model profile and adapter contract docs",
+        "tests"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_kvpack.py tests/test_storage.py tests/test_storage_benchmark.py tests/test_workflow.py tests/test_model_profiles.py tests/test_engine.py tests/test_engine_adapters.py tests/test_engine_probe.py tests/test_release_evidence.py tests/test_public_package.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "python -m py_compile src/restaurant_kv_serving/engine_protocol.py src/restaurant_kv_serving/engine_adapters.py src/restaurant_kv_serving/model_profiles.py src/restaurant_kv_serving/release_evidence.py src/restaurant_kv_serving/models.py src/restaurant_kv_serving/kvpack.py src/restaurant_kv_serving/workflow.py src/restaurant_kv_serving/engine.py src/restaurant_kv_serving/storage_benchmark.py src/document_kv_cache/engine_protocol.py src/document_kv_cache/model_profiles.py",
+        "poetry build"
+      ],
+      "what_changed": [
+        "Added KVStorageLayout and storage-layout normalization to KVLayout.",
+        "Persisted storage_layout on PackChunk and ChunkRef and validated it through workflow generation and engine-ready handoff construction.",
+        "Serialized storage_layout in engine adapter/probe records and release-evidence parsing.",
+        "Enforced the V1 qwen3-v1 shared K/V storage invariant and moved synthetic benchmarks/tests to synthetic layout labels.",
+        "Exported storage-layout APIs through restaurant_kv_serving and document_kv_cache.",
+        "Updated README and tests for the storage-layout contract."
+      ],
+      "why": "Make future vLLM/SGLang KV injection adapters able to reject physically incompatible cache bytes before they map chunks into native KV blocks."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

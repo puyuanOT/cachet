@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Initial GPT-5.5 review found planned probe output collisions, incomplete backend coverage when auto-feeding release evidence, and empty metadata-key acceptance. I added construction-time validation and regressions for all three, reran focused/full tests and build, and re-review returned clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/benchmark_plan.py",
+    "src/document_kv_cache/benchmark_plan.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "tests/test_benchmark_plan.py",
+    "tests/test_public_package.py",
+    "README.md",
+    "src/restaurant_kv_serving/README.md",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmark_plan.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review found output-collision, incomplete-backend, and metadata-key validation findings; all fixed and re-review returned clean"
+  ],
+  "what_changed": [
+    "Added planned native vLLM/SGLang engine-probe commands to V1 benchmark plans.",
+    "Allowed release evidence plan validation to consume planned engine-probe output paths automatically.",
+    "Added CLI flags for backend-keyed handoff, probe factory, output, payload, engine version, and metadata options."
+  ],
+  "why": "The V1 release plan should produce benchmark, storage, native engine-probe, and release-evidence artifacts reproducibly instead of requiring engine probe JSONs to be created out of band."
+}

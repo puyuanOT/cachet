@@ -1,0 +1,94 @@
+bundle:
+  name: document-kv-storage-benchmark
+
+variables:
+  runner_python_file:
+    description: Cluster-visible Python runner script URI for the storage-reader benchmark task.
+  workspace_dir:
+    default: /local_disk0/document-kv-storage-benchmark
+    description: Cluster-local directory for synthetic shard artifacts.
+  benchmark_output_json:
+    description: Cluster-visible output path for the storage benchmark evidence JSON.
+  benchmark_id:
+    default: document-kv-storage-benchmark
+    description: Benchmark id written into the storage benchmark record.
+  uc_volume_root:
+    description: Real UC Volume root, usually /Volumes/catalog/schema/volume/path.
+  wheel_uri:
+    description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
+  chunk_count:
+    default: 64
+    description: Number of synthetic KV chunks to write into the benchmark shard.
+  chunk_bytes:
+    default: 1048576
+    description: Payload bytes per synthetic KV chunk.
+  repeats:
+    default: 4
+    description: Number of times each chunk is read per storage reader.
+  parallelism:
+    default: 4
+    description: Reader-thread parallelism inside the benchmark process.
+  align_bytes:
+    default: 4096
+    description: KV pack byte alignment.
+  node_type_id:
+    default: g5.4xlarge
+    description: AWS g5 node type for the single-node GPU storage benchmark.
+  spark_version:
+    default: 15.4.x-gpu-ml-scala2.12
+    description: Databricks GPU ML runtime version.
+  single_user_name:
+    default: ${workspace.current_user.userName}
+    description: Databricks user or service principal for SINGLE_USER cluster access.
+
+resources:
+  jobs:
+    document_kv_storage_benchmark:
+      name: document-kv-storage-benchmark
+      tasks:
+        - task_key: document_kv_storage_benchmark
+          new_cluster:
+            spark_version: ${var.spark_version}
+            node_type_id: ${var.node_type_id}
+            driver_node_type_id: ${var.node_type_id}
+            data_security_mode: SINGLE_USER
+            single_user_name: ${var.single_user_name}
+            num_workers: 0
+            spark_conf:
+              spark.master: local[*]
+              spark.databricks.cluster.profile: singleNode
+            custom_tags:
+              ResourceClass: SingleNode
+              purpose: document-kv-storage-benchmark
+            aws_attributes:
+              availability: ON_DEMAND
+              zone_id: auto
+          libraries:
+            - whl: ${var.wheel_uri}
+          spark_python_task:
+            python_file: ${var.runner_python_file}
+            parameters:
+              - --workspace-dir
+              - ${var.workspace_dir}
+              - --benchmark-id
+              - ${var.benchmark_id}
+              - --chunk-count
+              - ${var.chunk_count}
+              - --chunk-bytes
+              - ${var.chunk_bytes}
+              - --repeats
+              - ${var.repeats}
+              - --parallelism
+              - ${var.parallelism}
+              - --align-bytes
+              - ${var.align_bytes}
+              - --output-json
+              - ${var.benchmark_output_json}
+              - --reader
+              - memory
+              - --reader
+              - disk
+              - --reader
+              - unity_catalog
+              - --uc-volume-root
+              - ${var.uc_volume_root}

@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that run-status sidecars could be paired with unrelated successful runs and could smuggle raw objects through allowed fields, including wrapper action. I required non-empty matching task keys, strict submit-payload provenance, and allowlisted type-checked schemas for wrappers/status/tasks/submit-payloads; final re-review returned no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/databricks_runs.py",
+    "src/document_kv_cache/databricks_runs.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "tests/test_databricks_runs.py",
+    "tests/test_release_bundle.py",
+    "tests/test_public_package.py",
+    "README.md",
+    "databricks/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_databricks_runs.py tests/test_public_package.py tests/test_databricks_job.py tests/test_project_governance.py (64 passed)",
+    "poetry run pytest -q (476 passed)",
+    "poetry build (succeeded)",
+    "GPT-5.5 review found unrelated-run and nested raw-field bypasses plus wrapper-action smuggling; all were fixed and final re-review returned no findings"
+  ],
+  "what_changed": [
+    "Added sanitized Databricks runs/submit payload provenance to compact run-status summaries, including canonical payload SHA-256, task keys, cluster node types, single-node status, data-security modes, and AWS g5 detection.",
+    "Required release-bundle Databricks run-status sidecars to include successful terminal run status plus strict single-node AWS g5 SINGLE_USER submit-payload proof.",
+    "Hardened run-status sidecar validation with strict wrapper/status/task/submit-payload schemas so raw Jobs API responses or nested sensitive fields cannot be bundled under allowed field names."
+  ],
+  "why": "The V1 release bundle must prove Databricks artifacts came from target AWS g5/UC runs, not merely from an unrelated successful Jobs run or a sidecar containing raw API payloads."
+}

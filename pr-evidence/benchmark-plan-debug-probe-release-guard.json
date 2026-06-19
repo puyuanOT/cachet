@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that explicit release probe JSON paths could alias planned debug probe outputs. I added canonical path validation to reject those aliases, covered planned-debug and planned-native alias cases, reran focused/full tests and build, and re-review returned no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/benchmark_plan.py",
+    "tests/test_benchmark_plan.py",
+    "README.md",
+    "src/restaurant_kv_serving/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmark_plan.py tests/test_public_package.py tests/test_project_governance.py (68 passed)",
+    "poetry run pytest -q (473 passed)",
+    "poetry build (succeeded)",
+    "GPT-5.5 review found explicit release probe path aliasing planned debug outputs; fixed with canonical-path guard and re-review returned no findings"
+  ],
+  "what_changed": [
+    "Added benchmark-plan validation that prevents release evidence from consuming planned debug engine probes with engine_version overrides or non-native debug mode.",
+    "Rejected explicit --release-engine-probe-json paths that alias planned debug probe outputs while preserving explicit paths that alias planned native probe outputs.",
+    "Documented the planned-probe release-safety rule and added CLI regressions for rejected debug plans, explicit native artifacts, and alias handling."
+  ],
+  "why": "The generated V1 release plan should not be able to produce debug/non-native engine-probe records and then validate them as release evidence by accident or path alias."
+}

@@ -1,0 +1,27 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that builtin factory filling could drop explicit unplanned factories; patched the helper to preserve explicit entries so matching-key validation rejects extras and added a regression test.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/benchmark_plan.py",
+    "tests/test_benchmark_plan.py",
+    "README.md",
+    "src/restaurant_kv_serving/README.md",
+    "pr-evidence/native-probe-factories/README.md",
+    "pr-evidence/benchmark-plan-builtin-native-factories/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_benchmark_plan.py tests/test_native_probe_factories.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added benchmark-plan opt-in for package-owned vLLM/SGLang native probe factory paths."
+  ],
+  "why": "Release plans need stable built-in factory targets for planned native engine probes while preserving fail-closed evidence integrity until real backend block-manager adapters exist."
+}

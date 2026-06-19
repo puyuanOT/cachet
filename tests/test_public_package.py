@@ -1,0 +1,751 @@
+import importlib
+import tomllib
+from pathlib import Path
+
+import document_kv_cache
+import restaurant_kv_serving
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_public_document_package_reexports_core_api():
+    from document_kv_cache import (
+        AdmissionQueue,
+        BENCHMARK_RUN_RECORD_TYPE,
+        CacheGenerationMethod,
+        CacheTier,
+        ChunkCacheResult,
+        ChunkCacheStats,
+        DATABRICKS_RUN_STATUS_RECORD_TYPE,
+        DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
+        DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
+        DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
+        DEFAULT_DATABRICKS_HOST_ENV,
+        DEFAULT_DATABRICKS_TOKEN_ENV,
+        DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
+        DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME,
+        ENGINE_PROBE_TARGETS_RECORD_TYPE,
+        ENGINE_PROBE_TARGETS_SCHEMA_VERSION,
+        ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND,
+        ENGINE_KV_PROBE_METADATA_HANDOFF_JSON,
+        ENGINE_KV_PROBE_METADATA_PAYLOAD_URI,
+        ENGINE_KV_PROBE_METADATA_PROBE_FACTORY,
+        ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
+        ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
+        RELEASE_BUNDLE_ARTIFACT_ROLES,
+        RELEASE_BUNDLE_MANIFEST_FILENAME,
+        RELEASE_BUNDLE_RECORD_TYPE,
+        RELEASE_EVIDENCE_ARTIFACT_ROLES,
+        SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE,
+        DatabricksSingleNodeG5ClusterConfig,
+        DatabricksVLLMSmokeJobConfig,
+        DatabricksWorkspaceConfig,
+        DocumentChunkRole,
+        DocumentChunkType,
+        DocumentKVRequest,
+        EngineProbePlanConfig,
+        EngineKVProbeConfig,
+        EngineKVProbeFactory,
+        KVCacheKey,
+        KVStorageLayout,
+        MODEL_PROFILE_RECORD_TYPE,
+        ModelProfileDefinition,
+        ModelProfileRegistry,
+        QWEN3_4B_INSTRUCT_PROFILE,
+        GPT55_REVIEW_OUTCOMES,
+        PR_EVIDENCE_RECORD_TYPE,
+        PR_EVIDENCE_VALIDATION_RECORD_TYPE,
+        RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
+        RELEASE_EVIDENCE_RECORD_TYPE,
+        RELEASE_STORAGE_BENCHMARK_READERS,
+        REQUIRED_ENGINE_PROBE_BACKENDS,
+        STORAGE_BENCHMARK_RECORD_TYPE,
+        DatabricksEngineProbeJobConfig,
+        DatabricksEngineProbeMatrixJobConfig,
+        DatabricksEngineProbeTargetConfig,
+        DatabricksEngineProbeTargetsFile,
+        DatabricksStorageBenchmarkJobConfig,
+        PullRequestEvidence,
+        ReleaseEvidence,
+        ReleaseBundlePlanConfig,
+        ReleaseEvidenceInputFileStatus,
+        ReleaseEvidenceInputStatus,
+        ReleaseEvidencePlanConfig,
+        ReleaseEvidenceArtifactSource,
+        ReleaseBundle,
+        ReleaseBundleArtifact,
+        ServingEnvironmentProfile,
+        DOCUMENT_CHUNK_TYPES,
+        LEGACY_RESTAURANT_CHUNK_TYPES,
+        StorageBenchmarkConfig,
+        StorageBenchmarkEvidence,
+        StorageBenchmarkPlanConfig,
+        SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES,
+        SUPPORTED_STORAGE_BENCHMARK_READERS,
+        build_databricks_engine_probe_run_submit_payload,
+        build_databricks_engine_probe_matrix_run_submit_payload,
+        build_databricks_storage_benchmark_run_submit_payload,
+        build_databricks_vllm_smoke_run_submit_payload,
+        build_release_bundle,
+        chunk_type_role,
+        chunk_type_sort_order,
+        databricks_workspace_config_from_env,
+        evaluate_release_storage_benchmark_evidence,
+        evaluate_storage_benchmark_evidence,
+        engine_probe_targets_to_record,
+        default_model_profile_registry,
+        evaluate_pr_evidence,
+        evaluate_pr_evidence_directory,
+        evaluate_pr_evidence_file,
+        evaluate_release_evidence,
+        inspect_release_evidence_input_files,
+        kv_storage_layout_from_value,
+        model_profile_definition_from_record,
+        model_profile_definition_to_record,
+        release_bundle_to_record,
+        pr_evidence_validation_to_record,
+        pr_evidence_to_record,
+        read_model_profile_definition_json,
+        read_databricks_engine_probe_targets_json,
+        read_databricks_engine_probe_targets_file_json,
+        release_evidence_input_status_to_record,
+        run_engine_kv_connector_probe,
+        serving_environment_profile,
+        serving_environment_profile_to_record,
+        serving_environment_profiles,
+        serving_environment_profiles_to_record,
+        summarize_databricks_run,
+        summarize_databricks_run_submit_payload,
+        write_model_profile_definition_json,
+        write_engine_probe_targets_json,
+    )
+
+    assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
+    assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
+    assert CacheGenerationMethod is restaurant_kv_serving.CacheGenerationMethod
+    assert CacheGenerationMethod.KV_PACKET.value == "kv_packet"
+    assert CacheTier is restaurant_kv_serving.CacheTier
+    assert ChunkCacheResult is restaurant_kv_serving.ChunkCacheResult
+    assert ChunkCacheStats is restaurant_kv_serving.ChunkCacheStats
+    assert DATABRICKS_RUN_STATUS_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_STATUS_RECORD_TYPE
+    assert DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
+    assert DEDICATED_DATABRICKS_DATA_SECURITY_MODE is restaurant_kv_serving.DEDICATED_DATABRICKS_DATA_SECURITY_MODE
+    assert DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME is restaurant_kv_serving.DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
+    assert DEFAULT_DATABRICKS_HOST_ENV is restaurant_kv_serving.DEFAULT_DATABRICKS_HOST_ENV
+    assert DEFAULT_DATABRICKS_TOKEN_ENV is restaurant_kv_serving.DEFAULT_DATABRICKS_TOKEN_ENV
+    assert (
+        DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME
+        is restaurant_kv_serving.DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME
+    )
+    assert DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME is restaurant_kv_serving.DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
+    assert ENGINE_PROBE_TARGETS_RECORD_TYPE is restaurant_kv_serving.ENGINE_PROBE_TARGETS_RECORD_TYPE
+    assert ENGINE_PROBE_TARGETS_SCHEMA_VERSION is restaurant_kv_serving.ENGINE_PROBE_TARGETS_SCHEMA_VERSION
+    assert ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND
+    assert ENGINE_KV_PROBE_METADATA_HANDOFF_JSON is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
+    assert ENGINE_KV_PROBE_METADATA_PAYLOAD_URI is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_PAYLOAD_URI
+    assert ENGINE_KV_PROBE_METADATA_PROBE_FACTORY is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_PROBE_FACTORY
+    assert (
+        ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE
+        is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE
+    )
+    assert (
+        ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION
+        is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION
+    )
+    assert RELEASE_BUNDLE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_BUNDLE_ARTIFACT_ROLES
+    assert RELEASE_BUNDLE_MANIFEST_FILENAME is restaurant_kv_serving.RELEASE_BUNDLE_MANIFEST_FILENAME
+    assert RELEASE_BUNDLE_RECORD_TYPE is restaurant_kv_serving.RELEASE_BUNDLE_RECORD_TYPE
+    assert RELEASE_EVIDENCE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_EVIDENCE_ARTIFACT_ROLES
+    assert (
+        SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE
+        is restaurant_kv_serving.SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE
+    )
+    assert DatabricksSingleNodeG5ClusterConfig is restaurant_kv_serving.DatabricksSingleNodeG5ClusterConfig
+    assert DatabricksVLLMSmokeJobConfig is restaurant_kv_serving.DatabricksVLLMSmokeJobConfig
+    assert DatabricksWorkspaceConfig is restaurant_kv_serving.DatabricksWorkspaceConfig
+    assert DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
+    assert DocumentChunkType is restaurant_kv_serving.DocumentChunkType
+    assert DocumentKVRequest is restaurant_kv_serving.DocumentKVRequest
+    assert EngineProbePlanConfig is restaurant_kv_serving.EngineProbePlanConfig
+    assert EngineKVProbeConfig is restaurant_kv_serving.EngineKVProbeConfig
+    assert EngineKVProbeFactory is restaurant_kv_serving.EngineKVProbeFactory
+    assert KVCacheKey is restaurant_kv_serving.KVCacheKey
+    assert KVStorageLayout is restaurant_kv_serving.KVStorageLayout
+    assert kv_storage_layout_from_value is restaurant_kv_serving.kv_storage_layout_from_value
+    assert MODEL_PROFILE_RECORD_TYPE is restaurant_kv_serving.MODEL_PROFILE_RECORD_TYPE
+    assert ModelProfileDefinition is restaurant_kv_serving.ModelProfileDefinition
+    assert ModelProfileRegistry is restaurant_kv_serving.ModelProfileRegistry
+    assert QWEN3_4B_INSTRUCT_PROFILE is restaurant_kv_serving.QWEN3_4B_INSTRUCT_PROFILE
+    assert GPT55_REVIEW_OUTCOMES is restaurant_kv_serving.GPT55_REVIEW_OUTCOMES
+    assert PR_EVIDENCE_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_RECORD_TYPE
+    assert PR_EVIDENCE_VALIDATION_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_VALIDATION_RECORD_TYPE
+    assert RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE is restaurant_kv_serving.RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE
+    assert RELEASE_EVIDENCE_RECORD_TYPE is restaurant_kv_serving.RELEASE_EVIDENCE_RECORD_TYPE
+    assert RELEASE_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.RELEASE_STORAGE_BENCHMARK_READERS
+    assert REQUIRED_ENGINE_PROBE_BACKENDS is restaurant_kv_serving.REQUIRED_ENGINE_PROBE_BACKENDS
+    assert STORAGE_BENCHMARK_RECORD_TYPE is restaurant_kv_serving.STORAGE_BENCHMARK_RECORD_TYPE
+    assert DatabricksEngineProbeJobConfig is restaurant_kv_serving.DatabricksEngineProbeJobConfig
+    assert DatabricksEngineProbeMatrixJobConfig is restaurant_kv_serving.DatabricksEngineProbeMatrixJobConfig
+    assert DatabricksEngineProbeTargetConfig is restaurant_kv_serving.DatabricksEngineProbeTargetConfig
+    assert DatabricksEngineProbeTargetsFile is restaurant_kv_serving.DatabricksEngineProbeTargetsFile
+    assert DatabricksStorageBenchmarkJobConfig is restaurant_kv_serving.DatabricksStorageBenchmarkJobConfig
+    assert PullRequestEvidence is restaurant_kv_serving.PullRequestEvidence
+    assert ReleaseEvidence is restaurant_kv_serving.ReleaseEvidence
+    assert ReleaseBundlePlanConfig is restaurant_kv_serving.ReleaseBundlePlanConfig
+    assert ReleaseEvidenceInputFileStatus is restaurant_kv_serving.ReleaseEvidenceInputFileStatus
+    assert ReleaseEvidenceInputStatus is restaurant_kv_serving.ReleaseEvidenceInputStatus
+    assert ReleaseEvidencePlanConfig is restaurant_kv_serving.ReleaseEvidencePlanConfig
+    assert ReleaseEvidenceArtifactSource is restaurant_kv_serving.ReleaseEvidenceArtifactSource
+    assert ReleaseBundle is restaurant_kv_serving.ReleaseBundle
+    assert ReleaseBundleArtifact is restaurant_kv_serving.ReleaseBundleArtifact
+    assert ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
+    assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
+    assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
+    assert SUPPORTED_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.SUPPORTED_STORAGE_BENCHMARK_READERS
+    assert StorageBenchmarkConfig is restaurant_kv_serving.StorageBenchmarkConfig
+    assert StorageBenchmarkEvidence is restaurant_kv_serving.StorageBenchmarkEvidence
+    assert StorageBenchmarkPlanConfig is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES is restaurant_kv_serving.SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
+    assert (
+        build_databricks_engine_probe_run_submit_payload
+        is restaurant_kv_serving.build_databricks_engine_probe_run_submit_payload
+    )
+    assert (
+        build_databricks_engine_probe_matrix_run_submit_payload
+        is restaurant_kv_serving.build_databricks_engine_probe_matrix_run_submit_payload
+    )
+    assert (
+        build_databricks_storage_benchmark_run_submit_payload
+        is restaurant_kv_serving.build_databricks_storage_benchmark_run_submit_payload
+    )
+    assert (
+        build_databricks_vllm_smoke_run_submit_payload
+        is restaurant_kv_serving.build_databricks_vllm_smoke_run_submit_payload
+    )
+    assert databricks_workspace_config_from_env is restaurant_kv_serving.databricks_workspace_config_from_env
+    assert build_release_bundle is restaurant_kv_serving.build_release_bundle
+    assert chunk_type_role is restaurant_kv_serving.chunk_type_role
+    assert chunk_type_sort_order is restaurant_kv_serving.chunk_type_sort_order
+    assert release_bundle_to_record is restaurant_kv_serving.release_bundle_to_record
+    assert evaluate_release_storage_benchmark_evidence is restaurant_kv_serving.evaluate_release_storage_benchmark_evidence
+    assert evaluate_release_evidence is restaurant_kv_serving.evaluate_release_evidence
+    assert inspect_release_evidence_input_files is restaurant_kv_serving.inspect_release_evidence_input_files
+    assert release_evidence_input_status_to_record is restaurant_kv_serving.release_evidence_input_status_to_record
+    assert evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
+    assert engine_probe_targets_to_record is restaurant_kv_serving.engine_probe_targets_to_record
+    assert default_model_profile_registry is restaurant_kv_serving.default_model_profile_registry
+    assert evaluate_pr_evidence is restaurant_kv_serving.evaluate_pr_evidence
+    assert evaluate_pr_evidence_directory is restaurant_kv_serving.evaluate_pr_evidence_directory
+    assert evaluate_pr_evidence_file is restaurant_kv_serving.evaluate_pr_evidence_file
+    assert model_profile_definition_from_record is restaurant_kv_serving.model_profile_definition_from_record
+    assert model_profile_definition_to_record is restaurant_kv_serving.model_profile_definition_to_record
+    assert read_model_profile_definition_json is restaurant_kv_serving.read_model_profile_definition_json
+    assert read_databricks_engine_probe_targets_json is restaurant_kv_serving.read_databricks_engine_probe_targets_json
+    assert (
+        read_databricks_engine_probe_targets_file_json
+        is restaurant_kv_serving.read_databricks_engine_probe_targets_file_json
+    )
+    assert write_model_profile_definition_json is restaurant_kv_serving.write_model_profile_definition_json
+    assert write_engine_probe_targets_json is restaurant_kv_serving.write_engine_probe_targets_json
+    assert run_engine_kv_connector_probe is restaurant_kv_serving.run_engine_kv_connector_probe
+    assert serving_environment_profile is restaurant_kv_serving.serving_environment_profile
+    assert serving_environment_profile_to_record is restaurant_kv_serving.serving_environment_profile_to_record
+    assert serving_environment_profiles is restaurant_kv_serving.serving_environment_profiles
+    assert serving_environment_profiles_to_record is restaurant_kv_serving.serving_environment_profiles_to_record
+    assert summarize_databricks_run is restaurant_kv_serving.summarize_databricks_run
+    assert (
+        summarize_databricks_run_submit_payload
+        is restaurant_kv_serving.summarize_databricks_run_submit_payload
+    )
+    assert pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
+    assert pr_evidence_to_record is restaurant_kv_serving.pr_evidence_to_record
+    assert "DocumentKVRequest" in dir(document_kv_cache)
+
+
+def test_public_document_package_star_exports_are_document_first_with_legacy_getattr_aliases():
+    assert "AdmissionQueue" in document_kv_cache.__all__
+    assert "BENCHMARK_RUN_RECORD_TYPE" in document_kv_cache.__all__
+    assert "PreparedRequest" in document_kv_cache.__all__
+    assert "RELEASE_EVIDENCE_RECORD_TYPE" in document_kv_cache.__all__
+    assert "RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE" in document_kv_cache.__all__
+    assert "RELEASE_EVIDENCE_ARTIFACT_ROLES" in document_kv_cache.__all__
+    assert "SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE" in document_kv_cache.__all__
+    assert "PR_EVIDENCE_RECORD_TYPE" in document_kv_cache.__all__
+    assert "PR_EVIDENCE_VALIDATION_RECORD_TYPE" in document_kv_cache.__all__
+    assert "MODEL_PROFILE_RECORD_TYPE" in document_kv_cache.__all__
+    assert "RELEASE_BUNDLE_RECORD_TYPE" in document_kv_cache.__all__
+    assert "RELEASE_BUNDLE_MANIFEST_FILENAME" in document_kv_cache.__all__
+    assert "RELEASE_BUNDLE_ARTIFACT_ROLES" in document_kv_cache.__all__
+    assert "RELEASE_STORAGE_BENCHMARK_READERS" in document_kv_cache.__all__
+    assert "REQUIRED_ENGINE_PROBE_BACKENDS" in document_kv_cache.__all__
+    assert "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME" in document_kv_cache.__all__
+    assert "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME" in document_kv_cache.__all__
+    assert "DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME" in document_kv_cache.__all__
+    assert "ENGINE_PROBE_TARGETS_RECORD_TYPE" in document_kv_cache.__all__
+    assert "ENGINE_PROBE_TARGETS_SCHEMA_VERSION" in document_kv_cache.__all__
+    assert "STORAGE_BENCHMARK_RECORD_TYPE" in document_kv_cache.__all__
+    assert "DatabricksEngineProbeJobConfig" in document_kv_cache.__all__
+    assert "DatabricksEngineProbeTargetsFile" in document_kv_cache.__all__
+    assert "DatabricksStorageBenchmarkJobConfig" in document_kv_cache.__all__
+    assert "DatabricksVLLMSmokeJobConfig" in document_kv_cache.__all__
+    assert "ReleaseEvidence" in document_kv_cache.__all__
+    assert "ReleaseBundlePlanConfig" in document_kv_cache.__all__
+    assert "ReleaseEvidenceInputFileStatus" in document_kv_cache.__all__
+    assert "ReleaseEvidenceInputStatus" in document_kv_cache.__all__
+    assert "ReleaseEvidencePlanConfig" in document_kv_cache.__all__
+    assert "ReleaseEvidenceArtifactSource" in document_kv_cache.__all__
+    assert "PullRequestEvidence" in document_kv_cache.__all__
+    assert "ModelProfileDefinition" in document_kv_cache.__all__
+    assert "ReleaseBundle" in document_kv_cache.__all__
+    assert "ReleaseBundleArtifact" in document_kv_cache.__all__
+    assert "ServingEnvironmentProfile" in document_kv_cache.__all__
+    assert "StorageBenchmarkConfig" in document_kv_cache.__all__
+    assert "StorageBenchmarkEvidence" in document_kv_cache.__all__
+    assert "StorageBenchmarkPlanConfig" in document_kv_cache.__all__
+    assert "ChunkCacheResult" in document_kv_cache.__all__
+    assert "SUPPORTED_STORAGE_BENCHMARK_READERS" in document_kv_cache.__all__
+    assert "DEDICATED_DATABRICKS_DATA_SECURITY_MODE" in document_kv_cache.__all__
+    assert "ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND" in document_kv_cache.__all__
+    assert "ENGINE_KV_PROBE_METADATA_HANDOFF_JSON" in document_kv_cache.__all__
+    assert "ENGINE_KV_PROBE_METADATA_PAYLOAD_URI" in document_kv_cache.__all__
+    assert "ENGINE_KV_PROBE_METADATA_PROBE_FACTORY" in document_kv_cache.__all__
+    assert "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE" in document_kv_cache.__all__
+    assert "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION" in document_kv_cache.__all__
+    assert "GPT55_REVIEW_OUTCOMES" in document_kv_cache.__all__
+    assert "evaluate_pr_evidence_directory" in document_kv_cache.__all__
+    assert "evaluate_pr_evidence_file" in document_kv_cache.__all__
+    assert "pr_evidence_validation_to_record" in document_kv_cache.__all__
+    assert "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES" in document_kv_cache.__all__
+    assert "DATABRICKS_RUN_STATUS_RECORD_TYPE" in document_kv_cache.__all__
+    assert "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE" in document_kv_cache.__all__
+    assert "summarize_databricks_run" in document_kv_cache.__all__
+    assert "engine_probe_targets_to_record" in document_kv_cache.__all__
+    assert "write_engine_probe_targets_json" in document_kv_cache.__all__
+    assert "read_databricks_engine_probe_targets_file_json" in document_kv_cache.__all__
+    assert "summarize_databricks_run_submit_payload" in document_kv_cache.__all__
+    assert "DocumentKVRequest" in document_kv_cache.__all__
+    assert "DocumentKVService" in document_kv_cache.__all__
+    assert "EngineProbePlanConfig" in document_kv_cache.__all__
+    assert "DocumentChunkType" in document_kv_cache.__all__
+    assert "DocumentChunkRole" in document_kv_cache.__all__
+    assert "DOCUMENT_CHUNK_TYPES" in document_kv_cache.__all__
+    assert "LEGACY_RESTAURANT_CHUNK_TYPES" in document_kv_cache.__all__
+    assert "chunk_type_role" in document_kv_cache.__all__
+    assert "chunk_type_sort_order" in document_kv_cache.__all__
+    assert "chunk_types_for_request" in document_kv_cache.__all__
+    assert "EngineKVProbeFactory" in document_kv_cache.__all__
+    assert "serving_environment_profile" in document_kv_cache.__all__
+    assert "serving_environment_profiles_to_record" in document_kv_cache.__all__
+    assert "KVStorageLayout" in document_kv_cache.__all__
+    assert "kv_storage_layout_from_value" in document_kv_cache.__all__
+    assert "RestaurantKVRequest" not in document_kv_cache.__all__
+    assert "RestaurantKVService" not in document_kv_cache.__all__
+    assert "ChunkType" not in document_kv_cache.__all__
+
+    assert document_kv_cache.RestaurantKVRequest is restaurant_kv_serving.RestaurantKVRequest
+    assert document_kv_cache.RestaurantKVService is restaurant_kv_serving.RestaurantKVService
+    assert document_kv_cache.ChunkType is restaurant_kv_serving.ChunkType
+    star_namespace: dict[str, object] = {}
+    exec("from document_kv_cache import *", star_namespace)
+    assert star_namespace["AdmissionQueue"] is restaurant_kv_serving.AdmissionQueue
+    assert star_namespace["PreparedRequest"] is restaurant_kv_serving.PreparedRequest
+    assert star_namespace["StorageBenchmarkConfig"] is restaurant_kv_serving.StorageBenchmarkConfig
+    assert star_namespace["StorageBenchmarkEvidence"] is restaurant_kv_serving.StorageBenchmarkEvidence
+    assert star_namespace["StorageBenchmarkPlanConfig"] is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert (
+        star_namespace["SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES"]
+        is restaurant_kv_serving.SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
+    )
+
+
+def test_public_cli_submodules_are_importable_under_document_namespace():
+    public_submodules = (
+        "admission",
+        "benchmark_plan",
+        "benchmark_plan_executor",
+        "benchmark_runner",
+        "benchmarks",
+        "cache",
+        "databricks_engine_probe_job",
+        "databricks_job",
+        "databricks_runs",
+        "databricks_storage_benchmark_job",
+        "databricks_vllm_smoke_job",
+        "dataset_prep",
+        "engine",
+        "engine_adapters",
+        "engine_probe",
+        "engine_protocol",
+        "kvpack",
+        "live_server",
+        "manifest",
+        "materializer",
+        "model_profiles",
+        "models",
+        "openai_compatible",
+        "planner",
+        "pr_evidence",
+        "release_bundle",
+        "release_evidence",
+        "service",
+        "serving_env",
+        "storage",
+        "storage_benchmark",
+        "template_resources",
+        "vllm_smoke",
+        "workflow",
+    )
+
+    modules = {
+        name: importlib.import_module(f"document_kv_cache.{name}")
+        for name in public_submodules
+    }
+
+    assert {name: module.__name__ for name, module in modules.items()} == {
+        name: f"document_kv_cache.{name}"
+        for name in public_submodules
+    }
+    benchmark_plan = modules["benchmark_plan"]
+    benchmark_runner = modules["benchmark_runner"]
+    admission = modules["admission"]
+    dataset_prep = modules["dataset_prep"]
+    engine_adapters = modules["engine_adapters"]
+    engine_probe = modules["engine_probe"]
+    model_profiles = modules["model_profiles"]
+    storage = modules["storage"]
+    storage_benchmark = modules["storage_benchmark"]
+    template_resources = modules["template_resources"]
+    vllm_smoke = modules["vllm_smoke"]
+    databricks_runs = modules["databricks_runs"]
+    databricks_engine_probe_job = modules["databricks_engine_probe_job"]
+    databricks_storage_benchmark_job = modules["databricks_storage_benchmark_job"]
+    databricks_vllm_smoke_job = modules["databricks_vllm_smoke_job"]
+    release_bundle = modules["release_bundle"]
+    release_evidence = modules["release_evidence"]
+    pr_evidence = modules["pr_evidence"]
+    serving_env = modules["serving_env"]
+
+    assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
+    assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
+    assert benchmark_plan.ENGINE_PROBE_TARGETS_RECORD_TYPE is restaurant_kv_serving.ENGINE_PROBE_TARGETS_RECORD_TYPE
+    assert benchmark_plan.EngineProbePlanConfig is restaurant_kv_serving.EngineProbePlanConfig
+    assert benchmark_plan.engine_probe_targets_to_record is restaurant_kv_serving.engine_probe_targets_to_record
+    assert benchmark_plan.ReleaseBundlePlanConfig is restaurant_kv_serving.ReleaseBundlePlanConfig
+    assert benchmark_plan.ReleaseEvidencePlanConfig is restaurant_kv_serving.ReleaseEvidencePlanConfig
+    assert benchmark_plan.StorageBenchmarkPlanConfig is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert benchmark_runner.BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
+    assert dataset_prep.convert_v1_jsonl is restaurant_kv_serving.convert_v1_jsonl
+    assert engine_adapters.vllm_adapter_spec is restaurant_kv_serving.vllm_adapter_spec
+    assert engine_probe.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
+    assert engine_probe.run_engine_kv_connector_probe is restaurant_kv_serving.run_engine_kv_connector_probe
+    assert model_profiles.ModelProfileRegistry is restaurant_kv_serving.ModelProfileRegistry
+    assert model_profiles.ModelProfileDefinition is restaurant_kv_serving.ModelProfileDefinition
+    assert model_profiles.MODEL_PROFILE_RECORD_TYPE is restaurant_kv_serving.MODEL_PROFILE_RECORD_TYPE
+    assert model_profiles.layout_for_model is restaurant_kv_serving.layout_for_model
+    assert (
+        model_profiles.model_profile_definition_to_record
+        is restaurant_kv_serving.model_profile_definition_to_record
+    )
+    assert storage.DiskRangeReader is restaurant_kv_serving.DiskRangeReader
+    assert release_bundle.ReleaseBundle is restaurant_kv_serving.ReleaseBundle
+    assert release_bundle.build_release_bundle is restaurant_kv_serving.build_release_bundle
+    assert release_evidence.RELEASE_EVIDENCE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_EVIDENCE_ARTIFACT_ROLES
+    assert release_evidence.ReleaseEvidenceArtifactSource is restaurant_kv_serving.ReleaseEvidenceArtifactSource
+    assert release_evidence.evaluate_release_evidence is restaurant_kv_serving.evaluate_release_evidence
+    assert release_evidence.inspect_release_evidence_input_files is restaurant_kv_serving.inspect_release_evidence_input_files
+    assert pr_evidence.PR_EVIDENCE_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_RECORD_TYPE
+    assert pr_evidence.PR_EVIDENCE_VALIDATION_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_VALIDATION_RECORD_TYPE
+    assert pr_evidence.PullRequestEvidence is restaurant_kv_serving.PullRequestEvidence
+    assert pr_evidence.evaluate_pr_evidence is restaurant_kv_serving.evaluate_pr_evidence
+    assert pr_evidence.evaluate_pr_evidence_directory is restaurant_kv_serving.evaluate_pr_evidence_directory
+    assert pr_evidence.evaluate_pr_evidence_file is restaurant_kv_serving.evaluate_pr_evidence_file
+    assert pr_evidence.pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
+    assert serving_env.ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
+    assert serving_env.SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE == "document_kv.serving_environment_profiles.v1"
+    assert serving_env.serving_environment_profiles_to_record is restaurant_kv_serving.serving_environment_profiles_to_record
+    assert storage_benchmark.run_storage_benchmark is restaurant_kv_serving.run_storage_benchmark
+    assert storage_benchmark.evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
+    assert template_resources.PACKAGED_TEMPLATE_PACKAGE == "document_kv_cache.templates"
+    assert vllm_smoke.SERVED_MODEL_NAME == "qwen3:4b-instruct"
+    assert databricks_runs.DatabricksWorkspaceConfig is restaurant_kv_serving.DatabricksWorkspaceConfig
+    assert (
+        databricks_engine_probe_job.DatabricksEngineProbeJobConfig
+        is restaurant_kv_serving.DatabricksEngineProbeJobConfig
+    )
+    assert (
+        databricks_engine_probe_job.DatabricksEngineProbeMatrixJobConfig
+        is restaurant_kv_serving.DatabricksEngineProbeMatrixJobConfig
+    )
+    assert (
+        databricks_engine_probe_job.build_databricks_engine_probe_matrix_run_submit_payload
+        is restaurant_kv_serving.build_databricks_engine_probe_matrix_run_submit_payload
+    )
+    assert (
+        databricks_storage_benchmark_job.DatabricksStorageBenchmarkJobConfig
+        is restaurant_kv_serving.DatabricksStorageBenchmarkJobConfig
+    )
+    assert (
+        databricks_vllm_smoke_job.DatabricksVLLMSmokeJobConfig
+        is restaurant_kv_serving.DatabricksVLLMSmokeJobConfig
+    )
+    assert (
+        storage_benchmark.evaluate_release_storage_benchmark_evidence
+        is restaurant_kv_serving.evaluate_release_storage_benchmark_evidence
+    )
+    assert storage_benchmark.RELEASE_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.RELEASE_STORAGE_BENCHMARK_READERS
+    assert "scheduler" not in document_kv_cache._PUBLIC_SUBMODULES
+
+
+def test_public_document_submodules_have_curated_star_import_surfaces():
+    cache = importlib.import_module("document_kv_cache.cache")
+    engine_adapters = importlib.import_module("document_kv_cache.engine_adapters")
+    kvpack = importlib.import_module("document_kv_cache.kvpack")
+    models = importlib.import_module("document_kv_cache.models")
+    openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
+    pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
+    serving_env = importlib.import_module("document_kv_cache.serving_env")
+    model_profiles = importlib.import_module("document_kv_cache.model_profiles")
+    service = importlib.import_module("document_kv_cache.service")
+    workflow = importlib.import_module("document_kv_cache.workflow")
+
+    assert engine_adapters.__all__ == [
+        "EngineAdapterRequest",
+        "EngineAdapterSpec",
+        "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
+        "ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION",
+        "EngineKVBlockManagerProbe",
+        "EngineKVBindAction",
+        "EngineKVConnectorActions",
+        "EngineKVConnectorProbeResult",
+        "EngineKVInjectionPlan",
+        "EngineKVReleaseAction",
+        "EngineKVReservationAction",
+        "EngineKVSegmentCopyAction",
+        "EngineKVSegmentBinding",
+        "PayloadMode",
+        "ServingBackend",
+        "build_engine_adapter_request",
+        "build_engine_kv_connector_actions",
+        "build_engine_kv_injection_plan",
+        "engine_kv_connector_probe_result_to_record",
+        "engine_adapter_request_to_record",
+        "payload_mode_for",
+        "probe_engine_kv_connector_actions",
+        "read_engine_adapter_request_json",
+        "sglang_adapter_spec",
+        "split_engine_adapter_payload",
+        "validate_engine_adapter_request_record",
+        "validate_engine_kv_connector_probe_record",
+        "validate_engine_kv_connector_actions",
+        "view_engine_adapter_payload",
+        "vllm_adapter_spec",
+        "write_engine_adapter_request_json",
+    ]
+    engine_probe = importlib.import_module("document_kv_cache.engine_probe")
+    assert engine_probe.__all__ == [
+        "EngineKVProbeConfig",
+        "ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND",
+        "ENGINE_KV_PROBE_METADATA_HANDOFF_JSON",
+        "ENGINE_KV_PROBE_METADATA_PAYLOAD_URI",
+        "ENGINE_KV_PROBE_METADATA_PROBE_FACTORY",
+        "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE",
+        "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION",
+        "EngineKVProbeFactory",
+        "EngineKVProbeFactoryContext",
+        "EngineKVProbeFactoryResult",
+        "run_engine_kv_connector_probe",
+        "read_engine_adapter_payload",
+        "write_engine_kv_connector_probe_result_json",
+        "load_engine_kv_probe_factory",
+        "parse_args",
+        "main",
+    ]
+    assert kvpack.__all__ == ["PackChunk", "LocalRangeReader", "write_kvpack"]
+    assert cache.__all__ == ["CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"]
+    assert "DocumentKVRequest" in models.__all__
+    assert "DocumentChunkRole" in models.__all__
+    assert "chunk_type_role" in models.__all__
+    assert "chunk_type_sort_order" in models.__all__
+    assert models.DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
+    assert models.chunk_type_role is restaurant_kv_serving.chunk_type_role
+    assert "DocumentKVService" in service.__all__
+    assert "RestaurantKVRequest" not in models.__all__
+    assert "RestaurantKVService" not in service.__all__
+    assert "ChunkType" not in models.__all__
+    assert models.RestaurantKVRequest is restaurant_kv_serving.RestaurantKVRequest
+    assert models.ChunkType is restaurant_kv_serving.ChunkType
+    assert service.RestaurantKVService is restaurant_kv_serving.RestaurantKVService
+    star_namespace: dict[str, object] = {}
+    exec(
+        "from document_kv_cache.models import *\n"
+        "from document_kv_cache.service import *",
+        star_namespace,
+    )
+    assert "DocumentKVRequest" in star_namespace
+    assert "DocumentKVService" in star_namespace
+    assert "RestaurantKVRequest" not in star_namespace
+    assert "RestaurantKVService" not in star_namespace
+    assert "ChunkType" not in star_namespace
+    assert openai_compatible.__all__ == [
+        "TokenCounter",
+        "PromptTextMode",
+        "PromptTokenAccounting",
+        "WhitespaceTokenCounter",
+        "OpenAICompatibleEngineConfig",
+        "OpenAICompatibleCompletionEngine",
+    ]
+    assert "urlopen" not in dir(openai_compatible)
+    assert pr_evidence.__all__ == [
+        "PR_EVIDENCE_RECORD_TYPE",
+        "PR_EVIDENCE_VALIDATION_RECORD_TYPE",
+        "GPT55_REVIEW_OUTCOMES",
+        "PullRequestEvidence",
+        "evaluate_pr_evidence",
+        "evaluate_pr_evidence_directory",
+        "evaluate_pr_evidence_file",
+        "evaluate_pr_evidence_record",
+        "pr_evidence_validation_to_record",
+        "pr_evidence_to_record",
+        "write_pr_evidence_json",
+        "main",
+    ]
+    assert serving_env.__all__ == [
+        "FASTAPI_CONSTRAINT",
+        "HUGGINGFACE_HUB_CONSTRAINT",
+        "NUMPY_CONSTRAINT",
+        "PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT",
+        "SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE",
+        "SGLANG_DEPENDENCY_CONSTRAINTS",
+        "SGLANG_SERVING_ENVIRONMENT_PROFILE",
+        "SGLANG_VERSION",
+        "ServingEnvironmentProfile",
+        "TOKENIZERS_CONSTRAINT",
+        "TRANSFORMERS_CONSTRAINT",
+        "VLLM_DEPENDENCY_CONSTRAINTS",
+        "VLLM_SERVING_ENVIRONMENT_PROFILE",
+        "VLLM_VERSION",
+        "serving_environment_profile",
+        "serving_environment_profile_to_record",
+        "serving_environment_profiles",
+        "serving_environment_profiles_to_record",
+    ]
+    assert model_profiles.__all__ == [
+        "DTYPE_BYTE_WIDTHS",
+        "AttentionMechanism",
+        "KVStorageLayout",
+        "KVLayout",
+        "dtype_byte_width",
+        "kv_storage_layout_from_value",
+        "KVModelProfile",
+        "MODEL_PROFILE_RECORD_TYPE",
+        "ModelProfileDefinition",
+        "ModelProfileRegistry",
+        "QWEN3_4B_INSTRUCT_PROFILE",
+        "builtin_model_profiles",
+        "default_model_profile_registry",
+        "get_model_profile",
+        "layout_for_model",
+        "model_profile_definition_from_record",
+        "model_profile_definition_to_record",
+        "read_model_profile_definition_json",
+        "write_model_profile_definition_json",
+    ]
+    assert "DocumentKVWorkflow" in workflow.__all__
+    assert "CacheAdapterArtifact" in workflow.__all__
+
+    for module in (kvpack, openai_compatible, workflow):
+        assert "reexport_public" not in dir(module)
+        assert "Path" not in module.__all__
+        assert "dataclass" not in module.__all__
+
+
+def test_package_level_submodule_imports_use_document_namespace_after_symbol_lookup():
+    from document_kv_cache import CacheTier  # noqa: F401
+    from document_kv_cache import cache
+
+    assert cache.__name__ == "document_kv_cache.cache"
+    assert cache.CacheTier is restaurant_kv_serving.CacheTier
+    assert cache.ChunkCacheResult is restaurant_kv_serving.ChunkCacheResult
+
+
+def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = pyproject["project"]
+    poetry = pyproject["tool"]["poetry"]
+    scripts = project["scripts"]
+    artifact_includes = poetry["include"]
+    expected_scripts = {
+        "document-kv-benchmark-plan": "document_kv_cache.benchmark_plan:main",
+        "document-kv-run-benchmark-plan": "document_kv_cache.benchmark_plan_executor:main",
+        "document-kv-databricks-job": "document_kv_cache.databricks_job:main",
+        "document-kv-databricks-runs": "document_kv_cache.databricks_runs:main",
+        "document-kv-storage-benchmark": "document_kv_cache.storage_benchmark:main",
+        "document-kv-storage-benchmark-databricks-job": "document_kv_cache.databricks_storage_benchmark_job:main",
+        "document-kv-templates": "document_kv_cache.template_resources:main",
+        "document-kv-release-evidence": "document_kv_cache.release_evidence:main",
+        "document-kv-release-bundle": "document_kv_cache.release_bundle:main",
+        "document-kv-pr-evidence": "document_kv_cache.pr_evidence:main",
+        "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
+        "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
+        "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
+        "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
+        "restaurant-kv-benchmark-plan": "restaurant_kv_serving.benchmark_plan:main",
+        "restaurant-kv-run-benchmark-plan": "restaurant_kv_serving.benchmark_plan_executor:main",
+        "restaurant-kv-databricks-job": "restaurant_kv_serving.databricks_job:main",
+        "restaurant-kv-databricks-runs": "restaurant_kv_serving.databricks_runs:main",
+        "restaurant-kv-storage-benchmark": "restaurant_kv_serving.storage_benchmark:main",
+        "restaurant-kv-storage-benchmark-databricks-job": "restaurant_kv_serving.databricks_storage_benchmark_job:main",
+        "restaurant-kv-release-evidence": "restaurant_kv_serving.release_evidence:main",
+        "restaurant-kv-release-bundle": "restaurant_kv_serving.release_bundle:main",
+        "restaurant-kv-pr-evidence": "restaurant_kv_serving.pr_evidence:main",
+        "restaurant-kv-engine-probe": "restaurant_kv_serving.engine_probe:main",
+        "restaurant-kv-engine-probe-databricks-job": "restaurant_kv_serving.databricks_engine_probe_job:main",
+        "restaurant-kv-vllm-smoke": "restaurant_kv_serving.vllm_smoke:main",
+        "restaurant-kv-vllm-smoke-databricks-job": "restaurant_kv_serving.databricks_vllm_smoke_job:main",
+    }
+    expected_includes = [
+        {
+            "path": "src/document_kv_cache/py.typed",
+            "format": ["sdist", "wheel"],
+        },
+        {
+            "path": "src/restaurant_kv_serving/py.typed",
+            "format": ["sdist", "wheel"],
+        },
+        {
+            "path": "src/document_kv_cache/templates/**/*.yml",
+            "format": ["sdist", "wheel"],
+        },
+        {
+            "path": "src/document_kv_cache/templates/**/*.md",
+            "format": ["sdist", "wheel"],
+        }
+    ]
+
+    assert project["name"] == "document-kv-cache"
+    assert project["description"] == "Document KV-cache orchestration and materialization for long-context LLM serving."
+    assert project["requires-python"] == ">=3.11,<4.0"
+    assert project["authors"] == [{"name": "OpenTable Data Science"}]
+    assert set(project["keywords"]) == {
+        "databricks",
+        "kv-cache",
+        "llm-serving",
+        "long-context",
+        "sglang",
+        "vllm",
+    }
+    assert {
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    }.issubset(set(project["classifiers"]))
+    assert {package["include"] for package in poetry["packages"]} == {
+        "document_kv_cache",
+        "restaurant_kv_serving",
+    }
+    assert artifact_includes == expected_includes
+    assert scripts == expected_scripts

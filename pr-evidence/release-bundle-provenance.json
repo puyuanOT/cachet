@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed release-bundle provenance changes, flagged wheel filename/payload validation issues, and reported Clean after fixes.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "README.md",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review clean after resolving findings"
+  ],
+  "what_changed": [
+    "Added release-bundle provenance artifacts for the tested package wheel and PR-evidence sidecars.",
+    "Kept strict release-evidence/preflight matching scoped to V1 benchmark, storage, and native engine-probe inputs while allowing optional provenance artifacts.",
+    "Preserved valid wheel basenames in release bundles and validated wheel payloads as real archives with .dist-info/WHEEL metadata."
+  ],
+  "why": "Published AWS g5/UC release bundles should be reproducible and auditable, carrying both the exact wheel that was tested and PR traceability without weakening benchmark release validation."
+}

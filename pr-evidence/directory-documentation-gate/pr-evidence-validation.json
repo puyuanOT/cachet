@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/directory-documentation-gate/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 found two low-severity issues: the directory documentation gate scans untracked directories, and template README wording could imply the packaged template tree need not stay importable. The untracked scan is intentional for local PR slices and is now documented in the helper docstring; the README now describes templates as importable resources rather than executable runtime modules.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "packaged template README documentation",
+        "template resource listing and extraction tests",
+        "repository directory documentation governance tests",
+        "PR evidence sidecar"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring tests/test_project_governance.py::test_packaged_template_root_readmes_explain_subfolders tests/test_template_resources.py -q",
+        "poetry run pytest tests/test_project_governance.py tests/test_template_resources.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+        "poetry build"
+      ],
+      "what_changed": [
+        "Added packaged template-root READMEs for src/document_kv_cache/templates and src/document_kv_cache/templates/databricks.",
+        "Updated template resource tests so the new READMEs are listed, packaged, and extractable.",
+        "Added a governance assertion that packaged template-root READMEs name their immediate subfolders.",
+        "Documented why the directory documentation helper scans tracked and untracked directories during local PR work."
+      ],
+      "why": "Keep every shipped folder self-documenting and make packaged Databricks template resources understandable after wheel extraction, without relying on source checkout context."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

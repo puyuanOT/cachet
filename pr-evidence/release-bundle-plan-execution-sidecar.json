@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed release bundle plan-execution sidecars, flagged exact return-code validation and combined sidecar coverage, and reported Clean after fixes.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "README.md",
+    "src/document_kv_cache/README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_benchmark_plan_executor.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest -q",
+    "poetry build",
+    "GPT-5.5 review clean after resolving return-code validation and combined-sidecar test findings"
+  ],
+  "what_changed": [
+    "Added optional benchmark plan execution sidecars to release bundles.",
+    "Validated plan execution sidecars as successful command-plan runs with exact integer zero return codes and identifiable plan-source SHA-256 provenance.",
+    "Kept plan execution sidecars out of strict release-evidence and preflight artifact-source matching."
+  ],
+  "why": "Published V1 release bundles should include not only benchmark, storage, and engine-probe evidence, but also the exact managed command-plan execution summary that produced those artifacts."
+}
