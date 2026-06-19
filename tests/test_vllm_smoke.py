@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import subprocess
 import sys
 import urllib.error
 
@@ -27,6 +29,8 @@ from document_kv_cache.vllm_smoke import (
     run_vllm_smoke_benchmark,
     smoke_dataset_records,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_dependency_constraints_match_pinned_g5_vllm_stack():
@@ -306,42 +310,42 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     )
     dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
 
-    monkeypatch.setattr(legacy_vllm_smoke, "create_venv", lambda path: calls.append(("create_venv", path)))
-    monkeypatch.setattr(legacy_vllm_smoke, "install_vllm", lambda python: calls.append(("install_vllm", python)))
+    monkeypatch.setattr(public_vllm_smoke, "create_venv", lambda path: calls.append(("create_venv", path)))
+    monkeypatch.setattr(public_vllm_smoke, "install_vllm", lambda python: calls.append(("install_vllm", python)))
     monkeypatch.setattr(
-        legacy_vllm_smoke,
+        public_vllm_smoke,
         "installed_versions",
         lambda python: {"vllm_version_installed": "0.23.0", "transformers_version_installed": "5.12.1"},
     )
     monkeypatch.setattr(
-        legacy_vllm_smoke,
+        public_vllm_smoke,
         "probe_vllm_import",
         lambda python, output, *, timeout_seconds, env: calls.append(
             ("probe_vllm_import", python, output, timeout_seconds, env["HF_HOME"])
         ),
     )
     monkeypatch.setattr(
-        legacy_vllm_smoke,
+        public_vllm_smoke,
         "write_smoke_datasets",
         lambda local_dir: calls.append(("write_smoke_datasets", local_dir)) or dataset_paths,
     )
     monkeypatch.setattr(
-        legacy_vllm_smoke,
+        public_vllm_smoke,
         "start_vllm_server",
         lambda cfg, python, log_path: calls.append(("start_vllm_server", cfg.server_base_url, python, log_path))
         or fake_server,
     )
     monkeypatch.setattr(
-        legacy_vllm_smoke,
+        public_vllm_smoke,
         "wait_for_server",
         lambda server, log_path, cfg, *, timeout_seconds: calls.append(
             ("wait_for_server", server, log_path, cfg.server_base_url, timeout_seconds)
         ),
     )
-    monkeypatch.setattr(legacy_vllm_smoke, "run", lambda argv: calls.append(("run", argv)))
-    monkeypatch.setattr(legacy_vllm_smoke, "terminate_process", lambda server: calls.append(("terminate", server)))
+    monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(("run", argv)))
+    monkeypatch.setattr(public_vllm_smoke, "terminate_process", lambda server: calls.append(("terminate", server)))
     monkeypatch.setattr(
-        legacy_vllm_smoke,
+        public_vllm_smoke,
         "copy_file_if_exists",
         lambda source, target: calls.append(("copy", source, target)),
     )
@@ -369,6 +373,71 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     metadata = build_metadata(config)
     assert metadata["server_base_url"] == "http://127.0.0.1:8123"
     assert metadata["hf_home"] == str(tmp_path / "local" / "hf-cache")
+
+
+def test_legacy_vllm_smoke_run_respects_legacy_helper_monkeypatch(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+
+    def fake_create_venv(path):
+        raise RuntimeError(f"legacy hook used for {path.name}")
+
+    monkeypatch.setattr(legacy_vllm_smoke, "create_venv", fake_create_venv)
+
+    with pytest.raises(RuntimeError, match="legacy hook used"):
+        legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
+
+
+def test_legacy_vllm_smoke_direct_helper_respects_legacy_run_monkeypatch(monkeypatch, tmp_path):
+    calls = []
+
+    monkeypatch.setattr(legacy_vllm_smoke, "run", lambda argv: calls.append(argv))
+
+    legacy_vllm_smoke.create_venv(tmp_path / "venv")
+
+    assert calls == [[sys.executable, "-m", "venv", str(tmp_path / "venv")]]
+
+
+def test_legacy_vllm_smoke_main_respects_legacy_run_monkeypatch(monkeypatch, tmp_path):
+    called = {}
+
+    def fake_run(config):
+        called["config"] = config
+
+    monkeypatch.setattr(legacy_vllm_smoke, "run_vllm_smoke_benchmark", fake_run)
+
+    exit_code = legacy_vllm_smoke.main(
+        [
+            "--benchmark-id",
+            "smoke-1",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--local-root",
+            str(tmp_path / "local"),
+        ]
+    )
+
+    assert exit_code == 0
+    assert called["config"].benchmark_id == "smoke-1"
+    assert called["config"].output_dir == tmp_path / "out"
+    assert called["config"].local_root == tmp_path / "local"
+
+
+def test_legacy_vllm_smoke_module_execution_shows_help():
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    completed = subprocess.run(
+        [sys.executable, "-m", "restaurant_kv_serving.vllm_smoke", "--help"],
+        cwd=REPO_ROOT,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5." in completed.stdout
 
 
 def test_public_vllm_smoke_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):

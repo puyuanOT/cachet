@@ -1,0 +1,57 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the vLLM smoke ownership inversion and found legacy execution, direct-helper monkeypatch, Databricks import-boundary, and typed-signature compatibility issues. The issues were fixed by restoring the legacy __main__ block, adding monkeypatch-aware typed helper wrappers, importing smoke defaults from document_kv_cache.vllm_smoke in the Databricks smoke job, and preserving concrete wrapper signatures. Final re-review found no issues.",
+  "issues": [
+    {
+      "resolution": "Restored the legacy if __name__ == '__main__' block and added subprocess coverage for python -m restaurant_kv_serving.vllm_smoke --help.",
+      "severity": "P2",
+      "summary": "Legacy module execution no longer ran main()."
+    },
+    {
+      "resolution": "Added direct legacy helper wrappers that project monkeypatched legacy globals into the document implementation while skipping default wrappers to avoid recursion.",
+      "severity": "P2",
+      "summary": "Broad legacy helper exports were not monkeypatch-compatible when called directly."
+    },
+    {
+      "resolution": "Changed databricks_vllm_smoke_job smoke-default imports to document_kv_cache.vllm_smoke.",
+      "severity": "P3",
+      "summary": "The Databricks smoke job still imported vLLM smoke defaults through the legacy wrapper."
+    },
+    {
+      "resolution": "Replaced generic helper wrappers with concrete typed signatures matching the document implementation.",
+      "severity": "P3",
+      "summary": "Legacy helper wrappers erased typed public signatures in a py.typed package."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document vLLM smoke implementation ownership",
+    "legacy vLLM smoke compatibility wrapper",
+    "legacy module execution and helper monkeypatch migration hooks",
+    "Databricks vLLM smoke import boundary",
+    "public package compatibility tests",
+    "document and legacy package README migration notes",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_vllm_smoke.py tests/test_databricks_vllm_smoke_job.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/vllm_smoke.py src/restaurant_kv_serving/vllm_smoke.py src/restaurant_kv_serving/databricks_vllm_smoke_job.py tests/test_vllm_smoke.py tests/test_databricks_vllm_smoke_job.py tests/test_public_package.py",
+    "poetry run pytest -q",
+    "poetry check",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "GPT-5.5 review found four compatibility issues; all were fixed and final re-review returned no findings"
+  ],
+  "what_changed": [
+    "Moved the Databricks-friendly vLLM smoke implementation into document_kv_cache.vllm_smoke.",
+    "Turned restaurant_kv_serving.vllm_smoke into a compatibility wrapper over the document module.",
+    "Kept the public document __all__ curated while preserving the legacy wrapper's broader historical helper surface.",
+    "Preserved legacy module execution and direct-helper monkeypatch behavior with typed compatibility wrappers.",
+    "Updated the Databricks vLLM smoke job to import smoke defaults from the document-owned module.",
+    "Updated package READMEs and public-package tests to record the new implementation boundary."
+  ],
+  "why": "The generalized package should own the self-contained Qwen3/vLLM smoke because it validates established serving-engine integration for arbitrary documents on the V1 target hardware path. This is a behavior-preserving migration step toward retiring restaurant-specific implementation ownership."
+}
