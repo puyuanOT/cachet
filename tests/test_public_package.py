@@ -555,16 +555,24 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert "run" not in vllm_smoke.__all__
     assert databricks_runs.DatabricksWorkspaceConfig is restaurant_kv_serving.DatabricksWorkspaceConfig
     assert (
-        databricks_engine_probe_job.DatabricksEngineProbeJobConfig
-        is restaurant_kv_serving.DatabricksEngineProbeJobConfig
+        issubclass(
+            restaurant_kv_serving.DatabricksEngineProbeJobConfig,
+            databricks_engine_probe_job.DatabricksEngineProbeJobConfig,
+        )
     )
     assert (
-        databricks_engine_probe_job.DatabricksEngineProbeMatrixJobConfig
-        is restaurant_kv_serving.DatabricksEngineProbeMatrixJobConfig
+        issubclass(
+            restaurant_kv_serving.DatabricksEngineProbeMatrixJobConfig,
+            databricks_engine_probe_job.DatabricksEngineProbeMatrixJobConfig,
+        )
     )
     assert (
-        databricks_engine_probe_job.build_databricks_engine_probe_matrix_run_submit_payload
-        is restaurant_kv_serving.build_databricks_engine_probe_matrix_run_submit_payload
+        databricks_engine_probe_job.DatabricksEngineProbeJobConfig.__module__
+        == "document_kv_cache.databricks_engine_probe_job"
+    )
+    assert (
+        restaurant_kv_serving.DatabricksEngineProbeJobConfig.__module__
+        == "restaurant_kv_serving.databricks_engine_probe_job"
     )
     assert (
         issubclass(

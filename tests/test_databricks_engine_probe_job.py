@@ -1,4 +1,9 @@
 import json
+import os
+import pickle
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -27,6 +32,7 @@ from document_kv_cache.engine_adapters import ServingBackend
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
 SINGLE_USER_NAME = "user@example.com"
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _target(backend: str, **overrides):
@@ -738,3 +744,376 @@ def test_public_engine_probe_job_main_respects_document_namespace_monkeypatch(mo
     assert exit_code == 0
     assert json.loads(output_path.read_text(encoding="utf-8")) == {"ok": True, "source": "public-hook"}
     assert legacy_engine_probe_job.build_databricks_engine_probe_run_submit_payload is original_legacy_build
+
+
+def test_legacy_engine_probe_job_main_respects_legacy_namespace_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+    original_public_build = public_engine_probe_job.build_databricks_engine_probe_run_submit_payload
+
+    def fake_build(config):
+        assert config.expected_backend == ServingBackend.SGLANG
+        return {"ok": True, "source": "legacy-hook"}
+
+    monkeypatch.setattr(legacy_engine_probe_job, "build_databricks_engine_probe_run_submit_payload", fake_build)
+
+    exit_code = legacy_engine_probe_job.main(
+        [
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+            "--probe-factory",
+            "sglang_probe:build_probe",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--expected-backend",
+            "sglang",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {"ok": True, "source": "legacy-hook"}
+    assert public_engine_probe_job.build_databricks_engine_probe_run_submit_payload is original_public_build
+
+
+def test_legacy_engine_probe_job_ignores_document_namespace_build_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+
+    def fake_public_build(config):
+        return {"ok": True, "source": "unexpected-public-hook"}
+
+    monkeypatch.setattr(public_engine_probe_job, "build_databricks_engine_probe_run_submit_payload", fake_public_build)
+
+    exit_code = legacy_engine_probe_job.main(
+        [
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "--probe-factory",
+            "vllm_probe:build_probe",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--expected-backend",
+            "vllm",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload != {"ok": True, "source": "unexpected-public-hook"}
+    assert payload["tasks"][0]["task_key"] == DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY
+
+
+def test_legacy_engine_probe_job_ignores_document_namespace_writer_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+    runner_path = tmp_path / "run_engine_probe.py"
+
+    def fake_public_runner_writer(path):
+        Path(path).write_text("# unexpected public hook\n", encoding="utf-8")
+
+    monkeypatch.setattr(public_engine_probe_job, "write_databricks_engine_probe_runner_script", fake_public_runner_writer)
+
+    exit_code = legacy_engine_probe_job.main(
+        [
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "--probe-factory",
+            "vllm_probe:build_probe",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--expected-backend",
+            "vllm",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+            "--runner-script-output",
+            str(runner_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert "# unexpected public hook" not in runner_path.read_text(encoding="utf-8")
+    assert "document_kv_cache.engine_probe" in runner_path.read_text(encoding="utf-8")
+
+
+def test_legacy_engine_probe_job_ignores_document_private_helper_monkeypatch(monkeypatch):
+    config = legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="vllm_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend="vllm",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    def fake_public_runner_parameters(config):
+        return ["--unexpected-public-private-hook"]
+
+    monkeypatch.setattr(public_engine_probe_job, "_runner_parameters", fake_public_runner_parameters)
+
+    payload = legacy_engine_probe_job.build_databricks_engine_probe_run_submit_payload(config)
+
+    assert payload["tasks"][0]["spark_python_task"]["parameters"] != ["--unexpected-public-private-hook"]
+    assert payload["tasks"][0]["spark_python_task"]["parameters"][:2] == [
+        "--handoff-json",
+        "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+    ]
+
+
+def test_legacy_engine_probe_job_payload_respects_legacy_private_cluster_monkeypatch(monkeypatch):
+    config = legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="vllm_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend="vllm",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    def broken_legacy_cluster_config(config):
+        raise RuntimeError(f"legacy cluster config hook for {config.expected_backend.value}")
+
+    monkeypatch.setattr(
+        legacy_engine_probe_job,
+        "_cluster_config_from_engine_probe_job",
+        broken_legacy_cluster_config,
+    )
+
+    try:
+        legacy_engine_probe_job.build_databricks_engine_probe_run_submit_payload(config)
+    except RuntimeError as exc:
+        assert "legacy cluster config hook" in str(exc)
+    else:
+        raise AssertionError("expected legacy private cluster monkeypatch to be observed")
+
+
+def test_legacy_engine_probe_job_config_ignores_document_private_helper_monkeypatch(monkeypatch):
+    def broken_public_cluster_config(config):
+        raise RuntimeError(f"unexpected document private hook for {config.expected_backend}")
+
+    monkeypatch.setattr(public_engine_probe_job, "_cluster_config_from_engine_probe_job", broken_public_cluster_config)
+
+    config = legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="vllm_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend="vllm",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    assert config.expected_backend == ServingBackend.VLLM
+
+
+def test_legacy_engine_probe_job_config_respects_legacy_backend_monkeypatch(monkeypatch):
+    def broken_serving_backend(value):
+        raise RuntimeError(f"legacy backend hook for {value}")
+
+    monkeypatch.setattr(legacy_engine_probe_job, "_serving_backend", broken_serving_backend)
+
+    try:
+        legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="vllm_probe:build_probe",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend="vllm",
+            single_user_name=SINGLE_USER_NAME,
+        )
+    except RuntimeError as exc:
+        assert "legacy backend hook" in str(exc)
+    else:
+        raise AssertionError("expected legacy backend monkeypatch to be observed")
+
+
+def test_legacy_engine_probe_job_direct_writer_respects_legacy_build_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+
+    def fake_build(config):
+        assert config.expected_backend == ServingBackend.VLLM
+        return {"ok": True, "source": "legacy-direct-writer-hook"}
+
+    monkeypatch.setattr(legacy_engine_probe_job, "build_databricks_engine_probe_run_submit_payload", fake_build)
+
+    legacy_engine_probe_job.write_databricks_engine_probe_run_submit_json(
+        legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="vllm_probe:build_probe",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend="vllm",
+            single_user_name=SINGLE_USER_NAME,
+        ),
+        output_path,
+    )
+
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "ok": True,
+        "source": "legacy-direct-writer-hook",
+    }
+
+
+def test_legacy_engine_probe_job_restores_document_hooks_after_error(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+    original_public_build = public_engine_probe_job.build_databricks_engine_probe_run_submit_payload
+
+    def broken_build(config):
+        raise RuntimeError(f"boom for {config.expected_backend.value}")
+
+    monkeypatch.setattr(legacy_engine_probe_job, "build_databricks_engine_probe_run_submit_payload", broken_build)
+
+    exit_code = legacy_engine_probe_job.main(
+        [
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "--probe-factory",
+            "vllm_probe:build_probe",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--expected-backend",
+            "vllm",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert public_engine_probe_job.build_databricks_engine_probe_run_submit_payload is original_public_build
+
+
+def test_legacy_engine_probe_job_module_execution_shows_help():
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "restaurant_kv_serving.databricks_engine_probe_job", "--help"],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert "Emit a Databricks runs/submit payload for an AWS g5 engine probe." in result.stdout
+
+
+def test_legacy_engine_probe_job_reexports_document_owned_types():
+    assert issubclass(
+        legacy_engine_probe_job.DatabricksEngineProbeJobConfig,
+        public_engine_probe_job.DatabricksEngineProbeJobConfig,
+    )
+    assert issubclass(
+        legacy_engine_probe_job.DatabricksEngineProbeMatrixJobConfig,
+        public_engine_probe_job.DatabricksEngineProbeMatrixJobConfig,
+    )
+    assert issubclass(
+        legacy_engine_probe_job.DatabricksEngineProbeTargetConfig,
+        public_engine_probe_job.DatabricksEngineProbeTargetConfig,
+    )
+    assert issubclass(
+        legacy_engine_probe_job.DatabricksEngineProbeTargetsFile,
+        public_engine_probe_job.DatabricksEngineProbeTargetsFile,
+    )
+    assert (
+        public_engine_probe_job.DatabricksEngineProbeJobConfig.__module__
+        == "document_kv_cache.databricks_engine_probe_job"
+    )
+    assert (
+        legacy_engine_probe_job.DatabricksEngineProbeJobConfig.__module__
+        == "restaurant_kv_serving.databricks_engine_probe_job"
+    )
+    assert set(public_engine_probe_job.__all__) < set(legacy_engine_probe_job.__all__)
+
+
+def test_legacy_engine_probe_job_config_pickle_uses_honest_legacy_module():
+    config = legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="vllm_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend="vllm",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    restored = pickle.loads(pickle.dumps(config))
+
+    assert type(restored) is legacy_engine_probe_job.DatabricksEngineProbeJobConfig
+    assert restored == config
+
+
+def test_legacy_engine_probe_job_config_keeps_slotted_layout():
+    config = legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="vllm_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend="vllm",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    assert not hasattr(config, "__dict__")
+
+
+def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
+    assert set(legacy_engine_probe_job.__all__) == {
+        "Any",
+        "DEFAULT_AWS_G5_NODE_TYPE",
+        "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
+        "DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY",
+        "DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE",
+        "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME",
+        "DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY",
+        "DEFAULT_DATABRICKS_SPARK_VERSION",
+        "DatabricksEngineProbeJobConfig",
+        "DatabricksEngineProbeMatrixJobConfig",
+        "DatabricksEngineProbeTargetConfig",
+        "DatabricksEngineProbeTargetsFile",
+        "DatabricksSingleNodeG5ClusterConfig",
+        "ENGINE_PROBE_RUNNER_SCRIPT",
+        "ENGINE_PROBE_TARGETS_RECORD_TYPE",
+        "ENGINE_PROBE_TARGETS_SCHEMA_VERSION",
+        "Mapping",
+        "Path",
+        "REQUIRED_ENGINE_PROBE_BACKENDS",
+        "Sequence",
+        "ServingBackend",
+        "argparse",
+        "build_databricks_engine_probe_matrix_run_submit_payload",
+        "build_databricks_engine_probe_run_submit_payload",
+        "build_single_node_g5_cluster",
+        "dataclass",
+        "field",
+        "json",
+        "main",
+        "read_databricks_engine_probe_targets_file_json",
+        "read_databricks_engine_probe_targets_json",
+        "write_databricks_engine_probe_matrix_run_submit_json",
+        "write_databricks_engine_probe_run_submit_json",
+        "write_databricks_engine_probe_runner_script",
+    }
+
+
+def test_legacy_engine_probe_job_star_import_uses_previous_surface():
+    namespace: dict[str, object] = {}
+
+    exec("from restaurant_kv_serving.databricks_engine_probe_job import *", namespace)
+
+    assert {key for key in namespace if key != "__builtins__"} == set(legacy_engine_probe_job.__all__)
+    assert namespace["DatabricksEngineProbeJobConfig"] is legacy_engine_probe_job.DatabricksEngineProbeJobConfig

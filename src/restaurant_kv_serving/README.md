@@ -27,7 +27,7 @@ migration.
 - `benchmark_plan_executor.py` executes a benchmark plan JSON command sequence, primarily for managed job runners.
 - `databricks_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script that invokes `benchmark_plan_executor.py`.
 - `databricks_storage_benchmark_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks storage-reader job payload helper.
-- `databricks_engine_probe_job.py` emits an AWS g5 Databricks `runs/submit` payload plus a tiny runner script for native vLLM/SGLang engine-probe evidence.
+- `databricks_engine_probe_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks native vLLM/SGLang engine-probe job payload helper.
 - `databricks_runs.py` submits generated Databricks payloads and checks run state using only `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables.
 - `benchmark_runner.py` is a compatibility wrapper over `document_kv_cache.benchmark_runner`, which owns canonical V1 JSONL loading, caller-provided or OpenAI-compatible vLLM/SGLang benchmark execution, and JSON measurement, summary, and comparison records.
 - `release_evidence.py` validates collected V1 benchmark, storage benchmark, and native vLLM/SGLang probe JSON artifacts before a release is called complete, and records the input artifact sources in the final release-evidence JSON.
