@@ -132,6 +132,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_openai_compatible.py": {
         "restaurant_kv_serving.openai_compatible",
     },
+    "tests/test_planner_materializer.py": {
+        "restaurant_kv_serving.materializer",
+    },
     "tests/test_public_package.py": {
         "restaurant_kv_serving",
         "restaurant_kv_serving.benchmark_runner",
