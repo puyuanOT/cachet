@@ -429,3 +429,166 @@ def test_legacy_vllm_smoke_job_star_import_uses_previous_surface():
 
     assert {key for key in namespace if key != "__builtins__"} == set(legacy_vllm_smoke_job.__all__)
     assert namespace["DatabricksVLLMSmokeJobConfig"] is legacy_vllm_smoke_job.DatabricksVLLMSmokeJobConfig
+
+
+def test_legacy_vllm_smoke_job_import_order_does_not_capture_public_monkeypatch(tmp_path):
+    script = f"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, {str(REPO_ROOT / "src")!r})
+
+import document_kv_cache.databricks_vllm_smoke_job as public_smoke_job
+
+
+class FakeVLLMSmokeJobConfig:
+    pass
+
+
+def fake_runner_writer(path):
+    Path(path).write_text("# unexpected public hook\\n", encoding="utf-8")
+
+
+public_smoke_job.DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME = "public-patched-run"
+public_smoke_job.DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY = "public_patched_task"
+public_smoke_job.VLLM_SMOKE_RUNNER_SCRIPT = "# unexpected public default\\n"
+public_smoke_job.DatabricksVLLMSmokeJobConfig = FakeVLLMSmokeJobConfig
+public_smoke_job.write_databricks_vllm_smoke_runner_script = fake_runner_writer
+
+import restaurant_kv_serving.databricks_vllm_smoke_job as legacy_smoke_job
+
+assert legacy_smoke_job.DatabricksVLLMSmokeJobConfig is not FakeVLLMSmokeJobConfig
+assert legacy_smoke_job.DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME == "document-kv-vllm-smoke"
+assert legacy_smoke_job.DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY == "document_kv_vllm_smoke"
+
+config = legacy_smoke_job.DatabricksVLLMSmokeJobConfig(
+    benchmark_id="v1-vllm-smoke-001",
+    output_dir="/Volumes/catalog/schema/volume/v1-vllm-smoke",
+    runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+payload = legacy_smoke_job.build_databricks_vllm_smoke_run_submit_payload(config)
+assert payload["run_name"] == "document-kv-vllm-smoke"
+assert payload["tasks"][0]["task_key"] == "document_kv_vllm_smoke"
+
+runner_path = Path({str(tmp_path / "vllm_import_order_runner.py")!r})
+legacy_smoke_job.write_databricks_vllm_smoke_runner_script(runner_path)
+runner_text = runner_path.read_text(encoding="utf-8")
+assert "# unexpected public hook" not in runner_text
+assert "# unexpected public default" not in runner_text
+assert "document_kv_cache.vllm_smoke" in runner_text
+
+print(json.dumps({{"ok": True}}, sort_keys=True))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"ok": True}
+
+
+def test_legacy_vllm_smoke_job_import_order_ignores_in_place_public_class_mutation():
+    script = f"""
+import json
+import pickle
+import sys
+
+sys.path.insert(0, {str(REPO_ROOT / "src")!r})
+
+import document_kv_cache.databricks_vllm_smoke_job as public_smoke_job
+
+
+def fake_public_config_init(self, *args, **kwargs):
+    raise AssertionError("legacy inherited patched public config __init__")
+
+
+public_smoke_job.DatabricksVLLMSmokeJobConfig.__init__ = fake_public_config_init
+public_smoke_job.DatabricksVLLMSmokeJobConfig.__setattr__ = object.__setattr__
+
+import restaurant_kv_serving.databricks_vllm_smoke_job as legacy_smoke_job
+
+assert legacy_smoke_job.DatabricksVLLMSmokeJobConfig is not public_smoke_job.DatabricksVLLMSmokeJobConfig
+
+config = legacy_smoke_job.DatabricksVLLMSmokeJobConfig(
+    benchmark_id="v1-vllm-smoke-001",
+    output_dir="/Volumes/catalog/schema/volume/v1-vllm-smoke",
+    runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.run_name == "document-kv-vllm-smoke"
+assert not hasattr(config, "__dict__")
+restored = pickle.loads(pickle.dumps(config))
+assert type(restored) is legacy_smoke_job.DatabricksVLLMSmokeJobConfig
+assert restored == config
+
+print(json.dumps({{"ok": True}}, sort_keys=True))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"ok": True}
+
+
+def test_legacy_vllm_smoke_job_import_order_ignores_public_config_helper_monkeypatch(tmp_path):
+    output_path = tmp_path / "payload.json"
+    script = f"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, {str(REPO_ROOT / "src")!r})
+
+import document_kv_cache.databricks_vllm_smoke_job as public_smoke_job
+
+
+def broken_public_cluster_config(config):
+    raise AssertionError("legacy used patched public config helper")
+
+
+public_smoke_job._DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB = broken_public_cluster_config
+
+import restaurant_kv_serving.databricks_vllm_smoke_job as legacy_smoke_job
+
+assert legacy_smoke_job.DatabricksVLLMSmokeJobConfig is not public_smoke_job.DatabricksVLLMSmokeJobConfig
+
+exit_code = legacy_smoke_job.main(
+    [
+        "--benchmark-id",
+        "v1-vllm-smoke-001",
+        "--output-dir",
+        "/Volumes/catalog/schema/volume/v1-vllm-smoke",
+        "--runner-python-file",
+        "dbfs:/benchmarks/run_vllm_smoke.py",
+        "--single-user-name",
+        {SINGLE_USER_NAME!r},
+        "--output-json",
+        {str(output_path)!r},
+    ]
+)
+
+assert exit_code == 0
+payload = json.loads(Path({str(output_path)!r}).read_text(encoding="utf-8"))
+assert payload["run_name"] == "document-kv-vllm-smoke"
+assert payload["tasks"][0]["task_key"] == "document_kv_vllm_smoke"
+
+print(json.dumps({{"ok": True}}, sort_keys=True))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"ok": True}

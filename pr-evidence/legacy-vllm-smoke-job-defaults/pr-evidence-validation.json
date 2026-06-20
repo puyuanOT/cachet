@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/legacy-vllm-smoke-job-defaults/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer Fermat initially found merge blockers around public config helper leakage and dynamic fallback config pickling/slotted behavior. The patch added helper-dependency fingerprinting, a real module-level fallback config class, legacy helper routing, fallback pickling/slotted regression coverage, reran the verification gate, and Fermat approved with no remaining merge blockers.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/restaurant_kv_serving/databricks_vllm_smoke_job.py; tests/test_databricks_vllm_smoke_job.py; pr-evidence/legacy-vllm-smoke-job-defaults"
+      ],
+      "verification": [
+        "python -m py_compile src/restaurant_kv_serving/databricks_vllm_smoke_job.py tests/test_databricks_vllm_smoke_job.py; poetry run pytest tests/test_databricks_vllm_smoke_job.py::test_legacy_vllm_smoke_job_import_order_does_not_capture_public_monkeypatch tests/test_databricks_vllm_smoke_job.py::test_legacy_vllm_smoke_job_import_order_ignores_in_place_public_class_mutation tests/test_databricks_vllm_smoke_job.py::test_legacy_vllm_smoke_job_import_order_ignores_public_config_helper_monkeypatch -q; poetry run pytest tests/test_databricks_vllm_smoke_job.py -q; poetry run pytest tests/test_public_package.py tests/test_project_governance.py -q; poetry run pytest -q; git diff --check; poetry check; poetry build; secret scan: rg only matched existing fake credential detector fixtures/evidence text"
+      ],
+      "what_changed": [
+        "Isolated the legacy Databricks vLLM smoke job facade from pre-import monkeypatches of document_kv_cache.databricks_vllm_smoke_job, including patched constants, replaced config classes, in-place config class mutations, patched public config helpers, and runner writer hooks."
+      ],
+      "why": "The migration-only restaurant_kv_serving facade must preserve legacy compatibility hooks without letting public document namespace test hooks or import-order mutations become legacy defaults. This keeps the Qwen3/vLLM Databricks smoke evidence path stable while implementation ownership continues moving to document_kv_cache."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
