@@ -794,9 +794,11 @@ python -m document_kv_cache.release_evidence \
 The command returns exit code `0` only when the V1 benchmark is AWS g5/Qwen3,
 the storage benchmark has strict Memory + Disk + real UC Volume evidence, and
 exactly one native engine probe record plus one connector action descriptor is
-present for each vLLM/SGLang backend. Each native probe must also report the
-pinned runtime engine version and include serving-engine package/version
-metadata matching the `document_kv_cache.serving_env` backend profile. Each
+present for each vLLM/SGLang backend. V1 comparison rows must include finite
+numeric quality deltas and positive finite latency speedups. Each native probe
+must also report the pinned runtime engine version and include serving-engine
+package/version metadata matching the `document_kv_cache.serving_env` backend
+profile. Each
 action descriptor must validate against the reserve/copy/bind/release schema and
 the same one-byte Qwen3 GQA layout contract. For each backend, release evidence
 also cross-checks that the connector-action sidecar describes the same request,

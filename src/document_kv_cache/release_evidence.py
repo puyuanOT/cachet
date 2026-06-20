@@ -884,9 +884,12 @@ def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> N
             issues.append(f"v1 benchmark comparison {dataset} baseline_arm_id must be {BASELINE_PREFILL_ARM!r}")
         if comparison.get("cache_arm_id") != CACHE_REUSE_ARM:
             issues.append(f"v1 benchmark comparison {dataset} cache_arm_id must be {CACHE_REUSE_ARM!r}")
-        for metric_name in ("ttft_speedup", "time_to_completion_speedup", "exact_match_delta", "answer_found_delta"):
-            if comparison.get(metric_name) is None:
-                issues.append(f"v1 benchmark comparison {dataset} must include {metric_name}")
+        for metric_name in ("ttft_speedup", "time_to_completion_speedup"):
+            if not _is_positive_number(comparison.get(metric_name)):
+                issues.append(f"v1 benchmark comparison {dataset} {metric_name} must be a positive finite number")
+        for metric_name in ("exact_match_delta", "answer_found_delta"):
+            if not _is_finite_number(comparison.get(metric_name)):
+                issues.append(f"v1 benchmark comparison {dataset} {metric_name} must be a finite number")
     missing = sorted(set(SUPPORTED_V1_DATASETS).difference(by_dataset))
     if missing:
         issues.append(f"v1 benchmark comparisons missing required datasets: {', '.join(missing)}")
@@ -1074,11 +1077,15 @@ def _positive_int_metadata(value: Any) -> int | None:
 
 
 def _is_non_negative_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    return _is_finite_number(value) and value >= 0
 
 
 def _is_positive_number(value: Any) -> bool:
     return _is_non_negative_number(value) and value > 0
+
+
+def _is_finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _validate_latency_summary(metric: Mapping[str, Any], label: str, issues: list[str]) -> None:
