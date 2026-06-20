@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5/high first found that the legacy serving_env wrapper lacked __all__, which would widen star imports. The wrapper was patched with a curated __all__ matching document_kv_cache.serving_env.__all__, tests were added for star/import compatibility, and GPT-5.5/high re-review approved with no remaining findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/serving_env.py",
+    "src/restaurant_kv_serving/serving_env.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "import smoke -> public/legacy ServingEnvironmentProfile identity, document root exports, curated legacy star imports, direct legacy helper attributes, and record_type passed",
+    "poetry run pytest tests/test_serving_env.py tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py -> 87 passed",
+    "poetry run pytest -> 630 passed",
+    "poetry check -> All set!",
+    "git diff --check -> passed",
+    "secret scan -> only expected fake LangSmith fixture patterns in tests/test_project_governance.py",
+    "poetry build -> built sdist and wheel"
+  ],
+  "what_changed": [
+    "Moved serving environment profile implementation into document_kv_cache.serving_env.",
+    "Replaced restaurant_kv_serving.serving_env with a compatibility wrapper over document_kv_cache.serving_env.",
+    "Routed document root serving environment exports to the document-owned module and added public-surface ownership assertions.",
+    "Preserved the curated legacy serving_env __all__ after GPT-5.5 review found an accidental star-import widening."
+  ],
+  "why": "Continue the package ownership migration from restaurant-specific modules to the document-generic namespace while preserving exact vLLM/SGLang serving environment profiles and legacy imports."
+}

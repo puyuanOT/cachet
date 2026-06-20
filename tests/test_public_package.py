@@ -158,6 +158,7 @@ def test_public_document_package_reexports_core_api():
         materializer,
         model_profiles,
         service,
+        serving_env,
     )
 
     assert AdmissionQueue is admission.AdmissionQueue
@@ -301,7 +302,9 @@ def test_public_document_package_reexports_core_api():
     assert SegmentedMaterializedKV is restaurant_kv_serving.SegmentedMaterializedKV
     assert ServingEngineConnector is engine.ServingEngineConnector
     assert ServingEngineConnector is restaurant_kv_serving.ServingEngineConnector
+    assert ServingEnvironmentProfile is serving_env.ServingEnvironmentProfile
     assert ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
+    assert ServingEnvironmentProfile.__module__ == "document_kv_cache.serving_env"
     assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
     assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
     assert SUPPORTED_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.SUPPORTED_STORAGE_BENCHMARK_READERS
@@ -366,9 +369,17 @@ def test_public_document_package_reexports_core_api():
     assert write_engine_probe_targets_json is restaurant_kv_serving.write_engine_probe_targets_json
     assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
     assert serving_environment_profile is restaurant_kv_serving.serving_environment_profile
+    assert serving_environment_profile is serving_env.serving_environment_profile
+    assert serving_environment_profile.__module__ == "document_kv_cache.serving_env"
     assert serving_environment_profile_to_record is restaurant_kv_serving.serving_environment_profile_to_record
+    assert serving_environment_profile_to_record is serving_env.serving_environment_profile_to_record
+    assert serving_environment_profile_to_record.__module__ == "document_kv_cache.serving_env"
     assert serving_environment_profiles is restaurant_kv_serving.serving_environment_profiles
+    assert serving_environment_profiles is serving_env.serving_environment_profiles
+    assert serving_environment_profiles.__module__ == "document_kv_cache.serving_env"
     assert serving_environment_profiles_to_record is restaurant_kv_serving.serving_environment_profiles_to_record
+    assert serving_environment_profiles_to_record is serving_env.serving_environment_profiles_to_record
+    assert serving_environment_profiles_to_record.__module__ == "document_kv_cache.serving_env"
     assert summarize_databricks_run is databricks_runs.summarize_databricks_run
     assert summarize_databricks_run_submit_payload is databricks_runs.summarize_databricks_run_submit_payload
     assert pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
@@ -678,8 +689,10 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert pr_evidence.evaluate_pr_evidence_file is restaurant_kv_serving.evaluate_pr_evidence_file
     assert pr_evidence.pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
     assert serving_env.ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
+    assert serving_env.ServingEnvironmentProfile.__module__ == "document_kv_cache.serving_env"
     assert serving_env.SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE == "document_kv.serving_environment_profiles.v1"
     assert serving_env.serving_environment_profiles_to_record is restaurant_kv_serving.serving_environment_profiles_to_record
+    assert serving_env.serving_environment_profiles_to_record.__module__ == "document_kv_cache.serving_env"
     assert storage_benchmark.run_storage_benchmark is restaurant_kv_serving.run_storage_benchmark
     assert storage_benchmark.evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
     assert template_resources.PACKAGED_TEMPLATE_PACKAGE == "document_kv_cache.templates"
@@ -1015,6 +1028,14 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "serving_environment_profiles",
         "serving_environment_profiles_to_record",
     ]
+    legacy_serving_env = importlib.import_module("restaurant_kv_serving.serving_env")
+    assert legacy_serving_env.__all__ == serving_env.__all__
+    serving_env_legacy_star_namespace = {}
+    exec("from restaurant_kv_serving.serving_env import *", serving_env_legacy_star_namespace)
+    assert sorted(k for k in serving_env_legacy_star_namespace if not k.startswith("__")) == serving_env.__all__
+    assert legacy_serving_env.ServingBackend is engine_adapters.ServingBackend
+    assert legacy_serving_env.dataclass is not None
+    assert "ServingBackend" not in legacy_serving_env.__all__
     assert model_profiles.__all__ == [
         "DTYPE_BYTE_WIDTHS",
         "AttentionMechanism",
