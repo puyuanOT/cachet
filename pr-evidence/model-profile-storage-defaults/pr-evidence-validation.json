@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/model-profile-storage-defaults/evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 approved the committed implementation diff with no blocking findings; reviewer verified backward-compatible profile records, default/override storage semantics, public exports, focused suites, and full pytest.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "document_kv_cache.model_profiles, model profile tests, README model-profile documentation"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_model_profiles.py -q; poetry run pytest tests/test_model_profiles.py tests/test_public_package.py tests/test_project_governance.py -q; poetry run pytest -q; poetry check; poetry install --dry-run; poetry build; git diff --check"
+      ],
+      "what_changed": [
+        "Add portable default K/V storage layout fields to model profiles and use them when deriving KV layouts."
+      ],
+      "why": "Future Qwen3.5, MiniMax, and adapter-trained model bundles need profile-owned storage semantics so cache generators and serving adapters derive the same shared, separate, or interleaved K/V layout without caller-specific overrides."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
