@@ -442,9 +442,29 @@ def test_layout_validation_rejects_inconsistent_geometry_byte_math():
         replace(layout(), bytes_per_token=TEST_BYTES_PER_TOKEN - 1).validate()
 
 
-def test_layout_validation_rejects_inconsistent_kv_stride():
-    with pytest.raises(ValueError, match="kv_stride_bytes"):
+def test_layout_validation_accepts_padded_kv_stride_when_byte_math_matches():
+    padded_bytes_per_token = 36 * 8 * 256 * 2
+    padded_layout = replace(layout(), kv_stride_bytes=256, bytes_per_token=padded_bytes_per_token)
+
+    assert padded_layout.expected_bytes_per_token == padded_bytes_per_token
+    padded_layout.validate()
+
+
+def test_layout_validation_rejects_inconsistent_padded_kv_stride_byte_math():
+    with pytest.raises(ValueError, match="does not match layout geometry"):
         replace(layout(), kv_stride_bytes=256).validate()
+
+
+def test_layout_validation_rejects_invalid_kv_stride_padding():
+    with pytest.raises(ValueError, match="smaller than"):
+        replace(layout(), kv_stride_bytes=64).validate()
+    with pytest.raises(ValueError, match="multiple"):
+        replace(
+            layout(),
+            dtype="bf16",
+            kv_stride_bytes=257,
+            bytes_per_token=36 * 8 * 257 * 2,
+        ).validate()
 
 
 def test_layout_validation_rejects_conflicting_storage_layout():

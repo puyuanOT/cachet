@@ -394,6 +394,26 @@ def test_evaluate_release_evidence_accepts_backend_block_size_and_lora_layout_va
     assert evidence.ok
 
 
+def test_evaluate_release_evidence_accepts_padded_qwen3_kv_stride():
+    padded_layout = layout_for_model("qwen3:4b-instruct", kv_stride_bytes=256)
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM, layout=padded_layout),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM, layout=padded_layout),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert padded_layout.bytes_per_token == 36 * 8 * 256 * 2
+    assert evidence.ok
+
+
 def test_evaluate_release_evidence_rejects_wrong_comparison_arms_and_missing_quality_delta():
     v1_record = _v1_record(ok=True)
     v1_record["comparisons"][0] = {

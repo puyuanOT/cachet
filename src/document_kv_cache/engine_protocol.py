@@ -114,7 +114,9 @@ class KVLayout:
         )
         if any(value is None for value in attention_fields):
             return None
-        return self.num_layers * self.num_kv_heads * self.head_size * 2 * dtype_byte_width(self.dtype)
+        assert self.num_kv_heads is not None
+        assert self.kv_stride_bytes is not None
+        return self.num_layers * self.num_kv_heads * self.kv_stride_bytes * 2
 
     def validate(self) -> None:
         _validate_nonempty_string("model_id", self.model_id)
@@ -155,11 +157,16 @@ class KVLayout:
             if self.num_query_heads % self.num_kv_heads != 0:
                 raise ValueError("num_query_heads must be divisible by num_kv_heads")
         if self.head_size is not None and self.kv_stride_bytes is not None:
-            expected_stride_bytes = self.head_size * dtype_byte_width(self.dtype)
-            if self.kv_stride_bytes != expected_stride_bytes:
+            dtype_width = dtype_byte_width(self.dtype)
+            minimum_stride_bytes = self.head_size * dtype_width
+            if self.kv_stride_bytes < minimum_stride_bytes:
                 raise ValueError(
-                    f"kv_stride_bytes {self.kv_stride_bytes} does not match "
-                    f"head_size * dtype width {expected_stride_bytes}"
+                    f"kv_stride_bytes {self.kv_stride_bytes} is smaller than "
+                    f"head_size * dtype width {minimum_stride_bytes}"
+                )
+            if self.kv_stride_bytes % dtype_width != 0:
+                raise ValueError(
+                    f"kv_stride_bytes {self.kv_stride_bytes} must be a multiple of dtype width {dtype_width}"
                 )
         expected_bytes_per_token = self.expected_bytes_per_token
         if expected_bytes_per_token is not None and self.bytes_per_token != expected_bytes_per_token:

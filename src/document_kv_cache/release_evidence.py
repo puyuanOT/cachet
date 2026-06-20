@@ -1174,12 +1174,10 @@ def _validate_v1_qwen3_probe_layout(layout: KVLayout) -> None:
         or layout.attention_mechanism != AttentionMechanism.GROUPED_QUERY
     ):
         raise ValueError("Engine KV probe layout must use the V1 Qwen3 GQA geometry")
-    expected_bytes_per_token = profile.kv_scalars_per_token * dtype_byte_width(layout.dtype)
-    if layout.bytes_per_token != expected_bytes_per_token:
+    if layout.expected_bytes_per_token is None:
+        raise ValueError("Engine KV probe layout must include complete V1 Qwen3 GQA stride geometry")
+    if layout.bytes_per_token != layout.expected_bytes_per_token:
         raise ValueError("Engine KV probe layout bytes_per_token must match the V1 Qwen3 GQA geometry")
-    expected_stride = profile.head_size * dtype_byte_width(layout.dtype)
-    if layout.kv_stride_bytes != expected_stride:
-        raise ValueError("Engine KV probe layout kv_stride_bytes must match the V1 Qwen3 head stride")
     if layout.shares_kv_storage is not True or layout.storage_layout != KVStorageLayout.SHARED_KEY_VALUE:
         raise ValueError("Engine KV probe layout must use the V1 Qwen3 shared K/V storage layout")
 

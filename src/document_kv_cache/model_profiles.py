@@ -102,9 +102,28 @@ class KVModelProfile:
     def kv_scalars_per_token(self) -> int:
         return self.num_layers * self.num_kv_heads * self.head_size * 2
 
-    def bytes_per_token(self, dtype: str | None = None) -> int:
+    def bytes_per_token(
+        self,
+        dtype: str | None = None,
+        *,
+        kv_stride_bytes: int | None = None,
+    ) -> int:
         layout_dtype = self.default_dtype if dtype is None else dtype
-        return self.kv_scalars_per_token * dtype_byte_width(layout_dtype)
+        byte_width = dtype_byte_width(layout_dtype)
+        if kv_stride_bytes is None:
+            return self.kv_scalars_per_token * byte_width
+        _validate_positive_int(kv_stride_bytes, "kv_stride_bytes")
+        minimum_stride_bytes = self.head_size * byte_width
+        if kv_stride_bytes < minimum_stride_bytes:
+            raise ValueError(
+                f"kv_stride_bytes {kv_stride_bytes} is smaller than "
+                f"head_size * dtype width {minimum_stride_bytes}"
+            )
+        if kv_stride_bytes % byte_width != 0:
+            raise ValueError(
+                f"kv_stride_bytes {kv_stride_bytes} must be a multiple of dtype width {byte_width}"
+            )
+        return self.num_layers * self.num_kv_heads * kv_stride_bytes * 2
 
     def to_layout(
         self,
@@ -120,6 +139,9 @@ class KVModelProfile:
     ) -> KVLayout:
         layout_dtype = self.default_dtype if dtype is None else dtype
         byte_width = dtype_byte_width(layout_dtype)
+        resolved_kv_stride_bytes = (
+            self.head_size * byte_width if kv_stride_bytes is None else kv_stride_bytes
+        )
         if storage_layout is None:
             resolved_storage_layout = (
                 KVStorageLayout.SHARED_KEY_VALUE if shares_kv_storage else KVStorageLayout.SEPARATE_KEY_VALUE
@@ -133,11 +155,14 @@ class KVModelProfile:
             dtype=layout_dtype,
             num_layers=self.num_layers,
             block_size=self.default_block_size if block_size is None else block_size,
-            bytes_per_token=self.bytes_per_token(layout_dtype),
+            bytes_per_token=self.bytes_per_token(
+                layout_dtype,
+                kv_stride_bytes=resolved_kv_stride_bytes,
+            ),
             num_query_heads=self.num_query_heads,
             num_kv_heads=self.num_kv_heads,
             head_size=self.head_size,
-            kv_stride_bytes=self.head_size * byte_width if kv_stride_bytes is None else kv_stride_bytes,
+            kv_stride_bytes=resolved_kv_stride_bytes,
             shares_kv_storage=shares_kv_storage,
             storage_layout=resolved_storage_layout,
         )

@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/support-padded-kv-strides/evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 initially requested release-evidence alignment for padded strides and stricter KVModelProfile.bytes_per_token stride validation; both were fixed and the second review returned APPROVED with no blocking findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/engine_protocol.py",
+        "src/document_kv_cache/model_profiles.py",
+        "src/document_kv_cache/release_evidence.py",
+        "tests/test_engine.py",
+        "tests/test_model_profiles.py",
+        "tests/test_release_evidence.py",
+        "README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_engine.py tests/test_model_profiles.py tests/test_engine_adapters.py tests/test_release_evidence.py -q -> 256 passed",
+        "poetry run pytest -q -> 1147 passed",
+        "poetry check && poetry install --dry-run -> passed",
+        "git diff --check -> passed"
+      ],
+      "what_changed": [
+        "Allowed KVLayout and KVModelProfile byte math to use padded kv_stride_bytes while preserving default Qwen3 layout behavior.",
+        "Updated release evidence validation to accept padded Qwen3 V1 probe/action layouts when geometry, storage layout, and byte totals are consistent."
+      ],
+      "why": "Engine backends can pad or align KV-head storage; the public layout schema already exposed kv_stride_bytes, so bytes-per-token and release gates should honor valid padded strides instead of forcing an unpadded head payload."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
