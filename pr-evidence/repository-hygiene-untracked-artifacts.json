@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved b45f610 with no blocking findings; PR evidence can mark gpt55_review_outcome=clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/README.md",
+    "src/document_kv_cache/repository_hygiene.py",
+    "src/document_kv_cache/release_bundle.py",
+    "tests/README.md",
+    "tests/test_repository_hygiene.py",
+    "tests/test_release_bundle.py"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_repository_hygiene.py tests/test_release_bundle.py tests/test_project_governance.py -> 77 passed",
+    "python -m py_compile src/document_kv_cache/repository_hygiene.py src/document_kv_cache/release_bundle.py -> clean",
+    "poetry run pytest -q -> 773 passed",
+    "poetry check -> All set",
+    "git diff --check -> clean",
+    "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-hygiene-untracked-smoke.json -> ok=true, forbidden_untracked_paths=[], untracked_path_count=0",
+    "GPT-5.5 reviewer reran poetry run pytest -q tests/test_repository_hygiene.py tests/test_release_bundle.py -> 41 passed"
+  ],
+  "what_changed": [
+    "Extended repository hygiene evidence with untracked_path_count and forbidden_untracked_paths.",
+    "Updated release-bundle validation to reject repository hygiene sidecars with forbidden untracked artifacts.",
+    "Documented and tested the stricter untracked-artifact hygiene contract."
+  ],
+  "why": "Release handoffs for an open-source package should prove generated, cache, temp, or secret-like files are neither tracked nor accidentally exposed as untracked Git-visible artifacts."
+}

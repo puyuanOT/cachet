@@ -105,8 +105,10 @@ class RepositoryHygieneEvidence:
     missing_gitignore_patterns: tuple[str, ...]
     forbidden_tracked_artifact_patterns: tuple[str, ...]
     forbidden_tracked_paths: tuple[str, ...]
+    forbidden_untracked_paths: tuple[str, ...]
     dirty_tracked_paths: tuple[str, ...]
     tracked_path_count: int
+    untracked_path_count: int
     issues: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -136,6 +138,11 @@ class RepositoryHygieneEvidence:
         )
         object.__setattr__(
             self,
+            "forbidden_untracked_paths",
+            _string_tuple(self.forbidden_untracked_paths, "forbidden_untracked_paths"),
+        )
+        object.__setattr__(
+            self,
             "dirty_tracked_paths",
             _string_tuple(self.dirty_tracked_paths, "dirty_tracked_paths"),
         )
@@ -143,10 +150,13 @@ class RepositoryHygieneEvidence:
             raise ValueError("repository_root must be non-empty")
         if type(self.tracked_path_count) is not int or self.tracked_path_count < 0:
             raise ValueError("tracked_path_count must be a non-negative integer")
+        if type(self.untracked_path_count) is not int or self.untracked_path_count < 0:
+            raise ValueError("untracked_path_count must be a non-negative integer")
         explicit_issues = _string_tuple(self.issues, "issues")
         semantic_issues = _semantic_issues(
             missing_gitignore_patterns=self.missing_gitignore_patterns,
             forbidden_tracked_paths=self.forbidden_tracked_paths,
+            forbidden_untracked_paths=self.forbidden_untracked_paths,
             dirty_tracked_paths=self.dirty_tracked_paths,
         )
         object.__setattr__(self, "issues", _dedupe_strings((*explicit_issues, *semantic_issues)))
@@ -156,10 +166,12 @@ def evaluate_repository_hygiene(repository_root: str | Path = ".") -> Repository
     root = local_path(str(repository_root)).resolve()
     gitignore_lines = _gitignore_lines(root)
     tracked_paths = _tracked_paths(root)
+    untracked_paths = _untracked_paths(root)
     dirty_tracked_paths = _dirty_tracked_paths(root)
     return evaluate_repository_hygiene_paths(
         repository_root=root,
         tracked_paths=tracked_paths,
+        untracked_paths=untracked_paths,
         dirty_tracked_paths=dirty_tracked_paths,
         gitignore_lines=gitignore_lines,
     )
@@ -170,6 +182,7 @@ def evaluate_repository_hygiene_paths(
     repository_root: str | Path,
     tracked_paths: Sequence[str],
     gitignore_lines: Sequence[str],
+    untracked_paths: Sequence[str] = (),
     dirty_tracked_paths: Sequence[str] = (),
 ) -> RepositoryHygieneEvidence:
     root = local_path(str(repository_root))
@@ -184,14 +197,20 @@ def evaluate_repository_hygiene_paths(
     forbidden_tracked_paths = tuple(
         sorted(path for path in normalized_tracked_paths if _is_forbidden_tracked_artifact(path))
     )
+    normalized_untracked_paths = tuple(path for path in untracked_paths if isinstance(path, str) and path)
+    forbidden_untracked_paths = tuple(
+        sorted(path for path in normalized_untracked_paths if _is_forbidden_tracked_artifact(path))
+    )
     return RepositoryHygieneEvidence(
         repository_root=str(root),
         required_gitignore_patterns=REQUIRED_GITIGNORE_PATTERNS,
         missing_gitignore_patterns=missing_gitignore_patterns,
         forbidden_tracked_artifact_patterns=FORBIDDEN_TRACKED_ARTIFACT_PATTERNS,
         forbidden_tracked_paths=forbidden_tracked_paths,
+        forbidden_untracked_paths=forbidden_untracked_paths,
         dirty_tracked_paths=normalized_dirty_tracked_paths,
         tracked_path_count=len(normalized_tracked_paths),
+        untracked_path_count=len(normalized_untracked_paths),
     )
 
 
@@ -205,8 +224,10 @@ def repository_hygiene_to_record(evidence: RepositoryHygieneEvidence) -> dict[st
         "missing_gitignore_patterns": list(evidence.missing_gitignore_patterns),
         "forbidden_tracked_artifact_patterns": list(evidence.forbidden_tracked_artifact_patterns),
         "forbidden_tracked_paths": list(evidence.forbidden_tracked_paths),
+        "forbidden_untracked_paths": list(evidence.forbidden_untracked_paths),
         "dirty_tracked_paths": list(evidence.dirty_tracked_paths),
         "issues": list(evidence.issues),
+        "untracked_path_count": evidence.untracked_path_count,
     }
 
 
@@ -223,6 +244,7 @@ def _semantic_issues(
     *,
     missing_gitignore_patterns: Sequence[str],
     forbidden_tracked_paths: Sequence[str],
+    forbidden_untracked_paths: Sequence[str],
     dirty_tracked_paths: Sequence[str],
 ) -> tuple[str, ...]:
     issues: list[str] = []
@@ -230,6 +252,11 @@ def _semantic_issues(
         issues.append("missing required .gitignore patterns: " + ", ".join(missing_gitignore_patterns))
     if forbidden_tracked_paths:
         issues.append("forbidden generated or secret-like tracked artifacts: " + ", ".join(forbidden_tracked_paths))
+    if forbidden_untracked_paths:
+        issues.append(
+            "forbidden generated or secret-like untracked artifacts: "
+            + ", ".join(forbidden_untracked_paths)
+        )
     if dirty_tracked_paths:
         issues.append("dirty tracked paths: " + ", ".join(dirty_tracked_paths))
     return tuple(issues)
@@ -246,6 +273,16 @@ def _gitignore_lines(repository_root: Path) -> tuple[str, ...]:
 def _tracked_paths(repository_root: Path) -> tuple[str, ...]:
     completed = subprocess.run(
         ["git", "ls-files", "-z"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+    )
+    return tuple(path for path in completed.stdout.decode("utf-8").split("\0") if path)
+
+
+def _untracked_paths(repository_root: Path) -> tuple[str, ...]:
+    completed = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
         cwd=repository_root,
         check=True,
         capture_output=True,
