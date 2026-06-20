@@ -866,6 +866,34 @@ def test_materialization_plan_validates_segment_cursors_and_totals(tmp_path):
     )
 
     assert valid.total_tokens == 5
+    assert valid.selected_document_ids == ("doc-a",)
+    assert (
+        MaterializationPlan(
+            request=plan.request,
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+            selected_document_ids=(document_id for document_id in ("doc-a",)),
+        ).selected_document_ids
+        == ("doc-a",)
+    )
+    assert (
+        MaterializationPlan(
+            request=plan.request,
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+            selected_restaurants=(document_id for document_id in ("doc-a",)),
+        ).selected_document_ids
+        == ("doc-a",)
+    )
+    with pytest.raises(TypeError, match="request"):
+        MaterializationPlan(
+            request=object(),  # type: ignore[arg-type]
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+        )
     with pytest.raises(TypeError, match="segments"):
         MaterializationPlan(
             request=plan.request,
@@ -883,6 +911,46 @@ def test_materialization_plan_validates_segment_cursors_and_totals(tmp_path):
         MaterializationPlan(request=plan.request, segments=plan.segments, total_tokens=5, total_bytes=6)
     with pytest.raises(ValueError, match="total_bytes"):
         replace(plan, total_bytes=True)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="selected_document_ids"):
+        MaterializationPlan(
+            request=plan.request,
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+            selected_document_ids="doc-a",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="selected_document_ids entries"):
+        MaterializationPlan(
+            request=plan.request,
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+            selected_document_ids=("",),
+        )
+    with pytest.raises(ValueError, match="selected_document_ids entries"):
+        MaterializationPlan(
+            request=plan.request,
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+            selected_document_ids=(1,),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="selected_document_ids entries must be unique"):
+        MaterializationPlan(
+            request=plan.request,
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+            selected_document_ids=("doc-a", "doc-a"),
+        )
+    with pytest.raises(ValueError, match="selected_document_ids entries must be unique"):
+        MaterializationPlan(
+            request=plan.request,
+            segments=plan.segments,
+            total_tokens=5,
+            total_bytes=5,
+            selected_restaurants=("doc-a", "doc-a"),
+        )
     with pytest.raises(ValueError, match="output_token_start"):
         MaterializationPlan(
             request=plan.request,

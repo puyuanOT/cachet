@@ -453,12 +453,14 @@ class MaterializationPlan:
         segments: tuple[PlanSegment, ...],
         total_tokens: int,
         total_bytes: int,
-        selected_document_ids: Sequence[str] = (),
+        selected_document_ids: Iterable[str] = (),
         *,
-        selected_restaurants: Sequence[str] | None = None,
+        selected_restaurants: Iterable[str] | None = None,
     ) -> None:
         if selected_restaurants is not None:
             selected_document_ids = selected_restaurants
+        if not isinstance(request, (DocumentKVRequest, RestaurantKVRequest)):
+            raise TypeError("request must be a DocumentKVRequest or RestaurantKVRequest")
         if not isinstance(segments, tuple):
             raise TypeError("segments must be a tuple of PlanSegment")
         _validate_non_negative_integer("total_tokens", total_tokens)
@@ -468,7 +470,11 @@ class MaterializationPlan:
         object.__setattr__(self, "segments", segments)
         object.__setattr__(self, "total_tokens", total_tokens)
         object.__setattr__(self, "total_bytes", total_bytes)
-        object.__setattr__(self, "selected_document_ids", tuple(selected_document_ids))
+        object.__setattr__(
+            self,
+            "selected_document_ids",
+            _normalize_selected_document_ids(selected_document_ids),
+        )
 
     @property
     def chunk_count(self) -> int:
@@ -615,6 +621,21 @@ def _validate_plan_segment_cursors(
         raise ValueError(f"Plan segment token counts {token_cursor} != total_tokens {total_tokens}")
     if byte_cursor != total_bytes:
         raise ValueError(f"Plan segment byte lengths {byte_cursor} != total_bytes {total_bytes}")
+
+
+def _normalize_selected_document_ids(value: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(value, (str, bytes, bytearray, memoryview)) or not isinstance(value, Iterable):
+        raise TypeError("selected_document_ids must be an iterable of strings")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for document_id in value:
+        if not _is_non_empty_string(document_id):
+            raise ValueError("selected_document_ids entries must be non-empty strings")
+        if document_id in seen:
+            raise ValueError("selected_document_ids entries must be unique")
+        seen.add(document_id)
+        normalized.append(document_id)
+    return tuple(normalized)
 
 
 def _is_sha256_hex(value: str) -> bool:

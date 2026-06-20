@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/harden-materialization-plan-selected-ids/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED - The patched signature now matches the generator-compatible runtime behavior, the legacy alias still normalizes through the canonical path, and the stricter duplicate/non-string rejection is isolated to manual/public construction without breaking serving/adapters/evidence consumers.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/models.py",
+        "tests/test_planner_materializer.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_planner_materializer.py -q -> 37 passed",
+        "poetry run pytest tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py -q -> 82 passed",
+        "python -m py_compile src/document_kv_cache/models.py tests/test_planner_materializer.py -> passed",
+        "poetry run pytest -q -> 1046 passed",
+        "poetry build -> passed",
+        "poetry check -> All set",
+        "poetry install --dry-run -> passed",
+        "git diff --check -> clean"
+      ],
+      "what_changed": [
+        "Hardened MaterializationPlan request and selected-document metadata validation."
+      ],
+      "why": "Engine handoff, release evidence, and serving diagnostics should receive a real request and ordered unique selected document ids."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
