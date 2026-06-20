@@ -1403,12 +1403,15 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
             if corrupt_member is not None:
                 return (f"package wheel artifact zip member {corrupt_member!r} is corrupt",)
             names = wheel_zip.namelist()
+            duplicate_member_issues = _duplicate_wheel_member_issues(names)
             dist_info_prefixes = tuple(sorted(_root_dist_info_prefixes(names)))
             metadata_names = tuple(name for name in names if _is_root_dist_info_file(name, "METADATA"))
             record_names = tuple(name for name in names if _is_root_dist_info_file(name, "RECORD"))
             wheel_names = tuple(name for name in names if _is_root_dist_info_file(name, "WHEEL"))
     except zipfile.BadZipFile:
         return ("package wheel artifact must be a valid wheel zip payload",)
+    if duplicate_member_issues:
+        return duplicate_member_issues
     if len(dist_info_prefixes) != 1:
         return ("package wheel artifact must contain exactly one root-level .dist-info directory",)
     dist_info_issues = _wheel_dist_info_prefix_issues(dist_info_prefixes[0], filename_match=filename_match)
@@ -1434,6 +1437,21 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
         *_wheel_metadata_issues(metadata_payload, filename_match=filename_match),
         *record_issues,
     )
+
+
+def _duplicate_wheel_member_issues(names: Sequence[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for name in names:
+        if name.endswith("/"):
+            continue
+        if name in seen and name not in duplicates:
+            duplicates.append(name)
+        seen.add(name)
+    if duplicates:
+        duplicate_list = ", ".join(repr(name) for name in duplicates)
+        return (f"package wheel artifact zip entries must not contain duplicate file paths: {duplicate_list}",)
+    return ()
 
 
 def _root_dist_info_prefixes(names: Sequence[str]) -> set[str]:
