@@ -476,6 +476,309 @@ with tempfile.TemporaryDirectory() as raw_tmp:
     assert result.returncode == 0, result.stderr
 
 
+def test_legacy_databricks_job_uses_source_benchmark_config_base_when_public_class_is_mutated_before_import():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+public_databricks_job.DatabricksBenchmarkJobConfig.plan_json_uri = property(lambda self: "")
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__module__ == "restaurant_kv_serving.databricks_job"
+try:
+    public_databricks_job.DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        single_user_name={SINGLE_USER_NAME!r},
+    )
+except (AttributeError, ValueError):
+    pass
+else:
+    raise AssertionError("public benchmark config mutation did not affect construction or validation")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_uses_source_cluster_config_base_when_public_class_is_mutated_before_import():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+public_databricks_job.DatabricksSingleNodeG5ClusterConfig.node_type_id = property(lambda self: "g6.8xlarge")
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksSingleNodeG5ClusterConfig(
+    purpose="document-kv-v1-benchmark",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.node_type_id == "g5.4xlarge"
+assert legacy_databricks_job.DatabricksSingleNodeG5ClusterConfig.__module__ == "restaurant_kv_serving.databricks_job"
+try:
+    public_databricks_job.DatabricksSingleNodeG5ClusterConfig(
+        purpose="document-kv-v1-benchmark",
+        single_user_name={SINGLE_USER_NAME!r},
+    )
+except (AttributeError, ValueError):
+    pass
+else:
+    raise AssertionError("public cluster config mutation did not affect construction or validation")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_handles_public_class_dict_mutation_with_unorderable_keys():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+
+class Key:
+    pass
+
+
+public_databricks_job.DatabricksBenchmarkJobConfig.extra = {{Key(): "a", Key(): "b"}}
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1] is not public_databricks_job.DatabricksBenchmarkJobConfig
+assert not hasattr(legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1], "extra")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_handles_public_class_mutation_with_bad_equality():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+
+class BadEq:
+    def __eq__(self, other):
+        raise RuntimeError("bad equality during fingerprint comparison")
+
+
+public_databricks_job.DatabricksBenchmarkJobConfig.__match_args__ = BadEq()
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1] is not public_databricks_job.DatabricksBenchmarkJobConfig
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_handles_public_dataclass_field_default_mutation_with_bad_equality():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+
+class BadEq:
+    def __eq__(self, other):
+        raise RuntimeError("bad field default equality during fingerprint comparison")
+
+
+public_databricks_job.DatabricksBenchmarkJobConfig.__dataclass_fields__["run_name"].default = BadEq()
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.run_name == "document-kv-v1-benchmark"
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1] is not public_databricks_job.DatabricksBenchmarkJobConfig
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_handles_public_class_mutation_with_bad_attribute_access():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+
+class BadAttr:
+    def __getattr__(self, name):
+        raise RuntimeError(f"bad attribute lookup {{name}}")
+
+
+public_databricks_job.DatabricksBenchmarkJobConfig.extra = BadAttr()
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1] is not public_databricks_job.DatabricksBenchmarkJobConfig
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_handles_public_dataclass_fields_metadata_replacement():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+
+class BadFields:
+    def __getattr__(self, name):
+        raise RuntimeError(f"bad fields attribute lookup {{name}}")
+
+
+public_databricks_job.DatabricksBenchmarkJobConfig.__dataclass_fields__ = BadFields()
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1] is not public_databricks_job.DatabricksBenchmarkJobConfig
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_handles_public_dataclass_init_closure_mutation():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+freevars = public_databricks_job.DatabricksBenchmarkJobConfig.__init__.__code__.co_freevars
+factory_index = freevars.index("_dflt_custom_tags")
+public_databricks_job.DatabricksBenchmarkJobConfig.__init__.__closure__[factory_index].cell_contents = (
+    lambda: {{"source": "mutated-public-closure"}}
+)
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.custom_tags == {{}}
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1] is not public_databricks_job.DatabricksBenchmarkJobConfig
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_databricks_job_handles_public_class_mutation_with_recursive_function_closure():
+    script = f"""
+import document_kv_cache.databricks_job as public_databricks_job
+
+
+def make_recursive():
+    def recursive():
+        return recursive
+
+    return recursive
+
+
+public_databricks_job.DatabricksBenchmarkJobConfig.extra = make_recursive()
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+    plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+    runner_python_file="dbfs:/benchmarks/run_plan.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig.__mro__[1] is not public_databricks_job.DatabricksBenchmarkJobConfig
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_legacy_databricks_job_direct_writer_respects_legacy_build_monkeypatch(monkeypatch, tmp_path):
     output_path = tmp_path / "payload.json"
 
