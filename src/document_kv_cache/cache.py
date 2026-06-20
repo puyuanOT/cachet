@@ -139,7 +139,7 @@ class ChunkCache:
 
             cold_refs = [ref]
             index += 1
-            while index < len(refs) and not self._has_cached_payload(refs[index]):
+            while index < len(refs) and not self._may_have_cached_payload(refs[index]):
                 cold_refs.append(refs[index])
                 index += 1
             results.extend(self._load_cold_refs(cold_refs, loader, batch_loader=batch_loader))
@@ -176,14 +176,14 @@ class ChunkCache:
             self._remove_local(local_path)
         return None
 
-    def _has_cached_payload(self, ref: ChunkRef) -> bool:
+    def _may_have_cached_payload(self, ref: ChunkRef) -> bool:
         key = self._cache_key(ref)
         if self.cpu.peek(key) is not None:
             return True
         local_path = self._local_path(ref)
         if local_path is None or not local_path.exists():
             return False
-        return self._is_valid_payload(ref, local_path.read_bytes())
+        return True
 
     def _load_cold_refs(
         self,
