@@ -817,6 +817,7 @@ def test_readme_workflow_api_shows_single_text_document_helper():
     workflow_api = _markdown_section(text, "Workflow API")
 
     assert "SourceDocument.from_text(" in workflow_api
+    assert "DocumentKVWorkflow.with_storage(" in workflow_api
     assert "DocumentKVRequest.for_text_document(" in workflow_api
     assert "SourceDocument.from_texts(" in workflow_api
     assert "static_chunk_metadata=" in workflow_api

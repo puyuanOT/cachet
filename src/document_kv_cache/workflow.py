@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from document_kv_cache.cache import ChunkCache
 from document_kv_cache.engine import EngineReadyRequest, KVLayout, _normalize_gpu_byte_multiplier, build_engine_ready_request
 from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout_from_value
 from document_kv_cache.kvpack import PackChunk, write_kvpack
@@ -21,6 +22,14 @@ from document_kv_cache.models import (
 )
 from document_kv_cache.planner import CachePlanner
 from document_kv_cache.service import DocumentKVService
+from document_kv_cache.storage import (
+    DiskRangeReader,
+    MemoryRangeReader,
+    RoutedRangeReader,
+    UnityCatalogVolumeRangeReader,
+    local_path,
+    unity_catalog_volume_path,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,11 +236,51 @@ class DocumentKVWorkflow:
         materializer: KVMaterializer,
         planner: CachePlanner | None = None,
         service: DocumentKVService | None = None,
+        shard_path_resolver: Callable[[str], Path] | None = None,
     ) -> None:
         self.manifest = manifest
         self.planner = planner or CachePlanner(manifest)
         self.materializer = materializer
         self.service = service
+        self.shard_path_resolver = shard_path_resolver
+
+    @classmethod
+    def with_storage(
+        cls,
+        *,
+        manifest: ManifestStore,
+        cpu_cache_bytes: int = 0,
+        local_cache_dir: str | Path | None = None,
+        local_cache_bytes: int | None = None,
+        disk_root: str | Path | None = None,
+        uc_volume_root: str | Path | None = None,
+        memory_blobs: Mapping[str, bytes] | None = None,
+        planner: CachePlanner | None = None,
+        service: DocumentKVService | None = None,
+    ) -> "DocumentKVWorkflow":
+        """Build a workflow with the standard memory/disk/UC reader stack."""
+        shard_path_resolver = _storage_shard_path_resolver(
+            disk_root=disk_root,
+            uc_volume_root=uc_volume_root,
+        )
+        return cls(
+            manifest=manifest,
+            planner=planner,
+            materializer=KVMaterializer(
+                cache=ChunkCache(
+                    cpu_max_bytes=cpu_cache_bytes,
+                    local_dir=local_cache_dir,
+                    local_max_bytes=local_cache_bytes,
+                ),
+                reader=RoutedRangeReader(
+                    memory=MemoryRangeReader(memory_blobs),
+                    disk=DiskRangeReader(root=disk_root),
+                    unity_catalog=UnityCatalogVolumeRangeReader(volume_root=uc_volume_root),
+                ),
+            ),
+            service=service,
+            shard_path_resolver=shard_path_resolver,
+        )
 
     def generate_cache(
         self,
@@ -246,7 +295,14 @@ class DocumentKVWorkflow:
         training_artifacts = trainer.fit(documents, config) if trainer is not None else None
         cache_method = _effective_cache_method(config, trainer)
         pack_chunks = tuple(self._iter_pack_chunks(documents, generator, config, training_artifacts))
-        refs = tuple(write_kvpack(shard_uri, pack_chunks, align_bytes=align_bytes))
+        refs = tuple(
+            write_kvpack(
+                shard_uri,
+                pack_chunks,
+                align_bytes=align_bytes,
+                path_resolver=self.shard_path_resolver,
+            )
+        )
         self.manifest.put_many(refs)
         return CacheGenerationResult(
             refs=refs,
@@ -428,6 +484,25 @@ def _chunk_metadata_map(
             raise ValueError("chunk_metadata keys must be non-empty strings")
         normalized[chunk_id] = _metadata_dict(f"chunk_metadata.{chunk_id}", metadata)
     return normalized
+
+
+def _storage_shard_path_resolver(
+    *,
+    disk_root: str | Path | None,
+    uc_volume_root: str | Path | None,
+) -> Callable[[str], Path]:
+    def resolve(shard_uri: str) -> Path:
+        if shard_uri.startswith("uc-volume:") or shard_uri == "/Volumes" or shard_uri.startswith("/Volumes/"):
+            return unity_catalog_volume_path(shard_uri, root=uc_volume_root)
+        if uc_volume_root is not None and _is_relative_storage_uri(shard_uri):
+            return unity_catalog_volume_path(shard_uri, root=uc_volume_root)
+        return local_path(shard_uri, root=disk_root)
+
+    return resolve
+
+
+def _is_relative_storage_uri(shard_uri: str) -> bool:
+    return ":" not in shard_uri and not Path(shard_uri).is_absolute()
 
 
 def _non_empty_string(name: str, value: object) -> str:

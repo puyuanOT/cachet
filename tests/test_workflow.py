@@ -1,7 +1,7 @@
 import pytest
 
 from document_kv_cache.admission import AdmissionQueue
-from document_kv_cache.cache import ChunkCache
+from document_kv_cache.cache import CacheTier, ChunkCache
 from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
@@ -345,6 +345,101 @@ def test_workflow_generates_registers_and_prepares_cache(tmp_path):
     assert b"doc-a:static:static context" in materialized.payload
     assert b"doc-a:section-1:hello world" in materialized.payload
     assert manifest.keys_for_document("doc-a")
+
+
+def test_workflow_with_storage_wires_routed_reader_and_local_cache(tmp_path):
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow.with_storage(
+        manifest=manifest,
+        cpu_cache_bytes=1,
+        local_cache_dir=tmp_path / "local-cache",
+        local_cache_bytes=4096,
+    )
+    document = SourceDocument.from_texts(
+        document_id="doc-a",
+        static_text="static context",
+        chunks={"section-1": "hello world"},
+    )
+
+    workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri=tmp_path / "factory-cache.kvpack",
+        align_bytes=1,
+    )
+    first = workflow.prepare(request_for("doc-a"))
+    second = workflow.prepare(request_for("doc-a"))
+
+    assert b"doc-a:static:static context" in first.payload
+    assert b"doc-a:section-1:hello world" in first.payload
+    assert first.segment_tiers == (CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE)
+    assert second.payload == first.payload
+    assert second.segment_tiers == (CacheTier.LOCAL_DISK, CacheTier.LOCAL_DISK)
+    assert workflow.materializer.cache.stats().cold_misses == 2
+    assert workflow.materializer.cache.stats().local_hits == 2
+
+
+def test_workflow_with_storage_generates_relative_shards_under_disk_root(tmp_path):
+    disk_root = tmp_path / "disk-root"
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow.with_storage(
+        manifest=manifest,
+        cpu_cache_bytes=4096,
+        disk_root=disk_root,
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="hello from disk root")
+    request = DocumentKVRequest.for_text_document(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+    )
+
+    workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri="relative-disk-cache.kvpack",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(request)
+
+    assert (disk_root / "relative-disk-cache.kvpack").exists()
+    assert materialized.payload == b"doc-a:document:hello from disk root"
+
+
+def test_workflow_with_storage_generates_relative_shards_under_uc_volume_root(tmp_path):
+    uc_volume_root = tmp_path / "Volumes" / "catalog" / "schema" / "volume"
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow.with_storage(
+        manifest=manifest,
+        cpu_cache_bytes=4096,
+        uc_volume_root=uc_volume_root,
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="hello from uc root")
+    request = DocumentKVRequest.for_text_document(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+    )
+
+    workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri="relative-uc-cache.kvpack",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(request)
+
+    assert (uc_volume_root / "relative-uc-cache.kvpack").exists()
+    assert materialized.payload == b"doc-a:document:hello from uc root"
 
 
 def test_workflow_generates_and_prepares_single_text_document(tmp_path):
