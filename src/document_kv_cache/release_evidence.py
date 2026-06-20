@@ -819,32 +819,61 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
     if not report_rows:
         issues.append("v1 benchmark report_rows must be non-empty")
         return
-    row_keys = set()
+    row_keys: set[tuple[str, str]] = set()
     for index, row in enumerate(report_rows):
         if not isinstance(row, Mapping):
             issues.append(f"v1 benchmark report_rows[{index}] must be a mapping")
             continue
-        dataset = row.get("dataset")
-        arm_id = row.get("arm_id")
-        row_keys.add((dataset, arm_id))
+        dataset_value = row.get("dataset")
+        arm_id_value = row.get("arm_id")
+        dataset = _validate_v1_dataset(
+            dataset_value,
+            label=f"v1 benchmark report_rows[{index}]",
+            issues=issues,
+        )
+        arm_id = _validate_v1_arm_id(
+            arm_id_value,
+            label=f"v1 benchmark report_rows[{index}]",
+            issues=issues,
+        )
+        if dataset is not None and arm_id is not None:
+            _add_unique_v1_dataset_arm(
+                row_keys,
+                dataset,
+                arm_id,
+                collection_name="report_rows",
+                issues=issues,
+            )
         if not _is_positive_int(row.get("requests")):
-            issues.append(f"v1 benchmark report row {dataset}:{arm_id} requests must be positive")
+            issues.append(f"v1 benchmark report row {dataset_value}:{arm_id_value} requests must be positive")
         if type(row.get("errors")) is not int or row["errors"] < 0:
-            issues.append(f"v1 benchmark report row {dataset}:{arm_id} errors must be a non-negative integer")
+            issues.append(
+                f"v1 benchmark report row {dataset_value}:{arm_id_value} errors must be a non-negative integer"
+            )
         elif _is_positive_int(row.get("requests")) and row["errors"] >= row["requests"]:
-            issues.append(f"v1 benchmark report row {dataset}:{arm_id} must include at least one successful request")
+            issues.append(
+                f"v1 benchmark report row {dataset_value}:{arm_id_value} must include at least one successful request"
+            )
         for metric_name in ("prompt_tokens_mean", "completion_tokens_mean", "output_tokens_per_second"):
             value = row.get(metric_name)
             if not _is_positive_number(value):
-                issues.append(f"v1 benchmark report row {dataset}:{arm_id} {metric_name} must be positive")
+                issues.append(
+                    f"v1 benchmark report row {dataset_value}:{arm_id_value} {metric_name} must be positive"
+                )
         for metric_name in ("ttft", "time_to_completion"):
             metric = row.get(metric_name)
             if not isinstance(metric, Mapping) or metric.get("p50") is None or metric.get("p95") is None:
-                issues.append(f"v1 benchmark report row {dataset}:{arm_id} must include {metric_name} p50/p95")
+                issues.append(
+                    f"v1 benchmark report row {dataset_value}:{arm_id_value} must include {metric_name} p50/p95"
+                )
             else:
-                _validate_latency_summary(metric, f"v1 benchmark report row {dataset}:{arm_id} {metric_name}", issues)
+                _validate_latency_summary(
+                    metric,
+                    f"v1 benchmark report row {dataset_value}:{arm_id_value} {metric_name}",
+                    issues,
+                )
         if row.get("answer_found_rate") is None and row.get("exact_match_rate") is None:
-            issues.append(f"v1 benchmark report row {dataset}:{arm_id} must include quality metrics")
+            issues.append(f"v1 benchmark report row {dataset_value}:{arm_id_value} must include quality metrics")
     expected = {
         (dataset, arm_id)
         for dataset in SUPPORTED_V1_DATASETS
@@ -859,26 +888,36 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
     if not measurements:
         issues.append("v1 benchmark measurements must be non-empty")
         return
-    measurement_keys = set()
+    measurement_keys: set[tuple[str, str]] = set()
     for index, measurement in enumerate(measurements):
         if not isinstance(measurement, Mapping):
             issues.append(f"v1 benchmark measurements[{index}] must be a mapping")
             continue
-        dataset = measurement.get("dataset")
-        arm_id = measurement.get("arm_id")
-        measurement_keys.add((dataset, arm_id))
-        if dataset not in SUPPORTED_V1_DATASETS:
-            issues.append(f"v1 benchmark measurement {index} has unsupported dataset {dataset!r}")
-        if arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
-            issues.append(f"v1 benchmark measurement {index} has unsupported arm_id {arm_id!r}")
+        dataset_value = measurement.get("dataset")
+        arm_id_value = measurement.get("arm_id")
+        dataset = _validate_v1_dataset(
+            dataset_value,
+            label=f"v1 benchmark measurement {index}",
+            issues=issues,
+        )
+        arm_id = _validate_v1_arm_id(
+            arm_id_value,
+            label=f"v1 benchmark measurement {index}",
+            issues=issues,
+        )
+        if dataset is not None and arm_id is not None:
+            measurement_keys.add((dataset, arm_id))
         for field_name in ("prompt_tokens", "completion_tokens"):
             if not _is_positive_int(measurement.get(field_name)):
-                issues.append(f"v1 benchmark measurement {dataset}:{arm_id} {field_name} must be a positive integer")
+                issues.append(
+                    f"v1 benchmark measurement {dataset_value}:{arm_id_value} "
+                    f"{field_name} must be a positive integer"
+                )
         for field_name in ("ttft_seconds", "time_to_completion_seconds"):
             value = measurement.get(field_name)
             if not _is_non_negative_number(value):
                 issues.append(
-                    f"v1 benchmark measurement {dataset}:{arm_id} "
+                    f"v1 benchmark measurement {dataset_value}:{arm_id_value} "
                     f"{field_name} must be a non-negative finite number"
                 )
         ttft_seconds = measurement.get("ttft_seconds")
@@ -886,14 +925,21 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         if _is_non_negative_number(ttft_seconds) and _is_non_negative_number(time_to_completion_seconds):
             if time_to_completion_seconds < ttft_seconds:
                 issues.append(
-                    f"v1 benchmark measurement {dataset}:{arm_id} "
+                    f"v1 benchmark measurement {dataset_value}:{arm_id_value} "
                     "time_to_completion_seconds must be greater than or equal to ttft_seconds"
                 )
         if measurement.get("error") not in (None, ""):
-            issues.append(f"v1 benchmark measurement {dataset}:{arm_id} must not have an error")
+            issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} must not have an error")
         if measurement.get("answer_found") is not None and type(measurement.get("answer_found")) is not bool:
-            issues.append(f"v1 benchmark measurement {dataset}:{arm_id} answer_found must be boolean when present")
-        _validate_v1_measurement_token_context(measurement, dataset=dataset, arm_id=arm_id, issues=issues)
+            issues.append(
+                f"v1 benchmark measurement {dataset_value}:{arm_id_value} answer_found must be boolean when present"
+            )
+        _validate_v1_measurement_token_context(
+            measurement,
+            dataset=dataset_value,
+            arm_id=arm_id_value,
+            issues=issues,
+        )
     expected = {
         (dataset, arm_id)
         for dataset in SUPPORTED_V1_DATASETS
@@ -939,24 +985,37 @@ def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> N
     if not comparisons:
         issues.append("v1 benchmark comparisons must be non-empty")
         return
-    by_dataset = {}
+    comparison_datasets: set[str] = set()
     for index, comparison in enumerate(comparisons):
         if not isinstance(comparison, Mapping):
             issues.append(f"v1 benchmark comparisons[{index}] must be a mapping")
             continue
-        dataset = comparison.get("dataset")
-        by_dataset[dataset] = comparison
+        dataset_value = comparison.get("dataset")
+        dataset = _validate_v1_dataset(
+            dataset_value,
+            label=f"v1 benchmark comparison {index}",
+            issues=issues,
+        )
+        if dataset is not None:
+            if dataset in comparison_datasets:
+                issues.append(f"v1 benchmark comparisons has duplicate comparison for {dataset}")
+            else:
+                comparison_datasets.add(dataset)
         if comparison.get("baseline_arm_id") != BASELINE_PREFILL_ARM:
-            issues.append(f"v1 benchmark comparison {dataset} baseline_arm_id must be {BASELINE_PREFILL_ARM!r}")
+            issues.append(
+                f"v1 benchmark comparison {dataset_value} baseline_arm_id must be {BASELINE_PREFILL_ARM!r}"
+            )
         if comparison.get("cache_arm_id") != CACHE_REUSE_ARM:
-            issues.append(f"v1 benchmark comparison {dataset} cache_arm_id must be {CACHE_REUSE_ARM!r}")
+            issues.append(f"v1 benchmark comparison {dataset_value} cache_arm_id must be {CACHE_REUSE_ARM!r}")
         for metric_name in ("ttft_speedup", "time_to_completion_speedup"):
             if not _is_positive_number(comparison.get(metric_name)):
-                issues.append(f"v1 benchmark comparison {dataset} {metric_name} must be a positive finite number")
+                issues.append(
+                    f"v1 benchmark comparison {dataset_value} {metric_name} must be a positive finite number"
+                )
         for metric_name in ("exact_match_delta", "answer_found_delta"):
             if not _is_finite_number(comparison.get(metric_name)):
-                issues.append(f"v1 benchmark comparison {dataset} {metric_name} must be a finite number")
-    missing = sorted(set(SUPPORTED_V1_DATASETS).difference(by_dataset))
+                issues.append(f"v1 benchmark comparison {dataset_value} {metric_name} must be a finite number")
+    missing = sorted(set(SUPPORTED_V1_DATASETS).difference(comparison_datasets))
     if missing:
         issues.append(f"v1 benchmark comparisons missing required datasets: {', '.join(missing)}")
 
@@ -1126,6 +1185,35 @@ def _matches_release_storage_readers(value: Any) -> bool:
         len(value) == len(RELEASE_STORAGE_BENCHMARK_READERS)
         and set(value) == set(RELEASE_STORAGE_BENCHMARK_READERS)
     )
+
+
+def _validate_v1_dataset(value: Any, *, label: str, issues: list[str]) -> str | None:
+    if not isinstance(value, str) or value not in SUPPORTED_V1_DATASETS:
+        issues.append(f"{label} has unsupported dataset {value!r}")
+        return None
+    return value
+
+
+def _validate_v1_arm_id(value: Any, *, label: str, issues: list[str]) -> str | None:
+    if not isinstance(value, str) or value not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
+        issues.append(f"{label} has unsupported arm_id {value!r}")
+        return None
+    return value
+
+
+def _add_unique_v1_dataset_arm(
+    seen: set[tuple[str, str]],
+    dataset: str,
+    arm_id: str,
+    *,
+    collection_name: str,
+    issues: list[str],
+) -> None:
+    key = (dataset, arm_id)
+    if key in seen:
+        issues.append(f"v1 benchmark {collection_name} has duplicate row for {dataset}:{arm_id}")
+        return
+    seen.add(key)
 
 
 def _is_positive_int(value: Any) -> bool:
