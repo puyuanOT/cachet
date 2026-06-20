@@ -154,8 +154,13 @@ def benchmark_plan_source_payload_to_record(path: str, driver_path: str | Path, 
     return _call_document_function("benchmark_plan_source_payload_to_record", path, driver_path, payload)
 
 
-def write_benchmark_command_results_json(results: Sequence[BenchmarkCommandResult], path: str | Path) -> None:
-    return _call_document_function("write_benchmark_command_results_json", results, path)
+def write_benchmark_command_results_json(
+    results: Sequence[BenchmarkCommandResult],
+    path: str | Path,
+    *,
+    plan_source: Mapping[str, Any] | None = None,
+) -> None:
+    return _call_document_function("write_benchmark_command_results_json", results, path, plan_source=plan_source)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
