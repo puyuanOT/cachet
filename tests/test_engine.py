@@ -5,7 +5,7 @@ import pytest
 from document_kv_cache.admission import AdmissionQueue
 from document_kv_cache.cache import CacheTier, ChunkCache
 from document_kv_cache.engine import EngineReadyRequest, build_engine_ready_request, build_handle_from_materialized
-from document_kv_cache.engine_protocol import AttentionMechanism, KVLayout, KVStorageLayout
+from document_kv_cache.engine_protocol import AttentionMechanism, KVLayout, KVStorageLayout, dtype_byte_width
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer
@@ -313,6 +313,33 @@ def test_layout_validation_rejects_invalid_gqa_shape():
 
     with pytest.raises(ValueError, match="divisible"):
         bad_layout.validate()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("model_id", object(), "model_id must be non-empty"),
+        ("lora_id", object(), "lora_id must be non-empty"),
+        ("layout_version", object(), "layout_version must be non-empty"),
+        ("dtype", object(), "dtype must be non-empty"),
+        ("num_layers", True, "num_layers must be a positive integer"),
+        ("block_size", 16.0, "block_size must be a positive integer"),
+        ("bytes_per_token", "73728", "bytes_per_token must be a positive integer"),
+        ("num_query_heads", True, "num_query_heads must be a positive integer"),
+        ("num_kv_heads", 8.0, "num_kv_heads must be a positive integer"),
+        ("head_size", "128", "head_size must be a positive integer"),
+        ("kv_stride_bytes", False, "kv_stride_bytes must be a positive integer"),
+        ("shares_kv_storage", 1, "shares_kv_storage must be a boolean"),
+    ],
+)
+def test_layout_validation_rejects_invalid_primitive_field_types(field_name, value, message):
+    with pytest.raises(ValueError, match=message):
+        replace(layout(), **{field_name: value}).validate()
+
+
+def test_dtype_byte_width_rejects_non_string_dtype():
+    with pytest.raises(ValueError, match="dtype must be a string"):
+        dtype_byte_width(1)  # type: ignore[arg-type]
 
 
 def test_layout_validation_rejects_inconsistent_geometry_byte_math():

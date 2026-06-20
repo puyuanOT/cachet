@@ -1,0 +1,26 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED: no blocking findings; valid behavior preserved, strict primitive validation added, and tests cover malformed primitive paths plus existing geometry checks.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/engine_protocol.py",
+    "tests/test_engine.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine.py tests/test_model_profiles.py -q -> 52 passed",
+    "git diff --check -> clean",
+    "poetry run pytest -q -> 1017 passed",
+    "poetry build -> passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> passed"
+  ],
+  "what_changed": [
+    "Hardened KVLayout primitive validation for model KV layout geometry."
+  ],
+  "why": "MQA/GQA and shared-KV serving layout math should reject malformed primitive values before adapter handoff."
+}
