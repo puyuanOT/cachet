@@ -49,7 +49,7 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
         "notes",
     }
 )
-_BENCHMARK_JOB_PLAN_COMMAND_KEYS = frozenset({"name", "argv"})
+_BENCHMARK_JOB_PLAN_COMMAND_KEYS = frozenset({"name", "argv", "shell"})
 
 __all__ = [
     "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",

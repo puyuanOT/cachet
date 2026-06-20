@@ -21,6 +21,12 @@ from document_kv_cache.benchmark_plan_executor import (
     main,
     write_benchmark_command_results_json,
 )
+from document_kv_cache.benchmark_plan import (
+    BenchmarkDatasetPath,
+    BenchmarkPlanConfig,
+    benchmark_job_plan_to_record,
+    build_v1_benchmark_plan,
+)
 from restaurant_kv_serving.benchmark_plan_executor import _driver_path, _runtime_argv
 
 
@@ -183,6 +189,30 @@ def test_execute_benchmark_job_plan_json_loads_plan_file(tmp_path):
     results = execute_benchmark_job_plan_json(path, dry_run=True)
 
     assert results[0].skipped is True
+
+
+def test_execute_benchmark_job_plan_accepts_generated_benchmark_plan_record(tmp_path):
+    plan = build_v1_benchmark_plan(
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=tuple(
+                BenchmarkDatasetPath(
+                    dataset=dataset,
+                    raw_jsonl=str(tmp_path / "raw" / f"{dataset}.jsonl"),
+                    prepared_jsonl=str(tmp_path / "prepared" / f"{dataset}.jsonl"),
+                )
+                for dataset in ("biography", "hotpotqa", "musique", "niah")
+            ),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+        )
+    )
+    record = benchmark_job_plan_to_record(plan)
+
+    results = execute_benchmark_job_plan(record, dry_run=True)
+
+    assert len(results) == len(record["commands"])
+    assert all(result.skipped for result in results)
 
 
 def test_execute_benchmark_job_plan_validates_command_records():

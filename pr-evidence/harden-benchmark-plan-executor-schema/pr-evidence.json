@@ -1,8 +1,8 @@
 {
   "gpt55_review_completed": true,
-  "gpt55_review_findings_resolved": false,
-  "gpt55_review_outcome": "clean",
-  "gpt55_review_summary": "GPT-5.5 reviewer found no issues: whitelist matches generated benchmark plan schema, minimal legacy commands-only plans still pass, and validation runs before subprocess execution.",
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer found the initial command whitelist rejected generated planner records because commands include shell; the fix allows shell and adds planner-to-executor regression coverage.",
   "issues": [],
   "ok": true,
   "record_type": "document_kv.pr_evidence.v1",
@@ -11,10 +11,10 @@
     "src/document_kv_cache/benchmark_plan_executor.py; tests/test_benchmark_plan_executor.py; README.md; pr-evidence/harden-benchmark-plan-executor-schema/README.md"
   ],
   "verification": [
-    "python -m pytest tests/test_benchmark_plan_executor.py; python -m pytest tests/test_benchmark_plan.py tests/test_release_bundle.py; python -m pytest -q; poetry check && poetry install --dry-run && poetry install --dry-run --extras databricks --extras test && poetry build; GPT-5.5 review approved with no findings"
+    "python -m pytest tests/test_benchmark_plan_executor.py; python -m pytest tests/test_benchmark_plan.py tests/test_release_bundle.py; python -m pytest -q; poetry check && poetry install --dry-run && poetry install --dry-run --extras databricks --extras test && poetry build; GPT-5.5 review finding about generated command shell field resolved"
   ],
   "what_changed": [
-    "Benchmark plan executor now rejects unsupported top-level benchmark plan keys and unsupported per-command keys before running commands."
+    "Benchmark plan executor now rejects unsupported top-level benchmark plan keys and unsupported per-command keys before running commands while accepting generated command shell renderings."
   ],
-  "why": "Keeps benchmark job plans fail-closed and prevents ad hoc/debug fields from silently influencing release execution provenance."
+  "why": "Keeps benchmark job plans fail-closed and prevents ad hoc/debug fields from silently influencing release execution provenance without breaking generated planner records."
 }
