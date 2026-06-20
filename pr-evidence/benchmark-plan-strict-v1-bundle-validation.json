@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/benchmark-plan-strict-v1-bundle.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 approved the benchmark-plan strict V1 release-bundle flag with no blocking issues and spot-checked the CLI flag path.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "benchmark-plan",
+        "release-bundle",
+        "cli-help",
+        "docs",
+        "tests"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_benchmark_plan.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry build",
+        "poetry install --dry-run",
+        "poetry install --dry-run --extras databricks --extras test",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Benchmark release-bundle plans now carry a require_complete_v1 flag.",
+        "The benchmark-plan CLI adds --release-bundle-require-complete-v1 and forwards --require-complete-v1 to the generated release bundle command.",
+        "Plan records now preserve whether strict V1 bundle generation was requested."
+      ],
+      "why": "Release publishing workflows need a planned path to invoke the strict V1 bundle gate instead of only the lower-level release_bundle CLI supporting it."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

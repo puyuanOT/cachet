@@ -265,6 +265,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             repository_hygiene_json=str(tmp_path / "repository-hygiene.json"),
             native_probe_factories_jsons=(str(tmp_path / "native-probe-factories.json"),),
             overwrite=True,
+            require_complete_v1=True,
         ),
     )
 
@@ -301,6 +302,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
         "pr_evidence_jsons": [str(tmp_path / "pr-evidence.json")],
         "release_evidence_json": str(tmp_path / "release-evidence.json"),
         "repository_hygiene_json": str(tmp_path / "repository-hygiene.json"),
+        "require_complete_v1": True,
         "storage_benchmark_json": str(tmp_path / "storage.json"),
         "v1_benchmark_json": str(tmp_path / "results.json"),
     }
@@ -322,7 +324,42 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert "--github-governance-json" in bundle_command.argv
     assert "--repository-hygiene-json" in bundle_command.argv
     assert "--native-probe-factories-json" in bundle_command.argv
+    assert "--require-complete-v1" in bundle_command.argv
     assert "--overwrite" in bundle_command.argv
+
+
+def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp_path):
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+        ),
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert record["release_bundle"]["require_complete_v1"] is False
+    assert "--require-complete-v1" not in bundle_command.argv
 
 
 def test_build_v1_benchmark_plan_can_generate_and_bundle_github_governance(tmp_path):
@@ -988,6 +1025,15 @@ def test_benchmark_plan_requires_release_evidence_before_release_bundle(tmp_path
                 output_dir=str(tmp_path / "release-bundle"),
                 output_json=str(tmp_path / "release-bundle-manifest.json"),
             ),
+        )
+
+
+def test_release_bundle_plan_rejects_non_boolean_strict_v1_flag(tmp_path):
+    with pytest.raises(ValueError, match="release bundle require_complete_v1 must be boolean"):
+        ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+            require_complete_v1=1,  # type: ignore[arg-type]
         )
 
 
@@ -2348,6 +2394,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "native-probe-factories.json"),
             "--native-probe-factories-output-json",
             str(tmp_path / "native-probe-factories.json"),
+            "--release-bundle-require-complete-v1",
             "--release-bundle-overwrite",
             "--plan-output-json",
             str(plan_json),
@@ -2398,6 +2445,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["release_bundle"]["native_probe_factories_jsons"] == [
         str(tmp_path / "native-probe-factories.json")
     ]
+    assert record["release_bundle"]["require_complete_v1"] is True
     assert governance_argv[:3] == [sys.executable, "-m", "document_kv_cache.github_governance"]
     assert governance_argv[governance_argv.index("--output-json") + 1] == str(tmp_path / "github-governance.json")
     assert hygiene_argv[:3] == [sys.executable, "-m", "document_kv_cache.repository_hygiene"]
@@ -2427,6 +2475,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert bundle_argv[bundle_argv.index("--native-probe-factories-json") + 1] == str(
         tmp_path / "native-probe-factories.json"
     )
+    assert "--require-complete-v1" in bundle_argv
     assert "--overwrite" in bundle_argv
 
 
