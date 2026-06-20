@@ -12,6 +12,8 @@ from typing import Any
 from document_kv_cache.model_profiles import (
     DTYPE_BYTE_WIDTHS,
     MODEL_PROFILE_RECORD_TYPE,
+    QWEN3_4B_BASE_HF_MODEL_ID,
+    QWEN3_4B_INSTRUCT_HF_MODEL_ID,
     QWEN3_4B_INSTRUCT_PROFILE,
     AttentionMechanism,
     KVLayout,

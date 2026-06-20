@@ -348,6 +348,8 @@ _DOCUMENT_ROOT_EXPORTS = {
     "KVModelProfile": ("document_kv_cache.model_profiles", "KVModelProfile"),
     "ModelProfileDefinition": ("document_kv_cache.model_profiles", "ModelProfileDefinition"),
     "ModelProfileRegistry": ("document_kv_cache.model_profiles", "ModelProfileRegistry"),
+    "QWEN3_4B_BASE_HF_MODEL_ID": ("document_kv_cache.model_profiles", "QWEN3_4B_BASE_HF_MODEL_ID"),
+    "QWEN3_4B_INSTRUCT_HF_MODEL_ID": ("document_kv_cache.model_profiles", "QWEN3_4B_INSTRUCT_HF_MODEL_ID"),
     "QWEN3_4B_INSTRUCT_PROFILE": ("document_kv_cache.model_profiles", "QWEN3_4B_INSTRUCT_PROFILE"),
     "builtin_model_profiles": ("document_kv_cache.model_profiles", "builtin_model_profiles"),
     "default_model_profile_registry": (

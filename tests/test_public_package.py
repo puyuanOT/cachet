@@ -75,6 +75,8 @@ def test_public_document_package_reexports_core_api():
         MaterializedKV,
         ModelProfileDefinition,
         ModelProfileRegistry,
+        QWEN3_4B_BASE_HF_MODEL_ID,
+        QWEN3_4B_INSTRUCT_HF_MODEL_ID,
         QWEN3_4B_INSTRUCT_PROFILE,
         GPT55_REVIEW_OUTCOMES,
         PR_EVIDENCE_RECORD_TYPE,
@@ -373,6 +375,10 @@ def test_public_document_package_reexports_core_api():
     assert ModelProfileRegistry is model_profiles.ModelProfileRegistry
     assert ModelProfileRegistry is restaurant_kv_serving.ModelProfileRegistry
     assert ModelProfileRegistry.__module__ == "document_kv_cache.model_profiles"
+    assert QWEN3_4B_BASE_HF_MODEL_ID == model_profiles.QWEN3_4B_BASE_HF_MODEL_ID
+    assert QWEN3_4B_BASE_HF_MODEL_ID == restaurant_kv_serving.QWEN3_4B_BASE_HF_MODEL_ID
+    assert QWEN3_4B_INSTRUCT_HF_MODEL_ID == model_profiles.QWEN3_4B_INSTRUCT_HF_MODEL_ID
+    assert QWEN3_4B_INSTRUCT_HF_MODEL_ID == restaurant_kv_serving.QWEN3_4B_INSTRUCT_HF_MODEL_ID
     assert QWEN3_4B_INSTRUCT_PROFILE is model_profiles.QWEN3_4B_INSTRUCT_PROFILE
     assert QWEN3_4B_INSTRUCT_PROFILE is restaurant_kv_serving.QWEN3_4B_INSTRUCT_PROFILE
     assert GPT55_REVIEW_OUTCOMES is restaurant_kv_serving.GPT55_REVIEW_OUTCOMES
@@ -1531,6 +1537,8 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "MODEL_PROFILE_RECORD_TYPE",
         "ModelProfileDefinition",
         "ModelProfileRegistry",
+        "QWEN3_4B_BASE_HF_MODEL_ID",
+        "QWEN3_4B_INSTRUCT_HF_MODEL_ID",
         "QWEN3_4B_INSTRUCT_PROFILE",
         "builtin_model_profiles",
         "default_model_profile_registry",
