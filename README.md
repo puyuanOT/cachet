@@ -529,6 +529,11 @@ document-kv-native-probe-factories \
   --output-json native-probe-factories.json
 ```
 
+Call `validate_native_probe_factories_record` or
+`native_probe_factories_record_issues` before bundling externally supplied
+diagnostics; release bundles reuse the same validator for the
+`document_kv.native_probe_factories.v1` sidecar.
+
 `EngineAdapterRequest` records the target backend (`vllm` or `sglang`), payload
 mode (`merged` or `segmented`), expected external package, required injection
 steps, and namespaced metadata such as `document_kv.handle_uri` and

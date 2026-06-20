@@ -464,9 +464,17 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.native_probe_factories",
         "native_probe_factory_inspection_to_record",
     ),
+    "native_probe_factories_record_issues": (
+        "document_kv_cache.native_probe_factories",
+        "native_probe_factories_record_issues",
+    ),
     "sglang_native_probe_factory": (
         "document_kv_cache.native_probe_factories",
         "sglang_native_probe_factory",
+    ),
+    "validate_native_probe_factories_record": (
+        "document_kv_cache.native_probe_factories",
+        "validate_native_probe_factories_record",
     ),
     "vllm_native_probe_factory": (
         "document_kv_cache.native_probe_factories",

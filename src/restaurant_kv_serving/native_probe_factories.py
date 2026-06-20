@@ -18,7 +18,9 @@ from document_kv_cache.native_probe_factories import (
     inspect_builtin_native_probe_factory,
     main,
     native_probe_factory_inspection_to_record,
+    native_probe_factories_record_issues,
     sglang_native_probe_factory,
+    validate_native_probe_factories_record,
     vllm_native_probe_factory,
     write_builtin_native_probe_factories_record_json,
 )
@@ -35,8 +37,10 @@ __all__ = [
     "inspect_builtin_native_probe_factories",
     "inspect_builtin_native_probe_factory",
     "main",
+    "native_probe_factories_record_issues",
     "native_probe_factory_inspection_to_record",
     "sglang_native_probe_factory",
+    "validate_native_probe_factories_record",
     "vllm_native_probe_factory",
     "write_builtin_native_probe_factories_record_json",
 ]

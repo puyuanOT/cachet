@@ -567,6 +567,10 @@ _EXPORTS = {
         "restaurant_kv_serving.native_probe_factories",
         "native_probe_factory_inspection_to_record",
     ),
+    "native_probe_factories_record_issues": (
+        "restaurant_kv_serving.native_probe_factories",
+        "native_probe_factories_record_issues",
+    ),
     "read_databricks_run_submit_payload": (
         "restaurant_kv_serving.databricks_runs",
         "read_databricks_run_submit_payload",
@@ -655,6 +659,10 @@ _EXPORTS = {
     "validate_engine_adapter_request_record": (
         "restaurant_kv_serving.engine_adapters",
         "validate_engine_adapter_request_record",
+    ),
+    "validate_native_probe_factories_record": (
+        "restaurant_kv_serving.native_probe_factories",
+        "validate_native_probe_factories_record",
     ),
     "validate_engine_kv_connector_actions_record": (
         "restaurant_kv_serving.engine_adapters",
@@ -1029,6 +1037,7 @@ __all__ = [
     "model_profile_definition_from_record",
     "model_profile_definition_to_record",
     "native_probe_factory_inspection_to_record",
+    "native_probe_factories_record_issues",
     "read_databricks_run_submit_payload",
     "read_model_profile_definition_json",
     "read_engine_adapter_request_json",
@@ -1060,6 +1069,7 @@ __all__ = [
     "vllm_adapter_spec",
     "vllm_native_probe_factory",
     "validate_engine_adapter_request_record",
+    "validate_native_probe_factories_record",
     "validate_engine_kv_connector_actions_record",
     "validate_engine_kv_connector_probe_record",
     "validate_engine_kv_connector_actions",
