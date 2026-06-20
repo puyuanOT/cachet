@@ -26,3 +26,9 @@ build/
 # Local run outputs.
 *.log
 *.tmp
+
+# Databricks and infrastructure local state.
+.databricks/
+.terraform/
+terraform.tfstate
+terraform.tfstate.*

@@ -21,6 +21,9 @@ def test_gitignore_covers_local_build_cache_and_secret_artifacts():
 
     assert set(REQUIRED_GITIGNORE_PATTERNS).issubset(ignored_lines)
     assert ".ipynb_checkpoints/" in ignored_lines
+    assert ".databricks/" in ignored_lines
+    assert ".terraform/" in ignored_lines
+    assert "terraform.tfstate" in ignored_lines
 
 
 def test_no_generated_artifacts_are_tracked():
@@ -94,13 +97,19 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         tracked_paths=(
             ".env.example",
             "dist/document_kv_cache-0.2.0-py3-none-any.whl",
+            ".databricks/bundle/dev/state.json",
+            ".terraform/providers/registry.terraform.io/hashicorp/databricks/provider",
+            "terraform.tfstate.backup",
             "notebooks/.ipynb_checkpoints/debug-checkpoint.ipynb",
             "src/document_kv_cache/__pycache__/cache.pyc",
         ),
         untracked_paths=(
+            ".databricks/bundle/dev/state.json",
+            ".terraform/providers/provider.bin",
             ".env.local",
             "notes.txt",
             "tmp/output.tmp",
+            "terraform.tfstate",
         ),
         dirty_tracked_paths=("README.md", "src/document_kv_cache/repository_hygiene.py"),
         gitignore_lines=(".venv/", "__pycache__/"),
@@ -113,19 +122,25 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
     assert record["documentation_checked_directory_paths"] == ["."]
     assert record["missing_directory_documentation_paths"] == []
     assert record["forbidden_tracked_paths"] == [
+        ".databricks/bundle/dev/state.json",
+        ".terraform/providers/registry.terraform.io/hashicorp/databricks/provider",
         "dist/document_kv_cache-0.2.0-py3-none-any.whl",
         "notebooks/.ipynb_checkpoints/debug-checkpoint.ipynb",
         "src/document_kv_cache/__pycache__/cache.pyc",
+        "terraform.tfstate.backup",
     ]
     assert record["forbidden_untracked_paths"] == [
+        ".databricks/bundle/dev/state.json",
         ".env.local",
+        ".terraform/providers/provider.bin",
+        "terraform.tfstate",
         "tmp/output.tmp",
     ]
     assert record["dirty_tracked_paths"] == [
         "README.md",
         "src/document_kv_cache/repository_hygiene.py",
     ]
-    assert record["untracked_path_count"] == 3
+    assert record["untracked_path_count"] == 6
     assert any(issue.startswith("missing required .gitignore patterns:") for issue in record["issues"])
     assert any(issue.startswith("forbidden generated or secret-like tracked artifacts:") for issue in record["issues"])
     assert any(issue.startswith("forbidden generated or secret-like untracked artifacts:") for issue in record["issues"])
