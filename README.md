@@ -417,6 +417,12 @@ exact adapter boundary that produced it.
 `--allow-non-native-probe` exists only for local adapter debugging; release
 evidence rejects those records. Use `--release-safe` on the Databricks
 `runs/submit` helper to fail fast if debug-only probe flags are present.
+The built-in reserved vLLM/SGLang probe factories fail closed until real
+block-manager adapters exist, but
+`builtin_native_probe_factories_to_record()` reports that status together with
+the pinned isolated serving-environment profile for each backend. Use that
+diagnostic record when preparing native adapter work so the target engine
+versions and dependency constraints stay tied to the probe entry points.
 
 `EngineAdapterRequest` records the target backend (`vllm` or `sglang`), payload
 mode (`merged` or `segmented`), expected external package, required injection

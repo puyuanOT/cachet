@@ -9,6 +9,10 @@ from typing import Any
 
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.engine_probe import EngineKVProbeFactoryContext
+from document_kv_cache.serving_env import (
+    serving_environment_profile,
+    serving_environment_profile_to_record,
+)
 
 VLLM_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:vllm_native_probe_factory"
 SGLANG_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:sglang_native_probe_factory"
@@ -94,12 +98,14 @@ def native_probe_factory_inspection_to_record(
 ) -> dict[str, Any]:
     """Serialize an inspection result for diagnostics and release planning."""
 
+    serving_profile = serving_environment_profile(inspection.backend)
     return {
         "backend": inspection.backend.value,
         "factory_path": inspection.factory_path,
         "package_name": inspection.package_name,
         "package_importable": inspection.package_importable,
         "package_version": inspection.package_version,
+        "serving_environment_profile": serving_environment_profile_to_record(serving_profile),
         "supported": inspection.supported,
         "reason": inspection.reason,
     }
