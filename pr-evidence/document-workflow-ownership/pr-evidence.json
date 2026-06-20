@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5/high reviewed the workflow ownership move for behavior regressions, public and legacy import surfaces, legacy wildcard compatibility, dataclass and protocol module ownership, root exports, circular imports, workflow cache generation, engine preparation behavior, optional training artifacts, and test coverage; it reported no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/workflow.py",
+    "src/restaurant_kv_serving/workflow.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_workflow.py tests/test_benchmarks.py tests/test_benchmark_runner.py tests/test_openai_compatible.py tests/test_public_package.py tests/test_project_governance.py",
+    "git diff --check",
+    "poetry run pytest",
+    "poetry check",
+    "repository secret scan over README.md CONTRIBUTING.md pyproject.toml src tests databricks pr-evidence .github; only expected fake LangSmith governance fixtures were reported",
+    "poetry build",
+    "GPT-5.5/high focused review"
+  ],
+  "what_changed": [
+    "Moved the end-to-end cache workflow implementation into `document_kv_cache.workflow` so workflow dataclasses, protocols, and orchestration now have document-owned module identity.",
+    "Replaced `restaurant_kv_serving.workflow` with a compatibility wrapper that preserves the old wildcard-visible helper bindings and direct private helper aliases.",
+    "Added document root exports plus public package and governance coverage for the workflow API and legacy compatibility surface."
+  ],
+  "why": "The workflow API is the user-facing path from source documents through optional training, cache generation, materialization, and engine-ready serving, so it must be owned by the document-generic package while legacy restaurant imports keep working during migration."
+}

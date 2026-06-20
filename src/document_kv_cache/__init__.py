@@ -353,6 +353,15 @@ _DOCUMENT_ROOT_EXPORTS = {
     "local_path": ("document_kv_cache.storage", "local_path"),
     "unity_catalog_volume_path": ("document_kv_cache.storage", "unity_catalog_volume_path"),
     "is_real_uc_volume_root": ("document_kv_cache.storage", "is_real_uc_volume_root"),
+    "SourceChunk": ("document_kv_cache.workflow", "SourceChunk"),
+    "SourceDocument": ("document_kv_cache.workflow", "SourceDocument"),
+    "CacheBuildConfig": ("document_kv_cache.workflow", "CacheBuildConfig"),
+    "CacheAdapterArtifact": ("document_kv_cache.workflow", "CacheAdapterArtifact"),
+    "TrainingArtifacts": ("document_kv_cache.workflow", "TrainingArtifacts"),
+    "TrainingAdapter": ("document_kv_cache.workflow", "TrainingAdapter"),
+    "KVChunkGenerator": ("document_kv_cache.workflow", "KVChunkGenerator"),
+    "CacheGenerationResult": ("document_kv_cache.workflow", "CacheGenerationResult"),
+    "DocumentKVWorkflow": ("document_kv_cache.workflow", "DocumentKVWorkflow"),
 }
 
 _legacy_package = import_module(_LEGACY_PACKAGE)

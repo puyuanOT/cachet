@@ -47,6 +47,7 @@ def test_public_document_package_reexports_core_api():
         DocumentChunkType,
         DocumentKVRequest,
         DocumentKVService,
+        DocumentKVWorkflow,
         DiskRangeReader,
         EngineReadyRequest,
         EngineProbePlanConfig,
@@ -94,6 +95,14 @@ def test_public_document_package_reexports_core_api():
         ServingEnvironmentProfile,
         NativeProbeFactoryInspection,
         NativeProbeFactoryUnavailable,
+        CacheAdapterArtifact,
+        CacheBuildConfig,
+        CacheGenerationResult,
+        KVChunkGenerator,
+        SourceChunk,
+        SourceDocument,
+        TrainingAdapter,
+        TrainingArtifacts,
         DOCUMENT_CHUNK_TYPES,
         LEGACY_RESTAURANT_CHUNK_TYPES,
         StorageBenchmarkConfig,
@@ -169,6 +178,7 @@ def test_public_document_package_reexports_core_api():
         native_probe_factories,
         service,
         serving_env,
+        workflow,
     )
 
     assert AdmissionQueue is admission.AdmissionQueue
@@ -232,6 +242,31 @@ def test_public_document_package_reexports_core_api():
     assert DocumentKVService is service.DocumentKVService
     assert DocumentKVService is restaurant_kv_serving.DocumentKVService
     assert DocumentKVService.__module__ == "document_kv_cache.service"
+    assert DocumentKVWorkflow is workflow.DocumentKVWorkflow
+    assert DocumentKVWorkflow is restaurant_kv_serving.DocumentKVWorkflow
+    assert DocumentKVWorkflow.__module__ == "document_kv_cache.workflow"
+    assert CacheAdapterArtifact is workflow.CacheAdapterArtifact
+    assert CacheAdapterArtifact is restaurant_kv_serving.CacheAdapterArtifact
+    assert CacheAdapterArtifact.__module__ == "document_kv_cache.workflow"
+    assert CacheBuildConfig is workflow.CacheBuildConfig
+    assert CacheBuildConfig is restaurant_kv_serving.CacheBuildConfig
+    assert CacheBuildConfig.__module__ == "document_kv_cache.workflow"
+    assert CacheGenerationResult is workflow.CacheGenerationResult
+    assert CacheGenerationResult is restaurant_kv_serving.CacheGenerationResult
+    assert CacheGenerationResult.__module__ == "document_kv_cache.workflow"
+    assert KVChunkGenerator is workflow.KVChunkGenerator
+    assert KVChunkGenerator is restaurant_kv_serving.KVChunkGenerator
+    assert SourceChunk is workflow.SourceChunk
+    assert SourceChunk is restaurant_kv_serving.SourceChunk
+    assert SourceChunk.__module__ == "document_kv_cache.workflow"
+    assert SourceDocument is workflow.SourceDocument
+    assert SourceDocument is restaurant_kv_serving.SourceDocument
+    assert SourceDocument.__module__ == "document_kv_cache.workflow"
+    assert TrainingAdapter is workflow.TrainingAdapter
+    assert TrainingAdapter is restaurant_kv_serving.TrainingAdapter
+    assert TrainingArtifacts is workflow.TrainingArtifacts
+    assert TrainingArtifacts is restaurant_kv_serving.TrainingArtifacts
+    assert TrainingArtifacts.__module__ == "document_kv_cache.workflow"
     assert EngineReadyRequest is engine.EngineReadyRequest
     assert EngineReadyRequest is restaurant_kv_serving.EngineReadyRequest
     assert EngineReadyRequest.__module__ == "document_kv_cache.engine"
@@ -595,6 +630,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     release_evidence = modules["release_evidence"]
     pr_evidence = modules["pr_evidence"]
     serving_env = modules["serving_env"]
+    workflow = modules["workflow"]
     legacy_benchmarks = importlib.import_module("restaurant_kv_serving.benchmarks")
     legacy_benchmark_runner = importlib.import_module("restaurant_kv_serving.benchmark_runner")
     legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
@@ -732,6 +768,10 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert serving_env.SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE == "document_kv.serving_environment_profiles.v1"
     assert serving_env.serving_environment_profiles_to_record is restaurant_kv_serving.serving_environment_profiles_to_record
     assert serving_env.serving_environment_profiles_to_record.__module__ == "document_kv_cache.serving_env"
+    assert workflow.SourceDocument is restaurant_kv_serving.SourceDocument
+    assert workflow.SourceDocument.__module__ == "document_kv_cache.workflow"
+    assert workflow.DocumentKVWorkflow is restaurant_kv_serving.DocumentKVWorkflow
+    assert workflow.DocumentKVWorkflow.__module__ == "document_kv_cache.workflow"
     assert storage_benchmark.run_storage_benchmark is restaurant_kv_serving.run_storage_benchmark
     assert storage_benchmark.evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
     assert template_resources.PACKAGED_TEMPLATE_PACKAGE == "document_kv_cache.templates"
@@ -1018,6 +1058,15 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["build_engine_ready_request"] is engine.build_engine_ready_request
     assert root_star_namespace["build_handle_from_materialized"] is engine.build_handle_from_materialized
     assert root_star_namespace["DocumentKVService"] is service.DocumentKVService
+    assert root_star_namespace["SourceChunk"] is workflow.SourceChunk
+    assert root_star_namespace["SourceDocument"] is workflow.SourceDocument
+    assert root_star_namespace["CacheBuildConfig"] is workflow.CacheBuildConfig
+    assert root_star_namespace["CacheAdapterArtifact"] is workflow.CacheAdapterArtifact
+    assert root_star_namespace["TrainingArtifacts"] is workflow.TrainingArtifacts
+    assert root_star_namespace["TrainingAdapter"] is workflow.TrainingAdapter
+    assert root_star_namespace["KVChunkGenerator"] is workflow.KVChunkGenerator
+    assert root_star_namespace["CacheGenerationResult"] is workflow.CacheGenerationResult
+    assert root_star_namespace["DocumentKVWorkflow"] is workflow.DocumentKVWorkflow
     assert root_star_namespace["local_path"] is storage.local_path
     assert root_star_namespace["unity_catalog_volume_path"] is storage.unity_catalog_volume_path
     assert root_star_namespace["is_real_uc_volume_root"] is storage.is_real_uc_volume_root
@@ -1119,8 +1168,63 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "read_model_profile_definition_json",
         "write_model_profile_definition_json",
     ]
-    assert "DocumentKVWorkflow" in workflow.__all__
-    assert "CacheAdapterArtifact" in workflow.__all__
+    assert workflow.__all__ == [
+        "SourceChunk",
+        "SourceDocument",
+        "CacheBuildConfig",
+        "CacheAdapterArtifact",
+        "TrainingArtifacts",
+        "TrainingAdapter",
+        "KVChunkGenerator",
+        "CacheGenerationResult",
+        "DocumentKVWorkflow",
+    ]
+    assert workflow.SourceDocument.__module__ == "document_kv_cache.workflow"
+    assert workflow.DocumentKVWorkflow.__module__ == "document_kv_cache.workflow"
+    legacy_workflow = importlib.import_module("restaurant_kv_serving.workflow")
+    workflow_legacy_star_namespace = {}
+    exec("from restaurant_kv_serving.workflow import *", workflow_legacy_star_namespace)
+    assert sorted(k for k in workflow_legacy_star_namespace if not k.startswith("__")) == [
+        "CacheAdapterArtifact",
+        "CacheBuildConfig",
+        "CacheGenerationMethod",
+        "CacheGenerationResult",
+        "CachePlanner",
+        "ChunkRef",
+        "DocumentChunkType",
+        "DocumentKVRequest",
+        "DocumentKVService",
+        "DocumentKVWorkflow",
+        "EngineReadyRequest",
+        "Iterable",
+        "KVChunkGenerator",
+        "KVLayout",
+        "KVMaterializer",
+        "KVStorageLayout",
+        "ManifestStore",
+        "Mapping",
+        "MaterializedKV",
+        "PackChunk",
+        "Path",
+        "Protocol",
+        "SegmentedMaterializedKV",
+        "Sequence",
+        "SourceChunk",
+        "SourceDocument",
+        "TrainingAdapter",
+        "TrainingArtifacts",
+        "annotations",
+        "build_engine_ready_request",
+        "dataclass",
+        "field",
+        "kv_storage_layout_from_value",
+        "write_kvpack",
+    ]
+    assert legacy_workflow.SourceDocument is workflow.SourceDocument
+    assert legacy_workflow.DocumentKVWorkflow is workflow.DocumentKVWorkflow
+    assert legacy_workflow._effective_cache_method is workflow._effective_cache_method
+    assert legacy_workflow.dataclass is not None
+    assert not hasattr(legacy_workflow, "__all__")
 
     for module in (kvpack, materializer, openai_compatible, workflow):
         assert "reexport_public" not in dir(module)
