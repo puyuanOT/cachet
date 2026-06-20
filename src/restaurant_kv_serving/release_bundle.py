@@ -67,9 +67,9 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Require the full V1 release artifact set: release/preflight sidecars, "
-            "plan execution, Databricks status for benchmark/storage/engine-probe runs, "
-            "tested wheel, PR evidence, governance, repository hygiene, and native probe "
-            "factory diagnostics."
+            "vLLM/SGLang connector actions, plan execution, Databricks status for "
+            "benchmark/storage/engine-probe runs, tested wheel, PR evidence, governance, "
+            "repository hygiene, and native probe factory diagnostics."
         ),
     )
     parser.add_argument("--output-dir", required=True)

@@ -321,6 +321,29 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
 
 
+@pytest.mark.parametrize("engine_actions_jsons", ((), ("vllm_actions",)))
+def test_build_release_bundle_strict_v1_requires_connector_action_sidecars(tmp_path, engine_actions_jsons):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    selected_actions = ()
+    if engine_actions_jsons:
+        selected_actions = tuple(
+            path
+            for path in release_kwargs["engine_actions_jsons"]
+            if any(action_key in path.name.replace("-", "_") for action_key in engine_actions_jsons)
+        )
+
+    with pytest.raises(ValueError, match="vLLM/SGLang connector action sidecars"):
+        build_release_bundle(
+            **{**release_kwargs, "engine_actions_jsons": selected_actions},
+            output_dir=tmp_path / f"strict-missing-actions-{len(selected_actions)}",
+            require_complete_v1=True,
+        )
+
+
 @pytest.mark.parametrize(("omitted_purpose", "expected_label"), STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES)
 def test_build_release_bundle_strict_v1_reports_each_missing_databricks_purpose(
     tmp_path,
@@ -1313,7 +1336,7 @@ def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsy
     "module_name",
     ("document_kv_cache.release_bundle", "restaurant_kv_serving.release_bundle"),
 )
-def test_release_bundle_cli_help_documents_strict_databricks_purpose_coverage(module_name):
+def test_release_bundle_cli_help_documents_strict_release_requirements(module_name):
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
     completed = subprocess.run(
         [sys.executable, "-m", module_name, "--help"],
@@ -1327,6 +1350,7 @@ def test_release_bundle_cli_help_documents_strict_databricks_purpose_coverage(mo
 
     assert "--require-complete-v1" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
+    assert "vLLM/SGLang connector actions" in help_text
 
 
 def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsys, tmp_path):
