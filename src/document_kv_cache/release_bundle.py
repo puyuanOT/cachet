@@ -85,6 +85,11 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("repository_hygiene", 1, "repository hygiene sidecar"),
     ("native_probe_factories", 1, "native probe factory diagnostics sidecar"),
 )
+STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES = (
+    ("document-kv-v1-benchmark", "V1 benchmark Databricks run-status evidence"),
+    ("document-kv-storage-benchmark", "storage-reader benchmark Databricks run-status evidence"),
+    ("document-kv-engine-probe", "native engine probe Databricks run-status evidence"),
+)
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
     r"^(?P<distribution>[A-Za-z0-9_.]+)-"
@@ -340,6 +345,8 @@ def build_release_bundle(
     if require_complete_v1:
         _validate_strict_v1_release_bundle_completeness(prepared_artifacts)
     _validate_release_bundle_inputs(prepared_artifacts)
+    if require_complete_v1:
+        _validate_strict_v1_databricks_purpose_coverage(prepared_artifacts)
     _preflight_release_bundle_destinations(
         prepared_artifacts=prepared_artifacts,
         bundle_dir=bundle_dir,
@@ -544,6 +551,46 @@ def _validate_strict_v1_release_bundle_completeness(
             "Strict V1 release bundle requires "
             f"{', '.join(missing)}"
         )
+
+
+def _validate_strict_v1_databricks_purpose_coverage(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> None:
+    missing = _missing_strict_v1_databricks_purpose_labels(artifacts)
+    if missing:
+        raise ValueError(
+            "Strict V1 release bundle requires "
+            f"{', '.join(missing)}"
+        )
+
+
+def _missing_strict_v1_databricks_purpose_labels(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> list[str]:
+    observed_purposes: set[str] = set()
+    for artifact in artifacts:
+        if artifact.role != "databricks_run_status" or artifact.record is None:
+            continue
+        status_record = _databricks_run_status_record(artifact.record)
+        if status_record is None:
+            continue
+        submit_payload = status_record.get("submit_payload")
+        if not isinstance(submit_payload, Mapping):
+            continue
+        tasks = submit_payload.get("tasks")
+        if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)):
+            continue
+        for task in tasks:
+            if not isinstance(task, Mapping):
+                continue
+            purpose = task.get("purpose")
+            if isinstance(purpose, str) and purpose:
+                observed_purposes.add(purpose)
+    return [
+        label
+        for purpose, label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES
+        if purpose not in observed_purposes
+    ]
 
 
 def _single_record_for_role(
@@ -1558,8 +1605,9 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Require the full V1 release artifact set: release/preflight sidecars, "
-            "plan execution, Databricks status, tested wheel, PR evidence, governance, "
-            "repository hygiene, and native probe factory diagnostics."
+            "plan execution, Databricks status for benchmark/storage/engine-probe runs, "
+            "tested wheel, PR evidence, governance, repository hygiene, and native probe "
+            "factory diagnostics."
         ),
     )
     parser.add_argument("--output-dir", required=True)
