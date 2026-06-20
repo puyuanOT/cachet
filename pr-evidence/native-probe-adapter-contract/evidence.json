@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 first requested release-evidence enforcement of the adapter contract and then requested strict bool/int validation. Both were fixed, re-verified, and the final review returned APPROVED.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/native_probe_factories.py",
+    "src/document_kv_cache/release_evidence.py",
+    "src/restaurant_kv_serving/native_probe_factories.py",
+    "tests/test_native_probe_factories.py",
+    "tests/test_public_package.py",
+    "tests/test_release_bundle.py",
+    "tests/test_release_evidence.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_evidence.py tests/test_native_probe_factories.py tests/test_release_bundle.py tests/test_public_package.py -q -> 114 passed",
+    "git diff --check -> passed",
+    "poetry run pytest -q -> 1149 passed",
+    "poetry check && poetry install --dry-run -> passed"
+  ],
+  "what_changed": [
+    "Native probe factory diagnostics now publish a stable adapter_contract describing the required engine handoff, probe/action schema versions, Qwen3 V1 layout, merged payload mode, and native-probe requirement.",
+    "Release evidence validation now enforces the same adapter contract for native probe and action evidence instead of accepting mismatched segmented payloads.",
+    "The restaurant compatibility facade exports the new contract helper, and tests cover malformed contract values including bool/int type confusion."
+  ],
+  "why": "Future vLLM/SGLang adapters need a machine-checkable contract, and release bundles must not claim a native adapter contract that their probe/action evidence does not satisfy."
+}

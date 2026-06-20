@@ -1574,6 +1574,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert legacy_serving_env.dataclass is not None
     assert "ServingBackend" not in legacy_serving_env.__all__
     assert native_probe_factories.__all__ == [
+        "NATIVE_PROBE_ADAPTER_CONTRACT",
         "NativeProbeFactoryInspection",
         "NativeProbeFactoryUnavailable",
         "SGLANG_NATIVE_PROBE_FACTORY",
@@ -1583,6 +1584,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "inspect_builtin_native_probe_factories",
         "inspect_builtin_native_probe_factory",
         "main",
+        "native_probe_adapter_contract_to_record",
         "native_probe_factories_record_issues",
         "native_probe_factory_inspection_to_record",
         "sglang_native_probe_factory",
