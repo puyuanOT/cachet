@@ -49,6 +49,7 @@ def test_summarize_github_repository_governance_reports_release_ready_repo():
         {
             "/repos/owner/document-kv-cache": _repository(private=False),
             "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
         }
     )
     config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token", timeout_seconds=11)
@@ -85,14 +86,23 @@ def test_summarize_github_repository_governance_reports_release_ready_repo():
             "allow_force_pushes": False,
             "allow_deletions": False,
         },
+        "open_pull_requests": {
+            "checked": True,
+            "total_count": 0,
+            "allowed_numbers": [],
+            "unexpected_count": 0,
+            "unexpected": [],
+            "truncated": False,
+        },
         "issues": [],
     }
     assert [request.full_url for request in opener.requests] == [
         "https://api.github.com/repos/owner/document-kv-cache",
         "https://api.github.com/repos/owner/document-kv-cache/branches/main/protection",
+        "https://api.github.com/repos/owner/document-kv-cache/pulls?state=open&per_page=100",
     ]
     assert opener.requests[0].headers["Authorization"] == "Bearer secret-token"
-    assert opener.timeouts == [11, 11]
+    assert opener.timeouts == [11, 11, 11]
 
 
 def test_summarize_github_repository_governance_fails_closed_for_private_unprotected_repo():
@@ -106,6 +116,7 @@ def test_summarize_github_repository_governance_fails_closed_for_private_unprote
                 {},
                 _BytesFile(b'{"message":"Upgrade to GitHub Pro or make this repository public"}'),
             ),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
         }
     )
     config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
@@ -130,6 +141,7 @@ def test_summarize_github_repository_governance_requires_public_visibility():
         {
             "/repos/owner/document-kv-cache": repository,
             "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
         }
     )
     config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
@@ -142,6 +154,82 @@ def test_summarize_github_repository_governance_requires_public_visibility():
     assert summary["issues"] == [
         "repository visibility must be public before open-source release",
     ]
+
+
+def test_summarize_github_repository_governance_rejects_unexpected_open_pull_requests():
+    opener = _FakeGitHubOpener(
+        {
+            "/repos/owner/document-kv-cache": _repository(private=False),
+            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [
+                _pull_request(72, title="Stale experiment branch", head_ref="experiment", draft=True),
+                _pull_request(73, title="Ready release guard", head_ref="release-guard", draft=False),
+            ],
+        }
+    )
+    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+
+    summary = summarize_github_repository_governance(config, opener=opener)
+
+    assert summary["ok"] is False
+    assert summary["open_pull_requests"] == {
+        "checked": True,
+        "total_count": 2,
+        "allowed_numbers": [],
+        "unexpected_count": 2,
+        "unexpected": [
+            {
+                "number": 72,
+                "title": "Stale experiment branch",
+                "draft": True,
+                "html_url": "https://github.com/owner/document-kv-cache/pull/72",
+                "head_ref": "experiment",
+                "base_ref": "main",
+            },
+            {
+                "number": 73,
+                "title": "Ready release guard",
+                "draft": False,
+                "html_url": "https://github.com/owner/document-kv-cache/pull/73",
+                "head_ref": "release-guard",
+                "base_ref": "main",
+            },
+        ],
+        "truncated": False,
+    }
+    assert summary["issues"] == [
+        "repository must not have unexpected open pull requests: #72, #73",
+    ]
+
+
+def test_summarize_github_repository_governance_allows_current_open_pull_request():
+    opener = _FakeGitHubOpener(
+        {
+            "/repos/owner/document-kv-cache": _repository(private=False),
+            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [
+                _pull_request(73, title="Ready release guard", head_ref="release-guard", draft=False),
+            ],
+        }
+    )
+    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+
+    summary = summarize_github_repository_governance(
+        config,
+        allowed_open_pull_request_numbers=(73,),
+        opener=opener,
+    )
+
+    assert summary["ok"] is True
+    assert summary["open_pull_requests"] == {
+        "checked": True,
+        "total_count": 1,
+        "allowed_numbers": [73],
+        "unexpected_count": 0,
+        "unexpected": [],
+        "truncated": False,
+    }
+    assert summary["issues"] == []
 
 
 def test_github_http_errors_are_sanitized():
@@ -171,26 +259,32 @@ def test_github_http_errors_are_sanitized():
 def test_main_writes_release_readiness_summary(monkeypatch, tmp_path):
     output_path = tmp_path / "github-governance.json"
     monkeypatch.setenv(DEFAULT_GITHUB_TOKEN_ENV, "secret-token")
-    monkeypatch.setattr(
-        "document_kv_cache.github_governance.summarize_github_repository_governance",
-        lambda config: {
+    captured_allowed_numbers = []
+
+    def fake_summary(config, *, allowed_open_pull_request_numbers=()):
+        captured_allowed_numbers.extend(allowed_open_pull_request_numbers)
+        return {
             "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
             "ok": True,
             "repository": config.repository,
             "issues": [],
-        },
-    )
+        }
+
+    monkeypatch.setattr("document_kv_cache.github_governance.summarize_github_repository_governance", fake_summary)
 
     exit_code = main(
         [
             "--repository",
             "owner/document-kv-cache",
+            "--allow-open-pull-request-number",
+            "73",
             "--output-json",
             str(output_path),
         ]
     )
 
     assert exit_code == 0
+    assert captured_allowed_numbers == [73]
     assert json.loads(output_path.read_text(encoding="utf-8")) == {
         "ok": True,
         "summary": {
@@ -207,7 +301,7 @@ def test_main_returns_nonzero_when_governance_summary_is_not_release_ready(monke
     monkeypatch.setenv(DEFAULT_GITHUB_TOKEN_ENV, "secret-token")
     monkeypatch.setattr(
         "document_kv_cache.github_governance.summarize_github_repository_governance",
-        lambda config: {
+        lambda config, *, allowed_open_pull_request_numbers=(): {
             "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
             "ok": False,
             "repository": config.repository,
@@ -319,4 +413,15 @@ def _branch_protection():
         "enforce_admins": {"enabled": True},
         "allow_force_pushes": {"enabled": False},
         "allow_deletions": {"enabled": False},
+    }
+
+
+def _pull_request(number: int, *, title: str, head_ref: str, draft: bool):
+    return {
+        "number": number,
+        "title": title,
+        "draft": draft,
+        "html_url": f"https://github.com/owner/document-kv-cache/pull/{number}",
+        "head": {"ref": head_ref},
+        "base": {"ref": "main"},
     }

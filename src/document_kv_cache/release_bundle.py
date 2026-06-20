@@ -155,6 +155,7 @@ _GITHUB_GOVERNANCE_SUMMARY_KEYS = frozenset(
         "homepage",
         "topics",
         "branch_protection",
+        "open_pull_requests",
         "issues",
     }
 )
@@ -176,6 +177,16 @@ _GITHUB_REQUIRED_PULL_REQUEST_REVIEWS_KEYS = frozenset(
         "dismiss_stale_reviews",
         "require_last_push_approval",
         "required_approving_review_count",
+    }
+)
+_GITHUB_OPEN_PULL_REQUESTS_KEYS = frozenset(
+    {
+        "checked",
+        "total_count",
+        "allowed_numbers",
+        "unexpected_count",
+        "unexpected",
+        "truncated",
     }
 )
 _NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
@@ -600,6 +611,11 @@ def _github_governance_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, .
         issues.append("GitHub governance sidecar branch_protection must be an object")
     else:
         issues.extend(_github_branch_protection_issues(branch_protection))
+    open_pull_requests = governance_record.get("open_pull_requests")
+    if not isinstance(open_pull_requests, Mapping):
+        issues.append("GitHub governance sidecar open_pull_requests must be an object")
+    else:
+        issues.extend(_github_open_pull_requests_issues(open_pull_requests))
     if governance_record.get("issues") != []:
         issues.append("GitHub governance sidecar issues must be an empty array")
     return _dedupe_strings(issues)
@@ -696,6 +712,37 @@ def _github_branch_protection_issues(record: Mapping[str, Any]) -> tuple[str, ..
         issues.append("GitHub governance sidecar allow_force_pushes must be false")
     if record.get("allow_deletions") is not False:
         issues.append("GitHub governance sidecar allow_deletions must be false")
+    return tuple(issues)
+
+
+def _github_open_pull_requests_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(
+        _unexpected_keys(
+            record,
+            _GITHUB_OPEN_PULL_REQUESTS_KEYS,
+            "GitHub governance sidecar open_pull_requests",
+        )
+    )
+    if record.get("checked") is not True:
+        issues.append("GitHub governance sidecar open_pull_requests.checked must be true")
+    if "error" in record or "error_status_code" in record:
+        issues.append("GitHub governance sidecar open_pull_requests must not contain error fields")
+    if type(record.get("total_count")) is not int or record.get("total_count") < 0:
+        issues.append("GitHub governance sidecar open_pull_requests.total_count must be a non-negative integer")
+    if type(record.get("unexpected_count")) is not int or record.get("unexpected_count") != 0:
+        issues.append("GitHub governance sidecar open_pull_requests.unexpected_count must be 0")
+    if record.get("truncated") is not False:
+        issues.append("GitHub governance sidecar open_pull_requests.truncated must be false")
+    issues.extend(
+        _list_of_non_negative_ints_field(
+            record,
+            "allowed_numbers",
+            "GitHub governance sidecar open_pull_requests",
+        )
+    )
+    if record.get("unexpected") != []:
+        issues.append("GitHub governance sidecar open_pull_requests.unexpected must be an empty array")
     return tuple(issues)
 
 
@@ -1079,6 +1126,15 @@ def _list_of_strings_field(record: Mapping[str, Any], field_name: str, label: st
     ):
         return ()
     return (f"{label}.{field_name} must be an array of non-empty strings",)
+
+
+def _list_of_non_negative_ints_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and all(
+        type(item) is int and item >= 0 for item in value
+    ):
+        return ()
+    return (f"{label}.{field_name} must be an array of non-negative integers",)
 
 
 def _task_key_list(tasks: Any) -> list[str]:

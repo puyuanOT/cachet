@@ -375,6 +375,41 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "raw-contexts-github-governance.json",
         raw_contexts_github_governance_record,
     )
+    unexpected_open_pr_github_governance_record = _github_governance_cli_record(ok=True)
+    unexpected_open_pr_github_governance_record["summary"]["ok"] = False
+    unexpected_open_pr_github_governance_record["summary"]["open_pull_requests"]["total_count"] = 1
+    unexpected_open_pr_github_governance_record["summary"]["open_pull_requests"]["unexpected_count"] = 1
+    unexpected_open_pr_github_governance_record["summary"]["open_pull_requests"]["unexpected"] = [
+        {
+            "number": 72,
+            "title": "Stale experiment branch",
+            "draft": True,
+            "html_url": "https://github.com/owner/document-kv-cache/pull/72",
+            "head_ref": "experiment",
+            "base_ref": "main",
+        }
+    ]
+    unexpected_open_pr_github_governance_record["summary"]["issues"] = [
+        "repository must not have unexpected open pull requests: #72",
+    ]
+    unexpected_open_pr_github_governance = _write_json(
+        tmp_path / "unexpected-open-pr-github-governance.json",
+        unexpected_open_pr_github_governance_record,
+    )
+    truncated_open_pr_github_governance_record = _github_governance_cli_record(ok=True)
+    truncated_open_pr_github_governance_record["summary"]["open_pull_requests"]["truncated"] = True
+    truncated_open_pr_github_governance = _write_json(
+        tmp_path / "truncated-open-pr-github-governance.json",
+        truncated_open_pr_github_governance_record,
+    )
+    raw_open_pr_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_open_pr_github_governance_record["summary"]["open_pull_requests"]["response"] = {
+        "headers": {"authorization": "do-not-bundle-me"}
+    }
+    raw_open_pr_github_governance = _write_json(
+        tmp_path / "raw-open-pr-github-governance.json",
+        raw_open_pr_github_governance_record,
+    )
     unresolved_review_pr_evidence_record = _pr_evidence_record(ok=True)
     unresolved_review_pr_evidence_record["gpt55_review_outcome"] = "findings_resolved"
     unresolved_review_pr_evidence_record["gpt55_review_findings_resolved"] = False
@@ -577,6 +612,26 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "failed-github-governance-bundle",
         )
 
+    with pytest.raises(ValueError, match="open_pull_requests.unexpected_count must be 0"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=unexpected_open_pr_github_governance,
+            output_dir=tmp_path / "unexpected-open-pr-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match="open_pull_requests.truncated must be false"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=truncated_open_pr_github_governance,
+            output_dir=tmp_path / "truncated-open-pr-github-governance-bundle",
+        )
+
     with pytest.raises(ValueError, match="visibility must be 'public'"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
@@ -602,6 +657,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         (raw_branch_protection_github_governance, "raw-branch-protection-github-governance-bundle"),
         (raw_status_checks_github_governance, "raw-status-checks-github-governance-bundle"),
         (raw_pr_reviews_github_governance, "raw-pr-reviews-github-governance-bundle"),
+        (raw_open_pr_github_governance, "raw-open-pr-github-governance-bundle"),
     ):
         with pytest.raises(ValueError, match="unsupported keys"):
             build_release_bundle(
@@ -1423,6 +1479,14 @@ def _github_governance_cli_record(*, ok: bool):
             "enforce_admins": ok,
             "allow_force_pushes": False,
             "allow_deletions": False,
+        },
+        "open_pull_requests": {
+            "checked": ok,
+            "total_count": 0,
+            "allowed_numbers": [],
+            "unexpected_count": 0,
+            "unexpected": [],
+            "truncated": False,
         },
         "issues": [] if ok else ["main branch protection must be enabled"],
     }

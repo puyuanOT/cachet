@@ -836,9 +836,10 @@ package metadata.
 
 Capture repository governance status as a separate release-readiness sidecar.
 The command reads the GitHub token from an environment variable, records
-repository visibility plus `main` branch protection state, and returns non-zero
-until the repository is public and the required `Test and build` protection is
-active:
+repository visibility, `main` branch protection state, and open pull-request
+pressure, and returns non-zero until the repository is public, the required
+`Test and build` protection is active, and no unexpected pull requests remain
+open:
 
 ```bash
 export GITHUB_TOKEN=...
@@ -846,6 +847,10 @@ python -m document_kv_cache.github_governance \
   --repository OWNER/document-kv-cache \
   --output-json github-governance.json
 ```
+
+When producing a sidecar from inside the current release PR, pass
+`--allow-open-pull-request-number <PR_NUMBER>` so that one active pull request is
+recorded but not treated as stale release pressure.
 
 If GitHub reports that private-repository branch protection is unavailable, the
 sidecar records `ok=false` and the release remains process-only rather than
