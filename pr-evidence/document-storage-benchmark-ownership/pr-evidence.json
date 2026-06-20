@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially found that the legacy facade could recurse through document public wrappers and then that private helper aliases ignored legacy monkeypatch hooks. I removed document-global mutation, gave the legacy facade local wrappers/helpers, added no-recursion/no-leak/private-hook regressions, and final re-review approved with no blocking findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/storage_benchmark.py",
+    "src/restaurant_kv_serving/storage_benchmark.py",
+    "tests/test_storage_benchmark.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "pr-evidence/document-storage-benchmark-ownership/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_storage_benchmark.py tests/test_public_package.py tests/test_project_governance.py tests/test_release_evidence.py tests/test_release_bundle.py tests/test_benchmark_plan.py",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret-pattern scan across docs, source, tests, databricks, pr-evidence, and GitHub metadata",
+    "GPT-5.5 focused review",
+    "GPT-5.5 follow-up review after compatibility fixes"
+  ],
+  "what_changed": [
+    "Moved the storage benchmark implementation into document_kv_cache.storage_benchmark with a curated public star-import surface.",
+    "Reworked restaurant_kv_serving.storage_benchmark into a legacy compatibility facade that preserves broad legacy imports and legacy namespace monkeypatch hooks.",
+    "Added regression coverage for legacy CLI hooks, serializer recursion, document namespace isolation, private helper monkeypatches, public package exports, and governance allowlists."
+  ],
+  "why": "Storage benchmark ownership should live in the open-source document package while existing restaurant namespace users continue to work during the migration."
+}

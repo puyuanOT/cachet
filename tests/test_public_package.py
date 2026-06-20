@@ -641,6 +641,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     legacy_benchmark_runner = importlib.import_module("restaurant_kv_serving.benchmark_runner")
     legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
     legacy_live_server = importlib.import_module("restaurant_kv_serving.live_server")
+    legacy_storage_benchmark = importlib.import_module("restaurant_kv_serving.storage_benchmark")
     legacy_vllm_smoke = importlib.import_module("restaurant_kv_serving.vllm_smoke")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
@@ -783,8 +784,17 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert workflow.SourceDocument.__module__ == "document_kv_cache.workflow"
     assert workflow.DocumentKVWorkflow is restaurant_kv_serving.DocumentKVWorkflow
     assert workflow.DocumentKVWorkflow.__module__ == "document_kv_cache.workflow"
-    assert storage_benchmark.run_storage_benchmark is restaurant_kv_serving.run_storage_benchmark
-    assert storage_benchmark.evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
+    assert storage_benchmark.StorageBenchmarkConfig is restaurant_kv_serving.StorageBenchmarkConfig
+    assert storage_benchmark.StorageBenchmarkConfig.__module__ == "document_kv_cache.storage_benchmark"
+    assert storage_benchmark.run_storage_benchmark.__module__ == "document_kv_cache.storage_benchmark"
+    assert restaurant_kv_serving.run_storage_benchmark is legacy_storage_benchmark.run_storage_benchmark
+    assert restaurant_kv_serving.run_storage_benchmark.__module__ == "restaurant_kv_serving.storage_benchmark"
+    assert storage_benchmark.evaluate_storage_benchmark_evidence.__module__ == "document_kv_cache.storage_benchmark"
+    assert (
+        restaurant_kv_serving.evaluate_storage_benchmark_evidence
+        is legacy_storage_benchmark.evaluate_storage_benchmark_evidence
+    )
+    assert restaurant_kv_serving.evaluate_storage_benchmark_evidence.__module__ == "restaurant_kv_serving.storage_benchmark"
     assert template_resources.PACKAGED_TEMPLATE_PACKAGE == "document_kv_cache.templates"
     assert vllm_smoke.SERVED_MODEL_NAME == "qwen3:4b-instruct"
     assert vllm_smoke.VLLMSmokeBenchmarkConfig.__module__ == "document_kv_cache.vllm_smoke"
@@ -844,9 +854,14 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         databricks_vllm_smoke_job.DatabricksVLLMSmokeJobConfig.__module__
         == "document_kv_cache.databricks_vllm_smoke_job"
     )
+    assert storage_benchmark.evaluate_release_storage_benchmark_evidence.__module__ == "document_kv_cache.storage_benchmark"
     assert (
-        storage_benchmark.evaluate_release_storage_benchmark_evidence
-        is restaurant_kv_serving.evaluate_release_storage_benchmark_evidence
+        restaurant_kv_serving.evaluate_release_storage_benchmark_evidence
+        is legacy_storage_benchmark.evaluate_release_storage_benchmark_evidence
+    )
+    assert (
+        restaurant_kv_serving.evaluate_release_storage_benchmark_evidence.__module__
+        == "restaurant_kv_serving.storage_benchmark"
     )
     assert storage_benchmark.RELEASE_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.RELEASE_STORAGE_BENCHMARK_READERS
     assert storage.is_real_uc_volume_root("/Volumes/catalog/schema/volume") is True
@@ -871,6 +886,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     model_profiles = importlib.import_module("document_kv_cache.model_profiles")
     native_probe_factories = importlib.import_module("document_kv_cache.native_probe_factories")
     service = importlib.import_module("document_kv_cache.service")
+    storage_benchmark = importlib.import_module("document_kv_cache.storage_benchmark")
     workflow = importlib.import_module("document_kv_cache.workflow")
 
     assert admission.__all__ == ["PreparedRequest", "AdmissionQueue"]
@@ -966,6 +982,26 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert legacy_kvpack.PackChunk is kvpack.PackChunk
     assert legacy_kvpack.LocalRangeReader is legacy_kvpack.DiskRangeReader
     assert legacy_kvpack.write_kvpack.__module__ == "restaurant_kv_serving.kvpack"
+    assert storage_benchmark.__all__ == [
+        "STORAGE_BENCHMARK_RECORD_TYPE",
+        "SUPPORTED_STORAGE_BENCHMARK_READERS",
+        "RELEASE_STORAGE_BENCHMARK_READERS",
+        "StorageBenchmarkConfig",
+        "StorageBenchmarkEvidence",
+        "StorageBenchmarkResult",
+        "StorageReaderBenchmarkResult",
+        "evaluate_storage_benchmark_evidence",
+        "evaluate_release_storage_benchmark_evidence",
+        "run_storage_benchmark",
+        "storage_benchmark_evidence_to_record",
+        "storage_benchmark_result_to_record",
+        "write_storage_benchmark_result_json",
+        "main",
+    ]
+    legacy_storage_benchmark = importlib.import_module("restaurant_kv_serving.storage_benchmark")
+    assert not hasattr(legacy_storage_benchmark, "__all__")
+    assert storage_benchmark.run_storage_benchmark.__module__ == "document_kv_cache.storage_benchmark"
+    assert legacy_storage_benchmark.run_storage_benchmark.__module__ == "restaurant_kv_serving.storage_benchmark"
     assert cache.__all__ == ["CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"]
     assert manifest.__all__ == ["ManifestStore", "InMemoryManifestStore"]
     assert manifest.ManifestStore.__module__ == "document_kv_cache.manifest"

@@ -157,11 +157,15 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.openai_compatible",
         "restaurant_kv_serving.pr_evidence",
         "restaurant_kv_serving.serving_env",
+        "restaurant_kv_serving.storage_benchmark",
         "restaurant_kv_serving.vllm_smoke",
         "restaurant_kv_serving.workflow",
     },
     "tests/test_storage.py": {
         "restaurant_kv_serving.storage",
+    },
+    "tests/test_storage_benchmark.py": {
+        "restaurant_kv_serving.storage_benchmark",
     },
     "tests/test_release_evidence.py": {
         "restaurant_kv_serving.release_evidence",
