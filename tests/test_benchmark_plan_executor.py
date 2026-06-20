@@ -1,6 +1,9 @@
 import hashlib
 import json
+import os
+import subprocess
 import sys
+from textwrap import dedent
 
 import pytest
 
@@ -320,6 +323,44 @@ def test_legacy_plan_executor_result_json_respects_legacy_record_hook(monkeypatc
         "source": "legacy-result-json-hook",
         "plan_source": {"source": "legacy-plan-source-hook"},
     }
+
+
+def test_legacy_plan_executor_import_order_does_not_capture_public_monkeypatch():
+    script = dedent(
+        """
+        import sys
+        import document_kv_cache.benchmark_plan_executor as public_plan_executor
+
+        def public_execute_should_not_run(*args, **kwargs):
+            raise AssertionError("legacy imported a public monkeypatch as its default")
+
+        public_plan_executor.execute_benchmark_job_plan = public_execute_should_not_run
+
+        import restaurant_kv_serving.benchmark_plan_executor as legacy_plan_executor
+
+        assert legacy_plan_executor.BenchmarkCommandResult is public_plan_executor.BenchmarkCommandResult
+        results = legacy_plan_executor.execute_benchmark_job_plan(
+            {"commands": [{"name": "command-1", "argv": [sys.executable, "-c", "pass"]}]},
+            dry_run=True,
+        )
+        assert results[0].skipped is True
+        try:
+            public_plan_executor.execute_benchmark_job_plan({"commands": []})
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("public monkeypatch was not installed")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_benchmark_plan_executor_document_module_owns_public_api():
