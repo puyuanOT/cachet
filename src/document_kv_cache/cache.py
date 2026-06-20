@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -54,6 +54,9 @@ class ByteLRU:
         self._items.move_to_end(key)
         return value
 
+    def peek(self, key: str) -> bytes | None:
+        return self._items.get(key)
+
     def put(self, key: str, value: bytes) -> None:
         if len(value) > self.max_bytes:
             old = self._items.pop(key, None)
@@ -102,6 +105,57 @@ class ChunkCache:
         return self.get_or_load_with_tier(ref, loader).payload
 
     def get_or_load_with_tier(self, ref: ChunkRef, loader: Callable[[ChunkRef], bytes]) -> ChunkCacheResult:
+        cached = self._get_cached_result(ref)
+        if cached is not None:
+            return cached
+        key = self._cache_key(ref)
+        local_path = self._local_path(ref)
+        payload = loader(ref)
+        self.cold_misses += 1
+        if local_path is not None:
+            self._write_local(local_path, payload)
+        self.cpu.put(key, payload)
+        return ChunkCacheResult(payload=payload, tier=CacheTier.COLD_STORAGE)
+
+    def get_many_or_load_with_tier(
+        self,
+        refs: Sequence[ChunkRef],
+        loader: Callable[[ChunkRef], bytes],
+        *,
+        batch_loader: Callable[[Sequence[ChunkRef]], Sequence[bytes]] | None = None,
+    ) -> tuple[ChunkCacheResult, ...]:
+        results: list[ChunkCacheResult] = []
+        index = 0
+        while index < len(refs):
+            ref = refs[index]
+            cached = self._get_cached_result(ref)
+            if cached is not None:
+                results.append(cached)
+                index += 1
+                continue
+
+            cold_refs = [ref]
+            index += 1
+            while index < len(refs) and not self._has_cached_payload(refs[index]):
+                cold_refs.append(refs[index])
+                index += 1
+            results.extend(self._load_cold_refs(cold_refs, loader, batch_loader=batch_loader))
+        return tuple(results)
+
+    def stats(self) -> ChunkCacheStats:
+        return ChunkCacheStats(
+            cpu_hits=self.cpu_hits,
+            local_hits=self.local_hits,
+            cold_misses=self.cold_misses,
+            cpu_items=len(self.cpu),
+            cpu_bytes=self.cpu.current_bytes,
+            cpu_max_bytes=self.cpu.max_bytes,
+            local_items=len(self._local_index),
+            local_bytes=self._local_bytes,
+            local_max_bytes=self.local_max_bytes,
+        )
+
+    def _get_cached_result(self, ref: ChunkRef) -> ChunkCacheResult | None:
         key = self._cache_key(ref)
         cached = self.cpu.get(key)
         if cached is not None:
@@ -117,26 +171,51 @@ class ChunkCache:
                 self.cpu.put(key, payload)
                 return ChunkCacheResult(payload=payload, tier=CacheTier.LOCAL_DISK)
             self._remove_local(local_path)
+        return None
 
-        payload = loader(ref)
-        self.cold_misses += 1
-        if local_path is not None:
-            self._write_local(local_path, payload)
-        self.cpu.put(key, payload)
-        return ChunkCacheResult(payload=payload, tier=CacheTier.COLD_STORAGE)
+    def _has_cached_payload(self, ref: ChunkRef) -> bool:
+        key = self._cache_key(ref)
+        if self.cpu.peek(key) is not None:
+            return True
+        local_path = self._local_path(ref)
+        if local_path is None or not local_path.exists():
+            return False
+        return self._is_valid_payload(ref, local_path.read_bytes())
 
-    def stats(self) -> ChunkCacheStats:
-        return ChunkCacheStats(
-            cpu_hits=self.cpu_hits,
-            local_hits=self.local_hits,
-            cold_misses=self.cold_misses,
-            cpu_items=len(self.cpu),
-            cpu_bytes=self.cpu.current_bytes,
-            cpu_max_bytes=self.cpu.max_bytes,
-            local_items=len(self._local_index),
-            local_bytes=self._local_bytes,
-            local_max_bytes=self.local_max_bytes,
-        )
+    def _load_cold_refs(
+        self,
+        refs: Sequence[ChunkRef],
+        loader: Callable[[ChunkRef], bytes],
+        *,
+        batch_loader: Callable[[Sequence[ChunkRef]], Sequence[bytes]] | None,
+    ) -> tuple[ChunkCacheResult, ...]:
+        if not refs:
+            return ()
+        if batch_loader is None:
+            return tuple(self.get_or_load_with_tier(ref, loader) for ref in refs)
+
+        unique_refs = _deduplicate_refs_by_cache_key(refs, self._cache_key)
+        payloads = tuple(batch_loader(unique_refs))
+        if len(payloads) != len(unique_refs):
+            raise ValueError("batch_loader returned the wrong number of payloads")
+        payload_by_cache_key = {
+            self._cache_key(ref): payload for ref, payload in zip(unique_refs, payloads, strict=True)
+        }
+        results: list[ChunkCacheResult] = []
+        for ref in refs:
+            cached = self._get_cached_result(ref)
+            if cached is not None:
+                results.append(cached)
+                continue
+            key = self._cache_key(ref)
+            payload = payload_by_cache_key[key]
+            local_path = self._local_path(ref)
+            self.cold_misses += 1
+            if local_path is not None:
+                self._write_local(local_path, payload)
+            self.cpu.put(key, payload)
+            results.append(ChunkCacheResult(payload=payload, tier=CacheTier.COLD_STORAGE))
+        return tuple(results)
 
     def _local_path(self, ref: ChunkRef) -> Path | None:
         if self.local_dir is None:
@@ -203,3 +282,18 @@ class ChunkCache:
         if len(payload) != ref.byte_length:
             return False
         return hashlib.sha256(payload).hexdigest() == ref.checksum
+
+
+def _deduplicate_refs_by_cache_key(
+    refs: Sequence[ChunkRef],
+    cache_key: Callable[[ChunkRef], str],
+) -> tuple[ChunkRef, ...]:
+    seen: set[str] = set()
+    unique_refs: list[ChunkRef] = []
+    for ref in refs:
+        key = cache_key(ref)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_refs.append(ref)
+    return tuple(unique_refs)

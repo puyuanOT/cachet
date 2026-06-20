@@ -15,6 +15,7 @@ from document_kv_cache.models import ChunkRef, DocumentChunkType, KVCacheKey
 from document_kv_cache.storage import (
     DiskRangeReader,
     MemoryRangeReader,
+    RangeBatchReader,
     RoutedRangeReader,
     UnityCatalogVolumeRangeReader,
     local_path,
@@ -101,6 +102,21 @@ def test_memory_range_reader_reads_validated_byte_ranges(tmp_path):
     assert reader.read(ref) == b"alpha"
 
 
+def test_memory_range_reader_read_many_preserves_order(tmp_path):
+    shard_path = tmp_path / "memory-many.kvpack"
+    refs = write_kvpack(
+        shard_path,
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    reader = MemoryRangeReader({refs[0].shard_uri: shard_path.read_bytes()})
+
+    assert reader.read_many((refs[1], refs[0])) == (b"beta", b"alpha")
+
+
 def test_disk_range_reader_resolves_relative_paths_under_root(tmp_path):
     shard_dir = tmp_path / "shards"
     ref = write_kvpack(
@@ -111,6 +127,20 @@ def test_disk_range_reader_resolves_relative_paths_under_root(tmp_path):
     relative_ref = replace(ref, shard_uri="disk.kvpack")
 
     assert DiskRangeReader(root=shard_dir).read(relative_ref) == b"disk"
+
+
+def test_disk_range_reader_read_many_reads_multiple_ranges_from_one_shard(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "disk-many.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("c"), payload=b"gamma", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+
+    assert DiskRangeReader().read_many((refs[2], refs[0], refs[1])) == (b"gamma", b"alpha", b"beta")
 
 
 def test_local_path_resolves_file_and_dbfs_uri_forms(tmp_path):
@@ -198,6 +228,23 @@ def test_routed_range_reader_dispatches_memory_and_disk(tmp_path):
     assert reader.read(disk_ref) == b"disk"
 
 
+def test_routed_range_reader_read_many_dispatches_mixed_backends(tmp_path):
+    shard_path = tmp_path / "routed-many.kvpack"
+    refs = write_kvpack(
+        shard_path,
+        [
+            PackChunk(key=key("disk"), payload=b"disk", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("memory"), payload=b"memory", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    memory_ref = replace(refs[1], shard_uri="memory:routed-many")
+    memory = MemoryRangeReader({"memory:routed-many": shard_path.read_bytes()})
+    reader = RoutedRangeReader(memory=memory, disk=DiskRangeReader())
+
+    assert reader.read_many((memory_ref, refs[0], memory_ref)) == (b"memory", b"disk", b"memory")
+
+
 def test_routed_range_reader_dispatches_relative_paths_to_configured_uc_root(tmp_path):
     volume_root = tmp_path / "Volumes" / "catalog" / "schema" / "volume"
     ref = write_kvpack(
@@ -238,7 +285,10 @@ def test_storage_public_and_legacy_modules_have_separate_ownership():
     assert issubclass(legacy_storage.DiskRangeReader, public_storage.DiskRangeReader)
     assert issubclass(legacy_storage.UnityCatalogVolumeRangeReader, public_storage.UnityCatalogVolumeRangeReader)
     assert issubclass(legacy_storage.RoutedRangeReader, public_storage.RoutedRangeReader)
+    assert public_storage.RangeBatchReader.__module__ == "document_kv_cache.storage"
     assert legacy_storage.RangeReader.__module__ == "restaurant_kv_serving.storage"
+    assert legacy_storage.RangeBatchReader.__module__ == "restaurant_kv_serving.storage"
+    assert RangeBatchReader.__module__ == "document_kv_cache.storage"
 
 
 def test_storage_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
@@ -250,6 +300,7 @@ def test_storage_star_import_surfaces_are_curated_for_document_and_preserved_for
 
     assert set(public_namespace) >= {
         "RangeReader",
+        "RangeBatchReader",
         "MemoryRangeReader",
         "DiskRangeReader",
         "UnityCatalogVolumeRangeReader",
@@ -262,11 +313,14 @@ def test_storage_star_import_surfaces_are_curated_for_document_and_preserved_for
     assert set(legacy_namespace) >= {
         "hashlib",
         "Mapping",
+        "Callable",
+        "Sequence",
         "Path",
         "PurePosixPath",
         "Protocol",
         "ChunkRef",
         "RangeReader",
+        "RangeBatchReader",
         "MemoryRangeReader",
         "DiskRangeReader",
         "UnityCatalogVolumeRangeReader",

@@ -66,6 +66,21 @@ def make_key(document_id: str, chunk_type: CacheChunkType, chunk_id: str) -> KVC
     )
 
 
+class BatchCountingReader:
+    def __init__(self, payloads: dict[str, bytes]) -> None:
+        self.payloads = payloads
+        self.read_calls = 0
+        self.read_many_calls = 0
+
+    def read(self, ref) -> bytes:
+        self.read_calls += 1
+        return self.payloads[ref.key.chunk_id]
+
+    def read_many(self, refs) -> tuple[bytes, ...]:
+        self.read_many_calls += 1
+        return tuple(self.payloads[ref.key.chunk_id] for ref in refs)
+
+
 def test_kv_cache_key_uses_document_id_with_restaurant_alias_compatibility():
     key = make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1")
     legacy_key = KVCacheKey(
@@ -318,6 +333,22 @@ def test_plan_static_then_selected_reviews_and_materialize(tmp_path):
     assert segmented.total_bytes == len(materialized.payload)
     assert segmented.segment_byte_offsets == materialized.segment_byte_offsets
     assert segmented.segment_tiers == (CacheTier.CPU,) * 5
+
+
+def test_materializer_uses_reader_batch_loader_when_available(tmp_path):
+    plan = document_plan(tmp_path, (b"abc", b"de"))
+    reader = BatchCountingReader({"section-1": b"abc", "section-2": b"de"})
+    materializer = KVMaterializer(cache=ChunkCache(cpu_max_bytes=1024), reader=reader)
+
+    materialized = materializer.materialize(plan)
+    segmented = materializer.materialize_segmented(plan)
+
+    assert materialized.payload == b"abcde"
+    assert materialized.segment_tiers == (CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE)
+    assert segmented.payloads == (b"abc", b"de")
+    assert segmented.segment_tiers == (CacheTier.CPU, CacheTier.CPU)
+    assert reader.read_many_calls == 1
+    assert reader.read_calls == 0
 
 
 def test_materialized_kv_validates_payload_length_and_offsets(tmp_path):

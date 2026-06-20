@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from document_kv_cache.cache import CacheTier, ChunkCache
+from document_kv_cache.cache import CacheTier, ChunkCache, ChunkCacheResult
 from document_kv_cache.models import MaterializationPlan
 from document_kv_cache.storage import RangeReader
 
@@ -75,36 +75,32 @@ class KVMaterializer:
 
     def materialize(self, plan: MaterializationPlan) -> MaterializedKV:
         started = time.perf_counter()
+        results = self._load_plan_segments(plan)
         parts: list[bytes] = []
         offsets: list[int] = []
-        tiers: list[CacheTier] = []
         cursor = 0
-        for segment in plan.segments:
+        for result in results:
             offsets.append(cursor)
-            result = self.cache.get_or_load_with_tier(segment.ref, self.reader.read)
             parts.append(result.payload)
-            tiers.append(result.tier)
             cursor += len(result.payload)
         return MaterializedKV(
             plan=plan,
             payload=b"".join(parts),
             segment_byte_offsets=tuple(offsets),
             materialization_seconds=time.perf_counter() - started,
-            segment_tiers=tuple(tiers),
+            segment_tiers=tuple(result.tier for result in results),
         )
 
     def materialize_segmented(self, plan: MaterializationPlan) -> SegmentedMaterializedKV:
         """Load chunk payloads without merging them into one large CPU buffer."""
         started = time.perf_counter()
+        results = self._load_plan_segments(plan)
         parts: list[bytes] = []
         offsets: list[int] = []
-        tiers: list[CacheTier] = []
         cursor = 0
-        for segment in plan.segments:
+        for result in results:
             offsets.append(cursor)
-            result = self.cache.get_or_load_with_tier(segment.ref, self.reader.read)
             parts.append(result.payload)
-            tiers.append(result.tier)
             cursor += len(result.payload)
         return SegmentedMaterializedKV(
             plan=plan,
@@ -112,7 +108,16 @@ class KVMaterializer:
             segment_byte_offsets=tuple(offsets),
             total_bytes=cursor,
             materialization_seconds=time.perf_counter() - started,
-            segment_tiers=tuple(tiers),
+            segment_tiers=tuple(result.tier for result in results),
+        )
+
+    def _load_plan_segments(self, plan: MaterializationPlan) -> tuple[ChunkCacheResult, ...]:
+        refs = tuple(segment.ref for segment in plan.segments)
+        batch_loader = getattr(self.reader, "read_many", None)
+        return self.cache.get_many_or_load_with_tier(
+            refs,
+            self.reader.read,
+            batch_loader=batch_loader if callable(batch_loader) else None,
         )
 
 

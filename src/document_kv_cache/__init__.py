@@ -508,6 +508,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     "KVMaterializer": ("document_kv_cache.materializer", "KVMaterializer"),
     "DocumentKVService": ("document_kv_cache.service", "DocumentKVService"),
     "RangeReader": ("document_kv_cache.storage", "RangeReader"),
+    "RangeBatchReader": ("document_kv_cache.storage", "RangeBatchReader"),
     "MemoryRangeReader": ("document_kv_cache.storage", "MemoryRangeReader"),
     "DiskRangeReader": ("document_kv_cache.storage", "DiskRangeReader"),
     "UnityCatalogVolumeRangeReader": (

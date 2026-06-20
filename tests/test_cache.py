@@ -85,6 +85,135 @@ def test_chunk_cache_result_reports_serving_tier_for_cold_cpu_and_local_hits(tmp
     assert local_only_cache.stats().cold_misses == 0
 
 
+def test_chunk_cache_get_many_batches_cold_loads_and_reuses_cpu_hits(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "batch-cache.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    reader = DiskRangeReader()
+    cache = ChunkCache(cpu_max_bytes=1024)
+    single_calls: list[str] = []
+    batch_calls: list[tuple[str, ...]] = []
+
+    def loader(ref):
+        single_calls.append(ref.key.chunk_id)
+        return reader.read(ref)
+
+    def batch_loader(batch):
+        batch_calls.append(tuple(ref.key.chunk_id for ref in batch))
+        return reader.read_many(batch)
+
+    cold_results = cache.get_many_or_load_with_tier(refs, loader, batch_loader=batch_loader)
+    cpu_results = cache.get_many_or_load_with_tier(refs, loader, batch_loader=batch_loader)
+
+    assert [result.payload for result in cold_results] == [b"alpha", b"beta"]
+    assert [result.tier for result in cold_results] == [CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE]
+    assert [result.tier for result in cpu_results] == [CacheTier.CPU, CacheTier.CPU]
+    assert single_calls == []
+    assert batch_calls == [("a", "b")]
+    assert cache.stats().cold_misses == 2
+    assert cache.stats().cpu_hits == 2
+
+
+def test_chunk_cache_get_many_deduplicates_cold_refs_within_one_batch(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "batch-cache-duplicate.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    reader = DiskRangeReader()
+    cache = ChunkCache(cpu_max_bytes=1024)
+    batch_calls: list[tuple[str, ...]] = []
+
+    def batch_loader(batch):
+        batch_calls.append(tuple(ref.key.chunk_id for ref in batch))
+        return reader.read_many(batch)
+
+    results = cache.get_many_or_load_with_tier(
+        (refs[0], refs[0], refs[1], refs[0]),
+        reader.read,
+        batch_loader=batch_loader,
+    )
+
+    assert [result.payload for result in results] == [b"alpha", b"alpha", b"beta", b"alpha"]
+    assert [result.tier for result in results] == [
+        CacheTier.COLD_STORAGE,
+        CacheTier.CPU,
+        CacheTier.COLD_STORAGE,
+        CacheTier.CPU,
+    ]
+    assert batch_calls == [("a", "b")]
+    assert cache.stats().cold_misses == 2
+    assert cache.stats().cpu_hits == 2
+
+
+def test_chunk_cache_get_many_duplicate_tiers_follow_configured_cache_capacity(tmp_path):
+    ref = write_kvpack(
+        tmp_path / "batch-cache-duplicate-local.kvpack",
+        [PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1")],
+        align_bytes=1,
+    )[0]
+    reader = DiskRangeReader()
+    cache = ChunkCache(cpu_max_bytes=0, local_dir=tmp_path / "chunk-cache")
+    batch_calls: list[tuple[str, ...]] = []
+
+    def batch_loader(batch):
+        batch_calls.append(tuple(ref.key.chunk_id for ref in batch))
+        return reader.read_many(batch)
+
+    results = cache.get_many_or_load_with_tier((ref, ref), reader.read, batch_loader=batch_loader)
+
+    assert [result.payload for result in results] == [b"alpha", b"alpha"]
+    assert [result.tier for result in results] == [CacheTier.COLD_STORAGE, CacheTier.LOCAL_DISK]
+    assert batch_calls == [("a",)]
+    assert cache.stats().cold_misses == 1
+    assert cache.stats().local_hits == 1
+    assert cache.stats().cpu_hits == 0
+
+
+def test_chunk_cache_get_many_preserves_interleaved_local_eviction_order(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "batch-cache-interleaved-eviction.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"aaa", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"bbbb", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    reader = DiskRangeReader()
+    sequence = (refs[0], refs[1], refs[0])
+
+    sequential_cache = ChunkCache(cpu_max_bytes=0, local_dir=tmp_path / "sequential-cache", local_max_bytes=4)
+    assert sequential_cache.get_or_load_with_tier(refs[0], reader.read).tier == CacheTier.COLD_STORAGE
+    sequential_cache = ChunkCache(cpu_max_bytes=0, local_dir=tmp_path / "sequential-cache", local_max_bytes=4)
+    sequential_results = [sequential_cache.get_or_load_with_tier(ref, reader.read) for ref in sequence]
+
+    batch_cache = ChunkCache(cpu_max_bytes=0, local_dir=tmp_path / "batch-cache", local_max_bytes=4)
+    assert batch_cache.get_or_load_with_tier(refs[0], reader.read).tier == CacheTier.COLD_STORAGE
+    batch_cache = ChunkCache(cpu_max_bytes=0, local_dir=tmp_path / "batch-cache", local_max_bytes=4)
+    batch_calls: list[tuple[str, ...]] = []
+
+    def batch_loader(batch):
+        batch_calls.append(tuple(ref.key.chunk_id for ref in batch))
+        return reader.read_many(batch)
+
+    batch_results = batch_cache.get_many_or_load_with_tier(sequence, reader.read, batch_loader=batch_loader)
+
+    assert [result.payload for result in batch_results] == [result.payload for result in sequential_results]
+    assert [result.tier for result in batch_results] == [CacheTier.LOCAL_DISK, CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE]
+    assert [result.tier for result in batch_results] == [result.tier for result in sequential_results]
+    assert batch_cache.stats().local_hits == sequential_cache.stats().local_hits == 1
+    assert batch_cache.stats().cold_misses == sequential_cache.stats().cold_misses == 2
+    assert batch_calls == [("b",), ("a",)]
+
+
 def test_chunk_cache_uses_local_disk_when_payload_is_too_large_for_cpu(tmp_path):
     ref = write_kvpack(
         tmp_path / "local-hit.kvpack",
