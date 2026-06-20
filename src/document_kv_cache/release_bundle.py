@@ -212,6 +212,22 @@ _PREFLIGHT_SIDECAR_KEYS = frozenset(
         "issues",
     }
 )
+_BENCHMARK_PLAN_EXECUTION_KEYS = frozenset({"record_type", "ok", "commands", "plan_source"})
+_BENCHMARK_PLAN_EXECUTION_COMMAND_KEYS = frozenset({"name", "argv", "returncode", "skipped", "error"})
+_BENCHMARK_PLAN_SOURCE_KEYS = frozenset(
+    {
+        "record_type",
+        "path",
+        "driver_path",
+        "size_bytes",
+        "sha256",
+        "plan_version",
+        "suite_id",
+        "model_id",
+        "hardware_target",
+        "command_count",
+    }
+)
 _GITHUB_GOVERNANCE_WRAPPER_KEYS = frozenset({"ok", "summary"})
 _GITHUB_GOVERNANCE_SUMMARY_KEYS = frozenset(
     {
@@ -1037,6 +1053,7 @@ def _repository_hygiene_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, 
 
 def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _BENCHMARK_PLAN_EXECUTION_KEYS, "benchmark plan execution sidecar"))
     if record.get("record_type") != BENCHMARK_PLAN_EXECUTION_RECORD_TYPE:
         issues.append(f"benchmark plan execution sidecar record_type must be {BENCHMARK_PLAN_EXECUTION_RECORD_TYPE!r}")
     if record.get("ok") is not True:
@@ -1060,6 +1077,13 @@ def _plan_execution_command_issues(commands: Sequence[Any]) -> tuple[str, ...]:
         if not isinstance(command, Mapping):
             issues.append(f"benchmark plan execution sidecar commands[{index}] must be an object")
             continue
+        issues.extend(
+            _unexpected_keys(
+                command,
+                _BENCHMARK_PLAN_EXECUTION_COMMAND_KEYS,
+                f"benchmark plan execution sidecar commands[{index}]",
+            )
+        )
         if type(command.get("returncode")) is not int or command["returncode"] != 0:
             issues.append(f"benchmark plan execution sidecar commands[{index}].returncode must be 0")
         if command.get("error") is not None:
@@ -1126,6 +1150,7 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
 
 def _plan_source_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _BENCHMARK_PLAN_SOURCE_KEYS, "benchmark plan execution sidecar plan_source"))
     if record.get("record_type") != BENCHMARK_PLAN_SOURCE_RECORD_TYPE:
         issues.append(f"benchmark plan execution sidecar plan_source.record_type must be {BENCHMARK_PLAN_SOURCE_RECORD_TYPE!r}")
     for field_name in ("path", "driver_path"):
