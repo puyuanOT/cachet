@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 high review approved with no findings; reviewer confirmed release-bundle behavior parity, export compatibility, and no circular import risk.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "native_probe_factories public helpers, release_bundle delegation, root/legacy exports, README, focused tests."
+  ],
+  "verification": [
+    "poetry run pytest tests/test_native_probe_factories.py tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py -q => 97 passed; git diff --check => clean; poetry run pytest -q => 946 passed; poetry build => succeeded; poetry check && poetry install --dry-run => succeeded."
+  ],
+  "what_changed": [
+    "Exposed public native probe factory diagnostics record validators and reused them from release bundle validation."
+  ],
+  "why": "Downstream users should be able to preflight document_kv.native_probe_factories.v1 sidecars before release bundling, with one canonical validator."
+}

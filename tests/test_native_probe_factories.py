@@ -17,7 +17,9 @@ from document_kv_cache.native_probe_factories import (
     inspect_builtin_native_probe_factory,
     main,
     native_probe_factory_inspection_to_record,
+    native_probe_factories_record_issues,
     sglang_native_probe_factory,
+    validate_native_probe_factories_record,
     vllm_native_probe_factory,
     write_builtin_native_probe_factories_record_json,
 )
@@ -91,6 +93,32 @@ def test_builtin_native_probe_factories_record_includes_required_backends():
         "vllm": serving_environment_profile_to_record(VLLM_SERVING_ENVIRONMENT_PROFILE),
         "sglang": serving_environment_profile_to_record(SGLANG_SERVING_ENVIRONMENT_PROFILE),
     }
+
+
+def test_validate_native_probe_factories_record_accepts_builtin_record():
+    record = builtin_native_probe_factories_to_record()
+
+    assert native_probe_factories_record_issues(record) == ()
+    validate_native_probe_factories_record(record)
+
+
+def test_validate_native_probe_factories_record_reports_malformed_sidecars():
+    missing_backend_record = builtin_native_probe_factories_to_record()
+    missing_backend_record["factories"] = missing_backend_record["factories"][:1]
+
+    issues = native_probe_factories_record_issues(missing_backend_record)
+
+    assert "native probe factories sidecar backends must match required backends" in issues
+    with pytest.raises(ValueError, match="backends must match required backends"):
+        validate_native_probe_factories_record(missing_backend_record)
+
+    wrong_path_record = builtin_native_probe_factories_to_record()
+    wrong_path_record["factories"][0]["factory_path"] = "downstream:factory"
+    wrong_path_issues = native_probe_factories_record_issues(wrong_path_record)
+
+    assert any("factory_path must match the built-in vllm factory path" in issue for issue in wrong_path_issues)
+    with pytest.raises(ValueError, match="factory_path must match the built-in vllm factory path"):
+        validate_native_probe_factories_record(wrong_path_record)
 
 
 def test_builtin_native_probe_factories_record_writer_and_cli(tmp_path, capsys):

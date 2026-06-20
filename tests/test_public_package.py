@@ -173,11 +173,13 @@ def test_public_document_package_reexports_core_api():
         release_evidence_input_status_to_record,
         run_engine_kv_connector_probe,
         native_probe_factory_inspection_to_record,
+        native_probe_factories_record_issues,
         serving_environment_profile,
         serving_environment_profile_to_record,
         serving_environment_profiles,
         serving_environment_profiles_to_record,
         sglang_native_probe_factory,
+        validate_native_probe_factories_record,
         vllm_adapter_spec,
         vllm_native_probe_factory,
         summarize_databricks_run,
@@ -521,6 +523,10 @@ def test_public_document_package_reexports_core_api():
     assert inspect_builtin_native_probe_factory is restaurant_kv_serving.inspect_builtin_native_probe_factory
     assert native_probe_factory_inspection_to_record is native_probe_factories.native_probe_factory_inspection_to_record
     assert native_probe_factory_inspection_to_record is restaurant_kv_serving.native_probe_factory_inspection_to_record
+    assert native_probe_factories_record_issues is native_probe_factories.native_probe_factories_record_issues
+    assert native_probe_factories_record_issues is restaurant_kv_serving.native_probe_factories_record_issues
+    assert validate_native_probe_factories_record is native_probe_factories.validate_native_probe_factories_record
+    assert validate_native_probe_factories_record is restaurant_kv_serving.validate_native_probe_factories_record
     assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
     assert (
         write_engine_kv_connector_actions_record_json
@@ -1518,8 +1524,10 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "inspect_builtin_native_probe_factories",
         "inspect_builtin_native_probe_factory",
         "main",
+        "native_probe_factories_record_issues",
         "native_probe_factory_inspection_to_record",
         "sglang_native_probe_factory",
+        "validate_native_probe_factories_record",
         "vllm_native_probe_factory",
         "write_builtin_native_probe_factories_record_json",
     ]

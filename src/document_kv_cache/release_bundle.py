@@ -37,8 +37,7 @@ from document_kv_cache.databricks_runs import (
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
-    SGLANG_NATIVE_PROBE_FACTORY,
-    VLLM_NATIVE_PROBE_FACTORY,
+    native_probe_factories_record_issues,
 )
 from document_kv_cache.pr_evidence import _PR_EVIDENCE_RECORD_KEYS, PR_EVIDENCE_RECORD_TYPE, evaluate_pr_evidence_record
 from document_kv_cache.repository_hygiene import (
@@ -46,7 +45,6 @@ from document_kv_cache.repository_hygiene import (
     REPOSITORY_HYGIENE_RECORD_TYPE,
     REQUIRED_GITIGNORE_PATTERNS,
 )
-from document_kv_cache.serving_env import serving_environment_profile, serving_environment_profile_to_record
 from document_kv_cache.storage import local_path
 
 
@@ -310,25 +308,6 @@ _REPOSITORY_HYGIENE_KEYS = frozenset(
         "issues",
     }
 )
-_NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
-_NATIVE_PROBE_FACTORY_KEYS = frozenset(
-    {
-        "backend",
-        "factory_path",
-        "package_name",
-        "package_importable",
-        "package_version",
-        "serving_environment_profile",
-        "supported",
-        "reason",
-    }
-)
-_BUILTIN_NATIVE_PROBE_FACTORY_PATHS = {
-    "vllm": VLLM_NATIVE_PROBE_FACTORY,
-    "sglang": SGLANG_NATIVE_PROBE_FACTORY,
-}
-
-
 @dataclass(frozen=True, slots=True)
 class _PreparedReleaseBundleArtifact:
     role: str
@@ -1204,60 +1183,7 @@ def _plan_execution_command_issues(commands: Sequence[Any]) -> tuple[str, ...]:
 
 
 def _native_probe_factories_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    issues: list[str] = []
-    issues.extend(_unexpected_keys(record, _NATIVE_PROBE_FACTORIES_KEYS, "native probe factories sidecar"))
-    if record.get("record_type") != NATIVE_PROBE_FACTORIES_RECORD_TYPE:
-        issues.append(
-            f"native probe factories sidecar record_type must be {NATIVE_PROBE_FACTORIES_RECORD_TYPE!r}"
-        )
-    factories = record.get("factories")
-    if not isinstance(factories, Sequence) or isinstance(factories, (str, bytes, bytearray)) or not factories:
-        issues.append("native probe factories sidecar factories must be a non-empty array")
-        return _dedupe_strings(issues)
-
-    backends: list[str] = []
-    for index, factory in enumerate(factories):
-        if not isinstance(factory, Mapping):
-            issues.append(f"native probe factories sidecar factories[{index}] must be an object")
-            continue
-        issues.extend(_native_probe_factory_issues(factory, index=index))
-        backend = factory.get("backend")
-        if isinstance(backend, str):
-            backends.append(backend)
-    if set(backends) != set(REQUIRED_ENGINE_PROBE_BACKENDS) or len(backends) != len(set(backends)):
-        issues.append("native probe factories sidecar backends must match required backends")
-    return _dedupe_strings(issues)
-
-
-def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
-    label = f"native probe factories sidecar factories[{index}]"
-    issues: list[str] = []
-    issues.extend(_unexpected_keys(factory, _NATIVE_PROBE_FACTORY_KEYS, label))
-    backend = factory.get("backend")
-    if not isinstance(backend, str) or backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
-        issues.append(f"{label}.backend must be one of {list(REQUIRED_ENGINE_PROBE_BACKENDS)!r}")
-    else:
-        expected_factory_path = _BUILTIN_NATIVE_PROBE_FACTORY_PATHS.get(backend)
-        if factory.get("factory_path") != expected_factory_path:
-            issues.append(f"{label}.factory_path must match the built-in {backend} factory path")
-    for field_name in ("backend", "factory_path", "package_name", "reason"):
-        issues.extend(_required_str_field(factory, field_name, label))
-    issues.extend(_optional_str_field(factory, "package_version", label))
-    for field_name in ("package_importable", "supported"):
-        issues.extend(_bool_field(factory, field_name, label))
-    if factory.get("supported") is True:
-        if factory.get("package_importable") is not True:
-            issues.append(f"{label}.package_importable must be true when supported is true")
-        if not isinstance(factory.get("package_version"), str) or not factory["package_version"]:
-            issues.append(f"{label}.package_version must be non-empty when supported is true")
-    serving_profile = factory.get("serving_environment_profile")
-    if not isinstance(serving_profile, Mapping):
-        issues.append(f"{label}.serving_environment_profile must be an object")
-    elif isinstance(backend, str) and backend in REQUIRED_ENGINE_PROBE_BACKENDS:
-        expected_profile = serving_environment_profile_to_record(serving_environment_profile(backend))
-        if dict(serving_profile) != expected_profile:
-            issues.append(f"{label}.serving_environment_profile must match the built-in {backend} profile")
-    return tuple(issues)
+    return native_probe_factories_record_issues(record)
 
 
 def _plan_source_issues(record: Mapping[str, Any]) -> tuple[str, ...]:

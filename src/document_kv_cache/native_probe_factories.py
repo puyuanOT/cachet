@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib import metadata, util
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 
 from document_kv_cache.engine_adapters import ServingBackend
@@ -21,6 +20,24 @@ from document_kv_cache.serving_env import (
 VLLM_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:vllm_native_probe_factory"
 SGLANG_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:sglang_native_probe_factory"
 NATIVE_PROBE_FACTORIES_RECORD_TYPE = "document_kv.native_probe_factories.v1"
+_REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS = ("vllm", "sglang")
+_NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
+_NATIVE_PROBE_FACTORY_KEYS = frozenset(
+    {
+        "backend",
+        "factory_path",
+        "package_name",
+        "package_importable",
+        "package_version",
+        "serving_environment_profile",
+        "supported",
+        "reason",
+    }
+)
+_BUILTIN_NATIVE_PROBE_FACTORY_PATHS = {
+    "vllm": VLLM_NATIVE_PROBE_FACTORY,
+    "sglang": SGLANG_NATIVE_PROBE_FACTORY,
+}
 
 
 class NativeProbeFactoryUnavailable(RuntimeError):
@@ -137,6 +154,42 @@ def builtin_native_probe_factories_to_record() -> dict[str, Any]:
     }
 
 
+def native_probe_factories_record_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return schema and compatibility issues for native factory diagnostics."""
+
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _NATIVE_PROBE_FACTORIES_KEYS, "native probe factories sidecar"))
+    if record.get("record_type") != NATIVE_PROBE_FACTORIES_RECORD_TYPE:
+        issues.append(
+            f"native probe factories sidecar record_type must be {NATIVE_PROBE_FACTORIES_RECORD_TYPE!r}"
+        )
+    factories = record.get("factories")
+    if not isinstance(factories, Sequence) or isinstance(factories, (str, bytes, bytearray)) or not factories:
+        issues.append("native probe factories sidecar factories must be a non-empty array")
+        return _dedupe_strings(issues)
+
+    backends: list[str] = []
+    for index, factory in enumerate(factories):
+        if not isinstance(factory, Mapping):
+            issues.append(f"native probe factories sidecar factories[{index}] must be an object")
+            continue
+        issues.extend(_native_probe_factory_issues(factory, index=index))
+        backend = factory.get("backend")
+        if isinstance(backend, str):
+            backends.append(backend)
+    if set(backends) != set(_REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS) or len(backends) != len(set(backends)):
+        issues.append("native probe factories sidecar backends must match required backends")
+    return _dedupe_strings(issues)
+
+
+def validate_native_probe_factories_record(record: Mapping[str, Any]) -> None:
+    """Validate a ``document_kv.native_probe_factories.v1`` diagnostics record."""
+
+    issues = native_probe_factories_record_issues(record)
+    if issues:
+        raise ValueError("; ".join(issues))
+
+
 def write_builtin_native_probe_factories_record_json(path: str | Path) -> None:
     """Write the built-in native factory diagnostics record to a JSON file."""
 
@@ -198,6 +251,72 @@ def _serving_backend(value: ServingBackend | str) -> ServingBackend:
         raise ValueError(f"Unsupported serving backend {value!r}") from exc
 
 
+def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
+    label = f"native probe factories sidecar factories[{index}]"
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(factory, _NATIVE_PROBE_FACTORY_KEYS, label))
+    backend = factory.get("backend")
+    if not isinstance(backend, str) or backend not in _REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS:
+        issues.append(f"{label}.backend must be one of {list(_REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS)!r}")
+    else:
+        expected_factory_path = _BUILTIN_NATIVE_PROBE_FACTORY_PATHS.get(backend)
+        if factory.get("factory_path") != expected_factory_path:
+            issues.append(f"{label}.factory_path must match the built-in {backend} factory path")
+    for field_name in ("backend", "factory_path", "package_name", "reason"):
+        issues.extend(_required_str_field(factory, field_name, label))
+    issues.extend(_optional_str_field(factory, "package_version", label))
+    for field_name in ("package_importable", "supported"):
+        issues.extend(_bool_field(factory, field_name, label))
+    if factory.get("supported") is True:
+        if factory.get("package_importable") is not True:
+            issues.append(f"{label}.package_importable must be true when supported is true")
+        if not isinstance(factory.get("package_version"), str) or not factory["package_version"]:
+            issues.append(f"{label}.package_version must be non-empty when supported is true")
+    serving_profile = factory.get("serving_environment_profile")
+    if not isinstance(serving_profile, Mapping):
+        issues.append(f"{label}.serving_environment_profile must be an object")
+    elif isinstance(backend, str) and backend in _REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS:
+        expected_profile = serving_environment_profile_to_record(serving_environment_profile(backend))
+        if dict(serving_profile) != expected_profile:
+            issues.append(f"{label}.serving_environment_profile must match the built-in {backend} profile")
+    return tuple(issues)
+
+
+def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
+    unexpected = sorted(str(key) for key in record if key not in allowed_keys)
+    if not unexpected:
+        return ()
+    return (f"{label} has unsupported keys: {unexpected}",)
+
+
+def _required_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if isinstance(value, str) and value:
+        return ()
+    return (f"{label}.{field_name} must be a non-empty string",)
+
+
+def _optional_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if value is None or isinstance(value, str):
+        return ()
+    return (f"{label}.{field_name} must be a string or null",)
+
+
+def _bool_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    if type(record.get(field_name)) is bool:
+        return ()
+    return (f"{label}.{field_name} must be boolean",)
+
+
+def _dedupe_strings(values: Sequence[str]) -> tuple[str, ...]:
+    deduped = []
+    for value in values:
+        if value not in deduped:
+            deduped.append(value)
+    return tuple(deduped)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Emit built-in native probe factory diagnostics for release planning."""
 
@@ -231,8 +350,10 @@ __all__ = [
     "inspect_builtin_native_probe_factories",
     "inspect_builtin_native_probe_factory",
     "main",
+    "native_probe_factories_record_issues",
     "native_probe_factory_inspection_to_record",
     "sglang_native_probe_factory",
+    "validate_native_probe_factories_record",
     "vllm_native_probe_factory",
     "write_builtin_native_probe_factories_record_json",
 ]
