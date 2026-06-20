@@ -193,6 +193,20 @@ def test_execute_benchmark_job_plan_validates_command_records():
         execute_benchmark_job_plan({"commands": [{"name": "bad", "argv": []}]})
 
 
+def test_execute_benchmark_job_plan_rejects_unsupported_plan_keys():
+    plan = {**plan_for((sys.executable, "-c", "pass")), "debug": True}
+
+    with pytest.raises(ValueError, match=r"Benchmark plan JSON has unsupported keys: \['debug'\]"):
+        execute_benchmark_job_plan(plan, dry_run=True)
+
+
+def test_execute_benchmark_job_plan_rejects_unsupported_command_keys():
+    plan = {"commands": [{"name": "command-1", "argv": [sys.executable, "-c", "pass"], "debug": True}]}
+
+    with pytest.raises(ValueError, match=r"commands\[0\] has unsupported keys: \['debug'\]"):
+        execute_benchmark_job_plan(plan, dry_run=True)
+
+
 def test_driver_path_normalizes_dbfs_uri_for_databricks_driver():
     assert _driver_path("dbfs:/benchmarks/v1-plan.json").as_posix() == "/dbfs/benchmarks/v1-plan.json"
 

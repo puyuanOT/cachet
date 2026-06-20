@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer found no issues: whitelist matches generated benchmark plan schema, minimal legacy commands-only plans still pass, and validation runs before subprocess execution.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_plan_executor.py; tests/test_benchmark_plan_executor.py; README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_benchmark_plan_executor.py; python -m pytest tests/test_benchmark_plan.py tests/test_release_bundle.py; python -m pytest -q; poetry check && poetry install --dry-run && poetry install --dry-run --extras databricks --extras test && poetry build; GPT-5.5 review approved with no findings"
+  ],
+  "what_changed": [
+    "Benchmark plan executor now rejects unsupported top-level benchmark plan keys and unsupported per-command keys before running commands."
+  ],
+  "why": "Keeps benchmark job plans fail-closed and prevents ad hoc/debug fields from silently influencing release execution provenance."
+}

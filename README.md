@@ -646,6 +646,9 @@ backend and cannot use debug-only `--engine-probe-engine-version` or
 `--allow-non-native-engine-probe`; if debug probe commands are also needed, pass
 separate native records directly with repeatable `--release-engine-probe-json`
 and `--release-engine-actions-json`.
+The benchmark plan executor treats generated plan JSON as a closed execution
+schema: unsupported top-level plan keys or per-command keys are rejected before
+any command is run.
 `--engine-probe-use-builtin-factories` fills missing planned factories with
 package-owned vLLM/SGLang factory paths. Those factories are stable release-plan
 targets but still fail closed until the backend-native block-manager adapter is
