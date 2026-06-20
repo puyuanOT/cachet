@@ -1,5 +1,9 @@
+import json
+
 import pytest
 
+import document_kv_cache.serving_env as public_serving_env
+import restaurant_kv_serving.serving_env as legacy_serving_env
 from document_kv_cache import ServingBackend
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -20,6 +24,7 @@ from document_kv_cache.serving_env import (
     serving_environment_profile_to_record,
     serving_environment_profiles,
     serving_environment_profiles_to_record,
+    write_serving_environment_profiles_record_json,
 )
 
 
@@ -75,6 +80,27 @@ def test_serving_environment_profiles_serialize_to_stable_records():
             serving_environment_profile_to_record(SGLANG_SERVING_ENVIRONMENT_PROFILE),
         ],
     }
+
+
+def test_serving_environment_profiles_writer_and_cli_emit_stable_records(tmp_path, capsys):
+    output_path = tmp_path / "serving-env.json"
+
+    write_serving_environment_profiles_record_json(output_path)
+    written_record = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert written_record == serving_environment_profiles_to_record()
+
+    assert public_serving_env.main([]) == 0
+    stdout_record = json.loads(capsys.readouterr().out)
+
+    assert stdout_record == serving_environment_profiles_to_record()
+
+
+def test_legacy_serving_environment_cli_emits_compatible_record(tmp_path):
+    output_path = tmp_path / "legacy-serving-env.json"
+
+    assert legacy_serving_env.main(["--output-json", str(output_path)]) == 0
+    assert json.loads(output_path.read_text(encoding="utf-8")) == serving_environment_profiles_to_record()
 
 
 def test_serving_environment_profile_rejects_ambiguous_or_combined_runtime_pins():

@@ -1,0 +1,40 @@
+{
+  "files": {
+    "pr-evidence/serving-env-profile-cli/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer reported no findings, approved the diff, and independently verified both module CLIs; local Poetry entry-point metadata remains stale until reinstall.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "pyproject.toml",
+        "src/document_kv_cache/README.md",
+        "src/document_kv_cache/serving_env.py",
+        "src/restaurant_kv_serving/serving_env.py",
+        "tests/test_serving_env.py",
+        "tests/test_public_package.py",
+        "tests/test_project_governance.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_serving_env.py tests/test_public_package.py::test_public_document_submodules_have_curated_star_import_surfaces tests/test_public_package.py::test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases tests/test_project_governance.py::test_readme_native_probe_diagnostics_include_serving_environment_profile tests/test_project_governance.py::test_document_package_readme_lists_public_modules_and_console_scripts tests/test_project_governance.py::test_legacy_restaurant_imports_in_tests_are_explicitly_scoped -q",
+        "poetry run python -m document_kv_cache.serving_env",
+        "poetry run python -m restaurant_kv_serving.serving_env --output-json /tmp/restaurant-serving-env.json",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Added serving environment profile sidecar CLI for pinned vLLM/SGLang profiles",
+        "Exposed document and legacy console scripts for serving environment diagnostics"
+      ],
+      "why": "Let release jobs capture the exact isolated serving-engine dependency contract as a standalone JSON artifact."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

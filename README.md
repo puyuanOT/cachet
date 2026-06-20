@@ -434,6 +434,9 @@ diagnostic record when preparing native adapter work so the target engine
 versions and dependency constraints stay tied to the probe entry points:
 
 ```bash
+document-kv-serving-env \
+  --output-json serving-environment-profiles.json
+
 document-kv-native-probe-factories \
   --output-json native-probe-factories.json
 ```

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from document_kv_cache.engine_adapters import ServingBackend
@@ -149,6 +153,36 @@ def serving_environment_profiles_to_record() -> dict[str, Any]:
     }
 
 
+def write_serving_environment_profiles_record_json(path: str | Path) -> None:
+    """Write the built-in serving environment profiles record to a JSON file."""
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(serving_environment_profiles_to_record(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Emit pinned serving environment profiles for release diagnostics."""
+
+    parser = argparse.ArgumentParser(
+        description="Emit pinned isolated vLLM/SGLang serving environment profiles."
+    )
+    parser.add_argument(
+        "--output-json",
+        help="Optional file path for the profiles JSON. Defaults to stdout.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.output_json:
+        write_serving_environment_profiles_record_json(args.output_json)
+    else:
+        print(json.dumps(serving_environment_profiles_to_record(), indent=2, sort_keys=True))
+    return 0
+
+
 __all__ = [
     "FASTAPI_CONSTRAINT",
     "HUGGINGFACE_HUB_CONSTRAINT",
@@ -164,8 +198,14 @@ __all__ = [
     "VLLM_DEPENDENCY_CONSTRAINTS",
     "VLLM_SERVING_ENVIRONMENT_PROFILE",
     "VLLM_VERSION",
+    "main",
     "serving_environment_profile",
     "serving_environment_profile_to_record",
     "serving_environment_profiles",
     "serving_environment_profiles_to_record",
+    "write_serving_environment_profiles_record_json",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
