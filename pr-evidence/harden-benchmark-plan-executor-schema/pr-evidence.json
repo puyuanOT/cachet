@@ -8,7 +8,7 @@
   "record_type": "document_kv.pr_evidence.v1",
   "refactor_skill_applied": true,
   "scope": [
-    "src/document_kv_cache/benchmark_plan_executor.py; tests/test_benchmark_plan_executor.py; README.md"
+    "src/document_kv_cache/benchmark_plan_executor.py; tests/test_benchmark_plan_executor.py; README.md; pr-evidence/harden-benchmark-plan-executor-schema/README.md"
   ],
   "verification": [
     "python -m pytest tests/test_benchmark_plan_executor.py; python -m pytest tests/test_benchmark_plan.py tests/test_release_bundle.py; python -m pytest -q; poetry check && poetry install --dry-run && poetry install --dry-run --extras databricks --extras test && poetry build; GPT-5.5 review approved with no findings"
