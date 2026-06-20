@@ -411,6 +411,71 @@ def test_legacy_databricks_job_config_respects_legacy_node_type_validator_monkey
         raise AssertionError("expected legacy node-type validator monkeypatch to be observed")
 
 
+def test_legacy_databricks_job_import_order_does_not_capture_public_monkeypatch():
+    script = f"""
+import json
+from pathlib import Path
+import tempfile
+
+import document_kv_cache.databricks_job as public_databricks_job
+
+def public_validator_should_not_run(node_type_id):
+    raise AssertionError(f"legacy imported patched public validator for {{node_type_id}}")
+
+def public_runner_writer_should_not_run(path):
+    Path(path).write_text("# unexpected public hook\\n", encoding="utf-8")
+
+class FakeDatabricksBenchmarkJobConfig:
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("legacy imported patched public job config")
+
+public_databricks_job.DEFAULT_AWS_G5_NODE_TYPE = "g6.8xlarge"
+public_databricks_job.DatabricksBenchmarkJobConfig = FakeDatabricksBenchmarkJobConfig
+public_databricks_job.validate_aws_g5_node_type = public_validator_should_not_run
+public_databricks_job.write_databricks_runner_script = public_runner_writer_should_not_run
+
+import restaurant_kv_serving.databricks_job as legacy_databricks_job
+
+assert legacy_databricks_job.DatabricksBenchmarkJobConfig is not FakeDatabricksBenchmarkJobConfig
+assert legacy_databricks_job.DEFAULT_AWS_G5_NODE_TYPE == "g5.4xlarge"
+legacy_databricks_job.validate_aws_g5_node_type("g5.xlarge")
+
+with tempfile.TemporaryDirectory() as raw_tmp:
+    tmp_path = Path(raw_tmp)
+    output_json = tmp_path / "payload.json"
+    runner_path = tmp_path / "run_plan.py"
+    exit_code = legacy_databricks_job.main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--single-user-name",
+            {SINGLE_USER_NAME!r},
+            "--output-json",
+            str(output_json),
+            "--runner-script-output",
+            str(runner_path),
+        ]
+    )
+    assert exit_code == 0
+    payload = json.loads(output_json.read_text(encoding="utf-8"))
+    assert payload["tasks"][0]["new_cluster"]["node_type_id"] == "g5.4xlarge"
+    runner_text = runner_path.read_text(encoding="utf-8")
+    assert "# unexpected public hook" not in runner_text
+    assert "document_kv_cache.benchmark_plan_executor" in runner_text
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_legacy_databricks_job_direct_writer_respects_legacy_build_monkeypatch(monkeypatch, tmp_path):
     output_path = tmp_path / "payload.json"
 

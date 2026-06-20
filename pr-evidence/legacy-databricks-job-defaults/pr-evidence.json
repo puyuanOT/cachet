@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved with no merge-blocking findings after checking import-order isolation, pristine inheritance, legacy hooks, pickle/slots behavior, runner output, and diff hygiene.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/databricks_job.py",
+    "tests/test_databricks_job.py"
+  ],
+  "verification": [
+    "python -m py_compile src/restaurant_kv_serving/databricks_job.py tests/test_databricks_job.py",
+    "poetry run pytest tests/test_databricks_job.py::test_legacy_databricks_job_import_order_does_not_capture_public_monkeypatch tests/test_databricks_job.py::test_legacy_databricks_job_reexports_document_owned_types tests/test_databricks_job.py::test_legacy_databricks_job_config_pickle_uses_honest_legacy_module tests/test_databricks_job.py::test_legacy_databricks_job_main_respects_legacy_namespace_monkeypatch tests/test_databricks_job.py::test_legacy_databricks_job_config_respects_legacy_node_type_validator_monkeypatch -q",
+    "poetry run pytest tests/test_databricks_job.py -q",
+    "poetry run pytest tests/test_public_package.py tests/test_project_governance.py -q",
+    "git diff --check",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Loaded clean document_kv_cache.databricks_job defaults for the legacy Databricks job facade.",
+    "Preserved honest legacy Databricks job config classes while avoiding import-order capture of public module monkeypatches.",
+    "Added regression coverage for public Databricks job monkeypatches applied before importing the legacy facade."
+  ],
+  "why": "Keeps the migration-only restaurant namespace safe while the package moves Databricks benchmark job ownership into document_kv_cache for the open-source Cachet package."
+}

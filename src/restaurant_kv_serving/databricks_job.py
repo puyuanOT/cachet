@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util as _importlib_util
 import json
+import sys as _sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,11 +52,66 @@ __all__ += [
     "Any",
 ]
 
-RESERVED_SINGLE_NODE_G5_TAG_KEYS = _document_module.RESERVED_SINGLE_NODE_G5_TAG_KEYS
-RUNNER_SCRIPT = _document_module.RUNNER_SCRIPT
+def _load_document_defaults_module():
+    module_path = Path(_document_module.__file__)
+    module_name = "_restaurant_kv_serving_databricks_job_document_defaults"
+    spec = _importlib_util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load document databricks_job defaults from {module_path}")
+    module = _importlib_util.module_from_spec(spec)
+    _sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
-class DatabricksSingleNodeG5ClusterConfig(_document_module.DatabricksSingleNodeG5ClusterConfig):
+_document_defaults_module = _load_document_defaults_module()
+_DOCUMENT_DEFAULTS = {
+    name: value
+    for name, value in vars(_document_defaults_module).items()
+    if not name.startswith("__")
+}
+_PUBLIC_CONSTANT_NAMES = frozenset(
+    {
+        "DEFAULT_AWS_G5_NODE_TYPE",
+        "DEFAULT_DATABRICKS_SPARK_VERSION",
+        "DEFAULT_DATABRICKS_RUN_NAME",
+        "DEFAULT_DATABRICKS_TASK_KEY",
+        "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
+        "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
+        "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
+        "RESERVED_SINGLE_NODE_G5_TAG_KEYS",
+        "RUNNER_SCRIPT",
+    }
+)
+
+
+def _is_pristine_public_class(name: str) -> bool:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    return (
+        isinstance(live_value, type)
+        and live_value.__module__ == _document_module.__name__
+        and live_value.__qualname__ == default_value.__qualname__
+    )
+
+
+def _public_class_base(name: str):
+    if _is_pristine_public_class(name):
+        return getattr(_document_module, name)
+    return _DOCUMENT_DEFAULTS[name]
+
+
+def _public_constant_default(name: str) -> Any:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    return live_value if live_value == default_value else default_value
+
+
+for _name in _PUBLIC_CONSTANT_NAMES:
+    globals()[_name] = _public_constant_default(_name)
+
+
+class DatabricksSingleNodeG5ClusterConfig(_public_class_base("DatabricksSingleNodeG5ClusterConfig")):
     __slots__ = ()
 
     def __post_init__(self) -> None:
@@ -78,7 +135,7 @@ class DatabricksSingleNodeG5ClusterConfig(_document_module.DatabricksSingleNodeG
             raise ValueError(f"custom_tags cannot override reserved tags: {sorted(reserved_tags)!r}")
 
 
-class DatabricksBenchmarkJobConfig(_document_module.DatabricksBenchmarkJobConfig):
+class DatabricksBenchmarkJobConfig(_public_class_base("DatabricksBenchmarkJobConfig")):
     __slots__ = ()
 
     def __post_init__(self) -> None:
@@ -149,11 +206,6 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "_runner_parameters": _runner_parameters,
     "main": main,
 }
-_DOCUMENT_DEFAULTS = {
-    name: value
-    for name, value in vars(_document_module).items()
-    if not name.startswith("__")
-}
 _PATCH_LOCK = RLock()
 _LEGACY_PATCH_NAMES = tuple(name for name in _DOCUMENT_DEFAULTS if name in globals())
 
@@ -184,7 +236,7 @@ def _isolated_document_namespace() -> dict[str, Any]:
 
 
 def _is_document_function(value: Any) -> bool:
-    return isinstance(value, FunctionType) and value.__globals__ is vars(_document_module)
+    return isinstance(value, FunctionType) and value.__globals__ is vars(_document_defaults_module)
 
 
 def _clone_document_function(function: FunctionType, namespace: dict[str, Any]) -> FunctionType:
