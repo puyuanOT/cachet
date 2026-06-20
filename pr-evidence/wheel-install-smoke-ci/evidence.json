@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED by GPT-5.5 with no blocking findings; reviewer inspected focused workflow, docs, and governance test changes.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/README.md",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_github_ci_workflow_runs_pr_quality_gate tests/test_project_governance.py::test_github_ci_workflow_verifies_installed_console_scripts tests/test_project_governance.py::test_github_ci_workflow_smokes_built_wheel_imports -q -> 3 passed",
+    "poetry check && poetry build -> passed",
+    "exact local wheel smoke from CI step -> wheel import smoke ok; cachet cli smoke ok",
+    "poetry run pytest tests/test_project_governance.py tests/test_public_package.py -q -> 47 passed",
+    "poetry run pytest -q -> 1143 passed",
+    "poetry check && poetry install --dry-run -> passed",
+    "git diff --check -> passed",
+    "repository hygiene record had no forbidden artifacts or missing directory docs; only expected dirty tracked files for this PR"
+  ],
+  "what_changed": [
+    "Added a CI built-wheel smoke gate that installs dist/document_kv_cache-*.whl in a fresh venv, verifies cachet/document_kv_cache/restaurant_kv_serving imports from the wheel, checks the Cachet facade contract, and exercises a Cachet CLI alias."
+  ],
+  "why": "CI previously built the package but did not prove the built wheel was installable and usable from a clean environment; this strengthens open-source packaging confidence after adding the Cachet facade."
+}

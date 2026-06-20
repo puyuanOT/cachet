@@ -67,3 +67,22 @@ jobs:
 
       - name: Build package
         run: poetry build
+
+      - name: Verify built wheel import smoke
+        run: |
+          python -m venv /tmp/cachet-wheel-smoke
+          /tmp/cachet-wheel-smoke/bin/python -m pip install --upgrade pip
+          /tmp/cachet-wheel-smoke/bin/python -m pip install dist/document_kv_cache-*.whl
+          /tmp/cachet-wheel-smoke/bin/python - <<'PY'
+          import cachet
+          import document_kv_cache
+          import restaurant_kv_serving
+
+          assert cachet.__all__ == document_kv_cache.__all__
+          assert cachet.CacheTier is document_kv_cache.CacheTier
+          assert cachet.DocumentKVRequest is document_kv_cache.DocumentKVRequest
+          assert restaurant_kv_serving.DocumentKVRequest is document_kv_cache.DocumentKVRequest
+          assert not hasattr(cachet, "RestaurantKVRequest")
+          assert not hasattr(cachet, "storage")
+          PY
+          /tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null
