@@ -269,6 +269,51 @@ def test_evaluate_release_evidence_rejects_probe_action_token_and_byte_mismatch(
     assert any("copied_bytes mismatch between engine probe and connector actions" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_probe_action_payload_mode_mismatch():
+    segmented_actions = _actions_record(ServingBackend.VLLM)
+    segmented_actions["copies"][0]["payload_index"] = 0
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            segmented_actions,
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("payload_mode mismatch between engine probe and connector actions" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_rejects_probe_action_layout_mismatch():
+    action_record = _actions_record(ServingBackend.VLLM)
+    action_record["reservation"]["layout"] = {
+        **action_record["reservation"]["layout"],
+        "lora_id": "selection-lora",
+    }
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            action_record,
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("layout mismatch between engine probe and connector actions" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_missing_or_non_qwen3_gqa_engine_probe_layout():
     missing_layout = _probe_record(ServingBackend.VLLM)
     missing_layout.pop("layout")

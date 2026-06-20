@@ -684,6 +684,8 @@ def _probe_action_pair_issues(
             ("copied_tokens", probe.get("copied_tokens"), reservation.get("total_tokens")),
             ("copied_bytes", probe.get("copied_bytes"), _action_record_expected_bytes(reservation)),
             ("copied_segments", probe.get("copied_segments"), copied_segments),
+            ("payload_mode", probe.get("payload_mode"), _action_record_payload_mode(actions)),
+            ("layout", probe.get("layout"), reservation.get("layout")),
         )
         for field_name, probe_value, action_value in expected_pairs:
             if probe_value != action_value:
@@ -692,6 +694,24 @@ def _probe_action_pair_issues(
                     f"({probe_value!r} != {action_value!r})"
                 )
     return tuple(issues)
+
+
+def _action_record_payload_mode(actions: Mapping[str, Any]) -> str | None:
+    copies = actions.get("copies")
+    if not isinstance(copies, Sequence) or isinstance(copies, (str, bytes, bytearray)):
+        return None
+    payload_indexes = [
+        copy.get("payload_index")
+        for copy in copies
+        if isinstance(copy, Mapping)
+    ]
+    if len(payload_indexes) != len(copies):
+        return None
+    if all(index is None for index in payload_indexes):
+        return "merged"
+    if all(type(index) is int for index in payload_indexes):
+        return "segmented"
+    return "mixed"
 
 
 def _action_record_expected_bytes(reservation: Mapping[str, Any]) -> int | None:

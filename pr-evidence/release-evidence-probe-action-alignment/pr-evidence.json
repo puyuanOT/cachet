@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no findings, approved the release-evidence pair checks, and ran PYTHONPATH=src pytest -q with 846 passing tests.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/release_evidence.py",
+    "tests/test_release_evidence.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_evidence.py::test_evaluate_release_evidence_rejects_probe_action_payload_mode_mismatch tests/test_release_evidence.py::test_evaluate_release_evidence_rejects_probe_action_layout_mismatch tests/test_release_evidence.py::test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_records -q",
+    "poetry run pytest tests/test_release_evidence.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check"
+  ],
+  "what_changed": [
+    "Tightened strict V1 release evidence cross-checks between native engine probe and connector-action sidecars",
+    "Added payload-mode and exact-layout mismatch tests for probe/action pairs"
+  ],
+  "why": "Ensure vLLM/SGLang connector-action artifacts audited in a release describe the same payload shape and KV layout as the native block-manager probe result."
+}
