@@ -455,6 +455,70 @@ def test_evaluate_release_evidence_rejects_non_numeric_comparison_metrics():
     assert any("answer_found_delta must be a finite number" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_duplicate_summary_and_malformed_v1_identities():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"].append(
+        {
+            **v1_record["measurements"][0],
+            "dataset": ["biography"],
+            "arm_id": "other_arm",
+        }
+    )
+    v1_record["report_rows"].append({**v1_record["report_rows"][0]})
+    v1_record["report_rows"].append(
+        {
+            **v1_record["report_rows"][0],
+            "dataset": "unsupported_dataset",
+            "arm_id": "other_arm",
+        }
+    )
+    v1_record["comparisons"].append({**v1_record["comparisons"][0]})
+    v1_record["comparisons"].append(
+        {
+            **v1_record["comparisons"][0],
+            "dataset": "unsupported_dataset",
+        }
+    )
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("measurement 8 has unsupported dataset ['biography']" in issue for issue in evidence.issues)
+    assert any("measurement 8 has unsupported arm_id 'other_arm'" in issue for issue in evidence.issues)
+    assert any("report_rows has duplicate row for biography:baseline_prefill" in issue for issue in evidence.issues)
+    assert any("report_rows[9] has unsupported dataset 'unsupported_dataset'" in issue for issue in evidence.issues)
+    assert any("report_rows[9] has unsupported arm_id 'other_arm'" in issue for issue in evidence.issues)
+    assert any("comparisons has duplicate comparison for biography" in issue for issue in evidence.issues)
+    assert any("comparison 5 has unsupported dataset 'unsupported_dataset'" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_allows_repeated_raw_measurements():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"].append({**v1_record["measurements"][0], "example_id": "biography-2"})
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert evidence.ok
+
+
 def test_evaluate_release_evidence_rejects_stub_measurement_rows():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"] = [{}]

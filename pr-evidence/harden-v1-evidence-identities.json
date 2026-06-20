@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially blocked duplicate raw measurement rejection as incompatible with valid per-example/per-repeat benchmark outputs; removed that uniqueness check, added a repeated-raw-measurement acceptance test, and GPT-5.5 re-reviewed cleanly as safe to merge.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_evidence.py",
+    "tests/test_release_evidence.py",
+    "pr-evidence/harden-v1-evidence-identities/README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_release_evidence.py -q -> 48 passed",
+    "python -m pytest -q -> 862 passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> succeeded",
+    "poetry build -> succeeded"
+  ],
+  "what_changed": [
+    "Validated V1 benchmark dataset and arm identities before counting required release coverage.",
+    "Rejected duplicate V1 summary report rows and duplicate per-dataset comparison rows.",
+    "Kept repeated raw measurements valid because benchmark measurements are per-example/per-repeat observations."
+  ],
+  "why": "Release readiness should fail closed for malformed or duplicated summary identities without rejecting valid raw benchmark outputs."
+}
