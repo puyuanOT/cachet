@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the uncommitted diff, ran the focused bundle-template regression, and approved with no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "databricks/engine-probe bundle templates, Databricks engine-probe documentation, and bundle contract tests."
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_job.py tests/test_template_resources.py -q; poetry run pytest tests/test_databricks_engine_probe_job.py tests/test_benchmark_plan.py -q; python -m compileall -q src/document_kv_cache src/restaurant_kv_serving; git diff --check; poetry run pytest -q"
+  ],
+  "what_changed": [
+    "Added actions_output_json to the standalone Databricks engine-probe Asset Bundle template and packaged copy, wired it to --actions-output-json, and updated Databricks docs/tests so declarative probe jobs emit connector-actions sidecars."
+  ],
+  "why": "Release evidence now requires document_kv.engine_kv_connector_actions.v1 sidecars for native engine probes; bundle users should not have to switch to the Python helper solely to produce release-ready sidecars."
+}

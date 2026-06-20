@@ -13,6 +13,7 @@ databricks bundle validate \
   --var handoff_json=/Volumes/catalog/schema/volume/probes/vllm-handoff.json \
   --var probe_factory=my_engine_adapter.probes:build_probe \
   --var probe_output_json=/Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
+  --var actions_output_json=/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --var payload_uri=/Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --var expected_backend=vllm \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
@@ -22,9 +23,9 @@ databricks bundle validate \
 The template intentionally omits debug-only `--allow-non-native-probe` and
 caller-supplied `--engine-version`. Release evidence expects each native factory
 to report the real serving-engine version through `EngineKVProbeFactoryResult`.
-Use the Python `databricks_engine_probe_job` helper instead when the job should
-also write the optional `document_kv.engine_kv_connector_actions.v1` descriptor
-sidecar.
+The bundle also writes the required
+`document_kv.engine_kv_connector_actions.v1` reserve/copy/bind/release
+descriptor sidecar through `actions_output_json`.
 
 For non-bundle release operations, the package CLI can emit one `runs/submit`
 payload with both required native backend probes:
@@ -40,7 +41,8 @@ python -m document_kv_cache.databricks_engine_probe_job \
 ```
 
 The target JSON must contain exactly one `vllm` probe and one `sglang` probe in
-`--release-safe` mode.
+`--release-safe` mode, and release-safe targets must include
+`actions_output_json` for each backend.
 `document_kv_cache.benchmark_plan --engine-probe-targets-output-json ...` can
 generate that target JSON from the same planned probe artifacts consumed by
 release evidence.
