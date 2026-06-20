@@ -92,6 +92,77 @@ def test_benchmark_suite_defaults_to_v1_contract():
     assert document_kv_cache_arm().arm_id == CACHE_REUSE_ARM
 
 
+def test_benchmark_example_validates_identity_documents_query_and_metadata():
+    source_document = document()
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=[source_document],
+        query="Who wrote notes on the Analytical Engine?",
+        expected_answer="Ada Lovelace",
+        metadata={"split": "dev"},
+    )
+
+    assert example.documents == (source_document,)
+    assert example.metadata == {"split": "dev"}
+
+    with pytest.raises(ValueError, match="example_id must be non-empty"):
+        BenchmarkExample(
+            example_id="",
+            dataset="biography",
+            documents=(source_document,),
+            query="Question?",
+        )
+    with pytest.raises(ValueError, match="query must be non-empty"):
+        BenchmarkExample(
+            example_id="bio-1",
+            dataset="biography",
+            documents=(source_document,),
+            query="",
+        )
+    with pytest.raises(ValueError, match="expected_answer must be non-empty"):
+        BenchmarkExample(
+            example_id="bio-1",
+            dataset="biography",
+            documents=(source_document,),
+            query="Question?",
+            expected_answer="",
+        )
+    with pytest.raises(ValueError, match="documents must include"):
+        BenchmarkExample(example_id="bio-1", dataset="biography", documents=(), query="Question?")
+    with pytest.raises(TypeError, match=r"documents\[0\]"):
+        BenchmarkExample(
+            example_id="bio-1",
+            dataset="biography",
+            documents=("not-a-document",),
+            query="Question?",
+        )
+    with pytest.raises(TypeError, match="metadata must be a mapping"):
+        BenchmarkExample(
+            example_id="bio-1",
+            dataset="biography",
+            documents=(source_document,),
+            query="Question?",
+            metadata=(),
+        )
+    with pytest.raises(ValueError, match="metadata keys"):
+        BenchmarkExample(
+            example_id="bio-1",
+            dataset="biography",
+            documents=(source_document,),
+            query="Question?",
+            metadata={"": "dev"},
+        )
+    with pytest.raises(ValueError, match="metadata.split"):
+        BenchmarkExample(
+            example_id="bio-1",
+            dataset="biography",
+            documents=(source_document,),
+            query="Question?",
+            metadata={"split": 1},
+        )
+
+
 def test_benchmark_suite_validates_identity_examples_and_datasets():
     example = BenchmarkExample(
         example_id="bio-1",
