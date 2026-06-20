@@ -257,7 +257,7 @@ def _read_many_from_paths(
         grouped.setdefault(path_for_ref(ref), []).append((index, ref))
     for path, indexed_refs in grouped.items():
         with path.open("rb") as handle:
-            for index, ref in indexed_refs:
+            for index, ref in sorted(indexed_refs, key=lambda item: (item[1].byte_offset, item[0])):
                 handle.seek(ref.byte_offset)
                 payload = handle.read(ref.byte_length)
                 payloads[index] = _validated_payload(ref, payload)

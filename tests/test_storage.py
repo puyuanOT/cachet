@@ -206,6 +206,51 @@ def test_disk_range_reader_read_many_reads_multiple_ranges_from_one_shard(tmp_pa
     assert DiskRangeReader().read_many((refs[2], refs[0], refs[1])) == (b"gamma", b"alpha", b"beta")
 
 
+def test_disk_range_reader_read_many_seeks_same_shard_ranges_in_offset_order(tmp_path, monkeypatch):
+    shard_path = tmp_path / "disk-many-seek-order.kvpack"
+    refs = write_kvpack(
+        shard_path,
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("c"), payload=b"gamma", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    seek_offsets: list[int] = []
+    path_type = type(shard_path)
+    original_open = path_type.open
+
+    class RecordingHandle:
+        def __init__(self, handle) -> None:
+            self._handle = handle
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._handle.__exit__(*args)
+
+        def seek(self, offset: int) -> int:
+            seek_offsets.append(offset)
+            return self._handle.seek(offset)
+
+        def read(self, size: int = -1) -> bytes:
+            return self._handle.read(size)
+
+    def recording_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        if path == shard_path:
+            return RecordingHandle(handle)
+        return handle
+
+    monkeypatch.setattr(path_type, "open", recording_open)
+
+    assert DiskRangeReader().read_many((refs[2], refs[0], refs[1])) == (b"gamma", b"alpha", b"beta")
+    assert seek_offsets == [ref.byte_offset for ref in refs]
+
+
 def test_local_path_resolves_file_and_dbfs_uri_forms(tmp_path):
     file_path = tmp_path / "shard.kvpack"
 
