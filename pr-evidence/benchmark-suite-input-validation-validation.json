@@ -1,0 +1,35 @@
+{
+  "files": {
+    "pr-evidence/benchmark-suite-input-validation.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped BenchmarkSuite validation diff with no findings, noting that constructor hardening matches the stated contract and preserves list-to-tuple normalization.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/benchmarks.py",
+        "tests/test_benchmarks.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_benchmarks.py tests/test_benchmark_runner.py -> 49 passed",
+        "python -m py_compile src/document_kv_cache/benchmarks.py tests/test_benchmarks.py -> clean",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 782 passed",
+        "poetry check -> All set",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-suite-validation-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+        "GPT-5.5 reviewer approved branch benchmark-suite-input-validation with no findings"
+      ],
+      "what_changed": [
+        "Required BenchmarkSuite suite_id, model_id, and hardware_target to be non-empty strings.",
+        "Required BenchmarkSuite examples to be a non-empty sequence of BenchmarkExample instances.",
+        "Required BenchmarkSuite datasets to be a non-empty sequence of supported V1 datasets while normalizing list inputs to tuples."
+      ],
+      "why": "V1 benchmark and release artifacts should be rooted in a well-formed suite identity, dataset set, and example collection, rather than allowing placeholder or malformed suite objects to flow into benchmark execution."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

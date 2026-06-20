@@ -92,6 +92,32 @@ def test_benchmark_suite_defaults_to_v1_contract():
     assert document_kv_cache_arm().arm_id == CACHE_REUSE_ARM
 
 
+def test_benchmark_suite_validates_identity_examples_and_datasets():
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+    )
+    suite = BenchmarkSuite(suite_id="v1", examples=[example], datasets=["biography"])
+
+    assert suite.examples == (example,)
+    assert suite.datasets == ("biography",)
+
+    with pytest.raises(ValueError, match="suite_id must be non-empty"):
+        BenchmarkSuite(suite_id="", examples=(example,))
+    with pytest.raises(ValueError, match="model_id must be non-empty"):
+        BenchmarkSuite(suite_id="v1", examples=(example,), model_id="")
+    with pytest.raises(ValueError, match="hardware_target must be non-empty"):
+        BenchmarkSuite(suite_id="v1", examples=(example,), hardware_target="")
+    with pytest.raises(ValueError, match="examples must include"):
+        BenchmarkSuite(suite_id="v1", examples=())
+    with pytest.raises(TypeError, match=r"examples\[0\]"):
+        BenchmarkSuite(suite_id="v1", examples=("not-an-example",))
+    with pytest.raises(ValueError, match="datasets must include"):
+        BenchmarkSuite(suite_id="v1", examples=(example,), datasets=())
+
+
 def test_v1_dataset_specs_cover_all_supported_datasets():
     specs = v1_dataset_specs()
 

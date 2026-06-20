@@ -111,10 +111,24 @@ class BenchmarkSuite:
     datasets: tuple[str, ...] = SUPPORTED_V1_DATASETS
 
     def __post_init__(self) -> None:
-        for dataset in self.datasets:
+        _validate_non_empty_str(self.suite_id, "suite_id")
+        _validate_non_empty_str(self.model_id, "model_id")
+        _validate_non_empty_str(self.hardware_target, "hardware_target")
+        examples = _tuple_from_sequence(self.examples, "examples")
+        if not examples:
+            raise ValueError("examples must include at least one BenchmarkExample")
+        for index, example in enumerate(examples):
+            if not isinstance(example, BenchmarkExample):
+                raise TypeError(f"examples[{index}] must be a BenchmarkExample")
+        datasets = _tuple_from_sequence(self.datasets, "datasets")
+        if not datasets:
+            raise ValueError("datasets must include at least one V1 dataset")
+        for dataset in datasets:
             validate_v1_dataset(dataset)
-        example_datasets = {example.dataset for example in self.examples}
-        missing = example_datasets.difference(self.datasets)
+        object.__setattr__(self, "examples", examples)
+        object.__setattr__(self, "datasets", datasets)
+        example_datasets = {example.dataset for example in examples}
+        missing = example_datasets.difference(datasets)
         if missing:
             raise ValueError(f"Examples reference datasets outside this suite: {sorted(missing)}")
 
@@ -425,6 +439,17 @@ def answer_found(output_text: str, expected_answer: str) -> bool:
 def validate_v1_dataset(dataset: str) -> None:
     if dataset not in SUPPORTED_V1_DATASETS:
         raise ValueError(f"Unsupported V1 dataset {dataset!r}; expected one of {SUPPORTED_V1_DATASETS}")
+
+
+def _validate_non_empty_str(value: str, field_name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be non-empty")
+
+
+def _tuple_from_sequence(value: Sequence[object], field_name: str) -> tuple[object, ...]:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise TypeError(f"{field_name} must be a sequence")
+    return tuple(value)
 
 
 def _validate_non_negative_int(value: int, field_name: str) -> None:
