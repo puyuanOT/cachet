@@ -396,6 +396,39 @@ def test_evaluate_release_evidence_rejects_stub_measurement_rows():
     assert any("missing required dataset/arm pairs" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_requires_prompt_token_context_metadata():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "metadata": {},
+    }
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "metadata": {
+            "prompt_text_mode": "logical",
+            "prompt_token_source": "logical",
+            "logical_prompt_tokens": "1024",
+            "runtime_prompt_tokens": "1024",
+        },
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("metadata.prompt_text_mode" in issue for issue in evidence.issues)
+    assert any("metadata.prompt_token_source" in issue for issue in evidence.issues)
+    assert any("metadata.logical_prompt_tokens" in issue for issue in evidence.issues)
+    assert any("metadata.runtime_prompt_tokens" in issue for issue in evidence.issues)
+    assert any("cache runtime_prompt_tokens must be smaller than logical_prompt_tokens" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_zero_token_volume_and_all_error_summary_rows():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
@@ -1204,37 +1237,8 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g5", model_id: str = "qw
             "hardware_target": hardware_target,
             "model_id": model_id,
         },
-        "measurements": [
-            {
-                "example_id": f"{dataset}-1",
-                "dataset": dataset,
-                "arm_id": arm,
-                "prompt_tokens": 1024,
-                "completion_tokens": 16,
-                "ttft_seconds": 1.0,
-                "time_to_completion_seconds": 2.0,
-                "answer_found": True,
-                "error": None,
-            }
-            for dataset in datasets
-            for arm in arms
-        ],
-        "report_rows": [
-            {
-                "dataset": dataset,
-                "arm_id": arm,
-                "requests": 1,
-                "errors": 0,
-                "prompt_tokens_mean": 1024.0,
-                "completion_tokens_mean": 16.0,
-                "ttft": {"p50": 1.0, "p95": 1.0},
-                "time_to_completion": {"p50": 2.0, "p95": 2.0},
-                "answer_found_rate": 1.0,
-                "output_tokens_per_second": 8.0,
-            }
-            for dataset in datasets
-            for arm in arms
-        ],
+        "measurements": [_v1_measurement_record(dataset, arm) for dataset in datasets for arm in arms],
+        "report_rows": [_v1_report_row_record(dataset, arm) for dataset in datasets for arm in arms],
         "comparisons": [
             {
                 "dataset": dataset,
@@ -1259,6 +1263,54 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g5", model_id: str = "qw
             "unexpected_datasets": [],
             "issues": [] if ok else ["missing report rows: hotpotqa:baseline_prefill"],
         },
+    }
+
+
+def _v1_measurement_record(dataset: str, arm: str):
+    prompt_tokens = 1024 if arm == "baseline_prefill" else 128
+    return {
+        "example_id": f"{dataset}-1",
+        "dataset": dataset,
+        "arm_id": arm,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": 16,
+        "ttft_seconds": 1.0,
+        "time_to_completion_seconds": 2.0,
+        "answer_found": True,
+        "error": None,
+        "metadata": _v1_measurement_metadata(arm),
+    }
+
+
+def _v1_report_row_record(dataset: str, arm: str):
+    prompt_tokens = 1024.0 if arm == "baseline_prefill" else 128.0
+    return {
+        "dataset": dataset,
+        "arm_id": arm,
+        "requests": 1,
+        "errors": 0,
+        "prompt_tokens_mean": prompt_tokens,
+        "completion_tokens_mean": 16.0,
+        "ttft": {"p50": 1.0, "p95": 1.0},
+        "time_to_completion": {"p50": 2.0, "p95": 2.0},
+        "answer_found_rate": 1.0,
+        "output_tokens_per_second": 8.0,
+    }
+
+
+def _v1_measurement_metadata(arm: str):
+    if arm == "baseline_prefill":
+        return {
+            "prompt_text_mode": "logical",
+            "prompt_token_source": "logical",
+            "logical_prompt_tokens": "1024",
+            "runtime_prompt_tokens": "1024",
+        }
+    return {
+        "prompt_text_mode": "runtime",
+        "prompt_token_source": "server_usage",
+        "logical_prompt_tokens": "1024",
+        "runtime_prompt_tokens": "128",
     }
 
 

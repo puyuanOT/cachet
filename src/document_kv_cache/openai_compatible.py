@@ -166,7 +166,7 @@ class OpenAICompatibleCompletionEngine:
         completed = self.clock()
         output_text = "".join(output_parts)
         ttft = (first_token_at or completed) - started
-        prompt_tokens, prompt_token_source = self._prompt_token_count(request, usage)
+        prompt_tokens, prompt_token_source, token_metadata = self._prompt_token_count(request, usage)
         return BenchmarkGeneration(
             output_text=output_text,
             prompt_tokens=prompt_tokens,
@@ -178,6 +178,7 @@ class OpenAICompatibleCompletionEngine:
                 "stream": "true",
                 "prompt_text_mode": self.config.prompt_text_mode,
                 "prompt_token_source": prompt_token_source,
+                **token_metadata,
             },
         )
 
@@ -192,7 +193,7 @@ class OpenAICompatibleCompletionEngine:
         completed = self.clock()
         output_text = _choice_text(data)
         usage = data.get("usage") or {}
-        prompt_tokens, prompt_token_source = self._prompt_token_count(request, usage)
+        prompt_tokens, prompt_token_source, token_metadata = self._prompt_token_count(request, usage)
         return BenchmarkGeneration(
             output_text=output_text,
             prompt_tokens=prompt_tokens,
@@ -204,17 +205,27 @@ class OpenAICompatibleCompletionEngine:
                 "stream": "false",
                 "prompt_text_mode": self.config.prompt_text_mode,
                 "prompt_token_source": prompt_token_source,
+                **token_metadata,
             },
         )
 
-    def _prompt_token_count(self, request: BenchmarkEngineRequest, usage: Mapping[str, Any]) -> tuple[int, str]:
+    def _prompt_token_count(
+        self,
+        request: BenchmarkEngineRequest,
+        usage: Mapping[str, Any],
+    ) -> tuple[int, str, dict[str, str]]:
         logical_count = self.token_counter.count(request.logical_prompt_text)
+        runtime_count = self.token_counter.count(self._prompt_text(request))
+        metadata = {
+            "logical_prompt_tokens": str(logical_count),
+            "runtime_prompt_tokens": str(runtime_count),
+        }
         if self.config.prompt_token_accounting == "server_usage":
             value = usage.get("prompt_tokens")
             if isinstance(value, int) and value >= 0:
-                return value, "server_usage"
-            return logical_count, "logical_fallback"
-        return logical_count, "logical"
+                return value, "server_usage", metadata
+            return logical_count, "logical_fallback", metadata
+        return logical_count, "logical", metadata
 
 
 def _iter_sse_events(response: Any) -> Iterator[str]:

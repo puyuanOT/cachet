@@ -143,6 +143,8 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert generation.time_to_completion_seconds == pytest.approx(0.75)
     assert generation.metadata["prompt_token_source"] == "logical"
     assert generation.metadata["prompt_text_mode"] == "logical"
+    assert generation.metadata["logical_prompt_tokens"] == "99"
+    assert generation.metadata["runtime_prompt_tokens"] == "99"
     request_body = engine.payloads[0]
     assert request_body["prompt"] == benchmark_request().logical_prompt_text
     assert request_body["model"] == "qwen3:4b-instruct"
@@ -171,6 +173,7 @@ def test_runtime_prompt_mode_uses_cache_suffix_for_kv_aware_proxy():
     assert generation.prompt_tokens == 12
     assert generation.metadata["prompt_token_source"] == "server_usage"
     assert generation.metadata["prompt_text_mode"] == "runtime"
+    assert int(generation.metadata["logical_prompt_tokens"]) > int(generation.metadata["runtime_prompt_tokens"])
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
 
 
@@ -193,6 +196,7 @@ def test_non_streaming_completion_engine_uses_usage_and_total_latency():
     assert generation.prompt_tokens == 12
     assert generation.completion_tokens == 2
     assert generation.metadata["prompt_token_source"] == "server_usage"
+    assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
     assert generation.ttft_seconds == pytest.approx(2.5)
     assert generation.time_to_completion_seconds == pytest.approx(2.5)
     assert engine.payloads[0]["model"] == "served-qwen"
@@ -216,6 +220,7 @@ def test_missing_usage_uses_logical_prompt_and_output_fallback_counts():
     assert generation.prompt_tokens == WhitespaceTokenCounter().count(request.logical_prompt_text)
     assert generation.completion_tokens == 2
     assert generation.metadata["prompt_token_source"] == "logical"
+    assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
 
 
 def test_server_usage_accounting_labels_missing_usage_fallback():
@@ -234,6 +239,7 @@ def test_server_usage_accounting_labels_missing_usage_fallback():
 
     assert generation.prompt_tokens == WhitespaceTokenCounter().count(request.logical_prompt_text)
     assert generation.metadata["prompt_token_source"] == "logical_fallback"
+    assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
 
 
 def test_streaming_error_payload_raises_and_closes_response():
