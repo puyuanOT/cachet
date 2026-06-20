@@ -271,74 +271,18 @@ def test_build_release_bundle_strict_v1_rejects_incomplete_release_artifact_set(
 def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
-    artifacts = _write_release_ready_artifacts(source_dir)
-    package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
-    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
-    v1_run_status = _write_json(
-        source_dir / "databricks-run-status-v1.json",
-        _databricks_run_status_cli_record(
-            succeeded=True,
-            purpose="document-kv-v1-benchmark",
-            run_name="document-kv-v1-benchmark",
-            task_key="document_kv_v1_benchmark",
-        ),
-    )
-    storage_run_status = _write_json(
-        source_dir / "databricks-run-status-storage.json",
-        _databricks_run_status_cli_record(
-            succeeded=True,
-            purpose="document-kv-storage-benchmark",
-            run_name="document-kv-storage-benchmark",
-            task_key="document_kv_storage_benchmark",
-        ),
-    )
-    engine_probe_run_status = _write_json(
-        source_dir / "databricks-run-status-engine-probe.json",
-        _databricks_run_status_cli_record(
-            succeeded=True,
-            purpose="document-kv-engine-probe",
-            run_name="document-kv-engine-probe",
-            task_key="document_kv_engine_probe",
-        ),
-    )
-    pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
-    github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
-    repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
-    native_probe_factories = _write_json(source_dir / "native-probe-factories.json", _native_probe_factories_record())
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir)
+    release_kwargs = _strict_v1_release_bundle_kwargs(source_dir, databricks_run_status_jsons=run_statuses)
 
     with pytest.raises(ValueError, match="storage-reader benchmark Databricks run-status evidence"):
         build_release_bundle(
-            v1_benchmark_json=artifacts["v1"],
-            storage_benchmark_json=artifacts["storage"],
-            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            release_evidence_json=artifacts["evidence"],
-            preflight_json=artifacts["preflight"],
-            plan_execution_jsons=(plan_execution,),
-            databricks_run_status_jsons=(v1_run_status,),
-            package_wheel=package_wheel,
-            pr_evidence_jsons=(pr_evidence,),
-            github_governance_json=github_governance,
-            repository_hygiene_json=repository_hygiene,
-            native_probe_factories_jsons=(native_probe_factories,),
+            **{**release_kwargs, "databricks_run_status_jsons": run_statuses[:1]},
             output_dir=tmp_path / "strict-missing-databricks-purpose-bundle",
             require_complete_v1=True,
         )
 
     bundle = build_release_bundle(
-        v1_benchmark_json=artifacts["v1"],
-        storage_benchmark_json=artifacts["storage"],
-        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-        release_evidence_json=artifacts["evidence"],
-        preflight_json=artifacts["preflight"],
-        plan_execution_jsons=(plan_execution,),
-        databricks_run_status_jsons=(v1_run_status, storage_run_status, engine_probe_run_status),
-        package_wheel=package_wheel,
-        pr_evidence_jsons=(pr_evidence,),
-        github_governance_json=github_governance,
-        repository_hygiene_json=repository_hygiene,
-        native_probe_factories_jsons=(native_probe_factories,),
+        **release_kwargs,
         output_dir=bundle_dir,
         require_complete_v1=True,
     )
@@ -375,6 +319,46 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         for task in status["submit_payload"]["tasks"]
     }
     assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
+
+
+@pytest.mark.parametrize(("omitted_purpose", "expected_label"), STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES)
+def test_build_release_bundle_strict_v1_reports_each_missing_databricks_purpose(
+    tmp_path,
+    omitted_purpose,
+    expected_label,
+):
+    source_dir = tmp_path / omitted_purpose
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir, omit_purpose=omitted_purpose)
+    release_kwargs = _strict_v1_release_bundle_kwargs(source_dir, databricks_run_status_jsons=run_statuses)
+
+    with pytest.raises(ValueError, match=expected_label):
+        build_release_bundle(
+            **release_kwargs,
+            output_dir=tmp_path / f"strict-missing-{omitted_purpose}",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_strict_v1_accepts_direct_databricks_status_records(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir, wrapped=False)
+    release_kwargs = _strict_v1_release_bundle_kwargs(source_dir, databricks_run_status_jsons=run_statuses)
+
+    bundle = build_release_bundle(
+        **release_kwargs,
+        output_dir=bundle_dir,
+        require_complete_v1=True,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert record["ok"] is True
+    bundled_statuses = [
+        json.loads((bundle_dir / artifact["bundled_path"]).read_text(encoding="utf-8"))
+        for artifact in record["artifacts"]
+        if artifact["role"] == "databricks_run_status"
+    ]
+    assert {status["record_type"] for status in bundled_statuses} == {DATABRICKS_RUN_STATUS_RECORD_TYPE}
 
 
 def test_build_release_bundle_can_include_native_probe_factories(tmp_path):
@@ -1325,6 +1309,26 @@ def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsy
     assert legacy_release_bundle.write_release_bundle_manifest_json is original_writer
 
 
+@pytest.mark.parametrize(
+    "module_name",
+    ("document_kv_cache.release_bundle", "restaurant_kv_serving.release_bundle"),
+)
+def test_release_bundle_cli_help_documents_strict_databricks_purpose_coverage(module_name):
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    completed = subprocess.run(
+        [sys.executable, "-m", module_name, "--help"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    help_text = " ".join(completed.stdout.split())
+
+    assert "--require-complete-v1" in completed.stdout
+    assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
+
+
 def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsys, tmp_path):
     output_json = tmp_path / "bundle-record.json"
     original_builder = public_release_bundle.build_release_bundle
@@ -1591,6 +1595,82 @@ def _actions_record(backend: ServingBackend, *, layout=None):
             release=EngineKVReleaseAction(request_id=request_id),
         )
     )
+
+
+STRICT_V1_DATABRICKS_RUN_STATUS_CASES = (
+    ("document-kv-v1-benchmark", "cachet-v1-target-run", "document_kv_v1_benchmark", "v1"),
+    (
+        "document-kv-storage-benchmark",
+        "cachet-storage-target-run",
+        "document_kv_storage_benchmark",
+        "storage",
+    ),
+    ("document-kv-engine-probe", "cachet-engine-probe-target-run", "document_kv_engine_probe", "engine-probe"),
+)
+
+
+def _strict_v1_release_bundle_kwargs(source_dir: Path, *, databricks_run_status_jsons: tuple[Path, ...]):
+    artifacts = _write_release_ready_artifacts(source_dir)
+    package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
+    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
+    pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
+    github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
+    repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
+    native_probe_factories = _write_json(source_dir / "native-probe-factories.json", _native_probe_factories_record())
+    return {
+        "v1_benchmark_json": artifacts["v1"],
+        "storage_benchmark_json": artifacts["storage"],
+        "engine_probe_jsons": (artifacts["vllm"], artifacts["sglang"]),
+        "engine_actions_jsons": (artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        "release_evidence_json": artifacts["evidence"],
+        "preflight_json": artifacts["preflight"],
+        "plan_execution_jsons": (plan_execution,),
+        "databricks_run_status_jsons": databricks_run_status_jsons,
+        "package_wheel": package_wheel,
+        "pr_evidence_jsons": (pr_evidence,),
+        "github_governance_json": github_governance,
+        "repository_hygiene_json": repository_hygiene,
+        "native_probe_factories_jsons": (native_probe_factories,),
+    }
+
+
+def _strict_v1_databricks_run_status_paths(
+    source_dir: Path,
+    *,
+    omit_purpose: str | None = None,
+    wrapped: bool = True,
+) -> tuple[Path, ...]:
+    return tuple(
+        _write_json(
+            source_dir / f"databricks-run-status-{suffix}.json",
+            _strict_v1_databricks_run_status_record(
+                purpose=purpose,
+                run_name=run_name,
+                task_key=task_key,
+                wrapped=wrapped,
+            ),
+        )
+        for purpose, run_name, task_key, suffix in STRICT_V1_DATABRICKS_RUN_STATUS_CASES
+        if purpose != omit_purpose
+    )
+
+
+def _strict_v1_databricks_run_status_record(
+    *,
+    purpose: str,
+    run_name: str,
+    task_key: str,
+    wrapped: bool,
+):
+    record = _databricks_run_status_record(
+        succeeded=True,
+        purpose=purpose,
+        run_name=run_name,
+        task_key=task_key,
+    )
+    if not wrapped:
+        return record
+    return {"ok": True, "action": "get", "summary": record}
 
 
 def _write_json(path: Path, record) -> Path:
