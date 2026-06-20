@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/storage-uri-handoff-writer/evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 approved the committed diff with no blocking findings; reviewer ran adapter, storage, engine-probe, public-package, and diff-check verification and noted only that live Databricks /dbfs or /Volumes mounts were not exercised.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "document_kv_cache.engine_adapters, engine adapter tests, README engine-handoff documentation"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_engine_adapters.py -q; poetry run pytest tests/test_engine_adapters.py tests/test_project_governance.py tests/test_public_package.py -q; poetry run pytest -q; poetry check; git diff --check origin/main...HEAD"
+      ],
+      "what_changed": [
+        "Make engine adapter handoff JSON writing resolve storage-style output paths through local_path."
+      ],
+      "why": "Databricks and serving connectors need handoff records written beside local-NVMe, DBFS, or Unity Catalog payloads; the reader and probe/action writers already normalize those URI forms, but write_engine_adapter_request_json previously treated them as raw Path values."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
