@@ -220,6 +220,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             databricks_run_status_jsons=(str(tmp_path / "databricks-run-status.json"),),
             package_wheel=str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
             pr_evidence_jsons=(str(tmp_path / "pr-evidence.json"),),
+            github_governance_json=str(tmp_path / "github-governance.json"),
             overwrite=True,
         ),
     )
@@ -242,6 +243,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             str(tmp_path / "vllm-probe.json"),
             str(tmp_path / "sglang-probe.json"),
         ],
+        "github_governance_json": str(tmp_path / "github-governance.json"),
         "output_dir": str(tmp_path / "release-bundle"),
         "output_json": str(tmp_path / "release-bundle-manifest.json"),
         "overwrite": True,
@@ -267,6 +269,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert "--databricks-run-status-json" in bundle_command.argv
     assert "--package-wheel" in bundle_command.argv
     assert "--pr-evidence-json" in bundle_command.argv
+    assert "--github-governance-json" in bundle_command.argv
     assert "--overwrite" in bundle_command.argv
 
 
@@ -1555,6 +1558,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
             "--release-bundle-pr-evidence-json",
             str(tmp_path / "pr-evidence.json"),
+            "--release-bundle-github-governance-json",
+            str(tmp_path / "github-governance.json"),
             "--release-bundle-overwrite",
             "--plan-output-json",
             str(plan_json),
@@ -1575,9 +1580,13 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["release_bundle"]["databricks_run_status_jsons"] == [
         str(tmp_path / "databricks-run-status.json")
     ]
+    assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
     assert bundle_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_bundle"]
     assert bundle_argv.count("--engine-probe-json") == 2
     assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")
+    assert bundle_argv[bundle_argv.index("--github-governance-json") + 1] == str(
+        tmp_path / "github-governance.json"
+    )
     assert "--overwrite" in bundle_argv
 
 
