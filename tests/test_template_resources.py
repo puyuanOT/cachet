@@ -57,6 +57,19 @@ def test_template_resources_can_be_filtered_read_and_serialized():
     assert "document-kv-storage-benchmark" in bundle_text
 
 
+def test_packaged_databricks_readme_explains_installed_wheel_extraction():
+    readme_text = read_template_resource("databricks/README.md")
+
+    assert "document-kv-templates list --prefix databricks" in readme_text
+    assert "document-kv-templates extract" in readme_text
+    assert "--prefix databricks" in readme_text
+    assert "--output-dir ./document-kv-templates" in readme_text
+    assert "document-kv-templates/databricks/" in readme_text
+    assert "document-kv-templates/databricks/storage-benchmark/" in readme_text
+    assert "document-kv-templates/databricks/engine-probe/" in readme_text
+    assert "document-kv-templates/databricks/vllm-smoke/" in readme_text
+
+
 def test_template_resource_validates_names():
     with pytest.raises(ValueError, match="relative"):
         read_template_resource("/databricks/databricks.yml")

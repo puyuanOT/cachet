@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review approved the diff with no blocking findings; it noted only that the reviewed changes were uncommitted before PR evidence generation.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "Docs and tests only: src/document_kv_cache/templates/databricks/README.md and tests/test_template_resources.py."
+  ],
+  "verification": [
+    "poetry run pytest tests/test_template_resources.py -q; git diff --check; poetry run python -m compileall -q src tests; poetry run pytest -q"
+  ],
+  "what_changed": [
+    "Documented installed-wheel extraction for packaged Databricks templates and added a template-resource guard for the handoff instructions."
+  ],
+  "why": "Release consumers need repository-free Databricks bundle templates from the installed document-kv-cache wheel, and the packaged README should make the extraction path explicit."
+}
