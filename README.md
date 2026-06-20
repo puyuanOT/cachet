@@ -215,6 +215,27 @@ ready = workflow.prepare_for_engine(
 )
 ```
 
+For documents that are already split into static context and reusable content
+chunks, use `SourceDocument.from_texts(...)` with
+`DocumentKVRequest.for_document_chunks(...)`:
+
+```python
+document = SourceDocument.from_texts(
+    document_id="doc-a",
+    static_text="Document profile...",
+    chunks={"review-1": "First reusable chunk", "review-2": "Second reusable chunk"},
+)
+request = DocumentKVRequest.for_document_chunks(
+    request_id="req-1",
+    task_id="qa",
+    model_id="qwen3:4b-instruct",
+    lora_id="base",
+    prompt_template_version="v1",
+    document_id="doc-a",
+    chunk_ids=("review-2",),
+)
+```
+
 The generator is intentionally injected. Real implementations can use Qwen, vLLM prefill workers, or future KV Packet training while this package keeps the orchestration and storage contract stable.
 `CacheGenerationMethod` labels the generation path as `VANILLA_PREFILL`,
 `ADAPTER_TRAINED`, `KV_PACKET`, or `CUSTOM` so benchmark reports and downstream

@@ -308,14 +308,40 @@ class DocumentKVRequest:
         chunk_id: ChunkId = "document",
         task_prefix_id: str | None = None,
     ) -> "DocumentKVRequest":
+        return cls.for_document_chunks(
+            request_id=request_id,
+            task_id=task_id,
+            model_id=model_id,
+            lora_id=lora_id,
+            prompt_template_version=prompt_template_version,
+            document_id=document_id,
+            chunk_ids=(chunk_id,),
+            include_static=False,
+            task_prefix_id=task_prefix_id,
+        )
+
+    @classmethod
+    def for_document_chunks(
+        cls,
+        *,
+        request_id: str,
+        task_id: str,
+        model_id: str,
+        lora_id: str,
+        prompt_template_version: str,
+        document_id: str,
+        chunk_ids: Sequence[ChunkId],
+        include_static: bool = True,
+        task_prefix_id: str | None = None,
+    ) -> "DocumentKVRequest":
         return cls(
             request_id=request_id,
             task_id=task_id,
             model_id=model_id,
             lora_id=lora_id,
             prompt_template_version=prompt_template_version,
-            document_chunks={document_id: (chunk_id,)},
-            include_static=False,
+            document_chunks={document_id: chunk_ids},
+            include_static=include_static,
             task_prefix_id=task_prefix_id,
         )
 
