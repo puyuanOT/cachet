@@ -588,7 +588,10 @@ into engine-native blocks. Treat `storage_layout` as a compatibility guard, not
 a complete tensor-stride language: the exact byte order is defined by
 `layout_version` plus the model profile. The V1 `qwen3-v1` payload contract is
 token-major, then layer-major, then logical key/value plane, then KV-head, with
-head elements contiguous according to `kv_stride_bytes`.
+head elements contiguous according to `kv_stride_bytes`. `kv_stride_bytes`
+includes any backend alignment padding for a KV head, so layout byte math uses
+`num_layers * num_kv_heads * kv_stride_bytes * 2` rather than assuming every
+engine stores exactly `head_size * dtype_width` bytes per head.
 
 ## Model Profiles
 

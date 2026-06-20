@@ -42,7 +42,9 @@ def test_qwen3_builtin_profile_derives_gqa_layout():
     assert layout.num_query_heads == 32
     assert layout.num_kv_heads == 8
     assert layout.head_size == 128
+    assert layout.kv_stride_bytes == 128
     assert layout.bytes_per_token == 73728
+    assert layout.expected_bytes_per_token == 73728
     assert layout.attention_mechanism == AttentionMechanism.GROUPED_QUERY
     assert layout.query_heads_per_kv_head == 4
     assert layout.shares_kv_storage is True
@@ -102,6 +104,18 @@ def test_custom_model_profile_registry_extends_aliases_without_mutating_builtins
     assert layout.attention_mechanism == AttentionMechanism.GROUPED_QUERY
     assert layout.query_heads_per_kv_head == 8
     assert layout.bytes_per_token == future_profile.bytes_per_token("bf16")
+
+
+def test_model_profile_layout_derives_bytes_from_padded_kv_stride():
+    layout = QWEN3_4B_INSTRUCT_PROFILE.to_layout(dtype="bf16", kv_stride_bytes=320)
+
+    assert layout.kv_stride_bytes == 320
+    assert layout.bytes_per_token == 36 * 8 * 320 * 2
+    assert layout.expected_bytes_per_token == 36 * 8 * 320 * 2
+    assert (
+        QWEN3_4B_INSTRUCT_PROFILE.bytes_per_token("bf16", kv_stride_bytes=320)
+        == 36 * 8 * 320 * 2
+    )
 
 
 def test_model_profile_registry_accepts_generator_aliases_and_rejects_collisions():
@@ -298,6 +312,16 @@ def test_layout_overrides_preserve_invalid_explicit_values_for_validation():
 
     with pytest.raises(ValueError, match="kv_stride_bytes must be positive"):
         QWEN3_4B_INSTRUCT_PROFILE.to_layout(kv_stride_bytes=0)
+
+    with pytest.raises(ValueError, match="smaller than"):
+        QWEN3_4B_INSTRUCT_PROFILE.to_layout(dtype="bf16", kv_stride_bytes=255)
+    with pytest.raises(ValueError, match="smaller than"):
+        QWEN3_4B_INSTRUCT_PROFILE.bytes_per_token("bf16", kv_stride_bytes=255)
+
+    with pytest.raises(ValueError, match="multiple"):
+        QWEN3_4B_INSTRUCT_PROFILE.to_layout(dtype="bf16", kv_stride_bytes=257)
+    with pytest.raises(ValueError, match="multiple"):
+        QWEN3_4B_INSTRUCT_PROFILE.bytes_per_token("bf16", kv_stride_bytes=257)
 
 
 def test_profile_supports_mha_and_mqa_attention_modes():
