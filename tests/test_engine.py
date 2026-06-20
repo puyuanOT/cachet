@@ -4,7 +4,7 @@ import pytest
 
 from document_kv_cache.admission import AdmissionQueue
 from document_kv_cache.cache import CacheTier, ChunkCache
-from document_kv_cache.engine import build_engine_ready_request, build_handle_from_materialized
+from document_kv_cache.engine import EngineReadyRequest, build_engine_ready_request, build_handle_from_materialized
 from document_kv_cache.engine_protocol import AttentionMechanism, KVLayout, KVStorageLayout
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
@@ -176,6 +176,7 @@ def test_build_handle_rejects_layout_metadata_mismatches(tmp_path):
     [
         (True, TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
         ("1.0", TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        (10**400, ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
         (float("nan"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
         (float("inf"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
         (-1.0, ValueError, "kv_gpu_bytes_per_payload_byte must be non-negative"),
@@ -193,11 +194,48 @@ def test_build_engine_ready_request_rejects_invalid_gpu_multiplier(tmp_path, mul
         )
 
 
+def test_build_engine_ready_request_rejects_nonfinite_gpu_estimate(tmp_path):
+    document_service = service(tmp_path)
+    materialized = document_service.materializer.materialize(document_service.planner.build_plan(request()))
+
+    with pytest.raises(ValueError, match="estimated_gpu_bytes must be finite"):
+        build_engine_ready_request(
+            materialized,
+            layout=layout(),
+            kv_gpu_bytes_per_payload_byte=1e308,
+        )
+
+
+@pytest.mark.parametrize(
+    ("estimated_gpu_bytes", "message"),
+    [
+        (True, "estimated_gpu_bytes must be an integer"),
+        (1.0, "estimated_gpu_bytes must be an integer"),
+        ("1", "estimated_gpu_bytes must be an integer"),
+        (-1, "estimated_gpu_bytes must be non-negative"),
+    ],
+)
+def test_engine_ready_request_validates_estimated_gpu_bytes(tmp_path, estimated_gpu_bytes, message):
+    document_service = service(tmp_path)
+    materialized = document_service.materializer.materialize(document_service.planner.build_plan(request()))
+    handle = build_handle_from_materialized(materialized, layout=layout())
+    ready = EngineReadyRequest(
+        handle=handle,
+        payload=materialized.payload,
+        estimated_gpu_bytes=estimated_gpu_bytes,
+        segment_tiers=materialized.segment_tiers,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        ready.validate()
+
+
 @pytest.mark.parametrize(
     ("multiplier", "error_type", "message"),
     [
         (True, TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
         ("1.0", TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        (10**400, ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
         (float("nan"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
         (float("inf"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
         (-1.0, ValueError, "kv_gpu_bytes_per_payload_byte must be non-negative"),
