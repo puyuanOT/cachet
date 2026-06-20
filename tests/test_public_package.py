@@ -124,7 +124,7 @@ def test_public_document_package_reexports_core_api():
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
-    from document_kv_cache import databricks_job, databricks_runs
+    from document_kv_cache import databricks_job, databricks_runs, engine_probe
 
     assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
@@ -146,17 +146,17 @@ def test_public_document_package_reexports_core_api():
     assert DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME is restaurant_kv_serving.DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     assert ENGINE_PROBE_TARGETS_RECORD_TYPE is restaurant_kv_serving.ENGINE_PROBE_TARGETS_RECORD_TYPE
     assert ENGINE_PROBE_TARGETS_SCHEMA_VERSION is restaurant_kv_serving.ENGINE_PROBE_TARGETS_SCHEMA_VERSION
-    assert ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND
-    assert ENGINE_KV_PROBE_METADATA_HANDOFF_JSON is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
-    assert ENGINE_KV_PROBE_METADATA_PAYLOAD_URI is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_PAYLOAD_URI
-    assert ENGINE_KV_PROBE_METADATA_PROBE_FACTORY is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_PROBE_FACTORY
+    assert ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND == restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND
+    assert ENGINE_KV_PROBE_METADATA_HANDOFF_JSON == restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
+    assert ENGINE_KV_PROBE_METADATA_PAYLOAD_URI == restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_PAYLOAD_URI
+    assert ENGINE_KV_PROBE_METADATA_PROBE_FACTORY == restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_PROBE_FACTORY
     assert (
         ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE
-        is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE
+        == restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE
     )
     assert (
         ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION
-        is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION
+        == restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION
     )
     assert RELEASE_BUNDLE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_BUNDLE_ARTIFACT_ROLES
     assert RELEASE_BUNDLE_MANIFEST_FILENAME is restaurant_kv_serving.RELEASE_BUNDLE_MANIFEST_FILENAME
@@ -178,8 +178,9 @@ def test_public_document_package_reexports_core_api():
     assert DocumentChunkType is restaurant_kv_serving.DocumentChunkType
     assert DocumentKVRequest is restaurant_kv_serving.DocumentKVRequest
     assert EngineProbePlanConfig is restaurant_kv_serving.EngineProbePlanConfig
-    assert EngineKVProbeConfig is restaurant_kv_serving.EngineKVProbeConfig
-    assert EngineKVProbeFactory is restaurant_kv_serving.EngineKVProbeFactory
+    assert EngineKVProbeConfig is engine_probe.EngineKVProbeConfig
+    assert issubclass(restaurant_kv_serving.EngineKVProbeConfig, engine_probe.EngineKVProbeConfig)
+    assert EngineKVProbeFactory is engine_probe.EngineKVProbeFactory
     assert KVCacheKey is restaurant_kv_serving.KVCacheKey
     assert KVStorageLayout is restaurant_kv_serving.KVStorageLayout
     assert kv_storage_layout_from_value is restaurant_kv_serving.kv_storage_layout_from_value
@@ -258,7 +259,7 @@ def test_public_document_package_reexports_core_api():
     )
     assert write_model_profile_definition_json is restaurant_kv_serving.write_model_profile_definition_json
     assert write_engine_probe_targets_json is restaurant_kv_serving.write_engine_probe_targets_json
-    assert run_engine_kv_connector_probe is restaurant_kv_serving.run_engine_kv_connector_probe
+    assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
     assert serving_environment_profile is restaurant_kv_serving.serving_environment_profile
     assert serving_environment_profile_to_record is restaurant_kv_serving.serving_environment_profile_to_record
     assert serving_environment_profiles is restaurant_kv_serving.serving_environment_profiles
@@ -525,8 +526,10 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert legacy_live_server.run_openai_compatible_live_check is live_server.run_openai_compatible_live_check
     assert "argparse" not in live_server.__all__
     assert engine_adapters.vllm_adapter_spec is restaurant_kv_serving.vllm_adapter_spec
-    assert engine_probe.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON is restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
-    assert engine_probe.run_engine_kv_connector_probe is restaurant_kv_serving.run_engine_kv_connector_probe
+    assert engine_probe.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON == restaurant_kv_serving.ENGINE_KV_PROBE_METADATA_HANDOFF_JSON
+    assert issubclass(restaurant_kv_serving.EngineKVProbeConfig, engine_probe.EngineKVProbeConfig)
+    assert engine_probe.EngineKVProbeConfig.__module__ == "document_kv_cache.engine_probe"
+    assert restaurant_kv_serving.EngineKVProbeConfig.__module__ == "restaurant_kv_serving.engine_probe"
     assert model_profiles.ModelProfileRegistry is restaurant_kv_serving.ModelProfileRegistry
     assert model_profiles.ModelProfileDefinition is restaurant_kv_serving.ModelProfileDefinition
     assert model_profiles.MODEL_PROFILE_RECORD_TYPE is restaurant_kv_serving.MODEL_PROFILE_RECORD_TYPE
