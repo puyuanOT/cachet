@@ -189,6 +189,48 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         BenchmarkSuite(suite_id="v1", examples=(example,), datasets=())
 
 
+def test_inference_measurement_validates_traceability_output_and_metadata():
+    measurement_record = InferenceMeasurement(
+        example_id="bio-1",
+        dataset="biography",
+        arm_id="baseline_prefill",
+        prompt_tokens=100,
+        completion_tokens=20,
+        ttft_seconds=1.0,
+        time_to_completion_seconds=2.0,
+        output_text="Ada Lovelace",
+        expected_answer="Ada Lovelace",
+        metadata={"prompt_token_source": "usage"},
+    )
+
+    assert measurement_record.metadata == {"prompt_token_source": "usage"}
+
+    base_kwargs = {
+        "example_id": "bio-1",
+        "dataset": "biography",
+        "arm_id": "baseline_prefill",
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "ttft_seconds": 1.0,
+        "time_to_completion_seconds": 2.0,
+        "output_text": "Ada Lovelace",
+    }
+    with pytest.raises(ValueError, match="example_id must be non-empty"):
+        InferenceMeasurement(**{**base_kwargs, "example_id": ""})
+    with pytest.raises(ValueError, match="arm_id must be non-empty"):
+        InferenceMeasurement(**{**base_kwargs, "arm_id": ""})
+    with pytest.raises(ValueError, match="output_text must be a string"):
+        InferenceMeasurement(**{**base_kwargs, "output_text": object()})
+    with pytest.raises(ValueError, match="expected_answer must be non-empty"):
+        InferenceMeasurement(**{**base_kwargs, "expected_answer": ""})
+    with pytest.raises(ValueError, match="error must be non-empty"):
+        InferenceMeasurement(**{**base_kwargs, "error": ""})
+    with pytest.raises(TypeError, match="metadata must be a mapping"):
+        InferenceMeasurement(**{**base_kwargs, "metadata": ()})
+    with pytest.raises(ValueError, match="metadata.token_source"):
+        InferenceMeasurement(**{**base_kwargs, "metadata": {"token_source": 1}})
+
+
 def test_v1_dataset_specs_cover_all_supported_datasets():
     specs = v1_dataset_specs()
 

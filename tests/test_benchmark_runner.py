@@ -46,6 +46,11 @@ class RecordingEngine:
         )
 
 
+class EmptyMessageFailureEngine:
+    def generate(self, request: BenchmarkEngineRequest) -> BenchmarkGeneration:
+        raise TimeoutError()
+
+
 def example(dataset: str = "biography") -> BenchmarkExample:
     return BenchmarkExample(
         example_id=f"{dataset}-1",
@@ -102,6 +107,22 @@ def test_run_benchmark_suite_records_engine_errors_without_aborting():
 
     assert cache_measurement.error == "engine unavailable"
     assert cache_measurement.metadata == {"error_type": "RuntimeError"}
+    assert result.comparisons[0].ttft_speedup is None
+
+
+def test_run_benchmark_suite_records_empty_message_engine_errors_without_aborting():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: EmptyMessageFailureEngine(),
+        },
+    )
+    cache_measurement = next(measurement for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM)
+
+    assert cache_measurement.error == "TimeoutError"
+    assert cache_measurement.metadata == {"error_type": "TimeoutError"}
     assert result.comparisons[0].ttft_speedup is None
 
 

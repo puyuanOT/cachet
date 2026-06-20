@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially found empty-message engine exceptions would become invalid measurements; added a non-empty exception fallback and regression test, then GPT-5.5 re-reviewed cleanly as safe to merge.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmarks.py",
+    "src/document_kv_cache/benchmark_runner.py",
+    "tests/test_benchmarks.py",
+    "tests/test_benchmark_runner.py",
+    "pr-evidence/harden-benchmark-measurement-schema/README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_benchmarks.py tests/test_benchmark_runner.py -q -> 55 passed",
+    "python -m pytest -q -> 864 passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> succeeded",
+    "poetry build -> succeeded"
+  ],
+  "what_changed": [
+    "Added producer-side validation for benchmark measurement traceability fields, output text type, optional answer/error strings, and metadata mapping.",
+    "Preserved non-aborting benchmark error measurements for empty-message engine exceptions by falling back to the exception type name."
+  ],
+  "why": "V1 benchmark artifacts should be generated from well-formed measurements before release evidence validates latency and quality results."
+}

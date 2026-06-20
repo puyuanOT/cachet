@@ -167,13 +167,21 @@ class InferenceMeasurement:
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        _validate_non_empty_str(self.example_id, "example_id")
         validate_v1_dataset(self.dataset)
+        _validate_non_empty_str(self.arm_id, "arm_id")
         _validate_non_negative_int(self.prompt_tokens, "prompt_tokens")
         _validate_non_negative_int(self.completion_tokens, "completion_tokens")
         _validate_non_negative_finite_number(self.ttft_seconds, "ttft_seconds")
         _validate_non_negative_finite_number(self.time_to_completion_seconds, "time_to_completion_seconds")
         if self.time_to_completion_seconds < self.ttft_seconds:
             raise ValueError("time_to_completion_seconds must be greater than or equal to ttft_seconds")
+        _validate_str(self.output_text, "output_text")
+        if self.expected_answer is not None:
+            _validate_non_empty_str(self.expected_answer, "expected_answer")
+        if self.error is not None:
+            _validate_non_empty_str(self.error, "error")
+        object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
 
     @property
     def ok(self) -> bool:
@@ -456,6 +464,11 @@ def validate_v1_dataset(dataset: str) -> None:
 def _validate_non_empty_str(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field_name} must be non-empty")
+
+
+def _validate_str(value: str, field_name: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
 
 
 def _tuple_from_sequence(value: Sequence[object], field_name: str) -> tuple[object, ...]:
