@@ -1,15 +1,18 @@
 # `restaurant_kv_serving`
 
-This package contains migration shims plus implementation modules that have not
-yet moved to `document_kv_cache`. New code should import `document_kv_cache`.
-This package remains available for existing Databricks jobs and tests during
-migration.
+This package contains migration shims for callers that have not yet moved to
+`document_kv_cache`. New code should import `document_kv_cache`. This package
+remains available for existing Databricks jobs and tests during migration.
+
+Except for `scheduler.py`, which is an older admission-helper shim, modules in
+this package forward to document-owned implementations while preserving legacy
+module paths, root exports, and selected monkeypatch hooks.
 
 - `models.py` defines cache keys, chunk references, document requests, and materialization plans.
 - `manifest.py` defines manifest lookup interfaces and an in-memory implementation for tests.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
 - `engine.py` defines engine-ready KV handles, tensor layouts, and the vLLM/SGLang connector protocol.
-- `engine_adapters.py` describes the external vLLM and SGLang adapter contracts and validation probes without importing or replacing those serving engines.
+- `engine_adapters.py` is a compatibility facade over `document_kv_cache.engine_adapters`, which owns the external vLLM and SGLang adapter contracts and validation probes without importing or replacing those serving engines.
 - `engine_probe.py` runs a serialized engine handoff through a backend-provided native probe factory and writes release-gate probe evidence JSON.
 - `model_profiles.py` records model attention geometry and derives validated KV layouts for MHA, GQA, and MQA-style caches.
 - `storage.py` defines Memory, Disk, Unity Catalog Volume, and routed range readers.
@@ -28,9 +31,9 @@ migration.
 - `databricks_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks V1 benchmark job payload helper.
 - `databricks_storage_benchmark_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks storage-reader job payload helper.
 - `databricks_engine_probe_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks native vLLM/SGLang engine-probe job payload helper.
-- `databricks_runs.py` submits generated Databricks payloads and checks run state using only `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables.
+- `databricks_runs.py` is a compatibility wrapper over `document_kv_cache.databricks_runs`, which submits generated Databricks payloads and checks run state using only `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables.
 - `benchmark_runner.py` is a compatibility wrapper over `document_kv_cache.benchmark_runner`, which owns canonical V1 JSONL loading, caller-provided or OpenAI-compatible vLLM/SGLang benchmark execution, and JSON measurement, summary, and comparison records.
-- `release_evidence.py` validates collected V1 benchmark, storage benchmark, and native vLLM/SGLang probe JSON artifacts before a release is called complete, and records the input artifact sources in the final release-evidence JSON.
+- `release_evidence.py` is a compatibility wrapper over `document_kv_cache.release_evidence`, which validates collected V1 benchmark, storage benchmark, and native vLLM/SGLang probe JSON artifacts before a release is called complete, and records the input artifact sources in the final release-evidence JSON.
 - `openai_compatible.py` is a compatibility wrapper over `document_kv_cache.openai_compatible`, which owns the thin streaming completion engine for vLLM/SGLang OpenAI-compatible API servers.
 - `live_server.py` is a compatibility wrapper over `document_kv_cache.live_server`, which owns the one-request live smoke check against an existing OpenAI-compatible vLLM/SGLang endpoint and prints a JSON latency/quality record.
 - `storage_benchmark.py` writes a synthetic packed shard and reports Memory, Disk, and Unity Catalog reader latency/throughput plus selected-reader and strict release machine-checkable evidence under configurable parallel read load.
@@ -140,9 +143,10 @@ python -m document_kv_cache.engine_probe \
   --output-json vllm-engine-probe.json
 ```
 
-The factory owns the real vLLM or SGLang block-manager calls; this package owns
-payload loading, descriptor validation, and the machine-checkable probe record,
-including the serving-engine profile metadata consumed by release evidence.
+The factory owns the real vLLM or SGLang block-manager calls;
+`document_kv_cache.engine_probe` owns payload loading, descriptor validation,
+and the machine-checkable probe record, including the serving-engine profile
+metadata consumed by release evidence.
 
 To run the same native probe through a Databricks-managed AWS g5 task, generate
 the small runner script and `runs/submit` payload:

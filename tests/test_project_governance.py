@@ -446,6 +446,23 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
         assert f"`{script_name}`" in text
     assert "`templates/`" in text
     assert "`templates/databricks/`" in text
+    assert "canonical implementation modules" in text
+    assert "Public files in this package define the document-owned classes" in text
+    assert "wrappers over implementation modules in `restaurant_kv_serving`" not in text
+    assert "real wrapper modules" not in text
+
+
+def test_legacy_package_readme_describes_migration_shims_not_new_implementation_owner():
+    text = (REPO_ROOT / "src" / "restaurant_kv_serving" / "README.md").read_text(encoding="utf-8")
+    compact_text = " ".join(text.split())
+
+    assert "migration shims for callers that have not yet moved to" in text
+    assert "modules in this package forward to document-owned implementations" in compact_text
+    assert "engine_adapters.py` is a compatibility facade over" in text
+    assert "databricks_runs.py` is a compatibility wrapper over" in text
+    assert "release_evidence.py` is a compatibility wrapper over" in text
+    assert "implementation modules that have not" not in text
+    assert "this package owns" not in compact_text
 
 
 def test_legacy_restaurant_imports_in_tests_are_explicitly_scoped():
