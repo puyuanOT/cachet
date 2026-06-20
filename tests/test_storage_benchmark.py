@@ -553,6 +553,76 @@ def test_legacy_storage_benchmark_hooks_do_not_leak_into_document_namespace(monk
     assert record["storage_evidence"]["ok"] is True
 
 
+def test_legacy_storage_benchmark_import_order_does_not_capture_public_monkeypatch():
+    script = """
+import json
+from pathlib import Path
+import sys
+import tempfile
+
+import document_kv_cache.storage_benchmark as public_storage_benchmark
+
+def public_payload_should_not_run(*args, **kwargs):
+    raise AssertionError("legacy imported a public monkeypatch as its default")
+
+class FakeStorageBenchmarkConfig:
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("legacy imported patched public config class")
+
+public_storage_benchmark._payload_for = public_payload_should_not_run
+public_storage_benchmark.RELEASE_STORAGE_BENCHMARK_READERS = ("memory",)
+public_storage_benchmark.StorageBenchmarkConfig = FakeStorageBenchmarkConfig
+
+import restaurant_kv_serving.storage_benchmark as legacy_storage_benchmark
+
+assert legacy_storage_benchmark.StorageBenchmarkConfig is not FakeStorageBenchmarkConfig
+assert legacy_storage_benchmark.RELEASE_STORAGE_BENCHMARK_READERS == ("memory", "disk", "unity_catalog")
+payload = legacy_storage_benchmark._payload_for(0, 32)
+assert payload.startswith(b"document-kv-cache:00000000:")
+try:
+    public_storage_benchmark._payload_for(0, 32)
+except AssertionError:
+    pass
+else:
+    raise AssertionError("public monkeypatch was not installed")
+
+with tempfile.TemporaryDirectory() as raw_tmp:
+    tmp_path = Path(raw_tmp)
+    output_json = tmp_path / "storage-result.json"
+    exit_code = legacy_storage_benchmark.main(
+        [
+            "--workspace-dir",
+            str(tmp_path / "workspace"),
+            "--chunk-count",
+            "1",
+            "--chunk-bytes",
+            "16",
+            "--repeats",
+            "1",
+            "--parallelism",
+            "1",
+            "--reader",
+            "memory",
+            "--output-json",
+            str(output_json),
+        ]
+    )
+    assert exit_code == 0
+    record = json.loads(output_json.read_text(encoding="utf-8"))
+    assert record["release_storage_evidence"]["required_readers"] == ["memory", "disk", "unity_catalog"]
+    assert record["release_storage_evidence"]["missing_readers"] == ["disk", "unity_catalog"]
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_storage_benchmark_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
     public_namespace: dict[str, object] = {}
     legacy_namespace: dict[str, object] = {}

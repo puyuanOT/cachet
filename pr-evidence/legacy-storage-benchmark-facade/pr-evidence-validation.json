@@ -1,0 +1,33 @@
+{
+  "files": {
+    "pr-evidence/legacy-storage-benchmark-facade/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer initially found public-module monkeypatch capture for constants/classes; the branch was patched and the same reviewer approved with no remaining merge blockers.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/restaurant_kv_serving/storage_benchmark.py",
+        "tests/test_storage_benchmark.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_storage_benchmark.py -q",
+        "poetry run pytest tests/test_public_package.py tests/test_project_governance.py tests/test_storage_benchmark.py -q",
+        "python -m py_compile src/restaurant_kv_serving/storage_benchmark.py tests/test_storage_benchmark.py",
+        "git diff --check",
+        "poetry run pytest"
+      ],
+      "what_changed": [
+        "Replaced the legacy restaurant_kv_serving.storage_benchmark implementation with a compatibility facade over document_kv_cache.storage_benchmark.",
+        "Preserved legacy monkeypatch hooks through an isolated document namespace while avoiding import-order capture of public module monkeypatches.",
+        "Added regression coverage for public-module monkeypatches applied before importing the legacy facade."
+      ],
+      "why": "Keeps the legacy restaurant namespace working while removing duplicated storage benchmark implementation from the compatibility package."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
