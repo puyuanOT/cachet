@@ -16,6 +16,11 @@ from document_kv_cache.native_probe_factories import (
     sglang_native_probe_factory,
     vllm_native_probe_factory,
 )
+from document_kv_cache.serving_env import (
+    SGLANG_SERVING_ENVIRONMENT_PROFILE,
+    VLLM_SERVING_ENVIRONMENT_PROFILE,
+    serving_environment_profile_to_record,
+)
 
 
 class DummyPlan:
@@ -60,6 +65,9 @@ def test_inspect_builtin_native_probe_factory_reports_fail_closed_status():
     assert record["factory_path"] == VLLM_NATIVE_PROBE_FACTORY
     assert record["supported"] is False
     assert "reason" in record
+    assert record["serving_environment_profile"] == serving_environment_profile_to_record(
+        VLLM_SERVING_ENVIRONMENT_PROFILE
+    )
 
 
 def test_builtin_native_probe_factories_record_includes_required_backends():
@@ -70,6 +78,14 @@ def test_builtin_native_probe_factories_record_includes_required_backends():
     assert record["record_type"] == "document_kv.native_probe_factories.v1"
     assert {factory["backend"] for factory in record["factories"]} == {"vllm", "sglang"}
     assert all(factory["supported"] is False for factory in record["factories"])
+    profile_by_backend = {
+        factory["backend"]: factory["serving_environment_profile"]
+        for factory in record["factories"]
+    }
+    assert profile_by_backend == {
+        "vllm": serving_environment_profile_to_record(VLLM_SERVING_ENVIRONMENT_PROFILE),
+        "sglang": serving_environment_profile_to_record(SGLANG_SERVING_ENVIRONMENT_PROFILE),
+    }
 
 
 def test_reserved_factories_reject_backend_mismatch_before_environment_probe():

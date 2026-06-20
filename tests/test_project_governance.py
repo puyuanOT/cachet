@@ -764,6 +764,17 @@ def test_readme_remaining_work_keeps_serving_boundary_explicit():
     assert "Add vLLM and SGLang adapters" not in remaining_work
 
 
+def test_readme_native_probe_diagnostics_include_serving_environment_profile():
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    serving_handoff = _markdown_section(text, "Serving Engine Handoff")
+    compact_serving_handoff = " ".join(serving_handoff.split())
+
+    assert "builtin_native_probe_factories_to_record()" in serving_handoff
+    assert "fail closed" in compact_serving_handoff
+    assert "pinned isolated serving-environment profile" in compact_serving_handoff
+    assert "target engine versions and dependency constraints" in compact_serving_handoff
+
+
 def test_pull_request_template_captures_traceability_and_review_gates():
     text = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
 
