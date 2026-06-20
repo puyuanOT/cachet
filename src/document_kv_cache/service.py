@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 from document_kv_cache.admission import AdmissionQueue, PreparedRequest
 from document_kv_cache.engine import (
@@ -56,7 +56,7 @@ class DocumentKVService:
         handle_uri: str | None = None,
         metadata: Mapping[str, str] | None = None,
         cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
-        adapter_ids: tuple[str, ...] = (),
+        adapter_ids: Iterable[str] = (),
         segmented: bool = False,
     ) -> EngineReadyRequest:
         plan = self.planner.build_plan(request)
@@ -80,7 +80,7 @@ class DocumentKVService:
         handle_uri: str | None = None,
         metadata: Mapping[str, str] | None = None,
         cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
-        adapter_ids: tuple[str, ...] = (),
+        adapter_ids: Iterable[str] = (),
         segmented: bool = False,
     ) -> EngineReadyRequest:
         ready = self.prepare_for_engine(

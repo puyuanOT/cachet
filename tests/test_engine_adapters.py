@@ -1995,14 +1995,12 @@ def test_adapter_spec_rejects_reserved_handle_metadata(tmp_path):
 
 
 def test_adapter_spec_rejects_non_string_metadata_keys_and_values(tmp_path):
-    ready = service(tmp_path).prepare_for_engine(
-        request(),
-        layout=layout(),
-        metadata={1: "bad"},  # type: ignore[dict-item]
-    )
-
     with pytest.raises(TypeError, match="metadata keys and values"):
-        build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+        service(tmp_path).prepare_for_engine(
+            request(),
+            layout=layout(),
+            metadata={1: "bad"},  # type: ignore[dict-item]
+        )
 
     with pytest.raises(TypeError, match="metadata keys and values"):
         EngineAdapterSpec(
