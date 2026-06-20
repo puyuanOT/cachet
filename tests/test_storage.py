@@ -22,6 +22,16 @@ from document_kv_cache.storage import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+RELATIVE_DISK_ESCAPE_URIS = (
+    "disk:../secret.kvpack",
+    "disk:benchmarks/../secret.kvpack",
+    "disk:benchmarks//secret.kvpack",
+    "disk:benchmarks/./secret.kvpack",
+    "../secret.kvpack",
+    "benchmarks/../secret.kvpack",
+    "benchmarks//secret.kvpack",
+    "benchmarks/./secret.kvpack",
+)
 
 
 def key(chunk_id: str) -> KVCacheKey:
@@ -108,8 +118,15 @@ def test_local_path_resolves_file_and_dbfs_uri_forms(tmp_path):
 
     assert local_path(f"disk:{file_path}") == file_path
     assert local_path("disk:shard.kvpack", root=tmp_path) == tmp_path / "shard.kvpack"
+    assert local_path("plain-shard.kvpack", root=tmp_path) == tmp_path / "plain-shard.kvpack"
     assert local_path(f"file:{file_path}") == file_path
     assert local_path("dbfs:/benchmarks/shard.kvpack").as_posix() == "/dbfs/benchmarks/shard.kvpack"
+
+
+@pytest.mark.parametrize("uri", RELATIVE_DISK_ESCAPE_URIS)
+def test_local_path_rejects_relative_disk_paths_that_escape_root(tmp_path, uri):
+    with pytest.raises(ValueError, match="disk path cannot contain"):
+        local_path(uri, root=tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -265,14 +282,26 @@ def test_legacy_storage_uses_legacy_helper_overrides(monkeypatch):
     legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
 
     def fake_join_confined(root, raw_relative_path, *, label):
-        assert root == Path("/dbfs")
-        assert raw_relative_path == "benchmarks/shard.kvpack"
-        assert label == "dbfs"
+        assert (root, raw_relative_path, label) in {
+            (Path("/dbfs"), "benchmarks/shard.kvpack", "dbfs"),
+            (Path("/legacy-root"), "benchmarks/shard.kvpack", "disk"),
+        }
         return Path("/legacy-override/shard.kvpack")
 
     monkeypatch.setattr(legacy_storage, "_join_confined", fake_join_confined)
 
     assert legacy_storage.local_path("dbfs:/benchmarks/shard.kvpack") == Path("/legacy-override/shard.kvpack")
+    assert legacy_storage.local_path("disk:benchmarks/shard.kvpack", root="/legacy-root") == Path(
+        "/legacy-override/shard.kvpack"
+    )
+
+
+@pytest.mark.parametrize("uri", RELATIVE_DISK_ESCAPE_URIS)
+def test_legacy_storage_rejects_relative_disk_paths_that_escape_root(tmp_path, uri):
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+
+    with pytest.raises(ValueError, match="disk path cannot contain"):
+        legacy_storage.local_path(uri, root=tmp_path)
 
 
 def test_legacy_storage_class_methods_ignore_public_class_overrides(monkeypatch):

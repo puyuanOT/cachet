@@ -116,7 +116,7 @@ def local_path(uri: str, *, root: str | Path | None = None) -> Path:
         return unity_catalog_volume_path(uri, root=root)
     if path.is_absolute() or root is None:
         return path
-    return Path(root) / path
+    return _join_confined(Path(root), uri, label="disk")
 
 
 def unity_catalog_volume_path(uri: str, *, root: str | Path | None = None) -> Path:

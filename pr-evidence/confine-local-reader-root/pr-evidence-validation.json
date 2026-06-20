@@ -1,0 +1,42 @@
+{
+  "files": {
+    "pr-evidence/confine-local-reader-root/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer Erdos the 2nd approved the initial storage confinement diff with no blocking findings and noted a residual legacy-test gap. That gap was resolved by adding explicit legacy rooted relative disk path rejection coverage; the reviewer re-approved the amended diff with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/storage.py",
+        "src/restaurant_kv_serving/storage.py",
+        "tests/test_storage.py",
+        "pr-evidence/confine-local-reader-root/README.md",
+        "pr-evidence/confine-local-reader-root/pr-evidence.json",
+        "pr-evidence/confine-local-reader-root/pr-evidence-validation.json"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_storage.py -> 56 passed",
+        "poetry run pytest -> 832 passed",
+        "poetry check -> All set",
+        "poetry run python -m compileall -q src tests -> passed",
+        "git diff --check -> passed",
+        "poetry run ruff check . -> unavailable locally: Command not found: ruff",
+        "poetry run mypy src tests -> unavailable locally: pyenv: mypy: command not found",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-confine-local-reader-root-hygiene-final.json -> ok=true",
+        "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json /tmp/document-kv-confine-local-reader-root-all-evidence.json -> ok=true, file_count=139",
+        "GPT-5.5 reviewer approved the branch after the explicit legacy rejection coverage was added"
+      ],
+      "what_changed": [
+        "Routed rooted relative disk paths through the existing confined path join helper in document_kv_cache.storage.local_path.",
+        "Applied the same rooted relative disk confinement to the restaurant_kv_serving compatibility wrapper while preserving its helper hooks.",
+        "Added public and legacy regression coverage for rooted local path traversal attempts using '..', '.', and empty path components."
+      ],
+      "why": "Dynamic KV shard loading from local disk should not allow manifest-provided relative paths to escape the configured shard root; this makes Disk storage match the existing DBFS and Unity Catalog path confinement behavior."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
