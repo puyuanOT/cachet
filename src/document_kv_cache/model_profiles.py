@@ -59,6 +59,8 @@ _MODEL_PROFILE_RECORD_KEYS = frozenset(
         "default_dtype",
         "default_block_size",
         "default_lora_id",
+        "default_shares_kv_storage",
+        "default_storage_layout",
         "metadata",
         "aliases",
     }
@@ -80,9 +82,19 @@ class KVModelProfile:
     default_dtype: str = "int8"
     default_block_size: int = 16
     default_lora_id: str = "base"
+    default_shares_kv_storage: bool = True
+    default_storage_layout: KVStorageLayout | str = KVStorageLayout.SHARED_KEY_VALUE
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "default_storage_layout",
+            kv_storage_layout_from_value(
+                self.default_storage_layout,
+                field_name="default_storage_layout",
+            ),
+        )
         self.validate()
         object.__setattr__(self, "metadata", MappingProxyType(dict(_validated_metadata(self.metadata))))
 
@@ -134,7 +146,7 @@ class KVModelProfile:
         block_size: int | None = None,
         layout_version: str | None = None,
         kv_stride_bytes: int | None = None,
-        shares_kv_storage: bool = True,
+        shares_kv_storage: bool | None = None,
         storage_layout: KVStorageLayout | str | None = None,
     ) -> KVLayout:
         layout_dtype = self.default_dtype if dtype is None else dtype
@@ -142,12 +154,26 @@ class KVModelProfile:
         resolved_kv_stride_bytes = (
             self.head_size * byte_width if kv_stride_bytes is None else kv_stride_bytes
         )
-        if storage_layout is None:
-            resolved_storage_layout = (
-                KVStorageLayout.SHARED_KEY_VALUE if shares_kv_storage else KVStorageLayout.SEPARATE_KEY_VALUE
+        if storage_layout is not None:
+            resolved_storage_layout = kv_storage_layout_from_value(
+                storage_layout,
+                field_name="storage_layout",
             )
+            resolved_shares_kv_storage = (
+                resolved_storage_layout == KVStorageLayout.SHARED_KEY_VALUE
+                if shares_kv_storage is None
+                else shares_kv_storage
+            )
+        elif shares_kv_storage is None:
+            resolved_storage_layout = self.default_storage_layout
+            resolved_shares_kv_storage = self.default_shares_kv_storage
         else:
-            resolved_storage_layout = storage_layout
+            resolved_shares_kv_storage = shares_kv_storage
+            resolved_storage_layout = (
+                KVStorageLayout.SHARED_KEY_VALUE
+                if resolved_shares_kv_storage
+                else KVStorageLayout.SEPARATE_KEY_VALUE
+            )
         layout = KVLayout(
             model_id=self.model_id if model_id is None else model_id,
             lora_id=self.default_lora_id if lora_id is None else lora_id,
@@ -163,7 +189,7 @@ class KVModelProfile:
             num_kv_heads=self.num_kv_heads,
             head_size=self.head_size,
             kv_stride_bytes=resolved_kv_stride_bytes,
-            shares_kv_storage=shares_kv_storage,
+            shares_kv_storage=resolved_shares_kv_storage,
             storage_layout=resolved_storage_layout,
         )
         layout.validate()
@@ -191,6 +217,12 @@ class KVModelProfile:
         if not isinstance(self.default_dtype, str) or not self.default_dtype:
             raise ValueError("default_dtype must be non-empty")
         dtype_byte_width(self.default_dtype)
+        if type(self.default_shares_kv_storage) is not bool:
+            raise ValueError("default_shares_kv_storage must be a boolean")
+        if self.default_shares_kv_storage and self.default_storage_layout != KVStorageLayout.SHARED_KEY_VALUE:
+            raise ValueError("default_shares_kv_storage requires default_storage_layout='shared_key_value'")
+        if self.default_storage_layout == KVStorageLayout.SHARED_KEY_VALUE and not self.default_shares_kv_storage:
+            raise ValueError("default_storage_layout='shared_key_value' requires default_shares_kv_storage=True")
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,7 +298,7 @@ class ModelProfileRegistry:
         block_size: int | None = None,
         layout_version: str | None = None,
         kv_stride_bytes: int | None = None,
-        shares_kv_storage: bool = True,
+        shares_kv_storage: bool | None = None,
         storage_layout: KVStorageLayout | str | None = None,
     ) -> KVLayout:
         return self.get(model_id).to_layout(
@@ -298,6 +330,8 @@ def model_profile_definition_to_record(definition: ModelProfileDefinition) -> di
         "default_dtype": profile.default_dtype,
         "default_block_size": profile.default_block_size,
         "default_lora_id": profile.default_lora_id,
+        "default_shares_kv_storage": profile.default_shares_kv_storage,
+        "default_storage_layout": profile.default_storage_layout.value,
         "metadata": dict(sorted(profile.metadata.items())),
         "aliases": list(definition.aliases),
     }
@@ -323,6 +357,12 @@ def model_profile_definition_from_record(record: Mapping[str, Any]) -> ModelProf
         default_dtype=_required_str(record, "default_dtype"),
         default_block_size=_required_int(record, "default_block_size"),
         default_lora_id=_required_str(record, "default_lora_id"),
+        default_shares_kv_storage=_optional_bool(record, "default_shares_kv_storage", default=True),
+        default_storage_layout=_optional_storage_layout(
+            record,
+            "default_storage_layout",
+            default=KVStorageLayout.SHARED_KEY_VALUE,
+        ),
         metadata=metadata,
     )
     return ModelProfileDefinition(profile=profile, aliases=aliases)
@@ -401,6 +441,23 @@ def _required_int(record: Mapping[str, Any], key: str) -> int:
     return value
 
 
+def _optional_bool(record: Mapping[str, Any], key: str, *, default: bool) -> bool:
+    value = record.get(key, default)
+    if type(value) is not bool:
+        raise ValueError(f"{key} must be a boolean")
+    return value
+
+
+def _optional_storage_layout(
+    record: Mapping[str, Any],
+    key: str,
+    *,
+    default: KVStorageLayout,
+) -> KVStorageLayout:
+    value = record.get(key, default)
+    return kv_storage_layout_from_value(value, field_name=key)
+
+
 def _validate_positive_int(value: Any, name: str) -> None:
     if type(value) is not int:
         raise ValueError(f"{name} must be an integer")
@@ -454,7 +511,7 @@ def layout_for_model(
     block_size: int | None = None,
     layout_version: str | None = None,
     kv_stride_bytes: int | None = None,
-    shares_kv_storage: bool = True,
+    shares_kv_storage: bool | None = None,
     storage_layout: KVStorageLayout | str | None = None,
 ) -> KVLayout:
     return _BUILTIN_MODEL_PROFILE_REGISTRY.layout_for_model(

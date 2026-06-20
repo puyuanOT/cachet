@@ -629,8 +629,11 @@ layout contract. Use a caller-owned `ModelProfileRegistry` for profiles that are
 not part of the V1 built-ins, or ship a portable `ModelProfileDefinition` JSON
 artifact when the profile belongs to an external model bundle. The JSON artifact
 uses a closed top-level schema; place external bundle annotations in `metadata`
-rather than adding ad hoc top-level fields. The example below uses a schematic
-MQA-style future profile; real model bundles should replace the
+rather than adding ad hoc top-level fields. Profiles also carry the default
+K/V storage layout for derived handoffs, so model bundles can choose shared,
+separate, or interleaved key/value storage once instead of relying on every
+caller to pass the same override. The example below uses a schematic MQA-style
+future profile with separate K/V storage; real model bundles should replace the
 illustrative geometry with measured values from the target model:
 
 ```python
@@ -650,6 +653,8 @@ future_mqa_profile = KVModelProfile(
     head_size=128,
     max_context_tokens=65536,
     default_layout_version="future-mqa-v1",
+    default_shares_kv_storage=False,
+    default_storage_layout="separate_key_value",
     metadata={"attention": "mqa", "status": "future-extension"},
 )
 definition = ModelProfileDefinition(
