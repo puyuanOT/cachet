@@ -44,6 +44,7 @@ def test_public_document_package_reexports_core_api():
         DocumentChunkRole,
         DocumentChunkType,
         DocumentKVRequest,
+        DiskRangeReader,
         EngineProbePlanConfig,
         EngineKVProbeConfig,
         EngineKVProbeFactory,
@@ -538,7 +539,10 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         model_profiles.model_profile_definition_to_record
         is restaurant_kv_serving.model_profile_definition_to_record
     )
-    assert storage.DiskRangeReader is restaurant_kv_serving.DiskRangeReader
+    assert document_kv_cache.DiskRangeReader is storage.DiskRangeReader
+    assert storage.DiskRangeReader.__module__ == "document_kv_cache.storage"
+    assert restaurant_kv_serving.DiskRangeReader.__module__ == "restaurant_kv_serving.storage"
+    assert issubclass(restaurant_kv_serving.DiskRangeReader, storage.DiskRangeReader)
     assert release_bundle.ReleaseBundle is restaurant_kv_serving.ReleaseBundle
     assert release_bundle.build_release_bundle is restaurant_kv_serving.build_release_bundle
     assert release_evidence.RELEASE_EVIDENCE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_EVIDENCE_ARTIFACT_ROLES
@@ -633,6 +637,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
     serving_env = importlib.import_module("document_kv_cache.serving_env")
+    storage = importlib.import_module("document_kv_cache.storage")
     model_profiles = importlib.import_module("document_kv_cache.model_profiles")
     service = importlib.import_module("document_kv_cache.service")
     workflow = importlib.import_module("document_kv_cache.workflow")
@@ -691,6 +696,16 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     ]
     assert kvpack.__all__ == ["PackChunk", "LocalRangeReader", "write_kvpack"]
     assert cache.__all__ == ["CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"]
+    assert storage.__all__ == [
+        "RangeReader",
+        "MemoryRangeReader",
+        "DiskRangeReader",
+        "UnityCatalogVolumeRangeReader",
+        "RoutedRangeReader",
+        "local_path",
+        "unity_catalog_volume_path",
+        "is_real_uc_volume_root",
+    ]
     assert "DocumentKVRequest" in models.__all__
     assert "DocumentChunkRole" in models.__all__
     assert "chunk_type_role" in models.__all__
@@ -715,6 +730,13 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert "RestaurantKVRequest" not in star_namespace
     assert "RestaurantKVService" not in star_namespace
     assert "ChunkType" not in star_namespace
+    root_star_namespace: dict[str, object] = {}
+    exec("from document_kv_cache import *", root_star_namespace)
+    assert root_star_namespace["DiskRangeReader"] is storage.DiskRangeReader
+    assert root_star_namespace["MemoryRangeReader"] is storage.MemoryRangeReader
+    assert root_star_namespace["local_path"] is storage.local_path
+    assert root_star_namespace["unity_catalog_volume_path"] is storage.unity_catalog_volume_path
+    assert root_star_namespace["is_real_uc_volume_root"] is storage.is_real_uc_volume_root
     assert openai_compatible.__all__ == [
         "TokenCounter",
         "PromptTextMode",

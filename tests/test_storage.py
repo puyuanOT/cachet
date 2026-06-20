@@ -1,5 +1,11 @@
 import hashlib
+import importlib
+import os
+import subprocess
+import sys
 from dataclasses import replace
+from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -14,6 +20,8 @@ from document_kv_cache.storage import (
     local_path,
     unity_catalog_volume_path,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def key(chunk_id: str) -> KVCacheKey:
@@ -201,3 +209,117 @@ def test_routed_range_reader_disk_uri_overrides_configured_uc_root(tmp_path):
     )
 
     assert reader.read(disk_ref) == b"local-routed"
+
+
+def test_storage_public_and_legacy_modules_have_separate_ownership():
+    public_storage = importlib.import_module("document_kv_cache.storage")
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+
+    assert public_storage.DiskRangeReader.__module__ == "document_kv_cache.storage"
+    assert legacy_storage.DiskRangeReader.__module__ == "restaurant_kv_serving.storage"
+    assert issubclass(legacy_storage.MemoryRangeReader, public_storage.MemoryRangeReader)
+    assert issubclass(legacy_storage.DiskRangeReader, public_storage.DiskRangeReader)
+    assert issubclass(legacy_storage.UnityCatalogVolumeRangeReader, public_storage.UnityCatalogVolumeRangeReader)
+    assert issubclass(legacy_storage.RoutedRangeReader, public_storage.RoutedRangeReader)
+    assert legacy_storage.RangeReader.__module__ == "restaurant_kv_serving.storage"
+
+
+def test_storage_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
+    public_namespace: dict[str, object] = {}
+    legacy_namespace: dict[str, object] = {}
+
+    exec("from document_kv_cache.storage import *", public_namespace)
+    exec("from restaurant_kv_serving.storage import *", legacy_namespace)
+
+    assert set(public_namespace) >= {
+        "RangeReader",
+        "MemoryRangeReader",
+        "DiskRangeReader",
+        "UnityCatalogVolumeRangeReader",
+        "RoutedRangeReader",
+        "local_path",
+        "unity_catalog_volume_path",
+        "is_real_uc_volume_root",
+    }
+    assert "hashlib" not in public_namespace
+    assert set(legacy_namespace) >= {
+        "hashlib",
+        "Mapping",
+        "Path",
+        "PurePosixPath",
+        "Protocol",
+        "ChunkRef",
+        "RangeReader",
+        "MemoryRangeReader",
+        "DiskRangeReader",
+        "UnityCatalogVolumeRangeReader",
+        "RoutedRangeReader",
+        "local_path",
+        "unity_catalog_volume_path",
+        "is_real_uc_volume_root",
+    }
+    assert "_document_module" not in legacy_namespace
+
+
+def test_legacy_storage_uses_legacy_helper_overrides(monkeypatch):
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+
+    def fake_join_confined(root, raw_relative_path, *, label):
+        assert root == Path("/dbfs")
+        assert raw_relative_path == "benchmarks/shard.kvpack"
+        assert label == "dbfs"
+        return Path("/legacy-override/shard.kvpack")
+
+    monkeypatch.setattr(legacy_storage, "_join_confined", fake_join_confined)
+
+    assert legacy_storage.local_path("dbfs:/benchmarks/shard.kvpack") == Path("/legacy-override/shard.kvpack")
+
+
+def test_legacy_storage_class_methods_ignore_public_class_overrides(monkeypatch):
+    public_storage = importlib.import_module("document_kv_cache.storage")
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("legacy class leaked through public class method")
+
+    monkeypatch.setattr(public_storage.MemoryRangeReader, "__init__", fail_if_called)
+    monkeypatch.setattr(public_storage.MemoryRangeReader, "put", fail_if_called)
+    monkeypatch.setattr(public_storage.DiskRangeReader, "__init__", fail_if_called)
+    monkeypatch.setattr(public_storage.UnityCatalogVolumeRangeReader, "__init__", fail_if_called)
+
+    memory_reader = legacy_storage.MemoryRangeReader()
+    memory_reader.put("memory:payload", b"payload")
+    disk_reader = legacy_storage.DiskRangeReader(root="/tmp")
+    uc_reader = legacy_storage.UnityCatalogVolumeRangeReader(volume_root="/Volumes/catalog/schema/volume")
+
+    assert memory_reader._blobs == {"memory:payload": b"payload"}
+    assert disk_reader.root == Path("/tmp")
+    assert uc_reader.root == Path("/Volumes/catalog/schema/volume")
+
+
+def test_legacy_storage_ignores_public_helper_overrides_when_imported_later():
+    script = dedent(
+        """
+        import importlib
+
+        public_storage = importlib.import_module("document_kv_cache.storage")
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("legacy wrapper leaked through public helper")
+
+        public_storage._join_confined = fail_if_called
+        legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+        assert legacy_storage.local_path("dbfs:/benchmarks/shard.kvpack").as_posix() == "/dbfs/benchmarks/shard.kvpack"
+        """
+    )
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(REPO_ROOT / "src")
+
+    subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=REPO_ROOT,
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )

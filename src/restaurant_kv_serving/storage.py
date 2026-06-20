@@ -1,3 +1,5 @@
+"""Compatibility wrapper for :mod:`document_kv_cache.storage`."""
+
 from __future__ import annotations
 
 import hashlib
@@ -5,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+import document_kv_cache.storage as _document_module
 from restaurant_kv_serving.models import ChunkRef
 
 
@@ -12,7 +15,7 @@ class RangeReader(Protocol):
     def read(self, ref: ChunkRef) -> bytes: ...
 
 
-class MemoryRangeReader:
+class MemoryRangeReader(_document_module.MemoryRangeReader):
     """Read cache shards from process memory."""
 
     def __init__(self, blobs: Mapping[str, bytes] | None = None) -> None:
@@ -30,7 +33,7 @@ class MemoryRangeReader:
         return _validated_payload(ref, payload)
 
 
-class DiskRangeReader:
+class DiskRangeReader(_document_module.DiskRangeReader):
     """Read cache shards from local disk, `disk:` URIs, or mounted paths."""
 
     def __init__(self, *, root: str | Path | None = None) -> None:
@@ -44,13 +47,8 @@ class DiskRangeReader:
         return _validated_payload(ref, payload)
 
 
-class UnityCatalogVolumeRangeReader(DiskRangeReader):
-    """Read shards from Databricks Unity Catalog Volumes.
-
-    Databricks exposes UC Volumes on the driver filesystem under `/Volumes`.
-    This reader accepts either native `/Volumes/...` paths, relative paths under
-    an optional `volume_root`, or `uc-volume:/...` / `uc-volume://...` URIs.
-    """
+class UnityCatalogVolumeRangeReader(DiskRangeReader, _document_module.UnityCatalogVolumeRangeReader):
+    """Read shards from Databricks Unity Catalog Volumes."""
 
     def __init__(self, *, volume_root: str | Path | None = None) -> None:
         super().__init__(root=volume_root)
@@ -63,7 +61,7 @@ class UnityCatalogVolumeRangeReader(DiskRangeReader):
         return _validated_payload(ref, payload)
 
 
-class RoutedRangeReader:
+class RoutedRangeReader(_document_module.RoutedRangeReader):
     """Dispatch reads by URI shape across memory, disk, and UC Volume readers."""
 
     def __init__(
@@ -116,7 +114,10 @@ def unity_catalog_volume_path(uri: str, *, root: str | Path | None = None) -> Pa
     if path.is_absolute():
         return _validate_absolute_uc_path(path, label="UC Volume path")
     if root is None:
-        return _validate_absolute_uc_path(_join_confined(Path("/Volumes"), uri, label="UC Volume path"), label="UC Volume path")
+        return _validate_absolute_uc_path(
+            _join_confined(Path("/Volumes"), uri, label="UC Volume path"),
+            label="UC Volume path",
+        )
     return _join_confined(Path(root), uri, label="UC Volume relative path")
 
 
