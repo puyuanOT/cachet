@@ -67,7 +67,14 @@ RELEASE_BUNDLE_MANIFEST_FILENAME = "manifest.json"
 RELEASE_BUNDLE_PACKAGE_NAME = "document-kv-cache"
 RELEASE_BUNDLE_PACKAGE_LICENSE_EXPRESSION = "Apache-2.0"
 RELEASE_BUNDLE_PACKAGE_LICENSE_FILE = "LICENSE"
+RELEASE_BUNDLE_PACKAGE_IMPORT_MARKER_PATHS = (
+    "cachet/__init__.py",
+)
+RELEASE_BUNDLE_PACKAGE_TYPE_STUB_PATHS = (
+    "cachet/__init__.pyi",
+)
 RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
+    "cachet/py.typed",
     "document_kv_cache/py.typed",
     "restaurant_kv_serving/py.typed",
 )
@@ -1425,10 +1432,22 @@ def _wheel_license_file_issues(names: Sequence[str], *, dist_info_prefix: str) -
 
 def _wheel_typed_marker_issues(names: Sequence[str]) -> tuple[str, ...]:
     wheel_paths = set(names)
-    return tuple(
-        f"package wheel artifact must contain typed marker file {path!r}"
-        for path in RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS
-        if path not in wheel_paths
+    return (
+        *(
+            f"package wheel artifact must contain importable package file {path!r}"
+            for path in RELEASE_BUNDLE_PACKAGE_IMPORT_MARKER_PATHS
+            if path not in wheel_paths
+        ),
+        *(
+            f"package wheel artifact must contain type stub file {path!r}"
+            for path in RELEASE_BUNDLE_PACKAGE_TYPE_STUB_PATHS
+            if path not in wheel_paths
+        ),
+        *(
+            f"package wheel artifact must contain typed marker file {path!r}"
+            for path in RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS
+            if path not in wheel_paths
+        ),
     )
 
 

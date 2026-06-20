@@ -95,10 +95,13 @@ restaurant-kv-vllm-smoke-databricks-job = "restaurant_kv_serving.databricks_vllm
 
 [tool.poetry]
 packages = [
+  { include = "cachet", from = "src" },
   { include = "document_kv_cache", from = "src" },
   { include = "restaurant_kv_serving", from = "src" },
 ]
 include = [
+  { path = "src/cachet/__init__.pyi", format = ["sdist", "wheel"] },
+  { path = "src/cachet/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/py.typed", format = ["sdist", "wheel"] },
   { path = "src/restaurant_kv_serving/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.yml", format = ["sdist", "wheel"] },

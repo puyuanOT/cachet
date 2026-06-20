@@ -410,7 +410,8 @@ def test_source_layout_readme_reflects_document_owned_implementation():
 
     assert "Cachet, the document KV-cache library" in compact_text
     assert "distribution package is `document-kv-cache`" in text
-    assert "public import namespace is `document_kv_cache`" in text
+    assert "public import namespaces are the branded `cachet` facade" in text
+    assert "`cachet/` is the branded import facade" in text
     assert "`document_kv_cache/` is the canonical implementation" in text
     assert "`restaurant_kv_serving/` remains packaged as a migration-only compatibility" in compact_text
     assert "contains the current implementation" not in text
@@ -645,7 +646,8 @@ def test_readme_documents_cachet_brand_and_scope():
     assert "Cachet is a reusable document KV-cache orchestration package" in text
     assert "Cachet is the product brand" in text
     assert "The package publishes as `document-kv-cache`" in text
-    assert "`document_kv_cache` import path" in text
+    assert "branded `cachet` root import facade" in " ".join(text.split())
+    assert "canonical `document_kv_cache` implementation import path" in " ".join(text.split())
     assert "applications that repeatedly serve long, mostly stable document context" in compact_purpose
     assert "Biography, HotpotQA, MusiQue, and Needle-in-a-Haystack" in compact_purpose
     assert "standard no-cache prefill baseline" in compact_purpose
@@ -741,6 +743,7 @@ def test_readme_and_root_license_document_apache_2_license():
     assert "`Apache-2.0` SPDX expression" in license_section
     assert "`LICENSE`" in license_section
     assert "`py.typed` markers" in license_section
+    assert "`cachet`" in license_section
     assert "`document_kv_cache`" in license_section
     assert "`restaurant_kv_serving`" in license_section
     assert license_text.startswith("Apache License\nVersion 2.0, January 2004")
@@ -1216,6 +1219,7 @@ def test_public_and_legacy_packages_publish_pep561_markers():
         if include.get("format") == ["sdist", "wheel"]
     }
     marker_paths = (
+        "src/cachet/py.typed",
         "src/document_kv_cache/py.typed",
         "src/restaurant_kv_serving/py.typed",
     )

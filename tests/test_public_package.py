@@ -2,6 +2,7 @@ import importlib
 import tomllib
 from pathlib import Path
 
+import cachet
 import document_kv_cache
 import restaurant_kv_serving
 
@@ -723,6 +724,34 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
         legacy_star_namespace["validate_engine_kv_connector_actions_record"]
         is restaurant_kv_serving.validate_engine_kv_connector_actions_record
     )
+
+
+def test_cachet_brand_facade_delegates_to_document_package():
+    from cachet import CacheTier, DocumentKVRequest, DocumentKVService, DocumentKVWorkflow
+
+    stub_text = (REPO_ROOT / "src" / "cachet" / "__init__.pyi").read_text(encoding="utf-8")
+
+    assert cachet.__all__ == document_kv_cache.__all__
+    assert CacheTier is document_kv_cache.CacheTier
+    assert DocumentKVRequest is document_kv_cache.DocumentKVRequest
+    assert DocumentKVService is document_kv_cache.DocumentKVService
+    assert DocumentKVWorkflow is document_kv_cache.DocumentKVWorkflow
+    assert not hasattr(cachet, "storage")
+    assert "storage" not in dir(cachet)
+
+    star_namespace: dict[str, object] = {}
+    exec("from cachet import *", star_namespace)
+
+    assert star_namespace["DocumentKVService"] is document_kv_cache.DocumentKVService
+    assert star_namespace["CacheTier"] is document_kv_cache.CacheTier
+    assert "RestaurantKVRequest" not in star_namespace
+    assert not hasattr(cachet, "RestaurantKVRequest")
+    assert "from document_kv_cache.cache import" in stub_text
+    assert "import document_kv_cache.storage as storage" not in stub_text
+    assert "CacheTier as CacheTier" in stub_text
+    assert "from document_kv_cache.models import" in stub_text
+    assert "DocumentKVRequest as DocumentKVRequest" in stub_text
+    assert "RestaurantKVRequest" not in stub_text
 
 
 def test_public_cli_submodules_are_importable_under_document_namespace():
@@ -1721,6 +1750,14 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     }
     expected_includes = [
         {
+            "path": "src/cachet/__init__.pyi",
+            "format": ["sdist", "wheel"],
+        },
+        {
+            "path": "src/cachet/py.typed",
+            "format": ["sdist", "wheel"],
+        },
+        {
             "path": "src/document_kv_cache/py.typed",
             "format": ["sdist", "wheel"],
         },
@@ -1769,6 +1806,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     }.issubset(set(project["classifiers"]))
     assert {package["include"] for package in poetry["packages"]} == {
+        "cachet",
         "document_kv_cache",
         "restaurant_kv_serving",
     }
