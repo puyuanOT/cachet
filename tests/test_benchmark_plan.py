@@ -1,8 +1,11 @@
 import json
+import pickle
 import sys
 
 import pytest
 
+import document_kv_cache.benchmark_plan as public_benchmark_plan
+import restaurant_kv_serving.benchmark_plan as legacy_benchmark_plan
 from document_kv_cache.benchmark_plan import (
     BenchmarkDatasetPath,
     BenchmarkPlanConfig,
@@ -904,6 +907,222 @@ def test_main_prints_plan_json_for_full_dataset_set(capsys, tmp_path):
     assert len(record["datasets"]) == 4
     assert record["commands"][0]["argv"][0] == sys.executable
     assert record["commands"][-1]["name"] == "run-benchmark"
+
+
+def test_public_benchmark_plan_main_respects_document_namespace_monkeypatch(monkeypatch, capsys, tmp_path):
+    original_legacy_build = legacy_benchmark_plan.build_v1_benchmark_plan
+
+    def fake_build(config):
+        assert config.suite_id == "v1-openai-compatible"
+        return "public-hook-plan"
+
+    def fake_record(plan):
+        assert plan == "public-hook-plan"
+        return {"ok": True, "source": "public-hook"}
+
+    monkeypatch.setattr(public_benchmark_plan, "build_v1_benchmark_plan", fake_build)
+    monkeypatch.setattr(public_benchmark_plan, "benchmark_job_plan_to_record", fake_record)
+
+    exit_code = public_benchmark_plan.main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "source": "public-hook"}
+    assert legacy_benchmark_plan.build_v1_benchmark_plan is original_legacy_build
+
+
+def test_legacy_benchmark_plan_main_respects_legacy_namespace_monkeypatch(monkeypatch, capsys, tmp_path):
+    original_public_build = public_benchmark_plan.build_v1_benchmark_plan
+
+    def fake_build(config):
+        assert config.suite_id == "v1-openai-compatible"
+        return "legacy-hook-plan"
+
+    def fake_record(plan):
+        assert plan == "legacy-hook-plan"
+        return {"ok": True, "source": "legacy-hook"}
+
+    monkeypatch.setattr(legacy_benchmark_plan, "build_v1_benchmark_plan", fake_build)
+    monkeypatch.setattr(legacy_benchmark_plan, "benchmark_job_plan_to_record", fake_record)
+
+    exit_code = legacy_benchmark_plan.main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "source": "legacy-hook"}
+    assert public_benchmark_plan.build_v1_benchmark_plan is original_public_build
+
+
+def test_legacy_benchmark_plan_output_json_respects_legacy_writer_hook(monkeypatch, tmp_path):
+    plan_json = tmp_path / "plan.json"
+
+    def fake_build(config):
+        return "legacy-hook-plan"
+
+    def fake_write(plan, path):
+        assert plan == "legacy-hook-plan"
+        assert path == str(plan_json)
+        plan_json.write_text(json.dumps({"source": "legacy-writer-hook"}) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(legacy_benchmark_plan, "build_v1_benchmark_plan", fake_build)
+    monkeypatch.setattr(legacy_benchmark_plan, "write_benchmark_job_plan_json", fake_write)
+
+    exit_code = legacy_benchmark_plan.main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(plan_json.read_text(encoding="utf-8")) == {"source": "legacy-writer-hook"}
+
+
+def test_legacy_benchmark_plan_main_isolates_dataclass_method_globals(monkeypatch, tmp_path):
+    plan_json = tmp_path / "plan.json"
+    original_public_datasets = public_benchmark_plan.SUPPORTED_V1_DATASETS
+
+    def validate_custom_dataset(dataset):
+        if dataset != "custom":
+            raise ValueError("expected custom dataset")
+
+    monkeypatch.setattr(legacy_benchmark_plan, "SUPPORTED_V1_DATASETS", ("custom",))
+    monkeypatch.setattr(legacy_benchmark_plan, "validate_v1_dataset", validate_custom_dataset)
+
+    exit_code = legacy_benchmark_plan.main(
+        [
+            "--raw-dataset",
+            f"custom={tmp_path / 'raw' / 'custom.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["datasets"] == [
+        {
+            "dataset": "custom",
+            "raw_jsonl": str(tmp_path / "raw" / "custom.jsonl"),
+            "prepared_jsonl": str(tmp_path / "prepared" / "custom.jsonl"),
+        }
+    ]
+    assert public_benchmark_plan.SUPPORTED_V1_DATASETS is original_public_datasets
+
+
+def test_legacy_benchmark_plan_without_patches_returns_public_dataclass_instances(tmp_path):
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+    )
+
+    plan = legacy_benchmark_plan.build_v1_benchmark_plan(config)
+    repeated_plan = legacy_benchmark_plan.build_v1_benchmark_plan(config)
+
+    assert type(plan) is legacy_benchmark_plan.BenchmarkJobPlan
+    assert type(plan) is public_benchmark_plan.BenchmarkJobPlan
+    assert plan == repeated_plan
+    assert pickle.loads(pickle.dumps(plan)) == plan
+
+
+def test_legacy_benchmark_plan_saved_original_wrapper_does_not_recurse(monkeypatch, tmp_path):
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+    )
+    original_build = legacy_benchmark_plan.build_v1_benchmark_plan
+    wrapped_calls = 0
+
+    def wrapped_build(config):
+        nonlocal wrapped_calls
+        wrapped_calls += 1
+        return original_build(config)
+
+    monkeypatch.setattr(legacy_benchmark_plan, "build_v1_benchmark_plan", wrapped_build)
+
+    direct_plan = original_build(config)
+    assert type(direct_plan) is public_benchmark_plan.BenchmarkJobPlan
+    assert wrapped_calls == 0
+
+    exit_code = legacy_benchmark_plan.main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--plan-output-json",
+            str(tmp_path / "plan.json"),
+        ]
+    )
+    assert exit_code == 0
+    assert wrapped_calls == 1
+
+
+def test_benchmark_plan_document_module_owns_public_api():
+    assert public_benchmark_plan.__all__ == [
+        "PLAN_VERSION",
+        "ENGINE_PROBE_TARGETS_RECORD_TYPE",
+        "ENGINE_PROBE_TARGETS_SCHEMA_VERSION",
+        "BenchmarkDatasetPath",
+        "BenchmarkCommand",
+        "StorageBenchmarkPlanConfig",
+        "EngineProbePlanConfig",
+        "ReleaseEvidencePlanConfig",
+        "ReleaseBundlePlanConfig",
+        "BenchmarkPlanConfig",
+        "BenchmarkJobPlan",
+        "build_v1_benchmark_plan",
+        "benchmark_job_plan_to_record",
+        "engine_probe_targets_to_record",
+        "write_benchmark_job_plan_json",
+        "write_benchmark_job_plan_shell",
+        "write_engine_probe_targets_json",
+        "main",
+    ]
+    assert public_benchmark_plan.BenchmarkPlanConfig.__module__ == "document_kv_cache.benchmark_plan"
+    assert public_benchmark_plan.build_v1_benchmark_plan.__module__ == "document_kv_cache.benchmark_plan"
+    assert public_benchmark_plan.main.__module__ == "document_kv_cache.benchmark_plan"
+    assert not hasattr(legacy_benchmark_plan, "__all__")
+    assert legacy_benchmark_plan.BenchmarkPlanConfig is public_benchmark_plan.BenchmarkPlanConfig
+    assert legacy_benchmark_plan.build_v1_benchmark_plan.__module__ == "restaurant_kv_serving.benchmark_plan"
+    assert legacy_benchmark_plan.main.__module__ == "restaurant_kv_serving.benchmark_plan"
 
 
 def test_main_writes_json_and_shell_outputs(tmp_path):

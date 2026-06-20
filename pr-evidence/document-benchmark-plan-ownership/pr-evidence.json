@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially found that document root exports still fell back to legacy wrappers, then found legacy monkeypatch isolation gaps for dataclass method globals, ephemeral dataclass identity on unpatched calls, and saved-original wrapper recursion. The branch now publishes benchmark-plan symbols from document_kv_cache, clones legacy compatibility globals only when needed, preserves unpatched public dataclass identity/equality/pickling, excludes a wrapper's own name from injected legacy patches, and the final GPT-5.5 review approved the slice.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_plan.py",
+    "src/restaurant_kv_serving/benchmark_plan.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_benchmark_plan.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "pr-evidence/document-benchmark-plan-ownership/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_benchmark_plan.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret scan over README.md, CONTRIBUTING.md, pyproject.toml, src, tests, databricks, pr-evidence, and .github",
+    "GPT-5.5 focused review"
+  ],
+  "what_changed": [
+    "Moved the benchmark-plan implementation into document_kv_cache.benchmark_plan with a curated document-owned public API.",
+    "Converted restaurant_kv_serving.benchmark_plan into a compatibility facade that delegates to the document module.",
+    "Extended public-package and benchmark-plan tests to cover document root exports, legacy facade behavior, monkeypatch isolation, dataclass identity, pickling, and saved-original wrapper recursion."
+  ],
+  "why": "The package is being generalized from restaurant-specific serving code to document-kv-cache, so benchmark plan ownership needs to live in the document namespace while keeping old imports working during migration."
+}

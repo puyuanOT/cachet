@@ -60,6 +60,50 @@ _PUBLIC_SUBMODULES = frozenset(
     }
 )
 _DOCUMENT_ROOT_EXPORTS = {
+    "PLAN_VERSION": ("document_kv_cache.benchmark_plan", "PLAN_VERSION"),
+    "ENGINE_PROBE_TARGETS_RECORD_TYPE": (
+        "document_kv_cache.benchmark_plan",
+        "ENGINE_PROBE_TARGETS_RECORD_TYPE",
+    ),
+    "ENGINE_PROBE_TARGETS_SCHEMA_VERSION": (
+        "document_kv_cache.benchmark_plan",
+        "ENGINE_PROBE_TARGETS_SCHEMA_VERSION",
+    ),
+    "BenchmarkDatasetPath": ("document_kv_cache.benchmark_plan", "BenchmarkDatasetPath"),
+    "BenchmarkCommand": ("document_kv_cache.benchmark_plan", "BenchmarkCommand"),
+    "StorageBenchmarkPlanConfig": (
+        "document_kv_cache.benchmark_plan",
+        "StorageBenchmarkPlanConfig",
+    ),
+    "EngineProbePlanConfig": ("document_kv_cache.benchmark_plan", "EngineProbePlanConfig"),
+    "ReleaseEvidencePlanConfig": (
+        "document_kv_cache.benchmark_plan",
+        "ReleaseEvidencePlanConfig",
+    ),
+    "ReleaseBundlePlanConfig": ("document_kv_cache.benchmark_plan", "ReleaseBundlePlanConfig"),
+    "BenchmarkPlanConfig": ("document_kv_cache.benchmark_plan", "BenchmarkPlanConfig"),
+    "BenchmarkJobPlan": ("document_kv_cache.benchmark_plan", "BenchmarkJobPlan"),
+    "build_v1_benchmark_plan": ("document_kv_cache.benchmark_plan", "build_v1_benchmark_plan"),
+    "benchmark_job_plan_to_record": (
+        "document_kv_cache.benchmark_plan",
+        "benchmark_job_plan_to_record",
+    ),
+    "engine_probe_targets_to_record": (
+        "document_kv_cache.benchmark_plan",
+        "engine_probe_targets_to_record",
+    ),
+    "write_benchmark_job_plan_json": (
+        "document_kv_cache.benchmark_plan",
+        "write_benchmark_job_plan_json",
+    ),
+    "write_benchmark_job_plan_shell": (
+        "document_kv_cache.benchmark_plan",
+        "write_benchmark_job_plan_shell",
+    ),
+    "write_engine_probe_targets_json": (
+        "document_kv_cache.benchmark_plan",
+        "write_engine_probe_targets_json",
+    ),
     "DEFAULT_AWS_G5_NODE_TYPE": ("document_kv_cache.databricks_job", "DEFAULT_AWS_G5_NODE_TYPE"),
     "DEFAULT_DATABRICKS_SPARK_VERSION": (
         "document_kv_cache.databricks_job",

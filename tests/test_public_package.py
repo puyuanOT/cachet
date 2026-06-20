@@ -50,6 +50,10 @@ def test_public_document_package_reexports_core_api():
         DocumentKVWorkflow,
         DiskRangeReader,
         EngineReadyRequest,
+        BenchmarkCommand,
+        BenchmarkDatasetPath,
+        BenchmarkJobPlan,
+        BenchmarkPlanConfig,
         EngineProbePlanConfig,
         EngineKVProbeConfig,
         EngineKVProbeFactory,
@@ -119,6 +123,8 @@ def test_public_document_package_reexports_core_api():
         build_handle_from_materialized,
         build_single_node_g5_cluster,
         build_release_bundle,
+        build_v1_benchmark_plan,
+        benchmark_job_plan_to_record,
         chunk_type_role,
         chunk_type_sort_order,
         databricks_workspace_config_from_env,
@@ -162,11 +168,14 @@ def test_public_document_package_reexports_core_api():
         summarize_databricks_run,
         summarize_databricks_run_submit_payload,
         validate_aws_g5_node_type,
+        write_benchmark_job_plan_json,
+        write_benchmark_job_plan_shell,
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
     from document_kv_cache import (
         admission,
+        benchmark_plan,
         cache,
         databricks_job,
         databricks_runs,
@@ -363,6 +372,19 @@ def test_public_document_package_reexports_core_api():
     assert StorageBenchmarkConfig is restaurant_kv_serving.StorageBenchmarkConfig
     assert StorageBenchmarkEvidence is restaurant_kv_serving.StorageBenchmarkEvidence
     assert StorageBenchmarkPlanConfig is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert StorageBenchmarkPlanConfig.__module__ == "document_kv_cache.benchmark_plan"
+    assert BenchmarkCommand is benchmark_plan.BenchmarkCommand
+    assert BenchmarkCommand is restaurant_kv_serving.BenchmarkCommand
+    assert BenchmarkCommand.__module__ == "document_kv_cache.benchmark_plan"
+    assert BenchmarkDatasetPath is benchmark_plan.BenchmarkDatasetPath
+    assert BenchmarkDatasetPath is restaurant_kv_serving.BenchmarkDatasetPath
+    assert BenchmarkDatasetPath.__module__ == "document_kv_cache.benchmark_plan"
+    assert BenchmarkJobPlan is benchmark_plan.BenchmarkJobPlan
+    assert BenchmarkJobPlan is restaurant_kv_serving.BenchmarkJobPlan
+    assert BenchmarkJobPlan.__module__ == "document_kv_cache.benchmark_plan"
+    assert BenchmarkPlanConfig is benchmark_plan.BenchmarkPlanConfig
+    assert BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
+    assert BenchmarkPlanConfig.__module__ == "document_kv_cache.benchmark_plan"
     assert SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES is restaurant_kv_serving.SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
     assert (
         build_databricks_engine_probe_run_submit_payload
@@ -388,6 +410,10 @@ def test_public_document_package_reexports_core_api():
     assert build_handle_from_materialized.__module__ == "document_kv_cache.engine"
     assert databricks_workspace_config_from_env is databricks_runs.databricks_workspace_config_from_env
     assert build_release_bundle is restaurant_kv_serving.build_release_bundle
+    assert build_v1_benchmark_plan is benchmark_plan.build_v1_benchmark_plan
+    assert build_v1_benchmark_plan.__module__ == "document_kv_cache.benchmark_plan"
+    assert benchmark_job_plan_to_record is benchmark_plan.benchmark_job_plan_to_record
+    assert benchmark_job_plan_to_record.__module__ == "document_kv_cache.benchmark_plan"
     assert chunk_type_role is restaurant_kv_serving.chunk_type_role
     assert chunk_type_sort_order is restaurant_kv_serving.chunk_type_sort_order
     assert release_bundle_to_record is restaurant_kv_serving.release_bundle_to_record
@@ -396,7 +422,8 @@ def test_public_document_package_reexports_core_api():
     assert inspect_release_evidence_input_files is restaurant_kv_serving.inspect_release_evidence_input_files
     assert release_evidence_input_status_to_record is restaurant_kv_serving.release_evidence_input_status_to_record
     assert evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
-    assert engine_probe_targets_to_record is restaurant_kv_serving.engine_probe_targets_to_record
+    assert engine_probe_targets_to_record is benchmark_plan.engine_probe_targets_to_record
+    assert engine_probe_targets_to_record.__module__ == "document_kv_cache.benchmark_plan"
     assert builtin_native_probe_factories_to_record is native_probe_factories.builtin_native_probe_factories_to_record
     assert builtin_native_probe_factories_to_record is restaurant_kv_serving.builtin_native_probe_factories_to_record
     assert builtin_native_probe_factory_path is native_probe_factories.builtin_native_probe_factory_path
@@ -425,7 +452,12 @@ def test_public_document_package_reexports_core_api():
     assert write_model_profile_definition_json is model_profiles.write_model_profile_definition_json
     assert write_model_profile_definition_json is restaurant_kv_serving.write_model_profile_definition_json
     assert write_model_profile_definition_json.__module__ == "document_kv_cache.model_profiles"
-    assert write_engine_probe_targets_json is restaurant_kv_serving.write_engine_probe_targets_json
+    assert write_benchmark_job_plan_json is benchmark_plan.write_benchmark_job_plan_json
+    assert write_benchmark_job_plan_json.__module__ == "document_kv_cache.benchmark_plan"
+    assert write_benchmark_job_plan_shell is benchmark_plan.write_benchmark_job_plan_shell
+    assert write_benchmark_job_plan_shell.__module__ == "document_kv_cache.benchmark_plan"
+    assert write_engine_probe_targets_json is benchmark_plan.write_engine_probe_targets_json
+    assert write_engine_probe_targets_json.__module__ == "document_kv_cache.benchmark_plan"
     assert inspect_builtin_native_probe_factories is native_probe_factories.inspect_builtin_native_probe_factories
     assert inspect_builtin_native_probe_factories is restaurant_kv_serving.inspect_builtin_native_probe_factories
     assert inspect_builtin_native_probe_factory is native_probe_factories.inspect_builtin_native_probe_factory
@@ -500,6 +532,10 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "ServingEnvironmentProfile" in document_kv_cache.__all__
     assert "StorageBenchmarkConfig" in document_kv_cache.__all__
     assert "StorageBenchmarkEvidence" in document_kv_cache.__all__
+    assert "BenchmarkCommand" in document_kv_cache.__all__
+    assert "BenchmarkDatasetPath" in document_kv_cache.__all__
+    assert "BenchmarkJobPlan" in document_kv_cache.__all__
+    assert "BenchmarkPlanConfig" in document_kv_cache.__all__
     assert "StorageBenchmarkPlanConfig" in document_kv_cache.__all__
     assert "ByteLRU" in document_kv_cache.__all__
     assert "ChunkCache" in document_kv_cache.__all__
@@ -520,7 +556,11 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "DATABRICKS_RUN_STATUS_RECORD_TYPE" in document_kv_cache.__all__
     assert "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE" in document_kv_cache.__all__
     assert "summarize_databricks_run" in document_kv_cache.__all__
+    assert "build_v1_benchmark_plan" in document_kv_cache.__all__
+    assert "benchmark_job_plan_to_record" in document_kv_cache.__all__
     assert "engine_probe_targets_to_record" in document_kv_cache.__all__
+    assert "write_benchmark_job_plan_json" in document_kv_cache.__all__
+    assert "write_benchmark_job_plan_shell" in document_kv_cache.__all__
     assert "write_engine_probe_targets_json" in document_kv_cache.__all__
     assert "read_databricks_engine_probe_targets_file_json" in document_kv_cache.__all__
     assert "summarize_databricks_run_submit_payload" in document_kv_cache.__all__
@@ -559,6 +599,9 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert star_namespace["StorageBenchmarkConfig"] is restaurant_kv_serving.StorageBenchmarkConfig
     assert star_namespace["StorageBenchmarkEvidence"] is restaurant_kv_serving.StorageBenchmarkEvidence
     assert star_namespace["StorageBenchmarkPlanConfig"] is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert star_namespace["BenchmarkPlanConfig"].__module__ == "document_kv_cache.benchmark_plan"
+    assert star_namespace["build_v1_benchmark_plan"].__module__ == "document_kv_cache.benchmark_plan"
+    assert star_namespace["engine_probe_targets_to_record"].__module__ == "document_kv_cache.benchmark_plan"
     assert (
         star_namespace["SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES"]
         is restaurant_kv_serving.SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
@@ -638,6 +681,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     pr_evidence = modules["pr_evidence"]
     serving_env = modules["serving_env"]
     workflow = modules["workflow"]
+    legacy_benchmark_plan = importlib.import_module("restaurant_kv_serving.benchmark_plan")
     legacy_benchmarks = importlib.import_module("restaurant_kv_serving.benchmarks")
     legacy_benchmark_plan_executor = importlib.import_module("restaurant_kv_serving.benchmark_plan_executor")
     legacy_benchmark_runner = importlib.import_module("restaurant_kv_serving.benchmark_runner")
@@ -649,12 +693,20 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert admission.AdmissionQueue.__module__ == "document_kv_cache.admission"
     assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
+    assert benchmark_plan.BenchmarkPlanConfig.__module__ == "document_kv_cache.benchmark_plan"
     assert benchmark_plan.ENGINE_PROBE_TARGETS_RECORD_TYPE is restaurant_kv_serving.ENGINE_PROBE_TARGETS_RECORD_TYPE
     assert benchmark_plan.EngineProbePlanConfig is restaurant_kv_serving.EngineProbePlanConfig
-    assert benchmark_plan.engine_probe_targets_to_record is restaurant_kv_serving.engine_probe_targets_to_record
+    assert benchmark_plan.EngineProbePlanConfig.__module__ == "document_kv_cache.benchmark_plan"
+    assert benchmark_plan.engine_probe_targets_to_record.__module__ == "document_kv_cache.benchmark_plan"
+    assert restaurant_kv_serving.engine_probe_targets_to_record is legacy_benchmark_plan.engine_probe_targets_to_record
+    assert restaurant_kv_serving.engine_probe_targets_to_record.__module__ == "restaurant_kv_serving.benchmark_plan"
     assert benchmark_plan.ReleaseBundlePlanConfig is restaurant_kv_serving.ReleaseBundlePlanConfig
     assert benchmark_plan.ReleaseEvidencePlanConfig is restaurant_kv_serving.ReleaseEvidencePlanConfig
     assert benchmark_plan.StorageBenchmarkPlanConfig is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert benchmark_plan.build_v1_benchmark_plan.__module__ == "document_kv_cache.benchmark_plan"
+    assert restaurant_kv_serving.build_v1_benchmark_plan is legacy_benchmark_plan.build_v1_benchmark_plan
+    assert restaurant_kv_serving.build_v1_benchmark_plan.__module__ == "restaurant_kv_serving.benchmark_plan"
+    assert not hasattr(legacy_benchmark_plan, "__all__")
     assert benchmark_plan_executor.BenchmarkCommandResult is restaurant_kv_serving.BenchmarkCommandResult
     assert benchmark_plan_executor.BenchmarkCommandResult.__module__ == "document_kv_cache.benchmark_plan_executor"
     assert benchmark_plan_executor.execute_benchmark_job_plan.__module__ == "document_kv_cache.benchmark_plan_executor"
@@ -901,6 +953,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     planner = importlib.import_module("document_kv_cache.planner")
     openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
+    benchmark_plan = importlib.import_module("document_kv_cache.benchmark_plan")
     benchmark_plan_executor = importlib.import_module("document_kv_cache.benchmark_plan_executor")
     release_bundle = importlib.import_module("document_kv_cache.release_bundle")
     release_evidence = importlib.import_module("document_kv_cache.release_evidence")
@@ -937,6 +990,29 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert legacy_engine_protocol.KVLayout is engine_protocol.KVLayout
     assert legacy_engine_protocol.KVStorageLayout is engine_protocol.KVStorageLayout
     assert legacy_engine_protocol.kv_storage_layout_from_value is engine_protocol.kv_storage_layout_from_value
+    assert benchmark_plan.__all__ == [
+        "PLAN_VERSION",
+        "ENGINE_PROBE_TARGETS_RECORD_TYPE",
+        "ENGINE_PROBE_TARGETS_SCHEMA_VERSION",
+        "BenchmarkDatasetPath",
+        "BenchmarkCommand",
+        "StorageBenchmarkPlanConfig",
+        "EngineProbePlanConfig",
+        "ReleaseEvidencePlanConfig",
+        "ReleaseBundlePlanConfig",
+        "BenchmarkPlanConfig",
+        "BenchmarkJobPlan",
+        "build_v1_benchmark_plan",
+        "benchmark_job_plan_to_record",
+        "engine_probe_targets_to_record",
+        "write_benchmark_job_plan_json",
+        "write_benchmark_job_plan_shell",
+        "write_engine_probe_targets_json",
+        "main",
+    ]
+    assert benchmark_plan.BenchmarkPlanConfig.__module__ == "document_kv_cache.benchmark_plan"
+    assert benchmark_plan.build_v1_benchmark_plan.__module__ == "document_kv_cache.benchmark_plan"
+    assert benchmark_plan.main.__module__ == "document_kv_cache.benchmark_plan"
     assert engine.__all__ == [
         "EngineReadyRequest",
         "ServingEngineConnector",

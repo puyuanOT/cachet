@@ -101,6 +101,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_benchmark_plan_executor.py": {
         "restaurant_kv_serving.benchmark_plan_executor",
     },
+    "tests/test_benchmark_plan.py": {
+        "restaurant_kv_serving.benchmark_plan",
+    },
     "tests/test_benchmark_runner.py": {
         "restaurant_kv_serving.benchmark_runner",
         "restaurant_kv_serving.benchmark_runner.run_openai_compatible_v1_benchmark",
@@ -146,6 +149,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     },
     "tests/test_public_package.py": {
         "restaurant_kv_serving",
+        "restaurant_kv_serving.benchmark_plan",
         "restaurant_kv_serving.benchmark_plan_executor",
         "restaurant_kv_serving.benchmark_runner",
         "restaurant_kv_serving.benchmarks",
