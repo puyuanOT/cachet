@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/validate-report-quality-rates.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 initially found a test-strength gap, then approved after row-specific assertions independently covered the bool rate case.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/release_evidence.py",
+        "tests/test_release_evidence.py",
+        "pr-evidence/validate-report-quality-rates/README.md"
+      ],
+      "verification": [
+        "python -m pytest tests/test_release_evidence.py -q -> 50 passed",
+        "python -m pytest -q -> 869 passed",
+        "poetry check -> All set",
+        "poetry install --dry-run -> succeeded",
+        "poetry build -> succeeded",
+        "git diff --check -> clean"
+      ],
+      "what_changed": [
+        "Validated strict V1 report-row quality rates when present.",
+        "Added release-evidence regression coverage for malformed exact_match_rate and answer_found_rate values."
+      ],
+      "why": "Strict V1 release evidence should reject malformed quality-rate summaries used to compare cache reuse against no-cache prefill."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
