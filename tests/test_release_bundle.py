@@ -699,6 +699,19 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "raw-allowed-summary-field-github-governance.json",
         raw_allowed_summary_field_github_governance_record,
     )
+    unbranded_github_governance_record = _github_governance_cli_record(ok=True)
+    unbranded_github_governance_record["summary"]["description"] = "Document KV-cache orchestration."
+    unbranded_github_governance_record["summary"]["topics"] = ["long-context"]
+    unbranded_github_governance = _write_json(
+        tmp_path / "unbranded-github-governance.json",
+        unbranded_github_governance_record,
+    )
+    missing_topic_github_governance_record = _github_governance_cli_record(ok=True)
+    missing_topic_github_governance_record["summary"]["topics"] = ["cachet"]
+    missing_topic_github_governance = _write_json(
+        tmp_path / "missing-topic-github-governance.json",
+        missing_topic_github_governance_record,
+    )
     raw_branch_protection_github_governance_record = _github_governance_cli_record(ok=True)
     raw_branch_protection_github_governance_record["summary"]["branch_protection"]["raw"] = {
         "headers": {"authorization": "do-not-bundle-me"}
@@ -1434,14 +1447,34 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
                 output_dir=tmp_path / bundle_name,
             )
 
-    with pytest.raises(ValueError, match=r"summary\.description must be a string or null"):
+    with pytest.raises(ValueError, match=r"summary\.description must be a non-empty string"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=raw_allowed_summary_field_github_governance,
             output_dir=tmp_path / "raw-allowed-summary-field-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match=r"summary\.description must mention Cachet"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=unbranded_github_governance,
+            output_dir=tmp_path / "unbranded-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match=r"summary\.topics must include: kv-cache"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=missing_topic_github_governance,
+            output_dir=tmp_path / "missing-topic-github-governance-bundle",
         )
 
     with pytest.raises(ValueError, match="contexts must be an array of strings"):

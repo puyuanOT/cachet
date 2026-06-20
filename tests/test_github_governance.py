@@ -156,6 +156,30 @@ def test_summarize_github_repository_governance_requires_public_visibility():
     ]
 
 
+def test_summarize_github_repository_governance_requires_cachet_repository_branding():
+    repository = _repository(private=False)
+    repository["description"] = "Document KV-cache orchestration."
+    repository["topics"] = ["long-context"]
+    opener = _FakeGitHubOpener(
+        {
+            "/repos/owner/document-kv-cache": repository,
+            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+        }
+    )
+    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+
+    summary = summarize_github_repository_governance(config, opener=opener)
+
+    assert summary["ok"] is False
+    assert summary["description"] == "Document KV-cache orchestration."
+    assert summary["topics"] == ["long-context"]
+    assert summary["issues"] == [
+        "repository description must mention Cachet before open-source release",
+        "repository topics must include: cachet, kv-cache",
+    ]
+
+
 def test_summarize_github_repository_governance_requires_admin_branch_protection():
     protection = _branch_protection()
     protection["enforce_admins"] = {"enabled": False}

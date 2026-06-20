@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/require-cachet-repo-branding.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 found README governance instructions did not mention the new branding gate; README was updated and GPT-5.5 approved with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/github_governance.py",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_github_governance.py",
+        "tests/test_release_bundle.py",
+        "pr-evidence/require-cachet-repo-branding/README.md"
+      ],
+      "verification": [
+        "python -m pytest tests/test_github_governance.py tests/test_release_bundle.py -q -> 53 passed",
+        "python -m pytest tests/test_github_governance.py tests/test_release_bundle.py tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring -q -> 54 passed",
+        "python -m pytest -q -> 872 passed",
+        "poetry check -> All set",
+        "poetry install --dry-run -> succeeded",
+        "poetry build -> succeeded",
+        "git diff --check -> clean"
+      ],
+      "what_changed": [
+        "Required Cachet-branded GitHub repository description and cachet/kv-cache topics in governance readiness.",
+        "Hardened release-bundle validation to reject governance sidecars missing Cachet repository branding metadata.",
+        "Updated README release-governance instructions for the new branding gate."
+      ],
+      "why": "The open-source package goal requires distinct Cachet branding and discoverable repository metadata before release."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
