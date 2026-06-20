@@ -156,15 +156,17 @@ databricks bundle validate \
   --var handoff_json=/Volumes/catalog/schema/volume/probes/vllm-handoff.json \
   --var probe_factory=my_engine_adapter.probes:build_probe \
   --var probe_output_json=/Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
+  --var actions_output_json=/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --var payload_uri=/Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --var expected_backend=vllm \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
 
-The standalone bundle keeps the required variable set minimal. Use the Python
-`document-kv-engine-probe-databricks-job` helper shown above when the job should
-also write the optional connector actions sidecar.
+The standalone bundle writes the same required connector actions sidecar as the
+Python helper through `actions_output_json`. Use the Python
+`document-kv-engine-probe-databricks-job` helper shown above for two-backend
+release-safe probe matrices.
 
 Then submit or inspect generated payloads from a shell with `DATABRICKS_HOST` and
 `DATABRICKS_TOKEN` set:

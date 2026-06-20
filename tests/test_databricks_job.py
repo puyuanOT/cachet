@@ -1074,6 +1074,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
         "handoff_json",
         "probe_factory",
         "probe_output_json",
+        "actions_output_json",
         "payload_uri",
         "expected_backend",
         "wheel_uri",
@@ -1109,6 +1110,8 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
             "${var.probe_factory}",
             "--output-json",
             "${var.probe_output_json}",
+            "--actions-output-json",
+            "${var.actions_output_json}",
             "--payload-uri",
             "${var.payload_uri}",
             "--expected-backend",
@@ -1127,8 +1130,8 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json" in root_readme_text
     assert "--var payload_uri=" in readme_text
     assert "--var payload_uri=" in probe_readme_text
-    assert "--var actions_output_json=" not in readme_text
-    assert "--var actions_output_json=" not in probe_readme_text
+    assert "--var actions_output_json=" in readme_text
+    assert "--var actions_output_json=" in probe_readme_text
     assert "native vLLM or SGLang" in probe_readme_text
     assert "target AWS g5 Databricks runtime" in packaged_probe_readme_text
     assert "uploaded payload URI" in packaged_probe_readme_text
