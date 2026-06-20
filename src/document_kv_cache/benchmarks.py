@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
@@ -141,14 +142,10 @@ class InferenceMeasurement:
 
     def __post_init__(self) -> None:
         validate_v1_dataset(self.dataset)
-        if self.prompt_tokens < 0:
-            raise ValueError("prompt_tokens must be non-negative")
-        if self.completion_tokens < 0:
-            raise ValueError("completion_tokens must be non-negative")
-        if self.ttft_seconds < 0:
-            raise ValueError("ttft_seconds must be non-negative")
-        if self.time_to_completion_seconds < 0:
-            raise ValueError("time_to_completion_seconds must be non-negative")
+        _validate_non_negative_int(self.prompt_tokens, "prompt_tokens")
+        _validate_non_negative_int(self.completion_tokens, "completion_tokens")
+        _validate_non_negative_finite_number(self.ttft_seconds, "ttft_seconds")
+        _validate_non_negative_finite_number(self.time_to_completion_seconds, "time_to_completion_seconds")
         if self.time_to_completion_seconds < self.ttft_seconds:
             raise ValueError("time_to_completion_seconds must be greater than or equal to ttft_seconds")
 
@@ -428,6 +425,16 @@ def answer_found(output_text: str, expected_answer: str) -> bool:
 def validate_v1_dataset(dataset: str) -> None:
     if dataset not in SUPPORTED_V1_DATASETS:
         raise ValueError(f"Unsupported V1 dataset {dataset!r}; expected one of {SUPPORTED_V1_DATASETS}")
+
+
+def _validate_non_negative_int(value: int, field_name: str) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+
+
+def _validate_non_negative_finite_number(value: float, field_name: str) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative finite number")
 
 
 _V1_DATASET_SPECS: Mapping[str, BenchmarkDatasetSpec] = {
