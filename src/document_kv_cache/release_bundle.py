@@ -972,6 +972,8 @@ def _github_branch_protection_issues(record: Mapping[str, Any]) -> tuple[str, ..
         issues.append("GitHub governance sidecar required_linear_history must be true")
     if record.get("required_conversation_resolution") is not True:
         issues.append("GitHub governance sidecar required_conversation_resolution must be true")
+    if record.get("enforce_admins") is not True:
+        issues.append("GitHub governance sidecar enforce_admins must be true")
     if record.get("allow_force_pushes") is not False:
         issues.append("GitHub governance sidecar allow_force_pushes must be false")
     if record.get("allow_deletions") is not False:

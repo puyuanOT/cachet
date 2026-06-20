@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/require-admin-branch-protection.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 found that release_bundle.py still accepted enforce_admins=false sidecars; the branch was fixed with bundle validation and regression coverage, then GPT-5.5 approved with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/github_governance.py",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_github_governance.py",
+        "tests/test_release_bundle.py",
+        "pr-evidence/require-admin-branch-protection/README.md"
+      ],
+      "verification": [
+        "python -m pytest tests/test_github_governance.py -q -> 13 passed",
+        "python -m pytest tests/test_github_governance.py tests/test_release_bundle.py -q -> 52 passed",
+        "python -m pytest -q -> 871 passed",
+        "poetry check -> All set",
+        "poetry install --dry-run -> succeeded",
+        "poetry build -> succeeded",
+        "git diff --check -> clean"
+      ],
+      "what_changed": [
+        "Required GitHub branch protection to apply to administrators for release readiness.",
+        "Hardened release-bundle validation to reject governance sidecars with branch_protection.enforce_admins false or missing."
+      ],
+      "why": "Direct pushes to main are prohibited; release governance and strict bundles must reject admin branch-protection bypass."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

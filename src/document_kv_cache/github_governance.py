@@ -296,6 +296,8 @@ def _release_readiness_issues(
         issues.append("branch protection must require linear history")
     if protection.get("required_conversation_resolution") is not True:
         issues.append("branch protection must require conversation resolution")
+    if protection.get("enforce_admins") is not True:
+        issues.append("branch protection must apply to administrators")
     if protection.get("allow_force_pushes") is not False:
         issues.append("branch protection must block force-pushes")
     if protection.get("allow_deletions") is not False:
