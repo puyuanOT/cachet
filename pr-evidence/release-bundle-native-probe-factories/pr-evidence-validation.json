@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/release-bundle-native-probe-factories/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 initially requested exact serving-environment profile validation for native-probe factory sidecars; the validator now compares embedded profiles to built-in vLLM/SGLang profile records and has malformed-profile rejection coverage. Re-review approved.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/release_bundle.py",
+        "src/document_kv_cache/benchmark_plan.py",
+        "src/document_kv_cache/native_probe_factories.py",
+        "src/restaurant_kv_serving/release_bundle.py",
+        "tests/test_release_bundle.py",
+        "tests/test_benchmark_plan.py",
+        "tests/test_native_probe_factories.py",
+        "README.md"
+      ],
+      "verification": [
+        "git diff --check",
+        "poetry run python -m compileall -q src tests",
+        "poetry run pytest -q (714 passed)"
+      ],
+      "what_changed": [
+        "Added native-probe factory diagnostics as an optional release-bundle sidecar with validation and manifest support.",
+        "Threaded native-probe factory diagnostics through benchmark-plan release-bundle config and CLI generation.",
+        "Updated public and legacy release-bundle CLIs, README examples, and tests."
+      ],
+      "why": "Release handoff bundles should carry the package-owned vLLM/SGLang native factory diagnostics alongside benchmark, storage, governance, wheel, and PR evidence artifacts."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

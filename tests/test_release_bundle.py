@@ -39,6 +39,11 @@ from document_kv_cache.engine_probe import (
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.native_probe_factories import (
+    NATIVE_PROBE_FACTORIES_RECORD_TYPE,
+    SGLANG_NATIVE_PROBE_FACTORY,
+    VLLM_NATIVE_PROBE_FACTORY,
+)
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_RECORD_TYPE,
@@ -53,7 +58,7 @@ from document_kv_cache.release_evidence import (
     write_release_evidence_input_status_json,
     write_release_evidence_json,
 )
-from document_kv_cache.serving_env import serving_environment_profile
+from document_kv_cache.serving_env import serving_environment_profile, serving_environment_profile_to_record
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
 
 
@@ -221,6 +226,82 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert github_artifact["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
     assert github_artifact["bundled_path"] == "github_governance.json"
     assert json.loads((bundle_dir / github_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_build_release_bundle_can_include_native_probe_factories(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    native_probe_factories = _write_json(
+        source_dir / "native-probe-factories.json",
+        _native_probe_factories_record(),
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        native_probe_factories_jsons=(native_probe_factories,),
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert record["artifacts"][-1]["role"] == "native_probe_factories"
+    assert record["artifacts"][-1]["record_type"] == NATIVE_PROBE_FACTORIES_RECORD_TYPE
+    assert record["artifacts"][-1]["bundled_path"] == "native_probe_factories_07.json"
+    bundled_record = json.loads((bundle_dir / "native_probe_factories_07.json").read_text(encoding="utf-8"))
+    assert bundled_record["record_type"] == NATIVE_PROBE_FACTORIES_RECORD_TYPE
+    assert {factory["backend"] for factory in bundled_record["factories"]} == {"vllm", "sglang"}
+
+
+def test_build_release_bundle_rejects_invalid_native_probe_factories(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    invalid_record = _native_probe_factories_record()
+    invalid_record["factories"] = invalid_record["factories"][:1]
+    invalid_native_probe_factories = _write_json(tmp_path / "invalid-native-probe-factories.json", invalid_record)
+
+    with pytest.raises(ValueError, match="native probe factories sidecar backends must match required backends"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            native_probe_factories_jsons=(invalid_native_probe_factories,),
+            output_dir=tmp_path / "invalid-native-probe-factories-bundle",
+        )
+
+    wrong_path_record = _native_probe_factories_record()
+    wrong_path_record["factories"][0]["factory_path"] = "downstream:factory"
+    wrong_path_native_probe_factories = _write_json(
+        tmp_path / "wrong-path-native-probe-factories.json",
+        wrong_path_record,
+    )
+    with pytest.raises(ValueError, match="factory_path must match the built-in vllm factory path"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            native_probe_factories_jsons=(wrong_path_native_probe_factories,),
+            output_dir=tmp_path / "wrong-path-native-probe-factories-bundle",
+        )
+
+    wrong_profile_record = _native_probe_factories_record()
+    del wrong_profile_record["factories"][0]["serving_environment_profile"]["dependency_constraints"]
+    wrong_profile_native_probe_factories = _write_json(
+        tmp_path / "wrong-profile-native-probe-factories.json",
+        wrong_profile_record,
+    )
+    with pytest.raises(ValueError, match="serving_environment_profile must match the built-in vllm profile"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            native_probe_factories_jsons=(wrong_profile_native_probe_factories,),
+            output_dir=tmp_path / "wrong-profile-native-probe-factories-bundle",
+        )
 
 
 def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_github_governance(tmp_path):
@@ -855,6 +936,10 @@ def test_release_bundle_dataclasses_validate_json_safe_schema():
 def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
     github_governance = _write_json(tmp_path / "github-governance.json", _github_governance_cli_record(ok=True))
+    native_probe_factories = _write_json(
+        tmp_path / "native-probe-factories.json",
+        _native_probe_factories_record(),
+    )
     output_json = tmp_path / "bundle-record.json"
     bundle_dir = tmp_path / "bundle"
 
@@ -881,6 +966,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
             str(artifacts["sglang_actions"]),
             "--github-governance-json",
             str(github_governance),
+            "--native-probe-factories-json",
+            str(native_probe_factories),
             "--output-dir",
             str(bundle_dir),
             "--output-json",
@@ -898,8 +985,10 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
         (bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME).read_text(encoding="utf-8")
     )
     record = json.loads(output_json.read_text(encoding="utf-8"))
-    assert record["artifacts"][-1]["role"] == "github_governance"
-    assert record["artifacts"][-1]["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
+    assert record["artifacts"][-2]["role"] == "github_governance"
+    assert record["artifacts"][-2]["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
+    assert record["artifacts"][-1]["role"] == "native_probe_factories"
+    assert record["artifacts"][-1]["record_type"] == NATIVE_PROBE_FACTORIES_RECORD_TYPE
 
 
 def test_public_release_bundle_cli_rejects_unresolved_pr_evidence(tmp_path):
@@ -1338,6 +1427,31 @@ def _github_governance_cli_record(*, ok: bool):
         "issues": [] if ok else ["main branch protection must be enabled"],
     }
     return {"ok": ok, "summary": summary}
+
+
+def _native_probe_factories_record():
+    return {
+        "record_type": NATIVE_PROBE_FACTORIES_RECORD_TYPE,
+        "factories": [
+            _native_probe_factory_record("vllm", VLLM_NATIVE_PROBE_FACTORY),
+            _native_probe_factory_record("sglang", SGLANG_NATIVE_PROBE_FACTORY),
+        ],
+    }
+
+
+def _native_probe_factory_record(backend: str, factory_path: str):
+    return {
+        "backend": backend,
+        "factory_path": factory_path,
+        "package_name": backend,
+        "package_importable": False,
+        "package_version": None,
+        "serving_environment_profile": serving_environment_profile_to_record(
+            serving_environment_profile(backend)
+        ),
+        "supported": False,
+        "reason": f"{backend} adapter is not installed",
+    }
 
 
 def _plan_execution_record(*, ok: bool):

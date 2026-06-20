@@ -165,6 +165,7 @@ class ReleaseBundlePlanConfig:
     package_wheel: str | None = None
     pr_evidence_jsons: tuple[str, ...] = ()
     github_governance_json: str | None = None
+    native_probe_factories_jsons: tuple[str, ...] = ()
     overwrite: bool = False
 
     def __post_init__(self) -> None:
@@ -184,11 +185,14 @@ class ReleaseBundlePlanConfig:
             raise ValueError("release bundle pr_evidence_jsons entries must be non-empty")
         if self.github_governance_json is not None and not self.github_governance_json:
             raise ValueError("release bundle github_governance_json must be non-empty when provided")
+        if any(not path for path in self.native_probe_factories_jsons):
+            raise ValueError("release bundle native_probe_factories_jsons entries must be non-empty")
         if type(self.overwrite) is not bool:
             raise ValueError("release bundle overwrite must be boolean")
         object.__setattr__(self, "plan_execution_jsons", tuple(self.plan_execution_jsons))
         object.__setattr__(self, "databricks_run_status_jsons", tuple(self.databricks_run_status_jsons))
         object.__setattr__(self, "pr_evidence_jsons", tuple(self.pr_evidence_jsons))
+        object.__setattr__(self, "native_probe_factories_jsons", tuple(self.native_probe_factories_jsons))
 
 
 @dataclass(frozen=True, slots=True)
@@ -715,6 +719,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--pr-evidence-json", pr_evidence_json)
     if bundle_config.github_governance_json is not None:
         argv = (*argv, "--github-governance-json", bundle_config.github_governance_json)
+    for native_probe_factories_json in bundle_config.native_probe_factories_jsons:
+        argv = (*argv, "--native-probe-factories-json", native_probe_factories_json)
     if bundle_config.overwrite:
         argv = (*argv, "--overwrite")
     return BenchmarkCommand(name="build-release-bundle", argv=argv)
@@ -741,6 +747,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "package_wheel": bundle_config.package_wheel,
         "pr_evidence_jsons": list(bundle_config.pr_evidence_jsons),
         "github_governance_json": bundle_config.github_governance_json,
+        "native_probe_factories_jsons": list(bundle_config.native_probe_factories_jsons),
         "overwrite": bundle_config.overwrite,
     }
 
@@ -1115,6 +1122,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="PR evidence sidecar to include in the release bundle. Repeat as needed.",
     )
     parser.add_argument("--release-bundle-github-governance-json", help="GitHub governance sidecar to include.")
+    parser.add_argument(
+        "--release-bundle-native-probe-factories-json",
+        action="append",
+        help="Native probe factory diagnostics sidecar to include in the release bundle. Repeat as needed.",
+    )
     parser.add_argument("--release-bundle-overwrite", action="store_true")
     parser.add_argument("--plan-output-json", help="Write the command plan JSON to this path.")
     parser.add_argument("--plan-output-sh", help="Write an executable shell script to this path.")
@@ -1368,6 +1380,7 @@ def _release_bundle_config_from_cli(
         package_wheel=args.release_bundle_package_wheel,
         pr_evidence_jsons=tuple(args.release_bundle_pr_evidence_json or ()),
         github_governance_json=args.release_bundle_github_governance_json,
+        native_probe_factories_jsons=tuple(args.release_bundle_native_probe_factories_json or ()),
         overwrite=args.release_bundle_overwrite,
     )
 
@@ -1381,6 +1394,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_package_wheel is not None
         or args.release_bundle_pr_evidence_json is not None
         or args.release_bundle_github_governance_json is not None
+        or args.release_bundle_native_probe_factories_json is not None
         or args.release_bundle_overwrite
     )
 

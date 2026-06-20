@@ -612,6 +612,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
   --release-bundle-github-governance-json /data/github-governance.json \
+  --release-bundle-native-probe-factories-json /data/native-probe-factories.json \
   --engine-probe-targets-output-json /data/engine-probe-targets.json \
   --engine-probe-targets-release-safe \
   --plan-output-json /data/v1-plan.json \
@@ -658,8 +659,9 @@ version and carries the serving-engine package/version metadata from
 `--release-bundle-output-dir` to append `document_kv_cache.release_bundle`
 after that validation step; the bundle command copies the validated V1,
 storage, engine-probe, release-evidence artifacts plus any supplied preflight,
-plan-execution, Databricks run-status, wheel, and PR-evidence sidecars into a
-checksummed handoff directory. For ad hoc local conversion, use `dataset_prep`
+plan-execution, Databricks run-status, wheel, PR-evidence, GitHub governance,
+and native-probe factory diagnostics sidecars into a checksummed handoff
+directory. For ad hoc local conversion, use `dataset_prep`
 directly:
 
 ```bash
@@ -795,6 +797,7 @@ python -m document_kv_cache.release_bundle \
   --package-wheel dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
   --github-governance-json github-governance.json \
+  --native-probe-factories-json native-probe-factories.json \
   --output-dir document-kv-release-bundle \
   --output-json release-bundle-manifest.json
 ```
@@ -810,7 +813,11 @@ connector-action, release-evidence, and preflight artifacts. Add
 `--github-governance-json` to
 include the repository visibility and branch-protection sidecar emitted by
 `document_kv_cache.github_governance`; the bundle rejects it unless the
-governance record is release-ready. Repeat
+governance record is release-ready. Repeat `--native-probe-factories-json` for
+`document_kv.native_probe_factories.v1` diagnostics emitted by
+`document_kv_cache.native_probe_factories`; the bundle validates that the
+diagnostics cover the built-in vLLM and SGLang native factory entry points.
+Repeat
 `--databricks-run-status-json` for compact `databricks_runs get --summary`
 outputs, or extracted inner `summary` records, from the managed runs whose
 outputs are included in the bundle; release bundles require those status
@@ -967,7 +974,7 @@ pytest tests -q
 
 ## Remaining V1 Work
 
-- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, release evidence, preflight sidecar, GitHub governance sidecar, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
+- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, release evidence, preflight sidecar, GitHub governance sidecar, native-probe factory diagnostics, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
 - Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.

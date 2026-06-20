@@ -6,6 +6,7 @@ from document_kv_cache.engine_probe import EngineKVProbeFactoryContext
 from document_kv_cache.engine_probe import load_engine_kv_probe_factory
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import (
+    NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     NativeProbeFactoryInspection,
     NativeProbeFactoryUnavailable,
     SGLANG_NATIVE_PROBE_FACTORY,
@@ -79,7 +80,7 @@ def test_builtin_native_probe_factories_record_includes_required_backends():
     assert {inspection.backend.value for inspection in inspections} == {"vllm", "sglang"}
 
     record = builtin_native_probe_factories_to_record()
-    assert record["record_type"] == "document_kv.native_probe_factories.v1"
+    assert record["record_type"] == NATIVE_PROBE_FACTORIES_RECORD_TYPE
     assert {factory["backend"] for factory in record["factories"]} == {"vllm", "sglang"}
     assert all(factory["supported"] is False for factory in record["factories"])
     profile_by_backend = {
