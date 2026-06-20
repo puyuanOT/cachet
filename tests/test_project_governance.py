@@ -817,8 +817,8 @@ def test_readme_workflow_api_shows_single_text_document_helper():
     workflow_api = _markdown_section(text, "Workflow API")
 
     assert "SourceDocument.from_text(" in workflow_api
-    assert 'document_chunks={"doc-a": ["document"]}' in workflow_api
-    assert "include_static=False" in workflow_api
+    assert "DocumentKVRequest.for_text_document(" in workflow_api
+    assert 'document_id="doc-a"' in workflow_api
 
 
 def test_pull_request_template_captures_traceability_and_review_gates():

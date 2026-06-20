@@ -292,6 +292,37 @@ def test_workflow_generates_registers_and_prepares_cache(tmp_path):
     assert manifest.keys_for_document("doc-a")
 
 
+def test_workflow_generates_and_prepares_single_text_document(tmp_path):
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow(
+        manifest=manifest,
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="hello from one text document")
+    request = DocumentKVRequest.for_text_document(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+    )
+
+    result = workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri=tmp_path / "one-text-cache.kvpack",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(request)
+
+    assert result.document_ids == ("doc-a",)
+    assert result.chunk_count == 1
+    assert request.document_chunks == {"doc-a": ("document",)}
+    assert materialized.payload == b"doc-a:document:hello from one text document"
+
+
 def test_workflow_invokes_optional_training_adapter(tmp_path):
     trainer = RecordingTrainer()
     workflow = DocumentKVWorkflow(
