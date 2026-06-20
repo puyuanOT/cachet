@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5/high approved the admission ownership move with no blocking findings; it confirmed behavior preservation, document-owned module identity, and legacy admission/scheduler compatibility.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/admission.py",
+    "src/restaurant_kv_serving/admission.py",
+    "src/document_kv_cache/scheduler.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py",
+    "tests/test_scheduler.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_scheduler.py tests/test_engine.py tests/test_engine_adapters.py tests/test_workflow.py tests/test_public_package.py tests/test_project_governance.py -> 123 passed",
+    "poetry run pytest -> 630 passed",
+    "poetry check -> All set!",
+    "git diff --check -> passed",
+    "poetry build -> built sdist and wheel",
+    "secret scan -> only expected fake LangSmith fixture patterns in tests/test_project_governance.py",
+    "GPT-5.5/high reviewer ran clean-process import probes for document/legacy admission, scheduler shims, root imports, and star-import surfaces"
+  ],
+  "what_changed": [
+    "Moved request admission helpers into document_kv_cache.admission.",
+    "Replaced restaurant_kv_serving.admission with a compatibility wrapper over document_kv_cache.admission.",
+    "Repointed document_kv_cache.scheduler and root AdmissionQueue/PreparedRequest exports at document-owned admission helpers."
+  ],
+  "why": "Continue the package ownership migration from restaurant-specific modules to document-generic modules while preserving admission and scheduler compatibility imports."
+}

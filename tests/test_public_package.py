@@ -78,6 +78,7 @@ def test_public_document_package_reexports_core_api():
         DatabricksEngineProbeTargetConfig,
         DatabricksEngineProbeTargetsFile,
         DatabricksStorageBenchmarkJobConfig,
+        PreparedRequest,
         PullRequestEvidence,
         ReleaseEvidence,
         ReleaseBundlePlanConfig,
@@ -139,9 +140,20 @@ def test_public_document_package_reexports_core_api():
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
-    from document_kv_cache import cache, databricks_job, databricks_runs, engine, engine_probe, materializer, service
+    from document_kv_cache import (
+        admission,
+        cache,
+        databricks_job,
+        databricks_runs,
+        engine,
+        engine_probe,
+        materializer,
+        service,
+    )
 
+    assert AdmissionQueue is admission.AdmissionQueue
     assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
+    assert AdmissionQueue.__module__ == "document_kv_cache.admission"
     assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
     assert ByteLRU is cache.ByteLRU
     assert CacheGenerationMethod is restaurant_kv_serving.CacheGenerationMethod
@@ -234,6 +246,9 @@ def test_public_document_package_reexports_core_api():
     assert DatabricksEngineProbeTargetConfig is restaurant_kv_serving.DatabricksEngineProbeTargetConfig
     assert DatabricksEngineProbeTargetsFile is restaurant_kv_serving.DatabricksEngineProbeTargetsFile
     assert DatabricksStorageBenchmarkJobConfig is restaurant_kv_serving.DatabricksStorageBenchmarkJobConfig
+    assert PreparedRequest is admission.PreparedRequest
+    assert PreparedRequest is restaurant_kv_serving.PreparedRequest
+    assert PreparedRequest.__module__ == "document_kv_cache.admission"
     assert PullRequestEvidence is restaurant_kv_serving.PullRequestEvidence
     assert ReleaseEvidence is restaurant_kv_serving.ReleaseEvidence
     assert ReleaseBundlePlanConfig is restaurant_kv_serving.ReleaseBundlePlanConfig
@@ -409,7 +424,9 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     star_namespace: dict[str, object] = {}
     exec("from document_kv_cache import *", star_namespace)
     assert star_namespace["AdmissionQueue"] is restaurant_kv_serving.AdmissionQueue
+    assert star_namespace["AdmissionQueue"].__module__ == "document_kv_cache.admission"
     assert star_namespace["PreparedRequest"] is restaurant_kv_serving.PreparedRequest
+    assert star_namespace["PreparedRequest"].__module__ == "document_kv_cache.admission"
     assert star_namespace["StorageBenchmarkConfig"] is restaurant_kv_serving.StorageBenchmarkConfig
     assert star_namespace["StorageBenchmarkEvidence"] is restaurant_kv_serving.StorageBenchmarkEvidence
     assert star_namespace["StorageBenchmarkPlanConfig"] is restaurant_kv_serving.StorageBenchmarkPlanConfig
@@ -495,6 +512,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     legacy_vllm_smoke = importlib.import_module("restaurant_kv_serving.vllm_smoke")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
+    assert admission.AdmissionQueue.__module__ == "document_kv_cache.admission"
     assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
     assert benchmark_plan.ENGINE_PROBE_TARGETS_RECORD_TYPE is restaurant_kv_serving.ENGINE_PROBE_TARGETS_RECORD_TYPE
     assert benchmark_plan.EngineProbePlanConfig is restaurant_kv_serving.EngineProbePlanConfig
@@ -681,6 +699,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
 
 
 def test_public_document_submodules_have_curated_star_import_surfaces():
+    admission = importlib.import_module("document_kv_cache.admission")
     cache = importlib.import_module("document_kv_cache.cache")
     engine = importlib.import_module("document_kv_cache.engine")
     engine_adapters = importlib.import_module("document_kv_cache.engine_adapters")
@@ -697,6 +716,11 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     service = importlib.import_module("document_kv_cache.service")
     workflow = importlib.import_module("document_kv_cache.workflow")
 
+    assert admission.__all__ == ["PreparedRequest", "AdmissionQueue"]
+    assert admission.AdmissionQueue.__module__ == "document_kv_cache.admission"
+    assert admission.PreparedRequest.__module__ == "document_kv_cache.admission"
+    assert restaurant_kv_serving.AdmissionQueue is admission.AdmissionQueue
+    assert restaurant_kv_serving.PreparedRequest is admission.PreparedRequest
     assert engine.__all__ == [
         "EngineReadyRequest",
         "ServingEngineConnector",
@@ -836,6 +860,8 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert "ChunkType" not in star_namespace
     root_star_namespace: dict[str, object] = {}
     exec("from document_kv_cache import *", root_star_namespace)
+    assert root_star_namespace["AdmissionQueue"] is admission.AdmissionQueue
+    assert root_star_namespace["PreparedRequest"] is admission.PreparedRequest
     assert root_star_namespace["DiskRangeReader"] is storage.DiskRangeReader
     assert root_star_namespace["MemoryRangeReader"] is storage.MemoryRangeReader
     assert root_star_namespace["CacheTier"] is cache.CacheTier

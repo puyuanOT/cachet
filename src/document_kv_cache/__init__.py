@@ -167,6 +167,8 @@ _DOCUMENT_ROOT_EXPORTS = {
         "write_engine_kv_connector_probe_result_json",
     ),
     "load_engine_kv_probe_factory": ("document_kv_cache.engine_probe", "load_engine_kv_probe_factory"),
+    "AdmissionQueue": ("document_kv_cache.admission", "AdmissionQueue"),
+    "PreparedRequest": ("document_kv_cache.admission", "PreparedRequest"),
     "EngineReadyRequest": ("document_kv_cache.engine", "EngineReadyRequest"),
     "ServingEngineConnector": ("document_kv_cache.engine", "ServingEngineConnector"),
     "build_engine_ready_request": ("document_kv_cache.engine", "build_engine_ready_request"),

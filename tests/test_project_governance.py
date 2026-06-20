@@ -161,6 +161,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_release_bundle.py": {
         "restaurant_kv_serving.release_bundle",
     },
+    "tests/test_scheduler.py": {
+        "restaurant_kv_serving.scheduler",
+    },
     "tests/test_vllm_smoke.py": {
         "restaurant_kv_serving.vllm_smoke",
     },
