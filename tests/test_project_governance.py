@@ -452,11 +452,15 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     document_scripts = sorted(
         name for name in pyproject["project"]["scripts"] if name.startswith("document-kv-")
     )
+    cachet_scripts = sorted(
+        name for name in pyproject["project"]["scripts"] if name.startswith("cachet-")
+    )
 
     assert public_modules
     assert set(public_modules) <= package_modules
     assert compatibility_only_modules == ["scheduler"]
     assert document_scripts
+    assert cachet_scripts
     for module_name in public_modules:
         assert f"`{module_name}.py`" in text
     for module_name in compatibility_only_modules:
@@ -464,6 +468,9 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "Compatibility-Only Modules" in text
     for script_name in document_scripts:
         assert f"`{script_name}`" in text
+    for script_name in cachet_scripts:
+        assert f"`{script_name}`" in text
+    assert "Cachet-branded aliases" in text
     assert "`templates/`" in text
     assert "`templates/databricks/`" in text
     assert "canonical implementation modules" in text
