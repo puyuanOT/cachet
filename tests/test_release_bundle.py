@@ -1031,9 +1031,12 @@ def _v1_record(*, ok: bool):
                 "arm_id": arm,
                 "requests": 1,
                 "errors": 0,
+                "prompt_tokens_mean": 1024.0,
+                "completion_tokens_mean": 16.0,
                 "ttft": {"p50": 1.0, "p95": 1.0},
                 "time_to_completion": {"p50": 2.0, "p95": 2.0},
                 "answer_found_rate": 1.0,
+                "output_tokens_per_second": 8.0,
             }
             for dataset in datasets
             for arm in arms

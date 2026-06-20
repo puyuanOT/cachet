@@ -734,7 +734,10 @@ serving-engine package/version metadata matching the
 `document_kv_cache.serving_env` backend profile.
 The V1 benchmark artifact must identify itself with
 `record_type=document_kv.benchmark_run.v1`; storage and engine-probe artifacts
-have matching record-type checks. The release JSON output also includes
+have matching record-type checks. Successful V1 measurement rows must carry
+positive prompt and completion token counts, and report rows must carry positive
+prompt-token, completion-token, and output-throughput summaries, so zero-token
+or summary-only benchmark stubs cannot pass release evidence. The release JSON output also includes
 `artifact_sources` entries for the exact V1 benchmark, storage benchmark, and
 engine-probe files that were evaluated, so release records remain auditable
 after artifacts are copied into durable storage.
