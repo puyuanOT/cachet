@@ -13,6 +13,7 @@ from document_kv_cache.storage import DiskRangeReader, MemoryRangeReader, Routed
 from document_kv_cache.workflow import (
     CacheAdapterArtifact,
     CacheBuildConfig,
+    CacheGenerationResult,
     DocumentKVWorkflow,
     SourceChunk,
     SourceDocument,
@@ -139,6 +140,29 @@ def config(*, cache_method: CacheGenerationMethod = CacheGenerationMethod.VANILL
     )
 
 
+def result_ref(tmp_path):
+    return write_kvpack(
+        tmp_path / "result-ref.kvpack",
+        [
+            PackChunk(
+                key=KVCacheKey.for_document(
+                    model_id="qwen3:4b-instruct",
+                    lora_id="base",
+                    prompt_template_version="v1",
+                    document_id="doc-a",
+                    chunk_type=DocumentChunkType.DOCUMENT_CHUNK,
+                    chunk_id="section-1",
+                ),
+                payload=b"result-bytes",
+                token_count=2,
+                dtype="int8",
+                layout_version="toy-one-byte-v1",
+            )
+        ],
+        align_bytes=1,
+    )[0]
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     (
@@ -189,6 +213,74 @@ def test_cache_build_config_preserves_non_empty_custom_cache_method_strings():
     )
 
     assert cfg.cache_method == "vendor_custom_method"
+
+
+def test_cache_generation_result_normalizes_public_fields(tmp_path):
+    ref = result_ref(tmp_path)
+    training_artifacts = TrainingArtifacts(adapter_ids=("packet-adapter",))
+
+    result = CacheGenerationResult(
+        refs=[ref],  # type: ignore[arg-type]
+        document_ids=["doc-a"],  # type: ignore[arg-type]
+        chunk_count=1,
+        total_bytes=ref.byte_length,
+        training_artifacts=training_artifacts,
+        cache_method="kv_packet",
+    )
+
+    assert result.refs == (ref,)
+    assert result.document_ids == ("doc-a",)
+    assert result.training_artifacts is training_artifacts
+    assert result.cache_method is CacheGenerationMethod.KV_PACKET
+    assert result.adapter_ids == ("packet-adapter",)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"refs": "not-refs"}, "refs"),
+        ({"refs": [object()]}, "refs entries"),
+        ({"document_ids": "doc-a"}, "document_ids"),
+        ({"document_ids": [""]}, "document_ids"),
+        ({"chunk_count": -1}, "chunk_count"),
+        ({"chunk_count": True}, "chunk_count"),
+        ({"chunk_count": 2}, "chunk_count must match"),
+        ({"total_bytes": -1}, "total_bytes"),
+        ({"total_bytes": True}, "total_bytes"),
+        ({"total_bytes_delta": 1}, "total_bytes must match"),
+        ({"training_artifacts": object()}, "training_artifacts"),
+        ({"cache_method": ""}, "cache_method"),
+    ),
+)
+def test_cache_generation_result_rejects_invalid_public_fields(tmp_path, overrides, message):
+    ref = result_ref(tmp_path)
+    values = {
+        "refs": (ref,),
+        "document_ids": ("doc-a",),
+        "chunk_count": 1,
+        "total_bytes": ref.byte_length,
+    }
+    if "total_bytes_delta" in overrides:
+        overrides = dict(overrides)
+        values["total_bytes"] = ref.byte_length + overrides.pop("total_bytes_delta")
+    values.update(overrides)
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        CacheGenerationResult(**values)
+
+
+def test_cache_generation_result_allows_empty_generation_result():
+    result = CacheGenerationResult(
+        refs=(),
+        document_ids=(),
+        chunk_count=0,
+        total_bytes=0,
+        cache_method="vendor_custom_method",
+    )
+
+    assert result.refs == ()
+    assert result.document_ids == ()
+    assert result.cache_method == "vendor_custom_method"
 
 
 def request_for(document_id: str) -> DocumentKVRequest:

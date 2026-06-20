@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/harden-cache-generation-result/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED: no blocking findings; scoped to CacheGenerationResult hardening plus focused tests; generated, empty, and custom-method results remain supported.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "document_kv_cache.workflow CacheGenerationResult validation and workflow tests."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_workflow.py -q => 66 passed; git diff --check => clean; poetry run pytest tests/test_workflow.py tests/test_public_package.py tests/test_project_governance.py -q => 111 passed; poetry run pytest -q => 974 passed; poetry build => succeeded; poetry check && poetry install --dry-run => succeeded."
+      ],
+      "what_changed": [
+        "Hardened CacheGenerationResult normalization and invariants in the document workflow."
+      ],
+      "why": "The public Cachet workflow result should be trustworthy for arbitrary document cache generation: refs, document ids, byte totals, chunk counts, training artifacts, and cache methods should be coherent before downstream serving handoff."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

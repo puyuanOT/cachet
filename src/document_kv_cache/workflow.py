@@ -223,12 +223,30 @@ class KVChunkGenerator(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class CacheGenerationResult:
-    refs: tuple[ChunkRef, ...]
-    document_ids: tuple[str, ...]
+    refs: tuple[ChunkRef, ...] | Sequence[ChunkRef]
+    document_ids: tuple[str, ...] | Sequence[str]
     chunk_count: int
     total_bytes: int
     training_artifacts: TrainingArtifacts | None = None
     cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
+
+    def __post_init__(self) -> None:
+        refs = _chunk_ref_tuple(self.refs)
+        document_ids = _non_empty_string_tuple("document_ids", self.document_ids)
+        if type(self.chunk_count) is not int or self.chunk_count < 0:
+            raise ValueError("chunk_count must be a non-negative integer")
+        if self.chunk_count != len(refs):
+            raise ValueError("chunk_count must match refs length")
+        expected_total_bytes = sum(ref.byte_length for ref in refs)
+        if type(self.total_bytes) is not int or self.total_bytes < 0:
+            raise ValueError("total_bytes must be a non-negative integer")
+        if self.total_bytes != expected_total_bytes:
+            raise ValueError("total_bytes must match refs byte_length sum")
+        if self.training_artifacts is not None and not isinstance(self.training_artifacts, TrainingArtifacts):
+            raise TypeError("training_artifacts must be TrainingArtifacts or None")
+        object.__setattr__(self, "refs", refs)
+        object.__setattr__(self, "document_ids", document_ids)
+        object.__setattr__(self, "cache_method", _cache_generation_method(self.cache_method))
 
     @property
     def adapter_ids(self) -> tuple[str, ...]:
@@ -535,6 +553,16 @@ def _cache_generation_method(cache_method: CacheGenerationMethod | str) -> Cache
         return CacheGenerationMethod(cache_method_text)
     except ValueError:
         return cache_method_text
+
+
+def _chunk_ref_tuple(refs: Iterable[ChunkRef]) -> tuple[ChunkRef, ...]:
+    if isinstance(refs, (str, bytes, bytearray)):
+        raise TypeError("refs must be a sequence of ChunkRef instances")
+    refs_tuple = tuple(refs)
+    for ref in refs_tuple:
+        if not isinstance(ref, ChunkRef):
+            raise TypeError("refs entries must be ChunkRef instances")
+    return refs_tuple
 
 
 def _document_chunk_type(chunk_type: DocumentChunkType | str) -> DocumentChunkType:
