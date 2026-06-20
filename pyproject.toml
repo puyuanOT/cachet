@@ -21,6 +21,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+dependencies = [
+  "packaging==26.2",
+]
+
 [project.urls]
 Repository = "https://github.com/puyuanOT/document-kv-cache"
 Issues = "https://github.com/puyuanOT/document-kv-cache/issues"

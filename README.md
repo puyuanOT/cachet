@@ -873,7 +873,8 @@ PR evidence sidecars must be valid `document_kv.pr_evidence.v1` records with
 Refactor-skill evidence, completed GPT-5.5 review, and any GPT-5.5 findings
 marked resolved before they can enter the release bundle.
 Wheel artifacts must be valid wheels for `document-kv-cache` with non-empty
-package metadata.
+package metadata, and the wheel filename, root `.dist-info` directory, and
+`METADATA` version must describe the same normalized package version.
 
 Capture repository governance status as a separate release-readiness sidecar.
 The command reads the GitHub token from an environment variable, records
