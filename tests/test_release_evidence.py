@@ -908,6 +908,48 @@ def test_inspect_release_evidence_input_files_accepts_complete_backend_set(tmp_p
     assert record["missing_engine_action_backends"] == []
 
 
+def test_inspect_release_evidence_input_files_rejects_wrong_record_types(tmp_path):
+    v1_path = tmp_path / "v1.json"
+    storage_path = tmp_path / "storage.json"
+    vllm_path = tmp_path / "vllm-probe.json"
+    sglang_path = tmp_path / "sglang-probe.json"
+    vllm_actions_path = tmp_path / "vllm-actions.json"
+    sglang_actions_path = tmp_path / "sglang-actions.json"
+    _write_json(v1_path, _storage_record(ok=True))
+    _write_json(storage_path, _v1_record(ok=True))
+    _write_json(vllm_path, _actions_record(ServingBackend.VLLM))
+    _write_json(sglang_path, _probe_record(ServingBackend.SGLANG))
+    _write_json(vllm_actions_path, _probe_record(ServingBackend.VLLM))
+    _write_json(sglang_actions_path, _actions_record(ServingBackend.SGLANG))
+
+    status = inspect_release_evidence_input_files(
+        v1_benchmark_json=v1_path,
+        storage_benchmark_json=storage_path,
+        engine_probe_jsons=(vllm_path, sglang_path),
+        engine_actions_jsons=(vllm_actions_path, sglang_actions_path),
+    )
+    record = release_evidence_input_status_to_record(status)
+
+    assert not status.ok
+    assert status.missing_paths == ()
+    assert status.unreadable_paths == ()
+    assert status.missing_engine_probe_backends == ("vllm",)
+    assert status.missing_engine_action_backends == ("vllm",)
+    assert record["invalid_record_type_paths"] == [
+        str(v1_path),
+        str(storage_path),
+        str(vllm_path),
+        str(vllm_actions_path),
+    ]
+    assert any("invalid input record types" in issue for issue in status.issues)
+    assert any("missing engine probe backends: vllm" in issue for issue in status.issues)
+    assert any("missing engine action backends: vllm" in issue for issue in status.issues)
+    assert "expected document_kv.benchmark_run.v1" in record["input_files"][0]["error"]
+    assert "expected document_kv.storage_benchmark.v1" in record["input_files"][1]["error"]
+    assert "expected document_kv.engine_kv_connector_probe.v1" in record["input_files"][2]["error"]
+    assert "expected document_kv.engine_kv_connector_actions.v1" in record["input_files"][4]["error"]
+
+
 def test_inspect_release_evidence_input_files_reports_missing_and_unreadable_paths(tmp_path):
     v1_path = tmp_path / "missing-v1.json"
     storage_path = tmp_path / "storage.json"

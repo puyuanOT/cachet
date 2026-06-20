@@ -1570,7 +1570,7 @@ def test_build_release_bundle_rejects_failed_release_evidence_or_preflight_sidec
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             release_evidence_json=failed_evidence_path,
             output_dir=tmp_path / "evidence-bundle",
         )
@@ -1580,9 +1580,29 @@ def test_build_release_bundle_rejects_failed_release_evidence_or_preflight_sidec
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
-        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             preflight_json=failed_preflight_path,
             output_dir=tmp_path / "preflight-bundle",
+        )
+
+
+def test_build_release_bundle_rejects_preflight_sidecars_with_invalid_record_type_paths(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    invalid_preflight_record = json.loads(artifacts["preflight"].read_text(encoding="utf-8"))
+    invalid_preflight_record["invalid_record_type_paths"] = [str(artifacts["vllm"])]
+    invalid_preflight_path = _write_json(
+        tmp_path / "invalid-record-type-preflight.json",
+        invalid_preflight_record,
+    )
+
+    with pytest.raises(ValueError, match="preflight sidecar invalid_record_type_paths must be empty"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            preflight_json=invalid_preflight_path,
+            output_dir=tmp_path / "invalid-record-type-preflight-bundle",
         )
 
 

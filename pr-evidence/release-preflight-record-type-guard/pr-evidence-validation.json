@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/release-preflight-record-type-guard/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found two preflight semantics gaps; both were fixed and the reviewer approved after rerunning release-evidence, release-bundle, and diff-check gates.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/release_evidence.py",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_release_evidence.py",
+        "tests/test_release_bundle.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_evidence.py::test_inspect_release_evidence_input_files_rejects_wrong_record_types tests/test_release_evidence.py::test_inspect_release_evidence_input_files_reports_record_types_and_missing_backends tests/test_release_evidence.py::test_inspect_release_evidence_input_files_accepts_complete_backend_set tests/test_release_evidence.py::test_release_evidence_input_status_validates_json_safe_schema -q",
+        "poetry run pytest tests/test_release_evidence.py -q",
+        "poetry run pytest tests/test_release_bundle.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Added invalid_record_type_paths to release-evidence preflight status",
+        "Made preflight reject readable JSON artifacts assigned to the wrong release input role"
+      ],
+      "why": "Prevent V1 release workflows from treating swapped or wrong artifact JSON as valid preflight inputs before strict validation and bundling."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

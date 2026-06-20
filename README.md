@@ -803,6 +803,12 @@ python -m document_kv_cache.release_evidence \
   --preflight-output-json release-inputs.json
 ```
 
+The preflight sidecar keeps malformed JSON, missing paths, and wrong
+role/record-type assignments separate. A readable JSON file with
+`document_kv.engine_kv_connector_actions.v1` in an `--engine-probe-json` slot is
+reported under `invalid_record_type_paths` instead of being treated as a valid
+probe input.
+
 The command returns exit code `0` only when the V1 benchmark is AWS g5/Qwen3,
 the storage benchmark has strict Memory + Disk + real UC Volume evidence, and
 exactly one native engine probe record plus one connector action descriptor is
