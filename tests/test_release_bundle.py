@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import json
 import os
@@ -898,6 +899,99 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=missing_universal_tag_wheel,
             output_dir=tmp_path / "bad-wheel-missing-universal-tag-bundle",
+        )
+
+    missing_record_wheel = _write_wheel(
+        tmp_path / "missing-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        include_record=False,
+    )
+    with pytest.raises(ValueError, match="exactly one .dist-info/RECORD"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_record_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-record-bundle",
+        )
+
+    empty_record_wheel = _write_wheel(
+        tmp_path / "empty-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        record_lines=(),
+    )
+    with pytest.raises(ValueError, match="RECORD must be non-empty"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=empty_record_wheel,
+            output_dir=tmp_path / "bad-wheel-empty-record-bundle",
+        )
+
+    incomplete_record_wheel = _write_wheel(
+        tmp_path / "incomplete-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        record_lines=(
+            "document_kv_cache/__init__.py,,",
+            "document_kv_cache-0.2.0.dist-info/METADATA,,",
+            "document_kv_cache-0.2.0.dist-info/RECORD,,",
+        ),
+    )
+    with pytest.raises(ValueError, match="RECORD must list required wheel files"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=incomplete_record_wheel,
+            output_dir=tmp_path / "bad-wheel-incomplete-record-bundle",
+        )
+
+    tampered_record_wheel = _write_wheel(
+        tmp_path / "tampered-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        record_lines=(
+            "document_kv_cache/__init__.py,sha256=not-the-real-digest,0",
+            "document_kv_cache-0.2.0.dist-info/WHEEL,sha256=not-the-real-digest,85",
+            "document_kv_cache-0.2.0.dist-info/METADATA,sha256=not-the-real-digest,37",
+            "document_kv_cache-0.2.0.dist-info/RECORD,,",
+        ),
+    )
+    with pytest.raises(ValueError, match="hash must match the wheel payload"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=tampered_record_wheel,
+            output_dir=tmp_path / "bad-wheel-tampered-record-bundle",
+        )
+
+    unrecorded_document_file_wheel = _write_wheel(
+        tmp_path / "unrecorded-document-file-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        extra_entries=(("document_kv_cache/extra_runtime.py", b"UNRECORDED = True\n"),),
+    )
+    with pytest.raises(ValueError, match="RECORD must list every wheel file"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=unrecorded_document_file_wheel,
+            output_dir=tmp_path / "bad-wheel-unrecorded-document-file-bundle",
+        )
+
+    unrecorded_legacy_file_wheel = _write_wheel(
+        tmp_path / "unrecorded-legacy-file-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        extra_entries=(("restaurant_kv_serving/compat_runtime.py", b"UNRECORDED = True\n"),),
+    )
+    with pytest.raises(ValueError, match="RECORD must list every wheel file"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=unrecorded_legacy_file_wheel,
+            output_dir=tmp_path / "bad-wheel-unrecorded-legacy-file-bundle",
         )
 
     nested_dist_info_wheel = _write_wheel(
@@ -1940,6 +2034,9 @@ def _write_wheel(
     metadata_name: str = "document-kv-cache",
     metadata_version: str | None = "0.2.0",
     dist_info_prefix: str = "document_kv_cache-0.2.0.dist-info",
+    include_record: bool = True,
+    record_lines: tuple[str, ...] | None = None,
+    extra_entries: tuple[tuple[str, bytes], ...] = (),
     wheel_metadata_lines: tuple[str, ...] = (
         "Wheel-Version: 1.0",
         "Generator: document-kv-cache test fixture",
@@ -1953,15 +2050,31 @@ def _write_wheel(
     if metadata_version is not None:
         metadata_lines.append(f"Version: {metadata_version}")
     metadata_lines.append("")
+    wheel_payload = "\n".join(wheel_metadata_lines).encode("utf-8")
+    metadata_payload = "\n".join(metadata_lines).encode("utf-8")
+    package_payload = b""
+    wheel_entries = (
+        ("document_kv_cache/__init__.py", package_payload),
+        (f"{dist_info_prefix}/WHEEL", wheel_payload),
+        (f"{dist_info_prefix}/METADATA", metadata_payload),
+    )
     with zipfile.ZipFile(path, "w") as wheel_zip:
-        wheel_zip.writestr("document_kv_cache/__init__.py", "")
-        wheel_zip.writestr(
-            f"{dist_info_prefix}/WHEEL",
-            "\n".join(wheel_metadata_lines),
-        )
-        wheel_zip.writestr(f"{dist_info_prefix}/METADATA", "\n".join(metadata_lines))
-        wheel_zip.writestr(f"{dist_info_prefix}/RECORD", "")
+        for name, payload in wheel_entries:
+            wheel_zip.writestr(name, payload)
+        for name, payload in extra_entries:
+            wheel_zip.writestr(name, payload)
+        if include_record:
+            if record_lines is None:
+                record_lines = tuple(_wheel_record_line(name, payload) for name, payload in wheel_entries) + (
+                    f"{dist_info_prefix}/RECORD,,",
+                )
+            wheel_zip.writestr(f"{dist_info_prefix}/RECORD", "\n".join(record_lines))
     return path
+
+
+def _wheel_record_line(path: str, payload: bytes) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(payload).digest()).decode("ascii").rstrip("=")
+    return f"{path},sha256={digest},{len(payload)}"
 
 
 def _pr_evidence_record(*, ok: bool):
