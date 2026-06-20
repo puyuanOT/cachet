@@ -524,6 +524,45 @@ def test_evaluate_release_evidence_rejects_malformed_measurement_quality_flags()
     assert any("answer_found must be boolean when present" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_malformed_report_quality_rates():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "exact_match_rate": "perfect",
+    }
+    v1_record["report_rows"][1] = {
+        **v1_record["report_rows"][1],
+        "answer_found_rate": 1.2,
+    }
+    v1_record["report_rows"][2] = {
+        **v1_record["report_rows"][2],
+        "answer_found_rate": True,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:baseline_prefill exact_match_rate must be a finite rate between 0 and 1" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:document_kv_cache answer_found_rate must be a finite rate between 0 and 1" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "hotpotqa:baseline_prefill answer_found_rate must be a finite rate between 0 and 1" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_allows_repeated_raw_measurements():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"].append({**v1_record["measurements"][0], "example_id": "biography-2"})

@@ -872,6 +872,12 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
                     f"v1 benchmark report row {dataset_value}:{arm_id_value} {metric_name}",
                     issues,
                 )
+        for metric_name in ("answer_found_rate", "exact_match_rate"):
+            _validate_optional_rate(
+                row.get(metric_name),
+                f"v1 benchmark report row {dataset_value}:{arm_id_value} {metric_name}",
+                issues,
+            )
         if row.get("answer_found_rate") is None and row.get("exact_match_rate") is None:
             issues.append(f"v1 benchmark report row {dataset_value}:{arm_id_value} must include quality metrics")
     expected = {
@@ -1221,6 +1227,13 @@ def _add_unique_v1_dataset_arm(
 def _validate_optional_bool(value: Any, label: str, issues: list[str]) -> None:
     if value is not None and type(value) is not bool:
         issues.append(f"{label} must be boolean when present")
+
+
+def _validate_optional_rate(value: Any, label: str, issues: list[str]) -> None:
+    if value is None:
+        return
+    if not _is_finite_number(value) or value < 0 or value > 1:
+        issues.append(f"{label} must be a finite rate between 0 and 1")
 
 
 def _is_positive_int(value: Any) -> bool:
