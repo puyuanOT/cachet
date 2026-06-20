@@ -322,8 +322,8 @@ adapters. The record contains the request id, backend, reservation geometry,
 copy offsets, bind metadata, and release action, but not raw KV payload bytes.
 Use `engine_kv_connector_actions_from_record` or
 `validate_engine_kv_connector_actions_record` at the engine boundary to reject a
-stale backend, schema, payload offset, or layout-derived block map before making
-native block-manager calls.
+stale backend, schema, unsupported action field, payload offset, or
+layout-derived block map before making native block-manager calls.
 Serialize successful probe summaries with
 `engine_kv_connector_probe_result_to_record` so release validation can verify
 that both native backends exercised reservation, import, bind, and release with

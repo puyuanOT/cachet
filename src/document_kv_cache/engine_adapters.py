@@ -47,6 +47,52 @@ _EXTERNAL_PAYLOAD_URI_SCHEMES = {
     "uc-volume",
     "wasbs",
 }
+_ENGINE_KV_CONNECTOR_ACTIONS_RECORD_KEYS = frozenset(
+    {
+        "record_type",
+        "schema_version",
+        "backend",
+        "request_id",
+        "reservation",
+        "copies",
+        "bind",
+        "release",
+    }
+)
+_ENGINE_KV_RESERVATION_ACTION_KEYS = frozenset(
+    {
+        "backend",
+        "request_id",
+        "total_blocks",
+        "total_tokens",
+        "estimated_gpu_bytes",
+        "adapter_ids",
+        "layout",
+    }
+)
+_ENGINE_KV_COPY_ACTION_KEYS = frozenset(
+    {
+        "request_id",
+        "document_id",
+        "chunk_type",
+        "chunk_id",
+        "payload_index",
+        "source_byte_start",
+        "source_byte_length",
+        "source_byte_end",
+        "global_byte_start",
+        "global_byte_end",
+        "token_start",
+        "token_count",
+        "token_end",
+        "first_block_index",
+        "last_block_index_exclusive",
+        "content_hash",
+        "cache_tier",
+    }
+)
+_ENGINE_KV_BIND_ACTION_KEYS = frozenset({"request_id", "handle_uri", "cache_method", "adapter_ids", "metadata"})
+_ENGINE_KV_RELEASE_ACTION_KEYS = frozenset({"request_id"})
 
 __all__ = [
     "EngineAdapterRequest",
@@ -898,6 +944,7 @@ def engine_kv_connector_actions_from_record(
 ) -> EngineKVConnectorActions:
     """Parse and validate connector action descriptors from a JSON-compatible record."""
 
+    _reject_unsupported_keys(record, _ENGINE_KV_CONNECTOR_ACTIONS_RECORD_KEYS, label="connector actions record")
     if record.get("record_type") != ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE:
         raise ValueError(f"Unsupported connector actions record_type {record.get('record_type')!r}")
     if record.get("schema_version") != ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION:
@@ -919,8 +966,8 @@ def engine_kv_connector_actions_from_record(
     actions = EngineKVConnectorActions(
         reservation=reservation,
         copies=tuple(
-            _copy_action_from_record(copy_action)
-            for copy_action in _required_mapping_sequence(record, "copies")
+            _copy_action_from_record(copy_action, index=index)
+            for index, copy_action in enumerate(_required_mapping_sequence(record, "copies"))
         ),
         bind=_bind_action_from_record(_required_mapping(record, "bind")),
         release=_release_action_from_record(_required_mapping(record, "release")),
@@ -1125,6 +1172,7 @@ def _reservation_action_to_record(action: EngineKVReservationAction) -> dict[str
 
 
 def _reservation_action_from_record(record: Mapping[str, Any]) -> EngineKVReservationAction:
+    _reject_unsupported_keys(record, _ENGINE_KV_RESERVATION_ACTION_KEYS, label="connector actions reservation")
     return EngineKVReservationAction(
         backend=_backend_from_value(_required_str(record, "backend"), field_name="reservation.backend"),
         request_id=_required_str(record, "request_id"),
@@ -1158,7 +1206,8 @@ def _copy_action_to_record(action: EngineKVSegmentCopyAction) -> dict[str, Any]:
     }
 
 
-def _copy_action_from_record(record: Mapping[str, Any]) -> EngineKVSegmentCopyAction:
+def _copy_action_from_record(record: Mapping[str, Any], *, index: int) -> EngineKVSegmentCopyAction:
+    _reject_unsupported_keys(record, _ENGINE_KV_COPY_ACTION_KEYS, label=f"connector actions copies[{index}]")
     payload_index = _optional_nonnegative_int(record, "payload_index")
     source_byte_start = _required_nonnegative_int(record, "source_byte_start")
     source_byte_length = _required_positive_int(record, "source_byte_length")
@@ -1196,6 +1245,7 @@ def _bind_action_to_record(action: EngineKVBindAction) -> dict[str, Any]:
 
 
 def _bind_action_from_record(record: Mapping[str, Any]) -> EngineKVBindAction:
+    _reject_unsupported_keys(record, _ENGINE_KV_BIND_ACTION_KEYS, label="connector actions bind")
     return EngineKVBindAction(
         request_id=_required_str(record, "request_id"),
         handle_uri=_required_str(record, "handle_uri"),
@@ -1210,6 +1260,7 @@ def _release_action_to_record(action: EngineKVReleaseAction) -> dict[str, Any]:
 
 
 def _release_action_from_record(record: Mapping[str, Any]) -> EngineKVReleaseAction:
+    _reject_unsupported_keys(record, _ENGINE_KV_RELEASE_ACTION_KEYS, label="connector actions release")
     return EngineKVReleaseAction(request_id=_required_str(record, "request_id"))
 
 
@@ -1487,6 +1538,12 @@ def _required_mapping(record: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{key} must be a mapping")
     return value
+
+
+def _reject_unsupported_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], *, label: str) -> None:
+    unsupported = sorted(str(key) for key in record if key not in allowed_keys)
+    if unsupported:
+        raise ValueError(f"{label} has unsupported keys: {unsupported}")
 
 
 def _required_sequence(record: Mapping[str, Any], key: str) -> tuple[Any, ...]:

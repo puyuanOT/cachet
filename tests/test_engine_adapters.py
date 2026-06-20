@@ -1183,6 +1183,41 @@ def test_engine_kv_connector_actions_record_validation_rejects_stale_fields(tmp_
     with pytest.raises(ValueError, match="schema_version"):
         engine_kv_connector_actions_from_record(wrong_schema)
 
+    unsupported_record = {**actions_record, "debug": {"accepted": False}}
+    with pytest.raises(ValueError, match=r"connector actions record has unsupported keys: \['debug'\]"):
+        engine_kv_connector_actions_from_record(unsupported_record)
+
+    unsupported_reservation = {
+        **actions_record,
+        "reservation": {**actions_record["reservation"], "debug": {"accepted": False}},
+    }
+    with pytest.raises(ValueError, match=r"connector actions reservation has unsupported keys: \['debug'\]"):
+        engine_kv_connector_actions_from_record(unsupported_reservation)
+
+    unsupported_copy = {
+        **actions_record,
+        "copies": [
+            {**actions_record["copies"][0], "debug": {"accepted": False}},
+            *actions_record["copies"][1:],
+        ],
+    }
+    with pytest.raises(ValueError, match=r"connector actions copies\[0\] has unsupported keys: \['debug'\]"):
+        engine_kv_connector_actions_from_record(unsupported_copy)
+
+    unsupported_bind = {
+        **actions_record,
+        "bind": {**actions_record["bind"], "debug": {"accepted": False}},
+    }
+    with pytest.raises(ValueError, match=r"connector actions bind has unsupported keys: \['debug'\]"):
+        engine_kv_connector_actions_from_record(unsupported_bind)
+
+    unsupported_release = {
+        **actions_record,
+        "release": {**actions_record["release"], "debug": {"accepted": False}},
+    }
+    with pytest.raises(ValueError, match=r"connector actions release has unsupported keys: \['debug'\]"):
+        engine_kv_connector_actions_from_record(unsupported_release)
+
 
 def test_build_engine_kv_connector_actions_describe_merged_payload_slices(tmp_path):
     ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
