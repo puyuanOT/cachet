@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved the committed diff with no blocking findings; reviewer ran focused engine-probe, public-package, governance, engine-adapter, storage, and diff-check verification and reported no behavior, API, path-safety, legacy wrapper, typing, or scope issues.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.engine_probe, public document/cachet/legacy facades, engine probe tests, README handoff documentation"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine_probe.py tests/test_public_package.py tests/test_project_governance.py -q; poetry run pytest -q; poetry check; git diff --check origin/main...HEAD"
+  ],
+  "what_changed": [
+    "Add a public write_engine_adapter_payload helper for validated engine adapter requests."
+  ],
+  "why": "The documented vLLM/SGLang handoff path previously required callers to manually concatenate and write ready.payload bytes before emitting the handoff record. A helper keeps merged and segmented payload writing consistent with the existing local/DBFS/Unity Catalog payload URI validation used by connector probes."
+}

@@ -16,6 +16,7 @@ from typing import Any
 
 from document_kv_cache._reexport import reexport_public
 from restaurant_kv_serving.engine_adapters import (
+    EngineAdapterRequest,
     EngineKVBlockManagerProbe,
     EngineKVConnectorProbeResult,
     EngineKVInjectionPlan,
@@ -165,6 +166,7 @@ __all__ += [
     "EngineKVProbeConfig",
     "run_engine_kv_connector_probe",
     "read_engine_adapter_payload",
+    "write_engine_adapter_payload",
     "write_engine_kv_connector_actions_record_json",
     "write_engine_kv_connector_probe_result_json",
     "load_engine_kv_probe_factory",
@@ -244,6 +246,10 @@ def read_engine_adapter_payload(payload_uri: str, *, expected_bytes: int | None 
     return _call_document_function("read_engine_adapter_payload", payload_uri, expected_bytes=expected_bytes)
 
 
+def write_engine_adapter_payload(request: EngineAdapterRequest, payload_uri: str) -> Path:
+    return _call_document_function("write_engine_adapter_payload", request, payload_uri)
+
+
 def write_engine_kv_connector_probe_result_json(
     result: EngineKVConnectorProbeResult,
     path: str | Path,
@@ -298,6 +304,7 @@ def _validate_metadata_strings(metadata: Mapping[str, str]) -> None:
 _DEFAULT_COMPAT_FUNCTIONS = {
     "run_engine_kv_connector_probe": run_engine_kv_connector_probe,
     "read_engine_adapter_payload": read_engine_adapter_payload,
+    "write_engine_adapter_payload": write_engine_adapter_payload,
     "write_engine_kv_connector_actions_record_json": write_engine_kv_connector_actions_record_json,
     "write_engine_kv_connector_probe_result_json": write_engine_kv_connector_probe_result_json,
     "load_engine_kv_probe_factory": load_engine_kv_probe_factory,
