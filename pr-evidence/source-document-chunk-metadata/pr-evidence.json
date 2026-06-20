@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially found that the branch was uncommitted and that surplus metadata could be silently dropped; both were fixed, then GPT-5.5 approved the committed branch with no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/workflow.py",
+    "tests/test_workflow.py",
+    "tests/test_project_governance.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_workflow.py tests/test_project_governance.py -q -> 69 passed",
+    "poetry run pytest -q -> 898 passed",
+    "git diff --check -> passed",
+    "poetry check -> passed",
+    "poetry install --dry-run -> passed",
+    "poetry build -> passed"
+  ],
+  "what_changed": [
+    "Added optional per-content-chunk metadata and static chunk metadata to `SourceDocument.from_texts(...)`.",
+    "Validated chunk metadata with the existing metadata helper and rejected unknown metadata chunk IDs.",
+    "Documented chunk metadata usage and added workflow/governance tests."
+  ],
+  "why": "Cachet source documents need provenance, section, page, or review identifiers on reusable chunks without forcing callers to construct every `SourceChunk` manually."
+}

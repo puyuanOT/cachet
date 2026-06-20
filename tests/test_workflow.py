@@ -248,16 +248,63 @@ def test_source_document_from_texts_validates_helper_inputs():
         static_chunk_id="profile",
         chunks={"p1": "body"},
         metadata={"title": "Doc A"},
+        chunk_metadata={"p1": {"source": "review", "rank": "1"}},
+        static_chunk_metadata={"source": "profile"},
     )
 
     assert [chunk.chunk_id for chunk in document.chunks] == ["profile", "p1"]
     assert document.chunks[0].chunk_type == DocumentChunkType.DOCUMENT_STATIC
+    assert document.chunks[0].metadata == {"source": "profile"}
+    assert document.chunks[1].metadata == {"source": "review", "rank": "1"}
     assert document.metadata == {"title": "Doc A"}
 
     with pytest.raises(TypeError, match="chunks must be a mapping"):
         SourceDocument.from_texts(document_id="doc-a", chunks=["body"])  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="metadata must be a mapping"):
         SourceDocument.from_texts(document_id="doc-a", chunks={"p1": "body"}, metadata=[])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="chunk_metadata must be a mapping"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            chunks={"p1": "body"},
+            chunk_metadata=[],  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="chunk_metadata keys must be non-empty strings"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            chunks={"p1": "body"},
+            chunk_metadata={"": {"source": "review"}},
+        )
+    with pytest.raises(TypeError, match="chunk_metadata.p1 must be a mapping"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            chunks={"p1": "body"},
+            chunk_metadata={"p1": []},  # type: ignore[dict-item]
+        )
+    with pytest.raises(ValueError, match="chunk_metadata.p1.source must be a string"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            chunks={"p1": "body"},
+            chunk_metadata={"p1": {"source": 1}},  # type: ignore[dict-item]
+        )
+    with pytest.raises(ValueError, match="chunk_metadata contains unknown chunk ids: missing"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            chunks={"p1": "body"},
+            chunk_metadata={"missing": {"source": "review"}},
+        )
+    with pytest.raises(ValueError, match="static_chunk_metadata requires static_text"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            chunks={"p1": "body"},
+            static_chunk_metadata={"source": "profile"},
+        )
+    with pytest.raises(ValueError, match="static_chunk_metadata.source must be a string"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            static_text="static context",
+            chunks={"p1": "body"},
+            static_chunk_metadata={"source": 1},  # type: ignore[dict-item]
+        )
     with pytest.raises(ValueError, match="chunk_id must be a non-empty string"):
         SourceDocument.from_texts(
             document_id="doc-a",

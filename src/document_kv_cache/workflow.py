@@ -88,9 +88,19 @@ class SourceDocument:
         static_text: str | None = None,
         static_chunk_id: str = DEFAULT_STATIC_CHUNK_ID,
         metadata: Mapping[str, str] | None = None,
+        chunk_metadata: Mapping[str, Mapping[str, str]] | None = None,
+        static_chunk_metadata: Mapping[str, str] | None = None,
     ) -> "SourceDocument":
         if not isinstance(chunks, Mapping):
             raise TypeError("chunks must be a mapping")
+        normalized_chunk_metadata = _chunk_metadata_map(chunk_metadata)
+        unknown_metadata_chunk_ids = tuple(chunk_id for chunk_id in normalized_chunk_metadata if chunk_id not in chunks)
+        if unknown_metadata_chunk_ids:
+            raise ValueError(
+                "chunk_metadata contains unknown chunk ids: " + ", ".join(unknown_metadata_chunk_ids)
+            )
+        if static_text is None and static_chunk_metadata is not None:
+            raise ValueError("static_chunk_metadata requires static_text")
         source_chunks: list[SourceChunk] = []
         if static_text is not None:
             source_chunks.append(
@@ -98,9 +108,20 @@ class SourceDocument:
                     chunk_id=static_chunk_id,
                     text=static_text,
                     chunk_type=DocumentChunkType.DOCUMENT_STATIC,
+                    metadata={} if static_chunk_metadata is None else _metadata_dict(
+                        "static_chunk_metadata",
+                        static_chunk_metadata,
+                    ),
                 )
             )
-        source_chunks.extend(SourceChunk(chunk_id=chunk_id, text=text) for chunk_id, text in chunks.items())
+        source_chunks.extend(
+            SourceChunk(
+                chunk_id=chunk_id,
+                text=text,
+                metadata=normalized_chunk_metadata.get(chunk_id, {}),
+            )
+            for chunk_id, text in chunks.items()
+        )
         return cls(
             document_id=document_id,
             chunks=tuple(source_chunks),
@@ -391,6 +412,21 @@ def _metadata_dict(name: str, metadata: Mapping[str, str]) -> dict[str, str]:
         if not isinstance(value, str):
             raise ValueError(f"{name}.{key} must be a string")
         normalized[key] = value
+    return normalized
+
+
+def _chunk_metadata_map(
+    chunk_metadata: Mapping[str, Mapping[str, str]] | None,
+) -> dict[str, dict[str, str]]:
+    if chunk_metadata is None:
+        return {}
+    if not isinstance(chunk_metadata, Mapping):
+        raise TypeError("chunk_metadata must be a mapping")
+    normalized: dict[str, dict[str, str]] = {}
+    for chunk_id, metadata in chunk_metadata.items():
+        if not isinstance(chunk_id, str) or not chunk_id:
+            raise ValueError("chunk_metadata keys must be non-empty strings")
+        normalized[chunk_id] = _metadata_dict(f"chunk_metadata.{chunk_id}", metadata)
     return normalized
 
 

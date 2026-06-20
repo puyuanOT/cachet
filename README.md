@@ -224,7 +224,12 @@ document = SourceDocument.from_texts(
     document_id="doc-a",
     static_text="Document profile...",
     static_chunk_id="profile",
+    static_chunk_metadata={"source": "metadata"},
     chunks={"review-1": "First reusable chunk", "review-2": "Second reusable chunk"},
+    chunk_metadata={
+        "review-1": {"source": "review"},
+        "review-2": {"source": "review"},
+    },
 )
 request = DocumentKVRequest.for_document_chunks(
     request_id="req-1",
