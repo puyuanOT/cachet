@@ -328,6 +328,18 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
             require_complete_v1=True,
         )
 
+    wrong_version_wheel = _write_wheel(
+        source_dir / "wrong-version-wheel" / "document_kv_cache-999.0.0-py3-none-any.whl",
+        metadata_version="999.0.0",
+        dist_info_prefix="document_kv_cache-999.0.0.dist-info",
+    )
+    with pytest.raises(ValueError, match="current project version"):
+        build_release_bundle(
+            **{**release_kwargs, "package_wheel": wrong_version_wheel},
+            output_dir=tmp_path / "strict-wrong-wheel-version-bundle",
+            require_complete_v1=True,
+        )
+
     bundle = build_release_bundle(
         **release_kwargs,
         output_dir=bundle_dir,
@@ -827,6 +839,20 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=invalid_build_tag_wheel,
             output_dir=tmp_path / "bad-wheel-build-tag-bundle",
+        )
+
+    wrong_filename_distribution_wheel = _write_wheel(
+        tmp_path / "other_package-0.2.0-py3-none-any.whl",
+        dist_info_prefix="other_package-0.2.0.dist-info",
+    )
+    with pytest.raises(ValueError, match="filename distribution"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=wrong_filename_distribution_wheel,
+            output_dir=tmp_path / "bad-wheel-filename-distribution-bundle",
         )
 
     non_universal_filename_wheel = _write_wheel(

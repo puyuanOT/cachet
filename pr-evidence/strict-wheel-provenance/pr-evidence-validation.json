@@ -1,0 +1,32 @@
+{
+  "files": {
+    "pr-evidence/strict-wheel-provenance/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer reported no findings and explicitly approved the current diff.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_release_bundle.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Tightened release-bundle wheel filename provenance for Cachet",
+        "Required strict V1 release bundles to carry the current project wheel version"
+      ],
+      "why": "Prevent stale or wrong-distribution wheels from being included in auditable V1 release bundles."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
