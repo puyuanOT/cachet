@@ -1,0 +1,35 @@
+{
+  "files": {
+    "pr-evidence/normalize-memory-reader-blobs/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED: constructor and put share validation/coercion; bytes-like payloads are copied to immutable bytes, invalid keys/payloads fail early, and legacy shim behavior remains aligned.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/storage.py",
+        "src/restaurant_kv_serving/storage.py",
+        "tests/test_storage.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_storage.py -q -> 74 passed",
+        "git diff --check -> clean",
+        "poetry run pytest tests/test_storage.py tests/test_public_package.py tests/test_project_governance.py -q -> 119 passed",
+        "python -m py_compile src/document_kv_cache/storage.py src/restaurant_kv_serving/storage.py tests/test_storage.py -> passed",
+        "poetry run pytest -q -> 1032 passed",
+        "poetry build -> passed",
+        "poetry check -> All set",
+        "poetry install --dry-run -> passed"
+      ],
+      "what_changed": [
+        "Normalized in-memory storage reader blobs to immutable bytes."
+      ],
+      "why": "The memory KV-cache tier should enforce the RangeReader bytes contract and reject malformed shard keys or payloads before inference-time reads."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

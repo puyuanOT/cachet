@@ -108,6 +108,44 @@ def test_memory_range_reader_reads_validated_byte_ranges(tmp_path):
     assert reader.read(ref) == b"alpha"
 
 
+def test_memory_range_reader_copies_constructor_blobs_to_immutable_bytes():
+    mutable_payload = bytearray(b"alpha")
+    ref = chunk_ref(
+        shard_uri="memory:mutable",
+        byte_length=len(mutable_payload),
+        checksum=hashlib.sha256(bytes(mutable_payload)).hexdigest(),
+    )
+    reader = MemoryRangeReader({"memory:mutable": mutable_payload})
+    mutable_payload[:] = b"xxxxx"
+
+    payload = reader.read(ref)
+
+    assert payload == b"alpha"
+    assert type(payload) is bytes
+
+
+@pytest.mark.parametrize(
+    ("blobs", "message"),
+    (
+        ({"": b"payload"}, "memory shard URI must be non-empty"),
+        ({123: b"payload"}, "memory shard URI must be non-empty"),
+        ({"memory:bad": 3}, "memory shard payload must be bytes-like"),
+    ),
+)
+def test_memory_range_reader_rejects_invalid_constructor_blobs(blobs, message):
+    with pytest.raises(ValueError, match=message):
+        MemoryRangeReader(blobs)
+
+
+def test_memory_range_reader_put_rejects_invalid_entries():
+    reader = MemoryRangeReader()
+
+    with pytest.raises(ValueError, match="memory shard URI must be non-empty"):
+        reader.put("", b"payload")
+    with pytest.raises(ValueError, match="memory shard payload must be bytes-like"):
+        reader.put("memory:bad", 3)  # type: ignore[arg-type]
+
+
 def test_memory_range_reader_read_many_preserves_order(tmp_path):
     shard_path = tmp_path / "memory-many.kvpack"
     refs = write_kvpack(
@@ -302,6 +340,32 @@ def test_storage_public_and_legacy_modules_have_separate_ownership():
     assert legacy_storage.RangeReader.__module__ == "restaurant_kv_serving.storage"
     assert legacy_storage.RangeBatchReader.__module__ == "restaurant_kv_serving.storage"
     assert RangeBatchReader.__module__ == "document_kv_cache.storage"
+
+
+def test_legacy_memory_range_reader_copies_constructor_blobs_to_immutable_bytes():
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+    mutable_payload = bytearray(b"alpha")
+    ref = chunk_ref(
+        shard_uri="memory:legacy-mutable",
+        byte_length=len(mutable_payload),
+        checksum=hashlib.sha256(bytes(mutable_payload)).hexdigest(),
+    )
+    reader = legacy_storage.MemoryRangeReader({"memory:legacy-mutable": mutable_payload})
+    mutable_payload[:] = b"xxxxx"
+
+    payload = reader.read(ref)
+
+    assert payload == b"alpha"
+    assert type(payload) is bytes
+
+
+def test_legacy_memory_range_reader_rejects_invalid_constructor_blobs():
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+
+    with pytest.raises(ValueError, match="memory shard URI must be non-empty"):
+        legacy_storage.MemoryRangeReader({"": b"payload"})
+    with pytest.raises(ValueError, match="memory shard payload must be bytes-like"):
+        legacy_storage.MemoryRangeReader({"memory:bad": 3})
 
 
 def test_storage_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
