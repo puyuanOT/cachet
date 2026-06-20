@@ -258,6 +258,7 @@ class BenchmarkPlanConfig:
     native_probe_factories_output_json: str | None = None
     repository_hygiene_output_json: str | None = None
     github_governance_output_json: str | None = None
+    release_preflight_output_json: str | None = None
 
     def __post_init__(self) -> None:
         if not self.suite_id:
@@ -298,6 +299,8 @@ class BenchmarkPlanConfig:
             raise ValueError("repository_hygiene_output_json must be non-empty when provided")
         if self.native_probe_factories_output_json is not None and not self.native_probe_factories_output_json:
             raise ValueError("native_probe_factories_output_json must be non-empty when provided")
+        if self.release_preflight_output_json is not None and not self.release_preflight_output_json:
+            raise ValueError("release_preflight_output_json must be non-empty when provided")
         object.__setattr__(self, "engine_probes", tuple(self.engine_probes))
         if len({probe.backend for probe in self.engine_probes}) != len(self.engine_probes):
             raise ValueError("engine_probes must not contain duplicate backends")
@@ -306,6 +309,9 @@ class BenchmarkPlanConfig:
         _validate_generated_artifact_output_paths(self)
         _validate_release_bundle_github_governance_path(self)
         _validate_release_bundle_repository_hygiene_path(self)
+        _validate_release_bundle_preflight_path(self)
+        if self.release_preflight_output_json is not None and self.release_evidence is None:
+            raise ValueError("release_preflight_output_json requires release_evidence")
         if (
             self.release_evidence is not None
             and not self.release_evidence.engine_probe_jsons
@@ -417,6 +423,8 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
         post_benchmark_commands.append(_repository_hygiene_command(config))
     if config.native_probe_factories_output_json is not None:
         post_benchmark_commands.append(_native_probe_factories_command(config))
+    if config.release_preflight_output_json is not None:
+        post_benchmark_commands.append(_release_preflight_command(config))
     if config.release_evidence is not None:
         post_benchmark_commands.append(_release_evidence_command(config))
     if config.release_bundle is not None:
@@ -433,6 +441,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
             "When configured, GitHub governance inspection runs before release validation and can be bundled as release governance evidence.",
             "When configured, repository hygiene inspection runs before release validation and can be bundled as release hygiene evidence.",
             "When configured, native probe factory diagnostics run before release validation and can be bundled as release handoff evidence.",
+            "When configured, release-evidence preflight runs before release validation and can be bundled as release input evidence.",
             "When configured, release evidence validation runs last and checks V1, storage, and native engine-probe artifacts together.",
             "When configured, release bundle assembly follows release evidence and copies the validated artifacts plus optional sidecars into a checksummed handoff directory.",
         ),
@@ -499,6 +508,7 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         "github_governance_output_json": plan.config.github_governance_output_json,
         "repository_hygiene_output_json": plan.config.repository_hygiene_output_json,
         "native_probe_factories_output_json": plan.config.native_probe_factories_output_json,
+        "release_preflight_output_json": plan.config.release_preflight_output_json,
         "planned_engine_probes": [
             {
                 "backend": probe.backend.value,
@@ -737,6 +747,29 @@ def _release_evidence_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     if release_config is None:
         raise ValueError("release_evidence must be configured")
     argv = (
+        *_release_evidence_input_argv(config),
+        "--output-json",
+        release_config.output_json,
+    )
+    return BenchmarkCommand(name="validate-release-evidence", argv=argv)
+
+
+def _release_preflight_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
+    if config.release_preflight_output_json is None:
+        raise ValueError("release_preflight_output_json must be configured")
+    argv = (
+        *_release_evidence_input_argv(config),
+        "--preflight-only",
+        "--preflight-output-json",
+        config.release_preflight_output_json,
+    )
+    return BenchmarkCommand(name="preflight-release-evidence", argv=argv)
+
+
+def _release_evidence_input_argv(config: BenchmarkPlanConfig) -> tuple[str, ...]:
+    if config.release_evidence is None:
+        raise ValueError("release_evidence must be configured")
+    argv = (
         config.python_executable,
         "-m",
         "document_kv_cache.release_evidence",
@@ -744,14 +777,12 @@ def _release_evidence_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         config.benchmark_output_json,
         "--storage-benchmark-json",
         _release_storage_benchmark_json(config),
-        "--output-json",
-        release_config.output_json,
     )
     for engine_probe_json in _release_engine_probe_jsons(config):
         argv = (*argv, "--engine-probe-json", engine_probe_json)
     for engine_action_json in _release_engine_action_jsons(config):
         argv = (*argv, "--engine-actions-json", engine_action_json)
-    return BenchmarkCommand(name="validate-release-evidence", argv=argv)
+    return argv
 
 
 def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
@@ -780,8 +811,9 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--engine-probe-json", engine_probe_json)
     for engine_action_json in _release_engine_action_jsons(config):
         argv = (*argv, "--engine-actions-json", engine_action_json)
-    if bundle_config.preflight_json is not None:
-        argv = (*argv, "--preflight-json", bundle_config.preflight_json)
+    preflight_json = _release_bundle_preflight_json(config)
+    if preflight_json is not None:
+        argv = (*argv, "--preflight-json", preflight_json)
     for plan_execution_json in bundle_config.plan_execution_jsons:
         argv = (*argv, "--plan-execution-json", plan_execution_json)
     for status_json in bundle_config.databricks_run_status_jsons:
@@ -818,7 +850,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "engine_probe_jsons": list(_release_engine_probe_jsons(config)),
         "engine_actions_jsons": list(_release_engine_action_jsons(config)),
         "release_evidence_json": release_config.output_json,
-        "preflight_json": bundle_config.preflight_json,
+        "preflight_json": _release_bundle_preflight_json(config),
         "plan_execution_jsons": list(bundle_config.plan_execution_jsons),
         "databricks_run_status_jsons": list(bundle_config.databricks_run_status_jsons),
         "package_wheel": bundle_config.package_wheel,
@@ -837,6 +869,27 @@ def _release_bundle_github_governance_json(config: BenchmarkPlanConfig) -> str |
     if config.github_governance_output_json is not None:
         return config.github_governance_output_json
     return bundle_config.github_governance_json
+
+
+def _release_bundle_preflight_json(config: BenchmarkPlanConfig) -> str | None:
+    bundle_config = config.release_bundle
+    if bundle_config is None:
+        return None
+    if config.release_preflight_output_json is not None:
+        return config.release_preflight_output_json
+    return bundle_config.preflight_json
+
+
+def _validate_release_bundle_preflight_path(config: BenchmarkPlanConfig) -> None:
+    bundle_config = config.release_bundle
+    if bundle_config is None:
+        return
+    _validate_release_bundle_single_sidecar_path(
+        release_bundle_label="release bundle preflight_json",
+        generated_label="release_preflight_output_json",
+        generated_path=config.release_preflight_output_json,
+        explicit_path=bundle_config.preflight_json,
+    )
 
 
 def _validate_release_bundle_github_governance_path(config: BenchmarkPlanConfig) -> None:
@@ -1061,6 +1114,8 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
         output_paths.append(("repository_hygiene_output_json", config.repository_hygiene_output_json))
     if config.native_probe_factories_output_json is not None:
         output_paths.append(("native_probe_factories_output_json", config.native_probe_factories_output_json))
+    if config.release_preflight_output_json is not None:
+        output_paths.append(("release_preflight_output_json", config.release_preflight_output_json))
     return tuple(output_paths)
 
 
@@ -1258,6 +1313,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Existing storage benchmark JSON for release evidence validation. Defaults to the planned storage benchmark output.",
     )
     parser.add_argument(
+        "--release-preflight-output-json",
+        help=(
+            "Append release-evidence input preflight and write "
+            "document_kv.release_evidence_inputs.v1 here."
+        ),
+    )
+    parser.add_argument(
         "--release-bundle-output-dir",
         help="Append release-bundle assembly and copy validated artifacts into this directory.",
     )
@@ -1351,6 +1413,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             github_governance_output_json=args.github_governance_output_json,
             repository_hygiene_output_json=args.repository_hygiene_output_json,
             native_probe_factories_output_json=args.native_probe_factories_output_json,
+            release_preflight_output_json=args.release_preflight_output_json,
         )
         _validate_plan_output_paths(
             config,
@@ -1538,6 +1601,7 @@ def _has_release_evidence_options(args: argparse.Namespace) -> bool:
         args.release_engine_probe_json is not None
         or args.release_engine_actions_json is not None
         or args.release_storage_benchmark_json is not None
+        or args.release_preflight_output_json is not None
     )
 
 

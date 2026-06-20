@@ -1,0 +1,31 @@
+{
+  "files": {
+    "pr-evidence/benchmark-plan-release-preflight/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer Galileo approved the branch as clean with no findings after checking config wiring, command ordering, CLI behavior, bundle auto-inclusion, docs, and tests.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/benchmark_plan.py; tests/test_benchmark_plan.py; README.md; src/document_kv_cache/README.md"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_benchmark_plan.py",
+        "poetry run pytest -q tests/test_benchmark_plan.py tests/test_release_evidence.py tests/test_release_bundle.py tests/test_project_governance.py tests/test_public_package.py",
+        "git diff --check",
+        "poetry run python -m compileall -q src tests",
+        "poetry run python -m document_kv_cache.benchmark_plan --help | rg 'release-preflight-output-json|release_evidence_inputs'",
+        "poetry run pytest -q"
+      ],
+      "what_changed": [
+        "Benchmark plans can now generate a release-evidence preflight sidecar with --release-preflight-output-json and bundle that generated sidecar automatically."
+      ],
+      "why": "Release bundles should be reproducible from the generated command plan without requiring a manually supplied release-input preflight JSON sidecar."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
