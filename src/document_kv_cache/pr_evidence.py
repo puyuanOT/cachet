@@ -15,6 +15,22 @@ from document_kv_cache.storage import local_path
 PR_EVIDENCE_RECORD_TYPE = "document_kv.pr_evidence.v1"
 PR_EVIDENCE_VALIDATION_RECORD_TYPE = "document_kv.pr_evidence_validation.v1"
 GPT55_REVIEW_OUTCOMES = ("clean", "findings_resolved")
+_PR_EVIDENCE_RECORD_KEYS = frozenset(
+    {
+        "record_type",
+        "ok",
+        "what_changed",
+        "why",
+        "scope",
+        "verification",
+        "refactor_skill_applied",
+        "gpt55_review_completed",
+        "gpt55_review_findings_resolved",
+        "gpt55_review_outcome",
+        "gpt55_review_summary",
+        "issues",
+    }
+)
 
 __all__ = [
     "PR_EVIDENCE_RECORD_TYPE",
@@ -114,6 +130,7 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
             issues=(f"record_type must be {PR_EVIDENCE_RECORD_TYPE!r}",),
         )
     parsing_issues: list[str] = []
+    parsing_issues.extend(_unexpected_keys(record, _PR_EVIDENCE_RECORD_KEYS, "PR evidence record"))
     what_changed = _record_string_sequence(record, "what_changed", parsing_issues)
     why = _record_string(record, "why", parsing_issues)
     scope = _record_string_sequence(record, "scope", parsing_issues)
@@ -277,6 +294,13 @@ def _record_bool(record: Mapping[str, Any], field_name: str, issues: list[str]) 
         return value
     issues.append(f"{field_name} must be boolean")
     return False
+
+
+def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
+    unexpected = sorted(str(key) for key in record if key not in allowed_keys)
+    if not unexpected:
+        return ()
+    return (f"{label} has unsupported keys: {unexpected}",)
 
 
 def _string_tuple(values: Sequence[str], field_name: str) -> tuple[str, ...]:

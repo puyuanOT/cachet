@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/strict-pr-evidence-record-schema/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer reported no findings and approved the strict PR evidence record schema slice.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/pr_evidence.py",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_pr_evidence.py",
+        "src/document_kv_cache/README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_pr_evidence.py::test_evaluate_pr_evidence_record_rejects_unsupported_keys -q",
+        "poetry run pytest tests/test_pr_evidence.py -q",
+        "poetry run pytest tests/test_release_bundle.py::test_build_release_bundle_rejects_pr_evidence_sidecars_with_extra_keys tests/test_release_bundle.py::test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_governance -q",
+        "poetry run pytest tests/test_release_bundle.py -q",
+        "poetry run pytest tests/test_public_package.py::test_public_document_submodules_have_curated_star_import_surfaces -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry run python -m compileall -q src tests",
+        "poetry run document-kv-pr-evidence --validate-directory pr-evidence --output-json /tmp/document-kv-pr-evidence-validation.json",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Rejected unsupported top-level keys in document_kv.pr_evidence.v1 parser validation",
+        "Shared the PR evidence record key set with release-bundle validation"
+      ],
+      "why": "Keep PR traceability evidence consistent across the standalone validator and V1 release-bundle handoff so raw debug payloads cannot pass one gate and fail the next."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

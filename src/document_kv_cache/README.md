@@ -68,8 +68,9 @@ new document modules depend on restaurant-owned implementations.
 - `openai_compatible.py` owns the stdlib-only streaming benchmark engine for
   vLLM/SGLang OpenAI-compatible APIs.
 - `planner.py` orders manifest chunks for runtime requests.
-- `pr_evidence.py` emits and validates machine-checkable PR traceability,
-  Refactor-skill, and GPT-5.5 review evidence for the project workflow.
+- `pr_evidence.py` emits and validates closed-schema, machine-checkable PR
+  traceability, Refactor-skill, and GPT-5.5 review evidence for the project
+  workflow.
 - `release_bundle.py` copies validated release evidence, optional benchmark
   plan execution records, Databricks run-status records, package wheels, and
   PR-evidence, release preflight, GitHub-governance, repository-hygiene, and
