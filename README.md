@@ -14,12 +14,13 @@ outside the inference engine:
 - admission metadata for external serving-engine connectors
 - local tests and Databricks benchmark support
 
-The package publishes as `document-kv-cache` and exposes the public
-`document_kv_cache` import path. Cachet is the product brand; the Python
-distribution and import names stay explicit for package discovery and backward
-compatibility. Installed wheels expose `cachet-*` CLI aliases for the primary
-Cachet workflow commands as well as explicit `document-kv-*` command names. The
-legacy `restaurant_kv_serving` package and
+The package publishes as `document-kv-cache` and exposes the branded `cachet`
+root import facade plus the canonical `document_kv_cache` implementation import
+path. Cachet is the product brand; the Python distribution name stays explicit
+for package discovery and backward compatibility. Installed wheels expose
+`cachet-*` CLI aliases for the primary Cachet workflow commands as well as
+explicit `document-kv-*` command names. The legacy `restaurant_kv_serving`
+package and
 restaurant-specific aliases are still bundled as compatibility shims for
 existing benchmark jobs. New code should use the document-generic names:
 `DocumentKVRequest`, `DocumentChunkType.DOCUMENT_STATIC`,
@@ -1208,7 +1209,7 @@ Cachet is distributed under the Apache License 2.0. The repository includes
 the full license text in `LICENSE`, and the Poetry package metadata includes
 the `Apache-2.0` SPDX expression plus the license file in built wheels and
 source distributions. Release-bundle validation also requires the built wheel
-to carry `py.typed` markers for both `document_kv_cache` and the legacy
+to carry `py.typed` markers for `cachet`, `document_kv_cache`, and the legacy
 `restaurant_kv_serving` compatibility package so downstream users keep inline
 type annotations after installation.
 

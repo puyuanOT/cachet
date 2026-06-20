@@ -1,0 +1,42 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "APPROVED by GPT-5.5 after resolving typed facade, release-gate, legacy alias, and submodule API findings; final design is a root-only Cachet facade.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/cachet/__init__.py",
+    "src/cachet/__init__.pyi",
+    "src/cachet/README.md",
+    "pyproject.toml",
+    "README.md",
+    "src/README.md",
+    "src/document_kv_cache/README.md",
+    "src/document_kv_cache/release_bundle.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py"
+  ],
+  "verification": [
+    "python -m py_compile src/cachet/__init__.py",
+    "ast.parse(src/cachet/__init__.pyi)",
+    "PYTHONPATH=src python runtime smoke for cachet root API, no cachet.storage, and no RestaurantKVRequest",
+    "poetry run pytest tests/test_public_package.py::test_cachet_brand_facade_delegates_to_document_package tests/test_public_package.py::test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases tests/test_release_bundle.py::test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_github_governance -q -> 3 passed",
+    "poetry run pytest tests/test_public_package.py tests/test_project_governance.py tests/test_release_bundle.py -q -> 89 passed",
+    "poetry run pytest -q -> 1142 passed",
+    "poetry check && poetry install --dry-run -> passed",
+    "poetry build -> built sdist and wheel",
+    "wheel inspection confirmed cachet/__init__.py, cachet/__init__.pyi, cachet/py.typed, document_kv_cache/py.typed, restaurant_kv_serving/py.typed in wheel and RECORD",
+    "entry point inspection confirmed cachet, document-kv, and restaurant-kv CLI aliases",
+    "MYPYPATH=src mypy root Cachet import smoke with --disallow-any-expr -> success",
+    "MYPYPATH=src mypy negative RestaurantKVRequest import -> expected attr-defined error",
+    "git diff --check -> passed"
+  ],
+  "what_changed": [
+    "Added a typed cachet root import facade, packaged Cachet stub and py.typed marker, documented the facade scope, and taught release-bundle wheel validation to require Cachet runtime/stub/typed files."
+  ],
+  "why": "Advance the Cachet brand and premium root import while preserving the canonical document_kv_cache implementation namespace, existing document-kv scripts, and legacy restaurant_kv_serving compatibility package."
+}

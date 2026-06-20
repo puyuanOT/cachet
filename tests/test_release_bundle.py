@@ -1430,6 +1430,48 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-license-file-bundle",
         )
 
+    missing_cachet_init_wheel = _write_wheel(
+        tmp_path / "missing-cachet-init-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        include_cachet_init=False,
+    )
+    with pytest.raises(ValueError, match=r"cachet/__init__\.py"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_cachet_init_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-cachet-init-bundle",
+        )
+
+    missing_cachet_stub_wheel = _write_wheel(
+        tmp_path / "missing-cachet-stub-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        include_cachet_stub=False,
+    )
+    with pytest.raises(ValueError, match=r"cachet/__init__\.pyi"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_cachet_stub_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-cachet-stub-bundle",
+        )
+
+    missing_cachet_typed_marker_wheel = _write_wheel(
+        tmp_path / "missing-cachet-typed-marker-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        include_cachet_typed_marker=False,
+    )
+    with pytest.raises(ValueError, match=r"cachet/py\.typed"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_cachet_typed_marker_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-cachet-typed-marker-bundle",
+        )
+
     missing_document_typed_marker_wheel = _write_wheel(
         tmp_path / "missing-document-typed-marker-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
         include_document_typed_marker=False,
@@ -2612,6 +2654,9 @@ def _write_wheel(
     dist_info_prefix: str = "document_kv_cache-0.2.0.dist-info",
     include_record: bool = True,
     include_license_file: bool = True,
+    include_cachet_init: bool = True,
+    include_cachet_stub: bool = True,
+    include_cachet_typed_marker: bool = True,
     include_document_typed_marker: bool = True,
     include_legacy_typed_marker: bool = True,
     record_lines: tuple[str, ...] | None = None,
@@ -2638,12 +2683,18 @@ def _write_wheel(
     metadata_payload = "\n".join(metadata_lines).encode("utf-8")
     package_payload = b""
     wheel_entries = [
-        ("document_kv_cache/__init__.py", package_payload),
         (f"{dist_info_prefix}/WHEEL", wheel_payload),
         (f"{dist_info_prefix}/METADATA", metadata_payload),
     ]
+    if include_cachet_init:
+        wheel_entries.append(("cachet/__init__.py", package_payload))
+    if include_cachet_stub:
+        wheel_entries.append(("cachet/__init__.pyi", package_payload))
+    wheel_entries.append(("document_kv_cache/__init__.py", package_payload))
     if include_license_file:
         wheel_entries.append((f"{dist_info_prefix}/licenses/LICENSE", b"Apache License 2.0\n"))
+    if include_cachet_typed_marker:
+        wheel_entries.append(("cachet/py.typed", b""))
     if include_document_typed_marker:
         wheel_entries.append(("document_kv_cache/py.typed", b""))
     if include_legacy_typed_marker:

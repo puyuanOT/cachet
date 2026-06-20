@@ -158,9 +158,10 @@ current releases pin incompatible Torch/Transformers stacks; install the target
 engine in a separate serving environment. `serving_env.py` exposes the pinned
 helper profiles used by smoke/probe jobs.
 
-Both `document_kv_cache` and the migration-only `restaurant_kv_serving` package
-ship `py.typed` markers so downstream type checkers can consume the inline type
-annotations from installed wheels.
+The branded `cachet` facade, canonical `document_kv_cache` implementation, and
+migration-only `restaurant_kv_serving` package all ship `py.typed` markers so
+downstream type checkers can consume the inline type annotations from installed
+wheels.
 
 ## Template Subfolders
 
