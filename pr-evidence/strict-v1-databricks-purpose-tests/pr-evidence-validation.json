@@ -1,0 +1,40 @@
+{
+  "files": {
+    "pr-evidence/strict-v1-databricks-purpose-tests/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "Halley reviewed the initial diff with GPT-5.5 high reasoning and found no blocking issues, with one non-blocking fixture-hardening suggestion. That suggestion was resolved by making run names intentionally different from required purpose values. Halley re-reviewed the updated diff and approved merging if CI is green, with no remaining test gaps for this PR.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "tests/test_release_bundle.py",
+        "pr-evidence/strict-v1-databricks-purpose-tests/README.md",
+        "pr-evidence/strict-v1-databricks-purpose-tests/pr-evidence.json",
+        "pr-evidence/strict-v1-databricks-purpose-tests/pr-evidence-validation.json"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py -q -> 26 passed",
+        "poetry run pytest tests/test_pr_evidence.py tests/test_project_governance.py -q -> 54 passed",
+        "poetry run pytest -q -> 747 passed",
+        "poetry check -> All set",
+        "poetry build -> built sdist and wheel",
+        "poetry install --dry-run -> passed",
+        "poetry install --dry-run --extras databricks --extras test -> passed",
+        "poetry run python -m compileall -q src tests -> passed",
+        "git diff --check -> passed"
+      ],
+      "what_changed": [
+        "Refactored strict V1 Databricks run-status test fixtures into table-driven helpers.",
+        "Added parametrized coverage for each missing strict Databricks purpose: V1 benchmark, storage-reader benchmark, and native engine probe.",
+        "Added strict-mode coverage for direct Databricks run-status records as well as databricks_runs get --summary wrapper records.",
+        "Added public and legacy release-bundle CLI help-text coverage for benchmark/storage/engine-probe Databricks status requirements."
+      ],
+      "why": "The strict V1 release gate now relies on Databricks purpose coverage, so the tests should prove each accepted input shape and each missing-purpose failure explicitly."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
