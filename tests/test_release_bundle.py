@@ -25,6 +25,7 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
+from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
@@ -146,13 +147,14 @@ def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_mat
     assert bundled_record["summary"]["succeeded"] is True
 
 
-def test_build_release_bundle_can_include_package_wheel_and_pr_evidence(tmp_path):
+def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_governance(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
     artifacts = _write_release_ready_artifacts(source_dir)
     package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
     plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
+    github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
@@ -161,6 +163,7 @@ def test_build_release_bundle_can_include_package_wheel_and_pr_evidence(tmp_path
         plan_execution_jsons=(plan_execution,),
         package_wheel=package_wheel,
         pr_evidence_jsons=(pr_evidence,),
+        github_governance_json=github_governance,
         output_dir=bundle_dir,
     )
     record = release_bundle_to_record(bundle)
@@ -173,10 +176,12 @@ def test_build_release_bundle_can_include_package_wheel_and_pr_evidence(tmp_path
         "plan_execution",
         "package_wheel",
         "pr_evidence",
+        "github_governance",
     ]
     execution_artifact = record["artifacts"][4]
     wheel_artifact = record["artifacts"][5]
     pr_artifact = record["artifacts"][6]
+    github_artifact = record["artifacts"][7]
     assert execution_artifact["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
     assert json.loads((bundle_dir / execution_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert wheel_artifact["bundled_path"] == package_wheel.name
@@ -184,13 +189,82 @@ def test_build_release_bundle_can_include_package_wheel_and_pr_evidence(tmp_path
     assert (bundle_dir / wheel_artifact["bundled_path"]).read_bytes() == package_wheel.read_bytes()
     assert pr_artifact["record_type"] == "document_kv.pr_evidence.v1"
     assert json.loads((bundle_dir / pr_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+    assert github_artifact["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
+    assert github_artifact["bundled_path"] == "github_governance.json"
+    assert json.loads((bundle_dir / github_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
 
 
-def test_build_release_bundle_rejects_invalid_package_wheel_or_pr_evidence(tmp_path):
+def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_github_governance(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
     bad_wheel = tmp_path / "not-a-wheel.txt"
     bad_wheel.write_bytes(b"not a wheel")
     failed_pr_evidence = _write_json(tmp_path / "failed-pr-evidence.json", _pr_evidence_record(ok=False))
+    failed_github_governance = _write_json(
+        tmp_path / "failed-github-governance.json",
+        _github_governance_cli_record(ok=False),
+    )
+    internal_github_governance_record = _github_governance_cli_record(ok=True)
+    internal_github_governance_record["summary"]["visibility"] = "internal"
+    internal_github_governance = _write_json(
+        tmp_path / "internal-github-governance.json",
+        internal_github_governance_record,
+    )
+    raw_response_github_governance = _write_json(
+        tmp_path / "raw-response-github-governance.json",
+        {
+            **_github_governance_cli_record(ok=True),
+            "response": {"headers": {"authorization": "do-not-bundle-me"}},
+        },
+    )
+    raw_summary_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_summary_github_governance_record["summary"]["response"] = {
+        "headers": {"authorization": "do-not-bundle-me"}
+    }
+    raw_summary_github_governance = _write_json(
+        tmp_path / "raw-summary-github-governance.json",
+        raw_summary_github_governance_record,
+    )
+    raw_allowed_summary_field_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_allowed_summary_field_github_governance_record["summary"]["description"] = {
+        "raw": {"authorization": "do-not-bundle-me"}
+    }
+    raw_allowed_summary_field_github_governance = _write_json(
+        tmp_path / "raw-allowed-summary-field-github-governance.json",
+        raw_allowed_summary_field_github_governance_record,
+    )
+    raw_branch_protection_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_branch_protection_github_governance_record["summary"]["branch_protection"]["raw"] = {
+        "headers": {"authorization": "do-not-bundle-me"}
+    }
+    raw_branch_protection_github_governance = _write_json(
+        tmp_path / "raw-branch-protection-github-governance.json",
+        raw_branch_protection_github_governance_record,
+    )
+    raw_status_checks_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_status_checks_github_governance_record["summary"]["branch_protection"]["required_status_checks"][
+        "checks"
+    ] = [{"context": "Test and build", "app": {"slug": "do-not-bundle-me"}}]
+    raw_status_checks_github_governance = _write_json(
+        tmp_path / "raw-status-checks-github-governance.json",
+        raw_status_checks_github_governance_record,
+    )
+    raw_pr_reviews_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_pr_reviews_github_governance_record["summary"]["branch_protection"]["required_pull_request_reviews"][
+        "bypass_pull_request_allowances"
+    ] = {"users": [{"login": "do-not-bundle-me"}]}
+    raw_pr_reviews_github_governance = _write_json(
+        tmp_path / "raw-pr-reviews-github-governance.json",
+        raw_pr_reviews_github_governance_record,
+    )
+    raw_contexts_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_contexts_github_governance_record["summary"]["branch_protection"]["required_status_checks"]["contexts"] = [
+        "Test and build",
+        {"context": "do-not-bundle-me"},
+    ]
+    raw_contexts_github_governance = _write_json(
+        tmp_path / "raw-contexts-github-governance.json",
+        raw_contexts_github_governance_record,
+    )
     unresolved_review_pr_evidence_record = _pr_evidence_record(ok=True)
     unresolved_review_pr_evidence_record["gpt55_review_outcome"] = "findings_resolved"
     unresolved_review_pr_evidence_record["gpt55_review_findings_resolved"] = False
@@ -371,6 +445,66 @@ def test_build_release_bundle_rejects_invalid_package_wheel_or_pr_evidence(tmp_p
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             pr_evidence_jsons=(unresolved_review_pr_evidence,),
             output_dir=tmp_path / "unresolved-review-pr-evidence-bundle",
+        )
+
+    with pytest.raises(ValueError, match="GitHub governance sidecar ok must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            github_governance_json=failed_github_governance,
+            output_dir=tmp_path / "failed-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match="visibility must be 'public'"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            github_governance_json=internal_github_governance,
+            output_dir=tmp_path / "internal-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match="unsupported keys"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            github_governance_json=raw_response_github_governance,
+            output_dir=tmp_path / "raw-response-github-governance-bundle",
+        )
+
+    for raw_payload_path, bundle_name in (
+        (raw_summary_github_governance, "raw-summary-github-governance-bundle"),
+        (raw_branch_protection_github_governance, "raw-branch-protection-github-governance-bundle"),
+        (raw_status_checks_github_governance, "raw-status-checks-github-governance-bundle"),
+        (raw_pr_reviews_github_governance, "raw-pr-reviews-github-governance-bundle"),
+    ):
+        with pytest.raises(ValueError, match="unsupported keys"):
+            build_release_bundle(
+                v1_benchmark_json=artifacts["v1"],
+                storage_benchmark_json=artifacts["storage"],
+                engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+                github_governance_json=raw_payload_path,
+                output_dir=tmp_path / bundle_name,
+            )
+
+    with pytest.raises(ValueError, match=r"summary\.description must be a string or null"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            github_governance_json=raw_allowed_summary_field_github_governance,
+            output_dir=tmp_path / "raw-allowed-summary-field-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match="contexts must be an array of strings"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            github_governance_json=raw_contexts_github_governance,
+            output_dir=tmp_path / "raw-contexts-github-governance-bundle",
         )
 
     with pytest.raises(ValueError, match="benchmark plan execution sidecar ok"):
@@ -656,6 +790,7 @@ def test_release_bundle_dataclasses_validate_json_safe_schema():
 
 def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    github_governance = _write_json(tmp_path / "github-governance.json", _github_governance_cli_record(ok=True))
     output_json = tmp_path / "bundle-record.json"
     bundle_dir = tmp_path / "bundle"
 
@@ -676,6 +811,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
             str(artifacts["vllm"]),
             "--engine-probe-json",
             str(artifacts["sglang"]),
+            "--github-governance-json",
+            str(github_governance),
             "--output-dir",
             str(bundle_dir),
             "--output-json",
@@ -692,6 +829,9 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
     assert json.loads(output_json.read_text(encoding="utf-8")) == json.loads(
         (bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME).read_text(encoding="utf-8")
     )
+    record = json.loads(output_json.read_text(encoding="utf-8"))
+    assert record["artifacts"][-1]["role"] == "github_governance"
+    assert record["artifacts"][-1]["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 
 
 def test_public_release_bundle_cli_rejects_unresolved_pr_evidence(tmp_path):
@@ -1040,6 +1180,42 @@ def _pr_evidence_record(*, ok: bool):
         "gpt55_review_summary": "clean" if ok else "",
         "issues": [] if ok else ["missing review summary"],
     }
+
+
+def _github_governance_cli_record(*, ok: bool):
+    summary = {
+        "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
+        "ok": ok,
+        "repository": "owner/document-kv-cache",
+        "default_branch": "main",
+        "branch": "main",
+        "private": False,
+        "visibility": "public",
+        "archived": False,
+        "disabled": False,
+        "description": "Cachet document KV cache.",
+        "homepage": "https://github.com/owner/document-kv-cache",
+        "topics": ["cachet", "kv-cache"],
+        "branch_protection": {
+            "enabled": ok,
+            "required_status_checks": {
+                "strict": ok,
+                "contexts": ["Test and build"] if ok else [],
+            },
+            "required_pull_request_reviews": {
+                "dismiss_stale_reviews": ok,
+                "require_last_push_approval": ok,
+                "required_approving_review_count": 1 if ok else 0,
+            },
+            "required_linear_history": ok,
+            "required_conversation_resolution": ok,
+            "enforce_admins": ok,
+            "allow_force_pushes": False,
+            "allow_deletions": False,
+        },
+        "issues": [] if ok else ["main branch protection must be enabled"],
+    }
+    return {"ok": ok, "summary": summary}
 
 
 def _plan_execution_record(*, ok: bool):

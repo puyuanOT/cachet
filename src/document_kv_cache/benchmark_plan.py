@@ -157,6 +157,7 @@ class ReleaseBundlePlanConfig:
     databricks_run_status_jsons: tuple[str, ...] = ()
     package_wheel: str | None = None
     pr_evidence_jsons: tuple[str, ...] = ()
+    github_governance_json: str | None = None
     overwrite: bool = False
 
     def __post_init__(self) -> None:
@@ -174,6 +175,8 @@ class ReleaseBundlePlanConfig:
             raise ValueError("release bundle package_wheel must be non-empty when provided")
         if any(not path for path in self.pr_evidence_jsons):
             raise ValueError("release bundle pr_evidence_jsons entries must be non-empty")
+        if self.github_governance_json is not None and not self.github_governance_json:
+            raise ValueError("release bundle github_governance_json must be non-empty when provided")
         if type(self.overwrite) is not bool:
             raise ValueError("release bundle overwrite must be boolean")
         object.__setattr__(self, "plan_execution_jsons", tuple(self.plan_execution_jsons))
@@ -653,6 +656,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--package-wheel", bundle_config.package_wheel)
     for pr_evidence_json in bundle_config.pr_evidence_jsons:
         argv = (*argv, "--pr-evidence-json", pr_evidence_json)
+    if bundle_config.github_governance_json is not None:
+        argv = (*argv, "--github-governance-json", bundle_config.github_governance_json)
     if bundle_config.overwrite:
         argv = (*argv, "--overwrite")
     return BenchmarkCommand(name="build-release-bundle", argv=argv)
@@ -677,6 +682,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "databricks_run_status_jsons": list(bundle_config.databricks_run_status_jsons),
         "package_wheel": bundle_config.package_wheel,
         "pr_evidence_jsons": list(bundle_config.pr_evidence_jsons),
+        "github_governance_json": bundle_config.github_governance_json,
         "overwrite": bundle_config.overwrite,
     }
 
@@ -990,6 +996,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="PR evidence sidecar to include in the release bundle. Repeat as needed.",
     )
+    parser.add_argument("--release-bundle-github-governance-json", help="GitHub governance sidecar to include.")
     parser.add_argument("--release-bundle-overwrite", action="store_true")
     parser.add_argument("--plan-output-json", help="Write the command plan JSON to this path.")
     parser.add_argument("--plan-output-sh", help="Write an executable shell script to this path.")
@@ -1228,6 +1235,7 @@ def _release_bundle_config_from_cli(
         databricks_run_status_jsons=tuple(args.release_bundle_databricks_run_status_json or ()),
         package_wheel=args.release_bundle_package_wheel,
         pr_evidence_jsons=tuple(args.release_bundle_pr_evidence_json or ()),
+        github_governance_json=args.release_bundle_github_governance_json,
         overwrite=args.release_bundle_overwrite,
     )
 
@@ -1240,6 +1248,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_databricks_run_status_json is not None
         or args.release_bundle_package_wheel is not None
         or args.release_bundle_pr_evidence_json is not None
+        or args.release_bundle_github_governance_json is not None
         or args.release_bundle_overwrite
     )
 

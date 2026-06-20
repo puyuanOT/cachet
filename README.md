@@ -562,6 +562,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-databricks-run-status-json /data/databricks-run-status.json \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
+  --release-bundle-github-governance-json /data/github-governance.json \
   --engine-probe-targets-output-json /data/engine-probe-targets.json \
   --engine-probe-targets-release-safe \
   --plan-output-json /data/v1-plan.json \
@@ -728,6 +729,7 @@ python -m document_kv_cache.release_bundle \
   --databricks-run-status-json databricks-run-status.json \
   --package-wheel dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
+  --github-governance-json github-governance.json \
   --output-dir document-kv-release-bundle \
   --output-json release-bundle-manifest.json
 ```
@@ -739,7 +741,10 @@ backend where applicable, size, and SHA-256 for every artifact. Add
 the exact benchmark plan JSON, `--package-wheel` to include the exact wheel
 tested on the target AWS g5 runtime, and repeat `--pr-evidence-json` to carry PR
 traceability records alongside the benchmark, storage, engine-probe,
-release-evidence, and preflight artifacts. Repeat
+release-evidence, and preflight artifacts. Add `--github-governance-json` to
+include the repository visibility and branch-protection sidecar emitted by
+`document_kv_cache.github_governance`; the bundle rejects it unless the
+governance record is release-ready. Repeat
 `--databricks-run-status-json` for compact `databricks_runs get --summary`
 outputs, or extracted inner `summary` records, from the managed runs whose
 outputs are included in the bundle; release bundles require those status

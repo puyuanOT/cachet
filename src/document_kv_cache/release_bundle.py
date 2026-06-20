@@ -27,6 +27,7 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
 )
+from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.pr_evidence import PR_EVIDENCE_RECORD_TYPE, evaluate_pr_evidence_record
 from document_kv_cache.storage import local_path
 
@@ -57,6 +58,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "databricks_run_status",
     "package_wheel",
     "pr_evidence",
+    "github_governance",
 )
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
@@ -129,6 +131,45 @@ _DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS = frozenset(
         "purpose",
     }
 )
+_GITHUB_GOVERNANCE_WRAPPER_KEYS = frozenset({"ok", "summary"})
+_GITHUB_GOVERNANCE_SUMMARY_KEYS = frozenset(
+    {
+        "record_type",
+        "ok",
+        "repository",
+        "default_branch",
+        "branch",
+        "private",
+        "visibility",
+        "archived",
+        "disabled",
+        "description",
+        "homepage",
+        "topics",
+        "branch_protection",
+        "issues",
+    }
+)
+_GITHUB_BRANCH_PROTECTION_KEYS = frozenset(
+    {
+        "enabled",
+        "required_status_checks",
+        "required_pull_request_reviews",
+        "required_linear_history",
+        "required_conversation_resolution",
+        "enforce_admins",
+        "allow_force_pushes",
+        "allow_deletions",
+    }
+)
+_GITHUB_REQUIRED_STATUS_CHECKS_KEYS = frozenset({"strict", "contexts"})
+_GITHUB_REQUIRED_PULL_REQUEST_REVIEWS_KEYS = frozenset(
+    {
+        "dismiss_stale_reviews",
+        "require_last_push_approval",
+        "required_approving_review_count",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +238,7 @@ def build_release_bundle(
     databricks_run_status_jsons: Sequence[str | Path] = (),
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
+    github_governance_json: str | Path | None = None,
     overwrite: bool = False,
 ) -> ReleaseBundle:
     bundle_dir = local_path(str(output_dir))
@@ -214,6 +256,7 @@ def build_release_bundle(
         databricks_run_status_jsons=databricks_run_status_jsons,
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
+        github_governance_json=github_governance_json,
     )
     prepared_artifacts = tuple(
         _prepare_release_bundle_artifact(role=role, source_path=source_path, index=index)
@@ -270,6 +313,7 @@ def _release_bundle_sources(
     databricks_run_status_jsons: Sequence[str | Path],
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
+    github_governance_json: str | Path | None,
 ) -> tuple[tuple[str, str | Path], ...]:
     sources: list[tuple[str, str | Path]] = [
         ("v1_benchmark", v1_benchmark_json),
@@ -285,6 +329,8 @@ def _release_bundle_sources(
     if package_wheel is not None:
         sources.append(("package_wheel", package_wheel))
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
+    if github_governance_json is not None:
+        sources.append(("github_governance", github_governance_json))
     return tuple(sources)
 
 
@@ -363,6 +409,11 @@ def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleAr
                 issues.append("PR evidence sidecar must be JSON")
                 continue
             issues.extend(_pr_evidence_sidecar_issues(artifact.record))
+        elif artifact.role == "github_governance":
+            if artifact.record is None:
+                issues.append("GitHub governance sidecar must be JSON")
+                continue
+            issues.extend(_github_governance_sidecar_issues(artifact.record))
         elif artifact.role == "plan_execution":
             if artifact.record is None:
                 issues.append("benchmark plan execution sidecar must be JSON")
@@ -453,6 +504,149 @@ def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if evidence.refactor_skill_applied is not True:
         issues.append("PR evidence sidecar Refactor skill must be applied")
     return _dedupe_strings(issues)
+
+
+def _github_governance_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    governance_record = _github_governance_record(record)
+    issues: list[str] = []
+    issues.extend(_github_governance_container_key_issues(record))
+    issues.extend(_github_governance_wrapper_field_issues(record))
+    if governance_record is None:
+        issues.append("GitHub governance sidecar must be a governance record or github_governance CLI output")
+        return _dedupe_strings(issues)
+    issues.extend(
+        _unexpected_keys(
+            governance_record,
+            _GITHUB_GOVERNANCE_SUMMARY_KEYS,
+            "GitHub governance sidecar summary",
+        )
+    )
+    if governance_record.get("record_type") != GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE:
+        issues.append(
+            f"GitHub governance sidecar record_type must be {GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE!r}"
+        )
+    if governance_record.get("ok") is not True:
+        issues.append("GitHub governance sidecar ok must be true")
+    if not isinstance(governance_record.get("repository"), str) or not governance_record["repository"]:
+        issues.append("GitHub governance sidecar repository must be non-empty")
+    issues.extend(_required_str_field(governance_record, "default_branch", "GitHub governance sidecar summary"))
+    if governance_record.get("default_branch") != "main":
+        issues.append("GitHub governance sidecar default_branch must be 'main'")
+    if governance_record.get("branch") != "main":
+        issues.append("GitHub governance sidecar branch must be 'main'")
+    if governance_record.get("private") is not False:
+        issues.append("GitHub governance sidecar private must be false")
+    if governance_record.get("visibility") != "public":
+        issues.append("GitHub governance sidecar visibility must be 'public'")
+    if governance_record.get("archived") is not False:
+        issues.append("GitHub governance sidecar archived must be false")
+    if governance_record.get("disabled") is not False:
+        issues.append("GitHub governance sidecar disabled must be false")
+    for field_name in ("description", "homepage"):
+        issues.extend(_optional_str_field(governance_record, field_name, "GitHub governance sidecar summary"))
+    issues.extend(_list_of_strings_field(governance_record, "topics", "GitHub governance sidecar summary"))
+    branch_protection = governance_record.get("branch_protection")
+    if not isinstance(branch_protection, Mapping):
+        issues.append("GitHub governance sidecar branch_protection must be an object")
+    else:
+        issues.extend(_github_branch_protection_issues(branch_protection))
+    if governance_record.get("issues") != []:
+        issues.append("GitHub governance sidecar issues must be an empty array")
+    return _dedupe_strings(issues)
+
+
+def _github_governance_record(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if record.get("record_type") == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE:
+        return record
+    summary = record.get("summary")
+    if (
+        isinstance(summary, Mapping)
+        and summary.get("record_type") == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
+    ):
+        return summary
+    return None
+
+
+def _github_governance_container_key_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    if record.get("record_type") == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE:
+        return ()
+    return _unexpected_keys(record, _GITHUB_GOVERNANCE_WRAPPER_KEYS, "GitHub governance sidecar wrapper")
+
+
+def _github_governance_wrapper_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    if record.get("record_type") == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE:
+        return ()
+    issues: list[str] = []
+    if record.get("ok") is not True:
+        issues.append("GitHub governance sidecar wrapper.ok must be true")
+    if not isinstance(record.get("summary"), Mapping):
+        issues.append("GitHub governance sidecar wrapper.summary must be an object")
+    return tuple(issues)
+
+
+def _github_branch_protection_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(
+        _unexpected_keys(
+            record,
+            _GITHUB_BRANCH_PROTECTION_KEYS,
+            "GitHub governance sidecar branch_protection",
+        )
+    )
+    if record.get("enabled") is not True:
+        issues.append("GitHub governance sidecar branch_protection.enabled must be true")
+    if "error" in record or "error_status_code" in record:
+        issues.append("GitHub governance sidecar branch_protection must not contain error fields")
+    required_status_checks = record.get("required_status_checks")
+    if not isinstance(required_status_checks, Mapping):
+        issues.append("GitHub governance sidecar required_status_checks must be an object")
+    else:
+        issues.extend(
+            _unexpected_keys(
+                required_status_checks,
+                _GITHUB_REQUIRED_STATUS_CHECKS_KEYS,
+                "GitHub governance sidecar required_status_checks",
+            )
+        )
+        if required_status_checks.get("strict") is not True:
+            issues.append("GitHub governance sidecar required_status_checks.strict must be true")
+        contexts = required_status_checks.get("contexts")
+        if not isinstance(contexts, list):
+            issues.append("GitHub governance sidecar required_status_checks.contexts must be an array of strings")
+        elif any(not isinstance(context, str) or not context for context in contexts):
+            issues.append("GitHub governance sidecar required_status_checks.contexts must be an array of strings")
+        elif "Test and build" not in contexts:
+            issues.append("GitHub governance sidecar required_status_checks.contexts must include 'Test and build'")
+    pull_request_reviews = record.get("required_pull_request_reviews")
+    if not isinstance(pull_request_reviews, Mapping):
+        issues.append("GitHub governance sidecar required_pull_request_reviews must be an object")
+    else:
+        issues.extend(
+            _unexpected_keys(
+                pull_request_reviews,
+                _GITHUB_REQUIRED_PULL_REQUEST_REVIEWS_KEYS,
+                "GitHub governance sidecar required_pull_request_reviews",
+            )
+        )
+        if pull_request_reviews.get("dismiss_stale_reviews") is not True:
+            issues.append("GitHub governance sidecar required_pull_request_reviews.dismiss_stale_reviews must be true")
+        if pull_request_reviews.get("require_last_push_approval") is not True:
+            issues.append(
+                "GitHub governance sidecar required_pull_request_reviews.require_last_push_approval must be true"
+            )
+        if pull_request_reviews.get("required_approving_review_count") != 1:
+            issues.append(
+                "GitHub governance sidecar required_pull_request_reviews.required_approving_review_count must be 1"
+            )
+    if record.get("required_linear_history") is not True:
+        issues.append("GitHub governance sidecar required_linear_history must be true")
+    if record.get("required_conversation_resolution") is not True:
+        issues.append("GitHub governance sidecar required_conversation_resolution must be true")
+    if record.get("allow_force_pushes") is not False:
+        issues.append("GitHub governance sidecar allow_force_pushes must be false")
+    if record.get("allow_deletions") is not False:
+        issues.append("GitHub governance sidecar allow_deletions must be false")
+    return tuple(issues)
 
 
 def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
@@ -973,6 +1167,9 @@ def _artifact_record_type(artifact: _PreparedReleaseBundleArtifact) -> str | Non
     if artifact.role == "databricks_run_status":
         status_record = _databricks_run_status_record(artifact.record)
         return _optional_str(status_record.get("record_type")) if status_record is not None else None
+    if artifact.role == "github_governance":
+        governance_record = _github_governance_record(artifact.record)
+        return _optional_str(governance_record.get("record_type")) if governance_record is not None else None
     return _optional_str(artifact.record.get("record_type"))
 
 
@@ -1010,6 +1207,8 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return Path(prepared.source_path).name
     if role == "pr_evidence":
         return f"pr_evidence_{index + 1:02d}.json"
+    if role == "github_governance":
+        return "github_governance.json"
     raise ValueError(f"Unsupported release bundle artifact role {role!r}")
 
 
@@ -1069,6 +1268,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--databricks-run-status-json", action="append", default=[])
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
+    parser.add_argument("--github-governance-json")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
     parser.add_argument("--overwrite", action="store_true")
@@ -1087,6 +1287,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         databricks_run_status_jsons=args.databricks_run_status_json,
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
+        github_governance_json=args.github_governance_json,
         output_dir=args.output_dir,
         overwrite=args.overwrite,
     )

@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 review found two fail-closed schema gaps for GitHub governance sidecars: unsupported nested raw payloads and raw objects under allowed summary fields. Both were fixed with explicit nested allowlists, scalar/list type checks, and regression tests; re-review approved with no merge blockers.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.release_bundle, restaurant_kv_serving.release_bundle facade, benchmark_plan release-bundle config, README docs, release bundle and benchmark plan tests."
+  ],
+  "verification": [
+    "poetry run pytest",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "secret scan completed; only existing detector fixtures and prior evidence text matched, no live credentials found"
+  ],
+  "what_changed": [
+    "Added GitHub repository governance sidecar support to release bundles, including direct and legacy CLI flags plus benchmark-plan pass-through."
+  ],
+  "why": "Release bundles already required PR evidence; this makes repository visibility and main-branch protection evidence a validated, bundled release artifact instead of a loose manual check."
+}
