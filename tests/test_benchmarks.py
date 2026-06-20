@@ -410,6 +410,7 @@ def test_evaluate_v1_benchmark_evidence_accepts_complete_v1_result():
     assert evidence.comparisons_without_metrics == ()
     assert evidence.rows_without_latency == ()
     assert evidence.rows_without_quality == ()
+    assert evidence.unexpected_arms == ()
     assert evidence.issues == ()
 
 
@@ -463,6 +464,37 @@ def test_evaluate_v1_benchmark_evidence_rejects_comparisons_without_metrics():
     assert evidence.missing_comparisons == ()
     assert evidence.comparisons_without_metrics == SUPPORTED_V1_DATASETS
     assert any(issue.startswith("comparisons without speedup") for issue in evidence.issues)
+
+
+def test_evaluate_v1_benchmark_evidence_reports_unexpected_arms():
+    measurements = []
+    for dataset in SUPPORTED_V1_DATASETS:
+        measurements.extend(
+            [
+                measurement(arm_id=BASELINE_PREFILL_ARM, dataset=dataset, ttft=10.0, ttc=20.0),
+                measurement(arm_id=CACHE_REUSE_ARM, dataset=dataset, ttft=2.0, ttc=8.0),
+            ]
+        )
+    measurements.append(measurement(arm_id="experimental_cache", dataset="biography", ttft=1.0, ttc=4.0))
+    rows = summarize_measurements(measurements)
+    comparisons = (
+        *compare_to_baseline(rows),
+        BenchmarkComparison(
+            dataset="biography",
+            baseline_arm_id=BASELINE_PREFILL_ARM,
+            cache_arm_id="experimental_cache",
+            ttft_speedup=10.0,
+            time_to_completion_speedup=5.0,
+            exact_match_delta=0.0,
+            answer_found_delta=0.0,
+        ),
+    )
+
+    evidence = evaluate_v1_benchmark_evidence(rows, comparisons)
+
+    assert not evidence.ok
+    assert evidence.unexpected_arms == ("experimental_cache",)
+    assert "unexpected arms: experimental_cache" in evidence.issues
 
 
 def test_measurements_validate_latency_values():

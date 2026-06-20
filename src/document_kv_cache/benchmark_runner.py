@@ -499,6 +499,7 @@ def _v1_evidence_to_record(evidence: Any) -> dict[str, Any]:
         "rows_without_successful_requests": list(evidence.rows_without_successful_requests),
         "rows_without_latency": list(evidence.rows_without_latency),
         "rows_without_quality": list(evidence.rows_without_quality),
+        "unexpected_arms": list(evidence.unexpected_arms),
         "unexpected_datasets": list(evidence.unexpected_datasets),
         "issues": list(evidence.issues),
     }

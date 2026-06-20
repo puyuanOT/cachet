@@ -609,6 +609,7 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
             "rows_without_successful_requests",
             "rows_without_latency",
             "rows_without_quality",
+            "unexpected_arms",
             "unexpected_datasets",
         ):
             if evidence.get(field_name) not in ([], ()):

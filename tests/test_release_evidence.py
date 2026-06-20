@@ -422,6 +422,27 @@ def test_evaluate_release_evidence_rejects_wrong_comparison_arms_and_missing_qua
     assert any("exact_match_delta" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_unexpected_v1_evidence_arms():
+    v1_record = _v1_record(ok=True)
+    v1_record["v1_evidence"]["unexpected_arms"] = ["experimental_cache"]
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert "v1 benchmark evidence unexpected_arms must be empty" in evidence.issues
+
+
 def test_evaluate_release_evidence_rejects_non_numeric_comparison_metrics():
     v1_record = _v1_record(ok=True)
     v1_record["comparisons"][0] = {
@@ -1543,6 +1564,7 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g5", model_id: str = "qw
             "rows_without_successful_requests": [],
             "rows_without_latency": [],
             "rows_without_quality": [],
+            "unexpected_arms": [],
             "unexpected_datasets": [],
             "issues": [] if ok else ["missing report rows: hotpotqa:baseline_prefill"],
         },
