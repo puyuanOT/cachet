@@ -1,4 +1,5 @@
 import json
+import math
 
 import pytest
 
@@ -51,6 +52,23 @@ class EmptyMessageFailureEngine:
         raise TimeoutError()
 
 
+class InvalidGenerationEngine:
+    def __init__(self, **generation_overrides) -> None:
+        self.generation_overrides = generation_overrides
+
+    def generate(self, request: BenchmarkEngineRequest) -> BenchmarkGeneration:
+        kwargs = {
+            "output_text": "Ada Lovelace",
+            "prompt_tokens": len(request.prompt_text.split()),
+            "completion_tokens": 2,
+            "ttft_seconds": 1.0,
+            "time_to_completion_seconds": 2.0,
+            "metadata": {"arm": request.arm.arm_id},
+        }
+        kwargs.update(self.generation_overrides)
+        return BenchmarkGeneration(**kwargs)
+
+
 def example(dataset: str = "biography") -> BenchmarkExample:
     return BenchmarkExample(
         example_id=f"{dataset}-1",
@@ -94,6 +112,44 @@ def test_run_benchmark_suite_records_baseline_and_cache_measurements():
     assert cache.requests[0].hardware_target == "aws-g5"
 
 
+def test_benchmark_generation_validates_output_timing_tokens_and_metadata():
+    generation = BenchmarkGeneration(
+        output_text="",
+        prompt_tokens=0,
+        completion_tokens=0,
+        ttft_seconds=0.0,
+        time_to_completion_seconds=0.0,
+        metadata={"source": "unit-test"},
+    )
+
+    assert generation.output_text == ""
+    assert generation.metadata == {"source": "unit-test"}
+
+    base_kwargs = {
+        "output_text": "Ada Lovelace",
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "ttft_seconds": 0.1,
+        "time_to_completion_seconds": 0.2,
+    }
+    with pytest.raises(ValueError, match="output_text must be a string"):
+        BenchmarkGeneration(**{**base_kwargs, "output_text": object()})
+    with pytest.raises(ValueError, match="prompt_tokens must be a non-negative integer"):
+        BenchmarkGeneration(**{**base_kwargs, "prompt_tokens": True})
+    with pytest.raises(ValueError, match="completion_tokens must be a non-negative integer"):
+        BenchmarkGeneration(**{**base_kwargs, "completion_tokens": -1})
+    with pytest.raises(ValueError, match="ttft_seconds must be a non-negative finite number"):
+        BenchmarkGeneration(**{**base_kwargs, "ttft_seconds": math.nan})
+    with pytest.raises(ValueError, match="time_to_completion_seconds must be a non-negative finite number"):
+        BenchmarkGeneration(**{**base_kwargs, "time_to_completion_seconds": math.inf})
+    with pytest.raises(ValueError, match="time_to_completion_seconds must be greater than or equal"):
+        BenchmarkGeneration(**{**base_kwargs, "ttft_seconds": 2.0, "time_to_completion_seconds": 1.0})
+    with pytest.raises(TypeError, match="metadata must be a mapping"):
+        BenchmarkGeneration(**{**base_kwargs, "metadata": ()})
+    with pytest.raises(ValueError, match="metadata.source must be a string"):
+        BenchmarkGeneration(**{**base_kwargs, "metadata": {"source": 1}})
+
+
 def test_run_benchmark_suite_records_engine_errors_without_aborting():
     suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
     result = run_benchmark_suite(
@@ -123,6 +179,38 @@ def test_run_benchmark_suite_records_empty_message_engine_errors_without_abortin
 
     assert cache_measurement.error == "TimeoutError"
     assert cache_measurement.metadata == {"error_type": "TimeoutError"}
+    assert result.comparisons[0].ttft_speedup is None
+
+
+def test_run_benchmark_suite_captures_invalid_generation_schema_as_error_measurement():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: InvalidGenerationEngine(ttft_seconds=math.nan),
+        },
+    )
+    cache_measurement = next(measurement for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM)
+
+    assert cache_measurement.error == "ttft_seconds must be a non-negative finite number"
+    assert cache_measurement.metadata == {"error_type": "ValueError"}
+    assert result.comparisons[0].ttft_speedup is None
+
+
+def test_run_benchmark_suite_captures_invalid_generation_metadata_as_error_measurement():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: InvalidGenerationEngine(metadata={"arm": CACHE_REUSE_ARM, "usage": 3}),
+        },
+    )
+    cache_measurement = next(measurement for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM)
+
+    assert cache_measurement.error == "metadata.usage must be a string"
+    assert cache_measurement.metadata == {"error_type": "ValueError"}
     assert result.comparisons[0].ttft_speedup is None
 
 

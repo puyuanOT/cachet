@@ -1,0 +1,33 @@
+{
+  "files": {
+    "pr-evidence/harden-benchmark-generation-schema.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reported no code findings, confirmed compatibility with zero tokens/timing, empty successful output text, first-party string metadata, and non-aborting invalid-generation capture; noted only that changes should be committed before merge.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/benchmark_runner.py",
+        "tests/test_benchmark_runner.py",
+        "pr-evidence/harden-benchmark-generation-schema/README.md"
+      ],
+      "verification": [
+        "python -m pytest tests/test_benchmark_runner.py -q -> 34 passed",
+        "python -m pytest -q -> 867 passed",
+        "poetry check -> All set",
+        "poetry install --dry-run -> succeeded",
+        "poetry build -> succeeded"
+      ],
+      "what_changed": [
+        "Validated BenchmarkGeneration output text, token counts, finite timing values, and metadata shape at the engine-output boundary.",
+        "Added regression coverage proving invalid generation schema is captured as benchmark error measurements instead of aborting runs."
+      ],
+      "why": "V1 benchmark runs should fail closed on malformed engine outputs while preserving non-aborting measurement collection for per-arm errors."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

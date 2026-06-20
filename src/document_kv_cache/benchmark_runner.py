@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from itertools import islice
 import json
+import math
 import random
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -67,14 +68,17 @@ class BenchmarkGeneration:
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.prompt_tokens < 0:
-            raise ValueError("prompt_tokens must be non-negative")
-        if self.completion_tokens < 0:
-            raise ValueError("completion_tokens must be non-negative")
-        if self.ttft_seconds < 0:
-            raise ValueError("ttft_seconds must be non-negative")
+        _validate_generation_text(self.output_text, "output_text")
+        _validate_generation_non_negative_int(self.prompt_tokens, "prompt_tokens")
+        _validate_generation_non_negative_int(self.completion_tokens, "completion_tokens")
+        _validate_generation_non_negative_finite_number(self.ttft_seconds, "ttft_seconds")
+        _validate_generation_non_negative_finite_number(
+            self.time_to_completion_seconds,
+            "time_to_completion_seconds",
+        )
         if self.time_to_completion_seconds < self.ttft_seconds:
             raise ValueError("time_to_completion_seconds must be greater than or equal to ttft_seconds")
+        object.__setattr__(self, "metadata", _generation_metadata(self.metadata))
 
 
 @dataclass(frozen=True, slots=True)
@@ -380,6 +384,34 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
 
 def _exception_message(exc: Exception) -> str:
     return str(exc) or type(exc).__name__
+
+
+def _validate_generation_text(value: Any, field_name: str) -> None:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+
+
+def _validate_generation_non_negative_int(value: Any, field_name: str) -> None:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+
+
+def _validate_generation_non_negative_finite_number(value: Any, field_name: str) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{field_name} must be a non-negative finite number")
+
+
+def _generation_metadata(metadata: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(metadata, Mapping):
+        raise TypeError("metadata must be a mapping")
+    normalized = {}
+    for key, value in metadata.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("metadata keys must be non-empty strings")
+        if not isinstance(value, str):
+            raise ValueError(f"metadata.{key} must be a string")
+        normalized[key] = value
+    return normalized
 
 
 def _openai_compatible_engine(arm: BenchmarkArm, config: OpenAICompatibleBenchmarkConfig) -> BenchmarkEngine:
