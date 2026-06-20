@@ -1,5 +1,8 @@
 import importlib
-from dataclasses import MISSING, fields, replace
+import copy
+import json
+import pickle
+from dataclasses import MISSING, asdict, fields, replace
 
 import pytest
 
@@ -14,6 +17,7 @@ from document_kv_cache.models import (
     DocumentChunkType,
     DocumentChunkRole,
     DocumentKVRequest,
+    FrozenDocumentChunkMap,
     KVCacheKey,
     LEGACY_RESTAURANT_CHUNK_TYPES,
     MaterializationPlan,
@@ -151,17 +155,32 @@ def test_chunk_roles_unify_document_and_legacy_aliases():
 
 
 def test_document_kv_request_validates_metadata_and_chunk_map():
+    chunk_ids = ["section-1", 2]
+    document_chunks = {"doc-a": chunk_ids}
     request = DocumentKVRequest(
         request_id="doc-req",
         task_id="qa",
         model_id="qwen35-4b-w8a8",
         lora_id="selection",
         prompt_template_version="v1",
-        document_chunks={"doc-a": ["section-1", 2]},
+        document_chunks=document_chunks,
         task_prefix_id="prefix",
     )
 
+    chunk_ids.append("late-section")
+    document_chunks["doc-b"] = ("late-section",)
+
+    assert request.document_chunks == {"doc-a": ("section-1", 2)}
+    assert request.document_chunks["doc-a"] == ("section-1", 2)
     assert request.selected_document_ids == ("doc-a",)
+    assert json.loads(json.dumps(request.document_chunks)) == {"doc-a": ["section-1", 2]}
+    assert asdict(request)["document_chunks"] == {"doc-a": ("section-1", 2)}
+    assert copy.deepcopy(request).document_chunks == {"doc-a": ("section-1", 2)}
+    assert pickle.loads(pickle.dumps(request)).document_chunks == {"doc-a": ("section-1", 2)}
+    with pytest.raises(TypeError, match="immutable"):
+        request.document_chunks["doc-b"] = ("late-section",)  # type: ignore[index]
+    with pytest.raises(TypeError, match="immutable"):
+        request.document_chunks.update({"doc-b": ("late-section",)})
     with pytest.raises(ValueError, match="request_id"):
         replace(request, request_id="")
     with pytest.raises(ValueError, match="model_id"):
@@ -186,18 +205,48 @@ def test_document_kv_request_validates_metadata_and_chunk_map():
         replace(request, document_chunks={"doc-a": [True]})  # type: ignore[list-item]
 
 
+def test_frozen_document_chunk_map_normalizes_direct_construction():
+    chunk_ids = ["section-1", 2]
+    chunk_map = FrozenDocumentChunkMap({"doc-a": chunk_ids})
+
+    chunk_ids.append("late-section")
+
+    assert chunk_map == {"doc-a": ("section-1", 2)}
+    assert json.loads(json.dumps(chunk_map)) == {"doc-a": ["section-1", 2]}
+    with pytest.raises(TypeError, match="immutable"):
+        chunk_map.setdefault("doc-b", ("late-section",))
+    with pytest.raises(ValueError, match="FrozenDocumentChunkMap keys"):
+        FrozenDocumentChunkMap({"": ["section-1"]})
+    with pytest.raises(TypeError, match="FrozenDocumentChunkMap values"):
+        FrozenDocumentChunkMap({"doc-a": "section-1"})
+
+
 def test_restaurant_kv_request_validates_legacy_review_map():
+    review_ids = ["rev1", 7]
+    restaurant_reviews = {"r1": review_ids}
     request = RestaurantKVRequest(
         request_id="legacy-req",
         task_id="selection",
         model_id="qwen35-4b-w8a8",
         lora_id="selection",
         prompt_template_version="v1",
-        restaurant_reviews={"r1": ["rev1", 7]},
+        restaurant_reviews=restaurant_reviews,
     )
 
-    assert request.document_chunks == {"r1": ["rev1", 7]}
+    review_ids.append("late-review")
+    restaurant_reviews["r2"] = ("late-review",)
+
+    assert request.restaurant_reviews == {"r1": ("rev1", 7)}
+    assert request.document_chunks == {"r1": ("rev1", 7)}
     assert request.selected_documents == ("r1",)
+    assert json.loads(json.dumps(request.restaurant_reviews)) == {"r1": ["rev1", 7]}
+    assert asdict(request)["restaurant_reviews"] == {"r1": ("rev1", 7)}
+    assert copy.deepcopy(request).restaurant_reviews == {"r1": ("rev1", 7)}
+    assert pickle.loads(pickle.dumps(request)).restaurant_reviews == {"r1": ("rev1", 7)}
+    with pytest.raises(TypeError, match="immutable"):
+        request.restaurant_reviews["r2"] = ("late-review",)  # type: ignore[index]
+    with pytest.raises(TypeError, match="immutable"):
+        request.restaurant_reviews.update({"r2": ("late-review",)})
     with pytest.raises(TypeError, match="restaurant_reviews"):
         replace(request, restaurant_reviews=())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="restaurant_reviews keys"):

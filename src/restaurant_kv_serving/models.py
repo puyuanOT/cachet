@@ -29,6 +29,7 @@ from document_kv_cache.models import (
     DocumentChunkRole,
     DocumentChunkType,
     DocumentKVRequest,
+    FrozenDocumentChunkMap,
     KVCacheKey,
     MaterializationPlan,
     PlanSegment,

@@ -46,6 +46,7 @@ def test_public_document_package_reexports_core_api():
         DocumentChunkRole,
         DocumentChunkType,
         DocumentKVRequest,
+        FrozenDocumentChunkMap,
         DocumentKVService,
         DocumentKVWorkflow,
         DiskRangeReader,
@@ -261,6 +262,7 @@ def test_public_document_package_reexports_core_api():
     assert DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
     assert DocumentChunkType is restaurant_kv_serving.DocumentChunkType
     assert DocumentKVRequest is restaurant_kv_serving.DocumentKVRequest
+    assert FrozenDocumentChunkMap is restaurant_kv_serving.FrozenDocumentChunkMap
     assert DocumentKVService is service.DocumentKVService
     assert DocumentKVService is restaurant_kv_serving.DocumentKVService
     assert DocumentKVService.__module__ == "document_kv_cache.service"
@@ -1303,6 +1305,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "DocumentChunkRole",
         "CacheGenerationMethod",
         "DocumentChunkMap",
+        "FrozenDocumentChunkMap",
         "CacheChunkType",
         "CacheChunkTypeSet",
         "DOCUMENT_CHUNK_TYPES",
@@ -1321,8 +1324,10 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert models.KVCacheKey.__module__ == "document_kv_cache.models"
     assert models.ChunkRef.__module__ == "document_kv_cache.models"
     assert models.DocumentKVRequest.__module__ == "document_kv_cache.models"
+    assert models.FrozenDocumentChunkMap.__module__ == "document_kv_cache.models"
     assert models.MaterializationPlan.__module__ == "document_kv_cache.models"
     assert models.DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
+    assert models.FrozenDocumentChunkMap is restaurant_kv_serving.FrozenDocumentChunkMap
     assert models.chunk_type_role is restaurant_kv_serving.chunk_type_role
     assert service.__all__ == ["CacheRequest", "DocumentKVService"]
     assert service.DocumentKVService.__module__ == "document_kv_cache.service"
@@ -1342,6 +1347,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         star_namespace,
     )
     assert "DocumentKVRequest" in star_namespace
+    assert "FrozenDocumentChunkMap" in star_namespace
     assert "DocumentKVService" in star_namespace
     assert "RestaurantKVRequest" not in star_namespace
     assert "RestaurantKVService" not in star_namespace
@@ -1368,6 +1374,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["KVCacheKey"] is models.KVCacheKey
     assert root_star_namespace["ChunkRef"] is models.ChunkRef
     assert root_star_namespace["DocumentKVRequest"] is models.DocumentKVRequest
+    assert root_star_namespace["FrozenDocumentChunkMap"] is models.FrozenDocumentChunkMap
     assert root_star_namespace["MaterializationPlan"] is models.MaterializationPlan
     assert root_star_namespace["ManifestStore"] is manifest.ManifestStore
     assert root_star_namespace["InMemoryManifestStore"] is manifest.InMemoryManifestStore

@@ -1,0 +1,48 @@
+{
+  "files": {
+    "pr-evidence/immutable-request-chunk-maps/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer Euler the 2nd found that MappingProxyType made request maps immutable but broke dataclasses.asdict, deepcopy, pickle, and direct JSON serialization. The branch replaced MappingProxyType with public FrozenDocumentChunkMap, added compatibility regression tests for document and legacy requests, tightened direct construction to normalize mutable sequences, and the reviewer approved the final re-review with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/models.py",
+        "src/document_kv_cache/__init__.py",
+        "src/restaurant_kv_serving/models.py",
+        "src/restaurant_kv_serving/__init__.py",
+        "tests/test_planner_materializer.py",
+        "tests/test_public_package.py",
+        "README.md",
+        "pr-evidence/immutable-request-chunk-maps/README.md",
+        "pr-evidence/immutable-request-chunk-maps/pr-evidence.json",
+        "pr-evidence/immutable-request-chunk-maps/pr-evidence-validation.json"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_planner_materializer.py -q -> 25 passed",
+        "poetry run pytest tests/test_planner_materializer.py tests/test_public_package.py -q -> 31 passed",
+        "poetry run pytest tests/test_public_package.py tests/test_planner_materializer.py tests/test_project_governance.py -q -> 67 passed",
+        "poetry run pytest -q -> 833 passed",
+        "poetry check -> All set",
+        "poetry run python -m compileall -q src tests -> passed",
+        "git diff --check -> passed",
+        "poetry run ruff check . -> unavailable locally: Command not found: ruff",
+        "poetry run mypy src tests -> unavailable locally: pyenv: mypy: command not found",
+        "Manual compatibility probe: direct FrozenDocumentChunkMap construction, json.dumps, dataclasses.asdict, copy.deepcopy, and pickle round-trips pass for DocumentKVRequest and RestaurantKVRequest",
+        "GPT-5.5 reviewer initially found MappingProxyType serialization regressions; after FrozenDocumentChunkMap fix and direct-construction tightening, final re-review approved with no findings"
+      ],
+      "what_changed": [
+        "Normalized DocumentKVRequest.document_chunks into a read-only FrozenDocumentChunkMap with tuple chunk ids.",
+        "Normalized legacy RestaurantKVRequest.restaurant_reviews through the same helper while preserving document_chunks and selected_* aliases.",
+        "Added public FrozenDocumentChunkMap facade exports and regression coverage for direct construction, JSON, dataclasses.asdict, deepcopy, pickle, replace, and mutation rejection.",
+        "Documented request chunk-map freezing in the README workflow section."
+      ],
+      "why": "Queued document KV requests should keep a stable selected document/chunk plan even if caller-owned dicts or lists are mutated while planning, materialization, or engine handoff is pending; the fix preserves serialization compatibility needed by distributed serving paths."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
