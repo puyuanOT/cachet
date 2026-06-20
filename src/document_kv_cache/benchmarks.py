@@ -99,7 +99,19 @@ class BenchmarkExample:
     metadata: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        _validate_non_empty_str(self.example_id, "example_id")
         validate_v1_dataset(self.dataset)
+        _validate_non_empty_str(self.query, "query")
+        if self.expected_answer is not None:
+            _validate_non_empty_str(self.expected_answer, "expected_answer")
+        documents = _tuple_from_sequence(self.documents, "documents")
+        if not documents:
+            raise ValueError("documents must include at least one SourceDocument")
+        for index, document in enumerate(documents):
+            if not isinstance(document, SourceDocument):
+                raise TypeError(f"documents[{index}] must be a SourceDocument")
+        object.__setattr__(self, "documents", documents)
+        object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,6 +462,19 @@ def _tuple_from_sequence(value: Sequence[object], field_name: str) -> tuple[obje
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise TypeError(f"{field_name} must be a sequence")
     return tuple(value)
+
+
+def _dict_from_str_mapping(value: Mapping[str, str], field_name: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    normalized = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{field_name} keys must be non-empty strings")
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name}.{key} must be a string")
+        normalized[key] = item
+    return normalized
 
 
 def _validate_non_negative_int(value: int, field_name: str) -> None:

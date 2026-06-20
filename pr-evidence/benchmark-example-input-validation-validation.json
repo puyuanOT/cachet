@@ -1,0 +1,35 @@
+{
+  "files": {
+    "pr-evidence/benchmark-example-input-validation.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped BenchmarkExample validation diff with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/benchmarks.py",
+        "tests/test_benchmarks.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_benchmarks.py tests/test_benchmark_runner.py -> 50 passed",
+        "python -m py_compile src/document_kv_cache/benchmarks.py tests/test_benchmarks.py -> clean",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 783 passed",
+        "poetry check -> All set",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-example-validation-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+        "GPT-5.5 reviewer approved branch benchmark-example-input-validation with no findings"
+      ],
+      "what_changed": [
+        "Required BenchmarkExample example_id and query to be non-empty strings.",
+        "Required expected_answer to be non-empty when provided.",
+        "Required documents to be a non-empty SourceDocument sequence and metadata to be a string-key/string-value mapping."
+      ],
+      "why": "V1 benchmark examples should be valid before prompt construction or release evidence generation, so malformed example identity, document context, query, answer, or metadata cannot flow into benchmark artifacts."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
