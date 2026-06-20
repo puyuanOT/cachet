@@ -25,6 +25,8 @@ REQUIRED_GITIGNORE_PATTERNS = (
     ".mypy_cache/",
     ".ruff_cache/",
     ".hypothesis/",
+    ".databricks/",
+    ".terraform/",
     ".coverage",
     "htmlcov/",
     "dist/",
@@ -41,6 +43,8 @@ REQUIRED_GITIGNORE_PATTERNS = (
     "*.secrets",
     "*.log",
     "*.tmp",
+    "terraform.tfstate",
+    "terraform.tfstate.*",
 )
 FORBIDDEN_TRACKED_ARTIFACT_PATTERNS = (
     ".venv/*",
@@ -60,6 +64,10 @@ FORBIDDEN_TRACKED_ARTIFACT_PATTERNS = (
     "*/.ruff_cache/*",
     ".hypothesis/*",
     "*/.hypothesis/*",
+    ".databricks/*",
+    "*/.databricks/*",
+    ".terraform/*",
+    "*/.terraform/*",
     ".coverage",
     "*/.coverage",
     "htmlcov/*",
@@ -85,6 +93,10 @@ FORBIDDEN_TRACKED_ARTIFACT_PATTERNS = (
     "*.secrets",
     "*.log",
     "*.tmp",
+    "terraform.tfstate",
+    "*/terraform.tfstate",
+    "terraform.tfstate.*",
+    "*/terraform.tfstate.*",
 )
 ALLOWED_FORBIDDEN_TRACKED_ARTIFACTS = frozenset({".env.example"})
 GENERATED_OR_TOOLING_DIRECTORY_NAMES = frozenset(
@@ -92,6 +104,8 @@ GENERATED_OR_TOOLING_DIRECTORY_NAMES = frozenset(
         ".coverage",
         ".git",
         ".hypothesis",
+        ".databricks",
+        ".terraform",
         ".ipynb_checkpoints",
         ".mypy_cache",
         ".nox",

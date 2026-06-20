@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found the intended hygiene diff was still uncommitted, which would have produced an empty PR. The code/test diff itself had no correctness findings; this branch now commits the reviewed changes before PR creation.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    ".gitignore, document_kv_cache.repository_hygiene, repository hygiene tests"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_repository_hygiene.py -q; poetry run pytest -q; poetry check; poetry install --dry-run; poetry build; git diff --check"
+  ],
+  "what_changed": [
+    "Extend repository hygiene to ignore and reject Databricks bundle state, Terraform provider state, and terraform.tfstate files."
+  ],
+  "why": "The package ships Databricks GPU benchmark templates, so local Databricks/IaC state must be excluded and machine-checked to keep release branches free of machine-specific infrastructure artifacts."
+}
