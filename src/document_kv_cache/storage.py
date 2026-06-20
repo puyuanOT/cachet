@@ -34,10 +34,13 @@ class MemoryRangeReader:
     """Read cache shards from process memory."""
 
     def __init__(self, blobs: Mapping[str, bytes] | None = None) -> None:
-        self._blobs = dict(blobs or {})
+        self._blobs = {
+            _validated_memory_shard_uri(shard_uri): _coerce_memory_payload(payload)
+            for shard_uri, payload in (blobs or {}).items()
+        }
 
     def put(self, shard_uri: str, payload: bytes) -> None:
-        self._blobs[shard_uri] = bytes(payload)
+        self._blobs[_validated_memory_shard_uri(shard_uri)] = _coerce_memory_payload(payload)
 
     def read(self, ref: ChunkRef) -> bytes:
         try:
@@ -193,6 +196,21 @@ def _file_uri_path(raw_path: str, *, root: str | Path | None) -> Path:
     if path.is_absolute() or root is None:
         return path
     return _join_confined(Path(root), raw_path, label="file")
+
+
+def _validated_memory_shard_uri(shard_uri: object) -> str:
+    if not isinstance(shard_uri, str) or not shard_uri:
+        raise ValueError("memory shard URI must be non-empty")
+    return shard_uri
+
+
+def _coerce_memory_payload(payload: object) -> bytes:
+    if isinstance(payload, bytes):
+        return payload
+    try:
+        return memoryview(payload).tobytes()
+    except TypeError as exc:
+        raise ValueError("memory shard payload must be bytes-like") from exc
 
 
 def _join_confined(root: Path, raw_relative_path: str, *, label: str) -> Path:
