@@ -18,6 +18,7 @@ from document_kv_cache.engine_adapters import (
     EngineKVConnectorProbeResult,
     EngineKVInjectionPlan,
     EngineKVReservationAction,
+    EngineKVSegmentBinding,
     PayloadMode,
     ServingBackend,
     build_engine_adapter_request,
@@ -84,6 +85,53 @@ def layout() -> KVLayout:
         kv_stride_bytes=128,
         shares_kv_storage=True,
     )
+
+
+def segment_binding(
+    *,
+    token_start: int = 0,
+    token_count: int = 1,
+    byte_start: int = 0,
+    byte_length: int = TEST_BYTES_PER_TOKEN,
+    first_block_index: int = 0,
+    last_block_index_exclusive: int = 1,
+) -> EngineKVSegmentBinding:
+    return EngineKVSegmentBinding(
+        document_id="doc-a",
+        chunk_type="document_chunk",
+        chunk_id="section-1",
+        token_start=token_start,
+        token_count=token_count,
+        token_end=token_start + token_count,
+        byte_start=byte_start,
+        byte_length=byte_length,
+        byte_end=byte_start + byte_length,
+        first_block_index=first_block_index,
+        last_block_index_exclusive=last_block_index_exclusive,
+    )
+
+
+def injection_plan_kwargs(**overrides):
+    values = {
+        "backend": ServingBackend.VLLM,
+        "request_id": "req-1",
+        "handle_uri": "document-kv://req-1",
+        "connector_package": "vllm",
+        "kv_injection_method": "native-test",
+        "payload_mode": PayloadMode.MERGED,
+        "payload_source_uri": None,
+        "layout": layout(),
+        "cache_method": "vanilla_prefill",
+        "adapter_ids": (),
+        "total_tokens": 1,
+        "total_bytes": TEST_BYTES_PER_TOKEN,
+        "total_blocks": 1,
+        "estimated_gpu_bytes": TEST_BYTES_PER_TOKEN,
+        "segments": (segment_binding(),),
+        "metadata": {},
+    }
+    values.update(overrides)
+    return values
 
 
 def request() -> DocumentKVRequest:
@@ -1549,6 +1597,99 @@ def test_engine_kv_injection_plan_rejects_invalid_estimated_gpu_bytes(estimated_
             segments=(),
             metadata={},
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "error_match"),
+    [
+        ("request_id", "", "request_id"),
+        ("request_id", 123, "request_id must be a non-empty string"),
+        ("handle_uri", "", "handle_uri"),
+        ("handle_uri", 123, "handle_uri must be a non-empty string"),
+        ("kv_injection_method", "", "kv_injection_method"),
+        ("kv_injection_method", 123, "kv_injection_method must be a non-empty string"),
+        ("cache_method", "", "cache_method"),
+        ("cache_method", 123, "cache_method must be a non-empty string"),
+        ("adapter_ids", "lora", "adapter_ids must be a sequence"),
+        ("adapter_ids", {"lora": "ignored"}, "adapter_ids must be a sequence"),
+        ("adapter_ids", ("",), "adapter_ids"),
+        ("segments", ("not-a-segment",), "segments entries"),
+    ],
+)
+def test_engine_kv_injection_plan_rejects_invalid_identity_and_sequence_fields(
+    field_name,
+    value,
+    error_match,
+):
+    with pytest.raises((TypeError, ValueError), match=error_match):
+        EngineKVInjectionPlan(**injection_plan_kwargs(**{field_name: value}))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_match"),
+    [
+        ({"total_tokens": True}, "total_tokens must be a non-negative integer"),
+        ({"total_tokens": -1}, "total_tokens must be a non-negative integer"),
+        ({"total_bytes": True}, "total_bytes must be a non-negative integer"),
+        ({"total_bytes": TEST_BYTES_PER_TOKEN - 1}, "total_bytes does not match"),
+        ({"total_blocks": True}, "total_blocks must be a non-negative integer"),
+        ({"total_blocks": 2}, "total_blocks does not match"),
+        (
+            {"layout": replace(layout(), bytes_per_token=TEST_BYTES_PER_TOKEN - 1)},
+            "bytes_per_token",
+        ),
+        ({"segments": ()}, "Segment bindings cover 0 tokens"),
+    ],
+)
+def test_engine_kv_injection_plan_rejects_invalid_layout_totals(overrides, error_match):
+    with pytest.raises(ValueError, match=error_match):
+        EngineKVInjectionPlan(**injection_plan_kwargs(**overrides))
+
+
+@pytest.mark.parametrize(
+    ("segment", "error_match"),
+    [
+        (
+            segment_binding(token_count=0, byte_length=0, last_block_index_exclusive=0),
+            "token_count must be positive",
+        ),
+        (
+            segment_binding(token_start=0.0),
+            "segment.token_start must be a non-negative integer",
+        ),
+        (
+            segment_binding(token_start=False),
+            "segment.token_start must be a non-negative integer",
+        ),
+        (
+            segment_binding(token_start=1, byte_start=TEST_BYTES_PER_TOKEN),
+            "Non-contiguous token segment binding",
+        ),
+        (
+            segment_binding(byte_start=1),
+            "Non-contiguous byte segment binding",
+        ),
+        (
+            segment_binding(byte_length=TEST_BYTES_PER_TOKEN - 1),
+            "token_count \\* bytes_per_token",
+        ),
+        (
+            segment_binding(first_block_index=1),
+            "first_block_index",
+        ),
+        (
+            segment_binding(first_block_index=False),
+            "segment.first_block_index must be a non-negative integer",
+        ),
+        (
+            segment_binding(last_block_index_exclusive=2),
+            "last_block_index_exclusive",
+        ),
+    ],
+)
+def test_engine_kv_injection_plan_rejects_invalid_segment_bindings(segment, error_match):
+    with pytest.raises(ValueError, match=error_match):
+        EngineKVInjectionPlan(**injection_plan_kwargs(segments=(segment,)))
 
 
 @pytest.mark.parametrize("estimated_gpu_bytes", [True, 1.0, "1", -1])
