@@ -26,6 +26,31 @@ DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE = "document-kv-engine-probe"
 DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY = "probes"
 ENGINE_PROBE_TARGETS_RECORD_TYPE = "document_kv.engine_probe_targets.v1"
 ENGINE_PROBE_TARGETS_SCHEMA_VERSION = 1
+_ENGINE_PROBE_TARGETS_ENVELOPE_KEYS = frozenset(
+    {
+        "record_type",
+        "schema_version",
+        "release_safe",
+        DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY,
+    }
+)
+_ENGINE_PROBE_TARGET_KEYS = frozenset(
+    {
+        "backend",
+        "expected_backend",
+        "handoff_json",
+        "probe_factory",
+        "output_json",
+        "probe_output_json",
+        "payload_uri",
+        "task_key",
+        "engine_version",
+        "allow_non_native_probe",
+        "metadata",
+        "actions_output_json",
+        "connector_actions_output_json",
+    }
+)
 ENGINE_PROBE_RUNNER_SCRIPT = """from document_kv_cache.engine_probe import main
 
 if __name__ == "__main__":
@@ -455,6 +480,7 @@ def read_databricks_engine_probe_targets_file_json(path: str | Path) -> Databric
 
 
 def _validate_engine_probe_targets_record_envelope(record: Mapping[str, Any]) -> None:
+    _reject_unsupported_keys(record, _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS, label="engine probe targets record")
     record_type = record.get("record_type")
     if record_type is not None and record_type != ENGINE_PROBE_TARGETS_RECORD_TYPE:
         raise ValueError(f"Unsupported engine probe targets record_type {record_type!r}")
@@ -472,6 +498,7 @@ def _validate_engine_probe_targets_record_envelope(record: Mapping[str, Any]) ->
 def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEngineProbeTargetConfig:
     if not isinstance(record, Mapping):
         raise ValueError(f"backend config probe {index} must be an object")
+    _reject_unsupported_keys(record, _ENGINE_PROBE_TARGET_KEYS, label=f"backend config probe {index}")
     output_json = record.get("output_json", record.get("probe_output_json"))
     allow_non_native_probe = record.get("allow_non_native_probe", False)
     if type(allow_non_native_probe) is not bool:
@@ -491,6 +518,12 @@ def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEnginePro
         metadata=tuple(metadata),
         actions_output_json=record.get("actions_output_json", record.get("connector_actions_output_json")),
     )
+
+
+def _reject_unsupported_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], *, label: str) -> None:
+    unsupported = sorted(str(key) for key in record if key not in allowed_keys)
+    if unsupported:
+        raise ValueError(f"{label} has unsupported keys: {unsupported}")
 
 
 def _required_single_arg(args: argparse.Namespace, name: str) -> str:

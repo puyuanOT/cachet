@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no blocking findings; compatibility aliases and raw array/object target formats remain preserved.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/databricks_engine_probe_job.py; tests/test_databricks_engine_probe_job.py; README.md; pr-evidence/harden-engine-probe-target-schema/README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_databricks_engine_probe_job.py; python -m pytest tests/test_benchmark_plan.py tests/test_public_package.py tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring; python -m pytest -q; poetry check && poetry install --dry-run && poetry install --dry-run --extras databricks --extras test && poetry build; git diff --check; GPT-5.5 review approved with no blocking findings"
+  ],
+  "what_changed": [
+    "Databricks engine-probe target files now reject unsupported top-level target keys and unsupported per-probe keys while preserving documented legacy aliases."
+  ],
+  "why": "Keeps generated native-probe target handoffs fail-closed before Databricks run-submit payloads are produced, improving release provenance for vLLM/SGLang probe jobs."
+}
