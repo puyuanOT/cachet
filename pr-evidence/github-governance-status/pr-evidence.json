@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5/high review found one P1 fail-open case: internal GitHub visibility could pass because readiness only checked private=true. The helper now also requires visibility == 'public', the regression test covers internal visibility, focused tests pass, and the re-review approved with no remaining merge blockers.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.github_governance helper and CLI",
+    "public document package module and script metadata",
+    "GitHub governance documentation",
+    "behavioral tests for fail-closed readiness, token redaction, and CLI JSON output"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_github_governance.py tests/test_public_package.py tests/test_project_governance.py -q (46 passed)",
+    "poetry run pytest (670 passed)",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "secret scan: rg -n \"dapi[0-9A-Za-z]{20,}|sk-proj|gh[pousr]_[A-Za-z0-9_]{20,}|lsv2_|-----BEGIN [A-Z ]*PRIVATE KEY-----\" README.md CONTRIBUTING.md pyproject.toml src tests databricks pr-evidence .github; only existing fake LangSmith detector fixtures matched",
+    "GPT-5.5/high review found a P1 visibility fail-open issue; fixed with a visibility == public check and regression test; re-review approved"
+  ],
+  "what_changed": [
+    "Added a stdlib-only GitHub governance helper and CLI that reads repository metadata plus main branch protection from the GitHub API.",
+    "Made release-readiness fail closed unless the repository is public and main branch protection includes the required CI and PR-review controls.",
+    "Wired the helper into the public document package submodule map, console scripts, package docs, and tests."
+  ],
+  "why": "Release readiness needs a machine-checkable sidecar proving whether GitHub visibility and branch protection are actually enforceable, without mutating repository settings or persisting credentials."
+}

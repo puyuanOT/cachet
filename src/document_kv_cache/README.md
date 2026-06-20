@@ -51,6 +51,8 @@ new document modules depend on restaurant-owned implementations.
   probe factory.
 - `engine_protocol.py` defines validated KV layout, segment, and handle data
   structures.
+- `github_governance.py` emits a GitHub repository visibility and branch
+  protection status record for release-readiness evidence.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
 - `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint.
@@ -106,6 +108,7 @@ The public package owns these document-branded CLI entry points:
 - `document-kv-release-evidence`
 - `document-kv-release-bundle`
 - `document-kv-pr-evidence`
+- `document-kv-github-governance`
 - `document-kv-engine-probe`
 - `document-kv-engine-probe-databricks-job`
 - `document-kv-vllm-smoke`

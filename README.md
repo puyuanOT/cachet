@@ -752,6 +752,23 @@ marked resolved before they can enter the release bundle.
 Wheel artifacts must be valid wheels for `document-kv-cache` with non-empty
 package metadata.
 
+Capture repository governance status as a separate release-readiness sidecar.
+The command reads the GitHub token from an environment variable, records
+repository visibility plus `main` branch protection state, and returns non-zero
+until the repository is public and the required `Test and build` protection is
+active:
+
+```bash
+export GITHUB_TOKEN=...
+python -m document_kv_cache.github_governance \
+  --repository OWNER/document-kv-cache \
+  --output-json github-governance.json
+```
+
+If GitHub reports that private-repository branch protection is unavailable, the
+sidecar records `ok=false` and the release remains process-only rather than
+enforced by GitHub settings.
+
 For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g5 `runs/submit` payload:
 
 ```bash
@@ -879,7 +896,7 @@ pytest tests -q
 
 ## Remaining V1 Work
 
-- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, release evidence, preflight sidecar, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
+- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, release evidence, preflight sidecar, GitHub governance sidecar, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
 - Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.

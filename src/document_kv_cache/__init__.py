@@ -37,6 +37,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "engine_adapters",
         "engine_probe",
         "engine_protocol",
+        "github_governance",
         "kvpack",
         "live_server",
         "manifest",
