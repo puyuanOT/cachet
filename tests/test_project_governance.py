@@ -757,7 +757,7 @@ def test_github_ci_workflow_runs_pr_quality_gate():
     run_commands = [
         line.split("run:", maxsplit=1)[1].strip()
         for line in text.splitlines()
-        if line.lstrip().startswith("run: ")
+        if line.lstrip().startswith("run: ") and line.split("run:", maxsplit=1)[1].strip() != "|"
     ]
     assert run_commands == [
         "python -m pip install poetry==2.2.1",
@@ -768,6 +768,17 @@ def test_github_ci_workflow_runs_pr_quality_gate():
         "poetry run pytest -q",
         "poetry build",
     ]
+
+
+def test_github_ci_workflow_verifies_installed_console_scripts():
+    text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+
+    assert "Verify console script entry points" in text
+    assert 'tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]' in text
+    assert "for script_name in sorted(scripts):" in text
+    assert "shutil.which(script_name)" in text
+    assert 'subprocess.run(' in text
+    assert '[script_path, "--help"]' in text
 
 
 def test_gitignore_blocks_local_secrets_and_generated_artifacts():

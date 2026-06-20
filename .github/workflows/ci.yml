@@ -41,6 +41,27 @@ jobs:
       - name: Install package with test extras
         run: poetry install -E test
 
+      - name: Verify console script entry points
+        run: |
+          poetry run python - <<'PY'
+          import shutil
+          import subprocess
+          import tomllib
+          from pathlib import Path
+
+          scripts = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]["scripts"]
+          for script_name in sorted(scripts):
+              script_path = shutil.which(script_name)
+              if script_path is None:
+                  raise SystemExit(f"Console script {script_name!r} is not installed")
+              subprocess.run(
+                  [script_path, "--help"],
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.STDOUT,
+              )
+          PY
+
       - name: Run tests
         run: poetry run pytest -q
 
