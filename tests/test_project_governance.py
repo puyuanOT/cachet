@@ -150,6 +150,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.engine_protocol",
         "restaurant_kv_serving.kvpack",
         "restaurant_kv_serving.live_server",
+        "restaurant_kv_serving.native_probe_factories",
         "restaurant_kv_serving.openai_compatible",
         "restaurant_kv_serving.serving_env",
         "restaurant_kv_serving.vllm_smoke",

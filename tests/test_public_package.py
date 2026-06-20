@@ -92,6 +92,8 @@ def test_public_document_package_reexports_core_api():
         SegmentedMaterializedKV,
         ServingEngineConnector,
         ServingEnvironmentProfile,
+        NativeProbeFactoryInspection,
+        NativeProbeFactoryUnavailable,
         DOCUMENT_CHUNK_TYPES,
         LEGACY_RESTAURANT_CHUNK_TYPES,
         StorageBenchmarkConfig,
@@ -122,6 +124,10 @@ def test_public_document_package_reexports_core_api():
         inspect_release_evidence_input_files,
         dtype_byte_width,
         kv_storage_layout_from_value,
+        builtin_native_probe_factories_to_record,
+        builtin_native_probe_factory_path,
+        inspect_builtin_native_probe_factories,
+        inspect_builtin_native_probe_factory,
         model_profile_definition_from_record,
         model_profile_definition_to_record,
         DTYPE_BYTE_WIDTHS,
@@ -137,10 +143,13 @@ def test_public_document_package_reexports_core_api():
         read_databricks_engine_probe_targets_file_json,
         release_evidence_input_status_to_record,
         run_engine_kv_connector_probe,
+        native_probe_factory_inspection_to_record,
         serving_environment_profile,
         serving_environment_profile_to_record,
         serving_environment_profiles,
         serving_environment_profiles_to_record,
+        sglang_native_probe_factory,
+        vllm_native_probe_factory,
         summarize_databricks_run,
         summarize_databricks_run_submit_payload,
         validate_aws_g5_node_type,
@@ -157,6 +166,7 @@ def test_public_document_package_reexports_core_api():
         engine_probe,
         materializer,
         model_profiles,
+        native_probe_factories,
         service,
         serving_env,
     )
@@ -305,6 +315,12 @@ def test_public_document_package_reexports_core_api():
     assert ServingEnvironmentProfile is serving_env.ServingEnvironmentProfile
     assert ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
     assert ServingEnvironmentProfile.__module__ == "document_kv_cache.serving_env"
+    assert NativeProbeFactoryInspection is native_probe_factories.NativeProbeFactoryInspection
+    assert NativeProbeFactoryInspection is restaurant_kv_serving.NativeProbeFactoryInspection
+    assert NativeProbeFactoryInspection.__module__ == "document_kv_cache.native_probe_factories"
+    assert NativeProbeFactoryUnavailable is native_probe_factories.NativeProbeFactoryUnavailable
+    assert NativeProbeFactoryUnavailable is restaurant_kv_serving.NativeProbeFactoryUnavailable
+    assert NativeProbeFactoryUnavailable.__module__ == "document_kv_cache.native_probe_factories"
     assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
     assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
     assert SUPPORTED_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.SUPPORTED_STORAGE_BENCHMARK_READERS
@@ -345,6 +361,10 @@ def test_public_document_package_reexports_core_api():
     assert release_evidence_input_status_to_record is restaurant_kv_serving.release_evidence_input_status_to_record
     assert evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
     assert engine_probe_targets_to_record is restaurant_kv_serving.engine_probe_targets_to_record
+    assert builtin_native_probe_factories_to_record is native_probe_factories.builtin_native_probe_factories_to_record
+    assert builtin_native_probe_factories_to_record is restaurant_kv_serving.builtin_native_probe_factories_to_record
+    assert builtin_native_probe_factory_path is native_probe_factories.builtin_native_probe_factory_path
+    assert builtin_native_probe_factory_path is restaurant_kv_serving.builtin_native_probe_factory_path
     assert default_model_profile_registry is model_profiles.default_model_profile_registry
     assert default_model_profile_registry is restaurant_kv_serving.default_model_profile_registry
     assert evaluate_pr_evidence is restaurant_kv_serving.evaluate_pr_evidence
@@ -367,7 +387,17 @@ def test_public_document_package_reexports_core_api():
     assert write_model_profile_definition_json is restaurant_kv_serving.write_model_profile_definition_json
     assert write_model_profile_definition_json.__module__ == "document_kv_cache.model_profiles"
     assert write_engine_probe_targets_json is restaurant_kv_serving.write_engine_probe_targets_json
+    assert inspect_builtin_native_probe_factories is native_probe_factories.inspect_builtin_native_probe_factories
+    assert inspect_builtin_native_probe_factories is restaurant_kv_serving.inspect_builtin_native_probe_factories
+    assert inspect_builtin_native_probe_factory is native_probe_factories.inspect_builtin_native_probe_factory
+    assert inspect_builtin_native_probe_factory is restaurant_kv_serving.inspect_builtin_native_probe_factory
+    assert native_probe_factory_inspection_to_record is native_probe_factories.native_probe_factory_inspection_to_record
+    assert native_probe_factory_inspection_to_record is restaurant_kv_serving.native_probe_factory_inspection_to_record
     assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
+    assert sglang_native_probe_factory is native_probe_factories.sglang_native_probe_factory
+    assert sglang_native_probe_factory is restaurant_kv_serving.sglang_native_probe_factory
+    assert vllm_native_probe_factory is native_probe_factories.vllm_native_probe_factory
+    assert vllm_native_probe_factory is restaurant_kv_serving.vllm_native_probe_factory
     assert serving_environment_profile is restaurant_kv_serving.serving_environment_profile
     assert serving_environment_profile is serving_env.serving_environment_profile
     assert serving_environment_profile.__module__ == "document_kv_cache.serving_env"
@@ -518,6 +548,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         "materializer",
         "model_profiles",
         "models",
+        "native_probe_factories",
         "openai_compatible",
         "planner",
         "pr_evidence",
@@ -549,6 +580,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     engine_adapters = modules["engine_adapters"]
     engine_probe = modules["engine_probe"]
     model_profiles = modules["model_profiles"]
+    native_probe_factories = modules["native_probe_factories"]
     storage = modules["storage"]
     storage_benchmark = modules["storage_benchmark"]
     template_resources = modules["template_resources"]
@@ -688,6 +720,13 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert pr_evidence.evaluate_pr_evidence_directory is restaurant_kv_serving.evaluate_pr_evidence_directory
     assert pr_evidence.evaluate_pr_evidence_file is restaurant_kv_serving.evaluate_pr_evidence_file
     assert pr_evidence.pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
+    assert native_probe_factories.NativeProbeFactoryInspection is restaurant_kv_serving.NativeProbeFactoryInspection
+    assert (
+        native_probe_factories.NativeProbeFactoryInspection.__module__
+        == "document_kv_cache.native_probe_factories"
+    )
+    assert native_probe_factories.builtin_native_probe_factory_path is restaurant_kv_serving.builtin_native_probe_factory_path
+    assert native_probe_factories.vllm_native_probe_factory is restaurant_kv_serving.vllm_native_probe_factory
     assert serving_env.ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
     assert serving_env.ServingEnvironmentProfile.__module__ == "document_kv_cache.serving_env"
     assert serving_env.SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE == "document_kv.serving_environment_profiles.v1"
@@ -779,6 +818,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     storage = importlib.import_module("document_kv_cache.storage")
     materializer = importlib.import_module("document_kv_cache.materializer")
     model_profiles = importlib.import_module("document_kv_cache.model_profiles")
+    native_probe_factories = importlib.import_module("document_kv_cache.native_probe_factories")
     service = importlib.import_module("document_kv_cache.service")
     workflow = importlib.import_module("document_kv_cache.workflow")
 
@@ -1036,6 +1076,28 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert legacy_serving_env.ServingBackend is engine_adapters.ServingBackend
     assert legacy_serving_env.dataclass is not None
     assert "ServingBackend" not in legacy_serving_env.__all__
+    assert native_probe_factories.__all__ == [
+        "NativeProbeFactoryInspection",
+        "NativeProbeFactoryUnavailable",
+        "SGLANG_NATIVE_PROBE_FACTORY",
+        "VLLM_NATIVE_PROBE_FACTORY",
+        "builtin_native_probe_factories_to_record",
+        "builtin_native_probe_factory_path",
+        "inspect_builtin_native_probe_factories",
+        "inspect_builtin_native_probe_factory",
+        "native_probe_factory_inspection_to_record",
+        "sglang_native_probe_factory",
+        "vllm_native_probe_factory",
+    ]
+    legacy_native_probe_factories = importlib.import_module("restaurant_kv_serving.native_probe_factories")
+    assert legacy_native_probe_factories.__all__ == native_probe_factories.__all__
+    native_probe_legacy_star_namespace = {}
+    exec("from restaurant_kv_serving.native_probe_factories import *", native_probe_legacy_star_namespace)
+    assert sorted(k for k in native_probe_legacy_star_namespace if not k.startswith("__")) == native_probe_factories.__all__
+    assert legacy_native_probe_factories.ServingBackend is engine_adapters.ServingBackend
+    assert legacy_native_probe_factories.EngineKVProbeFactoryContext is restaurant_kv_serving.EngineKVProbeFactoryContext
+    assert legacy_native_probe_factories.dataclass is not None
+    assert "ServingBackend" not in legacy_native_probe_factories.__all__
     assert model_profiles.__all__ == [
         "DTYPE_BYTE_WIDTHS",
         "AttentionMechanism",
