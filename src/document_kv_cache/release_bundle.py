@@ -1375,11 +1375,23 @@ def _package_wheel_issues(source_path: str, payload: bytes) -> tuple[str, ...]:
         issues.append("package wheel artifact source_path must end with .whl")
     elif filename_match is None:
         issues.append("package wheel artifact source_path must use a valid wheel filename")
+    else:
+        issues.extend(_wheel_filename_tag_issues(filename_match))
     if not payload:
         issues.append("package wheel artifact must be non-empty")
     else:
         issues.extend(_wheel_zip_payload_issues(payload, filename_match=filename_match))
     return tuple(issues)
+
+
+def _wheel_filename_tag_issues(filename_match: re.Match[str]) -> tuple[str, ...]:
+    if (
+        filename_match.group("python_tag"),
+        filename_match.group("abi_tag"),
+        filename_match.group("platform_tag"),
+    ) != ("py3", "none", "any"):
+        return ("package wheel artifact filename tags must be py3-none-any",)
+    return ()
 
 
 def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] | None) -> tuple[str, ...]:
@@ -1404,8 +1416,12 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
     if len(metadata_names) != 1:
         return ("package wheel artifact must contain exactly one .dist-info/METADATA file",)
     with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
+        wheel_payload = wheel_zip.read(wheel_names[0])
         metadata_payload = wheel_zip.read(metadata_names[0])
-    return _wheel_metadata_issues(metadata_payload, filename_match=filename_match)
+    return (
+        *_wheel_file_issues(wheel_payload),
+        *_wheel_metadata_issues(metadata_payload, filename_match=filename_match),
+    )
 
 
 def _root_dist_info_prefixes(names: Sequence[str]) -> set[str]:
@@ -1447,11 +1463,40 @@ def _wheel_metadata_issues(payload: bytes, *, filename_match: re.Match[str] | No
     return ()
 
 
+def _wheel_file_issues(payload: bytes) -> tuple[str, ...]:
+    try:
+        headers = _metadata_header_values(payload.decode("utf-8"))
+    except UnicodeDecodeError:
+        return ("package wheel artifact WHEEL metadata must be UTF-8 text",)
+    issues: list[str] = []
+    if not any(value for value in headers.get("wheel-version", ())):
+        issues.append("package wheel artifact WHEEL metadata Wheel-Version must be non-empty")
+    root_is_purelib = headers.get("root-is-purelib", ())
+    if tuple(value.lower() for value in root_is_purelib) != ("true",):
+        issues.append("package wheel artifact WHEEL metadata Root-Is-Purelib must be true")
+    tags = headers.get("tag", ())
+    if "py3-none-any" not in tags:
+        issues.append("package wheel artifact WHEEL metadata Tag must include py3-none-any")
+    return tuple(issues)
+
+
 def _wheel_versions_match(filename_version: str, metadata_version: str) -> bool:
     try:
         return Version(filename_version) == Version(metadata_version)
     except InvalidVersion:
         return filename_version == metadata_version
+
+
+def _metadata_header_values(text: str) -> dict[str, tuple[str, ...]]:
+    headers: dict[str, list[str]] = {}
+    for raw_line in text.splitlines():
+        if raw_line == "":
+            break
+        if raw_line[0].isspace() or ":" not in raw_line:
+            continue
+        name, value = raw_line.split(":", 1)
+        headers.setdefault(name.strip().lower(), []).append(value.strip())
+    return {name: tuple(values) for name, values in headers.items()}
 
 
 def _metadata_headers(text: str) -> dict[str, str]:

@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Initial GPT-5.5 review found empty Wheel-Version and non-universal filename tags could pass. Fixed both validations, added regressions, and re-review approved.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "release_bundle.py",
+    "tests",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_bundle.py tests/test_project_governance.py tests/test_public_package.py -q",
+    "poetry check",
+    "poetry build",
+    "poetry install --dry-run",
+    "poetry install --dry-run --extras databricks --extras test",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check origin/main..HEAD",
+    "poetry run pytest -q"
+  ],
+  "what_changed": [
+    "release bundle wheel validation now checks WHEEL metadata for pure py3-none-any package wheels",
+    "release bundle wheel validation now rejects non-universal filename tags"
+  ],
+  "why": "strict release bundles should carry the pure Python document-kv-cache wheel actually suitable for open-source distribution and target runtime installation"
+}
