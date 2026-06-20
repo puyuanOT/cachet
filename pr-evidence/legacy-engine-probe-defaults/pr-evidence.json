@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that re-evaluating the public EngineKVProbeFactoryResult base after clean import could break legacy factory-result recognition after later public mutation. I pinned the cloned namespace type to the legacy class import-time base, added a regression, reran verification, and re-review returned approval.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/engine_probe.py",
+    "tests/test_engine_probe.py",
+    "pr-evidence/legacy-engine-probe-defaults/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine_probe.py",
+    "poetry run pytest tests/test_engine_probe.py tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "git diff --check",
+    "poetry check",
+    "poetry build",
+    "GPT-5.5 focused review and re-review"
+  ],
+  "what_changed": [
+    "Hardened restaurant_kv_serving.engine_probe class-base selection for EngineKVProbeConfig, EngineKVProbeFactoryContext, and EngineKVProbeFactoryResult.",
+    "Preserved clean-import public subclass relationships while falling back to source-loaded defaults after pre-import public class replacement or mutation.",
+    "Stabilized the cloned document namespace factory-result type check against post-import public result-class mutations."
+  ],
+  "why": "The native engine probe path is the package boundary for established vLLM/SGLang connector validation, so legacy compatibility must not capture import-order public class mutations as defaults."
+}
