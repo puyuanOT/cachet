@@ -107,7 +107,7 @@ class RoutedRangeReader:
         self.unity_catalog = unity_catalog or UnityCatalogVolumeRangeReader()
 
     def read(self, ref: ChunkRef) -> bytes:
-        return self._reader_for_ref(ref).read(ref)
+        return _validated_single_payload(self._reader_for_ref(ref).read(ref))
 
     def read_many(self, refs: Sequence[ChunkRef]) -> tuple[bytes, ...]:
         outputs: list[bytes | None] = [None] * len(refs)
@@ -262,6 +262,12 @@ def _read_many_from_paths(
                 payload = handle.read(ref.byte_length)
                 payloads[index] = _validated_payload(ref, payload)
     return tuple(_require_payload(payload, index) for index, payload in enumerate(payloads))
+
+
+def _validated_single_payload(payload: object) -> bytes:
+    if not isinstance(payload, bytes):
+        raise TypeError("RangeReader.read must return bytes")
+    return payload
 
 
 def _validated_batch_payloads(payloads: object, *, expected_count: int) -> tuple[bytes, ...]:
