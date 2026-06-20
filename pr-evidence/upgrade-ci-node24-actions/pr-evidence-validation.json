@@ -1,0 +1,42 @@
+{
+  "files": {
+    "pr-evidence/upgrade-ci-node24-actions/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer Huygens the 2nd approved the scoped CI action major upgrade with no findings, confirming that the Test and build job name and ordered gate commands are preserved while checkout and setup-python move to Node 24-compatible majors.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        ".github/workflows/ci.yml",
+        "tests/test_project_governance.py",
+        "pr-evidence/upgrade-ci-node24-actions/README.md",
+        "pr-evidence/upgrade-ci-node24-actions/pr-evidence.json",
+        "pr-evidence/upgrade-ci-node24-actions/pr-evidence-validation.json"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_project_governance.py::test_github_ci_workflow_runs_pr_quality_gate tests/test_project_governance.py::test_github_main_branch_protection_payload_requires_pr_review_and_ci -q -> 2 passed",
+        "poetry run pytest tests/test_project_governance.py -q -> 36 passed",
+        "poetry run pytest -> 832 passed",
+        "poetry check -> All set",
+        "poetry run python -m compileall -q src tests -> passed",
+        "git diff --check -> passed",
+        "poetry run ruff check . -> unavailable locally: Command not found: ruff",
+        "poetry run mypy src tests -> unavailable locally: pyenv: mypy: command not found",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-upgrade-ci-node24-actions-hygiene-final.json -> ok=true",
+        "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json /tmp/document-kv-upgrade-ci-node24-actions-all-evidence.json -> ok=true, file_count=140",
+        "GPT-5.5 reviewer approved branch upgrade-ci-node24-actions with no findings"
+      ],
+      "what_changed": [
+        "Updated the required CI checkout step from actions/checkout@v4 to actions/checkout@v6.",
+        "Updated the required CI Python setup step from actions/setup-python@v5 to actions/setup-python@v6.",
+        "Updated the repository governance test so future workflow edits keep the Node 24-compatible action majors."
+      ],
+      "why": "The required PR quality gate should not depend on deprecated Node 20 action runtimes; keeping CI action majors current protects the automated merge gate used for every package-generalization PR."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
