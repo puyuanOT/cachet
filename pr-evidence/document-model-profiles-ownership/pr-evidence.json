@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5/high approved the model profile ownership move with no findings; review covered document-owned dataclasses/functions, legacy public identities and incidental star-import names, Qwen3/GQA layout math, JSON read/write behavior, root lazy export routing, and a targeted import/star/identity probe.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/model_profiles.py",
+    "src/restaurant_kv_serving/model_profiles.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py"
+  ],
+  "verification": [
+    "import smoke -> public/legacy KVModelProfile identity, document root exports, legacy star-import helper attributes, and Qwen3 layout bytes_per_token=73728 passed",
+    "poetry run pytest tests/test_model_profiles.py tests/test_engine.py tests/test_engine_adapters.py tests/test_kvpack.py tests/test_public_package.py tests/test_project_governance.py -> 119 passed",
+    "poetry run pytest -> 630 passed",
+    "poetry check -> All set!",
+    "git diff --check -> passed",
+    "secret scan -> only expected fake LangSmith fixture patterns in tests/test_project_governance.py",
+    "poetry build -> built sdist and wheel"
+  ],
+  "what_changed": [
+    "Moved model profile implementation into document_kv_cache.model_profiles.",
+    "Replaced restaurant_kv_serving.model_profiles with a compatibility wrapper over document_kv_cache.model_profiles.",
+    "Routed document root model profile exports to the document-owned module and added public-surface ownership assertions."
+  ],
+  "why": "Continue the package ownership migration from restaurant-specific modules to the document-generic namespace while preserving Qwen3/GQA profile behavior and legacy imports."
+}
