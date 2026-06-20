@@ -19,6 +19,8 @@ class PreparedRequest:
     def __post_init__(self) -> None:
         if not isinstance(self.request_id, str) or not self.request_id:
             raise ValueError("request_id must be non-empty")
+        if not isinstance(self.kv, MaterializedKV):
+            raise TypeError("kv must be a MaterializedKV")
         if type(self.estimated_gpu_bytes) is not int:
             raise ValueError("estimated_gpu_bytes must be an integer")
         if self.estimated_gpu_bytes < 0:
@@ -42,6 +44,8 @@ class AdmissionQueue:
         return self._pending_gpu_bytes
 
     def try_enqueue(self, request: PreparedRequest) -> bool:
+        if not isinstance(request, PreparedRequest):
+            raise TypeError("request must be a PreparedRequest")
         if self._pending_gpu_bytes + request.estimated_gpu_bytes > self.max_pending_gpu_bytes:
             return False
         self._queue.append(request)
