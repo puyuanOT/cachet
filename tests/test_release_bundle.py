@@ -818,6 +818,19 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-build-tag-bundle",
         )
 
+    non_universal_filename_wheel = _write_wheel(
+        tmp_path / "document_kv_cache-0.2.0-cp311-cp311-macosx_11_0_arm64.whl"
+    )
+    with pytest.raises(ValueError, match="filename tags must be py3-none-any"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=non_universal_filename_wheel,
+            output_dir=tmp_path / "bad-wheel-filename-tags-bundle",
+        )
+
     valid_named_bad_payload = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
     valid_named_bad_payload.write_bytes(b"PK\x03\x04not a valid zip")
     with pytest.raises(ValueError, match="valid wheel zip payload"):
@@ -828,6 +841,63 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=valid_named_bad_payload,
             output_dir=tmp_path / "bad-wheel-payload-bundle",
+        )
+
+    empty_wheel_version = _write_wheel(
+        tmp_path / "empty-wheel-version" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        wheel_metadata_lines=(
+            "Wheel-Version:",
+            "Root-Is-Purelib: true",
+            "Tag: py3-none-any",
+            "",
+        ),
+    )
+    with pytest.raises(ValueError, match="Wheel-Version must be non-empty"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=empty_wheel_version,
+            output_dir=tmp_path / "bad-wheel-empty-wheel-version-bundle",
+        )
+
+    non_purelib_wheel = _write_wheel(
+        tmp_path / "non-purelib-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        wheel_metadata_lines=(
+            "Wheel-Version: 1.0",
+            "Root-Is-Purelib: false",
+            "Tag: py3-none-any",
+            "",
+        ),
+    )
+    with pytest.raises(ValueError, match="Root-Is-Purelib must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=non_purelib_wheel,
+            output_dir=tmp_path / "bad-wheel-non-purelib-bundle",
+        )
+
+    missing_universal_tag_wheel = _write_wheel(
+        tmp_path / "missing-universal-tag-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        wheel_metadata_lines=(
+            "Wheel-Version: 1.0",
+            "Root-Is-Purelib: true",
+            "Tag: py3-none-macosx_11_0_arm64",
+            "",
+        ),
+    )
+    with pytest.raises(ValueError, match="Tag must include py3-none-any"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_universal_tag_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-universal-tag-bundle",
         )
 
     nested_dist_info_wheel = _write_wheel(
@@ -1870,6 +1940,13 @@ def _write_wheel(
     metadata_name: str = "document-kv-cache",
     metadata_version: str | None = "0.2.0",
     dist_info_prefix: str = "document_kv_cache-0.2.0.dist-info",
+    wheel_metadata_lines: tuple[str, ...] = (
+        "Wheel-Version: 1.0",
+        "Generator: document-kv-cache test fixture",
+        "Root-Is-Purelib: true",
+        "Tag: py3-none-any",
+        "",
+    ),
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     metadata_lines = [f"Name: {metadata_name}"]
@@ -1880,15 +1957,7 @@ def _write_wheel(
         wheel_zip.writestr("document_kv_cache/__init__.py", "")
         wheel_zip.writestr(
             f"{dist_info_prefix}/WHEEL",
-            "\n".join(
-                [
-                    "Wheel-Version: 1.0",
-                    "Generator: document-kv-cache test fixture",
-                    "Root-Is-Purelib: true",
-                    "Tag: py3-none-any",
-                    "",
-                ]
-            ),
+            "\n".join(wheel_metadata_lines),
         )
         wheel_zip.writestr(f"{dist_info_prefix}/METADATA", "\n".join(metadata_lines))
         wheel_zip.writestr(f"{dist_info_prefix}/RECORD", "")
