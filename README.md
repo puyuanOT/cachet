@@ -223,6 +223,7 @@ chunks, use `SourceDocument.from_texts(...)` with
 document = SourceDocument.from_texts(
     document_id="doc-a",
     static_text="Document profile...",
+    static_chunk_id="profile",
     chunks={"review-1": "First reusable chunk", "review-2": "Second reusable chunk"},
 )
 request = DocumentKVRequest.for_document_chunks(
@@ -232,6 +233,7 @@ request = DocumentKVRequest.for_document_chunks(
     lora_id="base",
     prompt_template_version="v1",
     document_id="doc-a",
+    static_chunk_id="profile",
     chunk_ids=("review-2",),
 )
 ```

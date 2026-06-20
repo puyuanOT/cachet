@@ -28,6 +28,7 @@ __all__ = [
     "CacheGenerationMethod",
     "DocumentChunkMap",
     "FrozenDocumentChunkMap",
+    "DEFAULT_STATIC_CHUNK_ID",
     "CacheChunkType",
     "CacheChunkTypeSet",
     "DOCUMENT_CHUNK_TYPES",
@@ -43,6 +44,7 @@ __all__ = [
 ]
 
 SHA256_HEX_LENGTH = 64
+DEFAULT_STATIC_CHUNK_ID = "static"
 
 
 class ChunkType(StrEnum):
@@ -278,6 +280,7 @@ class DocumentKVRequest:
     document_chunks: DocumentChunkMap
     include_static: bool = True
     task_prefix_id: str | None = None
+    static_chunk_id: ChunkId = DEFAULT_STATIC_CHUNK_ID
 
     def __post_init__(self) -> None:
         _validate_request_metadata(
@@ -289,6 +292,7 @@ class DocumentKVRequest:
             include_static=self.include_static,
             task_prefix_id=self.task_prefix_id,
         )
+        _validate_static_chunk_id(self.static_chunk_id)
         object.__setattr__(
             self,
             "document_chunks",
@@ -332,6 +336,7 @@ class DocumentKVRequest:
         document_id: str,
         chunk_ids: Sequence[ChunkId],
         include_static: bool = True,
+        static_chunk_id: ChunkId = DEFAULT_STATIC_CHUNK_ID,
         task_prefix_id: str | None = None,
     ) -> "DocumentKVRequest":
         return cls(
@@ -342,6 +347,7 @@ class DocumentKVRequest:
             prompt_template_version=prompt_template_version,
             document_chunks={document_id: chunk_ids},
             include_static=include_static,
+            static_chunk_id=static_chunk_id,
             task_prefix_id=task_prefix_id,
         )
 
@@ -541,6 +547,18 @@ def _validate_chunk_id(name: str, value: object) -> None:
     if value is None:
         raise ValueError(f"{name} chunk ids must not be None")
     raise TypeError(f"{name} chunk ids must be strings or integers")
+
+
+def _validate_static_chunk_id(value: object) -> None:
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("static_chunk_id must be non-empty")
+        return
+    if type(value) is int:
+        return
+    if value is None:
+        raise ValueError("static_chunk_id must not be None")
+    raise TypeError("static_chunk_id must be a string or integer")
 
 
 def _validate_plan_segment_cursors(

@@ -24,6 +24,7 @@ def test_public_document_package_reexports_core_api():
         DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
         DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
         DEFAULT_DATABRICKS_HOST_ENV,
+        DEFAULT_STATIC_CHUNK_ID,
         DEFAULT_DATABRICKS_TOKEN_ENV,
         DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
         DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME,
@@ -262,6 +263,8 @@ def test_public_document_package_reexports_core_api():
     assert DatabricksVLLMSmokeJobConfig is restaurant_kv_serving.DatabricksVLLMSmokeJobConfig
     assert DatabricksWorkspaceConfig is databricks_runs.DatabricksWorkspaceConfig
     assert issubclass(restaurant_kv_serving.DatabricksWorkspaceConfig, databricks_runs.DatabricksWorkspaceConfig)
+    assert DEFAULT_STATIC_CHUNK_ID == "static"
+    assert DEFAULT_STATIC_CHUNK_ID is restaurant_kv_serving.DEFAULT_STATIC_CHUNK_ID
     assert DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
     assert DocumentChunkType is restaurant_kv_serving.DocumentChunkType
     assert DocumentKVRequest is restaurant_kv_serving.DocumentKVRequest
@@ -1318,6 +1321,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "CacheGenerationMethod",
         "DocumentChunkMap",
         "FrozenDocumentChunkMap",
+        "DEFAULT_STATIC_CHUNK_ID",
         "CacheChunkType",
         "CacheChunkTypeSet",
         "DOCUMENT_CHUNK_TYPES",
@@ -1333,6 +1337,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     ]
     assert models.DocumentChunkType.__module__ == "document_kv_cache.models"
     assert models.DocumentChunkRole.__module__ == "document_kv_cache.models"
+    assert models.DEFAULT_STATIC_CHUNK_ID == "static"
     assert models.KVCacheKey.__module__ == "document_kv_cache.models"
     assert models.ChunkRef.__module__ == "document_kv_cache.models"
     assert models.DocumentKVRequest.__module__ == "document_kv_cache.models"

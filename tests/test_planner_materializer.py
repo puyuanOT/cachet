@@ -14,6 +14,7 @@ from document_kv_cache.models import (
     CacheChunkType,
     ChunkType,
     DOCUMENT_CHUNK_TYPES,
+    DEFAULT_STATIC_CHUNK_ID,
     DocumentChunkType,
     DocumentChunkRole,
     DocumentKVRequest,
@@ -187,6 +188,7 @@ def test_document_kv_request_validates_metadata_and_chunk_map():
 
     assert request.document_chunks == {"doc-a": ("section-1", 2)}
     assert request.document_chunks["doc-a"] == ("section-1", 2)
+    assert request.static_chunk_id == DEFAULT_STATIC_CHUNK_ID
     assert request.selected_document_ids == ("doc-a",)
     assert json.loads(json.dumps(request.document_chunks)) == {"doc-a": ["section-1", 2]}
     assert asdict(request)["document_chunks"] == {"doc-a": ("section-1", 2)}
@@ -204,6 +206,10 @@ def test_document_kv_request_validates_metadata_and_chunk_map():
         replace(request, include_static=1)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="task_prefix_id"):
         replace(request, task_prefix_id="")
+    with pytest.raises(ValueError, match="static_chunk_id"):
+        replace(request, static_chunk_id="")
+    with pytest.raises(TypeError, match="static_chunk_id"):
+        replace(request, static_chunk_id=True)  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="document_chunks"):
         replace(request, document_chunks=[])  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="document_chunks keys"):
@@ -218,6 +224,24 @@ def test_document_kv_request_validates_metadata_and_chunk_map():
         replace(request, document_chunks={"doc-a": [""]})
     with pytest.raises(TypeError, match="document_chunks chunk ids"):
         replace(request, document_chunks={"doc-a": [True]})  # type: ignore[list-item]
+
+
+def test_document_kv_request_preserves_positional_task_prefix_compatibility():
+    request = DocumentKVRequest(
+        "doc-req",
+        "qa",
+        "qwen35-4b-w8a8",
+        "selection",
+        "v1",
+        {"doc-a": ["section-1"]},
+        True,
+        "prefix",
+    )
+
+    assert request.include_static is True
+    assert request.task_prefix_id == "prefix"
+    assert request.static_chunk_id == DEFAULT_STATIC_CHUNK_ID
+    assert request.document_chunks == {"doc-a": ("section-1",)}
 
 
 def test_document_kv_request_for_text_document_matches_source_document_default_chunk():
@@ -256,11 +280,13 @@ def test_document_kv_request_for_document_chunks_builds_single_document_selectio
         prompt_template_version="v1",
         document_id="doc-a",
         chunk_ids=("section-1", 2),
+        static_chunk_id="profile",
         task_prefix_id="prefix",
     )
 
     assert request.document_chunks == {"doc-a": ("section-1", 2)}
     assert request.include_static is True
+    assert request.static_chunk_id == "profile"
     assert request.task_prefix_id == "prefix"
     assert request.selected_document_ids == ("doc-a",)
 
@@ -862,7 +888,7 @@ def test_materializer_reports_local_disk_tier_after_cpu_eviction(tmp_path):
 def test_document_request_uses_generic_chunk_aliases(tmp_path):
     chunks = [
         PackChunk(make_key("_task", DocumentChunkType.TASK_PREFIX, "prefix"), b"task:", 5, "fp8", "v1"),
-        PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_STATIC, "static"), b"title:", 6, "fp8", "v1"),
+        PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_STATIC, "profile"), b"title:", 6, "fp8", "v1"),
         PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"body", 4, "fp8", "v1"),
     ]
     refs = write_kvpack(tmp_path / "shard.kvpack", chunks, align_bytes=1)
@@ -875,6 +901,7 @@ def test_document_request_uses_generic_chunk_aliases(tmp_path):
         lora_id="selection",
         prompt_template_version="v1",
         document_chunks={"doc-a": ["section-1"]},
+        static_chunk_id="profile",
         task_prefix_id="prefix",
     )
 
@@ -884,7 +911,7 @@ def test_document_request_uses_generic_chunk_aliases(tmp_path):
     assert plan.selected_document_ids == ("doc-a",)
     assert plan.selected_restaurants == ("doc-a",)
     assert [segment.ref.key.document_id for segment in plan.segments] == ["_task", "doc-a", "doc-a"]
-    assert [segment.ref.key.chunk_id for segment in plan.segments] == ["prefix", "static", "section-1"]
+    assert [segment.ref.key.chunk_id for segment in plan.segments] == ["prefix", "profile", "section-1"]
     assert [segment.ref.key.chunk_type for segment in plan.segments] == [
         DocumentChunkType.TASK_PREFIX,
         DocumentChunkType.DOCUMENT_STATIC,
