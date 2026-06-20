@@ -23,6 +23,33 @@ _PRELOADED_PLAN_PAYLOAD: ContextVar[tuple[str, bytes] | None] = ContextVar(
     "_PRELOADED_PLAN_PAYLOAD",
     default=None,
 )
+_BENCHMARK_JOB_PLAN_KEYS = frozenset(
+    {
+        "plan_version",
+        "suite_id",
+        "model_id",
+        "hardware_target",
+        "require_all_v1_datasets",
+        "datasets",
+        "commands",
+        "benchmark_output_json",
+        "storage_benchmark_output_json",
+        "release_evidence_output_json",
+        "release_storage_benchmark_json",
+        "release_engine_probe_jsons",
+        "release_engine_actions_jsons",
+        "release_bundle_output_dir",
+        "release_bundle_output_json",
+        "release_bundle",
+        "github_governance_output_json",
+        "repository_hygiene_output_json",
+        "native_probe_factories_output_json",
+        "release_preflight_output_json",
+        "planned_engine_probes",
+        "notes",
+    }
+)
+_BENCHMARK_JOB_PLAN_COMMAND_KEYS = frozenset({"name", "argv", "shell"})
 
 __all__ = [
     "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",
@@ -210,6 +237,7 @@ def _patch_result_json_plan_source(path: str | Path, plan_source: Mapping[str, A
 
 
 def _commands_from_plan(plan: Mapping[str, Any]) -> list[tuple[str, tuple[str, ...]]]:
+    _reject_unsupported_keys(plan, _BENCHMARK_JOB_PLAN_KEYS, label="Benchmark plan JSON")
     raw_commands = plan.get("commands")
     if not isinstance(raw_commands, Sequence) or isinstance(raw_commands, (str, bytes)):
         raise ValueError("Benchmark plan JSON must include a commands array")
@@ -217,6 +245,11 @@ def _commands_from_plan(plan: Mapping[str, Any]) -> list[tuple[str, tuple[str, .
     for index, raw_command in enumerate(raw_commands):
         if not isinstance(raw_command, Mapping):
             raise ValueError(f"commands[{index}] must be an object")
+        _reject_unsupported_keys(
+            raw_command,
+            _BENCHMARK_JOB_PLAN_COMMAND_KEYS,
+            label=f"commands[{index}]",
+        )
         name = raw_command.get("name")
         if not isinstance(name, str) or not name:
             raise ValueError(f"commands[{index}].name must be non-empty")
@@ -226,6 +259,12 @@ def _commands_from_plan(plan: Mapping[str, Any]) -> list[tuple[str, tuple[str, .
         argv = tuple(_argv_item(item, command_index=index, item_index=item_index) for item_index, item in enumerate(raw_argv))
         commands.append((name, argv))
     return commands
+
+
+def _reject_unsupported_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], *, label: str) -> None:
+    unsupported = sorted(str(key) for key in record if key not in allowed_keys)
+    if unsupported:
+        raise ValueError(f"{label} has unsupported keys: {unsupported}")
 
 
 def _runtime_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
