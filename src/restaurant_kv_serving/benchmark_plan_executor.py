@@ -1,3 +1,5 @@
+"""Compatibility facade for :mod:`document_kv_cache.benchmark_plan_executor`."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,34 +13,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache.benchmark_plan_executor import (
+    BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
+    BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
+    BenchmarkCommandResult,
+    benchmark_command_results_to_record as _document_benchmark_command_results_to_record,
+    benchmark_plan_source_payload_to_record as _document_benchmark_plan_source_payload_to_record,
+)
 from restaurant_kv_serving.storage import local_path
 
 
-BENCHMARK_PLAN_EXECUTION_RECORD_TYPE = "document_kv.benchmark_plan_execution.v1"
-BENCHMARK_PLAN_SOURCE_RECORD_TYPE = "document_kv.benchmark_plan_source.v1"
 _PRELOADED_PLAN_PAYLOAD: ContextVar[tuple[str, bytes] | None] = ContextVar(
     "_PRELOADED_PLAN_PAYLOAD",
     default=None,
 )
-
-
-@dataclass(frozen=True, slots=True)
-class BenchmarkCommandResult:
-    name: str
-    argv: tuple[str, ...]
-    returncode: int
-    skipped: bool = False
-    error: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.name:
-            raise ValueError("name must be non-empty")
-        if not self.argv:
-            raise ValueError("argv must be non-empty")
-
-    @property
-    def ok(self) -> bool:
-        return self.returncode == 0 and self.error is None
 
 
 def execute_benchmark_job_plan(
@@ -79,23 +67,7 @@ def benchmark_command_results_to_record(
     *,
     plan_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    record = {
-        "record_type": BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
-        "ok": all(result.ok for result in results),
-        "commands": [
-            {
-                "name": result.name,
-                "argv": list(result.argv),
-                "returncode": result.returncode,
-                "skipped": result.skipped,
-                "error": result.error,
-            }
-            for result in results
-        ],
-    }
-    if plan_source is not None:
-        record["plan_source"] = dict(plan_source)
-    return record
+    return _document_benchmark_command_results_to_record(results, plan_source=plan_source)
 
 
 def benchmark_plan_source_to_record(path: str | Path) -> dict[str, Any]:
@@ -105,25 +77,7 @@ def benchmark_plan_source_to_record(path: str | Path) -> dict[str, Any]:
 
 
 def benchmark_plan_source_payload_to_record(path: str, driver_path: str | Path, payload: bytes) -> dict[str, Any]:
-    record: dict[str, Any] = {
-        "record_type": BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
-        "path": path,
-        "driver_path": str(driver_path),
-        "size_bytes": len(payload),
-        "sha256": hashlib.sha256(payload).hexdigest(),
-    }
-    try:
-        parsed = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return record
-    if isinstance(parsed, Mapping):
-        for field_name in ("plan_version", "suite_id", "model_id", "hardware_target"):
-            if isinstance(parsed.get(field_name), str) and parsed[field_name]:
-                record[field_name] = parsed[field_name]
-        commands = parsed.get("commands")
-        if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes, bytearray)):
-            record["command_count"] = len(commands)
-    return record
+    return _document_benchmark_plan_source_payload_to_record(path, driver_path, payload)
 
 
 def write_benchmark_command_results_json(results: Sequence[BenchmarkCommandResult], path: str | Path) -> None:
