@@ -26,13 +26,98 @@ def _load_document_defaults_module():
 
 
 _document_defaults_module = _load_document_defaults_module()
+_DOCUMENT_DEFAULTS = {
+    name: value
+    for name, value in vars(_document_defaults_module).items()
+    if name != "__all__" and not name.startswith("__")
+}
 
 
-for _name, _value in vars(_document_defaults_module).items():
-    if _name != "__all__" and not _name.startswith("__"):
-        globals()[_name] = _value
+for _name, _value in _DOCUMENT_DEFAULTS.items():
+    globals()[_name] = _value
 
-BenchmarkCommandResult = _document_module.BenchmarkCommandResult
+
+def _is_pristine_public_class(name: str) -> bool:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    return (
+        isinstance(live_value, type)
+        and live_value.__module__ == _document_module.__name__
+        and live_value.__qualname__ == default_value.__qualname__
+        and _class_fingerprint(live_value) == _class_fingerprint(default_value)
+    )
+
+
+def _class_fingerprint(value: type) -> tuple[tuple[str, Any], ...]:
+    return tuple(
+        (name, _class_attribute_fingerprint(name, attribute, owner=value))
+        for name, attribute in sorted(vars(value).items())
+        if name not in {"__doc__", "__module__", "_abc_impl"}
+    )
+
+
+def _class_attribute_fingerprint(name: str, value: Any, *, owner: type) -> Any:
+    if name == "__dataclass_fields__":
+        return _dataclass_field_fingerprint(value)
+    if name == "__dataclass_params__":
+        return repr(value)
+    if isinstance(value, property):
+        return (
+            "property",
+            _function_fingerprint(value.fget),
+            _function_fingerprint(value.fset),
+            _function_fingerprint(value.fdel),
+            value.__doc__,
+        )
+    if hasattr(value, "__objclass__") and hasattr(value, "__name__"):
+        return (
+            "descriptor",
+            type(value).__qualname__,
+            value.__name__,
+            _descriptor_owner_fingerprint(value.__objclass__, owner),
+        )
+    if isinstance(value, dict):
+        return tuple(sorted(value.items()))
+    function_fingerprint = _function_fingerprint(value)
+    if function_fingerprint is not None:
+        return ("function", function_fingerprint)
+    return value
+
+
+def _descriptor_owner_fingerprint(objclass: type, owner: type) -> tuple[str, str] | tuple[str, str, str]:
+    if objclass is owner:
+        return ("self", owner.__qualname__)
+    return ("foreign", objclass.__module__, objclass.__qualname__)
+
+
+def _function_fingerprint(value: Any) -> tuple[Any, ...] | None:
+    code = getattr(value, "__code__", None)
+    if code is None:
+        return None
+    return (
+        code.co_argcount,
+        code.co_kwonlyargcount,
+        code.co_posonlyargcount,
+        code.co_names,
+        code.co_varnames,
+        code.co_consts,
+        code.co_code,
+        getattr(value, "__defaults__", None),
+        getattr(value, "__kwdefaults__", None),
+    )
+
+
+def _dataclass_field_fingerprint(value: Mapping[str, Any]) -> tuple[tuple[str, Any, Any], ...]:
+    return tuple((name, field.default, field.default_factory) for name, field in value.items())
+
+
+def _public_class_default(name: str):
+    if _is_pristine_public_class(name):
+        return getattr(_document_module, name)
+    return _DOCUMENT_DEFAULTS[name]
+
+
+BenchmarkCommandResult = _public_class_default("BenchmarkCommandResult")
 
 
 def execute_benchmark_job_plan(
@@ -86,11 +171,6 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "write_benchmark_command_results_json": write_benchmark_command_results_json,
     "main": main,
 }
-_DOCUMENT_DEFAULTS = {
-    name: value
-    for name, value in vars(_document_defaults_module).items()
-    if name != "__all__" and not name.startswith("__")
-}
 _PATCH_LOCK = _RLock()
 _LEGACY_PATCH_NAMES = tuple(name for name in _DOCUMENT_DEFAULTS if name in globals())
 
@@ -105,7 +185,7 @@ def _document_global_for_legacy(name: str):
     if name not in globals():
         return _DOCUMENT_DEFAULTS[name]
     if name == "BenchmarkCommandResult":
-        return _document_module.BenchmarkCommandResult
+        return _public_class_default(name)
     current = globals()[name]
     if _DEFAULT_COMPAT_FUNCTIONS.get(name) is current:
         return _DOCUMENT_DEFAULTS[name]

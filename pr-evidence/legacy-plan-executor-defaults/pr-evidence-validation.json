@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/legacy-plan-executor-defaults/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 found that descriptor fingerprints ignored member-descriptor ownership, allowing a foreign slot descriptor mutation to pass as pristine. I added descriptor-owner fingerprinting, covered the foreign descriptor case, reran verification, and re-review returned approval.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/restaurant_kv_serving/benchmark_plan_executor.py",
+        "tests/test_benchmark_plan_executor.py",
+        "pr-evidence/legacy-plan-executor-defaults/README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_benchmark_plan_executor.py",
+        "poetry run pytest tests/test_benchmark_plan_executor.py tests/test_public_package.py tests/test_project_governance.py tests/test_release_bundle.py -q",
+        "poetry run pytest -q",
+        "git diff --check",
+        "poetry check",
+        "poetry build",
+        "GPT-5.5 focused review and re-review"
+      ],
+      "what_changed": [
+        "Hardened restaurant_kv_serving.benchmark_plan_executor so BenchmarkCommandResult is selected from the live public module only when the public class is pristine.",
+        "Added source-default fallback detection for public result-class replacement, property mutation, and foreign slot-descriptor mutation before legacy import.",
+        "Added import-order regression tests while preserving clean-import public class identity."
+      ],
+      "why": "Benchmark orchestration needs legacy wrapper monkeypatch compatibility without capturing pre-import document namespace mutations as defaults."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
