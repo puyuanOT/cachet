@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved the bounded quality-delta validation with no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_evidence.py",
+    "tests/test_release_evidence.py",
+    "pr-evidence/validate-comparison-quality-deltas/README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_release_evidence.py -q -> 51 passed",
+    "python -m pytest -q -> 870 passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> succeeded",
+    "poetry build -> succeeded",
+    "git diff --check -> clean"
+  ],
+  "what_changed": [
+    "Validated V1 comparison quality deltas are bounded finite numeric rate differences.",
+    "Added release-evidence regression coverage for out-of-bounds exact_match_delta and answer_found_delta values."
+  ],
+  "why": "Strict V1 release evidence should reject impossible quality deltas when comparing cache reuse against no-cache prefill."
+}
