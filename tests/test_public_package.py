@@ -184,7 +184,10 @@ def test_public_document_package_reexports_core_api():
         vllm_native_probe_factory,
         summarize_databricks_run,
         summarize_databricks_run_submit_payload,
+        databricks_run_status_record,
+        databricks_run_status_sidecar_issues,
         validate_aws_g5_node_type,
+        validate_databricks_run_status_sidecar,
         validate_engine_kv_connector_actions_record,
         write_benchmark_job_plan_json,
         write_benchmark_job_plan_shell,
@@ -554,6 +557,18 @@ def test_public_document_package_reexports_core_api():
     assert serving_environment_profiles_to_record.__module__ == "document_kv_cache.serving_env"
     assert summarize_databricks_run is databricks_runs.summarize_databricks_run
     assert summarize_databricks_run_submit_payload is databricks_runs.summarize_databricks_run_submit_payload
+    assert databricks_run_status_record is databricks_runs.databricks_run_status_record
+    assert databricks_run_status_sidecar_issues is databricks_runs.databricks_run_status_sidecar_issues
+    assert validate_databricks_run_status_sidecar is databricks_runs.validate_databricks_run_status_sidecar
+    assert restaurant_kv_serving.databricks_run_status_record.__module__ == "restaurant_kv_serving.databricks_runs"
+    assert (
+        restaurant_kv_serving.databricks_run_status_sidecar_issues.__module__
+        == "restaurant_kv_serving.databricks_runs"
+    )
+    assert (
+        restaurant_kv_serving.validate_databricks_run_status_sidecar.__module__
+        == "restaurant_kv_serving.databricks_runs"
+    )
     assert pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
     assert pr_evidence_validation_to_record.__module__ == "document_kv_cache.pr_evidence"
     assert pr_evidence_to_record is restaurant_kv_serving.pr_evidence_to_record
@@ -627,6 +642,9 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "DATABRICKS_RUN_STATUS_RECORD_TYPE" in document_kv_cache.__all__
     assert "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE" in document_kv_cache.__all__
     assert "summarize_databricks_run" in document_kv_cache.__all__
+    assert "databricks_run_status_record" in document_kv_cache.__all__
+    assert "databricks_run_status_sidecar_issues" in document_kv_cache.__all__
+    assert "validate_databricks_run_status_sidecar" in document_kv_cache.__all__
     assert "build_v1_benchmark_plan" in document_kv_cache.__all__
     assert "benchmark_job_plan_to_record" in document_kv_cache.__all__
     assert "engine_probe_targets_to_record" in document_kv_cache.__all__
@@ -984,6 +1002,18 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert issubclass(restaurant_kv_serving.DatabricksWorkspaceConfig, databricks_runs.DatabricksWorkspaceConfig)
     assert databricks_runs.DatabricksWorkspaceConfig.__module__ == "document_kv_cache.databricks_runs"
     assert restaurant_kv_serving.DatabricksWorkspaceConfig.__module__ == "restaurant_kv_serving.databricks_runs"
+    assert databricks_runs.databricks_run_status_record.__module__ == "document_kv_cache.databricks_runs"
+    assert databricks_runs.databricks_run_status_sidecar_issues.__module__ == "document_kv_cache.databricks_runs"
+    assert databricks_runs.validate_databricks_run_status_sidecar.__module__ == "document_kv_cache.databricks_runs"
+    assert restaurant_kv_serving.databricks_run_status_record.__module__ == "restaurant_kv_serving.databricks_runs"
+    assert (
+        restaurant_kv_serving.databricks_run_status_sidecar_issues.__module__
+        == "restaurant_kv_serving.databricks_runs"
+    )
+    assert (
+        restaurant_kv_serving.validate_databricks_run_status_sidecar.__module__
+        == "restaurant_kv_serving.databricks_runs"
+    )
     assert issubclass(restaurant_kv_serving.DatabricksBenchmarkJobConfig, databricks_job.DatabricksBenchmarkJobConfig)
     assert issubclass(
         restaurant_kv_serving.DatabricksSingleNodeG5ClusterConfig,

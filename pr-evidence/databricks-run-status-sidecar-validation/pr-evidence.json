@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED: no blocking findings; validator move appears behavior-preserving; release-bundle delegates to databricks_runs; direct/wrapped records and legacy wrapper behavior reviewed.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "databricks_runs public helpers, release_bundle delegation, root and legacy exports, README, focused tests."
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_runs.py tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py -q => 120 passed; git diff --check => clean; poetry run pytest -q => 950 passed; poetry build => succeeded; poetry check && poetry install --dry-run => succeeded."
+  ],
+  "what_changed": [
+    "Exposed public Databricks run-status sidecar validators and reused them from release bundle validation."
+  ],
+  "why": "Release-oriented AWS g5 Databricks run-status evidence should be preflightable before release bundling, with one canonical validator."
+}

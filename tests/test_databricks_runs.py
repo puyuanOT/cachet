@@ -15,6 +15,8 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
     DatabricksWorkspaceConfig,
+    databricks_run_status_record,
+    databricks_run_status_sidecar_issues,
     databricks_workspace_config_from_env,
     get_databricks_run,
     main,
@@ -22,6 +24,7 @@ from document_kv_cache.databricks_runs import (
     submit_databricks_run,
     summarize_databricks_run,
     summarize_databricks_run_submit_payload,
+    validate_databricks_run_status_sidecar,
     write_databricks_run_response_json,
 )
 
@@ -186,6 +189,66 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert submit_payload["node_type_ids"] == ["g5.4xlarge"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
     assert submit_payload["task_keys"] == ["run-benchmark"]
+
+
+def test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records():
+    status_record = _valid_databricks_run_status_record()
+    wrapped_record = {"ok": True, "action": "get", "summary": status_record}
+
+    assert databricks_run_status_record(status_record) is status_record
+    assert databricks_run_status_record(wrapped_record) is status_record
+    assert databricks_run_status_sidecar_issues(status_record) == ()
+    assert databricks_run_status_sidecar_issues(wrapped_record) == ()
+    validate_databricks_run_status_sidecar(status_record)
+    validate_databricks_run_status_sidecar(wrapped_record)
+
+
+def test_databricks_run_status_sidecar_validation_reports_release_readiness_issues():
+    status_record = _valid_databricks_run_status_record()
+    bad_record = {
+        **status_record,
+        "response": {"raw": True},
+        "succeeded": False,
+        "result_state": "FAILED",
+    }
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert "Databricks run status sidecar must not include the raw Jobs API response" in issues
+    assert "Databricks run status sidecar succeeded must be true" in issues
+    assert "Databricks run status sidecar result_state must be 'SUCCESS'" in issues
+    assert any("unsupported keys" in issue and "response" in issue for issue in issues)
+    with pytest.raises(ValueError, match="succeeded must be true"):
+        validate_databricks_run_status_sidecar(bad_record)
+
+
+def test_databricks_run_status_sidecar_validation_requires_submit_payload():
+    status_record = _valid_databricks_run_status_record()
+    bad_record = dict(status_record)
+    del bad_record["submit_payload"]
+
+    assert databricks_run_status_sidecar_issues(bad_record) == (
+        "Databricks run status sidecar submit_payload must be an object",
+    )
+
+
+def test_databricks_run_status_sidecar_validation_rejects_non_g5_or_mismatched_payload():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["aws_g5_node_type"] = False
+    submit_payload["tasks"][0]["task_key"] = "different-task"
+    submit_payload["tasks"][0]["node_type_id"] = "g6.8xlarge"
+    submit_payload["task_keys"] = ["different-task"]
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert "Databricks run status sidecar submit_payload.aws_g5_node_type must be true" in issues
+    assert (
+        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be an AWS g5 node type"
+        in issues
+    )
+    assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
 
 
 def test_summarize_databricks_run_submit_payload_reports_non_g5_multi_node_payload():
@@ -730,6 +793,9 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "get_databricks_run",
         "summarize_databricks_run",
         "summarize_databricks_run_submit_payload",
+        "databricks_run_status_record",
+        "databricks_run_status_sidecar_issues",
+        "validate_databricks_run_status_sidecar",
         "write_databricks_run_response_json",
         "read_databricks_run_submit_payload",
         "main",
@@ -817,6 +883,32 @@ class _BytesFile:
 
     def close(self):
         pass
+
+
+def _valid_databricks_run_status_record():
+    return summarize_databricks_run(
+        {
+            "run_id": 123,
+            "run_name": "document-kv-v1",
+            "run_page_url": "https://dbc.example/#job/123/run/123",
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+            "start_time": 1000,
+            "end_time": 2000,
+            "cluster_instance": {"cluster_id": "cluster-main"},
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "cluster_instance": {"cluster_id": "cluster-task"},
+                    "start_time": 1001,
+                    "end_time": 1999,
+                }
+            ],
+        },
+        submit_payload=_single_node_g5_submit_payload(),
+        submit_payload_path="/Volumes/catalog/schema/volume/databricks-run-submit.json",
+    )
 
 
 def _single_node_g5_submit_payload():

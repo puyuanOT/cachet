@@ -167,6 +167,18 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "summarize_databricks_run_submit_payload",
     ),
+    "databricks_run_status_record": (
+        "document_kv_cache.databricks_runs",
+        "databricks_run_status_record",
+    ),
+    "databricks_run_status_sidecar_issues": (
+        "document_kv_cache.databricks_runs",
+        "databricks_run_status_sidecar_issues",
+    ),
+    "validate_databricks_run_status_sidecar": (
+        "document_kv_cache.databricks_runs",
+        "validate_databricks_run_status_sidecar",
+    ),
     "write_databricks_run_response_json": (
         "document_kv_cache.databricks_runs",
         "write_databricks_run_response_json",
