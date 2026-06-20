@@ -630,6 +630,15 @@ def test_project_metadata_uses_cachet_brand_without_renaming_distribution():
     assert "cachet" in project["keywords"]
 
 
+def test_project_metadata_exposes_repository_and_issue_urls():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["urls"] == {
+        "Repository": "https://github.com/puyuanOT/document-kv-cache",
+        "Issues": "https://github.com/puyuanOT/document-kv-cache/issues",
+    }
+
+
 def test_readme_development_commands_use_public_package_branding():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     development_section = _markdown_section(text, "Development")

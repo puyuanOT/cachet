@@ -21,6 +21,10 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.urls]
+Repository = "https://github.com/puyuanOT/document-kv-cache"
+Issues = "https://github.com/puyuanOT/document-kv-cache/issues"
+
 [project.optional-dependencies]
 databricks = [
   "pyspark==4.1.2",
