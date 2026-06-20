@@ -1647,20 +1647,47 @@ def test_engine_kv_injection_plan_rejects_invalid_layout_totals(overrides, error
 
 
 @pytest.mark.parametrize(
+    ("overrides", "error_match"),
+    [
+        ({"document_id": ""}, "document_id"),
+        ({"document_id": 123}, "document_id must be a non-empty string"),
+        ({"chunk_type": ""}, "chunk_type"),
+        ({"chunk_id": ""}, "chunk_id"),
+        ({"token_start": 0.0}, "token_start must be a non-negative integer"),
+        ({"token_start": False}, "token_start must be a non-negative integer"),
+        ({"token_count": 0, "token_end": 0}, "token_count must be positive"),
+        ({"byte_length": 0, "byte_end": 0}, "byte_length must be positive"),
+        ({"token_end": 2}, "token_end does not match"),
+        ({"byte_end": TEST_BYTES_PER_TOKEN + 1}, "byte_end does not match"),
+        ({"first_block_index": False}, "first_block_index must be a non-negative integer"),
+        ({"last_block_index_exclusive": 0}, "block range must be positive"),
+        ({"content_hash": object()}, "content_hash must be a string"),
+        ({"cache_tier": "gpu"}, "cache_tier"),
+    ],
+)
+def test_engine_kv_segment_binding_rejects_invalid_public_fields(overrides, error_match):
+    values = {
+        "document_id": "doc-a",
+        "chunk_type": "document_chunk",
+        "chunk_id": "section-1",
+        "token_start": 0,
+        "token_count": 1,
+        "token_end": 1,
+        "byte_start": 0,
+        "byte_length": TEST_BYTES_PER_TOKEN,
+        "byte_end": TEST_BYTES_PER_TOKEN,
+        "first_block_index": 0,
+        "last_block_index_exclusive": 1,
+    }
+    values.update(overrides)
+
+    with pytest.raises((TypeError, ValueError), match=error_match):
+        EngineKVSegmentBinding(**values)
+
+
+@pytest.mark.parametrize(
     ("segment", "error_match"),
     [
-        (
-            segment_binding(token_count=0, byte_length=0, last_block_index_exclusive=0),
-            "token_count must be positive",
-        ),
-        (
-            segment_binding(token_start=0.0),
-            "segment.token_start must be a non-negative integer",
-        ),
-        (
-            segment_binding(token_start=False),
-            "segment.token_start must be a non-negative integer",
-        ),
         (
             segment_binding(token_start=1, byte_start=TEST_BYTES_PER_TOKEN),
             "Non-contiguous token segment binding",
@@ -1674,12 +1701,8 @@ def test_engine_kv_injection_plan_rejects_invalid_layout_totals(overrides, error
             "token_count \\* bytes_per_token",
         ),
         (
-            segment_binding(first_block_index=1),
+            segment_binding(first_block_index=1, last_block_index_exclusive=2),
             "first_block_index",
-        ),
-        (
-            segment_binding(first_block_index=False),
-            "segment.first_block_index must be a non-negative integer",
         ),
         (
             segment_binding(last_block_index_exclusive=2),
