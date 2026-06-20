@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from itertools import islice
 import json
 import random
 from collections.abc import Iterable, Mapping, Sequence
@@ -274,17 +275,20 @@ def load_benchmark_jsonl(
     if limit is not None and limit < 0:
         raise ValueError("limit must be non-negative")
     examples: list[BenchmarkExample] = []
-    for index, record in enumerate(_iter_jsonl(path)):
-        if limit is not None and len(examples) >= limit:
-            break
-        examples.append(
-            _example_from_record(
+    records = _iter_jsonl(path)
+    if limit is not None:
+        records = islice(records, limit)
+    for record_index, (line_number, record) in enumerate(records, start=1):
+        try:
+            example = _example_from_record(
                 record,
                 default_dataset=dataset,
-                line_number=index + 1,
+                record_index=record_index,
                 require_dataset=require_dataset,
             )
-        )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Benchmark JSONL line {line_number}: {exc}") from exc
+        examples.append(example)
     return tuple(examples)
 
 
@@ -510,33 +514,36 @@ def _example_seed(seed: int | None, example_id: str) -> int:
     return value
 
 
-def _iter_jsonl(path: str | Path) -> Iterable[Mapping[str, Any]]:
+def _iter_jsonl(path: str | Path) -> Iterable[tuple[int, Mapping[str, Any]]]:
     with local_path(str(path)).open("r", encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.strip()
             if not line:
                 continue
-            record = json.loads(line)
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Benchmark JSONL line {line_number} is not valid JSON: {exc.msg}") from exc
             if not isinstance(record, Mapping):
-                raise ValueError(f"JSONL line {line_number} must be an object")
-            yield record
+                raise ValueError(f"Benchmark JSONL line {line_number} must be an object")
+            yield line_number, record
 
 
 def _example_from_record(
     record: Mapping[str, Any],
     *,
     default_dataset: str | None,
-    line_number: int,
+    record_index: int,
     require_dataset: bool,
 ) -> BenchmarkExample:
     dataset = _string_field(record, "dataset", default=default_dataset)
     validate_v1_dataset(dataset)
     if require_dataset and default_dataset is not None and dataset != default_dataset:
         raise ValueError(
-            f"JSONL line {line_number} dataset {dataset!r} does not match expected dataset {default_dataset!r}"
+            f"dataset {dataset!r} does not match expected dataset {default_dataset!r}"
         )
     return BenchmarkExample(
-        example_id=_string_field(record, "example_id", fallback_fields=("id",), default=f"{dataset}-{line_number}"),
+        example_id=_string_field(record, "example_id", fallback_fields=("id",), default=f"{dataset}-{record_index}"),
         dataset=dataset,
         documents=tuple(_documents_from_record(record)),
         query=_string_field(record, "query", fallback_fields=("question",)),

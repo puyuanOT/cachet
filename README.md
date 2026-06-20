@@ -567,7 +567,11 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
 - `build_prompt_parts` splits each example into `system_prompt`, `document_context`, and `user_prompt`.
 - `build_prefill_prompt` concatenates all three parts for the no-cache baseline.
 - `build_cache_prefix_text` returns the text that should be represented by cached KV, while `build_cache_suffix_text` returns the query suffix appended at inference time.
-- `load_benchmark_jsonl` and `load_v1_jsonl_suite` load normalized JSONL plus common HotpotQA-style `context` pairs and MusiQue-style `paragraphs`, without adding a hard dependency on any one dataset host.
+- `load_benchmark_jsonl` and `load_v1_jsonl_suite` load normalized JSONL
+  plus common HotpotQA-style `context` pairs and MusiQue-style `paragraphs`,
+  without adding a hard dependency on any one dataset host. Malformed benchmark
+  rows fail with the physical JSONL line number so managed AWS g5 runs can
+  trace dataset issues back to source files.
 - `normalize_v1_record`, `convert_v1_jsonl`, and `build_niah_record` prepare raw Biography, HotpotQA, MusiQue, and synthetic/source NIAH rows into that normalized JSONL contract.
 - `build_v1_benchmark_plan` and the `benchmark_plan` CLI emit a portable command plan that prepares all four V1 datasets, runs the OpenAI-compatible benchmark on AWS g5/Qwen3, and can append storage-reader benchmarking on the same node.
 - `benchmark_plan_executor` and `databricks_job` let managed job runners execute that plan on single-node AWS g5 Databricks clusters; `databricks_runs` can submit/check those payloads using credentials supplied only through environment variables.

@@ -508,6 +508,15 @@ def test_load_benchmark_jsonl_accepts_dataset_default_and_static_only_documents(
     assert loaded[0].documents[0].chunks[0].chunk_id == "static"
 
 
+def test_load_benchmark_jsonl_keeps_logical_default_ids_when_file_has_blank_lines(tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text("\n" + json.dumps({"query": "Bio?", "documents": ["Bio context"]}) + "\n", encoding="utf-8")
+
+    loaded = load_benchmark_jsonl(path, dataset="biography")
+
+    assert loaded[0].example_id == "biography-1"
+
+
 def test_load_v1_jsonl_suite_combines_dataset_files(tmp_path):
     bio_path = tmp_path / "biography.jsonl"
     hotpot_path = tmp_path / "hotpotqa.jsonl"
@@ -534,11 +543,16 @@ def test_load_v1_jsonl_suite_combines_dataset_files(tmp_path):
 def test_load_v1_jsonl_suite_rejects_dataset_mismatch(tmp_path):
     path = tmp_path / "hotpotqa.jsonl"
     path.write_text(
-        json.dumps({"dataset": "biography", "query": "Bio?", "documents": ["Bio context"], "answer": "Bio"}) + "\n",
+        "\n"
+        + json.dumps({"dataset": "biography", "query": "Bio?", "documents": ["Bio context"], "answer": "Bio"})
+        + "\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="does not match expected dataset"):
+    with pytest.raises(
+        ValueError,
+        match="Benchmark JSONL line 2: dataset 'biography' does not match expected dataset 'hotpotqa'",
+    ):
         load_v1_jsonl_suite(suite_id="v1-jsonl", paths={"hotpotqa": path})
 
 
@@ -608,7 +622,25 @@ def test_load_benchmark_jsonl_accepts_musique_paragraphs(tmp_path):
 
 def test_load_benchmark_jsonl_validates_records(tmp_path):
     path = tmp_path / "bad.jsonl"
-    path.write_text(json.dumps({"dataset": "unknown", "query": "Bad?", "documents": ["x"]}) + "\n", encoding="utf-8")
+    path.write_text("\n" + json.dumps({"dataset": "unknown", "query": "Bad?", "documents": ["x"]}) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Unsupported V1 dataset"):
+    with pytest.raises(ValueError, match="Benchmark JSONL line 2: Unsupported V1 dataset"):
         load_benchmark_jsonl(path)
+
+
+def test_load_benchmark_jsonl_reports_invalid_json_line(tmp_path):
+    path = tmp_path / "bad-json.jsonl"
+    path.write_text(json.dumps({"query": "Ok?", "documents": ["x"]}) + "\n{not json}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Benchmark JSONL line 2 is not valid JSON"):
+        load_benchmark_jsonl(path, dataset="biography")
+
+
+def test_load_benchmark_jsonl_limit_does_not_parse_rows_after_limit(tmp_path):
+    path = tmp_path / "limited.jsonl"
+    path.write_text(json.dumps({"query": "Ok?", "documents": ["x"]}) + "\n{not json}\n", encoding="utf-8")
+
+    loaded = load_benchmark_jsonl(path, dataset="biography", limit=1)
+
+    assert len(loaded) == 1
+    assert loaded[0].example_id == "biography-1"
