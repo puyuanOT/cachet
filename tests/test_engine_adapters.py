@@ -405,6 +405,22 @@ def test_write_engine_adapter_request_json_writes_stable_record_with_payload_uri
     assert record["payload_source"]["uri"] == payload_uri
 
 
+def test_write_engine_adapter_request_json_resolves_storage_uri_output_paths(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    adapter_request = build_engine_adapter_request(ready, spec=sglang_adapter_spec())
+    handoff_path = tmp_path / "nested" / "handoff.json"
+
+    output_path = write_engine_adapter_request_json(
+        adapter_request,
+        f"disk:{handoff_path}",
+        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+    )
+
+    assert output_path == handoff_path
+    assert handoff_path.exists()
+    assert json.loads(handoff_path.read_text(encoding="utf-8"))["request_id"] == "req-1"
+
+
 def test_write_engine_adapter_request_json_accepts_external_handle_uri(tmp_path):
     handle_uri = f"file:{tmp_path / 'req-1.kv'}"
     ready = service(tmp_path).prepare_for_engine(

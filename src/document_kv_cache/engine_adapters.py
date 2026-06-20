@@ -721,7 +721,8 @@ def write_engine_adapter_request_json(
             "write_engine_adapter_request_json requires an adapter-readable payload_uri "
             "or external handle_uri; pass require_external_payload_uri=False for debug-only records"
         )
-    target_path = Path(path)
+    target_path = local_path(str(path))
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(
         json.dumps(record, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
