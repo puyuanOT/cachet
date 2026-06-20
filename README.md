@@ -587,8 +587,10 @@ python -m document_kv_cache.benchmark_plan \
   --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
   --engine-probe-handoff-json vllm=/data/vllm-handoff.json \
   --engine-probe-output-json vllm=/data/vllm-engine-probe.json \
+  --engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json \
   --engine-probe-handoff-json sglang=/data/sglang-handoff.json \
   --engine-probe-output-json sglang=/data/sglang-engine-probe.json \
+  --engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json \
   --engine-probe-use-builtin-factories \
   --release-evidence-output-json /data/release-evidence.json \
   --release-bundle-output-dir /data/document-kv-release-bundle \
@@ -614,23 +616,28 @@ points at a real UC Volume. It writes `<suite-id>-storage-benchmark.json` under
 `--prepared-dir` unless `--storage-benchmark-output-json` is set. Backend-keyed
 `--engine-probe-*` options append native `document_kv_cache.engine_probe`
 commands for vLLM and SGLang handoffs; release evidence automatically consumes
-those planned probe outputs. Planned probes consumed by release evidence cannot
-use debug-only `--engine-probe-engine-version` or
+those planned probe and connector-action outputs. Planned probes consumed by
+release evidence must include `--engine-probe-actions-output-json` for each
+backend and cannot use debug-only `--engine-probe-engine-version` or
 `--allow-non-native-engine-probe`; if debug probe commands are also needed, pass
-separate native records directly with repeatable `--release-engine-probe-json`.
+separate native records directly with repeatable `--release-engine-probe-json`
+and `--release-engine-actions-json`.
 `--engine-probe-use-builtin-factories` fills missing planned factories with
 package-owned vLLM/SGLang factory paths. Those factories are stable release-plan
 targets but still fail closed until the backend-native block-manager adapter is
 available; pass explicit `--engine-probe-factory BACKEND=MODULE:CALLABLE` to use
 a downstream adapter module.
-If probe records already exist, skip the planned probe flags and pass them
-directly with repeatable `--release-engine-probe-json`.
+If native probe and connector-action records already exist, skip the planned
+probe flags and pass them directly with repeatable `--release-engine-probe-json`
+and `--release-engine-actions-json`.
 `--engine-probe-targets-output-json` writes a
 `document_kv.engine_probe_targets.v1` sidecar whose `probes` array is directly
 accepted by `document_kv_cache.databricks_engine_probe_job --backend-config-json`.
 Use `--engine-probe-targets-release-safe` for release jobs; it requires exactly
 one native vLLM probe and one native SGLang probe and rejects debug-only planned
-probe settings before writing the target file.
+probe settings before writing the target file. Release-safe targets also carry
+each backend's `actions_output_json` path so the Databricks probe jobs write the
+sidecars required by release evidence.
 When release-evidence flags are supplied, the plan appends
 `document_kv_cache.release_evidence` last so the V1 benchmark, storage
 benchmark, and vLLM/SGLang probe artifacts are validated together. Release
