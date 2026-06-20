@@ -38,6 +38,7 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
 from document_kv_cache.model_profiles import get_model_profile
+from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage import is_real_uc_volume_root, local_path
 from document_kv_cache.storage_benchmark import RELEASE_STORAGE_BENCHMARK_READERS, STORAGE_BENCHMARK_RECORD_TYPE
@@ -1068,10 +1069,15 @@ def _validate_storage_results(results: Sequence[Any], issues: list[str]) -> None
 
 
 def _validate_release_engine_probe_record(record: Mapping[str, Any]) -> None:
+    adapter_contract = native_probe_adapter_contract_to_record()
     if record.get("model_id") != DEFAULT_V1_MODEL_ID:
         raise ValueError(f"Engine KV probe model_id must be {DEFAULT_V1_MODEL_ID!r}")
-    if record.get("layout_version") != "qwen3-v1":
-        raise ValueError("Engine KV probe layout_version must be 'qwen3-v1'")
+    if record.get("layout_version") != adapter_contract["layout_version"]:
+        raise ValueError(f"Engine KV probe layout_version must be {adapter_contract['layout_version']!r}")
+    if record.get("payload_mode") != adapter_contract["payload_mode"]:
+        raise ValueError("Engine KV probe payload_mode must match the native probe adapter contract")
+    if record.get("native_probe") is not adapter_contract["requires_native_probe"]:
+        raise ValueError("Engine KV probe native_probe must match the native probe adapter contract")
     layout = _release_probe_layout(record)
     _validate_v1_qwen3_probe_layout(layout)
     backend = record["backend"]
@@ -1083,10 +1089,13 @@ def _validate_release_engine_probe_record(record: Mapping[str, Any]) -> None:
 
 
 def _validate_release_engine_action_record(record: Mapping[str, Any]) -> None:
+    adapter_contract = native_probe_adapter_contract_to_record()
     backend = _required_str(record, "backend")
     reservation = _required_mapping(record, "reservation")
     if reservation.get("backend") != backend:
         raise ValueError("Engine KV action reservation.backend must match backend")
+    if _action_record_payload_mode(record) != adapter_contract["payload_mode"]:
+        raise ValueError("Engine KV action payload_mode must match the native probe adapter contract")
     layout = _release_action_layout(record)
     _validate_v1_qwen3_probe_layout(layout)
 

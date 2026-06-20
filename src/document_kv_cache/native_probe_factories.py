@@ -8,9 +8,19 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib import metadata, util
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
-from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.engine_adapters import (
+    ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
+    ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
+    ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+    ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
+    ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
+    ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION,
+    PayloadMode,
+    ServingBackend,
+)
 from document_kv_cache.engine_probe import EngineKVProbeFactoryContext
 from document_kv_cache.serving_env import (
     serving_environment_profile,
@@ -24,6 +34,7 @@ _REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS = ("vllm", "sglang")
 _NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
 _NATIVE_PROBE_FACTORY_KEYS = frozenset(
     {
+        "adapter_contract",
         "backend",
         "factory_path",
         "package_name",
@@ -34,6 +45,20 @@ _NATIVE_PROBE_FACTORY_KEYS = frozenset(
         "reason",
     }
 )
+NATIVE_PROBE_ADAPTER_CONTRACT: Mapping[str, str | int | bool] = MappingProxyType(
+    {
+        "handoff_record_type": ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
+        "handoff_schema_version": ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
+        "probe_record_type": ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
+        "probe_schema_version": ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION,
+        "actions_record_type": ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+        "actions_schema_version": ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
+        "layout_version": "qwen3-v1",
+        "payload_mode": PayloadMode.MERGED.value,
+        "requires_native_probe": True,
+    }
+)
+_NATIVE_PROBE_ADAPTER_CONTRACT_KEYS = frozenset(NATIVE_PROBE_ADAPTER_CONTRACT)
 _BUILTIN_NATIVE_PROBE_FACTORY_PATHS = {
     "vllm": VLLM_NATIVE_PROBE_FACTORY,
     "sglang": SGLANG_NATIVE_PROBE_FACTORY,
@@ -124,6 +149,7 @@ def native_probe_factory_inspection_to_record(
     return {
         "backend": inspection.backend.value,
         "factory_path": inspection.factory_path,
+        "adapter_contract": native_probe_adapter_contract_to_record(),
         "package_name": inspection.package_name,
         "package_importable": inspection.package_importable,
         "package_version": inspection.package_version,
@@ -131,6 +157,12 @@ def native_probe_factory_inspection_to_record(
         "supported": inspection.supported,
         "reason": inspection.reason,
     }
+
+
+def native_probe_adapter_contract_to_record() -> dict[str, str | int | bool]:
+    """Return the engine handoff contract required by built-in native probe factories."""
+
+    return dict(NATIVE_PROBE_ADAPTER_CONTRACT)
 
 
 def inspect_builtin_native_probe_factories() -> tuple[NativeProbeFactoryInspection, ...]:
@@ -267,6 +299,11 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
     issues.extend(_optional_str_field(factory, "package_version", label))
     for field_name in ("package_importable", "supported"):
         issues.extend(_bool_field(factory, field_name, label))
+    adapter_contract = factory.get("adapter_contract")
+    if not isinstance(adapter_contract, Mapping):
+        issues.append(f"{label}.adapter_contract must be an object")
+    else:
+        issues.extend(_native_probe_adapter_contract_issues(adapter_contract, label=f"{label}.adapter_contract"))
     if factory.get("supported") is True:
         if factory.get("package_importable") is not True:
             issues.append(f"{label}.package_importable must be true when supported is true")
@@ -279,6 +316,29 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
         expected_profile = serving_environment_profile_to_record(serving_environment_profile(backend))
         if dict(serving_profile) != expected_profile:
             issues.append(f"{label}.serving_environment_profile must match the built-in {backend} profile")
+    return tuple(issues)
+
+
+def _native_probe_adapter_contract_issues(contract: Mapping[str, Any], *, label: str) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(contract, _NATIVE_PROBE_ADAPTER_CONTRACT_KEYS, label))
+    expected = native_probe_adapter_contract_to_record()
+    for field_name, expected_value in expected.items():
+        value = contract.get(field_name)
+        field_label = f"{label}.{field_name}"
+        if isinstance(expected_value, bool):
+            if type(value) is not bool:
+                issues.append(f"{field_label} must be boolean")
+                continue
+        elif isinstance(expected_value, int):
+            if type(value) is not int:
+                issues.append(f"{field_label} must be an integer")
+                continue
+        elif not isinstance(value, str):
+            issues.append(f"{field_label} must be a string")
+            continue
+        if value != expected_value:
+            issues.append(f"{field_label} must match the built-in native probe adapter contract")
     return tuple(issues)
 
 
@@ -341,6 +401,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
+    "NATIVE_PROBE_ADAPTER_CONTRACT",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
     "SGLANG_NATIVE_PROBE_FACTORY",
@@ -350,6 +411,7 @@ __all__ = [
     "inspect_builtin_native_probe_factories",
     "inspect_builtin_native_probe_factory",
     "main",
+    "native_probe_adapter_contract_to_record",
     "native_probe_factories_record_issues",
     "native_probe_factory_inspection_to_record",
     "sglang_native_probe_factory",

@@ -4,7 +4,16 @@ import pytest
 
 from document_kv_cache.engine_probe import EngineKVProbeFactoryContext
 from document_kv_cache.engine_probe import load_engine_kv_probe_factory
-from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.engine_adapters import (
+    ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
+    ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
+    ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+    ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
+    ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
+    ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION,
+    PayloadMode,
+    ServingBackend,
+)
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     NativeProbeFactoryInspection,
@@ -16,6 +25,7 @@ from document_kv_cache.native_probe_factories import (
     inspect_builtin_native_probe_factories,
     inspect_builtin_native_probe_factory,
     main,
+    native_probe_adapter_contract_to_record,
     native_probe_factory_inspection_to_record,
     native_probe_factories_record_issues,
     sglang_native_probe_factory,
@@ -72,9 +82,24 @@ def test_inspect_builtin_native_probe_factory_reports_fail_closed_status():
     assert record["factory_path"] == VLLM_NATIVE_PROBE_FACTORY
     assert record["supported"] is False
     assert "reason" in record
+    assert record["adapter_contract"] == native_probe_adapter_contract_to_record()
     assert record["serving_environment_profile"] == serving_environment_profile_to_record(
         VLLM_SERVING_ENVIRONMENT_PROFILE
     )
+
+
+def test_native_probe_adapter_contract_records_required_engine_handoff_versions():
+    assert native_probe_adapter_contract_to_record() == {
+        "handoff_record_type": ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
+        "handoff_schema_version": ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
+        "probe_record_type": ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
+        "probe_schema_version": ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION,
+        "actions_record_type": ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+        "actions_schema_version": ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
+        "layout_version": "qwen3-v1",
+        "payload_mode": PayloadMode.MERGED.value,
+        "requires_native_probe": True,
+    }
 
 
 def test_builtin_native_probe_factories_record_includes_required_backends():
@@ -119,6 +144,36 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
     assert any("factory_path must match the built-in vllm factory path" in issue for issue in wrong_path_issues)
     with pytest.raises(ValueError, match="factory_path must match the built-in vllm factory path"):
         validate_native_probe_factories_record(wrong_path_record)
+
+    wrong_contract_record = builtin_native_probe_factories_to_record()
+    wrong_contract_record["factories"][0]["adapter_contract"] = {
+        **wrong_contract_record["factories"][0]["adapter_contract"],
+        "payload_mode": "segmented",
+    }
+    wrong_contract_issues = native_probe_factories_record_issues(wrong_contract_record)
+
+    assert any("adapter_contract.payload_mode must match" in issue for issue in wrong_contract_issues)
+    with pytest.raises(ValueError, match=r"adapter_contract\.payload_mode must match"):
+        validate_native_probe_factories_record(wrong_contract_record)
+
+    wrong_contract_type_record = builtin_native_probe_factories_to_record()
+    wrong_contract_type_record["factories"][0]["adapter_contract"] = {
+        **wrong_contract_type_record["factories"][0]["adapter_contract"],
+        "actions_schema_version": True,
+        "requires_native_probe": 1,
+    }
+    wrong_contract_type_issues = native_probe_factories_record_issues(wrong_contract_type_record)
+
+    assert any(
+        "adapter_contract.actions_schema_version must be an integer" in issue
+        for issue in wrong_contract_type_issues
+    )
+    assert any(
+        "adapter_contract.requires_native_probe must be boolean" in issue
+        for issue in wrong_contract_type_issues
+    )
+    with pytest.raises(ValueError, match=r"adapter_contract\.actions_schema_version must be an integer"):
+        validate_native_probe_factories_record(wrong_contract_type_record)
 
 
 def test_builtin_native_probe_factories_record_writer_and_cli(tmp_path, capsys):

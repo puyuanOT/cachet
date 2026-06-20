@@ -520,9 +520,13 @@ evidence rejects those records. Use `--release-safe` on the Databricks
 The built-in reserved vLLM/SGLang probe factories fail closed until real
 block-manager adapters exist, but
 `builtin_native_probe_factories_to_record()` reports that status together with
-the pinned isolated serving-environment profile for each backend. Use that
+the pinned isolated serving-environment profile for each backend. The same
+diagnostic record also includes an `adapter_contract` block naming the required
+engine handoff record, connector-action record, probe record, `qwen3-v1` layout,
+merged payload mode, and `native_probe=true` release requirement. Use that
 diagnostic record when preparing native adapter work so the target engine
-versions and dependency constraints stay tied to the probe entry points:
+versions and dependency constraints stay tied to the probe entry points, and so
+the descriptor contract remains explicit:
 
 ```bash
 document-kv-serving-env \

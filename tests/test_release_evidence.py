@@ -287,7 +287,34 @@ def test_evaluate_release_evidence_rejects_probe_action_payload_mode_mismatch():
     )
 
     assert not evidence.ok
-    assert any("payload_mode mismatch between engine probe and connector actions" in issue for issue in evidence.issues)
+    assert evidence.missing_engine_action_backends == ("vllm",)
+    assert any("Engine KV action payload_mode must match" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_rejects_probe_action_payload_mode_outside_adapter_contract():
+    segmented_probe = _probe_record(ServingBackend.VLLM)
+    segmented_probe["payload_mode"] = "segmented"
+    segmented_actions = _actions_record(ServingBackend.VLLM)
+    segmented_actions["copies"][0]["payload_index"] = 0
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            segmented_probe,
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            segmented_actions,
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert evidence.missing_engine_probe_backends == ("vllm",)
+    assert evidence.missing_engine_action_backends == ("vllm",)
+    assert any("Engine KV probe payload_mode must match" in issue for issue in evidence.issues)
+    assert any("Engine KV action payload_mode must match" in issue for issue in evidence.issues)
 
 
 def test_evaluate_release_evidence_rejects_probe_action_layout_mismatch():

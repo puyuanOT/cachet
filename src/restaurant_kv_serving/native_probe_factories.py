@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Any
 
 from document_kv_cache.native_probe_factories import (
+    NATIVE_PROBE_ADAPTER_CONTRACT,
     SGLANG_NATIVE_PROBE_FACTORY,
     VLLM_NATIVE_PROBE_FACTORY,
     NativeProbeFactoryInspection,
@@ -17,6 +18,7 @@ from document_kv_cache.native_probe_factories import (
     inspect_builtin_native_probe_factories,
     inspect_builtin_native_probe_factory,
     main,
+    native_probe_adapter_contract_to_record,
     native_probe_factory_inspection_to_record,
     native_probe_factories_record_issues,
     sglang_native_probe_factory,
@@ -28,6 +30,7 @@ from restaurant_kv_serving.engine_adapters import ServingBackend
 from restaurant_kv_serving.engine_probe import EngineKVProbeFactoryContext
 
 __all__ = [
+    "NATIVE_PROBE_ADAPTER_CONTRACT",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
     "SGLANG_NATIVE_PROBE_FACTORY",
@@ -37,6 +40,7 @@ __all__ = [
     "inspect_builtin_native_probe_factories",
     "inspect_builtin_native_probe_factory",
     "main",
+    "native_probe_adapter_contract_to_record",
     "native_probe_factories_record_issues",
     "native_probe_factory_inspection_to_record",
     "sglang_native_probe_factory",

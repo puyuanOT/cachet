@@ -44,6 +44,7 @@ from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     SGLANG_NATIVE_PROBE_FACTORY,
     VLLM_NATIVE_PROBE_FACTORY,
+    native_probe_adapter_contract_to_record,
 )
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
@@ -791,6 +792,22 @@ def test_build_release_bundle_rejects_invalid_native_probe_factories(tmp_path):
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             native_probe_factories_jsons=(wrong_profile_native_probe_factories,),
             output_dir=tmp_path / "wrong-profile-native-probe-factories-bundle",
+        )
+
+    wrong_contract_record = _native_probe_factories_record()
+    wrong_contract_record["factories"][0]["adapter_contract"]["requires_native_probe"] = False
+    wrong_contract_native_probe_factories = _write_json(
+        tmp_path / "wrong-contract-native-probe-factories.json",
+        wrong_contract_record,
+    )
+    with pytest.raises(ValueError, match=r"adapter_contract\.requires_native_probe must match"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            native_probe_factories_jsons=(wrong_contract_native_probe_factories,),
+            output_dir=tmp_path / "wrong-contract-native-probe-factories-bundle",
         )
 
     inconsistent_supported_record = _native_probe_factories_record(supported=True)
@@ -2816,6 +2833,7 @@ def _native_probe_factory_record(backend: str, factory_path: str, *, supported: 
     return {
         "backend": backend,
         "factory_path": factory_path,
+        "adapter_contract": native_probe_adapter_contract_to_record(),
         "package_name": backend,
         "package_importable": supported,
         "package_version": f"{backend}-test-version" if supported else None,
