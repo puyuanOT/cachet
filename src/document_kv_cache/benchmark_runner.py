@@ -361,7 +361,7 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
             time_to_completion_seconds=0.0,
             output_text="",
             expected_answer=request.example.expected_answer,
-            error=str(exc),
+            error=_exception_message(exc),
             metadata={"error_type": type(exc).__name__},
         )
     return InferenceMeasurement(
@@ -376,6 +376,10 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
         expected_answer=request.example.expected_answer,
         metadata=dict(generation.metadata),
     )
+
+
+def _exception_message(exc: Exception) -> str:
+    return str(exc) or type(exc).__name__
 
 
 def _openai_compatible_engine(arm: BenchmarkArm, config: OpenAICompatibleBenchmarkConfig) -> BenchmarkEngine:
