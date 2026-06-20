@@ -730,6 +730,12 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "main",
     ]
     assert kvpack.__all__ == ["PackChunk", "LocalRangeReader", "write_kvpack"]
+    legacy_kvpack = importlib.import_module("restaurant_kv_serving.kvpack")
+    assert kvpack.PackChunk.__module__ == "document_kv_cache.kvpack"
+    assert kvpack.write_kvpack.__module__ == "document_kv_cache.kvpack"
+    assert legacy_kvpack.PackChunk is kvpack.PackChunk
+    assert legacy_kvpack.LocalRangeReader is legacy_kvpack.DiskRangeReader
+    assert legacy_kvpack.write_kvpack.__module__ == "restaurant_kv_serving.kvpack"
     assert cache.__all__ == ["CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"]
     assert manifest.__all__ == ["ManifestStore", "InMemoryManifestStore"]
     assert manifest.ManifestStore.__module__ == "document_kv_cache.manifest"

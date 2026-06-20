@@ -1,0 +1,42 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the KVPack ownership inversion for PackChunk validation, bytes-like payload coercion, align_bytes validation, checksum/ref metadata, storage_layout propagation, output-open timing, LocalRangeReader alias behavior, import cycles, curated document exports, broad legacy star imports, root surface preservation, and tests. The initial review found that legacy LocalRangeReader no longer aliased the legacy DiskRangeReader and legacy write_kvpack no longer honored restaurant_kv_serving.kvpack.local_path overrides. Both were fixed with a document-owned private path-resolver helper plus legacy wrappers, and re-review approved with no remaining findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document kvpack implementation ownership",
+    "legacy kvpack compatibility wrapper",
+    "packed KV shard writing",
+    "packed chunk validation",
+    "storage layout propagation",
+    "legacy local_path override compatibility",
+    "document/legacy star-import compatibility",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "python -m py_compile src/document_kv_cache/kvpack.py src/restaurant_kv_serving/kvpack.py tests/test_kvpack.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest tests/test_kvpack.py tests/test_cache.py tests/test_storage.py tests/test_workflow.py tests/test_engine.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest tests/test_kvpack.py tests/test_cache.py tests/test_storage.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "PYTHONPATH=src python import sanity check for document and legacy KVPack aliases",
+    "GPT-5.5 review before merge"
+  ],
+  "what_changed": [
+    "Moved PackChunk, LocalRangeReader, and write_kvpack into document_kv_cache.kvpack.",
+    "Factored document write_kvpack through a private path-resolver helper so legacy writes can preserve legacy local_path override behavior without taking ownership away from the document module.",
+    "Turned restaurant_kv_serving.kvpack into a compatibility wrapper that aliases PackChunk, restores LocalRangeReader as the legacy DiskRangeReader alias, and wraps write_kvpack with the legacy local_path resolver.",
+    "Preserved PackChunk validation, bytes-like payload coercion, align_bytes validation, checksum and ChunkRef metadata creation, storage_layout propagation, and previous output-open timing.",
+    "Added regressions for document KVPack ownership, legacy LocalRangeReader alias compatibility, legacy local_path monkeypatch compatibility, curated document star imports, broad legacy star imports, and governance allowlist scope."
+  ],
+  "why": "The generalized package should own packed cache shard writing because generated document KV chunks must produce document-generic manifest refs. Keeping legacy wrappers for reader and local_path behavior makes this an incremental, behavior-preserving step for existing integrations."
+}
