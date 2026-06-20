@@ -126,6 +126,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_databricks_vllm_smoke_job.py": {
         "restaurant_kv_serving.databricks_vllm_smoke_job",
     },
+    "tests/test_engine_adapters.py": {
+        "restaurant_kv_serving.engine_adapters",
+    },
     "tests/test_engine_probe.py": {
         "restaurant_kv_serving.engine_probe",
     },
@@ -155,6 +158,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.benchmarks",
         "restaurant_kv_serving.dataset_prep",
         "restaurant_kv_serving.engine",
+        "restaurant_kv_serving.engine_adapters",
         "restaurant_kv_serving.engine_protocol",
         "restaurant_kv_serving.kvpack",
         "restaurant_kv_serving.live_server",

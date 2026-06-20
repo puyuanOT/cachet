@@ -173,6 +173,100 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "read_databricks_run_submit_payload",
     ),
+    "EngineAdapterRequest": ("document_kv_cache.engine_adapters", "EngineAdapterRequest"),
+    "EngineAdapterSpec": ("document_kv_cache.engine_adapters", "EngineAdapterSpec"),
+    "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE": (
+        "document_kv_cache.engine_adapters",
+        "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
+    ),
+    "ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION": (
+        "document_kv_cache.engine_adapters",
+        "ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION",
+    ),
+    "EngineKVBlockManagerProbe": (
+        "document_kv_cache.engine_adapters",
+        "EngineKVBlockManagerProbe",
+    ),
+    "EngineKVBindAction": ("document_kv_cache.engine_adapters", "EngineKVBindAction"),
+    "EngineKVConnectorActions": (
+        "document_kv_cache.engine_adapters",
+        "EngineKVConnectorActions",
+    ),
+    "EngineKVConnectorProbeResult": (
+        "document_kv_cache.engine_adapters",
+        "EngineKVConnectorProbeResult",
+    ),
+    "EngineKVInjectionPlan": ("document_kv_cache.engine_adapters", "EngineKVInjectionPlan"),
+    "EngineKVReleaseAction": ("document_kv_cache.engine_adapters", "EngineKVReleaseAction"),
+    "EngineKVReservationAction": (
+        "document_kv_cache.engine_adapters",
+        "EngineKVReservationAction",
+    ),
+    "EngineKVSegmentCopyAction": (
+        "document_kv_cache.engine_adapters",
+        "EngineKVSegmentCopyAction",
+    ),
+    "EngineKVSegmentBinding": (
+        "document_kv_cache.engine_adapters",
+        "EngineKVSegmentBinding",
+    ),
+    "PayloadMode": ("document_kv_cache.engine_adapters", "PayloadMode"),
+    "ServingBackend": ("document_kv_cache.engine_adapters", "ServingBackend"),
+    "build_engine_adapter_request": (
+        "document_kv_cache.engine_adapters",
+        "build_engine_adapter_request",
+    ),
+    "build_engine_kv_connector_actions": (
+        "document_kv_cache.engine_adapters",
+        "build_engine_kv_connector_actions",
+    ),
+    "build_engine_kv_injection_plan": (
+        "document_kv_cache.engine_adapters",
+        "build_engine_kv_injection_plan",
+    ),
+    "engine_kv_connector_probe_result_to_record": (
+        "document_kv_cache.engine_adapters",
+        "engine_kv_connector_probe_result_to_record",
+    ),
+    "engine_adapter_request_to_record": (
+        "document_kv_cache.engine_adapters",
+        "engine_adapter_request_to_record",
+    ),
+    "payload_mode_for": ("document_kv_cache.engine_adapters", "payload_mode_for"),
+    "probe_engine_kv_connector_actions": (
+        "document_kv_cache.engine_adapters",
+        "probe_engine_kv_connector_actions",
+    ),
+    "read_engine_adapter_request_json": (
+        "document_kv_cache.engine_adapters",
+        "read_engine_adapter_request_json",
+    ),
+    "sglang_adapter_spec": ("document_kv_cache.engine_adapters", "sglang_adapter_spec"),
+    "split_engine_adapter_payload": (
+        "document_kv_cache.engine_adapters",
+        "split_engine_adapter_payload",
+    ),
+    "validate_engine_adapter_request_record": (
+        "document_kv_cache.engine_adapters",
+        "validate_engine_adapter_request_record",
+    ),
+    "validate_engine_kv_connector_probe_record": (
+        "document_kv_cache.engine_adapters",
+        "validate_engine_kv_connector_probe_record",
+    ),
+    "validate_engine_kv_connector_actions": (
+        "document_kv_cache.engine_adapters",
+        "validate_engine_kv_connector_actions",
+    ),
+    "view_engine_adapter_payload": (
+        "document_kv_cache.engine_adapters",
+        "view_engine_adapter_payload",
+    ),
+    "vllm_adapter_spec": ("document_kv_cache.engine_adapters", "vllm_adapter_spec"),
+    "write_engine_adapter_request_json": (
+        "document_kv_cache.engine_adapters",
+        "write_engine_adapter_request_json",
+    ),
     "ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND": (
         "document_kv_cache.engine_probe",
         "ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND",

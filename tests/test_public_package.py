@@ -49,6 +49,8 @@ def test_public_document_package_reexports_core_api():
         DocumentKVService,
         DocumentKVWorkflow,
         DiskRangeReader,
+        EngineAdapterRequest,
+        EngineAdapterSpec,
         EngineReadyRequest,
         BenchmarkCommand,
         BenchmarkDatasetPath,
@@ -96,6 +98,7 @@ def test_public_document_package_reexports_core_api():
         ReleaseBundleArtifact,
         SegmentedMaterializedKV,
         ServingEngineConnector,
+        ServingBackend,
         ServingEnvironmentProfile,
         NativeProbeFactoryInspection,
         NativeProbeFactoryUnavailable,
@@ -119,6 +122,7 @@ def test_public_document_package_reexports_core_api():
         build_databricks_run_submit_payload,
         build_databricks_storage_benchmark_run_submit_payload,
         build_databricks_vllm_smoke_run_submit_payload,
+        build_engine_adapter_request,
         build_engine_ready_request,
         build_handle_from_materialized,
         build_single_node_g5_cluster,
@@ -164,6 +168,7 @@ def test_public_document_package_reexports_core_api():
         serving_environment_profiles,
         serving_environment_profiles_to_record,
         sglang_native_probe_factory,
+        vllm_adapter_spec,
         vllm_native_probe_factory,
         summarize_databricks_run,
         summarize_databricks_run_submit_payload,
@@ -180,6 +185,7 @@ def test_public_document_package_reexports_core_api():
         databricks_job,
         databricks_runs,
         engine,
+        engine_adapters,
         engine_protocol,
         engine_probe,
         materializer,
@@ -279,6 +285,21 @@ def test_public_document_package_reexports_core_api():
     assert EngineReadyRequest is engine.EngineReadyRequest
     assert EngineReadyRequest is restaurant_kv_serving.EngineReadyRequest
     assert EngineReadyRequest.__module__ == "document_kv_cache.engine"
+    assert EngineAdapterRequest is engine_adapters.EngineAdapterRequest
+    assert EngineAdapterRequest is restaurant_kv_serving.EngineAdapterRequest
+    assert EngineAdapterRequest.__module__ == "document_kv_cache.engine_adapters"
+    assert EngineAdapterSpec is engine_adapters.EngineAdapterSpec
+    assert EngineAdapterSpec is restaurant_kv_serving.EngineAdapterSpec
+    assert EngineAdapterSpec.__module__ == "document_kv_cache.engine_adapters"
+    assert ServingBackend is engine_adapters.ServingBackend
+    assert ServingBackend is restaurant_kv_serving.ServingBackend
+    assert ServingBackend.__module__ == "document_kv_cache.engine_adapters"
+    assert build_engine_adapter_request is engine_adapters.build_engine_adapter_request
+    assert build_engine_adapter_request is restaurant_kv_serving.build_engine_adapter_request
+    assert build_engine_adapter_request.__module__ == "document_kv_cache.engine_adapters"
+    assert vllm_adapter_spec is engine_adapters.vllm_adapter_spec
+    assert vllm_adapter_spec is restaurant_kv_serving.vllm_adapter_spec
+    assert vllm_adapter_spec.__module__ == "document_kv_cache.engine_adapters"
     assert DTYPE_BYTE_WIDTHS is engine_protocol.DTYPE_BYTE_WIDTHS
     assert DTYPE_BYTE_WIDTHS is restaurant_kv_serving.DTYPE_BYTE_WIDTHS
     assert AttentionMechanism is engine_protocol.AttentionMechanism
@@ -1056,6 +1077,12 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "vllm_adapter_spec",
         "write_engine_adapter_request_json",
     ]
+    legacy_engine_adapters = importlib.import_module("restaurant_kv_serving.engine_adapters")
+    assert engine_adapters.EngineAdapterRequest.__module__ == "document_kv_cache.engine_adapters"
+    assert engine_adapters.build_engine_adapter_request.__module__ == "document_kv_cache.engine_adapters"
+    assert legacy_engine_adapters.EngineAdapterRequest is engine_adapters.EngineAdapterRequest
+    assert legacy_engine_adapters.build_engine_adapter_request is engine_adapters.build_engine_adapter_request
+    assert not hasattr(legacy_engine_adapters, "__all__")
     engine_probe = importlib.import_module("document_kv_cache.engine_probe")
     assert engine_probe.__all__ == [
         "EngineKVProbeConfig",
