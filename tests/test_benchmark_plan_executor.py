@@ -363,6 +363,133 @@ def test_legacy_plan_executor_import_order_does_not_capture_public_monkeypatch()
     assert result.returncode == 0, result.stderr
 
 
+def test_legacy_plan_executor_uses_source_result_class_when_public_class_is_replaced_before_import():
+    script = dedent(
+        """
+        import sys
+        import document_kv_cache.benchmark_plan_executor as public_plan_executor
+
+        class FakeBenchmarkCommandResult:
+            def __init__(*args, **kwargs):
+                raise AssertionError("legacy imported patched public result class")
+
+        public_plan_executor.BenchmarkCommandResult = FakeBenchmarkCommandResult
+
+        import restaurant_kv_serving.benchmark_plan_executor as legacy_plan_executor
+
+        assert legacy_plan_executor.BenchmarkCommandResult is not FakeBenchmarkCommandResult
+        result = legacy_plan_executor.BenchmarkCommandResult(
+            name="command-1",
+            argv=(sys.executable, "-c", "pass"),
+            returncode=0,
+        )
+        assert result.ok is True
+        assert type(result) is legacy_plan_executor.BenchmarkCommandResult
+        results = legacy_plan_executor.execute_benchmark_job_plan(
+            {"commands": [{"name": "command-1", "argv": [sys.executable, "-c", "pass"]}]},
+            dry_run=True,
+        )
+        assert type(results[0]) is legacy_plan_executor.BenchmarkCommandResult
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_plan_executor_uses_source_result_class_when_public_class_is_mutated_before_import():
+    script = dedent(
+        """
+        import sys
+        import document_kv_cache.benchmark_plan_executor as public_plan_executor
+
+        public_plan_executor.BenchmarkCommandResult.ok = property(lambda self: False)
+
+        import restaurant_kv_serving.benchmark_plan_executor as legacy_plan_executor
+
+        result = legacy_plan_executor.BenchmarkCommandResult(
+            name="command-1",
+            argv=(sys.executable, "-c", "pass"),
+            returncode=0,
+        )
+        assert result.ok is True
+        results = legacy_plan_executor.execute_benchmark_job_plan(
+            {"commands": [{"name": "command-1", "argv": [sys.executable, "-c", "pass"]}]},
+            dry_run=True,
+        )
+        assert results[0].ok is True
+        assert public_plan_executor.BenchmarkCommandResult(
+            name="command-1",
+            argv=(sys.executable, "-c", "pass"),
+            returncode=0,
+        ).ok is False
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_plan_executor_uses_source_result_class_when_public_slot_descriptor_is_mutated_before_import():
+    script = dedent(
+        """
+        import sys
+        import document_kv_cache.benchmark_plan_executor as public_plan_executor
+
+        class ForeignResult:
+            __slots__ = ("returncode",)
+
+        public_plan_executor.BenchmarkCommandResult.returncode = ForeignResult.returncode
+
+        import restaurant_kv_serving.benchmark_plan_executor as legacy_plan_executor
+
+        result = legacy_plan_executor.BenchmarkCommandResult(
+            name="command-1",
+            argv=(sys.executable, "-c", "pass"),
+            returncode=0,
+        )
+        assert result.ok is True
+        results = legacy_plan_executor.execute_benchmark_job_plan(
+            {"commands": [{"name": "command-1", "argv": [sys.executable, "-c", "pass"]}]},
+            dry_run=True,
+        )
+        assert type(results[0]) is legacy_plan_executor.BenchmarkCommandResult
+        assert results[0].ok is True
+        try:
+            public_plan_executor.BenchmarkCommandResult(
+                name="command-1",
+                argv=(sys.executable, "-c", "pass"),
+                returncode=0,
+            )
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("public slot descriptor mutation did not affect construction")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_benchmark_plan_executor_document_module_owns_public_api():
     assert public_plan_executor.__all__ == [
         "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",
