@@ -252,6 +252,7 @@ class BenchmarkPlanConfig:
     engine_probes: tuple[EngineProbePlanConfig, ...] = ()
     release_evidence: ReleaseEvidencePlanConfig | None = None
     release_bundle: ReleaseBundlePlanConfig | None = None
+    native_probe_factories_output_json: str | None = None
 
     def __post_init__(self) -> None:
         if not self.suite_id:
@@ -286,6 +287,8 @@ class BenchmarkPlanConfig:
             raise ValueError("timeout_seconds must be positive")
         if self.cache_runtime_prompt and self.cache_base_url is None:
             raise ValueError("cache_runtime_prompt requires cache_base_url")
+        if self.native_probe_factories_output_json is not None and not self.native_probe_factories_output_json:
+            raise ValueError("native_probe_factories_output_json must be non-empty when provided")
         object.__setattr__(self, "engine_probes", tuple(self.engine_probes))
         if len({probe.backend for probe in self.engine_probes}) != len(self.engine_probes):
             raise ValueError("engine_probes must not contain duplicate backends")
@@ -397,6 +400,8 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
     if config.storage_benchmark is not None:
         post_benchmark_commands.append(_storage_benchmark_command(config))
     post_benchmark_commands.extend(_engine_probe_command(config, probe_config) for probe_config in config.engine_probes)
+    if config.native_probe_factories_output_json is not None:
+        post_benchmark_commands.append(_native_probe_factories_command(config))
     if config.release_evidence is not None:
         post_benchmark_commands.append(_release_evidence_command(config))
     if config.release_bundle is not None:
@@ -410,6 +415,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
             "Run these commands on an AWS g5-compatible environment with the target server already listening.",
             "The benchmark compares baseline full-prefill requests with the document KV-cache arm.",
             "When configured, the storage-reader benchmark runs after inference to capture selected reader load evidence on the same node.",
+            "When configured, native probe factory diagnostics run before release validation and can be bundled as release handoff evidence.",
             "When configured, release evidence validation runs last and checks V1, storage, and native engine-probe artifacts together.",
             "When configured, release bundle assembly follows release evidence and copies the validated artifacts plus optional sidecars into a checksummed handoff directory.",
         ),
@@ -473,6 +479,7 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
             if plan.config.release_bundle is not None
             else None
         ),
+        "native_probe_factories_output_json": plan.config.native_probe_factories_output_json,
         "planned_engine_probes": [
             {
                 "backend": probe.backend.value,
@@ -659,6 +666,21 @@ def _engine_probe_command(config: BenchmarkPlanConfig, probe_config: EngineProbe
     return BenchmarkCommand(name=f"run-{probe_config.backend.value}-engine-probe", argv=argv)
 
 
+def _native_probe_factories_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
+    if config.native_probe_factories_output_json is None:
+        raise ValueError("native_probe_factories_output_json must be configured")
+    return BenchmarkCommand(
+        name="inspect-native-probe-factories",
+        argv=(
+            config.python_executable,
+            "-m",
+            "document_kv_cache.native_probe_factories",
+            "--output-json",
+            config.native_probe_factories_output_json,
+        ),
+    )
+
+
 def _release_evidence_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     release_config = config.release_evidence
     if release_config is None:
@@ -719,7 +741,7 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--pr-evidence-json", pr_evidence_json)
     if bundle_config.github_governance_json is not None:
         argv = (*argv, "--github-governance-json", bundle_config.github_governance_json)
-    for native_probe_factories_json in bundle_config.native_probe_factories_jsons:
+    for native_probe_factories_json in _release_bundle_native_probe_factories_jsons(config):
         argv = (*argv, "--native-probe-factories-json", native_probe_factories_json)
     if bundle_config.overwrite:
         argv = (*argv, "--overwrite")
@@ -747,9 +769,27 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "package_wheel": bundle_config.package_wheel,
         "pr_evidence_jsons": list(bundle_config.pr_evidence_jsons),
         "github_governance_json": bundle_config.github_governance_json,
-        "native_probe_factories_jsons": list(bundle_config.native_probe_factories_jsons),
+        "native_probe_factories_jsons": list(_release_bundle_native_probe_factories_jsons(config)),
         "overwrite": bundle_config.overwrite,
     }
+
+
+def _release_bundle_native_probe_factories_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
+    bundle_config = config.release_bundle
+    if bundle_config is None:
+        return ()
+    paths = []
+    if config.native_probe_factories_output_json is not None:
+        paths.append(config.native_probe_factories_output_json)
+    paths.extend(bundle_config.native_probe_factories_jsons)
+    deduped = []
+    seen_canonical_paths = set()
+    for path in paths:
+        canonical_path = _canonical_artifact_path(path)
+        if canonical_path not in seen_canonical_paths:
+            seen_canonical_paths.add(canonical_path)
+            deduped.append(path)
+    return tuple(deduped)
 
 
 def _release_engine_probe_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
@@ -900,6 +940,8 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
     if config.release_bundle is not None:
         output_paths.append(("release_bundle.output_json", config.release_bundle.output_json))
         output_paths.append(("release_bundle.output_dir", config.release_bundle.output_dir))
+    if config.native_probe_factories_output_json is not None:
+        output_paths.append(("native_probe_factories_output_json", config.native_probe_factories_output_json))
     return tuple(output_paths)
 
 
@@ -1139,6 +1181,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Require planned engine probes to be native release probes for exactly vLLM and SGLang before writing targets.",
     )
+    parser.add_argument(
+        "--native-probe-factories-output-json",
+        help="Append native-probe factory diagnostics and write document_kv.native_probe_factories.v1 here.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1171,6 +1217,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 has_planned_engine_probes=bool(engine_probes),
             ),
             release_bundle=_release_bundle_config_from_cli(args, prepared_dir=prepared_dir),
+            native_probe_factories_output_json=args.native_probe_factories_output_json,
         )
         _validate_plan_output_paths(
             config,
