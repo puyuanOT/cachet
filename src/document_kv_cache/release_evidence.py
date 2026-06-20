@@ -217,7 +217,9 @@ def evaluate_release_evidence(
     issues.extend(v1_issues)
     issues.extend(storage_issues)
 
-    probe_backends, invalid_probe_records, duplicate_probe_backends = _engine_probe_evidence(engine_probe_records)
+    probe_backends, invalid_probe_records, duplicate_probe_backends, valid_probe_records = _engine_probe_evidence(
+        engine_probe_records
+    )
     missing_probe_backends = tuple(backend for backend in required_backends if backend not in probe_backends)
     if missing_probe_backends:
         issues.append(f"missing engine probe backends: {', '.join(missing_probe_backends)}")
@@ -225,7 +227,13 @@ def evaluate_release_evidence(
         issues.append(f"duplicate engine probe backends: {', '.join(duplicate_probe_backends)}")
     issues.extend(f"invalid engine probe record: {issue}" for issue in invalid_probe_records)
 
-    action_backends, invalid_action_records, duplicate_action_backends = _engine_action_evidence(engine_action_records)
+    action_backends, invalid_action_records, duplicate_action_backends, valid_action_records = _engine_action_evidence(
+        engine_action_records
+    )
+    invalid_action_records = (
+        *invalid_action_records,
+        *_probe_action_pair_issues(valid_probe_records, valid_action_records),
+    )
     missing_action_backends = tuple(backend for backend in required_action_backends if backend not in action_backends)
     if missing_action_backends:
         issues.append(f"missing engine action backends: {', '.join(missing_action_backends)}")
@@ -578,10 +586,11 @@ def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
 
 def _engine_probe_evidence(
     records: Sequence[Mapping[str, Any]],
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], dict[str, Mapping[str, Any]]]:
     backends: list[str] = []
     duplicate_backends: list[str] = []
     invalid_records: list[str] = []
+    valid_records: dict[str, Mapping[str, Any]] = {}
     for index, record in enumerate(records):
         backend = record.get("backend")
         label = str(backend) if isinstance(backend, str) and backend else f"record[{index}]"
@@ -596,15 +605,17 @@ def _engine_probe_evidence(
                 duplicate_backends.append(label)
             continue
         backends.append(label)
-    return tuple(backends), tuple(invalid_records), tuple(duplicate_backends)
+        valid_records[label] = record
+    return tuple(backends), tuple(invalid_records), tuple(duplicate_backends), valid_records
 
 
 def _engine_action_evidence(
     records: Sequence[Mapping[str, Any]],
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], dict[str, Mapping[str, Any]]]:
     backends: list[str] = []
     duplicate_backends: list[str] = []
     invalid_records: list[str] = []
+    valid_records: dict[str, Mapping[str, Any]] = {}
     for index, record in enumerate(records):
         backend = record.get("backend")
         label = str(backend) if isinstance(backend, str) and backend else f"record[{index}]"
@@ -619,7 +630,48 @@ def _engine_action_evidence(
                 duplicate_backends.append(label)
             continue
         backends.append(label)
-    return tuple(backends), tuple(invalid_records), tuple(duplicate_backends)
+        valid_records[label] = record
+    return tuple(backends), tuple(invalid_records), tuple(duplicate_backends), valid_records
+
+
+def _probe_action_pair_issues(
+    probe_records: Mapping[str, Mapping[str, Any]],
+    action_records: Mapping[str, Mapping[str, Any]],
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    for backend in REQUIRED_ENGINE_PROBE_BACKENDS:
+        probe = probe_records.get(backend)
+        actions = action_records.get(backend)
+        if probe is None or actions is None:
+            continue
+        reservation = _required_mapping(actions, "reservation")
+        copies = actions.get("copies")
+        copied_segments = len(copies) if isinstance(copies, Sequence) and not isinstance(copies, (str, bytes)) else None
+        expected_pairs = (
+            ("request_id", probe.get("request_id"), actions.get("request_id")),
+            ("total_blocks", probe.get("total_blocks"), reservation.get("total_blocks")),
+            ("copied_tokens", probe.get("copied_tokens"), reservation.get("total_tokens")),
+            ("copied_bytes", probe.get("copied_bytes"), _action_record_expected_bytes(reservation)),
+            ("copied_segments", probe.get("copied_segments"), copied_segments),
+        )
+        for field_name, probe_value, action_value in expected_pairs:
+            if probe_value != action_value:
+                issues.append(
+                    f"{backend}: {field_name} mismatch between engine probe and connector actions "
+                    f"({probe_value!r} != {action_value!r})"
+                )
+    return tuple(issues)
+
+
+def _action_record_expected_bytes(reservation: Mapping[str, Any]) -> int | None:
+    total_tokens = reservation.get("total_tokens")
+    layout = reservation.get("layout")
+    if not isinstance(total_tokens, int) or not isinstance(layout, Mapping):
+        return None
+    bytes_per_token = layout.get("bytes_per_token")
+    if not isinstance(bytes_per_token, int):
+        return None
+    return total_tokens * bytes_per_token
 
 
 def _validated_required_backends(backends: Sequence[str]) -> tuple[str, ...]:

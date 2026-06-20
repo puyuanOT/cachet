@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/cross-check-probe-action-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 approved the probe/action release-evidence cross-check PR with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/release_evidence.py",
+        "tests/test_release_evidence.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_evidence.py -q",
+        "poetry check",
+        "poetry run pytest tests/test_release_evidence.py tests/test_release_bundle.py tests/test_project_governance.py tests/test_public_package.py -q",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check origin/main..HEAD",
+        "poetry run pytest -q"
+      ],
+      "what_changed": [
+        "Release evidence now cross-checks each backend's native engine probe record against its connector-action sidecar.",
+        "Release evidence rejects mismatches in request id, block count, copied token count, copied byte count, and copied segment count."
+      ],
+      "why": "Strict V1 release evidence should prove that connector-action sidecars audit the same native probe run rather than merely being independently valid JSON."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
