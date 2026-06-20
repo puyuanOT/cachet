@@ -152,38 +152,126 @@ class OpenAICompatibleBenchmarkConfig:
     cache_extra_body: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.suite_id:
-            raise ValueError("suite_id must be non-empty")
-        if not self.dataset_paths:
+        _validate_non_empty_string(self.suite_id, "suite_id")
+        dataset_paths = _validated_dataset_paths(self.dataset_paths)
+        if not dataset_paths:
             raise ValueError("dataset_paths must be non-empty")
-        for dataset in self.dataset_paths:
+        for dataset in dataset_paths:
             validate_v1_dataset(dataset)
-        if not self.base_url:
-            raise ValueError("base_url must be non-empty")
-        if self.cache_base_url is not None and not self.cache_base_url:
-            raise ValueError("cache_base_url must be non-empty when provided")
-        if not self.endpoint:
-            raise ValueError("endpoint must be non-empty")
-        if self.cache_endpoint is not None and not self.cache_endpoint:
-            raise ValueError("cache_endpoint must be non-empty when provided")
-        if self.limit_per_dataset is not None and self.limit_per_dataset <= 0:
+        _validate_non_empty_string(self.base_url, "base_url")
+        if self.cache_base_url is not None:
+            _validate_non_empty_string(self.cache_base_url, "cache_base_url")
+        _validate_non_empty_string(self.endpoint, "endpoint")
+        if self.cache_endpoint is not None:
+            _validate_non_empty_string(self.cache_endpoint, "cache_endpoint")
+        _validate_non_empty_string(self.model_id, "model_id")
+        _validate_non_empty_string(self.hardware_target, "hardware_target")
+        if self.limit_per_dataset is not None and (
+            type(self.limit_per_dataset) is not int or self.limit_per_dataset <= 0
+        ):
             raise ValueError("limit_per_dataset must be positive when provided")
-        if self.repeats <= 0:
-            raise ValueError("repeats must be positive")
-        if self.max_tokens <= 0:
-            raise ValueError("max_tokens must be positive")
-        if self.temperature < 0:
-            raise ValueError("temperature must be non-negative")
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        _validate_positive_int(self.repeats, "repeats")
+        if self.seed is not None and type(self.seed) is not int:
+            raise ValueError("seed must be an integer when provided")
+        if type(self.shuffle) is not bool:
+            raise ValueError("shuffle must be a boolean")
+        _validate_positive_int(self.max_tokens, "max_tokens")
+        _validate_non_negative_finite_number(self.temperature, "temperature")
+        _validate_positive_finite_number(self.timeout_seconds, "timeout_seconds")
+        if type(self.stream) is not bool:
+            raise ValueError("stream must be a boolean")
+        if type(self.cache_runtime_prompt) is not bool:
+            raise ValueError("cache_runtime_prompt must be a boolean")
+        if self.api_key is not None and not isinstance(self.api_key, str):
+            raise ValueError("api_key must be a string when provided")
         if self.prompt_token_accounting not in {"logical", "server_usage"}:
             raise ValueError("prompt_token_accounting must be 'logical' or 'server_usage'")
         if self.cache_runtime_prompt and self.cache_base_url is None:
             raise ValueError("cache_runtime_prompt requires cache_base_url; pass the cache proxy URL explicitly")
+        object.__setattr__(self, "dataset_paths", dataset_paths)
+        object.__setattr__(
+            self,
+            "baseline_extra_body",
+            _json_object_mapping(self.baseline_extra_body, "baseline_extra_body"),
+        )
+        object.__setattr__(
+            self,
+            "cache_extra_body",
+            _json_object_mapping(self.cache_extra_body, "cache_extra_body"),
+        )
 
 
 OpenAICompatibleEngineFactory = Callable[[BenchmarkArm, OpenAICompatibleBenchmarkConfig], BenchmarkEngine]
 
+
+def _validate_non_empty_string(value: Any, field_name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be non-empty")
+
+
+def _validate_positive_int(value: Any, field_name: str) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{field_name} must be positive")
+
+
+def _validate_non_negative_finite_number(value: Any, field_name: str) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"{field_name} must be a non-negative finite number")
+
+
+def _validate_positive_finite_number(value: Any, field_name: str) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{field_name} must be a positive finite number")
+
+
+def _validated_dataset_paths(value: Any) -> dict[str, str | Path]:
+    if not isinstance(value, Mapping):
+        raise ValueError("dataset_paths must be a mapping")
+    paths: dict[str, str | Path] = {}
+    for dataset, path in value.items():
+        if not isinstance(dataset, str) or not dataset:
+            raise ValueError("dataset_paths keys must be non-empty strings")
+        if not isinstance(path, (str, Path)):
+            raise ValueError(f"dataset_paths.{dataset} must be a path string or Path")
+        paths[dataset] = path
+    return paths
+
+
+def _json_object_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping")
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{field_name} keys must be non-empty strings")
+        normalized[key] = _json_compatible_value(item, f"{field_name}.{key}")
+    return normalized
+
+
+def _json_compatible_value(value: Any, field_name: str) -> Any:
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if type(value) is int:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"{field_name} must be JSON-compatible")
+        return value
+    if isinstance(value, Mapping):
+        return _json_object_mapping(value, field_name)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
+        return [_json_compatible_value(item, f"{field_name}[{index}]") for index, item in enumerate(value)]
+    raise ValueError(f"{field_name} must be JSON-compatible")
 
 def default_benchmark_arms() -> tuple[BenchmarkArm, ...]:
     return (baseline_prefill_arm(), document_kv_cache_arm())

@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED - No findings; validation preserves OpenAI request flow, legacy re-export hooks remain covered, and mapping normalization has no obvious payload regressions.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_runner.py",
+    "src/document_kv_cache/openai_compatible.py",
+    "tests/test_benchmark_runner.py",
+    "tests/test_openai_compatible.py"
+  ],
+  "verification": [
+    "python -m py_compile src/document_kv_cache/benchmark_runner.py src/document_kv_cache/openai_compatible.py tests/test_benchmark_runner.py tests/test_openai_compatible.py -> passed",
+    "poetry run pytest tests/test_benchmark_runner.py tests/test_openai_compatible.py -q -> 91 passed",
+    "git diff --check -> clean",
+    "poetry run pytest tests/test_benchmark_runner.py tests/test_openai_compatible.py tests/test_public_package.py tests/test_project_governance.py -q -> 136 passed",
+    "poetry check && poetry install --dry-run -> All set",
+    "poetry run python console script import check -> checked 50 console scripts",
+    "poetry run pytest -q -> 1125 passed",
+    "poetry build -> passed"
+  ],
+  "what_changed": [
+    "Hardened OpenAI-compatible benchmark and engine configuration validation."
+  ],
+  "why": "V1 AWS g5 quality/latency benchmark runs should reject ambiguous bool-as-int fields, non-finite timings/sampling parameters, malformed dataset path maps, and non-JSON request-body/header overrides before issuing server requests."
+}

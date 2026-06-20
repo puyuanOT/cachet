@@ -8,7 +8,8 @@ import time
 import urllib.error as _urlerror
 import urllib.parse as _urlparse
 import urllib.request as _urlrequest
-from collections.abc import Callable, Iterator, Mapping
+import math
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
@@ -58,18 +59,95 @@ class OpenAICompatibleEngineConfig:
     extra_headers: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.base_url:
-            raise ValueError("base_url must be non-empty")
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
-        if self.max_tokens <= 0:
-            raise ValueError("max_tokens must be positive")
-        if self.temperature < 0:
-            raise ValueError("temperature must be non-negative")
+        _validate_non_empty_string(self.base_url, "base_url")
+        _validate_non_empty_string(self.endpoint, "endpoint")
+        if self.api_key is not None and not isinstance(self.api_key, str):
+            raise ValueError("api_key must be a string when provided")
+        _validate_positive_finite_number(self.timeout_seconds, "timeout_seconds")
+        _validate_positive_int(self.max_tokens, "max_tokens")
+        _validate_non_negative_finite_number(self.temperature, "temperature")
+        if type(self.stream) is not bool:
+            raise ValueError("stream must be a boolean")
+        if type(self.include_usage) is not bool:
+            raise ValueError("include_usage must be a boolean")
+        if self.model_id is not None:
+            _validate_non_empty_string(self.model_id, "model_id")
         if self.prompt_text_mode not in {"logical", "runtime"}:
             raise ValueError("prompt_text_mode must be 'logical' or 'runtime'")
         if self.prompt_token_accounting not in {"logical", "server_usage"}:
             raise ValueError("prompt_token_accounting must be 'logical' or 'server_usage'")
+        object.__setattr__(self, "extra_body", _json_object_mapping(self.extra_body, "extra_body"))
+        object.__setattr__(self, "extra_headers", _string_mapping(self.extra_headers, "extra_headers"))
+
+
+def _validate_non_empty_string(value: Any, field_name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be non-empty")
+
+
+def _validate_positive_int(value: Any, field_name: str) -> None:
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{field_name} must be positive")
+
+
+def _validate_non_negative_finite_number(value: Any, field_name: str) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise ValueError(f"{field_name} must be a non-negative finite number")
+
+
+def _validate_positive_finite_number(value: Any, field_name: str) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
+        raise ValueError(f"{field_name} must be a positive finite number")
+
+
+def _string_mapping(value: Any, field_name: str) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping")
+    normalized: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{field_name} keys must be non-empty strings")
+        if not isinstance(item, str):
+            raise ValueError(f"{field_name}.{key} must be a string")
+        normalized[key] = item
+    return normalized
+
+
+def _json_object_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping")
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{field_name} keys must be non-empty strings")
+        normalized[key] = _json_compatible_value(item, f"{field_name}.{key}")
+    return normalized
+
+
+def _json_compatible_value(value: Any, field_name: str) -> Any:
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if type(value) is int:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"{field_name} must be JSON-compatible")
+        return value
+    if isinstance(value, Mapping):
+        return _json_object_mapping(value, field_name)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
+        return [_json_compatible_value(item, f"{field_name}[{index}]") for index, item in enumerate(value)]
+    raise ValueError(f"{field_name} must be JSON-compatible")
 
 
 class OpenAICompatibleCompletionEngine:
