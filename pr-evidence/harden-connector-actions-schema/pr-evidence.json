@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no findings, verified tests/test_engine_adapters.py, and approved the focused schema hardening.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/engine_adapters.py; tests/test_engine_adapters.py; README.md; pr-evidence/harden-connector-actions-schema/README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_engine_adapters.py; python -m pytest tests/test_release_evidence.py tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring; python -m pytest -q; poetry check; poetry install --dry-run; poetry install --dry-run --extras databricks --extras test; poetry build; GPT-5.5 review approved with no findings."
+  ],
+  "what_changed": [
+    "Engine KV connector action records now reject unsupported top-level and nested action keys before native adapter parsing."
+  ],
+  "why": "Keeps out-of-process vLLM/SGLang native adapter descriptors fail-closed so release evidence and engine boundaries cannot silently carry stale or debug payloads."
+}
