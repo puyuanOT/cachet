@@ -146,6 +146,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     },
     "tests/test_public_package.py": {
         "restaurant_kv_serving",
+        "restaurant_kv_serving.benchmark_plan_executor",
         "restaurant_kv_serving.benchmark_runner",
         "restaurant_kv_serving.benchmarks",
         "restaurant_kv_serving.dataset_prep",

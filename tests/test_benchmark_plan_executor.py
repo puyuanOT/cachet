@@ -248,3 +248,105 @@ def test_public_plan_executor_main_respects_document_namespace_monkeypatch(monke
         "plan_source": {"source": "public-plan-source-hook"},
     }
     assert legacy_plan_executor.execute_benchmark_job_plan_json is original_legacy_execute
+
+
+def test_legacy_plan_executor_main_respects_legacy_namespace_monkeypatch(monkeypatch, capsys, tmp_path):
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan_for((sys.executable, "-c", "pass"))), encoding="utf-8")
+    original_public_execute = public_plan_executor.execute_benchmark_job_plan_json
+
+    def fake_execute_json(path, *, dry_run=False, cwd=None):
+        assert str(path) == str(plan_path)
+        return ("legacy-hook-result",)
+
+    def fake_record(results):
+        assert results == ("legacy-hook-result",)
+        return {"ok": True, "source": "legacy-hook"}
+
+    def fake_plan_source_payload_to_record(path, driver_path, payload):
+        assert str(path) == str(plan_path)
+        assert str(driver_path) == str(plan_path)
+        assert payload == plan_path.read_bytes()
+        return {"source": "legacy-plan-source-hook"}
+
+    monkeypatch.setattr(legacy_plan_executor, "execute_benchmark_job_plan_json", fake_execute_json)
+    monkeypatch.setattr(legacy_plan_executor, "benchmark_command_results_to_record", fake_record)
+    monkeypatch.setattr(
+        legacy_plan_executor,
+        "benchmark_plan_source_payload_to_record",
+        fake_plan_source_payload_to_record,
+    )
+
+    exit_code = legacy_plan_executor.main(["--plan-json", str(plan_path)])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "ok": True,
+        "source": "legacy-hook",
+        "plan_source": {"source": "legacy-plan-source-hook"},
+    }
+    assert public_plan_executor.execute_benchmark_job_plan_json is original_public_execute
+
+
+def test_legacy_plan_executor_result_json_respects_legacy_record_hook(monkeypatch, tmp_path):
+    plan_path = tmp_path / "plan.json"
+    result_path = tmp_path / "result.json"
+    plan_path.write_text(json.dumps(plan_for((sys.executable, "-c", "pass"))), encoding="utf-8")
+
+    def fake_execute_json(path, *, dry_run=False, cwd=None):
+        assert str(path) == str(plan_path)
+        return ("legacy-hook-result",)
+
+    def fake_record(results):
+        assert results == ("legacy-hook-result",)
+        return {"ok": True, "source": "legacy-result-json-hook"}
+
+    def fake_plan_source_payload_to_record(path, driver_path, payload):
+        return {"source": "legacy-plan-source-hook"}
+
+    monkeypatch.setattr(legacy_plan_executor, "execute_benchmark_job_plan_json", fake_execute_json)
+    monkeypatch.setattr(legacy_plan_executor, "benchmark_command_results_to_record", fake_record)
+    monkeypatch.setattr(
+        legacy_plan_executor,
+        "benchmark_plan_source_payload_to_record",
+        fake_plan_source_payload_to_record,
+    )
+
+    exit_code = legacy_plan_executor.main(["--plan-json", str(plan_path), "--result-json", str(result_path)])
+
+    assert exit_code == 0
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "ok": True,
+        "source": "legacy-result-json-hook",
+        "plan_source": {"source": "legacy-plan-source-hook"},
+    }
+
+
+def test_benchmark_plan_executor_document_module_owns_public_api():
+    assert public_plan_executor.__all__ == [
+        "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",
+        "BENCHMARK_PLAN_SOURCE_RECORD_TYPE",
+        "BenchmarkCommandResult",
+        "execute_benchmark_job_plan",
+        "execute_benchmark_job_plan_json",
+        "benchmark_command_results_to_record",
+        "benchmark_plan_source_to_record",
+        "benchmark_plan_source_payload_to_record",
+        "write_benchmark_command_results_json",
+        "main",
+    ]
+    assert public_plan_executor.BenchmarkCommandResult.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert public_plan_executor.execute_benchmark_job_plan.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert public_plan_executor.main.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert not hasattr(legacy_plan_executor, "__all__")
+    assert legacy_plan_executor.BenchmarkCommandResult is public_plan_executor.BenchmarkCommandResult
+    assert legacy_plan_executor.execute_benchmark_job_plan.__module__ == "restaurant_kv_serving.benchmark_plan_executor"
+    assert (
+        legacy_plan_executor.benchmark_command_results_to_record.__module__
+        == "restaurant_kv_serving.benchmark_plan_executor"
+    )
+    assert (
+        legacy_plan_executor.benchmark_plan_source_payload_to_record.__module__
+        == "restaurant_kv_serving.benchmark_plan_executor"
+    )
+    assert legacy_plan_executor.main.__module__ == "restaurant_kv_serving.benchmark_plan_executor"

@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the benchmark plan executor ownership diff with emphasis on public/legacy CLI monkeypatch isolation, result-json behavior, curated document __all__, legacy broad import compatibility, and private helper usability. It approved the current diff with no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_plan_executor.py",
+    "src/restaurant_kv_serving/benchmark_plan_executor.py",
+    "tests/test_benchmark_plan_executor.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "pr-evidence/document-benchmark-plan-executor-ownership/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_benchmark_plan_executor.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret-pattern scan across docs, source, tests, databricks, pr-evidence, and GitHub metadata",
+    "GPT-5.5 focused review"
+  ],
+  "what_changed": [
+    "Moved benchmark plan execution implementation into document_kv_cache.benchmark_plan_executor with a curated document __all__ surface.",
+    "Replaced restaurant_kv_serving.benchmark_plan_executor with a compatibility facade that preserves broad legacy import behavior and local CLI hook points.",
+    "Added regressions for document and legacy CLI monkeypatch isolation, legacy result-json serialization hooks, public module ownership, and explicit legacy-test governance."
+  ],
+  "why": "Benchmark plan execution is part of the open-source Document KV workflow, so implementation ownership should live in the document package while legacy restaurant imports and scripts continue to work during migration."
+}

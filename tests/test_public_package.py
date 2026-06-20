@@ -614,6 +614,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         for name in public_submodules
     }
     benchmark_plan = modules["benchmark_plan"]
+    benchmark_plan_executor = modules["benchmark_plan_executor"]
     benchmark_runner = modules["benchmark_runner"]
     benchmarks = modules["benchmarks"]
     admission = modules["admission"]
@@ -638,6 +639,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     serving_env = modules["serving_env"]
     workflow = modules["workflow"]
     legacy_benchmarks = importlib.import_module("restaurant_kv_serving.benchmarks")
+    legacy_benchmark_plan_executor = importlib.import_module("restaurant_kv_serving.benchmark_plan_executor")
     legacy_benchmark_runner = importlib.import_module("restaurant_kv_serving.benchmark_runner")
     legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
     legacy_live_server = importlib.import_module("restaurant_kv_serving.live_server")
@@ -653,6 +655,17 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert benchmark_plan.ReleaseBundlePlanConfig is restaurant_kv_serving.ReleaseBundlePlanConfig
     assert benchmark_plan.ReleaseEvidencePlanConfig is restaurant_kv_serving.ReleaseEvidencePlanConfig
     assert benchmark_plan.StorageBenchmarkPlanConfig is restaurant_kv_serving.StorageBenchmarkPlanConfig
+    assert benchmark_plan_executor.BenchmarkCommandResult is restaurant_kv_serving.BenchmarkCommandResult
+    assert benchmark_plan_executor.BenchmarkCommandResult.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert benchmark_plan_executor.execute_benchmark_job_plan.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert benchmark_plan_executor.main.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert not hasattr(legacy_benchmark_plan_executor, "__all__")
+    assert legacy_benchmark_plan_executor.BenchmarkCommandResult is benchmark_plan_executor.BenchmarkCommandResult
+    assert (
+        legacy_benchmark_plan_executor.execute_benchmark_job_plan.__module__
+        == "restaurant_kv_serving.benchmark_plan_executor"
+    )
+    assert legacy_benchmark_plan_executor.main.__module__ == "restaurant_kv_serving.benchmark_plan_executor"
     assert benchmarks.BenchmarkExample.__module__ == "document_kv_cache.benchmarks"
     assert set(benchmarks.__all__) < set(legacy_benchmarks.__all__)
     assert set(legacy_benchmarks.__all__) - set(benchmarks.__all__) == {"SourceDocument"}
@@ -888,6 +901,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     planner = importlib.import_module("document_kv_cache.planner")
     openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
+    benchmark_plan_executor = importlib.import_module("document_kv_cache.benchmark_plan_executor")
     release_bundle = importlib.import_module("document_kv_cache.release_bundle")
     release_evidence = importlib.import_module("document_kv_cache.release_evidence")
     serving_env = importlib.import_module("document_kv_cache.serving_env")
@@ -1008,6 +1022,21 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "write_storage_benchmark_result_json",
         "main",
     ]
+    assert benchmark_plan_executor.__all__ == [
+        "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",
+        "BENCHMARK_PLAN_SOURCE_RECORD_TYPE",
+        "BenchmarkCommandResult",
+        "execute_benchmark_job_plan",
+        "execute_benchmark_job_plan_json",
+        "benchmark_command_results_to_record",
+        "benchmark_plan_source_to_record",
+        "benchmark_plan_source_payload_to_record",
+        "write_benchmark_command_results_json",
+        "main",
+    ]
+    assert benchmark_plan_executor.BenchmarkCommandResult.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert benchmark_plan_executor.execute_benchmark_job_plan.__module__ == "document_kv_cache.benchmark_plan_executor"
+    assert benchmark_plan_executor.main.__module__ == "document_kv_cache.benchmark_plan_executor"
     legacy_storage_benchmark = importlib.import_module("restaurant_kv_serving.storage_benchmark")
     assert not hasattr(legacy_storage_benchmark, "__all__")
     assert storage_benchmark.run_storage_benchmark.__module__ == "document_kv_cache.storage_benchmark"
