@@ -83,6 +83,18 @@ class ArtifactTrainer:
         return TrainingArtifacts(metadata={"trained": "true"}, adapter_artifacts=(adapter,))
 
 
+class RecordingConnector:
+    def __init__(self) -> None:
+        self.submitted = []
+        self.released: list[str] = []
+
+    def submit(self, request) -> None:
+        self.submitted.append(request)
+
+    def release(self, request_id: str) -> None:
+        self.released.append(request_id)
+
+
 class WrongDocumentGenerator(EchoGenerator):
     def generate(self, **kwargs) -> PackChunk:
         pack_chunk = super().generate(**kwargs)
@@ -616,6 +628,40 @@ def test_workflow_records_training_adapter_artifacts_and_derives_engine_adapters
     assert result.training_artifacts.adapter_artifacts[0].metadata == {"rank": "8"}
     assert ready.handle.cache_method == "kv_packet"
     assert ready.handle.adapter_ids == result.adapter_ids
+
+
+def test_workflow_prepares_and_submits_engine_ready_request(tmp_path):
+    manifest = InMemoryManifestStore()
+    materializer = KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader())
+    workflow = DocumentKVWorkflow(manifest=manifest, materializer=materializer)
+    connector = RecordingConnector()
+    document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
+
+    result = workflow.generate_cache(
+        documents=(document,),
+        generator=ByteAlignedGenerator(),
+        config=config(cache_method=CacheGenerationMethod.KV_PACKET),
+        shard_uri=tmp_path / "submit-cache.kvpack",
+        trainer=ArtifactTrainer(),
+        align_bytes=1,
+    )
+    ready = workflow.prepare_and_submit_to_engine(
+        request_for("doc-a"),
+        connector=connector,
+        layout=one_byte_layout(),
+        cache_method=result.cache_method,
+        training_artifacts=result.training_artifacts,
+        segmented=True,
+    )
+
+    assert connector.submitted == [ready]
+    assert ready.payload == (
+        b"doc-a:static:static|qwen3:4b-instruct-kv-packet",
+        b"doc-a:section-1:body|qwen3:4b-instruct-kv-packet",
+    )
+    assert ready.handle.cache_method == "kv_packet"
+    assert ready.handle.adapter_ids == ("qwen3:4b-instruct-kv-packet",)
+    assert connector.released == []
 
 
 def test_workflow_records_non_vanilla_cache_generation_method(tmp_path):

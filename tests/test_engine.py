@@ -22,6 +22,18 @@ STATIC_PAYLOAD = b"s" * (STATIC_TOKEN_COUNT * TEST_BYTES_PER_TOKEN)
 REVIEW_PAYLOAD = b"r" * (REVIEW_TOKEN_COUNT * TEST_BYTES_PER_TOKEN)
 
 
+class RecordingConnector:
+    def __init__(self) -> None:
+        self.submitted: list[EngineReadyRequest] = []
+        self.released: list[str] = []
+
+    def submit(self, request: EngineReadyRequest) -> None:
+        self.submitted.append(request)
+
+    def release(self, request_id: str) -> None:
+        self.released.append(request_id)
+
+
 def key(chunk_type: DocumentChunkType, chunk_id: str) -> KVCacheKey:
     return KVCacheKey.for_document(
         model_id="qwen3:4b-instruct",
@@ -149,6 +161,24 @@ def test_service_prepares_engine_ready_request_with_segmented_payload(tmp_path):
     assert prepared.handle.metadata == {"engine": "sglang"}
     assert prepared.handle.cache_method == "vanilla_prefill"
     assert prepared.segment_tiers == (CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE)
+
+
+def test_service_prepares_and_submits_engine_ready_request(tmp_path):
+    connector = RecordingConnector()
+    ready = service(tmp_path).prepare_and_submit_to_engine(
+        request(),
+        connector=connector,
+        layout=layout(),
+        metadata={"engine": "vllm"},
+        adapter_ids=("selection-lora",),
+        segmented=True,
+    )
+
+    assert connector.submitted == [ready]
+    assert ready.payload == (STATIC_PAYLOAD, REVIEW_PAYLOAD)
+    assert ready.handle.metadata == {"engine": "vllm"}
+    assert ready.handle.adapter_ids == ("selection-lora",)
+    assert connector.released == []
 
 
 def test_build_handle_rejects_layout_metadata_mismatches(tmp_path):

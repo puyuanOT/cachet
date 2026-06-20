@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Protocol
 
 from document_kv_cache.cache import ChunkCache
-from document_kv_cache.engine import EngineReadyRequest, KVLayout, _normalize_gpu_byte_multiplier, build_engine_ready_request
+from document_kv_cache.engine import (
+    EngineReadyRequest,
+    KVLayout,
+    ServingEngineConnector,
+    _normalize_gpu_byte_multiplier,
+    build_engine_ready_request,
+)
 from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout_from_value
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import ManifestStore
@@ -350,6 +356,34 @@ class DocumentKVWorkflow:
             adapter_ids=engine_adapter_ids,
             kv_gpu_bytes_per_payload_byte=gpu_byte_multiplier,
         )
+
+    def prepare_and_submit_to_engine(
+        self,
+        request: DocumentKVRequest,
+        *,
+        connector: ServingEngineConnector,
+        layout: KVLayout,
+        handle_uri: str | None = None,
+        metadata: Mapping[str, str] | None = None,
+        cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+        adapter_ids: tuple[str, ...] = (),
+        training_artifacts: TrainingArtifacts | None = None,
+        segmented: bool = False,
+        kv_gpu_bytes_per_payload_byte: float | None = None,
+    ) -> EngineReadyRequest:
+        ready = self.prepare_for_engine(
+            request,
+            layout=layout,
+            handle_uri=handle_uri,
+            metadata=metadata,
+            cache_method=cache_method,
+            adapter_ids=adapter_ids,
+            training_artifacts=training_artifacts,
+            segmented=segmented,
+            kv_gpu_bytes_per_payload_byte=kv_gpu_bytes_per_payload_byte,
+        )
+        connector.submit(ready)
+        return ready
 
     def _require_service(self) -> DocumentKVService:
         if self.service is None:
