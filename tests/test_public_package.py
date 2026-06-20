@@ -51,6 +51,8 @@ def test_public_document_package_reexports_core_api():
         DiskRangeReader,
         EngineAdapterRequest,
         EngineAdapterSpec,
+        ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+        ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
         EngineReadyRequest,
         BenchmarkCommand,
         BenchmarkDatasetPath,
@@ -123,6 +125,7 @@ def test_public_document_package_reexports_core_api():
         build_databricks_storage_benchmark_run_submit_payload,
         build_databricks_vllm_smoke_run_submit_payload,
         build_engine_adapter_request,
+        build_engine_kv_connector_actions,
         build_engine_ready_request,
         build_handle_from_materialized,
         build_single_node_g5_cluster,
@@ -135,6 +138,8 @@ def test_public_document_package_reexports_core_api():
         evaluate_release_storage_benchmark_evidence,
         evaluate_storage_benchmark_evidence,
         engine_probe_targets_to_record,
+        engine_kv_connector_actions_from_record,
+        engine_kv_connector_actions_to_record,
         default_model_profile_registry,
         evaluate_pr_evidence,
         evaluate_pr_evidence_directory,
@@ -173,6 +178,7 @@ def test_public_document_package_reexports_core_api():
         summarize_databricks_run,
         summarize_databricks_run_submit_payload,
         validate_aws_g5_node_type,
+        validate_engine_kv_connector_actions_record,
         write_benchmark_job_plan_json,
         write_benchmark_job_plan_shell,
         write_model_profile_definition_json,
@@ -288,6 +294,23 @@ def test_public_document_package_reexports_core_api():
     assert EngineAdapterRequest is engine_adapters.EngineAdapterRequest
     assert EngineAdapterRequest is restaurant_kv_serving.EngineAdapterRequest
     assert EngineAdapterRequest.__module__ == "document_kv_cache.engine_adapters"
+    assert ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE == "document_kv.engine_kv_connector_actions.v1"
+    assert ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE is restaurant_kv_serving.ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE
+    assert ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION == 1
+    assert (
+        ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION
+        is restaurant_kv_serving.ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION
+    )
+    assert build_engine_kv_connector_actions is engine_adapters.build_engine_kv_connector_actions
+    assert (
+        engine_kv_connector_actions_from_record
+        is engine_adapters.engine_kv_connector_actions_from_record
+    )
+    assert engine_kv_connector_actions_to_record is engine_adapters.engine_kv_connector_actions_to_record
+    assert (
+        validate_engine_kv_connector_actions_record
+        is engine_adapters.validate_engine_kv_connector_actions_record
+    )
     assert EngineAdapterSpec is engine_adapters.EngineAdapterSpec
     assert EngineAdapterSpec is restaurant_kv_serving.EngineAdapterSpec
     assert EngineAdapterSpec.__module__ == "document_kv_cache.engine_adapters"
@@ -626,6 +649,29 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert (
         star_namespace["SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES"]
         is restaurant_kv_serving.SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
+    )
+
+    legacy_star_namespace: dict[str, object] = {}
+    exec("from restaurant_kv_serving import *", legacy_star_namespace)
+    assert (
+        legacy_star_namespace["ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE"]
+        is restaurant_kv_serving.ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE
+    )
+    assert (
+        legacy_star_namespace["ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION"]
+        is restaurant_kv_serving.ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION
+    )
+    assert (
+        legacy_star_namespace["engine_kv_connector_actions_from_record"]
+        is restaurant_kv_serving.engine_kv_connector_actions_from_record
+    )
+    assert (
+        legacy_star_namespace["engine_kv_connector_actions_to_record"]
+        is restaurant_kv_serving.engine_kv_connector_actions_to_record
+    )
+    assert (
+        legacy_star_namespace["validate_engine_kv_connector_actions_record"]
+        is restaurant_kv_serving.validate_engine_kv_connector_actions_record
     )
 
 
@@ -1054,6 +1100,8 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert engine_adapters.__all__ == [
         "EngineAdapterRequest",
         "EngineAdapterSpec",
+        "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE",
+        "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION",
         "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
         "ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION",
         "EngineKVBlockManagerProbe",
@@ -1070,6 +1118,8 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "build_engine_adapter_request",
         "build_engine_kv_connector_actions",
         "build_engine_kv_injection_plan",
+        "engine_kv_connector_actions_from_record",
+        "engine_kv_connector_actions_to_record",
         "engine_kv_connector_probe_result_to_record",
         "engine_adapter_request_to_record",
         "payload_mode_for",
@@ -1078,6 +1128,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "sglang_adapter_spec",
         "split_engine_adapter_payload",
         "validate_engine_adapter_request_record",
+        "validate_engine_kv_connector_actions_record",
         "validate_engine_kv_connector_probe_record",
         "validate_engine_kv_connector_actions",
         "view_engine_adapter_payload",

@@ -238,6 +238,14 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_adapters",
         "EngineKVConnectorProbeResult",
     ),
+    "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE": (
+        "restaurant_kv_serving.engine_adapters",
+        "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE",
+    ),
+    "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION": (
+        "restaurant_kv_serving.engine_adapters",
+        "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION",
+    ),
     "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE": (
         "restaurant_kv_serving.engine_adapters",
         "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
@@ -418,6 +426,14 @@ _EXPORTS = {
     "engine_kv_connector_probe_result_to_record": (
         "restaurant_kv_serving.engine_adapters",
         "engine_kv_connector_probe_result_to_record",
+    ),
+    "engine_kv_connector_actions_from_record": (
+        "restaurant_kv_serving.engine_adapters",
+        "engine_kv_connector_actions_from_record",
+    ),
+    "engine_kv_connector_actions_to_record": (
+        "restaurant_kv_serving.engine_adapters",
+        "engine_kv_connector_actions_to_record",
     ),
     "engine_probe_targets_to_record": (
         "restaurant_kv_serving.benchmark_plan",
@@ -635,6 +651,10 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_adapters",
         "validate_engine_adapter_request_record",
     ),
+    "validate_engine_kv_connector_actions_record": (
+        "restaurant_kv_serving.engine_adapters",
+        "validate_engine_kv_connector_actions_record",
+    ),
     "validate_engine_kv_connector_probe_record": (
         "restaurant_kv_serving.engine_adapters",
         "validate_engine_kv_connector_probe_record",
@@ -837,6 +857,8 @@ __all__ = [
     "EngineKVBindAction",
     "EngineKVConnectorActions",
     "EngineKVConnectorProbeResult",
+    "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE",
+    "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION",
     "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
     "ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION",
     "EngineKVInjectionPlan",
@@ -934,6 +956,8 @@ __all__ = [
     "build_engine_kv_connector_actions",
     "build_engine_kv_injection_plan",
     "engine_adapter_request_to_record",
+    "engine_kv_connector_actions_from_record",
+    "engine_kv_connector_actions_to_record",
     "engine_kv_connector_probe_result_to_record",
     "engine_probe_targets_to_record",
     "build_niah_record",
@@ -1022,6 +1046,7 @@ __all__ = [
     "vllm_adapter_spec",
     "vllm_native_probe_factory",
     "validate_engine_adapter_request_record",
+    "validate_engine_kv_connector_actions_record",
     "validate_engine_kv_connector_probe_record",
     "validate_engine_kv_connector_actions",
     "view_engine_adapter_payload",

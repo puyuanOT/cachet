@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/connector-actions-record-contract/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 initially requested legacy __all__ coverage and required source_byte_end validation. Both findings were fixed, covered by tests, and the reviewer approved the branch.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md; src/document_kv_cache/__init__.py; src/document_kv_cache/engine_adapters.py; src/restaurant_kv_serving/__init__.py; tests/test_engine_adapters.py; tests/test_public_package.py; pr-evidence/connector-actions-record-contract"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_engine_adapters.py -k \"connector_actions_record or document_module_owns_public_api\" tests/test_public_package.py -k \"core_api or star_exports_are_document_first or curated_star_import_surfaces\" -q; poetry run pytest tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py -q; poetry run pytest -q; git diff --check; poetry check; poetry build"
+      ],
+      "what_changed": [
+        "Added a JSON-compatible engine KV connector actions record contract for native vLLM/SGLang adapter handoff."
+      ],
+      "why": "Native adapter probes need stable out-of-process reserve/copy/bind/release descriptors without raw payload bytes, so action validation can move toward real vLLM/SGLang block managers without custom serving infrastructure."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
