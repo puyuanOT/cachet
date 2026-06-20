@@ -1112,6 +1112,48 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-metadata-version-bundle",
         )
 
+    missing_license_expression_wheel = _write_wheel(
+        tmp_path / "missing-license-expression-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        metadata_license_expression=None,
+    )
+    with pytest.raises(ValueError, match="License-Expression"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_license_expression_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-license-expression-bundle",
+        )
+
+    wrong_license_file_metadata_wheel = _write_wheel(
+        tmp_path / "wrong-license-file-metadata-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        metadata_license_file="NOTICE",
+    )
+    with pytest.raises(ValueError, match="License-File"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=wrong_license_file_metadata_wheel,
+            output_dir=tmp_path / "bad-wheel-license-file-metadata-bundle",
+        )
+
+    missing_license_file_wheel = _write_wheel(
+        tmp_path / "missing-license-file-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        include_license_file=False,
+    )
+    with pytest.raises(ValueError, match="must contain license file"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_license_file_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-license-file-bundle",
+        )
+
     with pytest.raises(ValueError, match="PR evidence sidecar ok"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
@@ -2116,8 +2158,11 @@ def _write_wheel(
     *,
     metadata_name: str = "document-kv-cache",
     metadata_version: str | None = "0.2.0",
+    metadata_license_expression: str | None = "Apache-2.0",
+    metadata_license_file: str | None = "LICENSE",
     dist_info_prefix: str = "document_kv_cache-0.2.0.dist-info",
     include_record: bool = True,
+    include_license_file: bool = True,
     record_lines: tuple[str, ...] | None = None,
     extra_entries: tuple[tuple[str, bytes], ...] = (),
     duplicate_entries: tuple[tuple[str, bytes], ...] = (),
@@ -2133,15 +2178,21 @@ def _write_wheel(
     metadata_lines = [f"Name: {metadata_name}"]
     if metadata_version is not None:
         metadata_lines.append(f"Version: {metadata_version}")
+    if metadata_license_expression is not None:
+        metadata_lines.append(f"License-Expression: {metadata_license_expression}")
+    if metadata_license_file is not None:
+        metadata_lines.append(f"License-File: {metadata_license_file}")
     metadata_lines.append("")
     wheel_payload = "\n".join(wheel_metadata_lines).encode("utf-8")
     metadata_payload = "\n".join(metadata_lines).encode("utf-8")
     package_payload = b""
-    wheel_entries = (
+    wheel_entries = [
         ("document_kv_cache/__init__.py", package_payload),
         (f"{dist_info_prefix}/WHEEL", wheel_payload),
         (f"{dist_info_prefix}/METADATA", metadata_payload),
-    )
+    ]
+    if include_license_file:
+        wheel_entries.append((f"{dist_info_prefix}/licenses/LICENSE", b"Apache License 2.0\n"))
     with zipfile.ZipFile(path, "w") as wheel_zip:
         for name, payload in wheel_entries:
             wheel_zip.writestr(name, payload)

@@ -64,6 +64,8 @@ __all__ = [
 RELEASE_BUNDLE_RECORD_TYPE = "document_kv.release_bundle.v1"
 RELEASE_BUNDLE_MANIFEST_FILENAME = "manifest.json"
 RELEASE_BUNDLE_PACKAGE_NAME = "document-kv-cache"
+RELEASE_BUNDLE_PACKAGE_LICENSE_EXPRESSION = "Apache-2.0"
+RELEASE_BUNDLE_PACKAGE_LICENSE_FILE = "LICENSE"
 RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
     "storage_benchmark",
@@ -1423,6 +1425,9 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
         return ("package wheel artifact must contain exactly one .dist-info/METADATA file",)
     if len(record_names) != 1:
         return ("package wheel artifact must contain exactly one .dist-info/RECORD file",)
+    license_issues = _wheel_license_file_issues(names, dist_info_prefix=dist_info_prefixes[0])
+    if license_issues:
+        return license_issues
     with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
         wheel_payload = wheel_zip.read(wheel_names[0])
         metadata_payload = wheel_zip.read(metadata_names[0])
@@ -1490,6 +1495,28 @@ def _wheel_metadata_issues(payload: bytes, *, filename_match: re.Match[str] | No
         return ("package wheel artifact METADATA Version must be non-empty",)
     if filename_match is not None and not _wheel_versions_match(filename_match.group("version"), version):
         return ("package wheel artifact METADATA Version must match wheel filename",)
+    return _wheel_metadata_license_issues(metadata)
+
+
+def _wheel_metadata_license_issues(metadata: Mapping[str, str]) -> tuple[str, ...]:
+    issues: list[str] = []
+    if metadata.get("license-expression") != RELEASE_BUNDLE_PACKAGE_LICENSE_EXPRESSION:
+        issues.append(
+            "package wheel artifact METADATA License-Expression "
+            f"must be {RELEASE_BUNDLE_PACKAGE_LICENSE_EXPRESSION!r}"
+        )
+    if metadata.get("license-file") != RELEASE_BUNDLE_PACKAGE_LICENSE_FILE:
+        issues.append(
+            "package wheel artifact METADATA License-File "
+            f"must be {RELEASE_BUNDLE_PACKAGE_LICENSE_FILE!r}"
+        )
+    return tuple(issues)
+
+
+def _wheel_license_file_issues(names: Sequence[str], *, dist_info_prefix: str) -> tuple[str, ...]:
+    expected_path = f"{dist_info_prefix}/licenses/{RELEASE_BUNDLE_PACKAGE_LICENSE_FILE}"
+    if expected_path not in names:
+        return (f"package wheel artifact must contain license file {expected_path!r}",)
     return ()
 
 

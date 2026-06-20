@@ -1662,6 +1662,8 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
     )
     assert project["requires-python"] == ">=3.11,<4.0"
+    assert project["license"] == "Apache-2.0"
+    assert project["license-files"] == ["LICENSE"]
     assert project["authors"] == [{"name": "OpenTable Data Science"}]
     assert set(project["keywords"]) == {
         "databricks",
@@ -1679,6 +1681,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     assert {
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
+        "License :: OSI Approved :: Apache Software License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",

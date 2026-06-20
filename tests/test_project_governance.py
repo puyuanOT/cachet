@@ -712,6 +712,21 @@ def test_project_metadata_uses_cachet_brand_without_renaming_distribution():
     assert project["name"] == "document-kv-cache"
     assert "Cachet document KV-cache" in project["description"]
     assert "cachet" in project["keywords"]
+    assert project["license"] == "Apache-2.0"
+    assert project["license-files"] == ["LICENSE"]
+    assert "License :: OSI Approved :: Apache Software License" in project["classifiers"]
+
+
+def test_readme_and_root_license_document_apache_2_license():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    license_text = (REPO_ROOT / "LICENSE").read_text(encoding="utf-8")
+    license_section = _markdown_section(readme, "License")
+
+    assert "Apache License 2.0" in license_section
+    assert "`Apache-2.0` SPDX expression" in license_section
+    assert "`LICENSE`" in license_section
+    assert license_text.startswith("Apache License\nVersion 2.0, January 2004")
+    assert "https://www.apache.org/licenses/" in license_text
 
 
 def test_project_metadata_exposes_repository_and_issue_urls():

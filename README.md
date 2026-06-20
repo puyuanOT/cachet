@@ -1048,6 +1048,13 @@ python -m pip install -e '.[test]'
 pytest tests -q
 ```
 
+## License
+
+Cachet is distributed under the Apache License 2.0. The repository includes
+the full license text in `LICENSE`, and the Poetry package metadata includes
+the `Apache-2.0` SPDX expression plus the license file in built wheels and
+source distributions.
+
 ## Remaining V1 Work
 
 - Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, connector-action sidecars, release evidence, preflight sidecar, GitHub governance sidecar, repository hygiene sidecar, native-probe factory diagnostics, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
