@@ -133,6 +133,7 @@ def write_probe_factory_module(
     module_name: str,
     engine_version: str | None,
     native_probe: bool = True,
+    result_module: str = "document_kv_cache.engine_probe",
 ) -> str:
     module_path = tmp_path / f"{module_name}.py"
     if engine_version is None:
@@ -151,7 +152,7 @@ def write_probe_factory_module(
     module_text = (
         dedent(
             """
-            from document_kv_cache.engine_probe import EngineKVProbeFactoryResult
+            from RESULT_MODULE import EngineKVProbeFactoryResult
 
             class Probe:
                 def reserve_kv_blocks(self, action):
@@ -172,7 +173,7 @@ def write_probe_factory_module(
             def build_probe(context):
                 probe = Probe()
             """
-        )
+        ).replace("RESULT_MODULE", result_module)
         + indent(factory_body, "    ")
         + "\n"
     )
@@ -611,6 +612,72 @@ def test_legacy_engine_probe_import_order_does_not_capture_public_constant_patch
     assert result.returncode == 0, result.stderr
 
 
+def test_legacy_engine_probe_uses_source_config_base_when_public_class_is_replaced_before_import():
+    script = dedent(
+        """
+        import document_kv_cache.engine_probe as public_engine_probe
+
+        public_engine_probe.EngineKVProbeConfig = object
+
+        import restaurant_kv_serving.engine_probe as legacy_engine_probe
+
+        config = legacy_engine_probe.EngineKVProbeConfig(
+            handoff_json="handoff.json",
+            probe_factory="some.module:factory",
+        )
+        assert type(config) is legacy_engine_probe.EngineKVProbeConfig
+        assert config.handoff_json.name == "handoff.json"
+        assert legacy_engine_probe.EngineKVProbeConfig.__module__ == "restaurant_kv_serving.engine_probe"
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_legacy_engine_probe_uses_source_config_base_when_public_class_is_mutated_before_import():
+    script = dedent(
+        """
+        import document_kv_cache.engine_probe as public_engine_probe
+
+        public_engine_probe.EngineKVProbeConfig.probe_factory = property(lambda self: "")
+
+        import restaurant_kv_serving.engine_probe as legacy_engine_probe
+
+        config = legacy_engine_probe.EngineKVProbeConfig(
+            handoff_json="handoff.json",
+            probe_factory="some.module:factory",
+        )
+        assert config.probe_factory == "some.module:factory"
+        assert legacy_engine_probe.EngineKVProbeConfig.__module__ == "restaurant_kv_serving.engine_probe"
+        try:
+            public_engine_probe.EngineKVProbeConfig(
+                handoff_json="handoff.json",
+                probe_factory="some.module:factory",
+            )
+        except (AttributeError, ValueError):
+            pass
+        else:
+            raise AssertionError("public class mutation did not affect validation")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_legacy_engine_probe_private_hooks_are_isolated(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     payload_path = tmp_path / "relative.kv"
@@ -643,6 +710,34 @@ def test_legacy_engine_probe_accepts_document_factory_result(tmp_path, monkeypat
     record = engine_kv_connector_probe_result_to_record(result)
     assert record["engine_version"] == "vllm-native-test"
     assert record["native_probe"] is True
+
+
+def test_legacy_engine_probe_accepts_legacy_factory_result_after_public_result_class_mutation(
+    tmp_path,
+    monkeypatch,
+):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=True)
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="legacy_factory_result_after_public_mutation",
+        engine_version="vllm-native-test",
+        result_module="restaurant_kv_serving.engine_probe",
+    )
+    public_engine_probe.EngineKVProbeFactoryResult.extra_marker = "mutated-after-legacy-import"
+
+    result = legacy_engine_probe.run_engine_kv_connector_probe(
+        legacy_engine_probe.EngineKVProbeConfig(
+            handoff_json=handoff_path,
+            probe_factory=probe_factory,
+            expected_backend="vllm",
+        )
+    )
+
+    record = engine_kv_connector_probe_result_to_record(result)
+    assert record["engine_version"] == "vllm-native-test"
+    assert record["native_probe"] is True
+    assert record["metadata"]["probe.request_id"] == "req-1"
 
 
 def test_engine_probe_reexports_document_owned_api_with_legacy_subclasses():
