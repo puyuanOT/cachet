@@ -50,6 +50,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "pr_evidence",
         "release_bundle",
         "release_evidence",
+        "repository_hygiene",
         "service",
         "serving_env",
         "storage",

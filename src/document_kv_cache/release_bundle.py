@@ -34,6 +34,11 @@ from document_kv_cache.native_probe_factories import (
     VLLM_NATIVE_PROBE_FACTORY,
 )
 from document_kv_cache.pr_evidence import PR_EVIDENCE_RECORD_TYPE, evaluate_pr_evidence_record
+from document_kv_cache.repository_hygiene import (
+    FORBIDDEN_TRACKED_ARTIFACT_PATTERNS,
+    REPOSITORY_HYGIENE_RECORD_TYPE,
+    REQUIRED_GITIGNORE_PATTERNS,
+)
 from document_kv_cache.serving_env import serving_environment_profile, serving_environment_profile_to_record
 from document_kv_cache.storage import local_path
 
@@ -66,6 +71,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "package_wheel",
     "pr_evidence",
     "github_governance",
+    "repository_hygiene",
     "native_probe_factories",
 )
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -189,6 +195,19 @@ _GITHUB_OPEN_PULL_REQUESTS_KEYS = frozenset(
         "truncated",
     }
 )
+_REPOSITORY_HYGIENE_KEYS = frozenset(
+    {
+        "record_type",
+        "ok",
+        "repository_root",
+        "tracked_path_count",
+        "required_gitignore_patterns",
+        "missing_gitignore_patterns",
+        "forbidden_tracked_artifact_patterns",
+        "forbidden_tracked_paths",
+        "issues",
+    }
+)
 _NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
 _NATIVE_PROBE_FACTORY_KEYS = frozenset(
     {
@@ -276,6 +295,7 @@ def build_release_bundle(
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
     github_governance_json: str | Path | None = None,
+    repository_hygiene_json: str | Path | None = None,
     native_probe_factories_jsons: Sequence[str | Path] = (),
     overwrite: bool = False,
 ) -> ReleaseBundle:
@@ -296,6 +316,7 @@ def build_release_bundle(
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
         github_governance_json=github_governance_json,
+        repository_hygiene_json=repository_hygiene_json,
         native_probe_factories_jsons=native_probe_factories_jsons,
     )
     prepared_artifacts = tuple(
@@ -355,6 +376,7 @@ def _release_bundle_sources(
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
     github_governance_json: str | Path | None,
+    repository_hygiene_json: str | Path | None,
     native_probe_factories_jsons: Sequence[str | Path],
 ) -> tuple[tuple[str, str | Path], ...]:
     sources: list[tuple[str, str | Path]] = [
@@ -374,6 +396,8 @@ def _release_bundle_sources(
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
     if github_governance_json is not None:
         sources.append(("github_governance", github_governance_json))
+    if repository_hygiene_json is not None:
+        sources.append(("repository_hygiene", repository_hygiene_json))
     sources.extend(("native_probe_factories", path) for path in native_probe_factories_jsons)
     return tuple(sources)
 
@@ -462,6 +486,11 @@ def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleAr
                 issues.append("GitHub governance sidecar must be JSON")
                 continue
             issues.extend(_github_governance_sidecar_issues(artifact.record))
+        elif artifact.role == "repository_hygiene":
+            if artifact.record is None:
+                issues.append("repository hygiene sidecar must be JSON")
+                continue
+            issues.extend(_repository_hygiene_sidecar_issues(artifact.record))
         elif artifact.role == "plan_execution":
             if artifact.record is None:
                 issues.append("benchmark plan execution sidecar must be JSON")
@@ -744,6 +773,42 @@ def _github_open_pull_requests_issues(record: Mapping[str, Any]) -> tuple[str, .
     if record.get("unexpected") != []:
         issues.append("GitHub governance sidecar open_pull_requests.unexpected must be an empty array")
     return tuple(issues)
+
+
+def _repository_hygiene_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _REPOSITORY_HYGIENE_KEYS, "repository hygiene sidecar"))
+    if record.get("record_type") != REPOSITORY_HYGIENE_RECORD_TYPE:
+        issues.append(f"repository hygiene sidecar record_type must be {REPOSITORY_HYGIENE_RECORD_TYPE!r}")
+    if record.get("ok") is not True:
+        issues.append("repository hygiene sidecar ok must be true")
+    if not isinstance(record.get("repository_root"), str) or not record["repository_root"]:
+        issues.append("repository hygiene sidecar repository_root must be non-empty")
+    if type(record.get("tracked_path_count")) is not int or record.get("tracked_path_count") <= 0:
+        issues.append("repository hygiene sidecar tracked_path_count must be a positive integer")
+    issues.extend(
+        _exact_string_list_field(
+            record,
+            "required_gitignore_patterns",
+            REQUIRED_GITIGNORE_PATTERNS,
+            "repository hygiene sidecar",
+        )
+    )
+    issues.extend(
+        _exact_string_list_field(
+            record,
+            "forbidden_tracked_artifact_patterns",
+            FORBIDDEN_TRACKED_ARTIFACT_PATTERNS,
+            "repository hygiene sidecar",
+        )
+    )
+    if record.get("missing_gitignore_patterns") != []:
+        issues.append("repository hygiene sidecar missing_gitignore_patterns must be an empty array")
+    if record.get("forbidden_tracked_paths") != []:
+        issues.append("repository hygiene sidecar forbidden_tracked_paths must be an empty array")
+    if record.get("issues") != []:
+        issues.append("repository hygiene sidecar issues must be an empty array")
+    return _dedupe_strings(issues)
 
 
 def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1128,6 +1193,22 @@ def _list_of_strings_field(record: Mapping[str, Any], field_name: str, label: st
     return (f"{label}.{field_name} must be an array of non-empty strings",)
 
 
+def _exact_string_list_field(
+    record: Mapping[str, Any],
+    field_name: str,
+    expected: Sequence[str],
+    label: str,
+) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray))
+        and list(value) == list(expected)
+    ):
+        return ()
+    return (f"{label}.{field_name} must match the current repository hygiene policy",)
+
+
 def _list_of_non_negative_ints_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
     value = record.get(field_name)
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and all(
@@ -1371,6 +1452,8 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return f"pr_evidence_{index + 1:02d}.json"
     if role == "github_governance":
         return "github_governance.json"
+    if role == "repository_hygiene":
+        return "repository_hygiene.json"
     if role == "native_probe_factories":
         return f"native_probe_factories_{index + 1:02d}.json"
     raise ValueError(f"Unsupported release bundle artifact role {role!r}")
@@ -1434,6 +1517,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
     parser.add_argument("--github-governance-json")
+    parser.add_argument("--repository-hygiene-json")
     parser.add_argument("--native-probe-factories-json", action="append", default=[])
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
@@ -1455,6 +1539,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
         github_governance_json=args.github_governance_json,
+        repository_hygiene_json=args.repository_hygiene_json,
         native_probe_factories_jsons=args.native_probe_factories_json,
         output_dir=args.output_dir,
         overwrite=args.overwrite,

@@ -52,6 +52,11 @@ from document_kv_cache.release_bundle import (
     build_release_bundle,
     release_bundle_to_record,
 )
+from document_kv_cache.repository_hygiene import (
+    FORBIDDEN_TRACKED_ARTIFACT_PATTERNS,
+    REPOSITORY_HYGIENE_RECORD_TYPE,
+    REQUIRED_GITIGNORE_PATTERNS,
+)
 from document_kv_cache.release_evidence import (
     evaluate_release_evidence_files,
     inspect_release_evidence_input_files,
@@ -186,6 +191,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
+    repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
@@ -196,6 +202,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
         package_wheel=package_wheel,
         pr_evidence_jsons=(pr_evidence,),
         github_governance_json=github_governance,
+        repository_hygiene_json=repository_hygiene,
         output_dir=bundle_dir,
     )
     record = release_bundle_to_record(bundle)
@@ -211,11 +218,13 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
         "package_wheel",
         "pr_evidence",
         "github_governance",
+        "repository_hygiene",
     ]
     execution_artifact = record["artifacts"][6]
     wheel_artifact = record["artifacts"][7]
     pr_artifact = record["artifacts"][8]
     github_artifact = record["artifacts"][9]
+    hygiene_artifact = record["artifacts"][10]
     assert execution_artifact["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
     assert json.loads((bundle_dir / execution_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert wheel_artifact["bundled_path"] == package_wheel.name
@@ -226,6 +235,9 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert github_artifact["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
     assert github_artifact["bundled_path"] == "github_governance.json"
     assert json.loads((bundle_dir / github_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+    assert hygiene_artifact["record_type"] == REPOSITORY_HYGIENE_RECORD_TYPE
+    assert hygiene_artifact["bundled_path"] == "repository_hygiene.json"
+    assert json.loads((bundle_dir / hygiene_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
 
 
 def test_build_release_bundle_can_include_native_probe_factories(tmp_path):
@@ -480,6 +492,23 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "raw-object-in-wrapper-action-databricks-run-status.json",
         raw_object_in_wrapper_action_record,
     )
+    failed_repository_hygiene = _write_json(
+        tmp_path / "failed-repository-hygiene.json",
+        _repository_hygiene_record(ok=False),
+    )
+    raw_repository_hygiene_record = _repository_hygiene_record(ok=True)
+    raw_repository_hygiene_record["raw_status"] = {"tracked": ["do-not-bundle-me"]}
+    raw_repository_hygiene = _write_json(
+        tmp_path / "raw-repository-hygiene.json",
+        raw_repository_hygiene_record,
+    )
+    stale_policy_repository_hygiene_record = _repository_hygiene_record(ok=True)
+    stale_policy_repository_hygiene_record["required_gitignore_patterns"] = [".venv/"]
+    stale_policy_repository_hygiene_record["forbidden_tracked_artifact_patterns"] = ["*.tmp"]
+    stale_policy_repository_hygiene = _write_json(
+        tmp_path / "stale-policy-repository-hygiene.json",
+        stale_policy_repository_hygiene_record,
+    )
 
     with pytest.raises(ValueError, match="package wheel artifact source_path"):
         build_release_bundle(
@@ -640,6 +669,36 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=internal_github_governance,
             output_dir=tmp_path / "internal-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match="repository hygiene sidecar ok must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            repository_hygiene_json=failed_repository_hygiene,
+            output_dir=tmp_path / "failed-repository-hygiene-bundle",
+        )
+
+    with pytest.raises(ValueError, match="repository hygiene sidecar has unsupported keys"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            repository_hygiene_json=raw_repository_hygiene,
+            output_dir=tmp_path / "raw-repository-hygiene-bundle",
+        )
+
+    with pytest.raises(ValueError, match="must match the current repository hygiene policy"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            repository_hygiene_json=stale_policy_repository_hygiene,
+            output_dir=tmp_path / "stale-policy-repository-hygiene-bundle",
         )
 
     with pytest.raises(ValueError, match="unsupported keys"):
@@ -1491,6 +1550,20 @@ def _github_governance_cli_record(*, ok: bool):
         "issues": [] if ok else ["main branch protection must be enabled"],
     }
     return {"ok": ok, "summary": summary}
+
+
+def _repository_hygiene_record(*, ok: bool):
+    return {
+        "record_type": REPOSITORY_HYGIENE_RECORD_TYPE,
+        "ok": ok,
+        "repository_root": "/workspace/document-kv-cache",
+        "tracked_path_count": 128,
+        "required_gitignore_patterns": list(REQUIRED_GITIGNORE_PATTERNS),
+        "missing_gitignore_patterns": [] if ok else [".env"],
+        "forbidden_tracked_artifact_patterns": list(FORBIDDEN_TRACKED_ARTIFACT_PATTERNS),
+        "forbidden_tracked_paths": [] if ok else ["dist/document_kv_cache-0.2.0-py3-none-any.whl"],
+        "issues": [] if ok else ["forbidden generated or secret-like tracked artifacts"],
+    }
 
 
 def _native_probe_factories_record():

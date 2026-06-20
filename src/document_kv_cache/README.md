@@ -71,10 +71,12 @@ new document modules depend on restaurant-owned implementations.
   Refactor-skill, and GPT-5.5 review evidence for the project workflow.
 - `release_bundle.py` copies validated release evidence, optional benchmark
   plan execution records, Databricks run-status records, package wheels, and
-  PR-evidence plus GitHub-governance sidecars into a checksummed durable
-  bundle.
+  PR-evidence, GitHub-governance, and repository-hygiene sidecars into a
+  checksummed durable bundle.
 - `release_evidence.py` validates V1 benchmark, storage, and native engine-probe
   artifacts, including the pinned serving-engine package/version metadata.
+- `repository_hygiene.py` emits a release-readiness sidecar proving `.gitignore`
+  coverage and absence of tracked generated or secret-like artifacts.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.
@@ -110,6 +112,7 @@ The public package owns these document-branded CLI entry points:
 - `document-kv-release-bundle`
 - `document-kv-pr-evidence`
 - `document-kv-github-governance`
+- `document-kv-repository-hygiene`
 - `document-kv-native-probe-factories`
 - `document-kv-engine-probe`
 - `document-kv-engine-probe-databricks-job`
