@@ -611,7 +611,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-databricks-run-status-json /data/databricks-run-status.json \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
-  --release-bundle-github-governance-json /data/github-governance.json \
+  --github-governance-output-json /data/github-governance.json \
   --repository-hygiene-output-json /data/repository-hygiene.json \
   --native-probe-factories-output-json /data/native-probe-factories.json \
   --engine-probe-targets-output-json /data/engine-probe-targets.json \
@@ -640,6 +640,12 @@ package-owned vLLM/SGLang factory paths. Those factories are stable release-plan
 targets but still fail closed until the backend-native block-manager adapter is
 available; pass explicit `--engine-probe-factory BACKEND=MODULE:CALLABLE` to use
 a downstream adapter module.
+Add `--github-governance-output-json` to the benchmark plan to emit the
+matching `document_kv.github_repository_governance.v1` sidecar using
+environment-provided GitHub credentials; when release-bundle assembly is also
+enabled, the generated sidecar is included in the bundle automatically. Use
+`--release-bundle-github-governance-json` only when the sidecar was generated
+outside the command plan.
 Add `--repository-hygiene-output-json` to the benchmark plan to emit the
 matching `document_kv.repository_hygiene.v1` sidecar; when release-bundle
 assembly is also enabled, the generated sidecar is included in the bundle
