@@ -759,6 +759,12 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "truncated-open-pr-github-governance.json",
         truncated_open_pr_github_governance_record,
     )
+    admin_bypass_github_governance_record = _github_governance_cli_record(ok=True)
+    admin_bypass_github_governance_record["summary"]["branch_protection"]["enforce_admins"] = False
+    admin_bypass_github_governance = _write_json(
+        tmp_path / "admin-bypass-github-governance.json",
+        admin_bypass_github_governance_record,
+    )
     raw_open_pr_github_governance_record = _github_governance_cli_record(ok=True)
     raw_open_pr_github_governance_record["summary"]["open_pull_requests"]["response"] = {
         "headers": {"authorization": "do-not-bundle-me"}
@@ -1329,6 +1335,16 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=truncated_open_pr_github_governance,
             output_dir=tmp_path / "truncated-open-pr-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match="enforce_admins must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=admin_bypass_github_governance,
+            output_dir=tmp_path / "admin-bypass-github-governance-bundle",
         )
 
     with pytest.raises(ValueError, match="visibility must be 'public'"):
