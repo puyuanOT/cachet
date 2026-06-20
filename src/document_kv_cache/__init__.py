@@ -129,6 +129,44 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "read_databricks_run_submit_payload",
     ),
+    "ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND": (
+        "document_kv_cache.engine_probe",
+        "ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND",
+    ),
+    "ENGINE_KV_PROBE_METADATA_HANDOFF_JSON": (
+        "document_kv_cache.engine_probe",
+        "ENGINE_KV_PROBE_METADATA_HANDOFF_JSON",
+    ),
+    "ENGINE_KV_PROBE_METADATA_PAYLOAD_URI": (
+        "document_kv_cache.engine_probe",
+        "ENGINE_KV_PROBE_METADATA_PAYLOAD_URI",
+    ),
+    "ENGINE_KV_PROBE_METADATA_PROBE_FACTORY": (
+        "document_kv_cache.engine_probe",
+        "ENGINE_KV_PROBE_METADATA_PROBE_FACTORY",
+    ),
+    "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE": (
+        "document_kv_cache.engine_probe",
+        "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE",
+    ),
+    "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION": (
+        "document_kv_cache.engine_probe",
+        "ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION",
+    ),
+    "EngineKVProbeConfig": ("document_kv_cache.engine_probe", "EngineKVProbeConfig"),
+    "EngineKVProbeFactory": ("document_kv_cache.engine_probe", "EngineKVProbeFactory"),
+    "EngineKVProbeFactoryContext": ("document_kv_cache.engine_probe", "EngineKVProbeFactoryContext"),
+    "EngineKVProbeFactoryResult": ("document_kv_cache.engine_probe", "EngineKVProbeFactoryResult"),
+    "run_engine_kv_connector_probe": (
+        "document_kv_cache.engine_probe",
+        "run_engine_kv_connector_probe",
+    ),
+    "read_engine_adapter_payload": ("document_kv_cache.engine_probe", "read_engine_adapter_payload"),
+    "write_engine_kv_connector_probe_result_json": (
+        "document_kv_cache.engine_probe",
+        "write_engine_kv_connector_probe_result_json",
+    ),
+    "load_engine_kv_probe_factory": ("document_kv_cache.engine_probe", "load_engine_kv_probe_factory"),
 }
 
 _legacy_package = import_module(_LEGACY_PACKAGE)

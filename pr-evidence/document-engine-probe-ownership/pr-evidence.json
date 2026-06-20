@@ -1,0 +1,49 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the engine-probe ownership inversion and found two legacy import-order isolation issues: public document monkeypatches installed before legacy import could become legacy defaults for functions and metadata constants. The legacy wrapper now loads a private pristine copy of the document implementation for defaults, explicitly takes metadata constants from that private copy, preserves legacy monkeypatch overlays after import, and keeps accepting document-owned EngineKVProbeFactoryResult objects. GPT-5.5 re-review approved the branch.",
+  "issues": [
+    {
+      "resolution": "Loaded a private pristine copy of document_kv_cache.engine_probe for legacy defaults and added a subprocess regression that patches public _parse_metadata_items before importing the legacy wrapper.",
+      "severity": "P2",
+      "summary": "Legacy callable defaults were import-order dependent when the public document module was monkeypatched before legacy import."
+    },
+    {
+      "resolution": "Assigned legacy ENGINE_KV_PROBE_METADATA_* constants from the private pristine defaults module and added a subprocess regression for provenance metadata key stability.",
+      "severity": "P2",
+      "summary": "Legacy provenance metadata constants could capture public document constant monkeypatches installed before legacy import."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document engine-probe implementation ownership",
+    "legacy engine-probe compatibility wrapper",
+    "native engine probe metadata provenance",
+    "legacy module execution and helper monkeypatch migration hooks",
+    "public package compatibility tests",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine_probe.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/engine_probe.py src/restaurant_kv_serving/engine_probe.py src/document_kv_cache/__init__.py tests/test_engine_probe.py tests/test_public_package.py tests/test_project_governance.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review and re-review after resolving legacy import-order isolation findings"
+  ],
+  "what_changed": [
+    "Moved the native engine KV connector probe runner into document_kv_cache.engine_probe.",
+    "Routed document_kv_cache root engine-probe symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.engine_probe into a compatibility wrapper over the document module.",
+    "Preserved legacy module execution, public and private helper monkeypatch behavior, document factory-result compatibility, slotted config layout, and the previous legacy star-import surface.",
+    "Added pickle support for EngineKVProbeConfig despite immutable metadata mapping proxies."
+  ],
+  "why": "The generalized package should own native vLLM/SGLang engine-probe evidence generation because it is part of the serving-engine integration boundary. Keeping legacy compatibility makes this an incremental, behavior-preserving step toward retiring restaurant-specific implementation ownership."
+}

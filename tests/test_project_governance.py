@@ -120,6 +120,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_databricks_vllm_smoke_job.py": {
         "restaurant_kv_serving.databricks_vllm_smoke_job",
     },
+    "tests/test_engine_probe.py": {
+        "restaurant_kv_serving.engine_probe",
+    },
     "tests/test_live_server.py": {
         "restaurant_kv_serving.live_server",
     },
