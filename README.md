@@ -554,7 +554,10 @@ when a connector needs independent `bytes` objects and can afford that extra
 copy. `build_engine_kv_injection_plan` derives a
 reference reservation/copy map from the validated record: total native KV blocks
 to reserve from `layout.block_size`, source byte spans, destination token spans,
-block-index ranges, adapter ids, and engine metadata. Segment block ranges may
+block-index ranges, adapter ids, and engine metadata. The resulting
+`EngineKVInjectionPlan` re-validates layout-derived byte totals, block totals,
+and segment token/byte/block spans so adapters fail before native block-manager
+calls if a handoff is malformed. Segment block ranges may
 overlap when a document segment starts or ends inside an engine block; reserve
 using the plan-level `total_blocks`, then use segment bindings to map byte spans
 onto the affected token/block spans. `build_engine_kv_connector_actions` turns

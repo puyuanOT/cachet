@@ -278,18 +278,37 @@ class EngineKVInjectionPlan:
         object.__setattr__(self, "backend", _backend_from_value(self.backend, field_name="backend"))
         object.__setattr__(self, "payload_mode", _payload_mode_from_value(self.payload_mode, field_name="payload_mode"))
         _validate_connector_package_matches_backend(self.backend, self.connector_package)
+        _validate_nonempty_str_value(self.request_id, field_name="request_id")
+        _validate_nonempty_str_value(self.handle_uri, field_name="handle_uri")
+        _validate_nonempty_str_value(self.kv_injection_method, field_name="kv_injection_method")
+        _validate_nonempty_str_value(self.cache_method, field_name="cache_method")
+        self.layout.validate()
+        _validate_nonnegative_int_value(self.total_tokens, field_name="total_tokens")
+        _validate_nonnegative_int_value(self.total_bytes, field_name="total_bytes")
+        _validate_nonnegative_int_value(self.total_blocks, field_name="total_blocks")
         _validate_nonnegative_int_value(self.estimated_gpu_bytes, field_name="estimated_gpu_bytes")
-        if self.total_blocks != _block_count(self.total_tokens, self.layout.block_size):
-            raise ValueError("total_blocks does not match total_tokens and layout.block_size")
-        if self.segments:
-            if self.segments[0].token_start != 0 or self.segments[0].byte_start != 0:
-                raise ValueError("First KV segment binding must start at token and byte offset zero")
-            if self.segments[-1].token_end != self.total_tokens:
-                raise ValueError("Segment bindings do not cover total_tokens")
-            if self.segments[-1].byte_end != self.total_bytes:
-                raise ValueError("Segment bindings do not cover total_bytes")
-        object.__setattr__(self, "adapter_ids", tuple(self.adapter_ids))
-        object.__setattr__(self, "segments", tuple(self.segments))
+        _validate_plan_totals(
+            total_tokens=self.total_tokens,
+            total_bytes=self.total_bytes,
+            total_blocks=self.total_blocks,
+            layout=self.layout,
+        )
+        if isinstance(self.adapter_ids, str) or not isinstance(self.adapter_ids, list | tuple):
+            raise TypeError("adapter_ids must be a sequence of non-empty strings")
+        adapter_ids = tuple(self.adapter_ids)
+        if any(not isinstance(adapter_id, str) or not adapter_id for adapter_id in adapter_ids):
+            raise ValueError("adapter_ids entries must be non-empty strings")
+        segments = tuple(self.segments)
+        if any(not isinstance(segment, EngineKVSegmentBinding) for segment in segments):
+            raise TypeError("segments entries must be EngineKVSegmentBinding instances")
+        _validate_injection_plan_segments(
+            segments,
+            total_tokens=self.total_tokens,
+            total_bytes=self.total_bytes,
+            layout=self.layout,
+        )
+        object.__setattr__(self, "adapter_ids", adapter_ids)
+        object.__setattr__(self, "segments", segments)
         _validate_metadata_strings(self.metadata)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
@@ -1605,6 +1624,88 @@ def _validate_nonnegative_int_value(
         qualifier = "null or a " if allow_null else "a "
         raise ValueError(f"{field_name} must be {qualifier}non-negative integer")
     return value
+
+
+def _validate_nonempty_str_value(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value
+
+
+def _validate_plan_totals(
+    *,
+    total_tokens: int,
+    total_bytes: int,
+    total_blocks: int,
+    layout: KVLayout,
+) -> None:
+    expected_total_bytes = total_tokens * layout.bytes_per_token
+    if total_bytes != expected_total_bytes:
+        raise ValueError("total_bytes does not match total_tokens * layout.bytes_per_token")
+    if total_blocks != _block_count(total_tokens, layout.block_size):
+        raise ValueError("total_blocks does not match total_tokens and layout.block_size")
+
+
+def _validate_injection_plan_segments(
+    segments: tuple[EngineKVSegmentBinding, ...],
+    *,
+    total_tokens: int,
+    total_bytes: int,
+    layout: KVLayout,
+) -> None:
+    token_cursor = 0
+    byte_cursor = 0
+    for segment in segments:
+        for field_name in (
+            "token_start",
+            "token_count",
+            "token_end",
+            "byte_start",
+            "byte_length",
+            "byte_end",
+            "first_block_index",
+            "last_block_index_exclusive",
+        ):
+            _validate_nonnegative_int_value(
+                getattr(segment, field_name),
+                field_name=f"segment.{field_name}",
+            )
+        if segment.token_count <= 0:
+            raise ValueError(f"Segment binding {segment.chunk_id!r} token_count must be positive")
+        if segment.byte_length <= 0:
+            raise ValueError(f"Segment binding {segment.chunk_id!r} byte_length must be positive")
+        if segment.token_start != token_cursor:
+            raise ValueError(f"Non-contiguous token segment binding {segment.chunk_id!r}")
+        if segment.byte_start != byte_cursor:
+            raise ValueError(f"Non-contiguous byte segment binding {segment.chunk_id!r}")
+        if segment.token_start + segment.token_count != segment.token_end:
+            raise ValueError(f"Segment binding {segment.chunk_id!r} token_end does not match token range")
+        if segment.byte_start + segment.byte_length != segment.byte_end:
+            raise ValueError(f"Segment binding {segment.chunk_id!r} byte_end does not match byte range")
+        expected_byte_length = segment.token_count * layout.bytes_per_token
+        if segment.byte_length != expected_byte_length:
+            raise ValueError(
+                f"Segment binding {segment.chunk_id!r} byte_length {segment.byte_length} "
+                f"!= token_count * bytes_per_token {expected_byte_length}"
+            )
+        expected_first_block = segment.token_start // layout.block_size
+        expected_last_block = _block_count(segment.token_end, layout.block_size)
+        if segment.first_block_index != expected_first_block:
+            raise ValueError(
+                f"Segment binding {segment.chunk_id!r} first_block_index "
+                f"{segment.first_block_index} != token_start // block_size {expected_first_block}"
+            )
+        if segment.last_block_index_exclusive != expected_last_block:
+            raise ValueError(
+                f"Segment binding {segment.chunk_id!r} last_block_index_exclusive "
+                f"{segment.last_block_index_exclusive} != ceil(token_end / block_size) {expected_last_block}"
+            )
+        token_cursor = segment.token_end
+        byte_cursor = segment.byte_end
+    if token_cursor != total_tokens:
+        raise ValueError(f"Segment bindings cover {token_cursor} tokens != total_tokens {total_tokens}")
+    if byte_cursor != total_bytes:
+        raise ValueError(f"Segment bindings cover {byte_cursor} bytes != total_bytes {total_bytes}")
 
 
 def _required_positive_int(record: Mapping[str, Any], key: str) -> int:

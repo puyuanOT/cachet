@@ -812,6 +812,9 @@ def test_readme_native_probe_diagnostics_include_serving_environment_profile():
     assert "fail closed" in compact_serving_handoff
     assert "pinned isolated serving-environment profile" in compact_serving_handoff
     assert "target engine versions and dependency constraints" in compact_serving_handoff
+    assert "EngineKVInjectionPlan" in serving_handoff
+    assert "layout-derived byte totals, block totals" in serving_handoff
+    assert "before native block-manager calls" in compact_serving_handoff
 
 
 def test_readme_workflow_api_shows_single_text_document_helper():
