@@ -98,6 +98,11 @@ implementations are:
 - `RoutedRangeReader` for URI-based dispatch across the three readers; `disk:` forces
   the local disk reader even when a UC Volume root is configured.
 
+`DocumentKVWorkflow.with_storage(...)` can also generate directly into the
+configured `MemoryRangeReader` when `generate_cache(...)` receives a `memory:`
+or `mem:` shard URI. Use that path for hot ephemeral shards; UC Volume or disk
+URIs remain the durable storage targets.
+
 ## Tiered Cache
 
 `ChunkCache` keeps hot document chunks in a byte-bounded CPU LRU and can persist
@@ -225,7 +230,8 @@ When `with_storage(...)` is used, relative `shard_uri` values passed to
 `generate_cache(...)` are written under `uc_volume_root` when it is configured;
 otherwise they resolve under `disk_root` or the current filesystem path. The
 manifest keeps the logical URI so the routed reader can load the same shard
-during `prepare(...)`.
+during `prepare(...)`. A `memory:` or `mem:` shard URI stays in process memory
+and is not written to disk.
 
 For documents that are already split into static context and reusable content
 chunks, use `SourceDocument.from_texts(...)` with

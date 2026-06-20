@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/memory-kvpack-generation/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 found injected-service memory reader mismatches and explicit-writer bypasses; the workflow now follows the active materializer rule, copies generated/preloaded memory bytes into service readers when safe, rejects incompatible memory generation up front, and GPT-5.5 approved d49c543.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/kvpack.py",
+        "src/document_kv_cache/workflow.py",
+        "tests/test_kvpack.py",
+        "tests/test_workflow.py",
+        "tests/test_public_package.py",
+        "tests/test_project_governance.py",
+        "README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_workflow.py tests/test_kvpack.py tests/test_public_package.py tests/test_project_governance.py -q -> 103 passed",
+        "poetry run pytest -q -> 915 passed",
+        "git diff --check -> passed",
+        "poetry check -> passed",
+        "poetry install --dry-run -> passed",
+        "poetry build -> passed"
+      ],
+      "what_changed": [
+        "Added write_kvpack_bytes(...) for in-memory kvpack shard serialization with manifest ChunkRef metadata.",
+        "Taught DocumentKVWorkflow memory-capable workflows to generate memory:/mem: shards into the active materializer memory reader, including injected-service readers and preloaded memory_blobs.",
+        "Rejected memory shard generation when the active materializer cannot load memory refs, preventing accidental local files and late prepare-time failures."
+      ],
+      "why": "Cachet needs Memory to be a first-class generated shard target for hot ephemeral document KV caches, not only a reader for manually preloaded blobs."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

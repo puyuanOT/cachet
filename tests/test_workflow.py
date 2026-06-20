@@ -3,13 +3,13 @@ import pytest
 from document_kv_cache.admission import AdmissionQueue
 from document_kv_cache.cache import CacheTier, ChunkCache
 from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout
-from document_kv_cache.kvpack import PackChunk, write_kvpack
+from document_kv_cache.kvpack import PackChunk, write_kvpack, write_kvpack_bytes
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer
 from document_kv_cache.models import CacheGenerationMethod, DocumentChunkType, DocumentKVRequest, KVCacheKey
 from document_kv_cache.planner import CachePlanner
 from document_kv_cache.service import DocumentKVService
-from document_kv_cache.storage import DiskRangeReader
+from document_kv_cache.storage import DiskRangeReader, MemoryRangeReader, RoutedRangeReader
 from document_kv_cache.workflow import (
     CacheAdapterArtifact,
     CacheBuildConfig,
@@ -452,6 +452,259 @@ def test_workflow_with_storage_generates_relative_shards_under_uc_volume_root(tm
 
     assert (uc_volume_root / "relative-uc-cache.kvpack").exists()
     assert materialized.payload == b"doc-a:document:hello from uc root"
+
+
+def test_workflow_with_storage_generates_memory_shards_in_process(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow.with_storage(manifest=manifest, cpu_cache_bytes=4096)
+    document = SourceDocument.from_text(document_id="doc-a", text="hello from memory")
+    request = DocumentKVRequest.for_text_document(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+    )
+
+    result = workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri="memory:doc-a",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(request)
+
+    assert result.refs[0].shard_uri == "memory:doc-a"
+    assert materialized.payload == b"doc-a:document:hello from memory"
+    assert not (tmp_path / "memory:doc-a").exists()
+
+
+def test_workflow_with_storage_generates_mem_alias_shards_in_process(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow.with_storage(manifest=manifest, cpu_cache_bytes=4096)
+    document = SourceDocument.from_text(document_id="doc-a", text="hello from mem alias")
+
+    result = workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri="mem:doc-a",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(
+        DocumentKVRequest.for_text_document(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+        )
+    )
+
+    assert result.refs[0].shard_uri == "mem:doc-a"
+    assert materialized.payload == b"doc-a:document:hello from mem alias"
+    assert not (tmp_path / "mem:doc-a").exists()
+
+
+def test_workflow_with_storage_populates_injected_service_memory_reader(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manifest = InMemoryManifestStore()
+    service = DocumentKVService(
+        planner=CachePlanner(manifest),
+        materializer=KVMaterializer(
+            cache=ChunkCache(cpu_max_bytes=4096),
+            reader=RoutedRangeReader(memory=MemoryRangeReader()),
+        ),
+        admission_queue=AdmissionQueue(max_pending_gpu_bytes=4096),
+    )
+    workflow = DocumentKVWorkflow.with_storage(
+        manifest=manifest,
+        cpu_cache_bytes=4096,
+        service=service,
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="service memory")
+
+    workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri="memory:service-doc-a",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(
+        DocumentKVRequest.for_text_document(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+        )
+    )
+
+    assert materialized.payload == b"doc-a:document:service memory"
+    assert materialized.segment_tiers == (CacheTier.COLD_STORAGE,)
+    assert not (tmp_path / "memory:service-doc-a").exists()
+
+
+def test_workflow_with_storage_rejects_memory_shard_when_injected_service_reader_cannot_load_it(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    manifest = InMemoryManifestStore()
+    service = DocumentKVService(
+        planner=CachePlanner(manifest),
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+        admission_queue=AdmissionQueue(max_pending_gpu_bytes=4096),
+    )
+    workflow = DocumentKVWorkflow.with_storage(
+        manifest=manifest,
+        cpu_cache_bytes=4096,
+        service=service,
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="service disk reader")
+
+    with pytest.raises(ValueError, match="active materializer"):
+        workflow.generate_cache(
+            documents=(document,),
+            generator=EchoGenerator(),
+            config=config(),
+            shard_uri="memory:service-doc-a",
+            align_bytes=1,
+        )
+
+    assert not (tmp_path / "memory:service-doc-a").exists()
+
+
+def test_workflow_with_storage_copies_preloaded_memory_blobs_to_injected_service_reader():
+    chunk = PackChunk(
+        key=KVCacheKey.for_document(
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+            chunk_type=DocumentChunkType.DOCUMENT_CHUNK,
+            chunk_id="section-1",
+        ),
+        payload=b"preloaded-service-memory",
+        token_count=len(b"preloaded-service-memory"),
+        dtype="int8",
+        layout_version="toy-one-byte-v1",
+    )
+    payload, refs = write_kvpack_bytes("memory:preloaded-service", [chunk], align_bytes=1)
+    manifest = InMemoryManifestStore(refs)
+    service = DocumentKVService(
+        planner=CachePlanner(manifest),
+        materializer=KVMaterializer(
+            cache=ChunkCache(cpu_max_bytes=4096),
+            reader=RoutedRangeReader(memory=MemoryRangeReader()),
+        ),
+        admission_queue=AdmissionQueue(max_pending_gpu_bytes=4096),
+    )
+    workflow = DocumentKVWorkflow.with_storage(
+        manifest=manifest,
+        cpu_cache_bytes=4096,
+        memory_blobs={"memory:preloaded-service": payload},
+        service=service,
+    )
+    request = DocumentKVRequest(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_chunks={"doc-a": ["section-1"]},
+        include_static=False,
+    )
+
+    materialized = workflow.prepare(request)
+
+    assert materialized.payload == b"preloaded-service-memory"
+
+
+def test_manual_workflow_generates_memory_shards_when_materializer_can_read_memory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    manifest = InMemoryManifestStore()
+    memory_reader = MemoryRangeReader()
+    workflow = DocumentKVWorkflow(
+        manifest=manifest,
+        materializer=KVMaterializer(
+            cache=ChunkCache(cpu_max_bytes=4096),
+            reader=RoutedRangeReader(memory=memory_reader),
+        ),
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="manual memory")
+
+    workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri="memory:doc-a",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(
+        DocumentKVRequest.for_text_document(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+        )
+    )
+
+    assert materialized.payload == b"doc-a:document:manual memory"
+    assert not (tmp_path / "memory:doc-a").exists()
+
+
+def test_manual_workflow_rejects_explicit_memory_writer_when_active_materializer_cannot_read_memory(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.chdir(tmp_path)
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+        memory_writer=MemoryRangeReader(),
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="explicit writer")
+
+    with pytest.raises(ValueError, match="active materializer"):
+        workflow.generate_cache(
+            documents=(document,),
+            generator=EchoGenerator(),
+            config=config(),
+            shard_uri="memory:doc-a",
+            align_bytes=1,
+        )
+
+    assert not (tmp_path / "memory:doc-a").exists()
+
+
+def test_manual_workflow_rejects_memory_shard_uri_without_memory_storage(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+    )
+    document = SourceDocument.from_text(document_id="doc-a", text="manual memory")
+
+    with pytest.raises(ValueError, match="active materializer"):
+        workflow.generate_cache(
+            documents=(document,),
+            generator=EchoGenerator(),
+            config=config(),
+            shard_uri="memory:doc-a",
+            align_bytes=1,
+        )
+
+    assert not (tmp_path / "memory:doc-a").exists()
 
 
 def test_workflow_generates_and_prepares_single_text_document(tmp_path):
