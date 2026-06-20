@@ -9,9 +9,11 @@ import hashlib
 import io
 import json
 import re
+import tomllib
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from importlib import metadata as package_metadata
 from pathlib import Path
 from typing import Any
 
@@ -361,9 +363,18 @@ def build_release_bundle(
         _prepare_release_bundle_artifact(role=role, source_path=source_path, index=index)
         for index, (role, source_path) in enumerate(sources)
     )
+    expected_package_version = _release_bundle_expected_package_version() if require_complete_v1 else None
+    if require_complete_v1 and expected_package_version is None:
+        raise ValueError(
+            "Strict V1 release bundle requires current project package version metadata "
+            "from pyproject.toml or the installed package"
+        )
     if require_complete_v1:
         _validate_strict_v1_release_bundle_completeness(prepared_artifacts)
-    _validate_release_bundle_inputs(prepared_artifacts)
+    _validate_release_bundle_inputs(
+        prepared_artifacts,
+        expected_package_version=expected_package_version,
+    )
     if require_complete_v1:
         _validate_strict_v1_databricks_purpose_coverage(prepared_artifacts)
         _validate_strict_v1_native_probe_factory_support(prepared_artifacts)
@@ -489,7 +500,11 @@ def _prepare_release_bundle_artifact(
     )
 
 
-def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleArtifact]) -> None:
+def _validate_release_bundle_inputs(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+    *,
+    expected_package_version: str | None = None,
+) -> None:
     v1_record = _single_record_for_role(artifacts, "v1_benchmark")
     storage_record = _single_record_for_role(artifacts, "storage_benchmark")
     engine_probe_records = tuple(artifact.record for artifact in artifacts if artifact.role == "engine_probe")
@@ -545,7 +560,13 @@ def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleAr
                 continue
             issues.extend(_databricks_run_status_sidecar_issues(artifact.record))
         elif artifact.role == "package_wheel":
-            issues.extend(_package_wheel_issues(artifact.source_path, artifact.payload))
+            issues.extend(
+                _package_wheel_issues(
+                    artifact.source_path,
+                    artifact.payload,
+                    expected_version=expected_package_version,
+                )
+            )
         elif artifact.role == "native_probe_factories":
             if artifact.record is None:
                 issues.append("native probe factories sidecar must be JSON")
@@ -1381,7 +1402,12 @@ def _task_key_list(tasks: Any) -> list[str]:
     ]
 
 
-def _package_wheel_issues(source_path: str, payload: bytes) -> tuple[str, ...]:
+def _package_wheel_issues(
+    source_path: str,
+    payload: bytes,
+    *,
+    expected_version: str | None = None,
+) -> tuple[str, ...]:
     issues: list[str] = []
     filename = Path(source_path).name
     filename_match = _WHEEL_FILENAME_RE.fullmatch(filename)
@@ -1390,25 +1416,39 @@ def _package_wheel_issues(source_path: str, payload: bytes) -> tuple[str, ...]:
     elif filename_match is None:
         issues.append("package wheel artifact source_path must use a valid wheel filename")
     else:
-        issues.extend(_wheel_filename_tag_issues(filename_match))
+        issues.extend(_wheel_filename_issues(filename_match))
     if not payload:
         issues.append("package wheel artifact must be non-empty")
     else:
-        issues.extend(_wheel_zip_payload_issues(payload, filename_match=filename_match))
+        issues.extend(
+            _wheel_zip_payload_issues(
+                payload,
+                filename_match=filename_match,
+                expected_version=expected_version,
+            )
+        )
     return tuple(issues)
 
 
-def _wheel_filename_tag_issues(filename_match: re.Match[str]) -> tuple[str, ...]:
+def _wheel_filename_issues(filename_match: re.Match[str]) -> tuple[str, ...]:
+    issues: list[str] = []
+    if canonicalize_name(filename_match.group("distribution")) != canonicalize_name(RELEASE_BUNDLE_PACKAGE_NAME):
+        issues.append(f"package wheel artifact filename distribution must be {RELEASE_BUNDLE_PACKAGE_NAME!r}")
     if (
         filename_match.group("python_tag"),
         filename_match.group("abi_tag"),
         filename_match.group("platform_tag"),
     ) != ("py3", "none", "any"):
-        return ("package wheel artifact filename tags must be py3-none-any",)
-    return ()
+        issues.append("package wheel artifact filename tags must be py3-none-any")
+    return tuple(issues)
 
 
-def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] | None) -> tuple[str, ...]:
+def _wheel_zip_payload_issues(
+    payload: bytes,
+    *,
+    filename_match: re.Match[str] | None,
+    expected_version: str | None,
+) -> tuple[str, ...]:
     try:
         with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
             corrupt_member = wheel_zip.testzip()
@@ -1452,7 +1492,11 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
         )
     return (
         *_wheel_file_issues(wheel_payload),
-        *_wheel_metadata_issues(metadata_payload, filename_match=filename_match),
+        *_wheel_metadata_issues(
+            metadata_payload,
+            filename_match=filename_match,
+            expected_version=expected_version,
+        ),
         *record_issues,
     )
 
@@ -1495,7 +1539,12 @@ def _wheel_dist_info_prefix_issues(prefix: str, *, filename_match: re.Match[str]
     return ()
 
 
-def _wheel_metadata_issues(payload: bytes, *, filename_match: re.Match[str] | None) -> tuple[str, ...]:
+def _wheel_metadata_issues(
+    payload: bytes,
+    *,
+    filename_match: re.Match[str] | None,
+    expected_version: str | None,
+) -> tuple[str, ...]:
     try:
         metadata = _metadata_headers(payload.decode("utf-8"))
     except UnicodeDecodeError:
@@ -1508,6 +1557,11 @@ def _wheel_metadata_issues(payload: bytes, *, filename_match: re.Match[str] | No
         return ("package wheel artifact METADATA Version must be non-empty",)
     if filename_match is not None and not _wheel_versions_match(filename_match.group("version"), version):
         return ("package wheel artifact METADATA Version must match wheel filename",)
+    if expected_version is not None and not _wheel_versions_match(expected_version, version):
+        return (
+            "package wheel artifact METADATA Version "
+            f"must match current project version {expected_version!r}",
+        )
     return _wheel_metadata_license_issues(metadata)
 
 
@@ -1644,6 +1698,37 @@ def _wheel_record_hash_issues(wheel_zip: zipfile.ZipFile, path: str, hash_value:
     if encoded_digest != actual_digest:
         return (f"package wheel artifact RECORD path {path!r} hash must match the wheel payload",)
     return ()
+
+
+def _release_bundle_expected_package_version() -> str | None:
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    pyproject_version = _release_bundle_package_version_from_pyproject(pyproject_path)
+    if pyproject_version is not None:
+        return pyproject_version
+    try:
+        return package_metadata.version(RELEASE_BUNDLE_PACKAGE_NAME)
+    except package_metadata.PackageNotFoundError:
+        return None
+
+
+def _release_bundle_package_version_from_pyproject(path: Path) -> str | None:
+    try:
+        payload = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        project = tomllib.loads(payload.decode("utf-8")).get("project")
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(project, Mapping):
+        return None
+    name = project.get("name")
+    version = project.get("version")
+    if not isinstance(name, str) or canonicalize_name(name) != canonicalize_name(RELEASE_BUNDLE_PACKAGE_NAME):
+        return None
+    if not isinstance(version, str) or not version:
+        return None
+    return version
 
 
 def _wheel_versions_match(filename_version: str, metadata_version: str) -> bool:
