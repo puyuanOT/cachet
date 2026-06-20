@@ -786,6 +786,16 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "dirty-repository-hygiene.json",
         dirty_repository_hygiene_record,
     )
+    untracked_repository_hygiene_record = _repository_hygiene_record(ok=True)
+    untracked_repository_hygiene_record["forbidden_untracked_paths"] = ["local-output.tmp"]
+    untracked_repository_hygiene_record["untracked_path_count"] = 1
+    untracked_repository_hygiene_record["issues"] = [
+        "forbidden generated or secret-like untracked artifacts: local-output.tmp"
+    ]
+    untracked_repository_hygiene = _write_json(
+        tmp_path / "untracked-repository-hygiene.json",
+        untracked_repository_hygiene_record,
+    )
 
     with pytest.raises(ValueError, match="package wheel artifact source_path"):
         build_release_bundle(
@@ -1280,6 +1290,16 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             repository_hygiene_json=dirty_repository_hygiene,
             output_dir=tmp_path / "dirty-repository-hygiene-bundle",
+        )
+
+    with pytest.raises(ValueError, match="forbidden_untracked_paths must be an empty array"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            repository_hygiene_json=untracked_repository_hygiene,
+            output_dir=tmp_path / "untracked-repository-hygiene-bundle",
         )
 
     with pytest.raises(ValueError, match="unsupported keys"):
@@ -2319,7 +2339,9 @@ def _repository_hygiene_record(*, ok: bool):
         "missing_gitignore_patterns": [] if ok else [".env"],
         "forbidden_tracked_artifact_patterns": list(FORBIDDEN_TRACKED_ARTIFACT_PATTERNS),
         "forbidden_tracked_paths": [] if ok else ["dist/document_kv_cache-0.2.0-py3-none-any.whl"],
+        "forbidden_untracked_paths": [],
         "dirty_tracked_paths": [],
+        "untracked_path_count": 0,
         "issues": [] if ok else ["forbidden generated or secret-like tracked artifacts"],
     }
 

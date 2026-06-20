@@ -78,7 +78,8 @@ new document modules depend on restaurant-owned implementations.
 - `release_evidence.py` validates V1 benchmark, storage, and native engine-probe
   artifacts, including the pinned serving-engine package/version metadata.
 - `repository_hygiene.py` emits a release-readiness sidecar proving `.gitignore`
-  coverage and absence of tracked generated or secret-like artifacts.
+  coverage and absence of tracked or untracked generated/secret-like artifacts
+  that Git exposes.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.

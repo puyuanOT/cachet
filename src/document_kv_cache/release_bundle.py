@@ -237,7 +237,9 @@ _REPOSITORY_HYGIENE_KEYS = frozenset(
         "missing_gitignore_patterns",
         "forbidden_tracked_artifact_patterns",
         "forbidden_tracked_paths",
+        "forbidden_untracked_paths",
         "dirty_tracked_paths",
+        "untracked_path_count",
         "issues",
     }
 )
@@ -926,6 +928,8 @@ def _repository_hygiene_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, 
         issues.append("repository hygiene sidecar repository_root must be non-empty")
     if type(record.get("tracked_path_count")) is not int or record.get("tracked_path_count") <= 0:
         issues.append("repository hygiene sidecar tracked_path_count must be a positive integer")
+    if type(record.get("untracked_path_count")) is not int or record.get("untracked_path_count") < 0:
+        issues.append("repository hygiene sidecar untracked_path_count must be a non-negative integer")
     issues.extend(
         _exact_string_list_field(
             record,
@@ -946,6 +950,8 @@ def _repository_hygiene_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, 
         issues.append("repository hygiene sidecar missing_gitignore_patterns must be an empty array")
     if record.get("forbidden_tracked_paths") != []:
         issues.append("repository hygiene sidecar forbidden_tracked_paths must be an empty array")
+    if record.get("forbidden_untracked_paths") != []:
+        issues.append("repository hygiene sidecar forbidden_untracked_paths must be an empty array")
     if record.get("dirty_tracked_paths") != []:
         issues.append("repository hygiene sidecar dirty_tracked_paths must be an empty array")
     if record.get("issues") != []:
