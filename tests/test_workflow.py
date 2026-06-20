@@ -150,6 +150,68 @@ def one_byte_layout() -> KVLayout:
     )
 
 
+def test_source_chunk_validates_and_normalizes_public_inputs():
+    chunk = SourceChunk(
+        chunk_id="p1",
+        text="body",
+        chunk_type="document_static",
+        metadata={"source": "fixture"},
+    )
+
+    assert chunk.chunk_id == "p1"
+    assert chunk.chunk_type == DocumentChunkType.DOCUMENT_STATIC
+    assert chunk.metadata == {"source": "fixture"}
+
+    with pytest.raises(ValueError, match="chunk_id must be a non-empty string"):
+        SourceChunk(chunk_id="", text="body")
+    with pytest.raises(TypeError, match="text must be a string"):
+        SourceChunk(chunk_id="p1", text=object())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="chunk_type must be one of"):
+        SourceChunk(chunk_id="p1", text="body", chunk_type="bad-type")
+    with pytest.raises(TypeError, match="metadata must be a mapping"):
+        SourceChunk(chunk_id="p1", text="body", metadata=())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="metadata keys must be non-empty strings"):
+        SourceChunk(chunk_id="p1", text="body", metadata={"": "fixture"})
+    with pytest.raises(ValueError, match="metadata.source must be a string"):
+        SourceChunk(chunk_id="p1", text="body", metadata={"source": 1})  # type: ignore[dict-item]
+
+
+def test_source_document_validates_and_normalizes_public_inputs():
+    chunk = SourceChunk(chunk_id="p1", text="body")
+    document = SourceDocument(document_id="doc-a", chunks=[chunk], metadata={"title": "Doc A"})  # type: ignore[arg-type]
+
+    assert document.document_id == "doc-a"
+    assert document.chunks == (chunk,)
+    assert document.metadata == {"title": "Doc A"}
+
+    with pytest.raises(ValueError, match="document_id must be a non-empty string"):
+        SourceDocument(document_id="", chunks=(chunk,))
+    with pytest.raises(ValueError, match="chunks must contain at least one SourceChunk"):
+        SourceDocument(document_id="doc-a", chunks=())
+    with pytest.raises(TypeError, match="chunks entries must be SourceChunk instances"):
+        SourceDocument(document_id="doc-a", chunks=("not-a-chunk",))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="metadata.title must be a string"):
+        SourceDocument(document_id="doc-a", chunks=(chunk,), metadata={"title": object()})  # type: ignore[dict-item]
+
+
+def test_source_document_from_texts_validates_helper_inputs():
+    document = SourceDocument.from_texts(
+        document_id="doc-a",
+        static_text="static context",
+        chunks={"p1": "body"},
+        metadata={"title": "Doc A"},
+    )
+
+    assert [chunk.chunk_id for chunk in document.chunks] == ["static", "p1"]
+    assert document.chunks[0].chunk_type == DocumentChunkType.DOCUMENT_STATIC
+    assert document.metadata == {"title": "Doc A"}
+
+    with pytest.raises(TypeError, match="chunks must be a mapping"):
+        SourceDocument.from_texts(document_id="doc-a", chunks=["body"])  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="metadata must be a mapping"):
+        SourceDocument.from_texts(document_id="doc-a", chunks={"p1": "body"}, metadata=[])  # type: ignore[arg-type]
+
+
 def test_workflow_generates_registers_and_prepares_cache(tmp_path):
     manifest = InMemoryManifestStore()
     workflow = DocumentKVWorkflow(

@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/source-document-input-validation.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found one helper metadata consistency issue; the branch now fixes it and adds a regression test. Re-review approved with no remaining findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/workflow.py",
+        "tests/test_workflow.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_workflow.py -> 20 passed",
+        "python -m py_compile src/document_kv_cache/workflow.py tests/test_workflow.py -> clean",
+        "poetry run pytest -q tests/test_benchmark_runner.py tests/test_benchmarks.py tests/test_openai_compatible.py -> 61 passed",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 786 passed",
+        "poetry check -> All set",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-source-document-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+        "GPT-5.5 reviewer approved branch source-document-input-validation after the metadata helper finding was fixed"
+      ],
+      "what_changed": [
+        "Normalized SourceChunk chunk_id, chunk_type, and metadata at construction time.",
+        "Rejected non-string SourceChunk text and malformed SourceChunk metadata before cache generation.",
+        "Normalized SourceDocument chunks to a tuple and rejected empty or non-SourceChunk chunk collections.",
+        "Validated SourceDocument metadata and SourceDocument.from_texts chunk mapping inputs."
+      ],
+      "why": "Source documents and chunks are public workflow inputs. Validating them before generation keeps malformed IDs, chunk types, and metadata from reaching manifests, KV keys, or benchmark prompts with harder-to-debug failures."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
