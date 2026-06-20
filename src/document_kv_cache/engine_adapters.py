@@ -247,6 +247,32 @@ class EngineKVSegmentBinding:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cache_tier", _cache_tier_from_value(self.cache_tier, field_name="cache_tier"))
+        _validate_nonempty_str_value(self.document_id, field_name="document_id")
+        _validate_nonempty_str_value(self.chunk_type, field_name="chunk_type")
+        _validate_nonempty_str_value(self.chunk_id, field_name="chunk_id")
+        for field_name in (
+            "token_start",
+            "token_count",
+            "token_end",
+            "byte_start",
+            "byte_length",
+            "byte_end",
+            "first_block_index",
+            "last_block_index_exclusive",
+        ):
+            _validate_nonnegative_int_value(getattr(self, field_name), field_name=field_name)
+        if self.token_count <= 0:
+            raise ValueError("token_count must be positive")
+        if self.byte_length <= 0:
+            raise ValueError("byte_length must be positive")
+        if self.token_start + self.token_count != self.token_end:
+            raise ValueError("token_end does not match token_start + token_count")
+        if self.byte_start + self.byte_length != self.byte_end:
+            raise ValueError("byte_end does not match byte_start + byte_length")
+        if self.last_block_index_exclusive <= self.first_block_index:
+            raise ValueError("block range must be positive")
+        if not isinstance(self.content_hash, str):
+            raise TypeError("content_hash must be a string")
 
     @property
     def block_count(self) -> int:

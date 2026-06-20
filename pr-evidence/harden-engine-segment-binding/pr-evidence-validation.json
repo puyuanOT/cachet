@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/harden-engine-segment-binding/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED: no blocking findings; local segment checks now live on EngineKVSegmentBinding while layout and cross-segment invariants remain on EngineKVInjectionPlan.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "document_kv_cache.engine_adapters EngineKVSegmentBinding validation and engine adapter tests."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_engine_adapters.py -q => 104 passed; git diff --check => clean; poetry run pytest tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py -q => 149 passed; poetry run pytest -q => 986 passed; poetry build && poetry check && poetry install --dry-run => succeeded."
+      ],
+      "what_changed": [
+        "Hardened EngineKVSegmentBinding construction-time validation for serving-engine KV segment bindings."
+      ],
+      "why": "The vLLM/SGLang adapter boundary should reject malformed document KV segment bindings before connector action planning, so invalid local spans cannot move deeper into serving handoff code."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
