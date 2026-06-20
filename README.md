@@ -1,6 +1,9 @@
-# Document KV Cache
+# Cachet: Document KV Cache
 
-Document KV Cache is the reusable cache orchestration package being split out of the restaurant KV-cache experiments. It owns the work outside the inference engine:
+Cachet is a reusable document KV-cache orchestration package for long-context
+LLM serving. It is being split out of the restaurant KV-cache experiments into
+an open-source library for arbitrary textual documents. Cachet owns the work
+outside the inference engine:
 
 - document/chunk manifest lookup
 - packed KV shard reading
@@ -12,7 +15,9 @@ Document KV Cache is the reusable cache orchestration package being split out of
 - local tests and Databricks benchmark support
 
 The package publishes as `document-kv-cache` and exposes the public
-`document_kv_cache` import path. The legacy `restaurant_kv_serving` package and
+`document_kv_cache` import path. Cachet is the product brand; the Python
+distribution and import names stay explicit for package discovery and backward
+compatibility. The legacy `restaurant_kv_serving` package and
 restaurant-specific aliases are still bundled as compatibility shims for
 existing benchmark jobs. New code should use the document-generic names:
 `DocumentKVRequest`, `DocumentChunkType.DOCUMENT_STATIC`,
@@ -20,6 +25,22 @@ existing benchmark jobs. New code should use the document-generic names:
 `keys_for_document` methods. Core identifiers are stored as `document_id`;
 legacy `restaurant_id` and `selected_restaurants` accessors remain aliases for
 old callers.
+
+## Purpose And Scope
+
+Cachet targets applications that repeatedly serve long, mostly stable document
+context with short request-specific suffixes: retrieval-heavy assistants,
+semantic filtering, compliance review, internal knowledge tools, and benchmark
+suites that compare cached-context serving against ordinary prefill. The V1
+release focuses on Qwen3 4B Instruct on AWS g5-class hardware, with Biography,
+HotpotQA, MusiQue, and Needle-in-a-Haystack benchmarks measuring quality and
+latency against a standard no-cache prefill baseline.
+
+The package deliberately stops at the engine handoff boundary. vLLM, SGLang, or
+another established serving engine owns scheduling, decode, LoRA execution, and
+native KV block management. Cachet provides the manifest, storage, materialized
+payload, admission metadata, benchmark evidence, and adapter contracts that let
+those engines reuse precomputed document context safely.
 
 ## Logical Model
 

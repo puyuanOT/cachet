@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the Cachet branding and source-layout documentation slice, including the separation between product brand, distribution name, and import namespace; no merge-blocking findings were reported.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/README.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/cachet-branding-source-layout-docs/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_source_layout_readme_reflects_document_owned_implementation tests/test_project_governance.py::test_readme_documents_cachet_brand_and_scope tests/test_project_governance.py::test_readme_development_commands_use_public_package_branding -q",
+    "poetry run pytest tests/test_project_governance.py -q",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret scan over README.md, CONTRIBUTING.md, pyproject.toml, src, tests, databricks, pr-evidence, and .github",
+    "GPT-5.5 focused review"
+  ],
+  "what_changed": [
+    "Introduced Cachet as the top-level product brand while keeping document-kv-cache as the Python distribution and document_kv_cache as the import namespace.",
+    "Added a Purpose And Scope README section covering target use cases, V1 benchmark/model/hardware scope, the no-cache baseline, and the vLLM/SGLang serving-engine boundary.",
+    "Updated src/README.md to describe document_kv_cache as the canonical implementation package and restaurant_kv_serving as migration-only compatibility.",
+    "Added governance tests that pin the Cachet brand, purpose/scope language, and source-layout ownership wording."
+  ],
+  "why": "The project goal requires a distinct premium package brand plus clear purpose, goals, target use cases, and directory documentation while preserving the already-published package and import names during migration."
+}
