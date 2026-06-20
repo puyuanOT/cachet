@@ -1053,7 +1053,10 @@ pytest tests -q
 Cachet is distributed under the Apache License 2.0. The repository includes
 the full license text in `LICENSE`, and the Poetry package metadata includes
 the `Apache-2.0` SPDX expression plus the license file in built wheels and
-source distributions.
+source distributions. Release-bundle validation also requires the built wheel
+to carry `py.typed` markers for both `document_kv_cache` and the legacy
+`restaurant_kv_serving` compatibility package so downstream users keep inline
+type annotations after installation.
 
 ## Remaining V1 Work
 

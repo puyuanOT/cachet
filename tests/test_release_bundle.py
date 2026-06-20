@@ -1154,6 +1154,34 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-license-file-bundle",
         )
 
+    missing_document_typed_marker_wheel = _write_wheel(
+        tmp_path / "missing-document-typed-marker-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        include_document_typed_marker=False,
+    )
+    with pytest.raises(ValueError, match=r"document_kv_cache/py\.typed"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_document_typed_marker_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-document-typed-marker-bundle",
+        )
+
+    missing_legacy_typed_marker_wheel = _write_wheel(
+        tmp_path / "missing-legacy-typed-marker-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        include_legacy_typed_marker=False,
+    )
+    with pytest.raises(ValueError, match=r"restaurant_kv_serving/py\.typed"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_legacy_typed_marker_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-legacy-typed-marker-bundle",
+        )
+
     with pytest.raises(ValueError, match="PR evidence sidecar ok"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
@@ -2163,6 +2191,8 @@ def _write_wheel(
     dist_info_prefix: str = "document_kv_cache-0.2.0.dist-info",
     include_record: bool = True,
     include_license_file: bool = True,
+    include_document_typed_marker: bool = True,
+    include_legacy_typed_marker: bool = True,
     record_lines: tuple[str, ...] | None = None,
     extra_entries: tuple[tuple[str, bytes], ...] = (),
     duplicate_entries: tuple[tuple[str, bytes], ...] = (),
@@ -2193,6 +2223,10 @@ def _write_wheel(
     ]
     if include_license_file:
         wheel_entries.append((f"{dist_info_prefix}/licenses/LICENSE", b"Apache License 2.0\n"))
+    if include_document_typed_marker:
+        wheel_entries.append(("document_kv_cache/py.typed", b""))
+    if include_legacy_typed_marker:
+        wheel_entries.append(("restaurant_kv_serving/py.typed", b""))
     with zipfile.ZipFile(path, "w") as wheel_zip:
         for name, payload in wheel_entries:
             wheel_zip.writestr(name, payload)

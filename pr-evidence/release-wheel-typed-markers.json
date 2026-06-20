@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved ea9f977 with no findings; PR evidence can mark gpt55_review_outcome=clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_project_governance.py tests/test_public_package.py -> 77 passed",
+    "poetry check -> All set",
+    "rm -rf dist && poetry build -q; wheel inspection showed document_kv_cache/py.typed and restaurant_kv_serving/py.typed",
+    "poetry run pytest -q -> 772 passed",
+    "git diff --check -> clean"
+  ],
+  "what_changed": [
+    "Required release-bundle package wheels to include py.typed markers for document_kv_cache and restaurant_kv_serving.",
+    "Updated wheel fixture/tests and README/governance docs for the typed-marker release gate."
+  ],
+  "why": "Open-source users should receive inline type information from the tested wheel, and release bundles should reject wheels missing PEP 561 markers."
+}
