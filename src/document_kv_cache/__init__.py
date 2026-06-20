@@ -321,6 +321,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "run_engine_kv_connector_probe",
     ),
     "read_engine_adapter_payload": ("document_kv_cache.engine_probe", "read_engine_adapter_payload"),
+    "write_engine_kv_connector_actions_record_json": (
+        "document_kv_cache.engine_probe",
+        "write_engine_kv_connector_actions_record_json",
+    ),
     "write_engine_kv_connector_probe_result_json": (
         "document_kv_cache.engine_probe",
         "write_engine_kv_connector_probe_result_json",

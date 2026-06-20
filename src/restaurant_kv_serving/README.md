@@ -140,6 +140,7 @@ python -m document_kv_cache.engine_probe \
   --handoff-json req-123-handoff.json \
   --probe-factory my_engine_adapter.probes:build_probe \
   --expected-backend vllm \
+  --actions-output-json vllm-connector-actions.json \
   --output-json vllm-engine-probe.json
 ```
 
@@ -147,6 +148,9 @@ The factory owns the real vLLM or SGLang block-manager calls;
 `document_kv_cache.engine_probe` owns payload loading, descriptor validation,
 and the machine-checkable probe record, including the serving-engine profile
 metadata consumed by release evidence.
+The optional `--actions-output-json` sidecar writes the validated
+`document_kv.engine_kv_connector_actions.v1` descriptor used by that native
+probe.
 
 To run the same native probe through a Databricks-managed AWS g5 task, generate
 the small runner script and `runs/submit` payload:
@@ -156,6 +160,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --handoff-json /Volumes/catalog/schema/volume/probes/vllm-handoff.json \
   --probe-factory my_engine_adapter.probes:build_probe \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
+  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \

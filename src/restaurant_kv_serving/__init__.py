@@ -675,6 +675,10 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_probe",
         "write_engine_kv_connector_probe_result_json",
     ),
+    "write_engine_kv_connector_actions_record_json": (
+        "restaurant_kv_serving.engine_probe",
+        "write_engine_kv_connector_actions_record_json",
+    ),
     "write_pr_evidence_json": ("restaurant_kv_serving.pr_evidence", "write_pr_evidence_json"),
     "write_model_profile_definition_json": (
         "restaurant_kv_serving.model_profiles",
@@ -1052,6 +1056,7 @@ __all__ = [
     "view_engine_adapter_payload",
     "write_engine_adapter_request_json",
     "write_engine_kv_connector_probe_result_json",
+    "write_engine_kv_connector_actions_record_json",
     "write_pr_evidence_json",
     "write_model_profile_definition_json",
     "write_release_evidence_json",

@@ -165,6 +165,7 @@ __all__ += [
     "EngineKVProbeConfig",
     "run_engine_kv_connector_probe",
     "read_engine_adapter_payload",
+    "write_engine_kv_connector_actions_record_json",
     "write_engine_kv_connector_probe_result_json",
     "load_engine_kv_probe_factory",
     "parse_args",
@@ -226,6 +227,8 @@ class EngineKVProbeConfig(_public_class_base("EngineKVProbeConfig")):
         object.__setattr__(self, "handoff_json", Path(self.handoff_json))
         if self.output_json is not None:
             object.__setattr__(self, "output_json", Path(self.output_json))
+        if self.actions_output_json is not None:
+            object.__setattr__(self, "actions_output_json", Path(self.actions_output_json))
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
 
@@ -242,6 +245,13 @@ def write_engine_kv_connector_probe_result_json(
     path: str | Path,
 ) -> None:
     return _call_document_function("write_engine_kv_connector_probe_result_json", result, path)
+
+
+def write_engine_kv_connector_actions_record_json(
+    actions,
+    path: str | Path,
+) -> None:
+    return _call_document_function("write_engine_kv_connector_actions_record_json", actions, path)
 
 
 def load_engine_kv_probe_factory(factory_path: str) -> EngineKVProbeFactory:
@@ -284,6 +294,7 @@ def _validate_metadata_strings(metadata: Mapping[str, str]) -> None:
 _DEFAULT_COMPAT_FUNCTIONS = {
     "run_engine_kv_connector_probe": run_engine_kv_connector_probe,
     "read_engine_adapter_payload": read_engine_adapter_payload,
+    "write_engine_kv_connector_actions_record_json": write_engine_kv_connector_actions_record_json,
     "write_engine_kv_connector_probe_result_json": write_engine_kv_connector_probe_result_json,
     "load_engine_kv_probe_factory": load_engine_kv_probe_factory,
     "parse_args": parse_args,

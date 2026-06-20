@@ -18,6 +18,7 @@ from document_kv_cache.engine_adapters import (
     ServingBackend,
     build_engine_kv_connector_actions,
     build_engine_kv_injection_plan,
+    engine_kv_connector_actions_to_record,
     engine_kv_connector_probe_result_to_record,
     probe_engine_kv_connector_actions,
     read_engine_adapter_request_json,
@@ -41,6 +42,7 @@ __all__ = [
     "EngineKVProbeFactoryResult",
     "run_engine_kv_connector_probe",
     "read_engine_adapter_payload",
+    "write_engine_kv_connector_actions_record_json",
     "write_engine_kv_connector_probe_result_json",
     "load_engine_kv_probe_factory",
     "parse_args",
@@ -103,6 +105,7 @@ class EngineKVProbeConfig:
     engine_version: str | None = None
     native_probe: bool = True
     metadata: Mapping[str, str] = field(default_factory=dict)
+    actions_output_json: Path | None = None
 
     def __post_init__(self) -> None:
         if not self.probe_factory:
@@ -111,6 +114,8 @@ class EngineKVProbeConfig:
         object.__setattr__(self, "handoff_json", Path(self.handoff_json))
         if self.output_json is not None:
             object.__setattr__(self, "output_json", Path(self.output_json))
+        if self.actions_output_json is not None:
+            object.__setattr__(self, "actions_output_json", Path(self.actions_output_json))
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
     def __reduce__(self):
@@ -125,6 +130,7 @@ class EngineKVProbeConfig:
                 self.engine_version,
                 self.native_probe,
                 dict(self.metadata),
+                self.actions_output_json,
             ),
         )
 
@@ -203,6 +209,8 @@ def run_engine_kv_connector_probe(config: EngineKVProbeConfig) -> EngineKVConnec
         validate_engine_kv_connector_probe_record(engine_kv_connector_probe_result_to_record(result))
     if config.output_json is not None:
         write_engine_kv_connector_probe_result_json(result, config.output_json)
+    if config.actions_output_json is not None:
+        write_engine_kv_connector_actions_record_json(actions, config.actions_output_json)
     return result
 
 
@@ -214,6 +222,20 @@ def read_engine_adapter_payload(payload_uri: str, *, expected_bytes: int | None 
     if expected_bytes is not None and len(payload) != expected_bytes:
         raise ValueError(f"Engine adapter payload length {len(payload)} != expected {expected_bytes}")
     return payload
+
+
+def write_engine_kv_connector_actions_record_json(
+    actions,
+    path: str | Path,
+) -> None:
+    """Write the JSON descriptor for connector actions validated by a probe run."""
+
+    output_path = local_path(str(path))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(engine_kv_connector_actions_to_record(actions), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def write_engine_kv_connector_probe_result_json(
@@ -248,6 +270,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--probe-factory", required=True, help="Dotted native probe factory, e.g. module:factory.")
     parser.add_argument("--output-json", help="Where to write the engine probe JSON record. Defaults to stdout.")
+    parser.add_argument(
+        "--actions-output-json",
+        help="Optional path for the validated document_kv.engine_kv_connector_actions.v1 descriptor.",
+    )
     parser.add_argument("--payload-uri", help="Override payload_source.uri from the handoff record.")
     parser.add_argument(
         "--engine-version",
@@ -278,6 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             handoff_json=Path(args.handoff_json),
             probe_factory=args.probe_factory,
             output_json=None,
+            actions_output_json=args.actions_output_json,
             expected_backend=args.expected_backend,
             payload_uri=args.payload_uri,
             engine_version=args.engine_version,

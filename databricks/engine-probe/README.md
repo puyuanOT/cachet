@@ -22,6 +22,9 @@ databricks bundle validate \
 The template intentionally omits debug-only `--allow-non-native-probe` and
 caller-supplied `--engine-version`. Release evidence expects each native factory
 to report the real serving-engine version through `EngineKVProbeFactoryResult`.
+Use the Python `databricks_engine_probe_job` helper instead when the job should
+also write the optional `document_kv.engine_kv_connector_actions.v1` descriptor
+sidecar.
 
 For non-bundle release operations, the package CLI can emit one `runs/submit`
 payload with both required native backend probes:

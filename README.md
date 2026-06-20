@@ -326,6 +326,7 @@ python -m document_kv_cache.engine_probe \
   --handoff-json req-123-handoff.json \
   --probe-factory my_vllm_adapter.probes:build_probe \
   --expected-backend vllm \
+  --actions-output-json vllm-connector-actions.json \
   --output-json vllm-engine-probe.json
 ```
 
@@ -337,6 +338,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --handoff-json /Volumes/catalog/schema/volume/probes/vllm-handoff.json \
   --probe-factory my_vllm_adapter.probes:build_probe \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
+  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
@@ -359,6 +361,7 @@ the same AWS g5 policy:
       "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
       "probe_factory": "my_vllm_adapter.probes:build_probe",
       "output_json": "/Volumes/catalog/schema/volume/probes/vllm-engine-probe.json",
+      "actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json",
       "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv"
     },
     {
@@ -366,6 +369,7 @@ the same AWS g5 policy:
       "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
       "probe_factory": "my_sglang_adapter.probes:build_probe",
       "output_json": "/Volumes/catalog/schema/volume/probes/sglang-engine-probe.json",
+      "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-connector-actions.json",
       "payload_uri": "/Volumes/catalog/schema/volume/probes/sglang-payload.kv"
     }
   ]
@@ -387,6 +391,10 @@ In `--release-safe` matrix mode, the submit payload must contain exactly one
 native vLLM task and one native SGLang task. Debug fallbacks such as
 `engine_version` overrides or `allow_non_native_probe` are rejected before the
 Databricks job is written.
+When `--actions-output-json` or a target `actions_output_json` is present, the
+runner also writes the validated `document_kv.engine_kv_connector_actions.v1`
+reserve/copy/bind/release descriptor next to the probe evidence. This sidecar is
+useful for auditing exactly which native block-manager actions were exercised.
 
 If the workspace uses Databricks Asset Bundles, the same native-probe contract is
 available as a standalone template under `databricks/engine-probe/databricks.yml`.

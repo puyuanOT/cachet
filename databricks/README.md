@@ -129,6 +129,7 @@ document-kv-engine-probe-databricks-job \
   --handoff-json /Volumes/catalog/schema/volume/probes/vllm-handoff.json \
   --probe-factory my_engine_adapter.probes:build_probe \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
+  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
@@ -142,6 +143,8 @@ document-kv-engine-probe-databricks-job \
 `--release-safe` rejects debug-only engine-probe options such as
 `--allow-non-native-probe` and caller-supplied `--engine-version`; native probe
 factories should report the real engine version in their result.
+`--actions-output-json` writes the validated reserve/copy/bind/release
+descriptor that the native block-manager probe consumed.
 
 Teams that manage these jobs declaratively can instead validate or deploy the
 standalone engine-probe bundle:
@@ -158,6 +161,10 @@ databricks bundle validate \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
+
+The standalone bundle keeps the required variable set minimal. Use the Python
+`document-kv-engine-probe-databricks-job` helper shown above when the job should
+also write the optional connector actions sidecar.
 
 Then submit or inspect generated payloads from a shell with `DATABRICKS_HOST` and
 `DATABRICKS_TOKEN` set:

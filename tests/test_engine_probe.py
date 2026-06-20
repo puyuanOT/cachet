@@ -12,10 +12,12 @@ import restaurant_kv_serving.engine_probe as legacy_engine_probe
 from document_kv_cache.admission import AdmissionQueue
 from document_kv_cache.cache import ChunkCache
 from document_kv_cache.engine_adapters import (
+    ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
     EngineKVConnectorProbeResult,
     PayloadMode,
     ServingBackend,
     build_engine_adapter_request,
+    engine_kv_connector_actions_from_record,
     engine_kv_connector_probe_result_to_record,
     validate_engine_kv_connector_probe_record,
     vllm_adapter_spec,
@@ -185,6 +187,7 @@ def write_probe_factory_module(
 def test_run_engine_kv_connector_probe_writes_native_release_record(tmp_path, monkeypatch):
     handoff_path, payload_path = write_handoff_and_payload(tmp_path, segmented=True)
     output_path = tmp_path / "probe-record.json"
+    actions_output_path = tmp_path / "probe-actions.json"
     probe_factory = write_probe_factory_module(
         tmp_path,
         monkeypatch,
@@ -197,6 +200,7 @@ def test_run_engine_kv_connector_probe_writes_native_release_record(tmp_path, mo
             handoff_json=handoff_path,
             probe_factory=probe_factory,
             output_json=output_path,
+            actions_output_json=actions_output_path,
             expected_backend=ServingBackend.VLLM,
             metadata={
                 "caller": "release-ci",
@@ -225,6 +229,61 @@ def test_run_engine_kv_connector_probe_writes_native_release_record(tmp_path, mo
     }
     validate_engine_kv_connector_probe_record(record, expected_backend="vllm")
     assert json.loads(output_path.read_text(encoding="utf-8")) == record
+    actions_record = json.loads(actions_output_path.read_text(encoding="utf-8"))
+    actions = engine_kv_connector_actions_from_record(actions_record, expected_backend="vllm")
+    assert actions_record["record_type"] == ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE
+    assert actions_record["request_id"] == "req-1"
+    assert actions.reservation.total_tokens == STATIC_TOKEN_COUNT + CHUNK_TOKEN_COUNT
+    assert [copy["payload_index"] for copy in actions_record["copies"]] == [0, 1]
+
+
+def test_run_engine_kv_connector_probe_does_not_write_actions_sidecar_on_probe_failure(
+    tmp_path,
+    monkeypatch,
+):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=True)
+    actions_output_path = tmp_path / "probe-actions.json"
+    module_path = tmp_path / "failing_native_probe_factory.py"
+    module_path.write_text(
+        dedent(
+            """
+            from document_kv_cache.engine_probe import EngineKVProbeFactoryResult
+
+            class Probe:
+                def reserve_kv_blocks(self, action):
+                    return {"request_id": action.request_id}
+
+                def import_kv_segment(self, reservation, action, payload):
+                    raise RuntimeError("native import failed")
+
+                def bind_kv_handle(self, reservation, action):
+                    raise AssertionError("bind should not run after import failure")
+
+                def release_kv_blocks(self, reservation, action):
+                    return None
+
+            def build_probe(context):
+                return EngineKVProbeFactoryResult(
+                    probe=Probe(),
+                    engine_version="vllm-native-test",
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(RuntimeError, match="native import failed"):
+        run_engine_kv_connector_probe(
+            EngineKVProbeConfig(
+                handoff_json=handoff_path,
+                probe_factory="failing_native_probe_factory:build_probe",
+                actions_output_json=actions_output_path,
+                expected_backend=ServingBackend.VLLM,
+            )
+        )
+
+    assert not actions_output_path.exists()
 
 
 def test_run_engine_kv_connector_probe_rejects_native_engine_version_override(
@@ -426,6 +485,8 @@ def test_public_engine_probe_main_respects_document_namespace_hooks(monkeypatch,
             "some.module:factory",
             "--output-json",
             str(output_path),
+            "--actions-output-json",
+            str(tmp_path / "actions.json"),
             "--expected-backend",
             "vllm",
             "--metadata",
@@ -436,6 +497,7 @@ def test_public_engine_probe_main_respects_document_namespace_hooks(monkeypatch,
     assert exit_code == 0
     assert calls["config"].handoff_json == tmp_path / "handoff.json"
     assert calls["config"].probe_factory == "some.module:factory"
+    assert calls["config"].actions_output_json == tmp_path / "actions.json"
     assert calls["config"].metadata == {"caller": "test"}
     assert calls["path"] == str(output_path)
     assert calls["record"]["metadata"] == {"source": "public-hook"}
@@ -480,6 +542,8 @@ def test_legacy_engine_probe_main_respects_legacy_namespace_hooks(monkeypatch, t
             "some.module:factory",
             "--output-json",
             str(output_path),
+            "--actions-output-json",
+            str(tmp_path / "legacy-actions.json"),
             "--expected-backend",
             "vllm",
             "--metadata",
@@ -490,6 +554,7 @@ def test_legacy_engine_probe_main_respects_legacy_namespace_hooks(monkeypatch, t
     assert exit_code == 0
     assert type(calls["config"]) is legacy_engine_probe.EngineKVProbeConfig
     assert calls["config"].handoff_json == tmp_path / "handoff.json"
+    assert calls["config"].actions_output_json == tmp_path / "legacy-actions.json"
     assert calls["config"].metadata == {"caller": "test"}
     assert calls["path"] == str(output_path)
     assert calls["record"]["metadata"] == {"source": "legacy-hook"}
@@ -764,6 +829,7 @@ def test_legacy_engine_probe_config_is_picklable_and_slotted(tmp_path):
         handoff_json=str(tmp_path / "handoff.json"),
         probe_factory="some.module:factory",
         metadata={"caller": "legacy"},
+        actions_output_json=str(tmp_path / "actions.json"),
     )
 
     round_tripped = pickle.loads(pickle.dumps(config))
@@ -772,6 +838,7 @@ def test_legacy_engine_probe_config_is_picklable_and_slotted(tmp_path):
     assert isinstance(config, public_engine_probe.EngineKVProbeConfig)
     assert type(round_tripped) is legacy_engine_probe.EngineKVProbeConfig
     assert round_tripped.handoff_json == tmp_path / "handoff.json"
+    assert round_tripped.actions_output_json == tmp_path / "actions.json"
     assert round_tripped.metadata == {"caller": "legacy"}
     assert not hasattr(config, "__dict__")
 
@@ -790,6 +857,7 @@ def test_engine_probe_star_import_surfaces_are_stable():
         "EngineKVProbeFactoryResult",
         "run_engine_kv_connector_probe",
         "read_engine_adapter_payload",
+        "write_engine_kv_connector_actions_record_json",
         "write_engine_kv_connector_probe_result_json",
         "load_engine_kv_probe_factory",
         "parse_args",

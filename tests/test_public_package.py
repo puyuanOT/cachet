@@ -181,6 +181,7 @@ def test_public_document_package_reexports_core_api():
         validate_engine_kv_connector_actions_record,
         write_benchmark_job_plan_json,
         write_benchmark_job_plan_shell,
+        write_engine_kv_connector_actions_record_json,
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
@@ -509,6 +510,14 @@ def test_public_document_package_reexports_core_api():
     assert native_probe_factory_inspection_to_record is native_probe_factories.native_probe_factory_inspection_to_record
     assert native_probe_factory_inspection_to_record is restaurant_kv_serving.native_probe_factory_inspection_to_record
     assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
+    assert (
+        write_engine_kv_connector_actions_record_json
+        is engine_probe.write_engine_kv_connector_actions_record_json
+    )
+    assert (
+        restaurant_kv_serving.write_engine_kv_connector_actions_record_json.__module__
+        == "restaurant_kv_serving.engine_probe"
+    )
     assert sglang_native_probe_factory is native_probe_factories.sglang_native_probe_factory
     assert sglang_native_probe_factory is restaurant_kv_serving.sglang_native_probe_factory
     assert vllm_native_probe_factory is native_probe_factories.vllm_native_probe_factory
@@ -606,6 +615,7 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "write_benchmark_job_plan_json" in document_kv_cache.__all__
     assert "write_benchmark_job_plan_shell" in document_kv_cache.__all__
     assert "write_engine_probe_targets_json" in document_kv_cache.__all__
+    assert "write_engine_kv_connector_actions_record_json" in document_kv_cache.__all__
     assert "read_databricks_engine_probe_targets_file_json" in document_kv_cache.__all__
     assert "summarize_databricks_run_submit_payload" in document_kv_cache.__all__
     assert "DocumentKVRequest" in document_kv_cache.__all__
@@ -646,6 +656,10 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert star_namespace["BenchmarkPlanConfig"].__module__ == "document_kv_cache.benchmark_plan"
     assert star_namespace["build_v1_benchmark_plan"].__module__ == "document_kv_cache.benchmark_plan"
     assert star_namespace["engine_probe_targets_to_record"].__module__ == "document_kv_cache.benchmark_plan"
+    assert (
+        star_namespace["write_engine_kv_connector_actions_record_json"]
+        is document_kv_cache.write_engine_kv_connector_actions_record_json
+    )
     assert (
         star_namespace["SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES"]
         is restaurant_kv_serving.SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
@@ -1170,6 +1184,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "EngineKVProbeFactoryResult",
         "run_engine_kv_connector_probe",
         "read_engine_adapter_payload",
+        "write_engine_kv_connector_actions_record_json",
         "write_engine_kv_connector_probe_result_json",
         "load_engine_kv_probe_factory",
         "parse_args",
