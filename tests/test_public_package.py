@@ -110,6 +110,7 @@ def test_public_document_package_reexports_core_api():
         ServingEnvironmentProfile,
         NativeProbeFactoryInspection,
         NativeProbeFactoryUnavailable,
+        NATIVE_PROBE_ADAPTER_CONTRACT,
         CacheAdapterArtifact,
         CacheBuildConfig,
         CacheGenerationResult,
@@ -158,6 +159,7 @@ def test_public_document_package_reexports_core_api():
         builtin_native_probe_factory_path,
         inspect_builtin_native_probe_factories,
         inspect_builtin_native_probe_factory,
+        native_probe_adapter_contract_to_record,
         model_profile_definition_from_record,
         model_profile_definition_to_record,
         DTYPE_BYTE_WIDTHS,
@@ -429,6 +431,8 @@ def test_public_document_package_reexports_core_api():
     assert NativeProbeFactoryUnavailable is native_probe_factories.NativeProbeFactoryUnavailable
     assert NativeProbeFactoryUnavailable is restaurant_kv_serving.NativeProbeFactoryUnavailable
     assert NativeProbeFactoryUnavailable.__module__ == "document_kv_cache.native_probe_factories"
+    assert NATIVE_PROBE_ADAPTER_CONTRACT is native_probe_factories.NATIVE_PROBE_ADAPTER_CONTRACT
+    assert NATIVE_PROBE_ADAPTER_CONTRACT is restaurant_kv_serving.NATIVE_PROBE_ADAPTER_CONTRACT
     assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
     assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
     assert SUPPORTED_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.SUPPORTED_STORAGE_BENCHMARK_READERS
@@ -525,6 +529,8 @@ def test_public_document_package_reexports_core_api():
     assert inspect_builtin_native_probe_factories is restaurant_kv_serving.inspect_builtin_native_probe_factories
     assert inspect_builtin_native_probe_factory is native_probe_factories.inspect_builtin_native_probe_factory
     assert inspect_builtin_native_probe_factory is restaurant_kv_serving.inspect_builtin_native_probe_factory
+    assert native_probe_adapter_contract_to_record is native_probe_factories.native_probe_adapter_contract_to_record
+    assert native_probe_adapter_contract_to_record is restaurant_kv_serving.native_probe_adapter_contract_to_record
     assert native_probe_factory_inspection_to_record is native_probe_factories.native_probe_factory_inspection_to_record
     assert native_probe_factory_inspection_to_record is restaurant_kv_serving.native_probe_factory_inspection_to_record
     assert native_probe_factories_record_issues is native_probe_factories.native_probe_factories_record_issues
@@ -727,7 +733,14 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
 
 
 def test_cachet_brand_facade_delegates_to_document_package():
-    from cachet import CacheTier, DocumentKVRequest, DocumentKVService, DocumentKVWorkflow
+    from cachet import (
+        CacheTier,
+        DocumentKVRequest,
+        DocumentKVService,
+        DocumentKVWorkflow,
+        NATIVE_PROBE_ADAPTER_CONTRACT,
+        native_probe_adapter_contract_to_record,
+    )
 
     stub_text = (REPO_ROOT / "src" / "cachet" / "__init__.pyi").read_text(encoding="utf-8")
 
@@ -736,6 +749,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert DocumentKVRequest is document_kv_cache.DocumentKVRequest
     assert DocumentKVService is document_kv_cache.DocumentKVService
     assert DocumentKVWorkflow is document_kv_cache.DocumentKVWorkflow
+    assert NATIVE_PROBE_ADAPTER_CONTRACT is document_kv_cache.NATIVE_PROBE_ADAPTER_CONTRACT
+    assert native_probe_adapter_contract_to_record is document_kv_cache.native_probe_adapter_contract_to_record
     assert not hasattr(cachet, "storage")
     assert "storage" not in dir(cachet)
 
@@ -749,6 +764,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "from document_kv_cache.cache import" in stub_text
     assert "import document_kv_cache.storage as storage" not in stub_text
     assert "CacheTier as CacheTier" in stub_text
+    assert "NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT" in stub_text
+    assert "native_probe_adapter_contract_to_record as native_probe_adapter_contract_to_record" in stub_text
     assert "from document_kv_cache.models import" in stub_text
     assert "DocumentKVRequest as DocumentKVRequest" in stub_text
     assert "RestaurantKVRequest" not in stub_text

@@ -448,6 +448,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.native_probe_factories",
         "NativeProbeFactoryUnavailable",
     ),
+    "NATIVE_PROBE_ADAPTER_CONTRACT": (
+        "document_kv_cache.native_probe_factories",
+        "NATIVE_PROBE_ADAPTER_CONTRACT",
+    ),
     "SGLANG_NATIVE_PROBE_FACTORY": (
         "document_kv_cache.native_probe_factories",
         "SGLANG_NATIVE_PROBE_FACTORY",
@@ -471,6 +475,10 @@ _DOCUMENT_ROOT_EXPORTS = {
     "inspect_builtin_native_probe_factory": (
         "document_kv_cache.native_probe_factories",
         "inspect_builtin_native_probe_factory",
+    ),
+    "native_probe_adapter_contract_to_record": (
+        "document_kv_cache.native_probe_factories",
+        "native_probe_adapter_contract_to_record",
     ),
     "native_probe_factory_inspection_to_record": (
         "document_kv_cache.native_probe_factories",

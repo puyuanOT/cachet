@@ -321,6 +321,10 @@ _EXPORTS = {
         "restaurant_kv_serving.native_probe_factories",
         "NativeProbeFactoryUnavailable",
     ),
+    "NATIVE_PROBE_ADAPTER_CONTRACT": (
+        "restaurant_kv_serving.native_probe_factories",
+        "NATIVE_PROBE_ADAPTER_CONTRACT",
+    ),
     "OpenAICompatibleCompletionEngine": (
         "restaurant_kv_serving.openai_compatible",
         "OpenAICompatibleCompletionEngine",
@@ -539,6 +543,10 @@ _EXPORTS = {
     "inspect_builtin_native_probe_factory": (
         "restaurant_kv_serving.native_probe_factories",
         "inspect_builtin_native_probe_factory",
+    ),
+    "native_probe_adapter_contract_to_record": (
+        "restaurant_kv_serving.native_probe_factories",
+        "native_probe_adapter_contract_to_record",
     ),
     "layout_for_model": ("restaurant_kv_serving.model_profiles", "layout_for_model"),
     "load_benchmark_jsonl": ("restaurant_kv_serving.benchmark_runner", "load_benchmark_jsonl"),
@@ -929,6 +937,7 @@ __all__ = [
     "MemoryRangeReader",
     "ModelProfileDefinition",
     "ModelProfileRegistry",
+    "NATIVE_PROBE_ADAPTER_CONTRACT",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
     "OpenAICompatibleCompletionEngine",
@@ -1050,6 +1059,7 @@ __all__ = [
     "pr_evidence_to_record",
     "model_profile_definition_from_record",
     "model_profile_definition_to_record",
+    "native_probe_adapter_contract_to_record",
     "native_probe_factory_inspection_to_record",
     "native_probe_factories_record_issues",
     "read_databricks_run_submit_payload",

@@ -309,6 +309,7 @@ from document_kv_cache.models import (
 )
 
 from document_kv_cache.native_probe_factories import (
+    NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT,
     NativeProbeFactoryInspection as NativeProbeFactoryInspection,
     NativeProbeFactoryUnavailable as NativeProbeFactoryUnavailable,
     SGLANG_NATIVE_PROBE_FACTORY as SGLANG_NATIVE_PROBE_FACTORY,
@@ -317,6 +318,7 @@ from document_kv_cache.native_probe_factories import (
     builtin_native_probe_factory_path as builtin_native_probe_factory_path,
     inspect_builtin_native_probe_factories as inspect_builtin_native_probe_factories,
     inspect_builtin_native_probe_factory as inspect_builtin_native_probe_factory,
+    native_probe_adapter_contract_to_record as native_probe_adapter_contract_to_record,
     native_probe_factories_record_issues as native_probe_factories_record_issues,
     native_probe_factory_inspection_to_record as native_probe_factory_inspection_to_record,
     sglang_native_probe_factory as sglang_native_probe_factory,
