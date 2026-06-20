@@ -495,16 +495,17 @@ head elements contiguous according to `kv_stride_bytes`.
 
 `KVModelProfile` centralizes model attention geometry so cache generators,
 manifests, and engine adapters derive the same `KVLayout`. V1 includes
-`QWEN3_4B_INSTRUCT_PROFILE`, exposed through both `qwen3:4b-instruct` and
-`Qwen/Qwen3-4B` aliases. A profile records the query-head count, KV-head count,
-head size, layer count, context limit, default dtype, and layout version, then
-derives bytes per cached token for MHA, GQA, or MQA-style caches. `KVLayout`
-also records a `KVStorageLayout`: `separate_key_value` for distinct key/value
-planes, `interleaved_key_value` for connector-specific K/V interleaving, and
-`shared_key_value` when K and V views share a base allocation and the adapter
-must preserve that relationship. Cache generators and manifest refs persist the
-same `storage_layout`; serving validation rejects a request if persisted chunks
-and the engine handoff layout disagree.
+`QWEN3_4B_INSTRUCT_PROFILE`, exposed through `qwen3:4b-instruct` and the
+canonical `Qwen/Qwen3-4B-Instruct-2507` Hugging Face model id, while
+`Qwen/Qwen3-4B` remains a compatibility alias. A profile records the query-head
+count, KV-head count, head size, layer count, context limit, default dtype, and
+layout version, then derives bytes per cached token for MHA, GQA, or MQA-style
+caches. `KVLayout` also records a `KVStorageLayout`: `separate_key_value` for
+distinct key/value planes, `interleaved_key_value` for connector-specific K/V
+interleaving, and `shared_key_value` when K and V views share a base allocation
+and the adapter must preserve that relationship. Cache generators and manifest
+refs persist the same `storage_layout`; serving validation rejects a request if
+persisted chunks and the engine handoff layout disagree.
 
 ```python
 from document_kv_cache import layout_for_model

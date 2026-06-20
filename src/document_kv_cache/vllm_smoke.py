@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 
+from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
@@ -26,7 +27,7 @@ from document_kv_cache.serving_env import (
     VLLM_VERSION,
 )
 
-HF_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+HF_MODEL_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
 SERVED_MODEL_NAME = "qwen3:4b-instruct"
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000

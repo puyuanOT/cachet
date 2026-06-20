@@ -6,6 +6,8 @@ from document_kv_cache.model_profiles import (
     MODEL_PROFILE_RECORD_TYPE,
     ModelProfileDefinition,
     ModelProfileRegistry,
+    QWEN3_4B_BASE_HF_MODEL_ID,
+    QWEN3_4B_INSTRUCT_HF_MODEL_ID,
     QWEN3_4B_INSTRUCT_PROFILE,
     builtin_model_profiles,
     default_model_profile_registry,
@@ -22,6 +24,10 @@ from document_kv_cache.model_profiles import (
 def test_qwen3_builtin_profile_derives_gqa_layout():
     profile = QWEN3_4B_INSTRUCT_PROFILE
 
+    assert profile.metadata["hf_model_id"] == QWEN3_4B_INSTRUCT_HF_MODEL_ID
+    assert QWEN3_4B_INSTRUCT_HF_MODEL_ID == "Qwen/Qwen3-4B-Instruct-2507"
+    assert QWEN3_4B_BASE_HF_MODEL_ID == "Qwen/Qwen3-4B"
+    assert profile.max_context_tokens == 262144
     assert profile.attention_mechanism == AttentionMechanism.GROUPED_QUERY
     assert profile.query_heads_per_kv_head == 4
     assert profile.kv_scalars_per_token == 36 * 8 * 128 * 2
@@ -54,10 +60,13 @@ def test_builtin_profile_aliases_and_layout_helper():
     profiles = builtin_model_profiles()
 
     assert profiles["qwen3:4b-instruct"] is QWEN3_4B_INSTRUCT_PROFILE
+    assert profiles[QWEN3_4B_INSTRUCT_HF_MODEL_ID] is QWEN3_4B_INSTRUCT_PROFILE
+    assert profiles[QWEN3_4B_BASE_HF_MODEL_ID] is QWEN3_4B_INSTRUCT_PROFILE
     assert default_model_profile_registry().get("qwen3:4b-instruct") is QWEN3_4B_INSTRUCT_PROFILE
-    assert get_model_profile("Qwen/Qwen3-4B") is QWEN3_4B_INSTRUCT_PROFILE
-    alias_layout = layout_for_model("Qwen/Qwen3-4B", dtype="bf16")
-    assert alias_layout.model_id == "Qwen/Qwen3-4B"
+    assert get_model_profile(QWEN3_4B_INSTRUCT_HF_MODEL_ID) is QWEN3_4B_INSTRUCT_PROFILE
+    assert get_model_profile(QWEN3_4B_BASE_HF_MODEL_ID) is QWEN3_4B_INSTRUCT_PROFILE
+    alias_layout = layout_for_model(QWEN3_4B_INSTRUCT_HF_MODEL_ID, dtype="bf16")
+    assert alias_layout.model_id == QWEN3_4B_INSTRUCT_HF_MODEL_ID
     assert alias_layout.bytes_per_token == 147456
     assert alias_layout.storage_layout == KVStorageLayout.SHARED_KEY_VALUE
 

@@ -30,6 +30,8 @@ __all__ = [
     "MODEL_PROFILE_RECORD_TYPE",
     "ModelProfileDefinition",
     "ModelProfileRegistry",
+    "QWEN3_4B_BASE_HF_MODEL_ID",
+    "QWEN3_4B_INSTRUCT_HF_MODEL_ID",
     "QWEN3_4B_INSTRUCT_PROFILE",
     "builtin_model_profiles",
     "default_model_profile_registry",
@@ -374,6 +376,10 @@ def _validate_positive_int(value: Any, name: str) -> None:
         raise ValueError(f"{name} must be positive")
 
 
+QWEN3_4B_BASE_HF_MODEL_ID = "Qwen/Qwen3-4B"
+QWEN3_4B_INSTRUCT_HF_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+
+
 QWEN3_4B_INSTRUCT_PROFILE = KVModelProfile(
     model_id="qwen3:4b-instruct",
     architecture="Qwen3ForCausalLM",
@@ -381,18 +387,18 @@ QWEN3_4B_INSTRUCT_PROFILE = KVModelProfile(
     num_query_heads=32,
     num_kv_heads=8,
     head_size=128,
-    max_context_tokens=40960,
+    max_context_tokens=262144,
     default_layout_version="qwen3-v1",
     default_dtype="int8",
     metadata={
         "attention": "gqa",
-        "hf_model_id": "Qwen/Qwen3-4B",
+        "hf_model_id": QWEN3_4B_INSTRUCT_HF_MODEL_ID,
     },
 )
 
 _BUILTIN_MODEL_PROFILE_REGISTRY = ModelProfileRegistry().with_profile(
     QWEN3_4B_INSTRUCT_PROFILE,
-    aliases=("Qwen/Qwen3-4B",),
+    aliases=(QWEN3_4B_INSTRUCT_HF_MODEL_ID, QWEN3_4B_BASE_HF_MODEL_ID),
 )
 
 

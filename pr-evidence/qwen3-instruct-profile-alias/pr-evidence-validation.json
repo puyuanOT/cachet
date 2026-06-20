@@ -1,0 +1,30 @@
+{
+  "files": {
+    "pr-evidence/qwen3-instruct-profile-alias/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 initially found model-profile drift: the canonical Qwen/Qwen3-4B-Instruct-2507 id was paired with the older 40960-token base-model context limit. The branch now sets max_context_tokens to 262144, tests that limit, and GPT-5.5 approved with no blocking findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "model profile constants, built-in Qwen3 profile metadata and aliases, vLLM smoke HF model constant, root/legacy exports, README documentation, and focused public-surface tests."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_model_profiles.py tests/test_vllm_smoke.py tests/test_public_package.py -q -> 36 passed",
+        "poetry run pytest tests/test_model_profiles.py tests/test_vllm_smoke.py tests/test_public_package.py tests/test_project_governance.py -q -> 73 passed",
+        "git diff --check && poetry run pytest -q -> 878 passed",
+        "poetry check && poetry install --dry-run && poetry build -> success; generated dist removed",
+        "GPT-5.5 initially requested matching the Instruct context limit; profile max_context_tokens was updated to 262144 and re-review approved."
+      ],
+      "what_changed": [
+        "Made Qwen3 Instruct HF model identity first-class in Cachet model profiles and vLLM smoke wiring."
+      ],
+      "why": "The V1 target is qwen3:4b-instruct, so release metadata, aliases, and smoke serving should consistently point at the Instruct HF model while retaining the old base alias for compatibility."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
