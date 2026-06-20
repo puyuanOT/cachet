@@ -1,0 +1,35 @@
+{
+  "files": {
+    "pr-evidence/strict-pr-evidence-validation-summaries/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer reported no findings and approved the strict PR evidence validation-summary skip slice.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/pr_evidence.py",
+        "tests/test_pr_evidence.py",
+        "src/document_kv_cache/README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_pr_evidence.py::test_evaluate_pr_evidence_directory_sorts_and_validates_sidecars -q",
+        "poetry run pytest tests/test_pr_evidence.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry run python -m compileall -q src tests",
+        "poetry run document-kv-pr-evidence --validate-directory pr-evidence --output-json /tmp/document-kv-pr-evidence-validation.json",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Skipped only clean closed-schema PR evidence validation summaries during directory validation",
+        "Reported raw or debug-augmented PR evidence validation summaries as invalid sidecars"
+      ],
+      "why": "Keep recursive PR traceability checks from silently ignoring malformed validation summaries that carry ad hoc debug payloads."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

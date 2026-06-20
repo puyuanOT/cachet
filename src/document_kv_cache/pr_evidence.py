@@ -31,6 +31,7 @@ _PR_EVIDENCE_RECORD_KEYS = frozenset(
         "issues",
     }
 )
+_PR_EVIDENCE_VALIDATION_RECORD_KEYS = frozenset({"record_type", "ok", "files"})
 
 __all__ = [
     "PR_EVIDENCE_RECORD_TYPE",
@@ -254,6 +255,8 @@ def _is_pr_evidence_validation_record(path: Path) -> bool:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     if not isinstance(record, Mapping) or record.get("record_type") != PR_EVIDENCE_VALIDATION_RECORD_TYPE:
+        return False
+    if _unexpected_keys(record, _PR_EVIDENCE_VALIDATION_RECORD_KEYS, "PR evidence validation record"):
         return False
     files = record.get("files")
     if record.get("ok") is not True or not isinstance(files, Mapping) or not files:

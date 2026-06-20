@@ -70,7 +70,8 @@ new document modules depend on restaurant-owned implementations.
 - `planner.py` orders manifest chunks for runtime requests.
 - `pr_evidence.py` emits and validates closed-schema, machine-checkable PR
   traceability, Refactor-skill, and GPT-5.5 review evidence for the project
-  workflow.
+  workflow; recursive directory validation skips only clean validation-summary
+  sidecars.
 - `release_bundle.py` copies validated release evidence, optional benchmark
   plan execution records, Databricks run-status records, package wheels, and
   PR-evidence, release preflight, GitHub-governance, repository-hygiene, and

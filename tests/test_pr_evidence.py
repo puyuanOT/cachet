@@ -239,6 +239,12 @@ def test_evaluate_pr_evidence_directory_sorts_and_validates_sidecars(tmp_path):
         json.dumps(validation_record),
         encoding="utf-8",
     )
+    raw_validation_record = dict(validation_record)
+    raw_validation_record["debug"] = {"accepted": False}
+    (tmp_path / "nested" / "raw-validation-summary.json").write_text(
+        json.dumps(raw_validation_record),
+        encoding="utf-8",
+    )
     (tmp_path / "nested" / "bad-validation-summary.json").write_text(
         json.dumps({"record_type": PR_EVIDENCE_VALIDATION_RECORD_TYPE}),
         encoding="utf-8",
@@ -266,6 +272,7 @@ def test_evaluate_pr_evidence_directory_sorts_and_validates_sidecars(tmp_path):
         "nested/c-valid.json",
         "nested/d-invalid.json",
         "nested/empty-validation-summary.json",
+        "nested/raw-validation-summary.json",
     ]
     assert not evidence_by_file["a-invalid.json"].ok
     assert evidence_by_file["b-valid.json"].ok
@@ -277,6 +284,7 @@ def test_evaluate_pr_evidence_directory_sorts_and_validates_sidecars(tmp_path):
     assert evidence_by_file["nested/c-valid.json"].ok
     assert not evidence_by_file["nested/d-invalid.json"].ok
     assert not evidence_by_file["nested/empty-validation-summary.json"].ok
+    assert not evidence_by_file["nested/raw-validation-summary.json"].ok
 
     shallow_evidence_by_file = evaluate_pr_evidence_directory(tmp_path, recursive=False)
 
