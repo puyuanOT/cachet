@@ -967,13 +967,14 @@ python -m document_kv_cache.repository_hygiene \
 
 The sidecar records the required `.gitignore` patterns, tracked and untracked
 path counts, tracked generated or secret-like artifact paths, and untracked
-generated or secret-like paths that Git still exposes as non-ignored files. It
-also records dirty tracked paths and the directories that require `README.md`
-or package docstring documentation, so release handoffs prove they were
-produced from a clean, documented worktree. It returns non-zero until all
-required ignore patterns are present, no forbidden artifact paths are tracked
-or exposed as untracked, every non-generated tracked/untracked directory is
-documented, and no tracked files differ from `HEAD`.
+generated or secret-like paths that Git still exposes as non-ignored files,
+including notebook checkpoint folders produced by exploratory Databricks or
+Jupyter work. It also records dirty tracked paths and the directories that
+require `README.md` or package docstring documentation, so release handoffs
+prove they were produced from a clean, documented worktree. It returns non-zero
+until all required ignore patterns are present, no forbidden artifact paths are
+tracked or exposed as untracked, every non-generated tracked/untracked
+directory is documented, and no tracked files differ from `HEAD`.
 
 For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g5 `runs/submit` payload:
 

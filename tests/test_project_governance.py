@@ -46,6 +46,7 @@ GENERATED_OR_TOOLING_DIRS = {
     ".coverage",
     ".git",
     ".hypothesis",
+    ".ipynb_checkpoints",
     ".mypy_cache",
     ".nox",
     ".pytest_cache",
@@ -397,6 +398,10 @@ def test_repository_directories_have_readme_or_package_docstring():
         missing_docs.append(str(relative))
 
     assert missing_docs == []
+
+
+def test_governance_directory_scan_skips_notebook_checkpoints():
+    assert _is_ignored(Path("notebooks/.ipynb_checkpoints/exploration-checkpoint.ipynb"))
 
 
 def test_source_layout_readme_reflects_document_owned_implementation():
@@ -923,6 +928,7 @@ def test_gitignore_blocks_local_secrets_and_generated_artifacts():
         "*.log",
         "*.tmp",
         ".coverage",
+        ".ipynb_checkpoints/",
         "htmlcov/",
         ".ruff_cache/",
         ".hypothesis/",
@@ -945,6 +951,8 @@ def test_gitignore_secret_patterns_work_with_git_check_ignore():
         "logs/run.log",
         "tmp/output.tmp",
         ".coverage",
+        ".ipynb_checkpoints/exploration-checkpoint.ipynb",
+        "notebooks/.ipynb_checkpoints/databricks-checkpoint.ipynb",
         "htmlcov/index.html",
         ".ruff_cache/state",
         ".hypothesis/examples",
