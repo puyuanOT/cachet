@@ -91,6 +91,10 @@ STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES = (
     ("document-kv-storage-benchmark", "storage-reader benchmark Databricks run-status evidence"),
     ("document-kv-engine-probe", "native engine probe Databricks run-status evidence"),
 )
+STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT = (
+    ("vllm", "vLLM native probe factory support"),
+    ("sglang", "SGLang native probe factory support"),
+)
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
     r"^(?P<distribution>[A-Za-z0-9_.]+)-"
@@ -348,6 +352,7 @@ def build_release_bundle(
     _validate_release_bundle_inputs(prepared_artifacts)
     if require_complete_v1:
         _validate_strict_v1_databricks_purpose_coverage(prepared_artifacts)
+        _validate_strict_v1_native_probe_factory_support(prepared_artifacts)
     _preflight_release_bundle_destinations(
         prepared_artifacts=prepared_artifacts,
         bundle_dir=bundle_dir,
@@ -592,6 +597,47 @@ def _missing_strict_v1_databricks_purpose_labels(
         for purpose, label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES
         if purpose not in observed_purposes
     ]
+
+
+def _validate_strict_v1_native_probe_factory_support(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> None:
+    missing = _missing_strict_v1_native_probe_factory_support_labels(artifacts)
+    if missing:
+        raise ValueError(
+            "Strict V1 release bundle requires "
+            f"{', '.join(missing)}"
+        )
+
+
+def _missing_strict_v1_native_probe_factory_support_labels(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> list[str]:
+    missing: list[str] = []
+    for artifact in artifacts:
+        if artifact.role != "native_probe_factories" or artifact.record is None:
+            continue
+        supported_backends = _supported_native_probe_factory_backends(artifact.record)
+        missing.extend(
+            f"{artifact.source_path}: {label}"
+            for backend, label in STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT
+            if backend not in supported_backends
+        )
+    return _dedupe_strings(missing)
+
+
+def _supported_native_probe_factory_backends(record: Mapping[str, Any]) -> set[str]:
+    supported_backends: set[str] = set()
+    factories = record.get("factories")
+    if not isinstance(factories, Sequence) or isinstance(factories, (str, bytes, bytearray)):
+        return supported_backends
+    for factory in factories:
+        if not isinstance(factory, Mapping):
+            continue
+        backend = factory.get("backend")
+        if isinstance(backend, str) and factory.get("supported") is True:
+            supported_backends.add(backend)
+    return supported_backends
 
 
 def _single_record_for_role(
@@ -967,6 +1013,11 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
     issues.extend(_optional_str_field(factory, "package_version", label))
     for field_name in ("package_importable", "supported"):
         issues.extend(_bool_field(factory, field_name, label))
+    if factory.get("supported") is True:
+        if factory.get("package_importable") is not True:
+            issues.append(f"{label}.package_importable must be true when supported is true")
+        if not isinstance(factory.get("package_version"), str) or not factory["package_version"]:
+            issues.append(f"{label}.package_version must be non-empty when supported is true")
     serving_profile = factory.get("serving_environment_profile")
     if not isinstance(serving_profile, Mapping):
         issues.append(f"{label}.serving_environment_profile must be an object")
@@ -1608,7 +1659,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "Require the full V1 release artifact set: release/preflight sidecars, "
             "vLLM/SGLang connector actions, plan execution, Databricks status for "
             "benchmark/storage/engine-probe runs, tested wheel, PR evidence, governance, "
-            "repository hygiene, and native probe factory diagnostics."
+            "repository hygiene, and supported native probe factory diagnostics."
         ),
     )
     parser.add_argument("--output-dir", required=True)
