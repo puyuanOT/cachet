@@ -26,7 +26,8 @@ new document modules depend on restaurant-owned implementations.
 
 - `admission.py` exposes pending GPU-memory admission controls.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
-  native engine-probe, and release-evidence command plans.
+  native engine-probe, release-readiness sidecar, and release-evidence command
+  plans.
 - `benchmark_plan_executor.py` runs command-plan JSON files for local or managed
   job runners and records source-plan SHA-256 provenance.
 - `benchmark_runner.py` owns baseline and cache-arm execution against

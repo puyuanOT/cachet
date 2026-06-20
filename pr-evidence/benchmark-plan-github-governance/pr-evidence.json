@@ -1,0 +1,25 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the generated GitHub-governance sidecar support, command ordering, release-bundle auto-inclusion, equivalent-path allowance, conflict rejection, and shared single-sidecar path validation; no findings were reported.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.benchmark_plan CLI/config/record generation, benchmark-plan tests, README workflow documentation"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmark_plan.py -> 76 passed",
+    "poetry run pytest -q tests/test_benchmark_plan.py tests/test_project_governance.py tests/test_public_package.py -> 117 passed",
+    "poetry run pytest -q -> 730 passed",
+    "git diff --check -> passed",
+    "poetry run python -m compileall -q src tests -> passed",
+    "poetry run python -m document_kv_cache.benchmark_plan --help -> passed"
+  ],
+  "what_changed": [
+    "Benchmark plans can generate GitHub governance sidecars and auto-bundle them as release governance evidence."
+  ],
+  "why": "Release bundle command plans should generate the GitHub governance evidence they need instead of requiring an out-of-band sidecar path."
+}

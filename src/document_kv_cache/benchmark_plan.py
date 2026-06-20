@@ -257,6 +257,7 @@ class BenchmarkPlanConfig:
     release_bundle: ReleaseBundlePlanConfig | None = None
     native_probe_factories_output_json: str | None = None
     repository_hygiene_output_json: str | None = None
+    github_governance_output_json: str | None = None
 
     def __post_init__(self) -> None:
         if not self.suite_id:
@@ -291,6 +292,8 @@ class BenchmarkPlanConfig:
             raise ValueError("timeout_seconds must be positive")
         if self.cache_runtime_prompt and self.cache_base_url is None:
             raise ValueError("cache_runtime_prompt requires cache_base_url")
+        if self.github_governance_output_json is not None and not self.github_governance_output_json:
+            raise ValueError("github_governance_output_json must be non-empty when provided")
         if self.repository_hygiene_output_json is not None and not self.repository_hygiene_output_json:
             raise ValueError("repository_hygiene_output_json must be non-empty when provided")
         if self.native_probe_factories_output_json is not None and not self.native_probe_factories_output_json:
@@ -301,6 +304,7 @@ class BenchmarkPlanConfig:
         if len({probe.output_json for probe in self.engine_probes}) != len(self.engine_probes):
             raise ValueError("engine_probes must not contain duplicate output_json paths")
         _validate_generated_artifact_output_paths(self)
+        _validate_release_bundle_github_governance_path(self)
         _validate_release_bundle_repository_hygiene_path(self)
         if (
             self.release_evidence is not None
@@ -407,6 +411,8 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
     if config.storage_benchmark is not None:
         post_benchmark_commands.append(_storage_benchmark_command(config))
     post_benchmark_commands.extend(_engine_probe_command(config, probe_config) for probe_config in config.engine_probes)
+    if config.github_governance_output_json is not None:
+        post_benchmark_commands.append(_github_governance_command(config))
     if config.repository_hygiene_output_json is not None:
         post_benchmark_commands.append(_repository_hygiene_command(config))
     if config.native_probe_factories_output_json is not None:
@@ -424,6 +430,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
             "Run these commands on an AWS g5-compatible environment with the target server already listening.",
             "The benchmark compares baseline full-prefill requests with the document KV-cache arm.",
             "When configured, the storage-reader benchmark runs after inference to capture selected reader load evidence on the same node.",
+            "When configured, GitHub governance inspection runs before release validation and can be bundled as release governance evidence.",
             "When configured, repository hygiene inspection runs before release validation and can be bundled as release hygiene evidence.",
             "When configured, native probe factory diagnostics run before release validation and can be bundled as release handoff evidence.",
             "When configured, release evidence validation runs last and checks V1, storage, and native engine-probe artifacts together.",
@@ -489,6 +496,7 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
             if plan.config.release_bundle is not None
             else None
         ),
+        "github_governance_output_json": plan.config.github_governance_output_json,
         "repository_hygiene_output_json": plan.config.repository_hygiene_output_json,
         "native_probe_factories_output_json": plan.config.native_probe_factories_output_json,
         "planned_engine_probes": [
@@ -677,6 +685,21 @@ def _engine_probe_command(config: BenchmarkPlanConfig, probe_config: EngineProbe
     return BenchmarkCommand(name=f"run-{probe_config.backend.value}-engine-probe", argv=argv)
 
 
+def _github_governance_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
+    if config.github_governance_output_json is None:
+        raise ValueError("github_governance_output_json must be configured")
+    return BenchmarkCommand(
+        name="inspect-github-governance",
+        argv=(
+            config.python_executable,
+            "-m",
+            "document_kv_cache.github_governance",
+            "--output-json",
+            config.github_governance_output_json,
+        ),
+    )
+
+
 def _repository_hygiene_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     if config.repository_hygiene_output_json is None:
         raise ValueError("repository_hygiene_output_json must be configured")
@@ -767,8 +790,9 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--package-wheel", bundle_config.package_wheel)
     for pr_evidence_json in bundle_config.pr_evidence_jsons:
         argv = (*argv, "--pr-evidence-json", pr_evidence_json)
-    if bundle_config.github_governance_json is not None:
-        argv = (*argv, "--github-governance-json", bundle_config.github_governance_json)
+    github_governance_json = _release_bundle_github_governance_json(config)
+    if github_governance_json is not None:
+        argv = (*argv, "--github-governance-json", github_governance_json)
     repository_hygiene_json = _release_bundle_repository_hygiene_json(config)
     if repository_hygiene_json is not None:
         argv = (*argv, "--repository-hygiene-json", repository_hygiene_json)
@@ -799,11 +823,32 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "databricks_run_status_jsons": list(bundle_config.databricks_run_status_jsons),
         "package_wheel": bundle_config.package_wheel,
         "pr_evidence_jsons": list(bundle_config.pr_evidence_jsons),
-        "github_governance_json": bundle_config.github_governance_json,
+        "github_governance_json": _release_bundle_github_governance_json(config),
         "repository_hygiene_json": _release_bundle_repository_hygiene_json(config),
         "native_probe_factories_jsons": list(_release_bundle_native_probe_factories_jsons(config)),
         "overwrite": bundle_config.overwrite,
     }
+
+
+def _release_bundle_github_governance_json(config: BenchmarkPlanConfig) -> str | None:
+    bundle_config = config.release_bundle
+    if bundle_config is None:
+        return None
+    if config.github_governance_output_json is not None:
+        return config.github_governance_output_json
+    return bundle_config.github_governance_json
+
+
+def _validate_release_bundle_github_governance_path(config: BenchmarkPlanConfig) -> None:
+    bundle_config = config.release_bundle
+    if bundle_config is None:
+        return
+    _validate_release_bundle_single_sidecar_path(
+        release_bundle_label="release bundle github_governance_json",
+        generated_label="github_governance_output_json",
+        generated_path=config.github_governance_output_json,
+        explicit_path=bundle_config.github_governance_json,
+    )
 
 
 def _release_bundle_repository_hygiene_json(config: BenchmarkPlanConfig) -> str | None:
@@ -817,19 +862,27 @@ def _release_bundle_repository_hygiene_json(config: BenchmarkPlanConfig) -> str 
 
 def _validate_release_bundle_repository_hygiene_path(config: BenchmarkPlanConfig) -> None:
     bundle_config = config.release_bundle
-    if (
-        bundle_config is None
-        or config.repository_hygiene_output_json is None
-        or bundle_config.repository_hygiene_json is None
-    ):
+    if bundle_config is None:
         return
-    if _canonical_artifact_path(config.repository_hygiene_output_json) != _canonical_artifact_path(
-        bundle_config.repository_hygiene_json
-    ):
-        raise ValueError(
-            "release bundle repository_hygiene_json must match "
-            "repository_hygiene_output_json when both are provided"
-        )
+    _validate_release_bundle_single_sidecar_path(
+        release_bundle_label="release bundle repository_hygiene_json",
+        generated_label="repository_hygiene_output_json",
+        generated_path=config.repository_hygiene_output_json,
+        explicit_path=bundle_config.repository_hygiene_json,
+    )
+
+
+def _validate_release_bundle_single_sidecar_path(
+    *,
+    release_bundle_label: str,
+    generated_label: str,
+    generated_path: str | None,
+    explicit_path: str | None,
+) -> None:
+    if generated_path is None or explicit_path is None:
+        return
+    if _canonical_artifact_path(generated_path) != _canonical_artifact_path(explicit_path):
+        raise ValueError(f"{release_bundle_label} must match {generated_label} when both are provided")
 
 
 def _release_bundle_native_probe_factories_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
@@ -1002,6 +1055,8 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
     if config.release_bundle is not None:
         output_paths.append(("release_bundle.output_json", config.release_bundle.output_json))
         output_paths.append(("release_bundle.output_dir", config.release_bundle.output_dir))
+    if config.github_governance_output_json is not None:
+        output_paths.append(("github_governance_output_json", config.github_governance_output_json))
     if config.repository_hygiene_output_json is not None:
         output_paths.append(("repository_hygiene_output_json", config.repository_hygiene_output_json))
     if config.native_probe_factories_output_json is not None:
@@ -1247,6 +1302,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Require planned engine probes to be native release probes for exactly vLLM and SGLang before writing targets.",
     )
     parser.add_argument(
+        "--github-governance-output-json",
+        help=(
+            "Append GitHub governance inspection and write "
+            "document_kv.github_repository_governance.v1 here."
+        ),
+    )
+    parser.add_argument(
         "--repository-hygiene-output-json",
         help="Append repository hygiene inspection and write document_kv.repository_hygiene.v1 here.",
     )
@@ -1286,6 +1348,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 has_planned_engine_probes=bool(engine_probes),
             ),
             release_bundle=_release_bundle_config_from_cli(args, prepared_dir=prepared_dir),
+            github_governance_output_json=args.github_governance_output_json,
             repository_hygiene_output_json=args.repository_hygiene_output_json,
             native_probe_factories_output_json=args.native_probe_factories_output_json,
         )
