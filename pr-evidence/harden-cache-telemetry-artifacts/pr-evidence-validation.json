@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/harden-cache-telemetry-artifacts/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED by GPT-5.5 subagent. No blocking findings in cache.py or test_cache.py; validation/normalization is consistent with existing cache helper rules and internal producers still emit valid values.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/cache.py",
+        "tests/test_cache.py"
+      ],
+      "verification": [
+        "python -m py_compile src/document_kv_cache/cache.py tests/test_cache.py",
+        "poetry run pytest tests/test_cache.py -q (43 passed)",
+        "poetry run pytest tests/test_cache.py tests/test_public_package.py tests/test_project_governance.py -q (88 passed)",
+        "git diff --check",
+        "poetry run pytest -q (1141 passed)",
+        "poetry check && poetry install --dry-run",
+        "poetry build",
+        "poetry run python console script import validation (validated 50 console scripts)"
+      ],
+      "what_changed": [
+        "Added __post_init__ validation to ChunkCacheStats and ChunkCacheResult so public cache telemetry rejects negative/non-integer counters, normalizes bytes-like payloads to immutable bytes, and validates cache tiers."
+      ],
+      "why": "Serving diagnostics and materialization code rely on these public artifacts to report cache tiers and counters; validating them at construction keeps bad telemetry from propagating silently."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

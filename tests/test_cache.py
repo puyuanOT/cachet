@@ -26,6 +26,62 @@ def test_cache_tier_names_are_public_stable_values():
     assert CacheTier.COLD_STORAGE.value == "cold_storage"
 
 
+def test_chunk_cache_result_normalizes_public_payload_and_tier():
+    payload = bytearray(b"alpha")
+
+    result = ChunkCacheResult(payload=payload, tier="cpu")
+    payload[:] = b"xxxxx"
+
+    assert result == ChunkCacheResult(payload=b"alpha", tier=CacheTier.CPU)
+    assert type(result.payload) is bytes
+    assert result.tier is CacheTier.CPU
+
+
+@pytest.mark.parametrize(
+    ("payload", "tier", "message"),
+    (
+        (object(), CacheTier.CPU, "cache result payload must be bytes-like"),
+        (b"payload", "missing", "cache result tier must be a valid CacheTier"),
+    ),
+)
+def test_chunk_cache_result_rejects_invalid_public_values(payload, tier, message):
+    with pytest.raises(ValueError, match=message):
+        ChunkCacheResult(payload=payload, tier=tier)
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    (
+        ({"cpu_hits": True}, "cpu_hits must be a non-negative integer"),
+        ({"local_hits": -1}, "local_hits must be non-negative"),
+        ({"cold_misses": 1.5}, "cold_misses must be a non-negative integer"),
+        ({"cpu_items": -1}, "cpu_items must be non-negative"),
+        ({"cpu_bytes": -1}, "cpu_bytes must be non-negative"),
+        ({"cpu_max_bytes": -1}, "cpu_max_bytes must be non-negative"),
+        ({"local_items": -1}, "local_items must be non-negative"),
+        ({"local_bytes": -1}, "local_bytes must be non-negative"),
+        ({"local_max_bytes": True}, "local_max_bytes must be a non-negative integer"),
+        ({"local_max_bytes": -1}, "local_max_bytes must be non-negative"),
+    ),
+)
+def test_chunk_cache_stats_rejects_invalid_public_telemetry(override, message):
+    values = {
+        "cpu_hits": 0,
+        "local_hits": 0,
+        "cold_misses": 0,
+        "cpu_items": 0,
+        "cpu_bytes": 0,
+        "cpu_max_bytes": 0,
+        "local_items": 0,
+        "local_bytes": 0,
+        "local_max_bytes": None,
+    }
+    values.update(override)
+
+    with pytest.raises(ValueError, match=message):
+        ChunkCacheStats(**values)
+
+
 def test_byte_lru_oversized_replacement_updates_byte_accounting():
     cache = ByteLRU(max_bytes=4)
 
