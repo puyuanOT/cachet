@@ -1,4 +1,5 @@
 import json
+import math
 from urllib.error import HTTPError
 
 import pytest
@@ -309,6 +310,57 @@ def test_document_urlopen_hook_still_wraps_http_errors(monkeypatch):
 
 def test_whitespace_token_counter_is_available_as_local_fallback():
     assert WhitespaceTokenCounter().count("Ada Lovelace wrote notes") == 4
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("base_url", "", "base_url must be non-empty"),
+        ("endpoint", "", "endpoint must be non-empty"),
+        ("api_key", 123, "api_key must be a string"),
+        ("timeout_seconds", math.inf, "timeout_seconds must be a positive finite number"),
+        ("max_tokens", True, "max_tokens must be positive"),
+        ("temperature", math.nan, "temperature must be a non-negative finite number"),
+        ("stream", 1, "stream must be a boolean"),
+        ("include_usage", 0, "include_usage must be a boolean"),
+        ("model_id", "", "model_id must be non-empty"),
+        ("prompt_text_mode", "full", "prompt_text_mode"),
+        ("prompt_token_accounting", "usage", "prompt_token_accounting"),
+    ],
+)
+def test_openai_compatible_engine_config_rejects_invalid_public_fields(field_name, value, message):
+    kwargs = {"base_url": "http://localhost:8000"}
+    kwargs[field_name] = value
+
+    with pytest.raises(ValueError, match=message):
+        OpenAICompatibleEngineConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"extra_body": []}, "extra_body must be a mapping"),
+        ({"extra_body": {"": 1}}, "extra_body keys"),
+        ({"extra_body": {"temperature": math.nan}}, "extra_body.temperature"),
+        ({"extra_body": {"bad": object()}}, "extra_body.bad"),
+        ({"extra_body": {"nested": {"bad": object()}}}, "extra_body.nested.bad"),
+        ({"extra_headers": []}, "extra_headers must be a mapping"),
+        ({"extra_headers": {"": "value"}}, "extra_headers keys"),
+        ({"extra_headers": {"X-Test": 1}}, "extra_headers.X-Test"),
+    ],
+)
+def test_openai_compatible_engine_config_rejects_invalid_mappings(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        OpenAICompatibleEngineConfig(base_url="http://localhost:8000", **overrides)
+
+
+def test_openai_compatible_engine_config_normalizes_json_body_tuples():
+    config = OpenAICompatibleEngineConfig(
+        base_url="http://localhost:8000",
+        extra_body={"guided_choice": ("yes", "no")},
+    )
+
+    assert config.extra_body == {"guided_choice": ["yes", "no"]}
 
 
 def test_legacy_module_reexports_document_owned_engine():

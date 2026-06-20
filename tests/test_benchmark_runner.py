@@ -343,6 +343,77 @@ def test_openai_compatible_benchmark_config_rejects_empty_limit_and_unsafe_runti
         )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("suite_id", 123, "suite_id must be non-empty"),
+        ("base_url", "", "base_url must be non-empty"),
+        ("cache_base_url", "", "cache_base_url must be non-empty"),
+        ("endpoint", "", "endpoint must be non-empty"),
+        ("cache_endpoint", "", "cache_endpoint must be non-empty"),
+        ("model_id", "", "model_id must be non-empty"),
+        ("hardware_target", "", "hardware_target must be non-empty"),
+        ("limit_per_dataset", True, "limit_per_dataset must be positive"),
+        ("repeats", True, "repeats must be positive"),
+        ("seed", True, "seed must be an integer"),
+        ("shuffle", 1, "shuffle must be a boolean"),
+        ("max_tokens", True, "max_tokens must be positive"),
+        ("temperature", math.nan, "temperature must be a non-negative finite number"),
+        ("timeout_seconds", math.inf, "timeout_seconds must be a positive finite number"),
+        ("stream", 1, "stream must be a boolean"),
+        ("cache_runtime_prompt", 0, "cache_runtime_prompt must be a boolean"),
+        ("api_key", 123, "api_key must be a string"),
+    ],
+)
+def test_openai_compatible_benchmark_config_rejects_invalid_public_fields(field_name, value, message):
+    kwargs = {
+        "suite_id": "v1",
+        "dataset_paths": {"biography": "biography.jsonl"},
+        "base_url": "http://server",
+    }
+    if field_name == "cache_runtime_prompt":
+        kwargs["cache_base_url"] = "http://cache"
+
+    with pytest.raises(ValueError, match=message):
+        OpenAICompatibleBenchmarkConfig(**{**kwargs, field_name: value})
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"dataset_paths": []}, "dataset_paths must be a mapping"),
+        ({"dataset_paths": {"": "bio.jsonl"}}, "dataset_paths keys"),
+        ({"dataset_paths": {"biography": 3}}, "dataset_paths.biography"),
+        ({"baseline_extra_body": []}, "baseline_extra_body must be a mapping"),
+        ({"baseline_extra_body": {"": 1}}, "baseline_extra_body keys"),
+        ({"baseline_extra_body": {"temperature": math.nan}}, "baseline_extra_body.temperature"),
+        ({"baseline_extra_body": {"bad": object()}}, "baseline_extra_body.bad"),
+        ({"cache_extra_body": {"nested": {"bad": object()}}}, "cache_extra_body.nested.bad"),
+    ],
+)
+def test_openai_compatible_benchmark_config_rejects_invalid_mappings(overrides, message):
+    kwargs = {
+        "suite_id": "v1",
+        "dataset_paths": {"biography": "biography.jsonl"},
+        "base_url": "http://server",
+    }
+    kwargs.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        OpenAICompatibleBenchmarkConfig(**kwargs)
+
+
+def test_openai_compatible_benchmark_config_normalizes_json_body_tuples():
+    config = OpenAICompatibleBenchmarkConfig(
+        suite_id="v1",
+        dataset_paths={"biography": "biography.jsonl"},
+        base_url="http://server",
+        baseline_extra_body={"guided_choice": ("yes", "no")},
+    )
+
+    assert config.baseline_extra_body == {"guided_choice": ["yes", "no"]}
+
+
 def test_openai_compatible_engine_normalizes_openai_v1_base_url_for_default_endpoint():
     config = OpenAICompatibleBenchmarkConfig(
         suite_id="v1",
