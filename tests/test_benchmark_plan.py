@@ -65,15 +65,26 @@ def planned_release_probe_cli_args(tmp_path):
         "vllm=vllm_probe:factory",
         "--engine-probe-output-json",
         f"vllm={tmp_path / 'vllm-probe.json'}",
+        "--engine-probe-actions-output-json",
+        f"vllm={tmp_path / 'vllm-actions.json'}",
         "--engine-probe-handoff-json",
         f"sglang={tmp_path / 'sglang-handoff.json'}",
         "--engine-probe-factory",
         "sglang=sglang_probe:factory",
         "--engine-probe-output-json",
         f"sglang={tmp_path / 'sglang-probe.json'}",
+        "--engine-probe-actions-output-json",
+        f"sglang={tmp_path / 'sglang-actions.json'}",
         "--release-evidence-output-json",
         str(tmp_path / "release-evidence.json"),
     ]
+
+
+def release_action_jsons(tmp_path):
+    return (
+        str(tmp_path / "vllm-actions.json"),
+        str(tmp_path / "sglang-actions.json"),
+    )
 
 
 def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_path):
@@ -166,6 +177,7 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
                 str(tmp_path / "vllm-probe.json"),
                 str(tmp_path / "sglang-probe.json"),
             ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
         ),
     )
 
@@ -184,6 +196,10 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
         str(tmp_path / "vllm-probe.json"),
         str(tmp_path / "sglang-probe.json"),
     ]
+    assert record["release_engine_actions_jsons"] == [
+        str(tmp_path / "vllm-actions.json"),
+        str(tmp_path / "sglang-actions.json"),
+    ]
     assert release_command.argv[:3] == ("python", "-m", "document_kv_cache.release_evidence")
     assert release_command.argv[release_command.argv.index("--v1-benchmark-json") + 1] == str(
         tmp_path / "results.json"
@@ -195,8 +211,11 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
         tmp_path / "release-evidence.json"
     )
     assert release_command.argv.count("--engine-probe-json") == 2
+    assert release_command.argv.count("--engine-actions-json") == 2
     assert str(tmp_path / "vllm-probe.json") in release_command.argv
     assert str(tmp_path / "sglang-probe.json") in release_command.argv
+    assert str(tmp_path / "vllm-actions.json") in release_command.argv
+    assert str(tmp_path / "sglang-actions.json") in release_command.argv
 
 
 def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidence(tmp_path):
@@ -217,6 +236,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
                 str(tmp_path / "vllm-probe.json"),
                 str(tmp_path / "sglang-probe.json"),
             ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
         ),
         release_bundle=ReleaseBundlePlanConfig(
             output_dir=str(tmp_path / "release-bundle"),
@@ -249,6 +269,10 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             str(tmp_path / "vllm-probe.json"),
             str(tmp_path / "sglang-probe.json"),
         ],
+        "engine_actions_jsons": [
+            str(tmp_path / "vllm-actions.json"),
+            str(tmp_path / "sglang-actions.json"),
+        ],
         "github_governance_json": str(tmp_path / "github-governance.json"),
         "output_dir": str(tmp_path / "release-bundle"),
         "output_json": str(tmp_path / "release-bundle-manifest.json"),
@@ -270,6 +294,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
         tmp_path / "release-bundle-manifest.json"
     )
     assert bundle_command.argv.count("--engine-probe-json") == 2
+    assert bundle_command.argv.count("--engine-actions-json") == 2
     assert "--preflight-json" in bundle_command.argv
     assert "--plan-execution-json" in bundle_command.argv
     assert "--databricks-run-status-json" in bundle_command.argv
@@ -297,6 +322,7 @@ def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_va
                 handoff_json=str(tmp_path / "vllm-handoff.json"),
                 probe_factory="vllm_probe:factory",
                 output_json=str(tmp_path / "vllm-probe.json"),
+                actions_output_json=str(tmp_path / "vllm-actions.json"),
                 payload_uri=f"disk:{tmp_path / 'vllm.kv'}",
                 metadata=("probe.source=plan",),
             ),
@@ -305,6 +331,7 @@ def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_va
                 handoff_json=str(tmp_path / "sglang-handoff.json"),
                 probe_factory="sglang_probe:factory",
                 output_json=str(tmp_path / "sglang-probe.json"),
+                actions_output_json=str(tmp_path / "sglang-actions.json"),
             ),
         ),
         release_evidence=ReleaseEvidencePlanConfig(
@@ -332,6 +359,7 @@ def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_va
             "handoff_json": str(tmp_path / "vllm-handoff.json"),
             "metadata": ["probe.source=plan"],
             "output_json": str(tmp_path / "vllm-probe.json"),
+            "actions_output_json": str(tmp_path / "vllm-actions.json"),
             "payload_uri": f"disk:{tmp_path / 'vllm.kv'}",
             "probe_factory": "vllm_probe:factory",
         },
@@ -342,6 +370,7 @@ def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_va
             "handoff_json": str(tmp_path / "sglang-handoff.json"),
             "metadata": [],
             "output_json": str(tmp_path / "sglang-probe.json"),
+            "actions_output_json": str(tmp_path / "sglang-actions.json"),
             "payload_uri": None,
             "probe_factory": "sglang_probe:factory",
         },
@@ -350,14 +379,24 @@ def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_va
         str(tmp_path / "vllm-probe.json"),
         str(tmp_path / "sglang-probe.json"),
     ]
+    assert record["release_engine_actions_jsons"] == [
+        str(tmp_path / "vllm-actions.json"),
+        str(tmp_path / "sglang-actions.json"),
+    ]
     assert vllm_command.argv[:3] == ("python", "-m", "document_kv_cache.engine_probe")
     assert "--expected-backend" in vllm_command.argv
     assert vllm_command.argv[vllm_command.argv.index("--expected-backend") + 1] == "vllm"
     assert "--payload-uri" in vllm_command.argv
+    assert vllm_command.argv[vllm_command.argv.index("--actions-output-json") + 1] == str(
+        tmp_path / "vllm-actions.json"
+    )
     assert "--metadata" in vllm_command.argv
     assert release_command.argv.count("--engine-probe-json") == 2
+    assert release_command.argv.count("--engine-actions-json") == 2
     assert str(tmp_path / "sglang-probe.json") in release_command.argv
     assert str(tmp_path / "vllm-probe.json") in release_command.argv
+    assert str(tmp_path / "sglang-actions.json") in release_command.argv
+    assert str(tmp_path / "vllm-actions.json") in release_command.argv
 
 
 def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path):
@@ -367,6 +406,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
             handoff_json=str(tmp_path / "vllm-handoff.json"),
             probe_factory="vllm_probe:factory",
             output_json=str(tmp_path / "vllm-probe.json"),
+            actions_output_json=str(tmp_path / "vllm-actions.json"),
             payload_uri=f"disk:{tmp_path / 'vllm.kv'}",
             metadata=("probe.source=plan",),
         ),
@@ -375,6 +415,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
             handoff_json=str(tmp_path / "sglang-handoff.json"),
             probe_factory="sglang_probe:factory",
             output_json=str(tmp_path / "sglang-probe.json"),
+            actions_output_json=str(tmp_path / "sglang-actions.json"),
         ),
     )
     record = engine_probe_targets_to_record(probes, release_safe=True)
@@ -390,6 +431,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
                 "handoff_json": str(tmp_path / "vllm-handoff.json"),
                 "metadata": ["probe.source=plan"],
                 "output_json": str(tmp_path / "vllm-probe.json"),
+                "actions_output_json": str(tmp_path / "vllm-actions.json"),
                 "payload_uri": f"disk:{tmp_path / 'vllm.kv'}",
                 "probe_factory": "vllm_probe:factory",
             },
@@ -399,6 +441,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
                 "handoff_json": str(tmp_path / "sglang-handoff.json"),
                 "metadata": [],
                 "output_json": str(tmp_path / "sglang-probe.json"),
+                "actions_output_json": str(tmp_path / "sglang-actions.json"),
                 "probe_factory": "sglang_probe:factory",
             },
         ],
@@ -418,6 +461,10 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
 
     targets = read_databricks_engine_probe_targets_json(target_path)
     assert [target.expected_backend for target in targets] == [ServingBackend.VLLM, ServingBackend.SGLANG]
+    assert [target.actions_output_json for target in targets] == [
+        str(tmp_path / "vllm-actions.json"),
+        str(tmp_path / "sglang-actions.json"),
+    ]
     assert targets[0].metadata == ("probe.source=plan",)
 
 
@@ -468,6 +515,7 @@ def test_release_evidence_plan_can_use_existing_storage_benchmark_json(tmp_path)
                 str(tmp_path / "vllm-probe.json"),
                 str(tmp_path / "sglang-probe.json"),
             ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
             storage_benchmark_json=str(tmp_path / "existing-storage.json"),
         ),
     )
@@ -477,9 +525,14 @@ def test_release_evidence_plan_can_use_existing_storage_benchmark_json(tmp_path)
     release_argv = plan.post_benchmark_commands[-1].argv
 
     assert record["release_storage_benchmark_json"] == str(tmp_path / "existing-storage.json")
+    assert record["release_engine_actions_jsons"] == [
+        str(tmp_path / "vllm-actions.json"),
+        str(tmp_path / "sglang-actions.json"),
+    ]
     assert release_argv[release_argv.index("--storage-benchmark-json") + 1] == str(
         tmp_path / "existing-storage.json"
     )
+    assert release_argv.count("--engine-actions-json") == 2
 
 
 def test_benchmark_plan_requires_storage_artifact_for_release_evidence(tmp_path):
@@ -506,6 +559,7 @@ def test_benchmark_plan_requires_explicit_release_probe_jsons_for_all_backends(t
             release_evidence=ReleaseEvidencePlanConfig(
                 output_json=str(tmp_path / "release-evidence.json"),
                 engine_probe_jsons=(str(tmp_path / "vllm-probe.json"),),
+                engine_actions_jsons=release_action_jsons(tmp_path),
                 storage_benchmark_json=str(tmp_path / "existing-storage.json"),
             ),
         )
@@ -577,12 +631,14 @@ def test_benchmark_plan_release_evidence_can_use_planned_engine_probe_outputs(tm
                 handoff_json=str(tmp_path / "vllm-handoff.json"),
                 probe_factory="probe:factory",
                 output_json=str(tmp_path / "vllm-probe.json"),
+                actions_output_json=str(tmp_path / "vllm-actions.json"),
             ),
             EngineProbePlanConfig(
                 backend="sglang",
                 handoff_json=str(tmp_path / "sglang-handoff.json"),
                 probe_factory="probe:factory",
                 output_json=str(tmp_path / "sglang-probe.json"),
+                actions_output_json=str(tmp_path / "sglang-actions.json"),
             ),
         ),
     )
@@ -591,6 +647,8 @@ def test_benchmark_plan_release_evidence_can_use_planned_engine_probe_outputs(tm
 
     assert str(tmp_path / "vllm-probe.json") in release_argv
     assert str(tmp_path / "sglang-probe.json") in release_argv
+    assert str(tmp_path / "vllm-actions.json") in release_argv
+    assert str(tmp_path / "sglang-actions.json") in release_argv
 
 
 def test_benchmark_plan_requires_all_release_backends_when_using_planned_probe_outputs(tmp_path):
@@ -610,6 +668,7 @@ def test_benchmark_plan_requires_all_release_backends_when_using_planned_probe_o
                     handoff_json=str(tmp_path / "handoff.json"),
                     probe_factory="probe:factory",
                     output_json=str(tmp_path / "probe.json"),
+                    actions_output_json=str(tmp_path / "actions.json"),
                 ),
             ),
         )
@@ -667,6 +726,7 @@ def test_benchmark_plan_rejects_release_bundle_output_path_collisions(tmp_path):
                     str(tmp_path / "vllm-probe.json"),
                     str(tmp_path / "sglang-probe.json"),
                 ),
+                engine_actions_jsons=release_action_jsons(tmp_path),
             ),
             release_bundle=ReleaseBundlePlanConfig(
                 output_dir=str(tmp_path / "release-bundle"),
@@ -694,6 +754,7 @@ def test_benchmark_plan_rejects_release_bundle_output_dir_colliding_with_generat
                     str(tmp_path / "vllm-probe.json"),
                     str(tmp_path / "sglang-probe.json"),
                 ),
+                engine_actions_jsons=release_action_jsons(tmp_path),
             ),
             release_bundle=ReleaseBundlePlanConfig(
                 output_dir=str(tmp_path / "release-evidence.json"),
@@ -759,6 +820,7 @@ def test_benchmark_plan_requires_release_storage_readers_for_planned_release_evi
                     str(tmp_path / "vllm-probe.json"),
                     str(tmp_path / "sglang-probe.json"),
                 ),
+                engine_actions_jsons=release_action_jsons(tmp_path),
             ),
         )
 
@@ -781,6 +843,7 @@ def test_benchmark_plan_accepts_release_storage_readers_in_any_order(tmp_path):
                 str(tmp_path / "vllm-probe.json"),
                 str(tmp_path / "sglang-probe.json"),
             ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
         ),
     )
 
@@ -1287,6 +1350,10 @@ def test_main_can_include_release_evidence_validation_command(tmp_path):
             str(tmp_path / "vllm-probe.json"),
             "--release-engine-probe-json",
             str(tmp_path / "sglang-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "vllm-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "sglang-actions.json"),
             "--plan-output-json",
             str(plan_json),
         ]
@@ -1303,8 +1370,13 @@ def test_main_can_include_release_evidence_validation_command(tmp_path):
         str(tmp_path / "vllm-probe.json"),
         str(tmp_path / "sglang-probe.json"),
     ]
+    assert record["release_engine_actions_jsons"] == [
+        str(tmp_path / "vllm-actions.json"),
+        str(tmp_path / "sglang-actions.json"),
+    ]
     assert release_argv[release_argv.index("--storage-benchmark-json") + 1] == str(tmp_path / "storage.json")
     assert release_argv.count("--engine-probe-json") == 2
+    assert release_argv.count("--engine-actions-json") == 2
 
 
 def test_main_can_include_planned_engine_probes_and_release_evidence_validation(tmp_path):
@@ -1332,6 +1404,8 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             "vllm=vllm_probe:factory",
             "--engine-probe-output-json",
             f"vllm={tmp_path / 'vllm-probe.json'}",
+            "--engine-probe-actions-output-json",
+            f"vllm={tmp_path / 'vllm-actions.json'}",
             "--engine-probe-payload-uri",
             f"vllm=disk:{tmp_path / 'vllm.kv'}",
             "--engine-probe-metadata",
@@ -1342,6 +1416,8 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             "sglang=sglang_probe:factory",
             "--engine-probe-output-json",
             f"sglang={tmp_path / 'sglang-probe.json'}",
+            "--engine-probe-actions-output-json",
+            f"sglang={tmp_path / 'sglang-actions.json'}",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
             "--plan-output-json",
@@ -1369,16 +1445,29 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
         str(tmp_path / "sglang-probe.json"),
         str(tmp_path / "vllm-probe.json"),
     ]
+    assert record["release_engine_actions_jsons"] == [
+        str(tmp_path / "sglang-actions.json"),
+        str(tmp_path / "vllm-actions.json"),
+    ]
     assert record["planned_engine_probes"][0]["backend"] == "sglang"
+    assert record["planned_engine_probes"][0]["actions_output_json"] == str(tmp_path / "sglang-actions.json")
     assert record["planned_engine_probes"][1]["metadata"] == ["probe.source=cli"]
     assert vllm_argv[vllm_argv.index("--expected-backend") + 1] == "vllm"
     assert vllm_argv[vllm_argv.index("--payload-uri") + 1] == f"disk:{tmp_path / 'vllm.kv'}"
+    assert vllm_argv[vllm_argv.index("--actions-output-json") + 1] == str(tmp_path / "vllm-actions.json")
     assert release_argv.count("--engine-probe-json") == 2
+    assert release_argv.count("--engine-actions-json") == 2
     assert str(tmp_path / "vllm-probe.json") in release_argv
     assert str(tmp_path / "sglang-probe.json") in release_argv
+    assert str(tmp_path / "vllm-actions.json") in release_argv
+    assert str(tmp_path / "sglang-actions.json") in release_argv
     assert targets_record["record_type"] == ENGINE_PROBE_TARGETS_RECORD_TYPE
     assert targets_record["release_safe"] is True
     assert [probe["backend"] for probe in targets_record["probes"]] == ["sglang", "vllm"]
+    assert [probe["actions_output_json"] for probe in targets_record["probes"]] == [
+        str(tmp_path / "sglang-actions.json"),
+        str(tmp_path / "vllm-actions.json"),
+    ]
     assert targets_record["probes"][1]["metadata"] == ["probe.source=cli"]
     assert read_databricks_engine_probe_targets_json(targets_json)[1].metadata == ("probe.source=cli",)
 
@@ -1406,10 +1495,14 @@ def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_pat
             f"vllm={tmp_path / 'vllm-handoff.json'}",
             "--engine-probe-output-json",
             f"vllm={tmp_path / 'vllm-probe.json'}",
+            "--engine-probe-actions-output-json",
+            f"vllm={tmp_path / 'vllm-actions.json'}",
             "--engine-probe-handoff-json",
             f"sglang={tmp_path / 'sglang-handoff.json'}",
             "--engine-probe-output-json",
             f"sglang={tmp_path / 'sglang-probe.json'}",
+            "--engine-probe-actions-output-json",
+            f"sglang={tmp_path / 'sglang-actions.json'}",
             "--engine-probe-use-builtin-factories",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
@@ -1533,6 +1626,10 @@ def test_main_allows_debug_planned_engine_probes_when_release_uses_explicit_prob
             str(tmp_path / "native-vllm-probe.json"),
             "--release-engine-probe-json",
             str(tmp_path / "native-sglang-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "native-vllm-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "native-sglang-actions.json"),
             "--plan-output-json",
             str(plan_json),
         ]
@@ -1546,8 +1643,12 @@ def test_main_allows_debug_planned_engine_probes_when_release_uses_explicit_prob
     assert record["planned_engine_probes"][0]["allow_non_native_probe"] is True
     assert str(tmp_path / "native-vllm-probe.json") in release_argv
     assert str(tmp_path / "native-sglang-probe.json") in release_argv
+    assert str(tmp_path / "native-vllm-actions.json") in release_argv
+    assert str(tmp_path / "native-sglang-actions.json") in release_argv
     assert str(tmp_path / "vllm-probe.json") not in release_argv
     assert str(tmp_path / "sglang-probe.json") not in release_argv
+    assert str(tmp_path / "vllm-actions.json") not in release_argv
+    assert str(tmp_path / "sglang-actions.json") not in release_argv
 
 
 def test_main_rejects_explicit_release_probe_json_aliasing_planned_debug_probe(capsys, tmp_path):
@@ -1560,6 +1661,10 @@ def test_main_rejects_explicit_release_probe_json_aliasing_planned_debug_probe(c
             str(tmp_path / "native-sglang-probe.json"),
             "--release-engine-probe-json",
             str(tmp_path / "vllm-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "native-vllm-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "native-sglang-actions.json"),
             "--plan-output-json",
             str(tmp_path / "plan.json"),
         ]
@@ -1584,6 +1689,10 @@ def test_main_allows_explicit_release_probe_json_aliasing_planned_native_probe(t
             str(tmp_path / "sglang-probe.json"),
             "--release-engine-probe-json",
             str(tmp_path / "vllm-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "sglang-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "vllm-actions.json"),
             "--plan-output-json",
             str(plan_json),
         ]
@@ -1595,6 +1704,10 @@ def test_main_allows_explicit_release_probe_json_aliasing_planned_native_probe(t
     assert record["release_engine_probe_jsons"] == [
         str(tmp_path / "sglang-probe.json"),
         str(tmp_path / "vllm-probe.json"),
+    ]
+    assert record["release_engine_actions_jsons"] == [
+        str(tmp_path / "sglang-actions.json"),
+        str(tmp_path / "vllm-actions.json"),
     ]
 
 
@@ -1622,6 +1735,10 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "vllm-probe.json"),
             "--release-engine-probe-json",
             str(tmp_path / "sglang-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "vllm-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "sglang-actions.json"),
             "--release-bundle-output-dir",
             str(tmp_path / "release-bundle"),
             "--release-bundle-output-json",
@@ -1655,12 +1772,17 @@ def test_main_can_include_release_bundle_command(tmp_path):
     ]
     assert record["release_bundle_output_dir"] == str(tmp_path / "release-bundle")
     assert record["release_bundle"]["release_evidence_json"] == str(tmp_path / "release-evidence.json")
+    assert record["release_bundle"]["engine_actions_jsons"] == [
+        str(tmp_path / "vllm-actions.json"),
+        str(tmp_path / "sglang-actions.json"),
+    ]
     assert record["release_bundle"]["databricks_run_status_jsons"] == [
         str(tmp_path / "databricks-run-status.json")
     ]
     assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
     assert bundle_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_bundle"]
     assert bundle_argv.count("--engine-probe-json") == 2
+    assert bundle_argv.count("--engine-actions-json") == 2
     assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")
     assert bundle_argv[bundle_argv.index("--github-governance-json") + 1] == str(
         tmp_path / "github-governance.json"
@@ -1715,6 +1837,10 @@ def test_main_rejects_plan_output_sh_colliding_with_release_bundle_output_dir(ca
             str(tmp_path / "vllm-probe.json"),
             "--release-engine-probe-json",
             str(tmp_path / "sglang-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "vllm-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "sglang-actions.json"),
             "--release-bundle-output-dir",
             str(tmp_path / "release-bundle"),
             "--plan-output-sh",

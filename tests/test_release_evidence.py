@@ -8,8 +8,20 @@ import pytest
 
 import document_kv_cache.release_evidence as public_release_evidence
 import restaurant_kv_serving.release_evidence as legacy_release_evidence
-from document_kv_cache.engine_adapters import EngineKVConnectorProbeResult, PayloadMode, ServingBackend
-from document_kv_cache.engine_adapters import engine_kv_connector_probe_result_to_record
+from document_kv_cache.engine_adapters import (
+    EngineKVBindAction,
+    EngineKVConnectorActions,
+    EngineKVConnectorProbeResult,
+    EngineKVReleaseAction,
+    EngineKVReservationAction,
+    EngineKVSegmentCopyAction,
+    PayloadMode,
+    ServingBackend,
+)
+from document_kv_cache.engine_adapters import (
+    engine_kv_connector_actions_to_record,
+    engine_kv_connector_probe_result_to_record,
+)
 from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
@@ -45,6 +57,10 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
             _probe_record(ServingBackend.VLLM),
             _probe_record(ServingBackend.SGLANG),
         ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
     )
     record = release_evidence_to_record(evidence)
 
@@ -61,6 +77,10 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
         "missing_engine_probe_backends": [],
         "duplicate_engine_probe_backends": [],
         "invalid_engine_probe_records": [],
+        "engine_action_backends": ["vllm", "sglang"],
+        "missing_engine_action_backends": [],
+        "duplicate_engine_action_backends": [],
+        "invalid_engine_action_records": [],
         "artifact_sources": [],
         "issues": [],
     }
@@ -107,6 +127,10 @@ def test_evaluate_release_evidence_rejects_summary_only_stubs():
         engine_probe_records=(
             _probe_record(ServingBackend.VLLM),
             _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
         ),
     )
 
@@ -276,6 +300,10 @@ def test_evaluate_release_evidence_accepts_backend_block_size_and_lora_layout_va
             _probe_record(ServingBackend.VLLM, layout=backend_layout),
             _probe_record(ServingBackend.SGLANG),
         ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM, layout=backend_layout),
+            _actions_record(ServingBackend.SGLANG),
+        ),
     )
 
     assert evidence.ok
@@ -296,6 +324,10 @@ def test_evaluate_release_evidence_rejects_wrong_comparison_arms_and_missing_qua
         engine_probe_records=(
             _probe_record(ServingBackend.VLLM),
             _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
         ),
     )
 
@@ -433,6 +465,10 @@ def test_evaluate_release_evidence_rejects_minimal_storage_rows_and_missing_uc_r
             _probe_record(ServingBackend.VLLM),
             _probe_record(ServingBackend.SGLANG),
         ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
     )
 
     assert not evidence.ok
@@ -489,6 +525,10 @@ def test_evaluate_release_evidence_accepts_storage_readers_in_any_order():
         engine_probe_records=(
             _probe_record(ServingBackend.VLLM),
             _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
         ),
     )
 
@@ -567,15 +607,20 @@ def test_evaluate_release_evidence_files_reads_json_artifacts(tmp_path):
     storage_path = tmp_path / "storage.json"
     vllm_path = tmp_path / "vllm-probe.json"
     sglang_path = tmp_path / "sglang-probe.json"
+    vllm_actions_path = tmp_path / "vllm-actions.json"
+    sglang_actions_path = tmp_path / "sglang-actions.json"
     _write_json(v1_path, _v1_record(ok=True))
     _write_json(storage_path, _storage_record(ok=True))
     _write_json(vllm_path, _probe_record(ServingBackend.VLLM))
     _write_json(sglang_path, _probe_record(ServingBackend.SGLANG))
+    _write_json(vllm_actions_path, _actions_record(ServingBackend.VLLM))
+    _write_json(sglang_actions_path, _actions_record(ServingBackend.SGLANG))
 
     evidence = evaluate_release_evidence_files(
         v1_benchmark_json=v1_path,
         storage_benchmark_json=storage_path,
         engine_probe_jsons=(vllm_path, sglang_path),
+        engine_actions_jsons=(vllm_actions_path, sglang_actions_path),
     )
 
     assert evidence.ok
@@ -602,6 +647,18 @@ def test_evaluate_release_evidence_files_reads_json_artifacts(tmp_path):
             "record_type": "document_kv.engine_kv_connector_probe.v1",
             "backend": "sglang",
         },
+        {
+            "role": "engine_connector_actions",
+            "path": str(vllm_actions_path),
+            "record_type": "document_kv.engine_kv_connector_actions.v1",
+            "backend": "vllm",
+        },
+        {
+            "role": "engine_connector_actions",
+            "path": str(sglang_actions_path),
+            "record_type": "document_kv.engine_kv_connector_actions.v1",
+            "backend": "sglang",
+        },
     ]
 
 
@@ -609,14 +666,17 @@ def test_inspect_release_evidence_input_files_reports_record_types_and_missing_b
     v1_path = tmp_path / "v1.json"
     storage_path = tmp_path / "storage.json"
     vllm_path = tmp_path / "vllm-probe.json"
+    vllm_actions_path = tmp_path / "vllm-actions.json"
     _write_json(v1_path, _v1_record(ok=True))
     _write_json(storage_path, _storage_record(ok=True))
     _write_json(vllm_path, _probe_record(ServingBackend.VLLM))
+    _write_json(vllm_actions_path, _actions_record(ServingBackend.VLLM))
 
     status = inspect_release_evidence_input_files(
         v1_benchmark_json=v1_path,
         storage_benchmark_json=storage_path,
         engine_probe_jsons=(vllm_path,),
+        engine_actions_jsons=(vllm_actions_path,),
     )
     record = release_evidence_input_status_to_record(status)
 
@@ -624,8 +684,12 @@ def test_inspect_release_evidence_input_files_reports_record_types_and_missing_b
     assert status.missing_paths == ()
     assert status.unreadable_paths == ()
     assert status.missing_engine_probe_backends == ("sglang",)
+    assert status.missing_engine_action_backends == ("sglang",)
     assert record["record_type"] == RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE
-    assert record["issues"] == ["missing engine probe backends: sglang"]
+    assert record["issues"] == [
+        "missing engine probe backends: sglang",
+        "missing engine action backends: sglang",
+    ]
     assert record["input_files"] == [
         {
             "role": "v1_benchmark",
@@ -649,6 +713,14 @@ def test_inspect_release_evidence_input_files_reports_record_types_and_missing_b
             "record_type": "document_kv.engine_kv_connector_probe.v1",
             "backend": "vllm",
         },
+        {
+            "role": "engine_connector_actions",
+            "path": str(vllm_actions_path),
+            "exists": True,
+            "readable_json": True,
+            "record_type": "document_kv.engine_kv_connector_actions.v1",
+            "backend": "vllm",
+        },
     ]
 
 
@@ -657,15 +729,20 @@ def test_inspect_release_evidence_input_files_accepts_complete_backend_set(tmp_p
     storage_path = tmp_path / "storage.json"
     vllm_path = tmp_path / "vllm-probe.json"
     sglang_path = tmp_path / "sglang-probe.json"
+    vllm_actions_path = tmp_path / "vllm-actions.json"
+    sglang_actions_path = tmp_path / "sglang-actions.json"
     _write_json(v1_path, _v1_record(ok=True))
     _write_json(storage_path, _storage_record(ok=True))
     _write_json(vllm_path, _probe_record(ServingBackend.VLLM))
     _write_json(sglang_path, _probe_record(ServingBackend.SGLANG))
+    _write_json(vllm_actions_path, _actions_record(ServingBackend.VLLM))
+    _write_json(sglang_actions_path, _actions_record(ServingBackend.SGLANG))
 
     status = inspect_release_evidence_input_files(
         v1_benchmark_json=v1_path,
         storage_benchmark_json=storage_path,
         engine_probe_jsons=(vllm_path, sglang_path),
+        engine_actions_jsons=(vllm_actions_path, sglang_actions_path),
     )
     record = release_evidence_input_status_to_record(status)
 
@@ -673,9 +750,11 @@ def test_inspect_release_evidence_input_files_accepts_complete_backend_set(tmp_p
     assert status.missing_paths == ()
     assert status.unreadable_paths == ()
     assert status.missing_engine_probe_backends == ()
+    assert status.missing_engine_action_backends == ()
     assert record["ok"] is True
     assert record["issues"] == []
     assert record["missing_engine_probe_backends"] == []
+    assert record["missing_engine_action_backends"] == []
 
 
 def test_inspect_release_evidence_input_files_reports_missing_and_unreadable_paths(tmp_path):
@@ -713,19 +792,27 @@ def test_release_evidence_input_status_validates_json_safe_schema():
         missing_paths=(),
         unreadable_paths=(),
         missing_engine_probe_backends=("sglang",),
-    ).issues == ("missing engine probe backends: sglang",)
+        missing_engine_action_backends=("sglang",),
+    ).issues == (
+        "missing engine probe backends: sglang",
+        "missing engine action backends: sglang",
+    )
     normalized = ReleaseEvidenceInputStatus(
         input_files=[good],
         missing_paths=["missing.json"],
         unreadable_paths=["bad.json"],
         missing_engine_probe_backends=["vllm", "vllm"],
+        missing_engine_action_backends=["sglang", "sglang"],
         required_engine_probe_backends=["sglang", "vllm", "vllm"],
+        required_engine_action_backends=["vllm", "sglang", "sglang"],
     )
     assert normalized.input_files == (good,)
     assert normalized.missing_paths == ("missing.json",)
     assert normalized.unreadable_paths == ("bad.json",)
     assert normalized.missing_engine_probe_backends == ("vllm",)
+    assert normalized.missing_engine_action_backends == ("sglang",)
     assert normalized.required_engine_probe_backends == ("sglang", "vllm")
+    assert normalized.required_engine_action_backends == ("vllm", "sglang")
 
     with pytest.raises(ValueError, match="Unsupported artifact role"):
         ReleaseEvidenceInputFileStatus(role="dataset", path="x.json", exists=True, readable_json=True)
@@ -751,6 +838,7 @@ def test_release_evidence_input_status_validates_json_safe_schema():
             missing_paths=(),
             unreadable_paths=(),
             missing_engine_probe_backends=(),
+            missing_engine_action_backends=(),
         )
     with pytest.raises(TypeError, match="missing_paths"):
         ReleaseEvidenceInputStatus(
@@ -758,6 +846,7 @@ def test_release_evidence_input_status_validates_json_safe_schema():
             missing_paths="missing.json",
             unreadable_paths=(),
             missing_engine_probe_backends=(),
+            missing_engine_action_backends=(),
         )
     with pytest.raises(ValueError, match="unreadable_paths"):
         ReleaseEvidenceInputStatus(
@@ -765,6 +854,7 @@ def test_release_evidence_input_status_validates_json_safe_schema():
             missing_paths=(),
             unreadable_paths=("",),
             missing_engine_probe_backends=(),
+            missing_engine_action_backends=(),
         )
 
 
@@ -803,13 +893,18 @@ def test_release_evidence_preserves_positional_artifact_sources_slot():
         ("vllm", "sglang"),
         (),
         (),
+        ("vllm", "sglang"),
+        (),
+        (),
         (),
         (source,),
     )
     record = release_evidence_to_record(evidence)
 
     assert evidence.duplicate_engine_probe_backends == ()
+    assert evidence.duplicate_engine_action_backends == ()
     assert record["duplicate_engine_probe_backends"] == []
+    assert record["duplicate_engine_action_backends"] == []
     assert record["artifact_sources"] == [
         {
             "role": "engine_probe",
@@ -1182,6 +1277,53 @@ def _probe_record(backend: ServingBackend, *, layout=None):
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE: profile.engine_package,
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION: profile.engine_version,
             },
+        )
+    )
+
+
+def _actions_record(backend: ServingBackend, *, layout=None):
+    layout = layout or layout_for_model("qwen3:4b-instruct")
+    request_id = f"{backend.value}-probe"
+    return engine_kv_connector_actions_to_record(
+        EngineKVConnectorActions(
+            reservation=EngineKVReservationAction(
+                backend=backend,
+                request_id=request_id,
+                total_blocks=1,
+                total_tokens=1,
+                estimated_gpu_bytes=layout.bytes_per_token,
+                layout=layout,
+                adapter_ids=("base",),
+            ),
+            copies=(
+                EngineKVSegmentCopyAction(
+                    request_id=request_id,
+                    document_id="doc-a",
+                    chunk_type="document_chunk",
+                    chunk_id="chunk-1",
+                    payload_index=None,
+                    source_byte_start=0,
+                    source_byte_length=layout.bytes_per_token,
+                    global_byte_start=0,
+                    global_byte_end=layout.bytes_per_token,
+                    token_start=0,
+                    token_count=1,
+                    token_end=1,
+                    first_block_index=0,
+                    last_block_index_exclusive=1,
+                ),
+            ),
+            bind=EngineKVBindAction(
+                request_id=request_id,
+                handle_uri=f"engine://{backend.value}/{request_id}",
+                cache_method="vanilla",
+                adapter_ids=("base",),
+                metadata={
+                    "engine.backend": backend.value,
+                    "engine.connector_package": backend.value,
+                },
+            ),
+            release=EngineKVReleaseAction(request_id=request_id),
         )
     )
 

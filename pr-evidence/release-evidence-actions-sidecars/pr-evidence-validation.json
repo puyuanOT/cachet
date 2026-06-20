@@ -1,0 +1,41 @@
+{
+  "files": {
+    "pr-evidence/release-evidence-actions-sidecars/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 review approved with no findings; reviewer verified local planning, validation, bundling, and target-record plumbing plus a fail-closed missing-sidecar check.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/release_evidence.py",
+        "src/document_kv_cache/release_bundle.py",
+        "src/document_kv_cache/benchmark_plan.py",
+        "src/restaurant_kv_serving/release_evidence.py",
+        "src/restaurant_kv_serving/release_bundle.py",
+        "tests/test_release_evidence.py",
+        "tests/test_release_bundle.py",
+        "tests/test_benchmark_plan.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_benchmark_plan.py -q -> 64 passed",
+        "poetry run pytest tests/test_release_evidence.py tests/test_release_bundle.py -q -> 55 passed",
+        "poetry run pytest tests/test_databricks_engine_probe_job.py tests/test_public_package.py -q -> 46 passed",
+        "python -m compileall -q src/document_kv_cache src/restaurant_kv_serving -> passed",
+        "poetry run pytest -q -> 706 passed",
+        "git diff --check -> passed"
+      ],
+      "what_changed": [
+        "Made engine connector action descriptors first-class release evidence artifacts for vLLM and SGLang.",
+        "Updated release evidence, preflight, and release bundle validation to require one action sidecar per release backend alongside native probe records.",
+        "Updated benchmark-plan generation and Databricks engine-probe target records to emit and consume actions_output_json paths, including legacy CLI passthrough."
+      ],
+      "why": "Release readiness needs to prove not only native KV connector probing but also the reserve/copy/bind/release action descriptors that serving integrations will consume."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

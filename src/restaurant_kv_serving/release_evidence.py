@@ -58,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument("--storage-benchmark-json", required=True)
     parser.add_argument("--engine-probe-json", action="append", default=[])
+    parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--output-json", help="Write the release evidence JSON to this path instead of stdout.")
     parser.add_argument("--preflight-output-json", help="Write release-evidence input file status JSON before validation.")
     parser.add_argument("--preflight-only", action="store_true", help="Only inspect input file availability and record types.")
@@ -69,6 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 v1_benchmark_json=args.v1_benchmark_json,
                 storage_benchmark_json=args.storage_benchmark_json,
                 engine_probe_jsons=tuple(args.engine_probe_json),
+                engine_actions_jsons=tuple(args.engine_actions_json),
             )
             if args.preflight_output_json:
                 write_release_evidence_input_status_json(input_status, args.preflight_output_json)
@@ -80,6 +82,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             v1_benchmark_json=args.v1_benchmark_json,
             storage_benchmark_json=args.storage_benchmark_json,
             engine_probe_jsons=tuple(args.engine_probe_json),
+            engine_actions_jsons=tuple(args.engine_actions_json),
         )
         if args.output_json:
             write_release_evidence_json(evidence, args.output_json)
