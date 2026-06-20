@@ -105,6 +105,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.benchmark_runner",
         "restaurant_kv_serving.benchmark_runner.run_openai_compatible_v1_benchmark",
     },
+    "tests/test_cache.py": {
+        "restaurant_kv_serving.cache",
+    },
     "tests/test_databricks_job.py": {
         "restaurant_kv_serving.databricks_job",
     },
