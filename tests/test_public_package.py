@@ -647,6 +647,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         "engine_adapters",
         "engine_probe",
         "engine_protocol",
+        "github_governance",
         "kvpack",
         "live_server",
         "manifest",
@@ -696,6 +697,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     databricks_engine_probe_job = modules["databricks_engine_probe_job"]
     databricks_storage_benchmark_job = modules["databricks_storage_benchmark_job"]
     databricks_vllm_smoke_job = modules["databricks_vllm_smoke_job"]
+    github_governance = modules["github_governance"]
     live_server = modules["live_server"]
     release_bundle = modules["release_bundle"]
     release_evidence = modules["release_evidence"]
@@ -960,6 +962,10 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert storage_benchmark.RELEASE_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.RELEASE_STORAGE_BENCHMARK_READERS
     assert storage.is_real_uc_volume_root("/Volumes/catalog/schema/volume") is True
     assert "scheduler" not in document_kv_cache._PUBLIC_SUBMODULES
+    assert github_governance.GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE == (
+        "document_kv.github_repository_governance.v1"
+    )
+    assert github_governance.GitHubRepositoryConfig.__module__ == "document_kv_cache.github_governance"
 
 
 def test_public_document_submodules_have_curated_star_import_surfaces():
@@ -968,6 +974,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     engine = importlib.import_module("document_kv_cache.engine")
     engine_protocol = importlib.import_module("document_kv_cache.engine_protocol")
     engine_adapters = importlib.import_module("document_kv_cache.engine_adapters")
+    github_governance = importlib.import_module("document_kv_cache.github_governance")
     kvpack = importlib.import_module("document_kv_cache.kvpack")
     manifest = importlib.import_module("document_kv_cache.manifest")
     models = importlib.import_module("document_kv_cache.models")
@@ -1077,6 +1084,21 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "vllm_adapter_spec",
         "write_engine_adapter_request_json",
     ]
+    assert github_governance.__all__ == [
+        "DEFAULT_GITHUB_API_BASE_URL",
+        "DEFAULT_GITHUB_BRANCH",
+        "DEFAULT_GITHUB_REPOSITORY_ENV",
+        "DEFAULT_GITHUB_TIMEOUT_SECONDS",
+        "DEFAULT_GITHUB_TOKEN_ENV",
+        "GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE",
+        "GitHubRepositoryConfig",
+        "github_repository_config_from_env",
+        "summarize_github_repository_governance",
+        "write_github_repository_governance_json",
+        "main",
+    ]
+    assert github_governance.GitHubRepositoryConfig.__module__ == "document_kv_cache.github_governance"
+    assert github_governance.main.__module__ == "document_kv_cache.github_governance"
     legacy_engine_adapters = importlib.import_module("restaurant_kv_serving.engine_adapters")
     assert engine_adapters.EngineAdapterRequest.__module__ == "document_kv_cache.engine_adapters"
     assert engine_adapters.build_engine_adapter_request.__module__ == "document_kv_cache.engine_adapters"
@@ -1526,6 +1548,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-release-evidence": "document_kv_cache.release_evidence:main",
         "document-kv-release-bundle": "document_kv_cache.release_bundle:main",
         "document-kv-pr-evidence": "document_kv_cache.pr_evidence:main",
+        "document-kv-github-governance": "document_kv_cache.github_governance:main",
         "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
         "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
         "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",

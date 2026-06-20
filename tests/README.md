@@ -19,6 +19,7 @@ These tests cover the document KV-cache orchestration package.
 - `test_benchmark_plan_executor.py` verifies command-plan validation, dry-run behavior, real subprocess execution, and result JSON emission.
 - `test_databricks_job.py` verifies AWS g5 Databricks run-submit payload generation and runner-script rendering.
 - `test_databricks_runs.py` verifies env-driven Databricks Jobs API submit/get helpers without using live credentials or network.
+- `test_github_governance.py` verifies env-driven GitHub repository governance checks without using live credentials or network.
 - `test_databricks_storage_benchmark_job.py` verifies AWS g5 Databricks run-submit payload generation for storage-reader evidence.
 - `test_databricks_engine_probe_job.py` verifies AWS g5 Databricks run-submit payload generation for native vLLM/SGLang engine-probe evidence.
 - `test_databricks_vllm_smoke_job.py` verifies AWS g5 Databricks run-submit payload generation for the self-contained vLLM smoke job.
