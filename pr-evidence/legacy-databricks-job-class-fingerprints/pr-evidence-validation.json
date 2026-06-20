@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/legacy-databricks-job-class-fingerprints/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found import-fragility and false-pristine paths in dict ordering, raw equality, unsafe attribute access, dataclass metadata, closure cells, and recursive closures. Each finding was patched with subprocess regressions, and final re-review approved the scoped diff.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/restaurant_kv_serving/databricks_job.py; tests/test_databricks_job.py; pr-evidence/legacy-databricks-job-class-fingerprints"
+      ],
+      "verification": [
+        "Focused mutation/import tests passed; clean-import subclass checks passed; targeted regression set passed; full pytest passed; git diff --check passed; poetry check passed; poetry build passed."
+      ],
+      "what_changed": [
+        "Hardened restaurant_kv_serving.databricks_job legacy class base selection with class body fingerprints for Databricks job dataclass configs."
+      ],
+      "why": "Pre-import in-place mutations to public document_kv_cache.databricks_job dataclass classes could be treated as pristine, allowing mutated public class state to leak into the legacy compatibility wrapper."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

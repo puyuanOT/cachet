@@ -10,7 +10,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import RLock
-from types import FunctionType
+from types import CodeType, FunctionType
 from typing import Any
 
 from document_kv_cache._reexport import reexport_public
@@ -92,7 +92,153 @@ def _is_pristine_public_class(name: str) -> bool:
         isinstance(live_value, type)
         and live_value.__module__ == _document_module.__name__
         and live_value.__qualname__ == default_value.__qualname__
+        and _class_fingerprint(live_value) == _class_fingerprint(default_value)
     )
+
+
+def _class_fingerprint(value: type) -> tuple[tuple[str, Any], ...]:
+    return tuple(
+        (name, _class_attribute_fingerprint(name, attribute, owner=value))
+        for name, attribute in sorted(vars(value).items())
+        if name not in {"__doc__", "__module__", "_abc_impl"}
+    )
+
+
+def _class_attribute_fingerprint(name: str, value: Any, *, owner: type) -> Any:
+    if name == "__dataclass_fields__":
+        return _dataclass_field_fingerprint(value) if isinstance(value, Mapping) else _object_fingerprint(value)
+    if name == "__dataclass_params__":
+        return _object_fingerprint(value)
+    if isinstance(value, property):
+        return (
+            "property",
+            _function_fingerprint(value.fget, owner=owner),
+            _function_fingerprint(value.fset, owner=owner),
+            _function_fingerprint(value.fdel, owner=owner),
+            _object_fingerprint(value.__doc__),
+        )
+    objclass = _safe_getattr(value, "__objclass__", None)
+    descriptor_name = _safe_getattr(value, "__name__", None)
+    if isinstance(objclass, type) and descriptor_name is not None:
+        return (
+            "descriptor",
+            type(value).__qualname__,
+            _object_fingerprint(descriptor_name),
+            _descriptor_owner_fingerprint(objclass, owner),
+        )
+    if isinstance(value, dict):
+        return _mapping_fingerprint(value)
+    function_fingerprint = _function_fingerprint(value, owner=owner)
+    if function_fingerprint is not None:
+        return ("function", function_fingerprint)
+    return _object_fingerprint(value)
+
+
+def _descriptor_owner_fingerprint(objclass: type, owner: type) -> tuple[str, str] | tuple[str, str, str]:
+    if objclass is owner:
+        return ("self", owner.__qualname__)
+    return ("foreign", objclass.__module__, objclass.__qualname__)
+
+
+def _object_fingerprint(value: Any) -> tuple[str, str, str]:
+    value_type = type(value)
+    try:
+        value_repr = repr(value)
+    except Exception as exc:  # pragma: no cover - defensive for mutated public classes
+        value_repr = f"<unrepresentable: {type(exc).__module__}.{type(exc).__qualname__}>"
+    return (value_type.__module__, value_type.__qualname__, value_repr)
+
+
+def _mapping_fingerprint(value: Mapping[Any, Any]) -> tuple[Any, ...]:
+    try:
+        return tuple(
+            sorted(
+                (_object_fingerprint(key), _object_fingerprint(item_value))
+                for key, item_value in value.items()
+            )
+        )
+    except Exception:
+        return ("mapping", _object_fingerprint(value))
+
+
+def _safe_getattr(value: Any, name: str, default: Any) -> Any:
+    try:
+        return getattr(value, name)
+    except Exception:
+        return default
+
+
+def _function_fingerprint(
+    value: Any,
+    *,
+    owner: type | None,
+    include_closure: bool = True,
+) -> tuple[Any, ...] | None:
+    code = _safe_getattr(value, "__code__", None)
+    if not isinstance(code, CodeType):
+        return None
+    kwdefaults = _safe_getattr(value, "__kwdefaults__", None)
+    return (
+        code.co_argcount,
+        code.co_kwonlyargcount,
+        code.co_posonlyargcount,
+        code.co_names,
+        code.co_varnames,
+        _object_fingerprint(code.co_consts),
+        code.co_code,
+        _object_fingerprint(_safe_getattr(value, "__defaults__", None)),
+        _mapping_fingerprint(kwdefaults) if isinstance(kwdefaults, Mapping) else _object_fingerprint(kwdefaults),
+        _closure_fingerprint(value, code, owner=owner) if include_closure else (),
+    )
+
+
+def _closure_fingerprint(value: Any, code: CodeType, *, owner: type | None) -> tuple[Any, ...]:
+    closure = _safe_getattr(value, "__closure__", None)
+    if closure is None:
+        return ()
+    if not isinstance(closure, tuple):
+        return ("closure", _object_fingerprint(closure))
+    return tuple(
+        (
+            code.co_freevars[index] if index < len(code.co_freevars) else str(index),
+            _cell_fingerprint(cell, owner=owner),
+        )
+        for index, cell in enumerate(closure)
+    )
+
+
+def _cell_fingerprint(cell: Any, *, owner: type | None) -> Any:
+    try:
+        value = cell.cell_contents
+    except Exception as exc:
+        return ("cell", "unreadable", f"{type(exc).__module__}.{type(exc).__qualname__}")
+    if owner is not None and (
+        value is owner
+        or (
+            isinstance(value, type)
+            and value.__module__ == owner.__module__
+            and value.__qualname__ == owner.__qualname__
+        )
+    ):
+        return ("self_class", owner.__qualname__)
+    function_fingerprint = _function_fingerprint(value, owner=owner, include_closure=False)
+    if function_fingerprint is not None:
+        return ("function", function_fingerprint)
+    return _object_fingerprint(value)
+
+
+def _dataclass_field_fingerprint(value: Mapping[str, Any]) -> tuple[Any, ...]:
+    try:
+        return tuple(
+            (
+                _object_fingerprint(name),
+                _object_fingerprint(_safe_getattr(field, "default", None)),
+                _object_fingerprint(_safe_getattr(field, "default_factory", None)),
+            )
+            for name, field in value.items()
+        )
+    except Exception:
+        return ("dataclass_fields", _object_fingerprint(value))
 
 
 def _public_class_base(name: str):
