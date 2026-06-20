@@ -841,7 +841,8 @@ connector-action, release-evidence, and preflight artifacts. Add
 build a V1 bundle unless the release evidence, preflight, vLLM/SGLang connector
 action, benchmark-plan execution, Databricks run-status, tested wheel, PR
 evidence, GitHub governance, repository hygiene, and native-probe factory
-diagnostics sidecars are all present. Add
+diagnostics sidecars are all present; the native factory diagnostics must also
+report supported built-in vLLM and SGLang factory entry points. Add
 `--github-governance-json` to
 include the repository visibility and branch-protection sidecar emitted by
 `document_kv_cache.github_governance`; the bundle rejects it unless the
@@ -852,7 +853,8 @@ generated, build, cache, or secret-like artifacts are tracked. Repeat
 `--native-probe-factories-json` for
 `document_kv.native_probe_factories.v1` diagnostics emitted by
 `document_kv_cache.native_probe_factories`; the bundle validates that the
-diagnostics cover the built-in vLLM and SGLang native factory entry points.
+diagnostics cover the built-in vLLM and SGLang native factory entry points, and
+strict V1 release bundles require both entries to be supported.
 Repeat
 `--databricks-run-status-json` for compact `databricks_runs get --summary`
 outputs, or extracted inner `summary` records, from the managed runs whose

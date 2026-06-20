@@ -48,6 +48,7 @@ from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_RECORD_TYPE,
     STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES,
+    STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT,
     ReleaseBundle,
     ReleaseBundleArtifact,
     build_release_bundle,
@@ -344,6 +345,69 @@ def test_build_release_bundle_strict_v1_requires_connector_action_sidecars(tmp_p
         )
 
 
+@pytest.mark.parametrize(
+    ("unsupported_backend", "expected_label"),
+    STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT,
+)
+def test_build_release_bundle_strict_v1_requires_supported_native_probe_factories(
+    tmp_path,
+    unsupported_backend,
+    expected_label,
+):
+    source_dir = tmp_path / unsupported_backend
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    unsupported_record = _native_probe_factories_record(supported=True)
+    for factory in unsupported_record["factories"]:
+        if factory["backend"] == unsupported_backend:
+            factory["supported"] = False
+            factory["reason"] = f"{unsupported_backend} native probe factory is not available"
+    unsupported_native_probe_factories = _write_json(
+        source_dir / f"unsupported-{unsupported_backend}-native-probe-factories.json",
+        unsupported_record,
+    )
+
+    with pytest.raises(ValueError, match=expected_label):
+        build_release_bundle(
+            **{**release_kwargs, "native_probe_factories_jsons": (unsupported_native_probe_factories,)},
+            output_dir=tmp_path / f"strict-unsupported-{unsupported_backend}",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_strict_v1_rejects_split_native_probe_factory_support(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    vllm_only_record = _native_probe_factories_record(supported=True)
+    sglang_only_record = _native_probe_factories_record(supported=True)
+    for factory in vllm_only_record["factories"]:
+        if factory["backend"] == "sglang":
+            factory["supported"] = False
+            factory["reason"] = "sglang native probe factory is not available"
+    for factory in sglang_only_record["factories"]:
+        if factory["backend"] == "vllm":
+            factory["supported"] = False
+            factory["reason"] = "vllm native probe factory is not available"
+    vllm_only_path = _write_json(source_dir / "vllm-only-native-probe-factories.json", vllm_only_record)
+    sglang_only_path = _write_json(source_dir / "sglang-only-native-probe-factories.json", sglang_only_record)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **{**release_kwargs, "native_probe_factories_jsons": (vllm_only_path, sglang_only_path)},
+            output_dir=tmp_path / "strict-split-native-support",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "vllm-only-native-probe-factories.json: SGLang native probe factory support" in error
+    assert "sglang-only-native-probe-factories.json: vLLM native probe factory support" in error
+
+
 @pytest.mark.parametrize(("omitted_purpose", "expected_label"), STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES)
 def test_build_release_bundle_strict_v1_reports_each_missing_databricks_purpose(
     tmp_path,
@@ -457,6 +521,22 @@ def test_build_release_bundle_rejects_invalid_native_probe_factories(tmp_path):
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             native_probe_factories_jsons=(wrong_profile_native_probe_factories,),
             output_dir=tmp_path / "wrong-profile-native-probe-factories-bundle",
+        )
+
+    inconsistent_supported_record = _native_probe_factories_record(supported=True)
+    inconsistent_supported_record["factories"][0]["package_importable"] = False
+    inconsistent_supported_native_probe_factories = _write_json(
+        tmp_path / "inconsistent-supported-native-probe-factories.json",
+        inconsistent_supported_record,
+    )
+    with pytest.raises(ValueError, match="package_importable must be true when supported is true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            native_probe_factories_jsons=(inconsistent_supported_native_probe_factories,),
+            output_dir=tmp_path / "inconsistent-supported-native-probe-factories-bundle",
         )
 
 
@@ -1351,6 +1431,7 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
     assert "--require-complete-v1" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
     assert "vLLM/SGLang connector actions" in help_text
+    assert "supported native probe factory diagnostics" in help_text
 
 
 def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsys, tmp_path):
@@ -1640,7 +1721,10 @@ def _strict_v1_release_bundle_kwargs(source_dir: Path, *, databricks_run_status_
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
     repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
-    native_probe_factories = _write_json(source_dir / "native-probe-factories.json", _native_probe_factories_record())
+    native_probe_factories = _write_json(
+        source_dir / "native-probe-factories.json",
+        _native_probe_factories_record(supported=True),
+    )
     return {
         "v1_benchmark_json": artifacts["v1"],
         "storage_benchmark_json": artifacts["storage"],
@@ -1809,28 +1893,32 @@ def _repository_hygiene_record(*, ok: bool):
     }
 
 
-def _native_probe_factories_record():
+def _native_probe_factories_record(*, supported: bool = False):
     return {
         "record_type": NATIVE_PROBE_FACTORIES_RECORD_TYPE,
         "factories": [
-            _native_probe_factory_record("vllm", VLLM_NATIVE_PROBE_FACTORY),
-            _native_probe_factory_record("sglang", SGLANG_NATIVE_PROBE_FACTORY),
+            _native_probe_factory_record("vllm", VLLM_NATIVE_PROBE_FACTORY, supported=supported),
+            _native_probe_factory_record("sglang", SGLANG_NATIVE_PROBE_FACTORY, supported=supported),
         ],
     }
 
 
-def _native_probe_factory_record(backend: str, factory_path: str):
+def _native_probe_factory_record(backend: str, factory_path: str, *, supported: bool = False):
     return {
         "backend": backend,
         "factory_path": factory_path,
         "package_name": backend,
-        "package_importable": False,
-        "package_version": None,
+        "package_importable": supported,
+        "package_version": f"{backend}-test-version" if supported else None,
         "serving_environment_profile": serving_environment_profile_to_record(
             serving_environment_profile(backend)
         ),
-        "supported": False,
-        "reason": f"{backend} adapter is not installed",
+        "supported": supported,
+        "reason": (
+            f"{backend} native probe factory is available"
+            if supported
+            else f"{backend} adapter is not installed"
+        ),
     }
 
 
