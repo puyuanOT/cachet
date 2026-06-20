@@ -1,0 +1,35 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially found that legacy main did not honor a monkeypatched legacy release_bundle_to_record on the output-json path and that the legacy star-import surface lost RELEASE_BUNDLE_PACKAGE_NAME. I added a facade-local legacy writer, restored the package-name constant in the legacy facade, added regressions for both behaviors, and follow-up review approved with no remaining blockers.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_bundle.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "pr-evidence/document-release-bundle-ownership/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret-pattern scan across docs, source, tests, databricks, pr-evidence, and GitHub metadata",
+    "PYTHONPATH=src python import-boundary and legacy writer/star-import probes",
+    "GPT-5.5 focused review",
+    "GPT-5.5 follow-up review after compatibility fixes"
+  ],
+  "what_changed": [
+    "Moved release bundle packaging implementation into document_kv_cache.release_bundle with a curated document __all__ surface.",
+    "Replaced restaurant_kv_serving.release_bundle with a compatibility facade that preserves the broad legacy star-import surface and owns a local main function.",
+    "Added regressions for document and legacy CLI hook behavior, legacy output-json serialization hooks, legacy star-import compatibility, public module ownership, and explicit legacy-test governance."
+  ],
+  "why": "Release bundles are part of the open-source package release workflow, so implementation ownership should live in the document package while legacy restaurant imports continue to work during migration."
+}

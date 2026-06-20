@@ -774,6 +774,57 @@ def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsy
     assert legacy_release_bundle.write_release_bundle_manifest_json is original_writer
 
 
+def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsys, tmp_path):
+    output_json = tmp_path / "bundle-record.json"
+    original_builder = public_release_bundle.build_release_bundle
+    original_serializer = public_release_bundle.release_bundle_to_record
+    original_writer = public_release_bundle.write_release_bundle_manifest_json
+    fake_bundle = ReleaseBundle(
+        output_dir=str(tmp_path / "bundle"),
+        manifest_path=str(tmp_path / "bundle" / "manifest.json"),
+        artifacts=(),
+    )
+
+    def fake_builder(**kwargs):
+        assert kwargs["output_dir"] == str(tmp_path / "bundle")
+        return fake_bundle
+
+    def fake_serializer(bundle):
+        assert bundle is fake_bundle
+        return {"record_type": "legacy-fake-bundle"}
+
+    monkeypatch.setattr(legacy_release_bundle, "build_release_bundle", fake_builder)
+    monkeypatch.setattr(legacy_release_bundle, "release_bundle_to_record", fake_serializer)
+
+    assert legacy_release_bundle.main(
+        [
+            "--v1-benchmark-json",
+            "v1.json",
+            "--storage-benchmark-json",
+            "storage.json",
+            "--output-dir",
+            str(tmp_path / "bundle"),
+        ]
+    ) == 0
+    assert json.loads(capsys.readouterr().out) == {"record_type": "legacy-fake-bundle"}
+    assert legacy_release_bundle.main(
+        [
+            "--v1-benchmark-json",
+            "v1.json",
+            "--storage-benchmark-json",
+            "storage.json",
+            "--output-dir",
+            str(tmp_path / "bundle"),
+            "--output-json",
+            str(output_json),
+        ]
+    ) == 0
+    assert json.loads(output_json.read_text(encoding="utf-8")) == {"record_type": "legacy-fake-bundle"}
+    assert public_release_bundle.build_release_bundle is original_builder
+    assert public_release_bundle.release_bundle_to_record is original_serializer
+    assert public_release_bundle.write_release_bundle_manifest_json is original_writer
+
+
 def _write_record(path: Path, record_type: str, *, backend: str | None = None) -> Path:
     record = {
         "record_type": record_type,
