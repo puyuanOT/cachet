@@ -36,6 +36,8 @@ DEFAULT_GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
 DEFAULT_GITHUB_TIMEOUT_SECONDS = 60.0
 GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE = "document_kv.github_repository_governance.v1"
 REQUIRED_CI_STATUS_CHECK = "Test and build"
+_REQUIRED_REPOSITORY_DESCRIPTION_TERM = "cachet"
+_REQUIRED_REPOSITORY_TOPICS = ("cachet", "kv-cache")
 
 
 class GitHubHTTPResponse(Protocol):
@@ -277,6 +279,7 @@ def _release_readiness_issues(
         issues.append("repository must not be archived")
     if repository.get("disabled") is True:
         issues.append("repository must not be disabled")
+    issues.extend(_repository_branding_issues(repository))
     if protection.get("enabled") is not True:
         issues.append("main branch protection must be enabled")
         return issues
@@ -314,6 +317,20 @@ def _release_readiness_issues(
         )
     if open_pull_requests.get("truncated") is True:
         issues.append("open pull request inspection must not be truncated")
+    return issues
+
+
+def _repository_branding_issues(repository: Mapping[str, Any]) -> list[str]:
+    issues: list[str] = []
+    description = repository.get("description")
+    if not isinstance(description, str) or not description.strip():
+        issues.append("repository description must be non-empty before open-source release")
+    elif _REQUIRED_REPOSITORY_DESCRIPTION_TERM not in description.casefold():
+        issues.append("repository description must mention Cachet before open-source release")
+    topics = set(_sorted_texts(repository.get("topics")))
+    missing_topics = [topic for topic in _REQUIRED_REPOSITORY_TOPICS if topic not in topics]
+    if missing_topics:
+        issues.append(f"repository topics must include: {', '.join(missing_topics)}")
     return issues
 
 

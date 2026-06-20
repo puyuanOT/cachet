@@ -933,10 +933,12 @@ installed files.
 
 Capture repository governance status as a separate release-readiness sidecar.
 The command reads the GitHub token from an environment variable, records
-repository visibility, `main` branch protection state, and open pull-request
-pressure, and returns non-zero until the repository is public, the required
-`Test and build` protection is active, and no unexpected pull requests remain
-open:
+repository visibility, branded repository metadata, `main` branch protection
+state, and open pull-request pressure. It returns non-zero until the repository
+is public, the description is non-empty and mentions Cachet, the repository
+topics include `cachet` and `kv-cache`, the required `Test and build`
+protection is active, branch protection applies to administrators, and no
+unexpected pull requests remain open:
 
 ```bash
 export GITHUB_TOKEN=...

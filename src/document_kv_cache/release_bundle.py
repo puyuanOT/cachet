@@ -268,6 +268,8 @@ _GITHUB_REQUIRED_PULL_REQUEST_REVIEWS_KEYS = frozenset(
         "required_approving_review_count",
     }
 )
+_GITHUB_REQUIRED_REPOSITORY_DESCRIPTION_TERM = "cachet"
+_GITHUB_REQUIRED_REPOSITORY_TOPICS = ("cachet", "kv-cache")
 _GITHUB_OPEN_PULL_REQUESTS_KEYS = frozenset(
     {
         "checked",
@@ -867,9 +869,8 @@ def _github_governance_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, .
         issues.append("GitHub governance sidecar archived must be false")
     if governance_record.get("disabled") is not False:
         issues.append("GitHub governance sidecar disabled must be false")
-    for field_name in ("description", "homepage"):
-        issues.extend(_optional_str_field(governance_record, field_name, "GitHub governance sidecar summary"))
-    issues.extend(_list_of_strings_field(governance_record, "topics", "GitHub governance sidecar summary"))
+    issues.extend(_github_repository_branding_issues(governance_record))
+    issues.extend(_optional_str_field(governance_record, "homepage", "GitHub governance sidecar summary"))
     branch_protection = governance_record.get("branch_protection")
     if not isinstance(branch_protection, Mapping):
         issues.append("GitHub governance sidecar branch_protection must be an object")
@@ -883,6 +884,25 @@ def _github_governance_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, .
     if governance_record.get("issues") != []:
         issues.append("GitHub governance sidecar issues must be an empty array")
     return _dedupe_strings(issues)
+
+
+def _github_repository_branding_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    description = record.get("description")
+    if not isinstance(description, str) or not description.strip():
+        issues.append("GitHub governance sidecar summary.description must be a non-empty string")
+    elif _GITHUB_REQUIRED_REPOSITORY_DESCRIPTION_TERM not in description.casefold():
+        issues.append("GitHub governance sidecar summary.description must mention Cachet")
+    topic_field_issues = _list_of_strings_field(record, "topics", "GitHub governance sidecar summary")
+    issues.extend(topic_field_issues)
+    if not topic_field_issues:
+        topic_set = set(record["topics"])
+        missing_topics = [topic for topic in _GITHUB_REQUIRED_REPOSITORY_TOPICS if topic not in topic_set]
+        if missing_topics:
+            issues.append(
+                "GitHub governance sidecar summary.topics must include: " + ", ".join(missing_topics)
+            )
+    return tuple(issues)
 
 
 def _github_governance_record(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
