@@ -110,6 +110,7 @@ The public package owns these document-branded CLI entry points:
 - `document-kv-release-bundle`
 - `document-kv-pr-evidence`
 - `document-kv-github-governance`
+- `document-kv-native-probe-factories`
 - `document-kv-engine-probe`
 - `document-kv-engine-probe-databricks-job`
 - `document-kv-vllm-smoke`

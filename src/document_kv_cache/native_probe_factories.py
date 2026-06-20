@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib import metadata, util
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
@@ -132,6 +136,17 @@ def builtin_native_probe_factories_to_record() -> dict[str, Any]:
     }
 
 
+def write_builtin_native_probe_factories_record_json(path: str | Path) -> None:
+    """Write the built-in native factory diagnostics record to a JSON file."""
+
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(builtin_native_probe_factories_to_record(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def vllm_native_probe_factory(context: EngineKVProbeFactoryContext) -> Any:
     """Reserved vLLM factory entry point.
 
@@ -182,6 +197,29 @@ def _serving_backend(value: ServingBackend | str) -> ServingBackend:
         raise ValueError(f"Unsupported serving backend {value!r}") from exc
 
 
+def main(argv: Sequence[str] | None = None) -> int:
+    """Emit built-in native probe factory diagnostics for release planning."""
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Inspect built-in vLLM/SGLang native probe factory entry points "
+            "and their pinned isolated serving-environment profiles."
+        )
+    )
+    parser.add_argument(
+        "--output-json",
+        help="Optional file path for the diagnostics JSON. Defaults to stdout.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.output_json:
+        write_builtin_native_probe_factories_record_json(args.output_json)
+    else:
+        record = builtin_native_probe_factories_to_record()
+        print(json.dumps(record, indent=2, sort_keys=True))
+    return 0
+
+
 __all__ = [
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
@@ -191,7 +229,13 @@ __all__ = [
     "builtin_native_probe_factory_path",
     "inspect_builtin_native_probe_factories",
     "inspect_builtin_native_probe_factory",
+    "main",
     "native_probe_factory_inspection_to_record",
     "sglang_native_probe_factory",
     "vllm_native_probe_factory",
+    "write_builtin_native_probe_factories_record_json",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/native-probe-factory-diagnostics-cli/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 approved the diff with no findings and spot-checked the native_probe_factories module help and stdout CLI behavior.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "Native probe factory diagnostics CLI, document-branded script metadata, compatibility exports, README guidance, and focused tests."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_native_probe_factories.py tests/test_public_package.py tests/test_project_governance.py -q; git diff --check; poetry run python -m compileall -q src tests; poetry run pytest -q; GPT-5.5 spot-checked python -m document_kv_cache.native_probe_factories --help and stdout output"
+      ],
+      "what_changed": [
+        "Added the document-kv-native-probe-factories CLI for emitting built-in vLLM/SGLang native probe factory diagnostics to stdout or JSON."
+      ],
+      "why": "Operators need an installed-package command to capture reserved native probe factory status and pinned serving-environment profiles while preparing real vLLM/SGLang block-manager adapters."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
