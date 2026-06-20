@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no findings, verified tests/test_model_profiles.py, and approved the fail-closed model profile schema hardening.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/model_profiles.py; tests/test_model_profiles.py; README.md; pr-evidence/harden-model-profile-schema/README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_model_profiles.py; python -m pytest tests/test_public_package.py tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring -q; python -m pytest -q; poetry check; poetry install --dry-run; poetry install --dry-run --extras databricks --extras test; poetry build; GPT-5.5 review approved with no findings."
+  ],
+  "what_changed": [
+    "ModelProfileDefinition JSON artifacts now reject unsupported top-level keys while preserving metadata as the extension point."
+  ],
+  "why": "Keeps layout-critical model profile artifacts deterministic and fail-closed for future Qwen3.5, MiniMax, MQA, GQA, and KV Packet integrations."
+}

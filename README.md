@@ -520,8 +520,10 @@ Future Qwen3.5, MiniMax, or adapter-trained KV Packet integrations should add a
 profile first, then implement a generator or engine adapter against the same
 layout contract. Use a caller-owned `ModelProfileRegistry` for profiles that are
 not part of the V1 built-ins, or ship a portable `ModelProfileDefinition` JSON
-artifact when the profile belongs to an external model bundle. The example below
-uses a schematic MQA-style future profile; real model bundles should replace the
+artifact when the profile belongs to an external model bundle. The JSON artifact
+uses a closed top-level schema; place external bundle annotations in `metadata`
+rather than adding ad hoc top-level fields. The example below uses a schematic
+MQA-style future profile; real model bundles should replace the
 illustrative geometry with measured values from the target model:
 
 ```python

@@ -43,6 +43,24 @@ __all__ = [
 
 
 MODEL_PROFILE_RECORD_TYPE = "document_kv.model_profile.v1"
+_MODEL_PROFILE_RECORD_KEYS = frozenset(
+    {
+        "record_type",
+        "model_id",
+        "architecture",
+        "num_layers",
+        "num_query_heads",
+        "num_kv_heads",
+        "head_size",
+        "max_context_tokens",
+        "default_layout_version",
+        "default_dtype",
+        "default_block_size",
+        "default_lora_id",
+        "metadata",
+        "aliases",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,6 +276,7 @@ def model_profile_definition_to_record(definition: ModelProfileDefinition) -> di
 def model_profile_definition_from_record(record: Mapping[str, Any]) -> ModelProfileDefinition:
     if not isinstance(record, Mapping):
         raise ValueError("model profile record must be an object")
+    _reject_unsupported_keys(record, _MODEL_PROFILE_RECORD_KEYS, label="model profile record")
     if record.get("record_type") != MODEL_PROFILE_RECORD_TYPE:
         raise ValueError(f"record_type must be {MODEL_PROFILE_RECORD_TYPE!r}")
     metadata = _validated_metadata(record.get("metadata", {}))
@@ -319,6 +338,12 @@ def _validated_metadata(value: Any) -> Mapping[str, str]:
             raise ValueError("metadata values must be strings")
         metadata[key] = item
     return metadata
+
+
+def _reject_unsupported_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], *, label: str) -> None:
+    unsupported = sorted(str(key) for key in record if key not in allowed_keys)
+    if unsupported:
+        raise ValueError(f"{label} has unsupported keys: {unsupported}")
 
 
 def _required_sequence(record: Mapping[str, Any], key: str) -> tuple[str, ...]:
