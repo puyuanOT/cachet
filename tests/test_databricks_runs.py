@@ -1,4 +1,8 @@
 import json
+import os
+import pickle
+import subprocess
+import sys
 import urllib.error
 
 import pytest
@@ -214,6 +218,28 @@ def test_databricks_http_errors_are_sanitized():
     assert "secret-token" not in str(excinfo.value)
 
 
+def test_databricks_http_error_body_echoed_credentials_are_redacted():
+    opener = _HTTPErrorOpener(
+        urllib.error.HTTPError(
+            "https://dbc.example/api/2.1/jobs/runs/get?run_id=123",
+            403,
+            "Forbidden",
+            {},
+            _BytesFile(b'{"message":"Authorization: Bearer secret-token; token=secret-token"}'),
+        )
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example", "secret-token")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        get_databricks_run(config, 123, opener=opener)
+
+    error = str(excinfo.value)
+    assert "HTTP 403" in error
+    assert "secret-token" not in error
+    assert "Bearer [REDACTED]" in error
+    assert "token=[REDACTED]" in error
+
+
 def test_read_and_write_databricks_run_json_helpers(tmp_path):
     payload_path = tmp_path / "payload.json"
     response_path = tmp_path / "response.json"
@@ -402,6 +428,50 @@ def test_main_output_json_write_failure_falls_back_to_stdout(monkeypatch, tmp_pa
     assert result["output_json_error_type"] == "FileNotFoundError"
 
 
+def test_main_output_json_redacts_databricks_http_error_body(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+    opener = _HTTPErrorOpener(
+        urllib.error.HTTPError(
+            "https://dbc.example/api/2.1/jobs/runs/get?run_id=123",
+            401,
+            "Unauthorized",
+            {},
+            _BytesFile(b'{"message":"Authorization: Bearer secret-token; echoed secret-token"}'),
+        )
+    )
+
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "get_databricks_run",
+        lambda config, run_id: legacy_databricks_runs._databricks_api_json(
+            config,
+            "GET",
+            f"/api/2.1/jobs/runs/get?run_id={run_id}",
+            opener=opener,
+        ),
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+        ]
+    )
+
+    output = output_path.read_text(encoding="utf-8")
+    record = json.loads(output)
+    assert exit_code == 1
+    assert record["error_type"] == "RuntimeError"
+    assert "HTTP 401" in record["error"]
+    assert "secret-token" not in output
+    assert "Bearer [REDACTED]" in record["error"]
+
+
 def test_public_databricks_runs_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):
     output_path = tmp_path / "response.json"
     original_legacy_get = legacy_databricks_runs.get_databricks_run
@@ -441,6 +511,193 @@ def test_public_databricks_runs_main_respects_document_namespace_monkeypatch(mon
         "summary": {"record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE, "source": "summary-hook"},
     }
     assert legacy_databricks_runs.get_databricks_run is original_legacy_get
+
+
+def test_legacy_databricks_runs_main_respects_legacy_namespace_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+    original_public_get = public_databricks_runs.get_databricks_run
+
+    def fake_get(config, run_id):
+        assert run_id == "123"
+        assert isinstance(config, legacy_databricks_runs.DatabricksWorkspaceConfig)
+        return {"run_id": 123, "source": "legacy-hook"}
+
+    def fake_summary(run, **kwargs):
+        assert run == {"run_id": 123, "source": "legacy-hook"}
+        assert kwargs == {"submit_payload": None, "submit_payload_path": None}
+        return {"record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE, "source": "legacy-summary-hook"}
+
+    monkeypatch.setattr(legacy_databricks_runs, "get_databricks_run", fake_get)
+    monkeypatch.setattr(legacy_databricks_runs, "summarize_databricks_run", fake_summary)
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "databricks_workspace_config_from_env",
+        lambda **kwargs: legacy_databricks_runs.DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--summary",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "ok": True,
+        "action": "get",
+        "summary": {"record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE, "source": "legacy-summary-hook"},
+    }
+    assert public_databricks_runs.get_databricks_run is original_public_get
+
+
+def test_legacy_databricks_runs_ignores_document_namespace_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+
+    def public_get_should_not_run(config, run_id):  # pragma: no cover - defensive assertion
+        raise AssertionError("legacy main should not use document namespace monkeypatches")
+
+    monkeypatch.setattr(public_databricks_runs, "get_databricks_run", public_get_should_not_run)
+    monkeypatch.setattr(legacy_databricks_runs, "get_databricks_run", lambda config, run_id: {"run_id": int(run_id)})
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "databricks_workspace_config_from_env",
+        lambda **kwargs: legacy_databricks_runs.DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(output_path.read_text(encoding="utf-8"))["response"] == {"run_id": 123}
+
+
+def test_legacy_databricks_runs_private_summary_hook_is_isolated(monkeypatch):
+    run = {
+        "run_id": 123,
+        "state": {"life_cycle_state": "RUNNING"},
+        "tasks": [{"task_key": "real-task", "state": {"life_cycle_state": "RUNNING"}}],
+    }
+
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "_task_summary",
+        lambda task: {
+            "task_key": "patched-task",
+            "life_cycle_state": "RUNNING",
+            "result_state": None,
+            "state_message": None,
+            "cluster_id": None,
+            "start_time": None,
+            "end_time": None,
+        },
+    )
+
+    legacy_summary = legacy_databricks_runs.summarize_databricks_run(run)
+    public_summary = public_databricks_runs.summarize_databricks_run(run)
+
+    assert legacy_summary["active_task_key"] == "patched-task"
+    assert legacy_summary["tasks"][0]["task_key"] == "patched-task"
+    assert public_summary["active_task_key"] == "real-task"
+    assert public_summary["tasks"][0]["task_key"] == "real-task"
+
+
+def test_databricks_runs_reexports_document_owned_api_with_legacy_subclass():
+    assert public_databricks_runs.DatabricksWorkspaceConfig.__module__ == "document_kv_cache.databricks_runs"
+    assert legacy_databricks_runs.DatabricksWorkspaceConfig.__module__ == "restaurant_kv_serving.databricks_runs"
+    assert issubclass(legacy_databricks_runs.DatabricksWorkspaceConfig, public_databricks_runs.DatabricksWorkspaceConfig)
+    assert public_databricks_runs.summarize_databricks_run.__module__ == "document_kv_cache.databricks_runs"
+    assert legacy_databricks_runs.summarize_databricks_run.__module__ == "restaurant_kv_serving.databricks_runs"
+    assert set(public_databricks_runs.__all__) < set(legacy_databricks_runs.__all__)
+    assert "urllib" not in public_databricks_runs.__all__
+    assert "urllib" in legacy_databricks_runs.__all__
+
+
+def test_legacy_workspace_config_factory_returns_picklable_legacy_config():
+    config = legacy_databricks_runs.databricks_workspace_config_from_env(
+        environ={
+            DEFAULT_DATABRICKS_HOST_ENV: "https://dbc.example/",
+            DEFAULT_DATABRICKS_TOKEN_ENV: "secret-token",
+        }
+    )
+
+    round_tripped = pickle.loads(pickle.dumps(config))
+
+    assert type(config) is legacy_databricks_runs.DatabricksWorkspaceConfig
+    assert isinstance(config, public_databricks_runs.DatabricksWorkspaceConfig)
+    assert type(round_tripped) is legacy_databricks_runs.DatabricksWorkspaceConfig
+    assert round_tripped.normalized_host == "https://dbc.example"
+    assert "secret-token" not in repr(round_tripped)
+    assert not hasattr(config, "__dict__")
+
+
+def test_databricks_runs_star_import_surfaces_are_stable():
+    expected_legacy_exports = {
+        "DEFAULT_DATABRICKS_HOST_ENV",
+        "DEFAULT_DATABRICKS_TOKEN_ENV",
+        "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+        "DATABRICKS_RUN_STATUS_RECORD_TYPE",
+        "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
+        "DATABRICKS_TERMINAL_LIFE_CYCLE_STATES",
+        "DatabricksHTTPResponse",
+        "DatabricksURLOpener",
+        "DatabricksWorkspaceConfig",
+        "databricks_workspace_config_from_env",
+        "submit_databricks_run",
+        "get_databricks_run",
+        "summarize_databricks_run",
+        "summarize_databricks_run_submit_payload",
+        "write_databricks_run_response_json",
+        "read_databricks_run_submit_payload",
+        "main",
+        "argparse",
+        "hashlib",
+        "Mapping",
+        "Sequence",
+        "dataclass",
+        "field",
+        "json",
+        "os",
+        "Path",
+        "Any",
+        "Protocol",
+        "urllib",
+    }
+    public_namespace: dict[str, object] = {}
+    legacy_namespace: dict[str, object] = {}
+
+    exec("from document_kv_cache.databricks_runs import *", public_namespace)
+    exec("from restaurant_kv_serving.databricks_runs import *", legacy_namespace)
+
+    assert set(public_databricks_runs.__all__) == set(public_namespace) - {"__builtins__"}
+    assert set(legacy_databricks_runs.__all__) == expected_legacy_exports
+    assert set(legacy_databricks_runs.__all__) == set(legacy_namespace) - {"__builtins__"}
+    assert "RLock" not in legacy_namespace
+    assert "urllib" not in public_namespace
+
+
+def test_legacy_databricks_runs_module_execution_help():
+    result = subprocess.run(
+        [sys.executable, "-m", "restaurant_kv_serving.databricks_runs", "--help"],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": "src"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "Submit or inspect Databricks runs" in result.stdout
 
 
 class _FakeResponse:
