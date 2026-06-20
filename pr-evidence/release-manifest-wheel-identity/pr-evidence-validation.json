@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/release-manifest-wheel-identity/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer reported no findings and explicitly approved the current diff.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_release_bundle.py",
+        "tests/test_project_governance.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py tests/test_project_governance.py::test_readme_release_bundle_documents_wheel_identity_manifest_fields -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Added package wheel name/version fields to release bundle manifest artifacts",
+        "Documented wheel identity manifest fields and strict version provenance"
+      ],
+      "why": "Make release handoff manifests auditable without reopening the copied wheel archive."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
