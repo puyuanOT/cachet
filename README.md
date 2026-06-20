@@ -685,7 +685,9 @@ factory diagnostics sidecars into a checksummed handoff directory. The benchmark
 plan executor writes `plan-execution.json` only after the planned commands
 finish, so the final strict release bundle should be built as a separate
 post-execution command with
-`--plan-execution-json /data/plan-execution.json --require-complete-v1`.
+`--plan-execution-json /data/plan-execution.json --require-complete-v1`, or by
+supplying `--release-bundle-plan-execution-json` together with
+`--release-bundle-require-complete-v1` when planning a follow-up bundle command.
 For ad hoc local conversion, use `dataset_prep`
 directly:
 

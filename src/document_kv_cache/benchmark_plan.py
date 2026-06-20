@@ -168,6 +168,7 @@ class ReleaseBundlePlanConfig:
     repository_hygiene_json: str | None = None
     native_probe_factories_jsons: tuple[str, ...] = ()
     overwrite: bool = False
+    require_complete_v1: bool = False
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -192,6 +193,8 @@ class ReleaseBundlePlanConfig:
             raise ValueError("release bundle native_probe_factories_jsons entries must be non-empty")
         if type(self.overwrite) is not bool:
             raise ValueError("release bundle overwrite must be boolean")
+        if type(self.require_complete_v1) is not bool:
+            raise ValueError("release bundle require_complete_v1 must be boolean")
         object.__setattr__(self, "plan_execution_jsons", tuple(self.plan_execution_jsons))
         object.__setattr__(self, "databricks_run_status_jsons", tuple(self.databricks_run_status_jsons))
         object.__setattr__(self, "pr_evidence_jsons", tuple(self.pr_evidence_jsons))
@@ -830,6 +833,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--repository-hygiene-json", repository_hygiene_json)
     for native_probe_factories_json in _release_bundle_native_probe_factories_jsons(config):
         argv = (*argv, "--native-probe-factories-json", native_probe_factories_json)
+    if bundle_config.require_complete_v1:
+        argv = (*argv, "--require-complete-v1")
     if bundle_config.overwrite:
         argv = (*argv, "--overwrite")
     return BenchmarkCommand(name="build-release-bundle", argv=argv)
@@ -859,6 +864,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "repository_hygiene_json": _release_bundle_repository_hygiene_json(config),
         "native_probe_factories_jsons": list(_release_bundle_native_probe_factories_jsons(config)),
         "overwrite": bundle_config.overwrite,
+        "require_complete_v1": bundle_config.require_complete_v1,
     }
 
 
@@ -1351,6 +1357,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="Native probe factory diagnostics sidecar to include in the release bundle. Repeat as needed.",
     )
+    parser.add_argument(
+        "--release-bundle-require-complete-v1",
+        action="store_true",
+        help="Emit --require-complete-v1 on the release bundle command for strict V1 publishing.",
+    )
     parser.add_argument("--release-bundle-overwrite", action="store_true")
     parser.add_argument("--plan-output-json", help="Write the command plan JSON to this path.")
     parser.add_argument("--plan-output-sh", help="Write an executable shell script to this path.")
@@ -1627,6 +1638,7 @@ def _release_bundle_config_from_cli(
         repository_hygiene_json=args.release_bundle_repository_hygiene_json,
         native_probe_factories_jsons=tuple(args.release_bundle_native_probe_factories_json or ()),
         overwrite=args.release_bundle_overwrite,
+        require_complete_v1=args.release_bundle_require_complete_v1,
     )
 
 
@@ -1641,6 +1653,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_github_governance_json is not None
         or args.release_bundle_repository_hygiene_json is not None
         or args.release_bundle_native_probe_factories_json is not None
+        or args.release_bundle_require_complete_v1
         or args.release_bundle_overwrite
     )
 
