@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/readme-engine-adapter-payload-reader/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewed the diff, ran the focused README governance test, checked the README imports against public exports, and approved with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README serving-engine adapter handoff documentation and project-governance README regression tests."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_project_governance.py::test_readme_engine_adapter_handoff_example_uses_public_payload_reader tests/test_project_governance.py::test_readme_documents_cachet_brand_and_scope -q; poetry run pytest tests/test_project_governance.py tests/test_public_package.py tests/test_engine_probe.py tests/test_engine_adapters.py -q; python -m compileall -q src/document_kv_cache src/restaurant_kv_serving; git diff --check; poetry run pytest -q"
+      ],
+      "what_changed": [
+        "Updated the README serving-engine handoff example to use the public read_engine_adapter_payload helper and added a governance test that parses the README code fence and verifies imported document_kv_cache names are public exports."
+      ],
+      "why": "The generalized package should give vLLM/SGLang connector authors a concrete, package-owned payload-loading boundary instead of an undefined adapter_storage placeholder."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
