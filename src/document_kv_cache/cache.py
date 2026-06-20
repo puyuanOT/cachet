@@ -41,13 +41,13 @@ class ChunkCacheResult:
 
 class ByteLRU:
     def __init__(self, max_bytes: int) -> None:
-        if max_bytes < 0:
-            raise ValueError("max_bytes must be non-negative")
+        _validate_non_negative_int("max_bytes", max_bytes)
         self.max_bytes = max_bytes
         self.current_bytes = 0
         self._items: OrderedDict[str, bytes] = OrderedDict()
 
     def get(self, key: str) -> bytes | None:
+        key = _validate_cache_key(key)
         value = self._items.get(key)
         if value is None:
             return None
@@ -55,9 +55,12 @@ class ByteLRU:
         return value
 
     def peek(self, key: str) -> bytes | None:
+        key = _validate_cache_key(key)
         return self._items.get(key)
 
     def put(self, key: str, value: bytes) -> None:
+        key = _validate_cache_key(key)
+        value = _coerce_cache_payload(value, label="cache value")
         if len(value) > self.max_bytes:
             old = self._items.pop(key, None)
             if old is not None:
@@ -86,8 +89,8 @@ class ChunkCache:
         local_dir: str | Path | None = None,
         local_max_bytes: int | None = None,
     ) -> None:
-        if local_max_bytes is not None and local_max_bytes < 0:
-            raise ValueError("local_max_bytes must be non-negative")
+        if local_max_bytes is not None:
+            _validate_non_negative_int("local_max_bytes", local_max_bytes)
         self.cpu = ByteLRU(cpu_max_bytes)
         self.local_dir = Path(local_dir) if local_dir is not None else None
         self.local_max_bytes = local_max_bytes
@@ -110,7 +113,7 @@ class ChunkCache:
             return cached
         key = self._cache_key(ref)
         local_path = self._local_path(ref)
-        payload = loader(ref)
+        payload = _coerce_cache_payload(loader(ref), label="loader payload")
         self.cold_misses += 1
         if local_path is not None:
             self._write_local(local_path, payload)
@@ -195,7 +198,10 @@ class ChunkCache:
             return tuple(self.get_or_load_with_tier(ref, loader) for ref in refs)
 
         unique_refs = _deduplicate_refs_by_cache_key(refs, self._cache_key)
-        payloads = tuple(batch_loader(unique_refs))
+        payloads = tuple(
+            _coerce_cache_payload(payload, label="batch_loader payload")
+            for payload in batch_loader(unique_refs)
+        )
         if len(payloads) != len(unique_refs):
             raise ValueError("batch_loader returned the wrong number of payloads")
         payload_by_cache_key = {
@@ -297,3 +303,25 @@ def _deduplicate_refs_by_cache_key(
         seen.add(key)
         unique_refs.append(ref)
     return tuple(unique_refs)
+
+
+def _validate_non_negative_int(name: str, value: object) -> None:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+
+
+def _validate_cache_key(key: object) -> str:
+    if not isinstance(key, str) or not key:
+        raise ValueError("cache key must be non-empty")
+    return key
+
+
+def _coerce_cache_payload(payload: object, *, label: str) -> bytes:
+    if isinstance(payload, bytes):
+        return payload
+    try:
+        return memoryview(payload).tobytes()
+    except TypeError as exc:
+        raise ValueError(f"{label} must be bytes-like") from exc

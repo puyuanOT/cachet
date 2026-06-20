@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED: changes are scoped to tiered cache contracts; bytes-like payloads normalize to immutable bytes, malformed budgets/keys/loader outputs fail early, and cold/CPU/local/batch paths remain consistent.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/cache.py",
+    "tests/test_cache.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_cache.py -q -> 28 passed",
+    "git diff --check -> clean",
+    "poetry run pytest tests/test_cache.py tests/test_public_package.py tests/test_project_governance.py -q -> 73 passed",
+    "python -m py_compile src/document_kv_cache/cache.py tests/test_cache.py -> passed",
+    "poetry run pytest -q -> 1046 passed",
+    "poetry build -> passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> passed"
+  ],
+  "what_changed": [
+    "Normalized tiered cache payloads to immutable bytes."
+  ],
+  "why": "Memory and local-disk cache tiers should enforce stable bytes payloads for inference-time document KV materialization."
+}
