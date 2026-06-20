@@ -1,5 +1,9 @@
 import json
+import os
+import pickle
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -229,6 +233,331 @@ def test_public_databricks_job_main_respects_document_namespace_monkeypatch(monk
     assert exit_code == 0
     assert json.loads(output_path.read_text(encoding="utf-8")) == {"ok": True, "source": "public-hook"}
     assert legacy_databricks_job.build_databricks_run_submit_payload is original_legacy_build
+
+
+def test_legacy_databricks_job_main_respects_legacy_namespace_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+    original_public_build = public_databricks_job.build_databricks_run_submit_payload
+
+    def fake_build(config):
+        assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+        return {"ok": True, "source": "legacy-hook"}
+
+    monkeypatch.setattr(legacy_databricks_job, "build_databricks_run_submit_payload", fake_build)
+
+    exit_code = legacy_databricks_job.main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {"ok": True, "source": "legacy-hook"}
+    assert public_databricks_job.build_databricks_run_submit_payload is original_public_build
+
+
+def test_legacy_databricks_job_ignores_document_namespace_build_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+
+    def fake_public_build(config):
+        return {"ok": True, "source": "unexpected-public-hook"}
+
+    monkeypatch.setattr(public_databricks_job, "build_databricks_run_submit_payload", fake_public_build)
+
+    exit_code = legacy_databricks_job.main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload != {"ok": True, "source": "unexpected-public-hook"}
+    assert payload["tasks"][0]["task_key"] == "document_kv_v1_benchmark"
+
+
+def test_legacy_databricks_job_ignores_document_namespace_writer_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+    runner_path = tmp_path / "run_plan.py"
+
+    def fake_public_runner_writer(path):
+        Path(path).write_text("# unexpected public hook\n", encoding="utf-8")
+
+    monkeypatch.setattr(public_databricks_job, "write_databricks_runner_script", fake_public_runner_writer)
+
+    exit_code = legacy_databricks_job.main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+            "--runner-script-output",
+            str(runner_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert "# unexpected public hook" not in runner_path.read_text(encoding="utf-8")
+    assert "document_kv_cache.benchmark_plan_executor" in runner_path.read_text(encoding="utf-8")
+
+
+def test_legacy_databricks_job_ignores_document_private_helper_monkeypatch(monkeypatch):
+    config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        execution_result_json_uri="dbfs:/benchmarks/result.json",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    def fake_public_runner_parameters(config):
+        return ["--unexpected-public-private-hook"]
+
+    monkeypatch.setattr(public_databricks_job, "_runner_parameters", fake_public_runner_parameters)
+
+    payload = legacy_databricks_job.build_databricks_run_submit_payload(config)
+
+    assert payload["tasks"][0]["spark_python_task"]["parameters"] != ["--unexpected-public-private-hook"]
+    assert payload["tasks"][0]["spark_python_task"]["parameters"][:2] == [
+        "--plan-json",
+        "dbfs:/benchmarks/v1-plan.json",
+    ]
+
+
+def test_legacy_databricks_job_payload_respects_legacy_private_cluster_monkeypatch(monkeypatch):
+    config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    def broken_legacy_cluster(config):
+        raise RuntimeError(f"legacy cluster hook for {config.plan_json_uri}")
+
+    monkeypatch.setattr(legacy_databricks_job, "_single_node_g5_cluster", broken_legacy_cluster)
+
+    try:
+        legacy_databricks_job.build_databricks_run_submit_payload(config)
+    except RuntimeError as exc:
+        assert "legacy cluster hook" in str(exc)
+    else:
+        raise AssertionError("expected legacy private cluster monkeypatch to be observed")
+
+
+def test_legacy_databricks_job_config_ignores_document_private_helper_monkeypatch(monkeypatch):
+    def broken_public_cluster_config(config):
+        raise RuntimeError(f"unexpected document private hook for {config.plan_json_uri}")
+
+    monkeypatch.setattr(public_databricks_job, "_cluster_config_from_benchmark_job", broken_public_cluster_config)
+
+    config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+
+
+def test_legacy_databricks_job_config_respects_legacy_private_cluster_config_monkeypatch(monkeypatch):
+    def broken_legacy_cluster_config(config):
+        raise RuntimeError(f"legacy config hook for {config.plan_json_uri}")
+
+    monkeypatch.setattr(legacy_databricks_job, "_cluster_config_from_benchmark_job", broken_legacy_cluster_config)
+
+    try:
+        legacy_databricks_job.DatabricksBenchmarkJobConfig(
+            plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+            runner_python_file="dbfs:/benchmarks/run_plan.py",
+            single_user_name=SINGLE_USER_NAME,
+        )
+    except RuntimeError as exc:
+        assert "legacy config hook" in str(exc)
+    else:
+        raise AssertionError("expected legacy cluster config monkeypatch to be observed")
+
+
+def test_legacy_databricks_job_config_respects_legacy_node_type_validator_monkeypatch(monkeypatch):
+    def broken_validator(node_type_id):
+        raise RuntimeError(f"legacy validator hook for {node_type_id}")
+
+    monkeypatch.setattr(legacy_databricks_job, "validate_aws_g5_node_type", broken_validator)
+
+    try:
+        legacy_databricks_job.DatabricksSingleNodeG5ClusterConfig(
+            purpose="document-kv-v1-benchmark",
+            single_user_name=SINGLE_USER_NAME,
+        )
+    except RuntimeError as exc:
+        assert "legacy validator hook" in str(exc)
+    else:
+        raise AssertionError("expected legacy node-type validator monkeypatch to be observed")
+
+
+def test_legacy_databricks_job_direct_writer_respects_legacy_build_monkeypatch(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+
+    def fake_build(config):
+        assert config.plan_json_uri == "dbfs:/benchmarks/v1-plan.json"
+        return {"ok": True, "source": "legacy-direct-writer-hook"}
+
+    monkeypatch.setattr(legacy_databricks_job, "build_databricks_run_submit_payload", fake_build)
+
+    legacy_databricks_job.write_databricks_run_submit_json(
+        legacy_databricks_job.DatabricksBenchmarkJobConfig(
+            plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+            runner_python_file="dbfs:/benchmarks/run_plan.py",
+            single_user_name=SINGLE_USER_NAME,
+        ),
+        output_path,
+    )
+
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "ok": True,
+        "source": "legacy-direct-writer-hook",
+    }
+
+
+def test_legacy_databricks_job_restores_document_hooks_after_error(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload.json"
+    original_public_build = public_databricks_job.build_databricks_run_submit_payload
+
+    def broken_build(config):
+        raise RuntimeError(f"boom for {config.plan_json_uri}")
+
+    monkeypatch.setattr(legacy_databricks_job, "build_databricks_run_submit_payload", broken_build)
+
+    exit_code = legacy_databricks_job.main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert public_databricks_job.build_databricks_run_submit_payload is original_public_build
+
+
+def test_legacy_databricks_job_module_execution_shows_help():
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "restaurant_kv_serving.databricks_job", "--help"],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert "Emit a Databricks runs/submit payload for a V1 AWS g5 benchmark." in result.stdout
+
+
+def test_legacy_databricks_job_reexports_document_owned_types():
+    assert issubclass(
+        legacy_databricks_job.DatabricksBenchmarkJobConfig,
+        public_databricks_job.DatabricksBenchmarkJobConfig,
+    )
+    assert issubclass(
+        legacy_databricks_job.DatabricksSingleNodeG5ClusterConfig,
+        public_databricks_job.DatabricksSingleNodeG5ClusterConfig,
+    )
+    assert (
+        public_databricks_job.DatabricksBenchmarkJobConfig.__module__
+        == "document_kv_cache.databricks_job"
+    )
+    assert (
+        legacy_databricks_job.DatabricksBenchmarkJobConfig.__module__
+        == "restaurant_kv_serving.databricks_job"
+    )
+    assert set(public_databricks_job.__all__) < set(legacy_databricks_job.__all__)
+
+
+def test_legacy_databricks_job_config_pickle_uses_honest_legacy_module():
+    config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    restored = pickle.loads(pickle.dumps(config))
+
+    assert type(restored) is legacy_databricks_job.DatabricksBenchmarkJobConfig
+    assert restored == config
+
+
+def test_legacy_databricks_job_config_keeps_slotted_layout():
+    config = legacy_databricks_job.DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    assert not hasattr(config, "__dict__")
+
+
+def test_legacy_databricks_job_keeps_previous_star_import_surface():
+    assert set(legacy_databricks_job.__all__) == {
+        "Any",
+        "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
+        "DEFAULT_AWS_G5_NODE_TYPE",
+        "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
+        "DEFAULT_DATABRICKS_RUN_NAME",
+        "DEFAULT_DATABRICKS_SPARK_VERSION",
+        "DEFAULT_DATABRICKS_TASK_KEY",
+        "DatabricksBenchmarkJobConfig",
+        "DatabricksSingleNodeG5ClusterConfig",
+        "Mapping",
+        "Path",
+        "RESERVED_SINGLE_NODE_G5_TAG_KEYS",
+        "RUNNER_SCRIPT",
+        "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
+        "Sequence",
+        "argparse",
+        "build_databricks_run_submit_payload",
+        "build_single_node_g5_cluster",
+        "dataclass",
+        "field",
+        "json",
+        "main",
+        "validate_aws_g5_node_type",
+        "write_databricks_run_submit_json",
+        "write_databricks_runner_script",
+    }
+
+
+def test_legacy_databricks_job_star_import_uses_previous_surface():
+    namespace: dict[str, object] = {}
+
+    exec("from restaurant_kv_serving.databricks_job import *", namespace)
+
+    assert {key for key in namespace if key != "__builtins__"} == set(legacy_databricks_job.__all__)
+    assert namespace["DatabricksBenchmarkJobConfig"] is legacy_databricks_job.DatabricksBenchmarkJobConfig
 
 
 def test_databricks_asset_bundle_template_matches_v1_g5_contract():

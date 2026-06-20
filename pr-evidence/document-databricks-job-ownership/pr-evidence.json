@@ -1,0 +1,43 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the Databricks benchmark job ownership inversion and found one document-root export leak: document_kv_cache root symbols still resolved through the legacy root. The root export map now redirects Databricks job symbols to document_kv_cache.databricks_job, tests cover document-root imports/star imports and legacy private-hook direct construction, and re-review approved the branch with no remaining findings.",
+  "issues": [
+    {
+      "resolution": "Added document-root export routing for Databricks job symbols, added root export assertions, and covered direct legacy _cluster_config_from_benchmark_job monkeypatch behavior.",
+      "severity": "P2",
+      "summary": "document_kv_cache root exports still returned legacy Databricks job classes and functions after the ownership inversion."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document Databricks benchmark job implementation ownership",
+    "legacy Databricks benchmark job compatibility wrapper",
+    "legacy module execution and helper monkeypatch migration hooks",
+    "public package compatibility tests",
+    "legacy package README migration note",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_job.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/__init__.py src/document_kv_cache/databricks_job.py src/restaurant_kv_serving/databricks_job.py tests/test_databricks_job.py tests/test_public_package.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "poetry check",
+    "poetry build",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review and re-review after resolving the document-root export finding"
+  ],
+  "what_changed": [
+    "Moved the Databricks V1 benchmark job implementation into document_kv_cache.databricks_job.",
+    "Routed document_kv_cache root Databricks job symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.databricks_job into a compatibility wrapper over the document module.",
+    "Preserved legacy module execution, direct writer monkeypatch behavior, public and private helper monkeypatch behavior, pickle support, slotted config layout, and the previous legacy star-import surface.",
+    "Recorded document ownership in public package tests and the legacy package README."
+  ],
+  "why": "The generalized package should own the reusable Databricks AWS g5 cluster helper and V1 benchmark job entry point. Keeping legacy compatibility makes this an incremental, behavior-preserving step toward retiring restaurant-specific implementation ownership."
+}

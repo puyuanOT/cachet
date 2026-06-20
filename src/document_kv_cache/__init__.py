@@ -59,6 +59,43 @@ _PUBLIC_SUBMODULES = frozenset(
         "workflow",
     }
 )
+_DOCUMENT_ROOT_EXPORTS = {
+    "DEFAULT_AWS_G5_NODE_TYPE": ("document_kv_cache.databricks_job", "DEFAULT_AWS_G5_NODE_TYPE"),
+    "DEFAULT_DATABRICKS_SPARK_VERSION": (
+        "document_kv_cache.databricks_job",
+        "DEFAULT_DATABRICKS_SPARK_VERSION",
+    ),
+    "DEFAULT_DATABRICKS_RUN_NAME": ("document_kv_cache.databricks_job", "DEFAULT_DATABRICKS_RUN_NAME"),
+    "DEFAULT_DATABRICKS_TASK_KEY": ("document_kv_cache.databricks_job", "DEFAULT_DATABRICKS_TASK_KEY"),
+    "DEFAULT_DATABRICKS_DATA_SECURITY_MODE": (
+        "document_kv_cache.databricks_job",
+        "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
+    ),
+    "DEDICATED_DATABRICKS_DATA_SECURITY_MODE": (
+        "document_kv_cache.databricks_job",
+        "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
+    ),
+    "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES": (
+        "document_kv_cache.databricks_job",
+        "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
+    ),
+    "DatabricksSingleNodeG5ClusterConfig": (
+        "document_kv_cache.databricks_job",
+        "DatabricksSingleNodeG5ClusterConfig",
+    ),
+    "DatabricksBenchmarkJobConfig": ("document_kv_cache.databricks_job", "DatabricksBenchmarkJobConfig"),
+    "validate_aws_g5_node_type": ("document_kv_cache.databricks_job", "validate_aws_g5_node_type"),
+    "build_single_node_g5_cluster": ("document_kv_cache.databricks_job", "build_single_node_g5_cluster"),
+    "build_databricks_run_submit_payload": (
+        "document_kv_cache.databricks_job",
+        "build_databricks_run_submit_payload",
+    ),
+    "write_databricks_run_submit_json": (
+        "document_kv_cache.databricks_job",
+        "write_databricks_run_submit_json",
+    ),
+    "write_databricks_runner_script": ("document_kv_cache.databricks_job", "write_databricks_runner_script"),
+}
 
 _legacy_package = import_module(_LEGACY_PACKAGE)
 __all__ = [
@@ -73,6 +110,11 @@ def __getattr__(name: str) -> Any:
         module = import_module(f"{__name__}.{name}")
         globals()[name] = module
         return module
+    if name in _DOCUMENT_ROOT_EXPORTS:
+        module_name, symbol_name = _DOCUMENT_ROOT_EXPORTS[name]
+        value = getattr(import_module(module_name), symbol_name)
+        globals()[name] = value
+        return value
     return getattr(_legacy_package, name)
 
 
