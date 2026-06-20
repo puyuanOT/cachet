@@ -770,6 +770,7 @@ def test_readme_native_probe_diagnostics_include_serving_environment_profile():
     compact_serving_handoff = " ".join(serving_handoff.split())
 
     assert "builtin_native_probe_factories_to_record()" in serving_handoff
+    assert "document-kv-native-probe-factories" in serving_handoff
     assert "fail closed" in compact_serving_handoff
     assert "pinned isolated serving-environment profile" in compact_serving_handoff
     assert "target engine versions and dependency constraints" in compact_serving_handoff

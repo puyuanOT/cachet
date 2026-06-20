@@ -16,9 +16,11 @@ from document_kv_cache.native_probe_factories import (
     builtin_native_probe_factory_path,
     inspect_builtin_native_probe_factories,
     inspect_builtin_native_probe_factory,
+    main,
     native_probe_factory_inspection_to_record,
     sglang_native_probe_factory,
     vllm_native_probe_factory,
+    write_builtin_native_probe_factories_record_json,
 )
 from restaurant_kv_serving.engine_adapters import ServingBackend
 from restaurant_kv_serving.engine_probe import EngineKVProbeFactoryContext
@@ -32,7 +34,9 @@ __all__ = [
     "builtin_native_probe_factory_path",
     "inspect_builtin_native_probe_factories",
     "inspect_builtin_native_probe_factory",
+    "main",
     "native_probe_factory_inspection_to_record",
     "sglang_native_probe_factory",
     "vllm_native_probe_factory",
+    "write_builtin_native_probe_factories_record_json",
 ]

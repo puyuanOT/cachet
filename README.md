@@ -422,7 +422,12 @@ block-manager adapters exist, but
 `builtin_native_probe_factories_to_record()` reports that status together with
 the pinned isolated serving-environment profile for each backend. Use that
 diagnostic record when preparing native adapter work so the target engine
-versions and dependency constraints stay tied to the probe entry points.
+versions and dependency constraints stay tied to the probe entry points:
+
+```bash
+document-kv-native-probe-factories \
+  --output-json native-probe-factories.json
+```
 
 `EngineAdapterRequest` records the target backend (`vllm` or `sglang`), payload
 mode (`merged` or `segmented`), expected external package, required injection

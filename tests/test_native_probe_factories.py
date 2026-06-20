@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from document_kv_cache.engine_probe import EngineKVProbeFactoryContext
@@ -12,9 +14,11 @@ from document_kv_cache.native_probe_factories import (
     builtin_native_probe_factory_path,
     inspect_builtin_native_probe_factories,
     inspect_builtin_native_probe_factory,
+    main,
     native_probe_factory_inspection_to_record,
     sglang_native_probe_factory,
     vllm_native_probe_factory,
+    write_builtin_native_probe_factories_record_json,
 )
 from document_kv_cache.serving_env import (
     SGLANG_SERVING_ENVIRONMENT_PROFILE,
@@ -86,6 +90,23 @@ def test_builtin_native_probe_factories_record_includes_required_backends():
         "vllm": serving_environment_profile_to_record(VLLM_SERVING_ENVIRONMENT_PROFILE),
         "sglang": serving_environment_profile_to_record(SGLANG_SERVING_ENVIRONMENT_PROFILE),
     }
+
+
+def test_builtin_native_probe_factories_record_writer_and_cli(tmp_path, capsys):
+    output_path = tmp_path / "native-probe-factories.json"
+
+    write_builtin_native_probe_factories_record_json(output_path)
+    written = json.loads(output_path.read_text(encoding="utf-8"))
+    assert written == builtin_native_probe_factories_to_record()
+
+    assert main([]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed == written
+
+    cli_output_path = tmp_path / "cli" / "native-probe-factories.json"
+    assert main(["--output-json", str(cli_output_path)]) == 0
+    assert capsys.readouterr().out == ""
+    assert json.loads(cli_output_path.read_text(encoding="utf-8")) == written
 
 
 def test_reserved_factories_reject_backend_mismatch_before_environment_probe():
