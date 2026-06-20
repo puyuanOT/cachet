@@ -681,6 +681,9 @@ and `--release-engine-actions-json`.
 `--engine-probe-targets-output-json` writes a
 `document_kv.engine_probe_targets.v1` sidecar whose `probes` array is directly
 accepted by `document_kv_cache.databricks_engine_probe_job --backend-config-json`.
+The Databricks engine-probe job treats this target file as a closed schema:
+unsupported top-level target keys or per-probe keys are rejected before a
+run-submit payload is produced.
 Use `--engine-probe-targets-release-safe` for release jobs; it requires exactly
 one native vLLM probe and one native SGLang probe and rejects debug-only planned
 probe settings before writing the target file. Release-safe targets also carry

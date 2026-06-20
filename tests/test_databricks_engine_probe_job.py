@@ -287,6 +287,53 @@ def test_read_databricks_engine_probe_targets_json_rejects_non_boolean_debug_fla
         read_databricks_engine_probe_targets_json(path)
 
 
+def test_read_databricks_engine_probe_targets_json_rejects_unsupported_envelope_keys(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "document_kv.engine_probe_targets.v1",
+                "schema_version": 1,
+                "release_safe": False,
+                "debug": {"accepted": False},
+                "probes": [
+                    {
+                        "backend": "vllm",
+                        "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                        "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                        "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"engine probe targets record has unsupported keys: \['debug'\]"):
+        read_databricks_engine_probe_targets_json(path)
+
+
+def test_read_databricks_engine_probe_targets_json_rejects_unsupported_probe_keys(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    "debug": {"accepted": False},
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"backend config probe 0 has unsupported keys: \['debug'\]"):
+        read_databricks_engine_probe_targets_json(path)
+
+
 def test_read_databricks_engine_probe_targets_json_honors_release_safe_envelope(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
