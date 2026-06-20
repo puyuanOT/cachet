@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5/high approved the engine protocol ownership move with no findings; review covered root export routing, legacy wrapper star surface, dataclass/enum identity, validation implementation, packaging risk, targeted import/star/pickle checks, and AST comparison checks.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/engine_protocol.py",
+    "src/restaurant_kv_serving/engine_protocol.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "import smoke -> public/legacy KVLayout identity, root exports, and legacy star-import helper attributes passed",
+    "poetry run pytest -> 630 passed",
+    "poetry check -> All set!",
+    "git diff --check -> passed",
+    "secret scan -> only expected fake LangSmith fixture patterns in tests/test_project_governance.py",
+    "poetry build -> built sdist and wheel"
+  ],
+  "what_changed": [
+    "Moved engine protocol implementation into document_kv_cache.engine_protocol.",
+    "Replaced restaurant_kv_serving.engine_protocol with a compatibility wrapper over document_kv_cache.engine_protocol.",
+    "Added document root exports and public-surface tests for engine protocol symbols."
+  ],
+  "why": "Continue the package ownership migration from restaurant-specific modules to the document-generic namespace without breaking legacy imports."
+}

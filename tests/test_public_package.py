@@ -119,9 +119,15 @@ def test_public_document_package_reexports_core_api():
         evaluate_pr_evidence_file,
         evaluate_release_evidence,
         inspect_release_evidence_input_files,
+        dtype_byte_width,
         kv_storage_layout_from_value,
         model_profile_definition_from_record,
         model_profile_definition_to_record,
+        DTYPE_BYTE_WIDTHS,
+        AttentionMechanism,
+        KVCacheHandle,
+        KVLayout,
+        KVSegment,
         release_bundle_to_record,
         pr_evidence_validation_to_record,
         pr_evidence_to_record,
@@ -146,6 +152,7 @@ def test_public_document_package_reexports_core_api():
         databricks_job,
         databricks_runs,
         engine,
+        engine_protocol,
         engine_probe,
         materializer,
         service,
@@ -215,6 +222,11 @@ def test_public_document_package_reexports_core_api():
     assert EngineReadyRequest is engine.EngineReadyRequest
     assert EngineReadyRequest is restaurant_kv_serving.EngineReadyRequest
     assert EngineReadyRequest.__module__ == "document_kv_cache.engine"
+    assert DTYPE_BYTE_WIDTHS is engine_protocol.DTYPE_BYTE_WIDTHS
+    assert DTYPE_BYTE_WIDTHS is restaurant_kv_serving.DTYPE_BYTE_WIDTHS
+    assert AttentionMechanism is engine_protocol.AttentionMechanism
+    assert AttentionMechanism is restaurant_kv_serving.AttentionMechanism
+    assert AttentionMechanism.__module__ == "document_kv_cache.engine_protocol"
     assert EngineProbePlanConfig is restaurant_kv_serving.EngineProbePlanConfig
     assert EngineKVProbeConfig is engine_probe.EngineKVProbeConfig
     assert issubclass(restaurant_kv_serving.EngineKVProbeConfig, engine_probe.EngineKVProbeConfig)
@@ -224,8 +236,24 @@ def test_public_document_package_reexports_core_api():
     assert KVCacheKey is restaurant_kv_serving.KVCacheKey
     assert KVMaterializer is materializer.KVMaterializer
     assert KVMaterializer is restaurant_kv_serving.KVMaterializer
+    assert KVCacheHandle is engine_protocol.KVCacheHandle
+    assert KVCacheHandle is restaurant_kv_serving.KVCacheHandle
+    assert KVCacheHandle.__module__ == "document_kv_cache.engine_protocol"
+    assert KVLayout is engine_protocol.KVLayout
+    assert KVLayout is restaurant_kv_serving.KVLayout
+    assert KVLayout.__module__ == "document_kv_cache.engine_protocol"
+    assert KVSegment is engine_protocol.KVSegment
+    assert KVSegment is restaurant_kv_serving.KVSegment
+    assert KVSegment.__module__ == "document_kv_cache.engine_protocol"
+    assert KVStorageLayout is engine_protocol.KVStorageLayout
     assert KVStorageLayout is restaurant_kv_serving.KVStorageLayout
+    assert KVStorageLayout.__module__ == "document_kv_cache.engine_protocol"
+    assert dtype_byte_width is engine_protocol.dtype_byte_width
+    assert dtype_byte_width is restaurant_kv_serving.dtype_byte_width
+    assert dtype_byte_width.__module__ == "document_kv_cache.engine_protocol"
+    assert kv_storage_layout_from_value is engine_protocol.kv_storage_layout_from_value
     assert kv_storage_layout_from_value is restaurant_kv_serving.kv_storage_layout_from_value
+    assert kv_storage_layout_from_value.__module__ == "document_kv_cache.engine_protocol"
     assert ManifestStore is restaurant_kv_serving.ManifestStore
     assert MaterializedKV is materializer.MaterializedKV
     assert MaterializedKV is restaurant_kv_serving.MaterializedKV
@@ -702,6 +730,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     admission = importlib.import_module("document_kv_cache.admission")
     cache = importlib.import_module("document_kv_cache.cache")
     engine = importlib.import_module("document_kv_cache.engine")
+    engine_protocol = importlib.import_module("document_kv_cache.engine_protocol")
     engine_adapters = importlib.import_module("document_kv_cache.engine_adapters")
     kvpack = importlib.import_module("document_kv_cache.kvpack")
     manifest = importlib.import_module("document_kv_cache.manifest")
@@ -721,6 +750,25 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert admission.PreparedRequest.__module__ == "document_kv_cache.admission"
     assert restaurant_kv_serving.AdmissionQueue is admission.AdmissionQueue
     assert restaurant_kv_serving.PreparedRequest is admission.PreparedRequest
+    assert engine_protocol.__all__ == [
+        "DTYPE_BYTE_WIDTHS",
+        "AttentionMechanism",
+        "KVStorageLayout",
+        "dtype_byte_width",
+        "kv_storage_layout_from_value",
+        "KVLayout",
+        "KVSegment",
+        "KVCacheHandle",
+    ]
+    legacy_engine_protocol = importlib.import_module("restaurant_kv_serving.engine_protocol")
+    assert engine_protocol.AttentionMechanism.__module__ == "document_kv_cache.engine_protocol"
+    assert engine_protocol.KVStorageLayout.__module__ == "document_kv_cache.engine_protocol"
+    assert engine_protocol.KVLayout.__module__ == "document_kv_cache.engine_protocol"
+    assert engine_protocol.KVSegment.__module__ == "document_kv_cache.engine_protocol"
+    assert engine_protocol.KVCacheHandle.__module__ == "document_kv_cache.engine_protocol"
+    assert legacy_engine_protocol.KVLayout is engine_protocol.KVLayout
+    assert legacy_engine_protocol.KVStorageLayout is engine_protocol.KVStorageLayout
+    assert legacy_engine_protocol.kv_storage_layout_from_value is engine_protocol.kv_storage_layout_from_value
     assert engine.__all__ == [
         "EngineReadyRequest",
         "ServingEngineConnector",
@@ -862,6 +910,14 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     exec("from document_kv_cache import *", root_star_namespace)
     assert root_star_namespace["AdmissionQueue"] is admission.AdmissionQueue
     assert root_star_namespace["PreparedRequest"] is admission.PreparedRequest
+    assert root_star_namespace["AttentionMechanism"] is engine_protocol.AttentionMechanism
+    assert root_star_namespace["KVStorageLayout"] is engine_protocol.KVStorageLayout
+    assert root_star_namespace["KVLayout"] is engine_protocol.KVLayout
+    assert root_star_namespace["KVSegment"] is engine_protocol.KVSegment
+    assert root_star_namespace["KVCacheHandle"] is engine_protocol.KVCacheHandle
+    assert root_star_namespace["DTYPE_BYTE_WIDTHS"] is engine_protocol.DTYPE_BYTE_WIDTHS
+    assert root_star_namespace["dtype_byte_width"] is engine_protocol.dtype_byte_width
+    assert root_star_namespace["kv_storage_layout_from_value"] is engine_protocol.kv_storage_layout_from_value
     assert root_star_namespace["DiskRangeReader"] is storage.DiskRangeReader
     assert root_star_namespace["MemoryRangeReader"] is storage.MemoryRangeReader
     assert root_star_namespace["CacheTier"] is cache.CacheTier
