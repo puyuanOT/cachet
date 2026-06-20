@@ -1,6 +1,7 @@
-import importlib
 import copy
+import importlib
 import json
+import math
 import pickle
 from dataclasses import MISSING, asdict, fields, replace
 
@@ -580,6 +581,10 @@ def test_materialized_kv_validates_payload_length_and_offsets(tmp_path):
         MaterializedKV(plan=plan, payload=b"abcde", segment_byte_offsets=(False, 3), materialization_seconds=0.0)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="materialization_seconds"):
         MaterializedKV(plan=plan, payload=b"abcde", segment_byte_offsets=(0, 3), materialization_seconds=-0.1)
+    with pytest.raises(ValueError, match="materialization_seconds must be finite"):
+        MaterializedKV(plan=plan, payload=b"abcde", segment_byte_offsets=(0, 3), materialization_seconds=math.nan)
+    with pytest.raises(ValueError, match="materialization_seconds must be finite"):
+        MaterializedKV(plan=plan, payload=b"abcde", segment_byte_offsets=(0, 3), materialization_seconds=math.inf)
     with pytest.raises(TypeError, match="materialization_seconds"):
         MaterializedKV(plan=plan, payload=b"abcde", segment_byte_offsets=(0, 3), materialization_seconds=True)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="segment_tiers count"):
@@ -613,6 +618,14 @@ def test_segmented_materialized_kv_validates_payload_lengths_and_totals(tmp_path
 
     assert segmented.total_bytes == 5
     assert segmented.segment_tiers == (CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE)
+    with pytest.raises(ValueError, match="materialization_seconds must be finite"):
+        SegmentedMaterializedKV(
+            plan=plan,
+            payloads=(b"abc", b"de"),
+            segment_byte_offsets=(0, 3),
+            total_bytes=5,
+            materialization_seconds=math.inf,
+        )
     with pytest.raises(ValueError, match="payload count"):
         SegmentedMaterializedKV(
             plan=plan,
