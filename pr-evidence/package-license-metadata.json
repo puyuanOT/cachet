@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the Apache-2.0 metadata, README, LICENSE, and release-bundle wheel validation with no blocking findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+    "src/document_kv_cache/release_bundle.py",
+    "tests/test_project_governance.py",
+    "tests/test_public_package.py",
+    "tests/test_release_bundle.py"
+  ],
+  "verification": [
+    "poetry check -> All set",
+    "rm -rf dist && poetry build -q; wheel metadata includes License-Expression: Apache-2.0, License-File: LICENSE, Apache classifier, and .dist-info/licenses/LICENSE",
+    "poetry run pytest -q tests/test_project_governance.py tests/test_public_package.py tests/test_release_bundle.py -> 77 passed",
+    "poetry run pytest -q -> 772 passed",
+    "git diff --check -> clean"
+  ],
+  "what_changed": [
+    "Added Apache-2.0 license metadata and root LICENSE for the open-source package.",
+    "Documented the License section in README and pinned governance tests for pyproject license metadata.",
+    "Extended release-bundle wheel validation to require Apache-2.0 license metadata and bundled wheel license file."
+  ],
+  "why": "The project goal requires an open-source Python package; release artifacts should carry explicit license metadata and fail closed if tested wheels omit it."
+}
