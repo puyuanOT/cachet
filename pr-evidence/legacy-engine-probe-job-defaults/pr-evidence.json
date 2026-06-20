@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that matrix target coercion still referenced the mutable public document target class; the wrapper now checks stable target bases and a regression test covers valid contaminated matrix targets plus invalid object rejection. Final re-review reported no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/databricks_engine_probe_job.py",
+    "tests/test_databricks_engine_probe_job.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_engine_probe_job.py",
+    "poetry run pytest -q",
+    "git diff --check",
+    "poetry check && poetry build",
+    "credential-like scan over changed files",
+    "GPT-5.5 review completed; P1 target coercion finding fixed and re-review approved"
+  ],
+  "what_changed": [
+    "Loaded pristine document_kv_cache.databricks_engine_probe_job defaults from source for the legacy restaurant_kv_serving compatibility wrapper.",
+    "Moved engine-probe legacy config classes and constants onto source-default fallbacks when public document symbols are replaced before import.",
+    "Kept matrix probe target coercion on stable legacy/source bases instead of the mutable public document class."
+  ],
+  "why": "The legacy package boundary should remain behavior-compatible even when tests or downstream integrations monkeypatch the new document namespace before importing the old restaurant namespace."
+}
