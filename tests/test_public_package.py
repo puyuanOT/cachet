@@ -751,7 +751,9 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert restaurant_kv_serving.DiskRangeReader.__module__ == "restaurant_kv_serving.storage"
     assert issubclass(restaurant_kv_serving.DiskRangeReader, storage.DiskRangeReader)
     assert release_bundle.ReleaseBundle is restaurant_kv_serving.ReleaseBundle
+    assert release_bundle.ReleaseBundle.__module__ == "document_kv_cache.release_bundle"
     assert release_bundle.build_release_bundle is restaurant_kv_serving.build_release_bundle
+    assert release_bundle.build_release_bundle.__module__ == "document_kv_cache.release_bundle"
     assert release_evidence.RELEASE_EVIDENCE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_EVIDENCE_ARTIFACT_ROLES
     assert release_evidence.ReleaseEvidenceArtifactSource is restaurant_kv_serving.ReleaseEvidenceArtifactSource
     assert release_evidence.ReleaseEvidenceArtifactSource.__module__ == "document_kv_cache.release_evidence"
@@ -886,6 +888,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     planner = importlib.import_module("document_kv_cache.planner")
     openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
+    release_bundle = importlib.import_module("document_kv_cache.release_bundle")
     release_evidence = importlib.import_module("document_kv_cache.release_evidence")
     serving_env = importlib.import_module("document_kv_cache.serving_env")
     storage = importlib.import_module("document_kv_cache.storage")
@@ -1009,6 +1012,27 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert not hasattr(legacy_storage_benchmark, "__all__")
     assert storage_benchmark.run_storage_benchmark.__module__ == "document_kv_cache.storage_benchmark"
     assert legacy_storage_benchmark.run_storage_benchmark.__module__ == "restaurant_kv_serving.storage_benchmark"
+    assert release_bundle.__all__ == [
+        "RELEASE_BUNDLE_RECORD_TYPE",
+        "RELEASE_BUNDLE_MANIFEST_FILENAME",
+        "RELEASE_BUNDLE_ARTIFACT_ROLES",
+        "ReleaseBundleArtifact",
+        "ReleaseBundle",
+        "build_release_bundle",
+        "release_bundle_to_record",
+        "write_release_bundle_manifest_json",
+        "main",
+    ]
+    legacy_release_bundle = importlib.import_module("restaurant_kv_serving.release_bundle")
+    release_bundle_legacy_star_namespace: dict[str, object] = {}
+    exec("from restaurant_kv_serving.release_bundle import *", release_bundle_legacy_star_namespace)
+    assert not hasattr(legacy_release_bundle, "__all__")
+    assert "RELEASE_BUNDLE_PACKAGE_NAME" not in release_bundle.__all__
+    assert release_bundle_legacy_star_namespace["RELEASE_BUNDLE_PACKAGE_NAME"] == "document-kv-cache"
+    assert release_bundle.ReleaseBundle.__module__ == "document_kv_cache.release_bundle"
+    assert legacy_release_bundle.ReleaseBundle is release_bundle.ReleaseBundle
+    assert release_bundle.main.__module__ == "document_kv_cache.release_bundle"
+    assert legacy_release_bundle.main.__module__ == "restaurant_kv_serving.release_bundle"
     assert release_evidence.__all__ == [
         "RELEASE_EVIDENCE_RECORD_TYPE",
         "RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE",
