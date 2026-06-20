@@ -399,6 +399,7 @@ class BenchmarkPlanConfig:
             raise ValueError("release_evidence requires the planned storage_benchmark to use release readers")
         if self.release_bundle is not None and self.release_evidence is None:
             raise ValueError("release_bundle requires release_evidence")
+        _validate_strict_v1_release_bundle_plan(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -929,6 +930,33 @@ def _validate_release_bundle_repository_hygiene_path(config: BenchmarkPlanConfig
         generated_path=config.repository_hygiene_output_json,
         explicit_path=bundle_config.repository_hygiene_json,
     )
+
+
+def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None:
+    bundle_config = config.release_bundle
+    if bundle_config is None or not bundle_config.require_complete_v1:
+        return
+
+    missing = []
+    if _release_bundle_preflight_json(config) is None:
+        missing.append("preflight sidecar")
+    if not bundle_config.plan_execution_jsons:
+        missing.append("benchmark plan execution sidecar")
+    if not bundle_config.databricks_run_status_jsons:
+        missing.append("Databricks run-status sidecar")
+    if bundle_config.package_wheel is None:
+        missing.append("tested package wheel")
+    if not bundle_config.pr_evidence_jsons:
+        missing.append("PR evidence sidecar")
+    if _release_bundle_github_governance_json(config) is None:
+        missing.append("GitHub governance sidecar")
+    if _release_bundle_repository_hygiene_json(config) is None:
+        missing.append("repository hygiene sidecar")
+    if not _release_bundle_native_probe_factories_jsons(config):
+        missing.append("native probe factory diagnostics sidecar")
+
+    if missing:
+        raise ValueError("strict V1 release bundle plans require " + ", ".join(missing))
 
 
 def _validate_release_bundle_single_sidecar_path(
