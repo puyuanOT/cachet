@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util as _importlib_util
 import json
+import sys as _sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -63,7 +65,109 @@ __all__ += [
 ]
 
 
-class DatabricksStorageBenchmarkJobConfig(_document_module.DatabricksStorageBenchmarkJobConfig):
+def _load_document_defaults_module():
+    module_path = Path(_document_module.__file__)
+    module_name = "_restaurant_kv_serving_databricks_storage_benchmark_job_document_defaults"
+    spec = _importlib_util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load document databricks_storage_benchmark_job defaults from {module_path}")
+    module = _importlib_util.module_from_spec(spec)
+    _sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_document_defaults_module = _load_document_defaults_module()
+_DOCUMENT_DEFAULTS = {
+    name: value
+    for name, value in vars(_document_defaults_module).items()
+    if not name.startswith("__")
+}
+_PUBLIC_CONSTANT_NAMES = frozenset(
+    {
+        "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME",
+        "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY",
+        "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE",
+        "STORAGE_BENCHMARK_RUNNER_SCRIPT",
+    }
+)
+
+
+def _is_pristine_public_class(name: str) -> bool:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    return (
+        isinstance(live_value, type)
+        and live_value.__module__ == _document_module.__name__
+        and live_value.__qualname__ == default_value.__qualname__
+        and _class_fingerprint(live_value) == _class_fingerprint(default_value)
+    )
+
+
+def _class_fingerprint(value: type) -> tuple[tuple[str, Any], ...]:
+    return tuple(
+        (name, _class_attribute_fingerprint(name, attribute))
+        for name, attribute in sorted(vars(value).items())
+        if name not in {"__doc__", "__module__"}
+    )
+
+
+def _class_attribute_fingerprint(name: str, value: Any) -> Any:
+    if name == "__dataclass_fields__":
+        return _dataclass_field_fingerprint(value)
+    if name == "__dataclass_params__":
+        return repr(value)
+    if hasattr(value, "__objclass__") and hasattr(value, "__name__"):
+        return ("descriptor", type(value).__qualname__, value.__name__)
+    if isinstance(value, dict):
+        return tuple(sorted(value.items()))
+    function_fingerprint = _function_fingerprint(value)
+    if function_fingerprint is not None:
+        return ("function", function_fingerprint)
+    return value
+
+
+def _function_fingerprint(value: Any) -> tuple[Any, ...] | None:
+    code = getattr(value, "__code__", None)
+    if code is None:
+        return None
+    return (
+        code.co_argcount,
+        code.co_kwonlyargcount,
+        code.co_posonlyargcount,
+        code.co_names,
+        code.co_varnames,
+        code.co_consts,
+        code.co_code,
+        getattr(value, "__defaults__", None),
+        getattr(value, "__kwdefaults__", None),
+    )
+
+
+def _dataclass_field_fingerprint(value: Mapping[str, Any]) -> tuple[tuple[str, Any, Any], ...]:
+    return tuple(
+        (name, field.default, field.default_factory)
+        for name, field in value.items()
+    )
+
+
+def _public_class_base(name: str):
+    if _is_pristine_public_class(name):
+        return getattr(_document_module, name)
+    return _DOCUMENT_DEFAULTS[name]
+
+
+def _public_constant_default(name: str) -> Any:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    return live_value if live_value == default_value else default_value
+
+
+for _name in _PUBLIC_CONSTANT_NAMES:
+    globals()[_name] = _public_constant_default(_name)
+
+
+class DatabricksStorageBenchmarkJobConfig(_public_class_base("DatabricksStorageBenchmarkJobConfig")):
     __slots__ = ()
 
     def __post_init__(self) -> None:
@@ -142,11 +246,6 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "write_databricks_storage_benchmark_runner_script": write_databricks_storage_benchmark_runner_script,
     "main": main,
 }
-_DOCUMENT_DEFAULTS = {
-    name: value
-    for name, value in vars(_document_module).items()
-    if not name.startswith("__")
-}
 _PATCH_LOCK = RLock()
 _LEGACY_PATCH_NAMES = (*__all__, "_cluster_config_from_storage_benchmark_job")
 
@@ -179,7 +278,7 @@ def _isolated_document_namespace() -> dict[str, Any]:
 
 
 def _is_document_function(value: Any) -> bool:
-    return isinstance(value, FunctionType) and value.__globals__ is vars(_document_module)
+    return isinstance(value, FunctionType) and value.__globals__ is vars(_document_defaults_module)
 
 
 def _clone_document_function(function: FunctionType, namespace: dict[str, Any]) -> FunctionType:

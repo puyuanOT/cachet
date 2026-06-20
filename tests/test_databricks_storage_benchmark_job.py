@@ -591,6 +591,124 @@ def test_legacy_storage_benchmark_job_config_respects_legacy_storage_config_monk
         raise AssertionError("expected legacy StorageBenchmarkConfig monkeypatch to be observed")
 
 
+def test_legacy_storage_benchmark_job_import_order_does_not_capture_public_monkeypatch(tmp_path):
+    script = f"""
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, {str(REPO_ROOT / "src")!r})
+
+import document_kv_cache.databricks_storage_benchmark_job as public_storage_job
+
+
+class FakeStorageBenchmarkJobConfig:
+    pass
+
+
+def fake_uc_root_check(value):
+    raise AssertionError("legacy imported patched public UC root check")
+
+
+def fake_storage_config(**kwargs):
+    raise AssertionError("legacy imported patched public storage config")
+
+
+def fake_runner_writer(path):
+    Path(path).write_text("# unexpected public hook\\n", encoding="utf-8")
+
+
+public_storage_job.DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME = "public-patched-run"
+public_storage_job.DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY = "public_patched_task"
+public_storage_job.STORAGE_BENCHMARK_RUNNER_SCRIPT = "# unexpected public default\\n"
+public_storage_job.DatabricksStorageBenchmarkJobConfig = FakeStorageBenchmarkJobConfig
+public_storage_job.is_real_uc_volume_root = fake_uc_root_check
+public_storage_job.StorageBenchmarkConfig = fake_storage_config
+public_storage_job.write_databricks_storage_benchmark_runner_script = fake_runner_writer
+
+import restaurant_kv_serving.databricks_storage_benchmark_job as legacy_storage_job
+
+assert not issubclass(legacy_storage_job.DatabricksStorageBenchmarkJobConfig, FakeStorageBenchmarkJobConfig)
+assert legacy_storage_job.DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME == "document-kv-storage-benchmark"
+assert legacy_storage_job.DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY == "document_kv_storage_benchmark"
+
+config = legacy_storage_job.DatabricksStorageBenchmarkJobConfig(
+    workspace_dir="/local_disk0/document-kv-storage-benchmark",
+    output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
+    runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
+    uc_volume_root="/Volumes/catalog/schema/volume/storage",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+payload = legacy_storage_job.build_databricks_storage_benchmark_run_submit_payload(config)
+assert payload["run_name"] == "document-kv-storage-benchmark"
+assert payload["tasks"][0]["task_key"] == "document_kv_storage_benchmark"
+
+runner_path = Path({str(tmp_path / "storage_import_order_runner.py")!r})
+legacy_storage_job.write_databricks_storage_benchmark_runner_script(runner_path)
+runner_text = runner_path.read_text(encoding="utf-8")
+assert "# unexpected public hook" not in runner_text
+assert "# unexpected public default" not in runner_text
+assert "document_kv_cache.storage_benchmark" in runner_text
+
+print(json.dumps({{"ok": True}}, sort_keys=True))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"ok": True}
+
+
+def test_legacy_storage_benchmark_job_import_order_ignores_in_place_public_class_mutation():
+    script = f"""
+import json
+import sys
+
+sys.path.insert(0, {str(REPO_ROOT / "src")!r})
+
+import document_kv_cache.databricks_storage_benchmark_job as public_storage_job
+
+
+def fake_public_config_init(self, *args, **kwargs):
+    raise AssertionError("legacy inherited patched public config __init__")
+
+
+public_storage_job.DatabricksStorageBenchmarkJobConfig.__init__ = fake_public_config_init
+public_storage_job.DatabricksStorageBenchmarkJobConfig.__setattr__ = object.__setattr__
+
+import restaurant_kv_serving.databricks_storage_benchmark_job as legacy_storage_job
+
+assert not issubclass(
+    legacy_storage_job.DatabricksStorageBenchmarkJobConfig,
+    public_storage_job.DatabricksStorageBenchmarkJobConfig,
+)
+
+config = legacy_storage_job.DatabricksStorageBenchmarkJobConfig(
+    workspace_dir="/local_disk0/document-kv-storage-benchmark",
+    output_json="/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
+    runner_python_file="dbfs:/benchmarks/run_storage_benchmark.py",
+    uc_volume_root="/Volumes/catalog/schema/volume/storage",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+assert config.run_name == "document-kv-storage-benchmark"
+
+print(json.dumps({{"ok": True}}, sort_keys=True))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"ok": True}
+
+
 def test_databricks_storage_benchmark_config_rejects_non_uc_roots_before_job_submission():
     try:
         DatabricksStorageBenchmarkJobConfig(
