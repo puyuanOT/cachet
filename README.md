@@ -497,7 +497,9 @@ Future Qwen3.5, MiniMax, or adapter-trained KV Packet integrations should add a
 profile first, then implement a generator or engine adapter against the same
 layout contract. Use a caller-owned `ModelProfileRegistry` for profiles that are
 not part of the V1 built-ins, or ship a portable `ModelProfileDefinition` JSON
-artifact when the profile belongs to an external model bundle:
+artifact when the profile belongs to an external model bundle. The example below
+uses a schematic MQA-style future profile; real model bundles should replace the
+illustrative geometry with measured values from the target model:
 
 ```python
 from document_kv_cache import (
@@ -507,25 +509,27 @@ from document_kv_cache import (
     write_model_profile_definition_json,
 )
 
-future_profile = KVModelProfile(
-    model_id="future-model:4b",
-    architecture="FutureForCausalLM",
-    num_layers=32,
+future_mqa_profile = KVModelProfile(
+    model_id="future-mqa:4b",
+    architecture="FutureMQAForCausalLM",
+    num_layers=28,
     num_query_heads=32,
-    num_kv_heads=4,
+    num_kv_heads=1,
     head_size=128,
     max_context_tokens=65536,
-    default_layout_version="future-v1",
+    default_layout_version="future-mqa-v1",
+    metadata={"attention": "mqa", "status": "future-extension"},
 )
-registry = default_model_profile_registry().with_profile(
-    future_profile,
-    aliases=("Provider/Future-4B",),
+definition = ModelProfileDefinition(
+    profile=future_mqa_profile,
+    aliases=("Provider/Future-MQA-4B",),
 )
-layout = registry.layout_for_model("Provider/Future-4B", dtype="int8")
+registry = default_model_profile_registry().with_definition(definition)
+layout = registry.layout_for_model("Provider/Future-MQA-4B", dtype="int8")
 
 write_model_profile_definition_json(
-    ModelProfileDefinition(profile=future_profile, aliases=("Provider/Future-4B",)),
-    "future-model-profile.json",
+    definition,
+    "future-mqa-profile.json",
 )
 ```
 
