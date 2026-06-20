@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/harden-materialization-timing/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED - No findings; the shared validator preserves type/bool/non-negative semantics while rejecting non-finite floats for both materialized shapes, with no public surface expansion.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/materializer.py",
+        "tests/test_planner_materializer.py"
+      ],
+      "verification": [
+        "python -m py_compile src/document_kv_cache/materializer.py tests/test_planner_materializer.py -> passed",
+        "poetry run pytest tests/test_planner_materializer.py -q -> 37 passed",
+        "poetry run pytest tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py -q -> 82 passed",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 1128 passed",
+        "poetry build -> passed",
+        "poetry check && poetry install --dry-run -> passed / All set",
+        "poetry run python console script import check -> checked 50 console scripts"
+      ],
+      "what_changed": [
+        "Rejected non-finite materialized KV timing values."
+      ],
+      "why": "Materialization latency metadata feeds benchmark traces, serving diagnostics, and release evidence; NaN or infinite timings should fail at the artifact boundary instead of leaking into downstream reports."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

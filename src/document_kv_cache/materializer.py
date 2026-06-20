@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 
@@ -124,6 +125,8 @@ class KVMaterializer:
 def _validate_materialization_seconds(value: float) -> None:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise TypeError("materialization_seconds must be numeric")
+    if not math.isfinite(value):
+        raise ValueError("materialization_seconds must be finite")
     if value < 0:
         raise ValueError("materialization_seconds must be non-negative")
 
