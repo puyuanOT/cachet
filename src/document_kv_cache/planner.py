@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from document_kv_cache.manifest import ManifestStore
 from document_kv_cache.models import (
+    DEFAULT_STATIC_CHUNK_ID,
     DocumentKVRequest,
     KVCacheKey,
     MaterializationPlan,
@@ -33,6 +34,9 @@ class CachePlanner:
             byte_cursor += ref.byte_length
 
         chunk_types = chunk_types_for_request(request)
+        static_chunk_id = (
+            request.static_chunk_id if isinstance(request, DocumentKVRequest) else DEFAULT_STATIC_CHUNK_ID
+        )
 
         if request.task_prefix_id:
             add(
@@ -55,7 +59,7 @@ class CachePlanner:
                         prompt_template_version=request.prompt_template_version,
                         document_id=document_id,
                         chunk_type=chunk_types.static,
-                        chunk_id="static",
+                        chunk_id=str(static_chunk_id),
                     )
                 )
             for chunk_id in chunk_ids:

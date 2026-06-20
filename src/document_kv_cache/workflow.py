@@ -12,7 +12,13 @@ from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import ManifestStore
 from document_kv_cache.materializer import KVMaterializer, MaterializedKV, SegmentedMaterializedKV
-from document_kv_cache.models import CacheGenerationMethod, ChunkRef, DocumentChunkType, DocumentKVRequest
+from document_kv_cache.models import (
+    DEFAULT_STATIC_CHUNK_ID,
+    CacheGenerationMethod,
+    ChunkRef,
+    DocumentChunkType,
+    DocumentKVRequest,
+)
 from document_kv_cache.planner import CachePlanner
 from document_kv_cache.service import DocumentKVService
 
@@ -80,6 +86,7 @@ class SourceDocument:
         document_id: str,
         chunks: Mapping[str, str],
         static_text: str | None = None,
+        static_chunk_id: str = DEFAULT_STATIC_CHUNK_ID,
         metadata: Mapping[str, str] | None = None,
     ) -> "SourceDocument":
         if not isinstance(chunks, Mapping):
@@ -88,7 +95,7 @@ class SourceDocument:
         if static_text is not None:
             source_chunks.append(
                 SourceChunk(
-                    chunk_id="static",
+                    chunk_id=static_chunk_id,
                     text=static_text,
                     chunk_type=DocumentChunkType.DOCUMENT_STATIC,
                 )

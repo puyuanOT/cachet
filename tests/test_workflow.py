@@ -245,11 +245,12 @@ def test_source_document_from_texts_validates_helper_inputs():
     document = SourceDocument.from_texts(
         document_id="doc-a",
         static_text="static context",
+        static_chunk_id="profile",
         chunks={"p1": "body"},
         metadata={"title": "Doc A"},
     )
 
-    assert [chunk.chunk_id for chunk in document.chunks] == ["static", "p1"]
+    assert [chunk.chunk_id for chunk in document.chunks] == ["profile", "p1"]
     assert document.chunks[0].chunk_type == DocumentChunkType.DOCUMENT_STATIC
     assert document.metadata == {"title": "Doc A"}
 
@@ -257,6 +258,13 @@ def test_source_document_from_texts_validates_helper_inputs():
         SourceDocument.from_texts(document_id="doc-a", chunks=["body"])  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="metadata must be a mapping"):
         SourceDocument.from_texts(document_id="doc-a", chunks={"p1": "body"}, metadata=[])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="chunk_id must be a non-empty string"):
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            static_text="body",
+            static_chunk_id="",
+            chunks={"p1": "body"},
+        )
 
 
 def test_workflow_generates_registers_and_prepares_cache(tmp_path):
@@ -332,6 +340,7 @@ def test_workflow_generates_and_prepares_selected_document_chunks(tmp_path):
     document = SourceDocument.from_texts(
         document_id="doc-a",
         static_text="profile",
+        static_chunk_id="profile",
         chunks={"review-1": "first review", "review-2": "second review"},
     )
     request = DocumentKVRequest.for_document_chunks(
@@ -342,6 +351,7 @@ def test_workflow_generates_and_prepares_selected_document_chunks(tmp_path):
         prompt_template_version="v1",
         document_id="doc-a",
         chunk_ids=("review-2",),
+        static_chunk_id="profile",
     )
 
     result = workflow.generate_cache(
@@ -355,7 +365,7 @@ def test_workflow_generates_and_prepares_selected_document_chunks(tmp_path):
 
     assert result.chunk_count == 3
     assert request.document_chunks == {"doc-a": ("review-2",)}
-    assert b"doc-a:static:profile" in materialized.payload
+    assert b"doc-a:profile:profile" in materialized.payload
     assert b"doc-a:review-2:second review" in materialized.payload
     assert b"doc-a:review-1:first review" not in materialized.payload
 

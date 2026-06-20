@@ -1,0 +1,43 @@
+{
+  "files": {
+    "pr-evidence/document-static-chunk-id/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5/high review initially found a positional constructor ABI regression. Fixed by moving static_chunk_id after task_prefix_id and adding a positional compatibility regression test; re-review approved with no blockers.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/models.py",
+        "src/document_kv_cache/planner.py",
+        "src/document_kv_cache/workflow.py",
+        "src/document_kv_cache/__init__.py",
+        "src/restaurant_kv_serving/__init__.py",
+        "src/restaurant_kv_serving/models.py",
+        "tests/test_planner_materializer.py",
+        "tests/test_workflow.py",
+        "tests/test_public_package.py",
+        "README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_planner_materializer.py tests/test_workflow.py tests/test_public_package.py tests/test_project_governance.py -q (106 passed)",
+        "poetry run pytest -q (894 passed)",
+        "git diff --check",
+        "poetry check",
+        "poetry install --dry-run",
+        "poetry build"
+      ],
+      "what_changed": [
+        "Added DEFAULT_STATIC_CHUNK_ID and DocumentKVRequest.static_chunk_id for caller-owned document static context chunk names.",
+        "Updated CachePlanner to honor custom static_chunk_id for DocumentKVRequest while preserving legacy RestaurantKVRequest static chunk behavior.",
+        "Extended SourceDocument.from_texts(...) and README examples to use caller-owned static chunk ids.",
+        "Exported the static chunk default through document and legacy facades and added compatibility tests."
+      ],
+      "why": "Removes a hardcoded static chunk name from document planning so Cachet can support arbitrary textual document schemas without breaking existing callers."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

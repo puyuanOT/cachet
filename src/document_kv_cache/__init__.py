@@ -486,6 +486,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     "CacheGenerationMethod": ("document_kv_cache.models", "CacheGenerationMethod"),
     "DocumentChunkMap": ("document_kv_cache.models", "DocumentChunkMap"),
     "FrozenDocumentChunkMap": ("document_kv_cache.models", "FrozenDocumentChunkMap"),
+    "DEFAULT_STATIC_CHUNK_ID": ("document_kv_cache.models", "DEFAULT_STATIC_CHUNK_ID"),
     "CacheChunkType": ("document_kv_cache.models", "CacheChunkType"),
     "CacheChunkTypeSet": ("document_kv_cache.models", "CacheChunkTypeSet"),
     "DOCUMENT_CHUNK_TYPES": ("document_kv_cache.models", "DOCUMENT_CHUNK_TYPES"),

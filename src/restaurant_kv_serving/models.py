@@ -18,6 +18,7 @@ from typing import TypeAlias
 from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout_from_value
 from document_kv_cache.models import (
     DOCUMENT_CHUNK_TYPES,
+    DEFAULT_STATIC_CHUNK_ID,
     LEGACY_RESTAURANT_CHUNK_TYPES,
     CacheChunkType,
     CacheChunkTypeSet,
