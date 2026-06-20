@@ -460,6 +460,45 @@ def test_manifest_orders_mixed_legacy_and_document_aliases_deterministically(tmp
     ]
 
 
+def test_manifest_validates_refs_before_mutating_store(tmp_path):
+    ref = write_kvpack(
+        tmp_path / "validated-manifest.kvpack",
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"body", 4, "fp8", "v1")],
+        align_bytes=1,
+    )[0]
+    manifest = InMemoryManifestStore()
+
+    with pytest.raises(TypeError, match="refs entries"):
+        manifest.put_many([ref, object()])  # type: ignore[list-item]
+    with pytest.raises(TypeError, match="refs must be an iterable"):
+        InMemoryManifestStore("not-refs")  # type: ignore[arg-type]
+
+    assert manifest.keys_for_document("doc-a") == []
+
+
+def test_manifest_validates_and_normalizes_document_filters(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "filtered-manifest.kvpack",
+        [
+            PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_STATIC, "profile"), b"meta", 4, "fp8", "v1"),
+            PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"body", 4, "fp8", "v1"),
+        ],
+        align_bytes=1,
+    )
+    manifest = InMemoryManifestStore(refs)
+
+    assert manifest.keys_for_document("doc-a", "document_chunk") == [refs[1].key]
+    assert manifest.keys_for_restaurant("doc-a", "document_static") == [refs[0].key]
+    with pytest.raises(ValueError, match="document_id"):
+        manifest.keys_for_document("")
+    with pytest.raises(ValueError, match="document_id"):
+        manifest.keys_for_document("doc|a")
+    with pytest.raises(ValueError, match="chunk_type"):
+        manifest.keys_for_document("doc-a", "unknown_chunk")
+    with pytest.raises(TypeError, match="chunk_type"):
+        manifest.keys_for_document("doc-a", object())  # type: ignore[arg-type]
+
+
 def test_plan_static_then_selected_reviews_and_materialize(tmp_path):
     chunks = [
         PackChunk(make_key("r1", ChunkType.RESTAURANT_STATIC, "static"), b"menu:", 5, "fp8", "v1"),

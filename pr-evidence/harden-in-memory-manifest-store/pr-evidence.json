@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED: no blocking findings; transactional put_many validation, string chunk-type normalization, and invalid filter rejection align with public model invariants.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.manifest InMemoryManifestStore validation and planner/materializer manifest tests."
+  ],
+  "verification": [
+    "poetry run pytest tests/test_planner_materializer.py -q => 37 passed; git diff --check => clean; poetry run pytest tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py -q => 82 passed; poetry run pytest -q => 976 passed; poetry build && poetry check && poetry install --dry-run => succeeded."
+  ],
+  "what_changed": [
+    "Hardened InMemoryManifestStore validation for document manifests."
+  ],
+  "why": "The public Cachet manifest store is the source of truth for arbitrary document KV-cache materialization, so it should reject invalid refs and lookup filters before downstream planning or serving handoff."
+}
