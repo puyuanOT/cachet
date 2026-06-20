@@ -151,10 +151,13 @@ class CacheBuildConfig:
     prompt_template_version: str
     dtype: str
     layout_version: str
-    cache_method: CacheGenerationMethod = CacheGenerationMethod.VANILLA_PREFILL
+    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
     storage_layout: KVStorageLayout | str = KVStorageLayout.SEPARATE_KEY_VALUE
 
     def __post_init__(self) -> None:
+        for field_name in ("model_id", "lora_id", "prompt_template_version", "dtype", "layout_version"):
+            object.__setattr__(self, field_name, _non_empty_string(field_name, getattr(self, field_name)))
+        object.__setattr__(self, "cache_method", _cache_generation_method(self.cache_method))
         object.__setattr__(
             self,
             "storage_layout",
@@ -225,7 +228,7 @@ class CacheGenerationResult:
     chunk_count: int
     total_bytes: int
     training_artifacts: TrainingArtifacts | None = None
-    cache_method: CacheGenerationMethod = CacheGenerationMethod.VANILLA_PREFILL
+    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
 
     @property
     def adapter_ids(self) -> tuple[str, ...]:
@@ -499,7 +502,7 @@ class DocumentKVWorkflow:
             raise ValueError(f"Generated chunk does not match source/config ({details})")
 
 
-def _effective_cache_method(config: CacheBuildConfig, trainer: TrainingAdapter | None) -> CacheGenerationMethod:
+def _effective_cache_method(config: CacheBuildConfig, trainer: TrainingAdapter | None) -> CacheGenerationMethod | str:
     if trainer is not None and config.cache_method == CacheGenerationMethod.VANILLA_PREFILL:
         return CacheGenerationMethod.ADAPTER_TRAINED
     return config.cache_method
@@ -522,6 +525,16 @@ def _cache_method_value(cache_method: CacheGenerationMethod | str) -> str:
     if isinstance(cache_method, CacheGenerationMethod):
         return cache_method.value
     return str(cache_method)
+
+
+def _cache_generation_method(cache_method: CacheGenerationMethod | str) -> CacheGenerationMethod | str:
+    if isinstance(cache_method, CacheGenerationMethod):
+        return cache_method
+    cache_method_text = _non_empty_string("cache_method", cache_method)
+    try:
+        return CacheGenerationMethod(cache_method_text)
+    except ValueError:
+        return cache_method_text
 
 
 def _document_chunk_type(chunk_type: DocumentChunkType | str) -> DocumentChunkType:
