@@ -102,11 +102,12 @@ class RoutedRangeReader(_document_module.RoutedRangeReader):
             ref_group = tuple(ref for _, ref in indexed_refs)
             batch_reader = getattr(reader, "read_many", None)
             if callable(batch_reader):
-                payloads = batch_reader(ref_group)
+                payloads = _validated_batch_payloads(batch_reader(ref_group), expected_count=len(indexed_refs))
             else:
-                payloads = tuple(reader.read(ref) for ref in ref_group)
-            if len(payloads) != len(indexed_refs):
-                raise ValueError("RangeBatchReader.read_many returned the wrong number of payloads")
+                payloads = _validated_batch_payloads(
+                    tuple(reader.read(ref) for ref in ref_group),
+                    expected_count=len(indexed_refs),
+                )
             for (index, _), payload in zip(indexed_refs, payloads, strict=True):
                 outputs[index] = payload
         return tuple(_require_payload(payload, index) for index, payload in enumerate(outputs))
@@ -245,6 +246,19 @@ def _read_many_from_paths(
                 payload = handle.read(ref.byte_length)
                 payloads[index] = _validated_payload(ref, payload)
     return tuple(_require_payload(payload, index) for index, payload in enumerate(payloads))
+
+
+def _validated_batch_payloads(payloads: object, *, expected_count: int) -> tuple[bytes, ...]:
+    if isinstance(payloads, (bytes, bytearray, memoryview)) or not isinstance(payloads, Sequence):
+        raise TypeError("RangeBatchReader.read_many must return a sequence of bytes")
+    if len(payloads) != expected_count:
+        raise ValueError("RangeBatchReader.read_many returned the wrong number of payloads")
+    normalized_payloads: list[bytes] = []
+    for index, payload in enumerate(payloads):
+        if not isinstance(payload, bytes):
+            raise TypeError(f"RangeBatchReader.read_many payload {index} must be bytes")
+        normalized_payloads.append(payload)
+    return tuple(normalized_payloads)
 
 
 def _require_payload(payload: bytes | None, index: int) -> bytes:
