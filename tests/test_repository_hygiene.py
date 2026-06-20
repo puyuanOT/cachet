@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 from document_kv_cache.repository_hygiene import (
@@ -28,18 +29,33 @@ def test_no_generated_artifacts_are_tracked():
     assert violations == []
 
 
-def test_repository_hygiene_record_is_release_ready_for_current_repo():
+def test_repository_hygiene_record_uses_current_repository_policy():
     evidence = evaluate_repository_hygiene(REPO_ROOT)
     record = repository_hygiene_to_record(evidence)
 
-    assert record["ok"] is True
     assert record["record_type"] == "document_kv.repository_hygiene.v1"
     assert record["missing_gitignore_patterns"] == []
     assert record["forbidden_tracked_paths"] == []
     assert record["tracked_path_count"] > 0
     assert set(record["required_gitignore_patterns"]) == set(REQUIRED_GITIGNORE_PATTERNS)
     assert set(record["forbidden_tracked_artifact_patterns"]) == set(FORBIDDEN_TRACKED_ARTIFACT_PATTERNS)
-    assert record["issues"] == []
+
+
+def test_repository_hygiene_reports_dirty_tracked_paths_from_git(tmp_path):
+    _git(tmp_path, "init")
+    (tmp_path / ".gitignore").write_text("\n".join(REQUIRED_GITIGNORE_PATTERNS) + "\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("clean\n", encoding="utf-8")
+    _git(tmp_path, "add", ".gitignore", "README.md")
+    _git(tmp_path, "-c", "user.email=cachet@example.com", "-c", "user.name=Cachet CI", "commit", "-m", "init")
+
+    (tmp_path / "README.md").write_text("dirty\n", encoding="utf-8")
+
+    record = repository_hygiene_to_record(evaluate_repository_hygiene(tmp_path))
+
+    assert record["ok"] is False
+    assert record["dirty_tracked_paths"] == ["README.md"]
+    assert record["forbidden_tracked_paths"] == []
+    assert any(issue == "dirty tracked paths: README.md" for issue in record["issues"])
 
 
 def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_artifacts(tmp_path):
@@ -50,6 +66,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
             "dist/document_kv_cache-0.2.0-py3-none-any.whl",
             "src/document_kv_cache/__pycache__/cache.pyc",
         ),
+        dirty_tracked_paths=("README.md", "src/document_kv_cache/repository_hygiene.py"),
         gitignore_lines=(".venv/", "__pycache__/"),
     )
     record = repository_hygiene_to_record(evidence)
@@ -61,5 +78,14 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         "dist/document_kv_cache-0.2.0-py3-none-any.whl",
         "src/document_kv_cache/__pycache__/cache.pyc",
     ]
+    assert record["dirty_tracked_paths"] == [
+        "README.md",
+        "src/document_kv_cache/repository_hygiene.py",
+    ]
     assert any(issue.startswith("missing required .gitignore patterns:") for issue in record["issues"])
     assert any(issue.startswith("forbidden generated or secret-like tracked artifacts:") for issue in record["issues"])
+    assert any(issue.startswith("dirty tracked paths:") for issue in record["issues"])
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)

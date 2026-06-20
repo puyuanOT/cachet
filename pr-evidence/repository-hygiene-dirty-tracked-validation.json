@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/repository-hygiene-dirty-tracked.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found test stability and README completeness issues; both were fixed, re-reviewed, and approved.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "repository-hygiene",
+        "release-bundle",
+        "tests",
+        "docs"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_repository_hygiene.py tests/test_release_bundle.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry build",
+        "poetry install --dry-run",
+        "poetry install --dry-run --extras databricks --extras test",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check origin/main..HEAD"
+      ],
+      "what_changed": [
+        "Repository hygiene sidecars now record dirty tracked paths.",
+        "Release-bundle validation rejects repository hygiene sidecars unless dirty_tracked_paths is empty."
+      ],
+      "why": "Release handoffs should prove they were produced from a clean tracked worktree, not just from a repo without forbidden tracked artifacts."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
