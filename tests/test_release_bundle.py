@@ -47,6 +47,7 @@ from document_kv_cache.native_probe_factories import (
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_RECORD_TYPE,
+    STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES,
     ReleaseBundle,
     ReleaseBundleArtifact,
     build_release_bundle,
@@ -273,11 +274,56 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     artifacts = _write_release_ready_artifacts(source_dir)
     package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
     plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
-    run_status = _write_json(source_dir / "databricks-run-status.json", _databricks_run_status_cli_record(succeeded=True))
+    v1_run_status = _write_json(
+        source_dir / "databricks-run-status-v1.json",
+        _databricks_run_status_cli_record(
+            succeeded=True,
+            purpose="document-kv-v1-benchmark",
+            run_name="document-kv-v1-benchmark",
+            task_key="document_kv_v1_benchmark",
+        ),
+    )
+    storage_run_status = _write_json(
+        source_dir / "databricks-run-status-storage.json",
+        _databricks_run_status_cli_record(
+            succeeded=True,
+            purpose="document-kv-storage-benchmark",
+            run_name="document-kv-storage-benchmark",
+            task_key="document_kv_storage_benchmark",
+        ),
+    )
+    engine_probe_run_status = _write_json(
+        source_dir / "databricks-run-status-engine-probe.json",
+        _databricks_run_status_cli_record(
+            succeeded=True,
+            purpose="document-kv-engine-probe",
+            run_name="document-kv-engine-probe",
+            task_key="document_kv_engine_probe",
+        ),
+    )
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
     repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
     native_probe_factories = _write_json(source_dir / "native-probe-factories.json", _native_probe_factories_record())
+
+    with pytest.raises(ValueError, match="storage-reader benchmark Databricks run-status evidence"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            release_evidence_json=artifacts["evidence"],
+            preflight_json=artifacts["preflight"],
+            plan_execution_jsons=(plan_execution,),
+            databricks_run_status_jsons=(v1_run_status,),
+            package_wheel=package_wheel,
+            pr_evidence_jsons=(pr_evidence,),
+            github_governance_json=github_governance,
+            repository_hygiene_json=repository_hygiene,
+            native_probe_factories_jsons=(native_probe_factories,),
+            output_dir=tmp_path / "strict-missing-databricks-purpose-bundle",
+            require_complete_v1=True,
+        )
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
@@ -287,7 +333,7 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         release_evidence_json=artifacts["evidence"],
         preflight_json=artifacts["preflight"],
         plan_execution_jsons=(plan_execution,),
-        databricks_run_status_jsons=(run_status,),
+        databricks_run_status_jsons=(v1_run_status, storage_run_status, engine_probe_run_status),
         package_wheel=package_wheel,
         pr_evidence_jsons=(pr_evidence,),
         github_governance_json=github_governance,
@@ -310,12 +356,25 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "preflight",
         "plan_execution",
         "databricks_run_status",
+        "databricks_run_status",
+        "databricks_run_status",
         "package_wheel",
         "pr_evidence",
         "github_governance",
         "repository_hygiene",
         "native_probe_factories",
     ]
+    status_records = [
+        json.loads((bundle_dir / artifact["bundled_path"]).read_text(encoding="utf-8"))["summary"]
+        for artifact in record["artifacts"]
+        if artifact["role"] == "databricks_run_status"
+    ]
+    purposes = {
+        task["purpose"]
+        for status in status_records
+        for task in status["submit_payload"]["tasks"]
+    }
+    assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
 
 
 def test_build_release_bundle_can_include_native_probe_factories(tmp_path):
@@ -1698,21 +1757,38 @@ def _plan_execution_record(*, ok: bool):
     }
 
 
-def _databricks_run_status_cli_record(*, succeeded: bool):
+def _databricks_run_status_cli_record(
+    *,
+    succeeded: bool,
+    purpose: str = "document-kv-v1-benchmark",
+    run_name: str = "document-kv-v1",
+    task_key: str = "run-benchmark",
+):
     return {
         "ok": True,
         "action": "get",
-        "summary": _databricks_run_status_record(succeeded=succeeded),
+        "summary": _databricks_run_status_record(
+            succeeded=succeeded,
+            purpose=purpose,
+            run_name=run_name,
+            task_key=task_key,
+        ),
     }
 
 
-def _databricks_run_status_record(*, succeeded: bool):
+def _databricks_run_status_record(
+    *,
+    succeeded: bool,
+    purpose: str = "document-kv-v1-benchmark",
+    run_name: str = "document-kv-v1",
+    task_key: str = "run-benchmark",
+):
     life_cycle_state = "TERMINATED" if succeeded else "RUNNING"
     result_state = "SUCCESS" if succeeded else None
     return {
         "record_type": DATABRICKS_RUN_STATUS_RECORD_TYPE,
         "run_id": 123,
-        "run_name": "document-kv-v1",
+        "run_name": run_name,
         "run_page_url": "https://dbc.example/#job/123",
         "life_cycle_state": life_cycle_state,
         "result_state": result_state,
@@ -1721,11 +1797,11 @@ def _databricks_run_status_record(*, succeeded: bool):
         "end_time": 2000 if succeeded else None,
         "terminal": succeeded,
         "succeeded": succeeded,
-        "active_task_key": None if succeeded else "benchmark",
+        "active_task_key": None if succeeded else task_key,
         "task_count": 1,
         "tasks": [
             {
-                "task_key": "run-benchmark",
+                "task_key": task_key,
                 "run_id": 124,
                 "life_cycle_state": life_cycle_state,
                 "result_state": result_state,
@@ -1736,28 +1812,37 @@ def _databricks_run_status_record(*, succeeded: bool):
             }
         ],
         "cluster_id": "cluster-123",
-        "submit_payload": _databricks_run_submit_payload_record(),
+        "submit_payload": _databricks_run_submit_payload_record(
+            purpose=purpose,
+            run_name=run_name,
+            task_key=task_key,
+        ),
     }
 
 
-def _databricks_run_submit_payload_record():
+def _databricks_run_submit_payload_record(
+    *,
+    purpose: str = "document-kv-v1-benchmark",
+    run_name: str = "document-kv-v1",
+    task_key: str = "run-benchmark",
+):
     return {
         "record_type": DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
         "source_path": "/Volumes/catalog/schema/volume/databricks-run-submit.json",
         "sha256": "a" * 64,
-        "run_name": "document-kv-v1",
+        "run_name": run_name,
         "task_count": 1,
-        "task_keys": ["run-benchmark"],
+        "task_keys": [task_key],
         "tasks": [
             {
-                "task_key": "run-benchmark",
+                "task_key": task_key,
                 "node_type_id": "g5.4xlarge",
                 "driver_node_type_id": "g5.4xlarge",
                 "spark_version": "15.4.x-gpu-ml-scala2.12",
                 "data_security_mode": "SINGLE_USER",
                 "num_workers": 0,
                 "single_node": True,
-                "purpose": "document-kv-benchmark",
+                "purpose": purpose,
             }
         ],
         "node_type_ids": ["g5.4xlarge"],

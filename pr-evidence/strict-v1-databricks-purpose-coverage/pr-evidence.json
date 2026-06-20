@@ -1,0 +1,37 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Schrodinger reviewed the uncommitted diff with GPT-5.5 high reasoning and reported no release-blocking findings; approved merging if CI is green. Noted non-blocking gaps around separate missing-purpose permutations, direct status records, and help-text assertions.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_bundle.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "pr-evidence/strict-v1-databricks-purpose-coverage/README.md",
+    "pr-evidence/strict-v1-databricks-purpose-coverage/pr-evidence.json",
+    "pr-evidence/strict-v1-databricks-purpose-coverage/pr-evidence-validation.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_bundle.py tests/test_public_package.py -q -> 26 passed",
+    "poetry run pytest tests/test_pr_evidence.py -q -> 19 passed",
+    "poetry run pytest -q -> 741 passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> passed",
+    "poetry install --dry-run --extras databricks --extras test -> passed",
+    "poetry run python console-script --help sweep -> checked 30 console scripts",
+    "poetry build -> built sdist and wheel",
+    "poetry run python -m compileall -q src tests -> passed",
+    "git diff --check -> passed"
+  ],
+  "what_changed": [
+    "Strict V1 release bundles now require successful Databricks run-status evidence for the V1 benchmark, storage-reader benchmark, and native engine probe run purposes.",
+    "Kept normal Databricks run-status validation ahead of strict purpose coverage so malformed or failed status sidecars still produce precise release-readiness errors.",
+    "Updated public and legacy release-bundle CLI help text to describe benchmark/storage/engine-probe Databricks status coverage.",
+    "Added branch PR evidence and README documentation for the stricter Databricks purpose coverage gate."
+  ],
+  "why": "A complete V1 release bundle should prove all target AWS g5/UC Databricks run categories completed, not just one generic successful run."
+}
