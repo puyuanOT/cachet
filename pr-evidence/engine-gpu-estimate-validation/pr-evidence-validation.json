@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/engine-gpu-estimate-validation.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped engine GPU estimate validation diff. The reviewer noted one residual test gap for float estimated_gpu_bytes; the branch added that regression case and re-review approved with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/engine.py",
+        "tests/test_engine.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_engine.py tests/test_workflow.py -> 48 passed",
+        "poetry run pytest -q tests/test_engine.py tests/test_workflow.py tests/test_public_package.py::test_public_document_submodules_have_curated_star_import_surfaces -> 50 passed",
+        "python -m py_compile src/document_kv_cache/engine.py tests/test_engine.py -> clean",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 808 passed",
+        "poetry check -> All set",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-engine-gpu-estimate-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+        "GPT-5.5 reviewer approved branch engine-gpu-estimate-validation after the float estimated_gpu_bytes regression case was added"
+      ],
+      "what_changed": [
+        "Validated direct EngineReadyRequest estimated_gpu_bytes values as non-negative integers.",
+        "Rejected GPU byte multiplier values whose float conversion overflows.",
+        "Rejected non-finite estimated GPU byte products before converting them to integers."
+      ],
+      "why": "GPU byte estimates feed serving engine handoff records and admission accounting. Validating direct estimates and overflow paths prevents malformed or non-finite values from reaching vLLM/SGLang integration boundaries."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

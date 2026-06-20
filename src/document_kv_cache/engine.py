@@ -40,8 +40,7 @@ class EngineReadyRequest:
 
     def validate(self) -> None:
         self.handle.validate()
-        if self.estimated_gpu_bytes < 0:
-            raise ValueError("estimated_gpu_bytes must be non-negative")
+        _validate_estimated_gpu_bytes(self.estimated_gpu_bytes)
         normalize_segment_tiers(self.segment_tiers, len(self.handle.segments), segments_label="handle segments")
         if isinstance(self.payload, tuple):
             if len(self.payload) != len(self.handle.segments):
@@ -118,7 +117,7 @@ def build_engine_ready_request(
     ready_request = EngineReadyRequest(
         handle=handle,
         payload=_payload(materialized),
-        estimated_gpu_bytes=int(handle.total_bytes * gpu_byte_multiplier),
+        estimated_gpu_bytes=_estimate_gpu_bytes(handle.total_bytes, gpu_byte_multiplier),
         segment_tiers=materialized.segment_tiers,
     )
     ready_request.validate()
@@ -128,12 +127,31 @@ def build_engine_ready_request(
 def _normalize_gpu_byte_multiplier(kv_gpu_bytes_per_payload_byte: float) -> float:
     if isinstance(kv_gpu_bytes_per_payload_byte, bool) or not isinstance(kv_gpu_bytes_per_payload_byte, int | float):
         raise TypeError("kv_gpu_bytes_per_payload_byte must be numeric")
-    multiplier = float(kv_gpu_bytes_per_payload_byte)
+    try:
+        multiplier = float(kv_gpu_bytes_per_payload_byte)
+    except OverflowError as exc:
+        raise ValueError("kv_gpu_bytes_per_payload_byte must be finite") from exc
     if not math.isfinite(multiplier):
         raise ValueError("kv_gpu_bytes_per_payload_byte must be finite")
     if multiplier < 0:
         raise ValueError("kv_gpu_bytes_per_payload_byte must be non-negative")
     return multiplier
+
+
+def _estimate_gpu_bytes(total_bytes: int, multiplier: float) -> int:
+    estimated_gpu_bytes = total_bytes * multiplier
+    if not math.isfinite(estimated_gpu_bytes):
+        raise ValueError("estimated_gpu_bytes must be finite")
+    estimated_gpu_bytes_int = int(estimated_gpu_bytes)
+    _validate_estimated_gpu_bytes(estimated_gpu_bytes_int)
+    return estimated_gpu_bytes_int
+
+
+def _validate_estimated_gpu_bytes(estimated_gpu_bytes: int) -> None:
+    if type(estimated_gpu_bytes) is not int:
+        raise ValueError("estimated_gpu_bytes must be an integer")
+    if estimated_gpu_bytes < 0:
+        raise ValueError("estimated_gpu_bytes must be non-negative")
 
 
 def _segment_from_plan(index: int, materialized: MaterializedKV | SegmentedMaterializedKV) -> KVSegment:
