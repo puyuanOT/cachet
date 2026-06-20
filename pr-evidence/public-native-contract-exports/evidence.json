@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved the public facade export patch with no blocking findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/__init__.py",
+    "src/restaurant_kv_serving/__init__.py",
+    "src/cachet/__init__.pyi",
+    "tests/test_public_package.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_public_package.py -q -> 7 passed",
+    "git diff --check -> passed",
+    "poetry run pytest -q -> 1149 passed",
+    "poetry check && poetry install --dry-run -> passed"
+  ],
+  "what_changed": [
+    "Exposed the native probe adapter contract constant and record helper through the public document_kv_cache root facade.",
+    "Mirrored the same exports through the legacy restaurant_kv_serving root facade and the Cachet type stub.",
+    "Added public-package assertions that document_kv_cache, restaurant_kv_serving, and cachet resolve the same module-owned symbols."
+  ],
+  "why": "The adapter contract became a documented native-integration surface, so users should be able to import it from the same branded and compatibility facades as the rest of the engine-adapter API."
+}
