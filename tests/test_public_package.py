@@ -50,6 +50,7 @@ def test_public_document_package_reexports_core_api():
         DocumentKVService,
         DocumentKVWorkflow,
         DiskRangeReader,
+        RangeBatchReader,
         EngineAdapterRequest,
         EngineAdapterSpec,
         ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
@@ -898,9 +899,13 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         is restaurant_kv_serving.model_profile_definition_to_record
     )
     assert document_kv_cache.DiskRangeReader is storage.DiskRangeReader
+    assert document_kv_cache.RangeBatchReader is storage.RangeBatchReader
     assert storage.DiskRangeReader.__module__ == "document_kv_cache.storage"
+    assert storage.RangeBatchReader.__module__ == "document_kv_cache.storage"
     assert restaurant_kv_serving.DiskRangeReader.__module__ == "restaurant_kv_serving.storage"
+    assert restaurant_kv_serving.RangeBatchReader.__module__ == "restaurant_kv_serving.storage"
     assert issubclass(restaurant_kv_serving.DiskRangeReader, storage.DiskRangeReader)
+    assert document_kv_cache.RangeBatchReader is storage.RangeBatchReader
     assert release_bundle.ReleaseBundle is restaurant_kv_serving.ReleaseBundle
     assert release_bundle.ReleaseBundle.__module__ == "document_kv_cache.release_bundle"
     assert release_bundle.build_release_bundle is restaurant_kv_serving.build_release_bundle
@@ -1292,6 +1297,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert materializer.__all__ == ["MaterializedKV", "SegmentedMaterializedKV", "KVMaterializer"]
     assert storage.__all__ == [
         "RangeReader",
+        "RangeBatchReader",
         "MemoryRangeReader",
         "DiskRangeReader",
         "UnityCatalogVolumeRangeReader",
@@ -1365,6 +1371,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["dtype_byte_width"] is engine_protocol.dtype_byte_width
     assert root_star_namespace["kv_storage_layout_from_value"] is engine_protocol.kv_storage_layout_from_value
     assert root_star_namespace["DiskRangeReader"] is storage.DiskRangeReader
+    assert root_star_namespace["RangeBatchReader"] is storage.RangeBatchReader
     assert root_star_namespace["MemoryRangeReader"] is storage.MemoryRangeReader
     assert root_star_namespace["CacheTier"] is cache.CacheTier
     assert root_star_namespace["ByteLRU"] is cache.ByteLRU

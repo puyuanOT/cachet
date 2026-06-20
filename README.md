@@ -87,7 +87,10 @@ The current implementation is storage-format-first and tensor-runtime-agnostic. 
 
 ## Storage Backends
 
-The materializer consumes a small `RangeReader` protocol. Current implementations are:
+The materializer consumes a small `RangeReader` protocol. Readers can also
+implement `RangeBatchReader.read_many()` so a materialization plan can load many
+ranges from the same packed shard with one open file handle per shard. Current
+implementations are:
 
 - `MemoryRangeReader` for hot shards already resident in process memory.
 - `DiskRangeReader` for local NVMe, `disk:` / `file:` URIs, and filesystem-mounted paths.
@@ -121,7 +124,9 @@ for latency attribution. Normal materialization also carries those tiers:
 `MaterializedKV`, `SegmentedMaterializedKV`, and `EngineReadyRequest` expose
 `segment_tiers` parallel to their ordered KV segments. Local files are keyed by
 logical chunk identity plus checksum, so regenerating a chunk cannot
-accidentally reuse stale local bytes from an older shard.
+accidentally reuse stale local bytes from an older shard. When a reader supports
+`read_many()`, normal materialization batches cold misses while preserving the
+same CPU/local/cold tier attribution as single-chunk loads.
 
 To measure storage-reader behavior on the target hardware, run the synthetic
 reader benchmark. It writes one packed shard, then reports p50/p95 read latency

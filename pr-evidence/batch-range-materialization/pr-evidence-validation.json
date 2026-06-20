@@ -1,0 +1,45 @@
+{
+  "files": {
+    "pr-evidence/batch-range-materialization/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found an interleaved local-eviction accounting bug; the branch was fixed with sequential cache-state replay and regression coverage, then reviewer approved with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/cache.py",
+        "src/document_kv_cache/materializer.py",
+        "src/document_kv_cache/storage.py",
+        "src/document_kv_cache/__init__.py",
+        "src/restaurant_kv_serving/storage.py",
+        "src/restaurant_kv_serving/__init__.py",
+        "tests/test_cache.py",
+        "tests/test_storage.py",
+        "tests/test_planner_materializer.py",
+        "tests/test_public_package.py"
+      ],
+      "verification": [
+        "python -m compileall -q src/document_kv_cache src/restaurant_kv_serving",
+        "git diff --check",
+        "pytest tests/test_cache.py tests/test_storage.py tests/test_planner_materializer.py tests/test_public_package.py (105 passed)",
+        "pytest (841 passed)",
+        "poetry run pytest -q (841 passed)",
+        "poetry check",
+        "poetry run python console-script --help check (30 scripts checked)",
+        "poetry build"
+      ],
+      "what_changed": [
+        "Added RangeBatchReader.read_many and batch range reads for memory, disk, Unity Catalog, and routed readers.",
+        "Updated ChunkCache and KVMaterializer to batch cold materialization while preserving sequential cache-tier accounting.",
+        "Exposed RangeBatchReader through document_kv_cache and restaurant_kv_serving facades and documented the materialization behavior."
+      ],
+      "why": "Reduce packed-shard open/read overhead during cold KV materialization without changing segment order, bytes, or tier semantics."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

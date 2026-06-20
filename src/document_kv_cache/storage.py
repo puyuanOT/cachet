@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
@@ -11,6 +11,7 @@ from document_kv_cache.models import ChunkRef
 
 __all__ = [
     "RangeReader",
+    "RangeBatchReader",
     "MemoryRangeReader",
     "DiskRangeReader",
     "UnityCatalogVolumeRangeReader",
@@ -23,6 +24,10 @@ __all__ = [
 
 class RangeReader(Protocol):
     def read(self, ref: ChunkRef) -> bytes: ...
+
+
+class RangeBatchReader(RangeReader, Protocol):
+    def read_many(self, refs: Sequence[ChunkRef]) -> tuple[bytes, ...]: ...
 
 
 class MemoryRangeReader:
@@ -42,6 +47,9 @@ class MemoryRangeReader:
         payload = blob[ref.byte_offset : ref.byte_offset + ref.byte_length]
         return _validated_payload(ref, payload)
 
+    def read_many(self, refs: Sequence[ChunkRef]) -> tuple[bytes, ...]:
+        return tuple(self.read(ref) for ref in refs)
+
 
 class DiskRangeReader:
     """Read cache shards from local disk, `disk:` URIs, or mounted paths."""
@@ -50,11 +58,17 @@ class DiskRangeReader:
         self.root = Path(root) if root is not None else None
 
     def read(self, ref: ChunkRef) -> bytes:
-        path = local_path(ref.shard_uri, root=self.root)
+        path = self._path_for_ref(ref)
         with path.open("rb") as handle:
             handle.seek(ref.byte_offset)
             payload = handle.read(ref.byte_length)
         return _validated_payload(ref, payload)
+
+    def read_many(self, refs: Sequence[ChunkRef]) -> tuple[bytes, ...]:
+        return _read_many_from_paths(refs, self._path_for_ref)
+
+    def _path_for_ref(self, ref: ChunkRef) -> Path:
+        return local_path(ref.shard_uri, root=self.root)
 
 
 class UnityCatalogVolumeRangeReader(DiskRangeReader):
@@ -69,11 +83,10 @@ class UnityCatalogVolumeRangeReader(DiskRangeReader):
         super().__init__(root=volume_root)
 
     def read(self, ref: ChunkRef) -> bytes:
-        path = unity_catalog_volume_path(ref.shard_uri, root=self.root)
-        with path.open("rb") as handle:
-            handle.seek(ref.byte_offset)
-            payload = handle.read(ref.byte_length)
-        return _validated_payload(ref, payload)
+        return super().read(ref)
+
+    def _path_for_ref(self, ref: ChunkRef) -> Path:
+        return unity_catalog_volume_path(ref.shard_uri, root=self.root)
 
 
 class RoutedRangeReader:
@@ -91,15 +104,36 @@ class RoutedRangeReader:
         self.unity_catalog = unity_catalog or UnityCatalogVolumeRangeReader()
 
     def read(self, ref: ChunkRef) -> bytes:
+        return self._reader_for_ref(ref).read(ref)
+
+    def read_many(self, refs: Sequence[ChunkRef]) -> tuple[bytes, ...]:
+        outputs: list[bytes | None] = [None] * len(refs)
+        grouped: dict[RangeReader, list[tuple[int, ChunkRef]]] = {}
+        for index, ref in enumerate(refs):
+            grouped.setdefault(self._reader_for_ref(ref), []).append((index, ref))
+        for reader, indexed_refs in grouped.items():
+            ref_group = tuple(ref for _, ref in indexed_refs)
+            batch_reader = getattr(reader, "read_many", None)
+            if callable(batch_reader):
+                payloads = batch_reader(ref_group)
+            else:
+                payloads = tuple(reader.read(ref) for ref in ref_group)
+            if len(payloads) != len(indexed_refs):
+                raise ValueError("RangeBatchReader.read_many returned the wrong number of payloads")
+            for (index, _), payload in zip(indexed_refs, payloads, strict=True):
+                outputs[index] = payload
+        return tuple(_require_payload(payload, index) for index, payload in enumerate(outputs))
+
+    def _reader_for_ref(self, ref: ChunkRef) -> RangeReader:
         if ref.shard_uri.startswith("memory:") or ref.shard_uri.startswith("mem:"):
-            return self.memory.read(ref)
+            return self.memory
         if ref.shard_uri.startswith("disk:"):
-            return self.disk.read(ref)
+            return self.disk
         if ref.shard_uri.startswith("uc-volume:") or ref.shard_uri.startswith("/Volumes/"):
-            return self.unity_catalog.read(ref)
+            return self.unity_catalog
         if self.unity_catalog.root is not None and _is_relative_uri(ref.shard_uri):
-            return self.unity_catalog.read(ref)
-        return self.disk.read(ref)
+            return self.unity_catalog
+        return self.disk
 
 
 def local_path(uri: str, *, root: str | Path | None = None) -> Path:
@@ -185,6 +219,29 @@ def _validate_absolute_uc_path(path: Path, *, label: str) -> Path:
     if any(part in {"", ".", ".."} for part in parts[2:]):
         raise ValueError(f"{label} cannot contain empty, '.', or '..' components")
     return path
+
+
+def _read_many_from_paths(
+    refs: Sequence[ChunkRef],
+    path_for_ref: Callable[[ChunkRef], Path],
+) -> tuple[bytes, ...]:
+    payloads: list[bytes | None] = [None] * len(refs)
+    grouped: dict[Path, list[tuple[int, ChunkRef]]] = {}
+    for index, ref in enumerate(refs):
+        grouped.setdefault(path_for_ref(ref), []).append((index, ref))
+    for path, indexed_refs in grouped.items():
+        with path.open("rb") as handle:
+            for index, ref in indexed_refs:
+                handle.seek(ref.byte_offset)
+                payload = handle.read(ref.byte_length)
+                payloads[index] = _validated_payload(ref, payload)
+    return tuple(_require_payload(payload, index) for index, payload in enumerate(payloads))
+
+
+def _require_payload(payload: bytes | None, index: int) -> bytes:
+    if payload is None:  # pragma: no cover - protected by read_many fill logic.
+        raise ValueError(f"Missing payload for range index {index}")
+    return payload
 
 
 def _validated_payload(ref: ChunkRef, payload: bytes) -> bytes:
