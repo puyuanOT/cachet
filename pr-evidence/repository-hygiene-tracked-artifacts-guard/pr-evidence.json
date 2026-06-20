@@ -1,0 +1,27 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer found false negatives for env/credential files, wheels/sdists, and .pyd files; fixes were applied and final re-review approved.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "tests/test_repository_hygiene.py",
+    "tests/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_repository_hygiene.py -q -> 2 passed",
+    "poetry run pytest -q -> 704 passed",
+    "git diff --check -> passed",
+    "poetry check -> All set",
+    "poetry build -> built sdist and wheel"
+  ],
+  "what_changed": [
+    "Added a repository hygiene regression guard that verifies .gitignore covers local build, cache, environment, and credential artifacts.",
+    "Added a tracked-file guard that rejects committed build outputs, caches, local env files, credentials, wheels, and sdists while allowing .env.example.",
+    "Documented the new hygiene test in tests/README.md."
+  ],
+  "why": "The V1 package goal requires strict repository cleanliness and no generated artifacts, local configuration, logs, or credentials to be pushed."
+}

@@ -28,5 +28,6 @@ These tests cover the document KV-cache orchestration package.
 - `test_benchmark_runner.py` verifies canonical JSONL loading and engine-agnostic benchmark execution.
 - `test_openai_compatible.py` verifies the OpenAI-compatible streaming benchmark engine with offline fake API responses.
 - `test_live_server.py` verifies the optional live vLLM/SGLang smoke-check request and JSON result contract using a fake benchmark engine.
+- `test_repository_hygiene.py` verifies ignore coverage and rejects tracked build/cache artifacts.
 
 Keep tests behavioral: they should assert stable cache planning and materialization outcomes, not incidental implementation details.
