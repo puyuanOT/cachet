@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/admission-queue-input-validation.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped admission queue validation diff with no findings after re-reviewing the newly visible test file.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/admission.py",
+        "tests/test_admission.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_admission.py tests/test_workflow.py -> 23 passed",
+        "poetry run pytest -q tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring -> 1 passed",
+        "python -m py_compile src/document_kv_cache/admission.py tests/test_admission.py -> clean",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 789 passed",
+        "poetry check -> All set",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-admission-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+        "GPT-5.5 reviewer approved branch admission-queue-input-validation with no findings"
+      ],
+      "what_changed": [
+        "Rejected PreparedRequest values that do not carry a MaterializedKV payload.",
+        "Rejected non-PreparedRequest objects at AdmissionQueue.try_enqueue before mutating queue state.",
+        "Added focused admission queue tests for public input validation, budget enforcement, and FIFO pop behavior."
+      ],
+      "why": "The admission queue is the serving handoff boundary before vLLM/SGLang integration. Explicitly validating prepared requests prevents malformed cache payloads or arbitrary objects from reaching pending GPU-memory accounting."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
