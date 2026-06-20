@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped GPU byte multiplier validation diff with no findings. Residual risk noted: extremely large finite multipliers can still produce very large estimates, which is outside this finite numeric validation scope.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/engine.py",
+    "src/document_kv_cache/service.py",
+    "src/document_kv_cache/workflow.py",
+    "tests/test_engine.py",
+    "tests/test_workflow.py"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_engine.py tests/test_workflow.py -> 42 passed",
+    "poetry run pytest -q tests/test_public_package.py::test_public_document_submodules_have_curated_star_import_surfaces -> 1 passed",
+    "python -m py_compile src/document_kv_cache/engine.py src/document_kv_cache/service.py src/document_kv_cache/workflow.py tests/test_engine.py tests/test_workflow.py -> clean",
+    "git diff --check -> clean",
+    "poetry run pytest -q -> 801 passed",
+    "poetry check -> All set",
+    "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-gpu-multiplier-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+    "GPT-5.5 reviewer approved branch gpu-byte-multiplier-validation with no findings"
+  ],
+  "what_changed": [
+    "Added internal finite numeric validation for kv_gpu_bytes_per_payload_byte in engine-ready request construction.",
+    "Reused the same multiplier validation from DocumentKVService initialization and DocumentKVWorkflow engine handoff overrides.",
+    "Extended engine and workflow tests to reject bool, non-numeric, NaN, infinity, and negative GPU byte multipliers."
+  ],
+  "why": "GPU memory estimates feed admission control and vLLM/SGLang handoff metadata. Validating the multiplier consistently at each public serving path prevents NaN, infinity, booleans, or late TypeError/ValueError failures from corrupting serving-boundary accounting."
+}
