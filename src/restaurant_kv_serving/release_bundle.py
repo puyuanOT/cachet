@@ -60,6 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
     parser.add_argument("--github-governance-json")
+    parser.add_argument("--repository-hygiene-json")
     parser.add_argument("--native-probe-factories-json", action="append", default=[])
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
@@ -81,6 +82,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
         github_governance_json=args.github_governance_json,
+        repository_hygiene_json=args.repository_hygiene_json,
         native_probe_factories_jsons=args.native_probe_factories_json,
         output_dir=args.output_dir,
         overwrite=args.overwrite,

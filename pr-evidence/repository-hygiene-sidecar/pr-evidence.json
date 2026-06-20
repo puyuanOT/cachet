@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer James found stale policy arrays were not rejected; release-bundle validation now requires exact repository hygiene policy constants, and James approved with no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/repository_hygiene.py",
+    "src/document_kv_cache/release_bundle.py",
+    "src/document_kv_cache/benchmark_plan.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_repository_hygiene.py",
+    "tests/test_release_bundle.py",
+    "tests/test_benchmark_plan.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_repository_hygiene.py tests/test_release_bundle.py (22 passed)",
+    "poetry run pytest -q tests/test_benchmark_plan.py tests/test_public_package.py tests/test_project_governance.py (108 passed)",
+    "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-repository-hygiene-smoke.json (ok=true)",
+    "git diff --check",
+    "poetry run python -m compileall -q src tests",
+    "poetry run pytest -q (721 passed)"
+  ],
+  "what_changed": [
+    "Added document_kv.repository_hygiene.v1 evidence and document-kv-repository-hygiene CLI.",
+    "Refactored repository hygiene tests to share the package policy constants.",
+    "Added repository hygiene sidecar support to release bundles and benchmark-plan release-bundle commands."
+  ],
+  "why": "The release process needs machine-readable proof that .gitignore coverage is intact and no generated or secret-like artifacts are tracked."
+}

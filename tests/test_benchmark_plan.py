@@ -247,6 +247,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             package_wheel=str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
             pr_evidence_jsons=(str(tmp_path / "pr-evidence.json"),),
             github_governance_json=str(tmp_path / "github-governance.json"),
+            repository_hygiene_json=str(tmp_path / "repository-hygiene.json"),
             native_probe_factories_jsons=(str(tmp_path / "native-probe-factories.json"),),
             overwrite=True,
         ),
@@ -284,6 +285,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
         "preflight_json": str(tmp_path / "release-inputs.json"),
         "pr_evidence_jsons": [str(tmp_path / "pr-evidence.json")],
         "release_evidence_json": str(tmp_path / "release-evidence.json"),
+        "repository_hygiene_json": str(tmp_path / "repository-hygiene.json"),
         "storage_benchmark_json": str(tmp_path / "storage.json"),
         "v1_benchmark_json": str(tmp_path / "results.json"),
     }
@@ -303,6 +305,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert "--package-wheel" in bundle_command.argv
     assert "--pr-evidence-json" in bundle_command.argv
     assert "--github-governance-json" in bundle_command.argv
+    assert "--repository-hygiene-json" in bundle_command.argv
     assert "--native-probe-factories-json" in bundle_command.argv
     assert "--overwrite" in bundle_command.argv
 
@@ -1868,6 +1871,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "pr-evidence.json"),
             "--release-bundle-github-governance-json",
             str(tmp_path / "github-governance.json"),
+            "--release-bundle-repository-hygiene-json",
+            str(tmp_path / "repository-hygiene.json"),
             "--release-bundle-native-probe-factories-json",
             str(tmp_path / "native-probe-factories.json"),
             "--native-probe-factories-output-json",
@@ -1902,6 +1907,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
         str(tmp_path / "databricks-run-status.json")
     ]
     assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
+    assert record["release_bundle"]["repository_hygiene_json"] == str(tmp_path / "repository-hygiene.json")
     assert record["release_bundle"]["native_probe_factories_jsons"] == [
         str(tmp_path / "native-probe-factories.json")
     ]
@@ -1913,6 +1919,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")
     assert bundle_argv[bundle_argv.index("--github-governance-json") + 1] == str(
         tmp_path / "github-governance.json"
+    )
+    assert bundle_argv[bundle_argv.index("--repository-hygiene-json") + 1] == str(
+        tmp_path / "repository-hygiene.json"
     )
     assert bundle_argv[bundle_argv.index("--native-probe-factories-json") + 1] == str(
         tmp_path / "native-probe-factories.json"

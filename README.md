@@ -612,6 +612,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
   --release-bundle-github-governance-json /data/github-governance.json \
+  --release-bundle-repository-hygiene-json /data/repository-hygiene.json \
   --native-probe-factories-output-json /data/native-probe-factories.json \
   --engine-probe-targets-output-json /data/engine-probe-targets.json \
   --engine-probe-targets-release-safe \
@@ -801,6 +802,7 @@ python -m document_kv_cache.release_bundle \
   --package-wheel dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
   --github-governance-json github-governance.json \
+  --repository-hygiene-json repository-hygiene.json \
   --native-probe-factories-json native-probe-factories.json \
   --output-dir document-kv-release-bundle \
   --output-json release-bundle-manifest.json
@@ -817,7 +819,11 @@ connector-action, release-evidence, and preflight artifacts. Add
 `--github-governance-json` to
 include the repository visibility and branch-protection sidecar emitted by
 `document_kv_cache.github_governance`; the bundle rejects it unless the
-governance record is release-ready. Repeat `--native-probe-factories-json` for
+governance record is release-ready. Add `--repository-hygiene-json` to include
+the `.gitignore` and tracked-artifact sidecar emitted by
+`document_kv_cache.repository_hygiene`; release bundles reject it unless no
+generated, build, cache, or secret-like artifacts are tracked. Repeat
+`--native-probe-factories-json` for
 `document_kv.native_probe_factories.v1` diagnostics emitted by
 `document_kv_cache.native_probe_factories`; the bundle validates that the
 diagnostics cover the built-in vLLM and SGLang native factory entry points.
@@ -855,6 +861,19 @@ recorded but not treated as stale release pressure.
 If GitHub reports that private-repository branch protection is unavailable, the
 sidecar records `ok=false` and the release remains process-only rather than
 enforced by GitHub settings.
+
+Capture repository hygiene as a separate release-readiness sidecar:
+
+```bash
+python -m document_kv_cache.repository_hygiene \
+  --repository-root . \
+  --output-json repository-hygiene.json
+```
+
+The sidecar records the required `.gitignore` patterns, tracked path count, and
+any tracked generated or secret-like artifact paths. It returns non-zero until
+all required ignore patterns are present and no forbidden artifact paths are
+tracked.
 
 For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g5 `runs/submit` payload:
 
@@ -983,7 +1002,7 @@ pytest tests -q
 
 ## Remaining V1 Work
 
-- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, release evidence, preflight sidecar, GitHub governance sidecar, native-probe factory diagnostics, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
+- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, release evidence, preflight sidecar, GitHub governance sidecar, repository hygiene sidecar, native-probe factory diagnostics, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
 - Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.
