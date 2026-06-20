@@ -499,6 +499,31 @@ def test_evaluate_release_evidence_rejects_duplicate_summary_and_malformed_v1_id
     assert any("comparison 5 has unsupported dataset 'unsupported_dataset'" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_malformed_measurement_quality_flags():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "exact_match": "yes",
+    }
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "answer_found": 1,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("exact_match must be boolean when present" in issue for issue in evidence.issues)
+    assert any("answer_found must be boolean when present" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_allows_repeated_raw_measurements():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"].append({**v1_record["measurements"][0], "example_id": "biography-2"})

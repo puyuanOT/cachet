@@ -1,0 +1,27 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reported no findings, confirmed optional boolean compatibility for True, False, None, and missing exact_match/answer_found flags, and marked the change safe to merge.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_evidence.py",
+    "tests/test_release_evidence.py",
+    "pr-evidence/validate-measurement-quality-booleans/README.md"
+  ],
+  "verification": [
+    "python -m pytest tests/test_release_evidence.py -q -> 49 passed",
+    "python -m pytest -q -> 868 passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> succeeded",
+    "poetry build -> succeeded"
+  ],
+  "what_changed": [
+    "Validated raw V1 measurement exact_match and answer_found fields with the same optional-boolean contract.",
+    "Added release-evidence regression coverage for malformed measurement quality flags."
+  ],
+  "why": "Strict V1 release evidence should not accept malformed raw quality flags in benchmark artifacts used to compare cache reuse against no-cache prefill."
+}

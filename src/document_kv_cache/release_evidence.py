@@ -930,9 +930,11 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
                 )
         if measurement.get("error") not in (None, ""):
             issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} must not have an error")
-        if measurement.get("answer_found") is not None and type(measurement.get("answer_found")) is not bool:
-            issues.append(
-                f"v1 benchmark measurement {dataset_value}:{arm_id_value} answer_found must be boolean when present"
+        for field_name in ("exact_match", "answer_found"):
+            _validate_optional_bool(
+                measurement.get(field_name),
+                f"v1 benchmark measurement {dataset_value}:{arm_id_value} {field_name}",
+                issues,
             )
         _validate_v1_measurement_token_context(
             measurement,
@@ -1214,6 +1216,11 @@ def _add_unique_v1_dataset_arm(
         issues.append(f"v1 benchmark {collection_name} has duplicate row for {dataset}:{arm_id}")
         return
     seen.add(key)
+
+
+def _validate_optional_bool(value: Any, label: str, issues: list[str]) -> None:
+    if value is not None and type(value) is not bool:
+        issues.append(f"{label} must be boolean when present")
 
 
 def _is_positive_int(value: Any) -> bool:
