@@ -613,10 +613,82 @@ def test_legacy_databricks_runs_private_summary_hook_is_isolated(monkeypatch):
     assert public_summary["tasks"][0]["task_key"] == "real-task"
 
 
+def test_legacy_databricks_runs_ignores_preimport_document_env_helper_monkeypatch():
+    env = {
+        **os.environ,
+        "PYTHONPATH": "src",
+    }
+    script = """
+import json
+import document_kv_cache.databricks_runs as public_runs
+
+def broken_env_helper(**kwargs):
+    raise RuntimeError("unexpected import-order env helper")
+
+public_runs.databricks_workspace_config_from_env = broken_env_helper
+
+import restaurant_kv_serving.databricks_runs as legacy_runs
+
+config = legacy_runs.databricks_workspace_config_from_env(
+    environ={
+        "DATABRICKS_HOST": "https://dbc.example/",
+        "DATABRICKS_TOKEN": "secret-token",
+    },
+)
+print(json.dumps({"host": config.normalized_host, "module": type(config).__module__}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "host": "https://dbc.example",
+        "module": "restaurant_kv_serving.databricks_runs",
+    }
+
+
+def test_legacy_databricks_runs_uses_source_config_base_when_public_class_is_replaced_before_import():
+    env = {
+        **os.environ,
+        "PYTHONPATH": "src",
+    }
+    script = """
+import json
+import document_kv_cache.databricks_runs as public_runs
+
+public_runs.DatabricksWorkspaceConfig = object
+
+import restaurant_kv_serving.databricks_runs as legacy_runs
+
+config = legacy_runs.DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+print(json.dumps({"host": config.normalized_host, "module": type(config).__module__}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "host": "https://dbc.example",
+        "module": "restaurant_kv_serving.databricks_runs",
+    }
+
+
 def test_databricks_runs_reexports_document_owned_api_with_legacy_subclass():
     assert public_databricks_runs.DatabricksWorkspaceConfig.__module__ == "document_kv_cache.databricks_runs"
     assert legacy_databricks_runs.DatabricksWorkspaceConfig.__module__ == "restaurant_kv_serving.databricks_runs"
     assert issubclass(legacy_databricks_runs.DatabricksWorkspaceConfig, public_databricks_runs.DatabricksWorkspaceConfig)
+    assert legacy_databricks_runs.DatabricksHTTPResponse is public_databricks_runs.DatabricksHTTPResponse
+    assert legacy_databricks_runs.DatabricksURLOpener is public_databricks_runs.DatabricksURLOpener
     assert public_databricks_runs.summarize_databricks_run.__module__ == "document_kv_cache.databricks_runs"
     assert legacy_databricks_runs.summarize_databricks_run.__module__ == "restaurant_kv_serving.databricks_runs"
     assert set(public_databricks_runs.__all__) < set(legacy_databricks_runs.__all__)

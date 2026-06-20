@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that Protocol _abc_impl cache identity caused clean-import protocol aliases to fall back to source-default protocol classes. I skipped _abc_impl in the class fingerprint, added protocol identity assertions, reran verification, and re-review returned no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving/databricks_runs.py",
+    "tests/test_databricks_runs.py",
+    "pr-evidence/legacy-databricks-runs-defaults/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_runs.py",
+    "poetry run pytest tests/test_databricks_runs.py tests/test_public_package.py tests/test_release_bundle.py -q",
+    "poetry run pytest -q",
+    "git diff --check",
+    "poetry check",
+    "poetry build",
+    "GPT-5.5 focused review and re-review"
+  ],
+  "what_changed": [
+    "Loaded document_kv_cache.databricks_runs source defaults in the legacy wrapper before compatibility cloning.",
+    "Preserved clean-import public protocol identity and DatabricksWorkspaceConfig subclassing while falling back to source-default classes after pre-import public class replacement.",
+    "Added regression tests for pre-import public helper monkeypatches, pre-import public config class replacement, and clean protocol identity."
+  ],
+  "why": "The legacy Databricks wrapper must remain safe under import-order monkeypatches without regressing public compatibility for normal document-kv-cache imports."
+}
