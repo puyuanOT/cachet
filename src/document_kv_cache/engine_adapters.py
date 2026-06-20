@@ -232,6 +232,7 @@ class EngineKVInjectionPlan:
         object.__setattr__(self, "backend", _backend_from_value(self.backend, field_name="backend"))
         object.__setattr__(self, "payload_mode", _payload_mode_from_value(self.payload_mode, field_name="payload_mode"))
         _validate_connector_package_matches_backend(self.backend, self.connector_package)
+        _validate_nonnegative_int_value(self.estimated_gpu_bytes, field_name="estimated_gpu_bytes")
         if self.total_blocks != _block_count(self.total_tokens, self.layout.block_size):
             raise ValueError("total_blocks does not match total_tokens and layout.block_size")
         if self.segments:
@@ -266,8 +267,7 @@ class EngineKVReservationAction:
         self.layout.validate()
         if self.total_blocks != _block_count(self.total_tokens, self.layout.block_size):
             raise ValueError("total_blocks does not match total_tokens and layout.block_size")
-        if self.estimated_gpu_bytes < 0:
-            raise ValueError("estimated_gpu_bytes must be non-negative")
+        _validate_nonnegative_int_value(self.estimated_gpu_bytes, field_name="estimated_gpu_bytes")
         if any(not isinstance(adapter_id, str) or not adapter_id for adapter_id in self.adapter_ids):
             raise ValueError("adapter_ids entries must be non-empty strings")
         object.__setattr__(self, "adapter_ids", tuple(self.adapter_ids))
@@ -1528,17 +1528,25 @@ def _optional_str(record: Mapping[str, Any], key: str) -> str | None:
 
 def _required_nonnegative_int(record: Mapping[str, Any], key: str) -> int:
     value = record.get(key)
-    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{key} must be a non-negative integer")
-    return value
+    return _validate_nonnegative_int_value(value, field_name=key)
 
 
 def _optional_nonnegative_int(record: Mapping[str, Any], key: str) -> int | None:
     value = record.get(key)
     if value is None:
         return None
+    return _validate_nonnegative_int_value(value, field_name=key, allow_null=True)
+
+
+def _validate_nonnegative_int_value(
+    value: Any,
+    *,
+    field_name: str,
+    allow_null: bool = False,
+) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{key} must be null or a non-negative integer")
+        qualifier = "null or a " if allow_null else "a "
+        raise ValueError(f"{field_name} must be {qualifier}non-negative integer")
     return value
 
 

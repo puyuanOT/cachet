@@ -1493,6 +1493,43 @@ def test_engine_adapter_dataclasses_normalize_known_backend_strings(tmp_path):
     assert probe_result.payload_mode is PayloadMode.MERGED
 
 
+@pytest.mark.parametrize("estimated_gpu_bytes", [True, 1.0, "1", -1])
+def test_engine_kv_injection_plan_rejects_invalid_estimated_gpu_bytes(estimated_gpu_bytes):
+    with pytest.raises(ValueError, match="estimated_gpu_bytes must be a non-negative integer"):
+        EngineKVInjectionPlan(
+            backend=ServingBackend.VLLM,
+            request_id="req-1",
+            handle_uri="document-kv://req-1",
+            connector_package="vllm",
+            kv_injection_method="native-test",
+            payload_mode=PayloadMode.MERGED,
+            payload_source_uri=None,
+            layout=layout(),
+            cache_method="vanilla_prefill",
+            adapter_ids=(),
+            total_tokens=0,
+            total_bytes=0,
+            total_blocks=0,
+            estimated_gpu_bytes=estimated_gpu_bytes,
+            segments=(),
+            metadata={},
+        )
+
+
+@pytest.mark.parametrize("estimated_gpu_bytes", [True, 1.0, "1", -1])
+def test_engine_kv_reservation_action_rejects_invalid_estimated_gpu_bytes(estimated_gpu_bytes):
+    with pytest.raises(ValueError, match="estimated_gpu_bytes must be a non-negative integer"):
+        EngineKVReservationAction(
+            backend=ServingBackend.VLLM,
+            request_id="req-1",
+            total_blocks=1,
+            total_tokens=1,
+            estimated_gpu_bytes=estimated_gpu_bytes,
+            layout=layout(),
+            adapter_ids=(),
+        )
+
+
 def test_engine_adapter_dataclasses_reject_custom_solver_backends():
     with pytest.raises(ValueError, match="Unsupported backend"):
         EngineAdapterSpec(
