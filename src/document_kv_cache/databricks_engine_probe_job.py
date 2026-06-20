@@ -83,6 +83,7 @@ class DatabricksEngineProbeTargetConfig:
     engine_version: str | None = None
     allow_non_native_probe: bool = False
     metadata: tuple[str, ...] = ()
+    actions_output_json: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
@@ -98,6 +99,8 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("task_key must be non-empty when provided")
         if self.engine_version is not None and not self.engine_version:
             raise ValueError("engine_version must be non-empty when provided")
+        if self.actions_output_json is not None and not self.actions_output_json:
+            raise ValueError("actions_output_json must be non-empty when provided")
         if type(self.allow_non_native_probe) is not bool:
             raise ValueError("allow_non_native_probe must be a boolean")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
@@ -162,6 +165,7 @@ class DatabricksEngineProbeJobConfig:
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
+    actions_output_json: str | None = None
 
     def __post_init__(self) -> None:
         if not self.handoff_json:
@@ -182,6 +186,8 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("wheel_uri must be non-empty when provided")
         if self.engine_version is not None and not self.engine_version:
             raise ValueError("engine_version must be non-empty when provided")
+        if self.actions_output_json is not None and not self.actions_output_json:
+            raise ValueError("actions_output_json must be non-empty when provided")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
         _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB(self)
@@ -297,6 +303,7 @@ def _engine_probe_task_from_target(
         availability=config.availability,
         zone_id=config.zone_id,
         custom_tags=config.custom_tags,
+        actions_output_json=target.actions_output_json,
     )
     return build_databricks_engine_probe_run_submit_payload(single_config)["tasks"][0]
 
@@ -312,6 +319,8 @@ def _runner_parameters(config: DatabricksEngineProbeJobConfig) -> list[str]:
         "--expected-backend",
         config.expected_backend.value,
     ]
+    if config.actions_output_json is not None:
+        parameters.extend(["--actions-output-json", config.actions_output_json])
     if config.payload_uri is not None:
         parameters.extend(["--payload-uri", config.payload_uri])
     if config.engine_version is not None:
@@ -480,6 +489,7 @@ def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEnginePro
         engine_version=record.get("engine_version"),
         allow_non_native_probe=allow_non_native_probe,
         metadata=tuple(metadata),
+        actions_output_json=record.get("actions_output_json", record.get("connector_actions_output_json")),
     )
 
 
@@ -496,6 +506,7 @@ def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
         "handoff-json": args.handoff_json,
         "probe-factory": args.probe_factory,
         "probe-output-json": args.probe_output_json,
+        "actions-output-json": args.actions_output_json,
         "expected-backend": args.expected_backend,
         "payload-uri": args.payload_uri,
         "engine-version": args.engine_version,
@@ -518,6 +529,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--handoff-json", help="Cluster-visible engine handoff JSON path or URI.")
     parser.add_argument("--probe-factory", help="Dotted native probe factory, e.g. module:factory.")
     parser.add_argument("--probe-output-json", help="Cluster-visible native probe evidence output path.")
+    parser.add_argument("--actions-output-json", help="Optional cluster-visible connector actions descriptor output path.")
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--expected-backend", choices=[backend.value for backend in ServingBackend])
     parser.add_argument(
@@ -592,6 +604,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 allow_non_native_probe=args.allow_non_native_probe,
                 metadata=tuple(args.metadata or ()),
                 release_safe=args.release_safe,
+                actions_output_json=args.actions_output_json,
             )
             payload = build_databricks_engine_probe_run_submit_payload(config)
         if args.runner_script_output:

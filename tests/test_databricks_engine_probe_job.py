@@ -61,6 +61,7 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
         engine_version="debug-vllm",
         allow_non_native_probe=True,
         metadata=("probe.source=single",),
+        actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
         custom_tags={"team": "document-kv"},
     )
 
@@ -90,6 +91,8 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
             "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
             "--expected-backend",
             "vllm",
+            "--actions-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
             "--payload-uri",
             "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
             "--engine-version",
@@ -124,7 +127,11 @@ def test_build_databricks_engine_probe_release_safe_payload_omits_debug_flags():
 def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required_backends():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
-            _target("vllm", metadata=("probe.source=matrix",)),
+            _target(
+                "vllm",
+                metadata=("probe.source=matrix",),
+                actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+            ),
             _target("sglang"),
         ),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
@@ -165,6 +172,11 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
             "--payload-uri",
             f"/Volumes/catalog/schema/volume/probes/{backend}-payload.kv",
         ]
+        if backend == "vllm":
+            expected_parameters[8:8] = [
+                "--actions-output-json",
+                "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+            ]
         if backend == "vllm":
             expected_parameters.extend(["--metadata", "probe.source=matrix"])
         assert parameters == expected_parameters
@@ -224,12 +236,14 @@ def test_read_databricks_engine_probe_targets_json_accepts_object_and_aliases(tm
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
                         "probe_factory": "document_kv_cache_vllm_probe:build_probe",
                         "probe_output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                        "connector_actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
                     },
                     {
                         "expected_backend": "sglang",
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-actions.json",
                         "allow_non_native_probe": False,
                         "metadata": ["probe.source=targets"],
                     },
@@ -246,7 +260,9 @@ def test_read_databricks_engine_probe_targets_json_accepts_object_and_aliases(tm
     assert targets_file.release_safe is False
     assert [target.expected_backend for target in targets] == [ServingBackend.VLLM, ServingBackend.SGLANG]
     assert targets[0].output_json == "/Volumes/catalog/schema/volume/probes/vllm-probe.json"
+    assert targets[0].actions_output_json == "/Volumes/catalog/schema/volume/probes/vllm-actions.json"
     assert targets[1].output_json == "/Volumes/catalog/schema/volume/probes/sglang-probe.json"
+    assert targets[1].actions_output_json == "/Volumes/catalog/schema/volume/probes/sglang-actions.json"
     assert targets[1].metadata == ("probe.source=targets",)
 
 
@@ -530,6 +546,8 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
             "vllm_probe:build_probe",
             "--probe-output-json",
             "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--actions-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
             "--runner-python-file",
             "dbfs:/benchmarks/run_engine_probe.py",
             "--expected-backend",
@@ -546,7 +564,9 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
     )
 
     assert exit_code == 0
-    assert json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["libraries"] == [{"whl": WHEEL_URI}]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    assert payload["tasks"][0]["libraries"] == [{"whl": WHEEL_URI}]
+    assert "--actions-output-json" in payload["tasks"][0]["spark_python_task"]["parameters"]
     assert "engine_probe" in runner_path.read_text(encoding="utf-8")
 
 

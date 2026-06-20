@@ -1123,11 +1123,16 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in readme_text
     assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in root_readme_text
     assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in module_readme_text
+    assert "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json" in readme_text
+    assert "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json" in root_readme_text
     assert "--var payload_uri=" in readme_text
     assert "--var payload_uri=" in probe_readme_text
+    assert "--var actions_output_json=" not in readme_text
+    assert "--var actions_output_json=" not in probe_readme_text
     assert "native vLLM or SGLang" in probe_readme_text
     assert "target AWS g5 Databricks runtime" in packaged_probe_readme_text
     assert "uploaded payload URI" in packaged_probe_readme_text
+    assert "document_kv.engine_kv_connector_actions.v1" in packaged_probe_readme_text
 
 
 def _parse_simple_yaml(text: str) -> dict:
