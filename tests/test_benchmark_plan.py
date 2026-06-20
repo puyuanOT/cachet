@@ -307,6 +307,101 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert "--overwrite" in bundle_command.argv
 
 
+def test_build_v1_benchmark_plan_can_generate_and_bundle_native_probe_factories(tmp_path):
+    native_probe_factories_json = str(tmp_path / "native-probe-factories.json")
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+        ),
+        native_probe_factories_output_json=native_probe_factories_json,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    native_command = next(command for command in plan.commands if command.name == "inspect-native-probe-factories")
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert [command.name for command in plan.commands][-5:] == [
+        "run-benchmark",
+        "run-storage-benchmark",
+        "inspect-native-probe-factories",
+        "validate-release-evidence",
+        "build-release-bundle",
+    ]
+    assert record["native_probe_factories_output_json"] == native_probe_factories_json
+    assert record["release_bundle"]["native_probe_factories_jsons"] == [native_probe_factories_json]
+    assert native_command.argv == (
+        "python",
+        "-m",
+        "document_kv_cache.native_probe_factories",
+        "--output-json",
+        native_probe_factories_json,
+    )
+    assert bundle_command.argv[bundle_command.argv.index("--native-probe-factories-json") + 1] == (
+        native_probe_factories_json
+    )
+
+
+def test_build_v1_benchmark_plan_dedupes_equivalent_native_probe_factories_paths(tmp_path):
+    native_probe_factories_json = str(tmp_path / "native-probe-factories.json")
+    equivalent_native_probe_factories_json = str(tmp_path / "subdir" / ".." / "native-probe-factories.json")
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+            native_probe_factories_jsons=(equivalent_native_probe_factories_json,),
+        ),
+        native_probe_factories_output_json=native_probe_factories_json,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert record["release_bundle"]["native_probe_factories_jsons"] == [native_probe_factories_json]
+    assert bundle_command.argv.count("--native-probe-factories-json") == 1
+    assert bundle_command.argv[bundle_command.argv.index("--native-probe-factories-json") + 1] == (
+        native_probe_factories_json
+    )
+
+
 def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_validation(tmp_path):
     config = BenchmarkPlanConfig(
         suite_id="v1-g5",
@@ -763,6 +858,21 @@ def test_benchmark_plan_rejects_release_bundle_output_dir_colliding_with_generat
                 output_dir=str(tmp_path / "release-evidence.json"),
                 output_json=str(tmp_path / "release-bundle-manifest.json"),
             ),
+        )
+
+
+def test_benchmark_plan_rejects_native_probe_factories_output_path_collisions(tmp_path):
+    with pytest.raises(ValueError, match="output paths must be distinct"):
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            storage_benchmark=StorageBenchmarkPlanConfig(
+                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                output_json=str(tmp_path / "storage.json"),
+            ),
+            native_probe_factories_output_json=str(tmp_path / "storage.json"),
         )
 
 
@@ -1760,6 +1870,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "github-governance.json"),
             "--release-bundle-native-probe-factories-json",
             str(tmp_path / "native-probe-factories.json"),
+            "--native-probe-factories-output-json",
+            str(tmp_path / "native-probe-factories.json"),
             "--release-bundle-overwrite",
             "--plan-output-json",
             str(plan_json),
@@ -1770,12 +1882,17 @@ def test_main_can_include_release_bundle_command(tmp_path):
     bundle_argv = record["commands"][-1]["argv"]
 
     assert exit_code == 0
-    assert [command["name"] for command in record["commands"]][-3:] == [
+    assert [command["name"] for command in record["commands"]][-4:] == [
         "run-storage-benchmark",
+        "inspect-native-probe-factories",
         "validate-release-evidence",
         "build-release-bundle",
     ]
+    native_argv = next(
+        command["argv"] for command in record["commands"] if command["name"] == "inspect-native-probe-factories"
+    )
     assert record["release_bundle_output_dir"] == str(tmp_path / "release-bundle")
+    assert record["native_probe_factories_output_json"] == str(tmp_path / "native-probe-factories.json")
     assert record["release_bundle"]["release_evidence_json"] == str(tmp_path / "release-evidence.json")
     assert record["release_bundle"]["engine_actions_jsons"] == [
         str(tmp_path / "vllm-actions.json"),
@@ -1788,6 +1905,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["release_bundle"]["native_probe_factories_jsons"] == [
         str(tmp_path / "native-probe-factories.json")
     ]
+    assert native_argv[:3] == [sys.executable, "-m", "document_kv_cache.native_probe_factories"]
+    assert native_argv[native_argv.index("--output-json") + 1] == str(tmp_path / "native-probe-factories.json")
     assert bundle_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_bundle"]
     assert bundle_argv.count("--engine-probe-json") == 2
     assert bundle_argv.count("--engine-actions-json") == 2

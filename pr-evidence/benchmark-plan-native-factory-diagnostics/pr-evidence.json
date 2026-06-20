@@ -1,0 +1,27 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 requested canonical-path dedupe for generated and explicit native factory diagnostics sidecars. The helper now dedupes with _canonical_artifact_path and a regression test covers equivalent paths; re-review approved.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_plan.py",
+    "tests/test_benchmark_plan.py",
+    "README.md"
+  ],
+  "verification": [
+    "git diff --check",
+    "poetry run python -m compileall -q src tests",
+    "poetry run pytest -q (717 passed)",
+    "poetry run pytest tests/test_benchmark_plan.py tests/test_project_governance.py -q (102 passed)"
+  ],
+  "what_changed": [
+    "Added benchmark-plan generation for native-probe factory diagnostics via --native-probe-factories-output-json.",
+    "Automatically includes generated native-probe factory diagnostics in release-bundle commands and plan records, deduped by canonical artifact path with explicit sidecars.",
+    "Updated README examples and benchmark-plan tests for command ordering, CLI wiring, path collision checks, and equivalent-path dedupe."
+  ],
+  "why": "Release handoff plans should generate the package-owned vLLM/SGLang native factory diagnostics sidecar instead of requiring users to run it manually before bundling."
+}

@@ -612,7 +612,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
   --release-bundle-github-governance-json /data/github-governance.json \
-  --release-bundle-native-probe-factories-json /data/native-probe-factories.json \
+  --native-probe-factories-output-json /data/native-probe-factories.json \
   --engine-probe-targets-output-json /data/engine-probe-targets.json \
   --engine-probe-targets-release-safe \
   --plan-output-json /data/v1-plan.json \
@@ -639,6 +639,10 @@ package-owned vLLM/SGLang factory paths. Those factories are stable release-plan
 targets but still fail closed until the backend-native block-manager adapter is
 available; pass explicit `--engine-probe-factory BACKEND=MODULE:CALLABLE` to use
 a downstream adapter module.
+Add `--native-probe-factories-output-json` to the benchmark plan to emit the
+matching `document_kv.native_probe_factories.v1` diagnostics sidecar; when
+release-bundle assembly is also enabled, the generated sidecar is included in
+the bundle automatically.
 If native probe and connector-action records already exist, skip the planned
 probe flags and pass them directly with repeatable `--release-engine-probe-json`
 and `--release-engine-actions-json`.
