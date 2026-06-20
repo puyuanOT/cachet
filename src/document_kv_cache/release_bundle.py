@@ -226,6 +226,7 @@ _REPOSITORY_HYGIENE_KEYS = frozenset(
         "missing_gitignore_patterns",
         "forbidden_tracked_artifact_patterns",
         "forbidden_tracked_paths",
+        "dirty_tracked_paths",
         "issues",
     }
 )
@@ -934,6 +935,8 @@ def _repository_hygiene_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, 
         issues.append("repository hygiene sidecar missing_gitignore_patterns must be an empty array")
     if record.get("forbidden_tracked_paths") != []:
         issues.append("repository hygiene sidecar forbidden_tracked_paths must be an empty array")
+    if record.get("dirty_tracked_paths") != []:
+        issues.append("repository hygiene sidecar dirty_tracked_paths must be an empty array")
     if record.get("issues") != []:
         issues.append("repository hygiene sidecar issues must be an empty array")
     return _dedupe_strings(issues)

@@ -855,7 +855,8 @@ include the repository visibility and branch-protection sidecar emitted by
 governance record is release-ready. Add `--repository-hygiene-json` to include
 the `.gitignore` and tracked-artifact sidecar emitted by
 `document_kv_cache.repository_hygiene`; release bundles reject it unless no
-generated, build, cache, or secret-like artifacts are tracked. Repeat
+generated, build, cache, or secret-like artifacts are tracked and no tracked
+paths differ from `HEAD`. Repeat
 `--native-probe-factories-json` for
 `document_kv.native_probe_factories.v1` diagnostics emitted by
 `document_kv_cache.native_probe_factories`; the bundle validates that the
@@ -905,9 +906,10 @@ python -m document_kv_cache.repository_hygiene \
 ```
 
 The sidecar records the required `.gitignore` patterns, tracked path count, and
-any tracked generated or secret-like artifact paths. It returns non-zero until
-all required ignore patterns are present and no forbidden artifact paths are
-tracked.
+any tracked generated or secret-like artifact paths. It also records dirty
+tracked paths so release handoffs prove they were produced from a clean tracked
+worktree. It returns non-zero until all required ignore patterns are present, no
+forbidden artifact paths are tracked, and no tracked files differ from `HEAD`.
 
 For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g5 `runs/submit` payload:
 

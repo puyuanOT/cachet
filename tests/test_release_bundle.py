@@ -733,6 +733,13 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "stale-policy-repository-hygiene.json",
         stale_policy_repository_hygiene_record,
     )
+    dirty_repository_hygiene_record = _repository_hygiene_record(ok=True)
+    dirty_repository_hygiene_record["dirty_tracked_paths"] = ["src/document_kv_cache/repository_hygiene.py"]
+    dirty_repository_hygiene_record["issues"] = ["dirty tracked paths: src/document_kv_cache/repository_hygiene.py"]
+    dirty_repository_hygiene = _write_json(
+        tmp_path / "dirty-repository-hygiene.json",
+        dirty_repository_hygiene_record,
+    )
 
     with pytest.raises(ValueError, match="package wheel artifact source_path"):
         build_release_bundle(
@@ -923,6 +930,16 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             repository_hygiene_json=stale_policy_repository_hygiene,
             output_dir=tmp_path / "stale-policy-repository-hygiene-bundle",
+        )
+
+    with pytest.raises(ValueError, match="dirty_tracked_paths must be an empty array"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            repository_hygiene_json=dirty_repository_hygiene,
+            output_dir=tmp_path / "dirty-repository-hygiene-bundle",
         )
 
     with pytest.raises(ValueError, match="unsupported keys"):
@@ -1889,6 +1906,7 @@ def _repository_hygiene_record(*, ok: bool):
         "missing_gitignore_patterns": [] if ok else [".env"],
         "forbidden_tracked_artifact_patterns": list(FORBIDDEN_TRACKED_ARTIFACT_PATTERNS),
         "forbidden_tracked_paths": [] if ok else ["dist/document_kv_cache-0.2.0-py3-none-any.whl"],
+        "dirty_tracked_paths": [],
         "issues": [] if ok else ["forbidden generated or secret-like tracked artifacts"],
     }
 
