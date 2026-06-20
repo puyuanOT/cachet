@@ -202,6 +202,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     "MaterializedKV": ("document_kv_cache.materializer", "MaterializedKV"),
     "SegmentedMaterializedKV": ("document_kv_cache.materializer", "SegmentedMaterializedKV"),
     "KVMaterializer": ("document_kv_cache.materializer", "KVMaterializer"),
+    "DocumentKVService": ("document_kv_cache.service", "DocumentKVService"),
     "RangeReader": ("document_kv_cache.storage", "RangeReader"),
     "MemoryRangeReader": ("document_kv_cache.storage", "MemoryRangeReader"),
     "DiskRangeReader": ("document_kv_cache.storage", "DiskRangeReader"),

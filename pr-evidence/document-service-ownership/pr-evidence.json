@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5/high approved the service ownership move with no blocking findings; it confirmed behavior preservation, legacy imports/aliases, and curated document service star imports.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/service.py",
+    "src/restaurant_kv_serving/service.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine.py tests/test_engine_adapters.py tests/test_workflow.py tests/test_engine_probe.py tests/test_public_package.py tests/test_project_governance.py -> 129 passed",
+    "poetry run pytest -> 630 passed",
+    "poetry check -> All set!",
+    "git diff --check -> passed",
+    "poetry build -> built sdist and wheel",
+    "secret scan -> only expected fake LangSmith fixture patterns in tests/test_project_governance.py",
+    "GPT-5.5/high reviewer additionally ran poetry run pytest tests/test_public_package.py -q -> 6 passed"
+  ],
+  "what_changed": [
+    "Moved service orchestration implementation into document_kv_cache.service.",
+    "Replaced restaurant_kv_serving.service with a compatibility wrapper over document_kv_cache.service.",
+    "Pointed document_kv_cache root DocumentKVService export at the document-owned service module and added public surface tests."
+  ],
+  "why": "Continue the package ownership migration from restaurant-specific modules to the document-generic namespace while preserving legacy service imports."
+}
