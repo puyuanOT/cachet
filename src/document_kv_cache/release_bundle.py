@@ -275,9 +275,21 @@ _GITHUB_OPEN_PULL_REQUESTS_KEYS = frozenset(
         "checked",
         "total_count",
         "allowed_numbers",
+        "allowed_count",
+        "allowed",
         "unexpected_count",
         "unexpected",
         "truncated",
+    }
+)
+_GITHUB_PULL_REQUEST_SUMMARY_KEYS = frozenset(
+    {
+        "number",
+        "title",
+        "draft",
+        "html_url",
+        "head_ref",
+        "base_ref",
     }
 )
 _REPOSITORY_HYGIENE_KEYS = frozenset(
@@ -1027,8 +1039,67 @@ def _github_open_pull_requests_issues(record: Mapping[str, Any]) -> tuple[str, .
             "GitHub governance sidecar open_pull_requests",
         )
     )
+    allowed_numbers = record.get("allowed_numbers")
+    valid_allowed_numbers = (
+        isinstance(allowed_numbers, Sequence)
+        and not isinstance(allowed_numbers, (str, bytes, bytearray))
+        and all(type(number) is int and number >= 0 for number in allowed_numbers)
+    )
+    if type(record.get("allowed_count")) is not int or record.get("allowed_count") < 0:
+        issues.append("GitHub governance sidecar open_pull_requests.allowed_count must be a non-negative integer")
+    allowed = record.get("allowed")
+    if not isinstance(allowed, Sequence) or isinstance(allowed, (str, bytes, bytearray)):
+        issues.append("GitHub governance sidecar open_pull_requests.allowed must be an array")
+    else:
+        if record.get("allowed_count") != len(allowed):
+            issues.append("GitHub governance sidecar open_pull_requests.allowed_count must match allowed length")
+        allowed_summary_numbers = []
+        for index, pull_request in enumerate(allowed):
+            issues.extend(_github_pull_request_summary_issues(pull_request, index=index))
+            if isinstance(pull_request, Mapping) and type(pull_request.get("number")) is int:
+                allowed_summary_numbers.append(pull_request["number"])
+        if valid_allowed_numbers:
+            unexpected_allowed_numbers = sorted(set(allowed_summary_numbers) - set(allowed_numbers))
+            if unexpected_allowed_numbers:
+                issues.append(
+                    "GitHub governance sidecar open_pull_requests.allowed numbers must be listed in "
+                    "allowed_numbers"
+                )
+            if record.get("allowed_count") == len(allowed) and sorted(allowed_summary_numbers) != sorted(allowed_numbers):
+                issues.append(
+                    "GitHub governance sidecar open_pull_requests.allowed must summarize every allowed number"
+                )
+    if (
+        type(record.get("total_count")) is int
+        and record.get("total_count") >= 0
+        and type(record.get("allowed_count")) is int
+        and record.get("allowed_count") >= 0
+        and type(record.get("unexpected_count")) is int
+        and record.get("unexpected_count") >= 0
+        and record.get("total_count") != record.get("allowed_count") + record.get("unexpected_count")
+    ):
+        issues.append(
+            "GitHub governance sidecar open_pull_requests.total_count must equal "
+            "allowed_count plus unexpected_count"
+        )
     if record.get("unexpected") != []:
         issues.append("GitHub governance sidecar open_pull_requests.unexpected must be an empty array")
+    return tuple(issues)
+
+
+def _github_pull_request_summary_issues(record: Any, *, index: int) -> tuple[str, ...]:
+    label = f"GitHub governance sidecar open_pull_requests.allowed[{index}]"
+    if not isinstance(record, Mapping):
+        return (f"{label} must be an object",)
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _GITHUB_PULL_REQUEST_SUMMARY_KEYS, label))
+    if type(record.get("number")) is not int or record.get("number") <= 0:
+        issues.append(f"{label}.number must be a positive integer")
+    issues.extend(_required_str_field(record, "title", label))
+    issues.extend(_bool_field(record, "draft", label))
+    issues.extend(_required_str_field(record, "html_url", label))
+    issues.extend(_required_str_field(record, "head_ref", label))
+    issues.extend(_required_str_field(record, "base_ref", label))
     return tuple(issues)
 
 

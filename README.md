@@ -949,7 +949,8 @@ python -m document_kv_cache.github_governance \
 
 When producing a sidecar from inside the current release PR, pass
 `--allow-open-pull-request-number <PR_NUMBER>` so that one active pull request is
-recorded but not treated as stale release pressure.
+recorded with its sanitized PR summary but not treated as stale release
+pressure.
 
 If GitHub reports that private-repository branch protection is unavailable, the
 sidecar records `ok=false` and the release remains process-only rather than

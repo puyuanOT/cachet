@@ -90,6 +90,8 @@ def test_summarize_github_repository_governance_reports_release_ready_repo():
             "checked": True,
             "total_count": 0,
             "allowed_numbers": [],
+            "allowed_count": 0,
+            "allowed": [],
             "unexpected_count": 0,
             "unexpected": [],
             "truncated": False,
@@ -221,6 +223,8 @@ def test_summarize_github_repository_governance_rejects_unexpected_open_pull_req
         "checked": True,
         "total_count": 2,
         "allowed_numbers": [],
+        "allowed_count": 0,
+        "allowed": [],
         "unexpected_count": 2,
         "unexpected": [
             {
@@ -270,6 +274,17 @@ def test_summarize_github_repository_governance_allows_current_open_pull_request
         "checked": True,
         "total_count": 1,
         "allowed_numbers": [73],
+        "allowed_count": 1,
+        "allowed": [
+            {
+                "number": 73,
+                "title": "Ready release guard",
+                "draft": False,
+                "html_url": "https://github.com/owner/document-kv-cache/pull/73",
+                "head_ref": "release-guard",
+                "base_ref": "main",
+            },
+        ],
         "unexpected_count": 0,
         "unexpected": [],
         "truncated": False,
