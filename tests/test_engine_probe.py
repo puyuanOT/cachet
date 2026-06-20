@@ -345,6 +345,23 @@ def test_run_engine_kv_connector_probe_owns_expected_backend_metadata_without_co
     )
 
 
+@pytest.mark.parametrize("module", [public_engine_probe, legacy_engine_probe])
+def test_engine_probe_native_probe_flags_must_be_boolean(module, tmp_path):
+    with pytest.raises(TypeError, match="native_probe must be boolean"):
+        module.EngineKVProbeConfig(
+            handoff_json=tmp_path / "handoff.json",
+            probe_factory="some.module:factory",
+            native_probe="false",
+        )
+
+    with pytest.raises(TypeError, match="native_probe must be boolean"):
+        module.EngineKVProbeFactoryResult(
+            probe=object(),
+            engine_version="vllm-native-test",
+            native_probe=1,
+        )
+
+
 def test_run_engine_kv_connector_probe_requires_engine_version_for_native_probe(tmp_path, monkeypatch):
     handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=True)
     probe_factory = write_probe_factory_module(

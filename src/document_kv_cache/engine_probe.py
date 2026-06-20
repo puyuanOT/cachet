@@ -83,6 +83,8 @@ class EngineKVProbeFactoryResult:
     def __post_init__(self) -> None:
         if not self.engine_version:
             raise ValueError("engine_version must be non-empty")
+        if type(self.native_probe) is not bool:
+            raise TypeError("native_probe must be boolean")
         _validate_metadata_strings(self.metadata)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
@@ -110,6 +112,8 @@ class EngineKVProbeConfig:
     def __post_init__(self) -> None:
         if not self.probe_factory:
             raise ValueError("probe_factory must be non-empty")
+        if type(self.native_probe) is not bool:
+            raise TypeError("native_probe must be boolean")
         _validate_metadata_strings(self.metadata)
         object.__setattr__(self, "handoff_json", Path(self.handoff_json))
         if self.output_json is not None:
