@@ -240,6 +240,8 @@ from document_kv_cache import (
     build_engine_adapter_request,
     build_engine_kv_connector_actions,
     build_engine_kv_injection_plan,
+    engine_kv_connector_actions_from_record,
+    engine_kv_connector_actions_to_record,
     engine_adapter_request_to_record,
     probe_engine_kv_connector_actions,
     read_engine_adapter_request_json,
@@ -276,6 +278,8 @@ payload = adapter_storage.read_bytes(record["payload_source"]["uri"])
 payload_or_segments = view_engine_adapter_payload(record, payload)
 injection_plan = build_engine_kv_injection_plan(record, expected_backend="vllm")
 actions = build_engine_kv_connector_actions(injection_plan, payload_or_segments)
+actions_record = engine_kv_connector_actions_to_record(actions)
+actions = engine_kv_connector_actions_from_record(actions_record, expected_backend="vllm")
 
 reservation = vllm_block_manager.reserve(
     request_id=actions.reservation.request_id,
@@ -299,6 +303,14 @@ validation path exercises native reservation, KV import, handle binding, and
 release using the exact descriptors that production serving will consume, but it
 does not schedule decode; vLLM or SGLang still owns request scheduling, LoRA
 routing, token generation, and final cleanup.
+`engine_kv_connector_actions_to_record` emits the JSON-compatible
+`document_kv.engine_kv_connector_actions.v1` descriptor for out-of-process native
+adapters. The record contains the request id, backend, reservation geometry,
+copy offsets, bind metadata, and release action, but not raw KV payload bytes.
+Use `engine_kv_connector_actions_from_record` or
+`validate_engine_kv_connector_actions_record` at the engine boundary to reject a
+stale backend, schema, payload offset, or layout-derived block map before making
+native block-manager calls.
 Serialize successful probe summaries with
 `engine_kv_connector_probe_result_to_record` so release validation can verify
 that both native backends exercised reservation, import, bind, and release with
@@ -424,7 +436,12 @@ that plan plus the loaded payload into reserve/copy/bind/release descriptors.
 Those descriptors carry source offsets, payload indexes, token spans, and block
 ranges, but not raw KV bytes, so adapters can slice or stream from their
 existing payload buffer without duplicating large caches in Python objects. The
-actual adapter remains a thin integration layer inside the vLLM or SGLang
+optional `engine_kv_connector_actions_to_record` step serializes those
+descriptors as `document_kv.engine_kv_connector_actions.v1` for native adapters
+that cross a process boundary; the matching parser validates the record back
+into the same reserve/copy/bind/release dataclasses before the engine touches
+its block manager.
+The actual adapter remains a thin integration layer inside the vLLM or SGLang
 serving process: it translates the descriptors to native block-manager calls,
 binds the handle to the request, and lets the serving engine own scheduling,
 decode, LoRA routing, and release. The nested `layout` record also carries

@@ -8,6 +8,8 @@ import pytest
 from document_kv_cache.admission import AdmissionQueue
 from document_kv_cache.cache import CacheTier, ChunkCache
 from document_kv_cache.engine_adapters import (
+    ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+    ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
     ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
     ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION,
     EngineAdapterRequest,
@@ -21,6 +23,8 @@ from document_kv_cache.engine_adapters import (
     build_engine_adapter_request,
     build_engine_kv_connector_actions,
     build_engine_kv_injection_plan,
+    engine_kv_connector_actions_from_record,
+    engine_kv_connector_actions_to_record,
     engine_kv_connector_probe_result_to_record,
     engine_adapter_request_to_record,
     payload_mode_for,
@@ -29,6 +33,7 @@ from document_kv_cache.engine_adapters import (
     sglang_adapter_spec,
     split_engine_adapter_payload,
     validate_engine_adapter_request_record,
+    validate_engine_kv_connector_actions_record,
     validate_engine_kv_connector_probe_record,
     validate_engine_kv_connector_actions,
     view_engine_adapter_payload,
@@ -135,6 +140,8 @@ def test_engine_adapters_document_module_owns_public_api():
     assert public_module.__all__ == [
         "EngineAdapterRequest",
         "EngineAdapterSpec",
+        "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE",
+        "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION",
         "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
         "ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION",
         "EngineKVBlockManagerProbe",
@@ -151,6 +158,8 @@ def test_engine_adapters_document_module_owns_public_api():
         "build_engine_adapter_request",
         "build_engine_kv_connector_actions",
         "build_engine_kv_injection_plan",
+        "engine_kv_connector_actions_from_record",
+        "engine_kv_connector_actions_to_record",
         "engine_kv_connector_probe_result_to_record",
         "engine_adapter_request_to_record",
         "payload_mode_for",
@@ -159,6 +168,7 @@ def test_engine_adapters_document_module_owns_public_api():
         "sglang_adapter_spec",
         "split_engine_adapter_payload",
         "validate_engine_adapter_request_record",
+        "validate_engine_kv_connector_actions_record",
         "validate_engine_kv_connector_probe_record",
         "validate_engine_kv_connector_actions",
         "view_engine_adapter_payload",
@@ -1068,6 +1078,110 @@ def test_build_engine_kv_connector_actions_describe_segmented_native_handoff(tmp
         ("bind", "req-1", "document-kv://req-1", ("selection-lora",)),
         ("release", "req-1"),
     ]
+
+
+def test_engine_kv_connector_actions_record_round_trips_segmented_handoff(tmp_path):
+    plan_layout = KVLayout(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        layout_version="qwen3-v1",
+        dtype="int8",
+        num_layers=36,
+        block_size=2,
+        bytes_per_token=TEST_BYTES_PER_TOKEN,
+        num_query_heads=32,
+        num_kv_heads=8,
+        head_size=128,
+        kv_stride_bytes=128,
+        shares_kv_storage=True,
+    )
+    ready = service(tmp_path).prepare_for_engine(
+        request(),
+        layout=plan_layout,
+        adapter_ids=("selection-lora",),
+        segmented=True,
+    )
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    record = engine_adapter_request_to_record(
+        adapter_request,
+        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+    )
+    payload_or_segments = view_engine_adapter_payload(record, b"".join(ready.payload))
+    injection_plan = build_engine_kv_injection_plan(record, expected_backend="vllm")
+    actions = build_engine_kv_connector_actions(injection_plan, payload_or_segments)
+
+    actions_record = engine_kv_connector_actions_to_record(actions)
+    json_record = json.loads(json.dumps(actions_record))
+    restored = engine_kv_connector_actions_from_record(json_record, expected_backend=ServingBackend.VLLM)
+
+    assert actions_record["record_type"] == ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE
+    assert actions_record["schema_version"] == ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION
+    assert actions_record["backend"] == "vllm"
+    assert actions_record["request_id"] == "req-1"
+    assert actions_record["reservation"]["layout"]["storage_layout"] == "shared_key_value"
+    assert actions_record["reservation"]["adapter_ids"] == ["selection-lora"]
+    assert [copy["payload_index"] for copy in actions_record["copies"]] == [0, 1]
+    assert actions_record["copies"][0]["source_byte_end"] == len(STATIC_PAYLOAD)
+    assert actions_record["copies"][1]["source_byte_start"] == 0
+    assert actions_record["bind"]["metadata"]["engine.connector_package"] == "vllm"
+    assert restored.reservation == actions.reservation
+    assert restored.copies == actions.copies
+    assert restored.bind.request_id == actions.bind.request_id
+    assert restored.bind.adapter_ids == actions.bind.adapter_ids
+    assert dict(restored.bind.metadata) == dict(actions.bind.metadata)
+    assert restored.release == actions.release
+    validate_engine_kv_connector_actions_record(json_record, expected_backend="vllm")
+
+
+def test_engine_kv_connector_actions_record_validation_rejects_stale_fields(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    adapter_request = build_engine_adapter_request(ready, spec=sglang_adapter_spec())
+    record = engine_adapter_request_to_record(
+        adapter_request,
+        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+    )
+    payload_view = view_engine_adapter_payload(record, ready.payload)
+    injection_plan = build_engine_kv_injection_plan(record, expected_backend="sglang")
+    actions = build_engine_kv_connector_actions(injection_plan, payload_view)
+    actions_record = engine_kv_connector_actions_to_record(actions)
+
+    with pytest.raises(ValueError, match="expected"):
+        validate_engine_kv_connector_actions_record(actions_record, expected_backend="vllm")
+
+    wrong_source_end = {
+        **actions_record,
+        "copies": [
+            {**actions_record["copies"][0], "source_byte_end": actions_record["copies"][0]["source_byte_end"] + 1},
+            *actions_record["copies"][1:],
+        ],
+    }
+    with pytest.raises(ValueError, match="source_byte_end"):
+        engine_kv_connector_actions_from_record(wrong_source_end)
+
+    missing_source_end = {
+        **actions_record,
+        "copies": [
+            {
+                key: value
+                for key, value in actions_record["copies"][0].items()
+                if key != "source_byte_end"
+            },
+            *actions_record["copies"][1:],
+        ],
+    }
+    with pytest.raises(ValueError, match="source_byte_end"):
+        engine_kv_connector_actions_from_record(missing_source_end)
+
+    wrong_reservation_backend = {
+        **actions_record,
+        "reservation": {**actions_record["reservation"], "backend": "vllm"},
+    }
+    with pytest.raises(ValueError, match="reservation.backend"):
+        engine_kv_connector_actions_from_record(wrong_reservation_backend)
+
+    wrong_schema = {**actions_record, "schema_version": 0}
+    with pytest.raises(ValueError, match="schema_version"):
+        engine_kv_connector_actions_from_record(wrong_schema)
 
 
 def test_build_engine_kv_connector_actions_describe_merged_payload_slices(tmp_path):

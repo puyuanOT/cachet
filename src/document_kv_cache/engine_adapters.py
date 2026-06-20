@@ -24,6 +24,8 @@ from document_kv_cache.storage import local_path
 RESERVED_METADATA_PREFIXES = ("document_kv.", "engine.")
 ENGINE_ADAPTER_HANDOFF_RECORD_TYPE = "document_kv.engine_adapter_request.v1"
 ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION = 2
+ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE = "document_kv.engine_kv_connector_actions.v1"
+ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION = 1
 ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE = "document_kv.engine_kv_connector_probe.v1"
 ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION = 2
 _NON_NATIVE_PROBE_KIND_VALUES = frozenset({"debug_in_memory", "in_memory_debug", "non_native_debug"})
@@ -49,6 +51,8 @@ _EXTERNAL_PAYLOAD_URI_SCHEMES = {
 __all__ = [
     "EngineAdapterRequest",
     "EngineAdapterSpec",
+    "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE",
+    "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION",
     "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
     "ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION",
     "EngineKVBlockManagerProbe",
@@ -65,6 +69,8 @@ __all__ = [
     "build_engine_adapter_request",
     "build_engine_kv_connector_actions",
     "build_engine_kv_injection_plan",
+    "engine_kv_connector_actions_from_record",
+    "engine_kv_connector_actions_to_record",
     "engine_kv_connector_probe_result_to_record",
     "engine_adapter_request_to_record",
     "payload_mode_for",
@@ -73,6 +79,7 @@ __all__ = [
     "sglang_adapter_spec",
     "split_engine_adapter_payload",
     "validate_engine_adapter_request_record",
+    "validate_engine_kv_connector_actions_record",
     "validate_engine_kv_connector_probe_record",
     "validate_engine_kv_connector_actions",
     "view_engine_adapter_payload",
@@ -868,6 +875,70 @@ def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> N
         )
 
 
+def engine_kv_connector_actions_to_record(actions: EngineKVConnectorActions) -> dict[str, Any]:
+    """Serialize connector action descriptors for an out-of-process native adapter."""
+
+    validate_engine_kv_connector_actions(actions)
+    return {
+        "record_type": ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+        "schema_version": ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
+        "backend": actions.reservation.backend.value,
+        "request_id": actions.reservation.request_id,
+        "reservation": _reservation_action_to_record(actions.reservation),
+        "copies": [_copy_action_to_record(copy_action) for copy_action in actions.copies],
+        "bind": _bind_action_to_record(actions.bind),
+        "release": _release_action_to_record(actions.release),
+    }
+
+
+def engine_kv_connector_actions_from_record(
+    record: Mapping[str, Any],
+    *,
+    expected_backend: str | ServingBackend | None = None,
+) -> EngineKVConnectorActions:
+    """Parse and validate connector action descriptors from a JSON-compatible record."""
+
+    if record.get("record_type") != ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE:
+        raise ValueError(f"Unsupported connector actions record_type {record.get('record_type')!r}")
+    if record.get("schema_version") != ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION:
+        raise ValueError(
+            f"Unsupported connector actions schema_version {record.get('schema_version')!r}; "
+            f"expected {ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION}"
+        )
+    backend = _backend_from_value(_required_str(record, "backend"), field_name="backend")
+    if expected_backend is not None:
+        expected = _backend_from_value(expected_backend, field_name="expected_backend")
+        if backend != expected:
+            raise ValueError(f"Connector actions backend {backend.value!r} != expected {expected.value!r}")
+    request_id = _required_str(record, "request_id")
+    reservation = _reservation_action_from_record(_required_mapping(record, "reservation"))
+    if reservation.backend != backend:
+        raise ValueError("Connector actions reservation.backend must match record backend")
+    if reservation.request_id != request_id:
+        raise ValueError("Connector actions reservation.request_id must match record request_id")
+    actions = EngineKVConnectorActions(
+        reservation=reservation,
+        copies=tuple(
+            _copy_action_from_record(copy_action)
+            for copy_action in _required_mapping_sequence(record, "copies")
+        ),
+        bind=_bind_action_from_record(_required_mapping(record, "bind")),
+        release=_release_action_from_record(_required_mapping(record, "release")),
+    )
+    validate_engine_kv_connector_actions(actions)
+    return actions
+
+
+def validate_engine_kv_connector_actions_record(
+    record: Mapping[str, Any],
+    *,
+    expected_backend: str | ServingBackend | None = None,
+) -> None:
+    """Validate a serialized connector actions record without returning descriptors."""
+
+    engine_kv_connector_actions_from_record(record, expected_backend=expected_backend)
+
+
 def probe_engine_kv_connector_actions(
     actions: EngineKVConnectorActions,
     payload_or_segments: bytes | memoryview | tuple[bytes | memoryview, ...],
@@ -1039,6 +1110,107 @@ def _copy_action_from_binding(
         content_hash=binding.content_hash,
         cache_tier=binding.cache_tier,
     )
+
+
+def _reservation_action_to_record(action: EngineKVReservationAction) -> dict[str, Any]:
+    return {
+        "backend": action.backend.value,
+        "request_id": action.request_id,
+        "total_blocks": action.total_blocks,
+        "total_tokens": action.total_tokens,
+        "estimated_gpu_bytes": action.estimated_gpu_bytes,
+        "adapter_ids": list(action.adapter_ids),
+        "layout": _layout_to_record(action.layout),
+    }
+
+
+def _reservation_action_from_record(record: Mapping[str, Any]) -> EngineKVReservationAction:
+    return EngineKVReservationAction(
+        backend=_backend_from_value(_required_str(record, "backend"), field_name="reservation.backend"),
+        request_id=_required_str(record, "request_id"),
+        total_blocks=_required_nonnegative_int(record, "total_blocks"),
+        total_tokens=_required_nonnegative_int(record, "total_tokens"),
+        estimated_gpu_bytes=_required_nonnegative_int(record, "estimated_gpu_bytes"),
+        layout=_layout_from_record(_required_mapping(record, "layout")),
+        adapter_ids=_required_str_sequence(record, "adapter_ids"),
+    )
+
+
+def _copy_action_to_record(action: EngineKVSegmentCopyAction) -> dict[str, Any]:
+    return {
+        "request_id": action.request_id,
+        "document_id": action.document_id,
+        "chunk_type": action.chunk_type,
+        "chunk_id": action.chunk_id,
+        "payload_index": action.payload_index,
+        "source_byte_start": action.source_byte_start,
+        "source_byte_length": action.source_byte_length,
+        "source_byte_end": action.source_byte_end,
+        "global_byte_start": action.global_byte_start,
+        "global_byte_end": action.global_byte_end,
+        "token_start": action.token_start,
+        "token_count": action.token_count,
+        "token_end": action.token_end,
+        "first_block_index": action.first_block_index,
+        "last_block_index_exclusive": action.last_block_index_exclusive,
+        "content_hash": action.content_hash,
+        "cache_tier": action.cache_tier.value,
+    }
+
+
+def _copy_action_from_record(record: Mapping[str, Any]) -> EngineKVSegmentCopyAction:
+    payload_index = _optional_nonnegative_int(record, "payload_index")
+    source_byte_start = _required_nonnegative_int(record, "source_byte_start")
+    source_byte_length = _required_positive_int(record, "source_byte_length")
+    source_byte_end = _required_nonnegative_int(record, "source_byte_end")
+    if source_byte_end != source_byte_start + source_byte_length:
+        raise ValueError("copy action source_byte_end must match source_byte_start + source_byte_length")
+    return EngineKVSegmentCopyAction(
+        request_id=_required_str(record, "request_id"),
+        document_id=_required_str(record, "document_id"),
+        chunk_type=_required_str(record, "chunk_type"),
+        chunk_id=_required_str(record, "chunk_id"),
+        payload_index=payload_index,
+        source_byte_start=source_byte_start,
+        source_byte_length=source_byte_length,
+        global_byte_start=_required_nonnegative_int(record, "global_byte_start"),
+        global_byte_end=_required_nonnegative_int(record, "global_byte_end"),
+        token_start=_required_nonnegative_int(record, "token_start"),
+        token_count=_required_positive_int(record, "token_count"),
+        token_end=_required_nonnegative_int(record, "token_end"),
+        first_block_index=_required_nonnegative_int(record, "first_block_index"),
+        last_block_index_exclusive=_required_nonnegative_int(record, "last_block_index_exclusive"),
+        content_hash=_optional_str(record, "content_hash") or "",
+        cache_tier=_cache_tier_from_value(_required_str(record, "cache_tier"), field_name="copy.cache_tier"),
+    )
+
+
+def _bind_action_to_record(action: EngineKVBindAction) -> dict[str, Any]:
+    return {
+        "request_id": action.request_id,
+        "handle_uri": action.handle_uri,
+        "cache_method": action.cache_method,
+        "adapter_ids": list(action.adapter_ids),
+        "metadata": dict(action.metadata),
+    }
+
+
+def _bind_action_from_record(record: Mapping[str, Any]) -> EngineKVBindAction:
+    return EngineKVBindAction(
+        request_id=_required_str(record, "request_id"),
+        handle_uri=_required_str(record, "handle_uri"),
+        cache_method=_required_str(record, "cache_method"),
+        adapter_ids=_required_str_sequence(record, "adapter_ids"),
+        metadata=_required_mapping(record, "metadata"),
+    )
+
+
+def _release_action_to_record(action: EngineKVReleaseAction) -> dict[str, Any]:
+    return {"request_id": action.request_id}
+
+
+def _release_action_from_record(record: Mapping[str, Any]) -> EngineKVReleaseAction:
+    return EngineKVReleaseAction(request_id=_required_str(record, "request_id"))
 
 
 def _handle_to_record(request: EngineReadyRequest) -> dict[str, Any]:
@@ -1358,6 +1530,15 @@ def _required_nonnegative_int(record: Mapping[str, Any], key: str) -> int:
     value = record.get(key)
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"{key} must be a non-negative integer")
+    return value
+
+
+def _optional_nonnegative_int(record: Mapping[str, Any], key: str) -> int | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{key} must be null or a non-negative integer")
     return value
 
 

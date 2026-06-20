@@ -176,6 +176,14 @@ _DOCUMENT_ROOT_EXPORTS = {
     ),
     "EngineAdapterRequest": ("document_kv_cache.engine_adapters", "EngineAdapterRequest"),
     "EngineAdapterSpec": ("document_kv_cache.engine_adapters", "EngineAdapterSpec"),
+    "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE": (
+        "document_kv_cache.engine_adapters",
+        "ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE",
+    ),
+    "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION": (
+        "document_kv_cache.engine_adapters",
+        "ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION",
+    ),
     "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE": (
         "document_kv_cache.engine_adapters",
         "ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE",
@@ -225,6 +233,14 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.engine_adapters",
         "build_engine_kv_injection_plan",
     ),
+    "engine_kv_connector_actions_from_record": (
+        "document_kv_cache.engine_adapters",
+        "engine_kv_connector_actions_from_record",
+    ),
+    "engine_kv_connector_actions_to_record": (
+        "document_kv_cache.engine_adapters",
+        "engine_kv_connector_actions_to_record",
+    ),
     "engine_kv_connector_probe_result_to_record": (
         "document_kv_cache.engine_adapters",
         "engine_kv_connector_probe_result_to_record",
@@ -250,6 +266,10 @@ _DOCUMENT_ROOT_EXPORTS = {
     "validate_engine_adapter_request_record": (
         "document_kv_cache.engine_adapters",
         "validate_engine_adapter_request_record",
+    ),
+    "validate_engine_kv_connector_actions_record": (
+        "document_kv_cache.engine_adapters",
+        "validate_engine_kv_connector_actions_record",
     ),
     "validate_engine_kv_connector_probe_record": (
         "document_kv_cache.engine_adapters",
