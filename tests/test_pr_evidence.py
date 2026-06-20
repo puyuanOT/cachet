@@ -151,6 +151,27 @@ def test_evaluate_pr_evidence_record_rejects_wrong_record_type():
     assert f"record_type must be {PR_EVIDENCE_RECORD_TYPE!r}" in evidence.issues
 
 
+def test_evaluate_pr_evidence_record_rejects_unsupported_keys():
+    evidence = evaluate_pr_evidence(
+        what_changed=("Tightened PR evidence parsing",),
+        why="Keep PR traceability records auditable.",
+        scope=("pr_evidence.py",),
+        verification=("poetry run pytest tests/test_pr_evidence.py",),
+        refactor_skill_applied=True,
+        gpt55_review_completed=True,
+        gpt55_review_findings_resolved=False,
+        gpt55_review_outcome="clean",
+        gpt55_review_summary="Review was clean.",
+    )
+    record = pr_evidence_to_record(evidence)
+    record["debug"] = {"accepted": False}
+
+    parsed = evaluate_pr_evidence_record(record)
+
+    assert not parsed.ok
+    assert "PR evidence record has unsupported keys: ['debug']" in parsed.issues
+
+
 def test_evaluate_pr_evidence_record_returns_failed_evidence_for_malformed_current_records():
     evidence = evaluate_pr_evidence_record(
         {
