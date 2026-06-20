@@ -268,6 +268,28 @@ def test_build_release_bundle_accepts_pep440_equivalent_wheel_version_spellings(
     assert wheel_artifact["bundled_path"] == package_wheel.name
 
 
+def test_build_release_bundle_accepts_normalized_wheel_metadata_name(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    package_wheel = _write_wheel(
+        source_dir / "document_kv_cache-0.2.0-py3-none-any.whl",
+        metadata_name="Document_KV.Cache",
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        package_wheel=package_wheel,
+        output_dir=tmp_path / "bundle",
+    )
+    record = release_bundle_to_record(bundle)
+
+    wheel_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "package_wheel")
+    assert wheel_artifact["bundled_path"] == package_wheel.name
+
+
 def test_build_release_bundle_strict_v1_rejects_incomplete_release_artifact_set(tmp_path):
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)

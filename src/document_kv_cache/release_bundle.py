@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from document_kv_cache.release_evidence import (
@@ -1437,7 +1438,7 @@ def _wheel_metadata_issues(payload: bytes, *, filename_match: re.Match[str] | No
         return ("package wheel artifact METADATA must be UTF-8 text",)
     name = metadata.get("name")
     version = metadata.get("version")
-    if name != RELEASE_BUNDLE_PACKAGE_NAME:
+    if name is None or canonicalize_name(name) != canonicalize_name(RELEASE_BUNDLE_PACKAGE_NAME):
         return (f"package wheel artifact METADATA Name must be {RELEASE_BUNDLE_PACKAGE_NAME!r}",)
     if not version:
         return ("package wheel artifact METADATA Version must be non-empty",)
