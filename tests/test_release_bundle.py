@@ -236,7 +236,25 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
     plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
-    github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
+    github_governance_record = _github_governance_cli_record(ok=True)
+    github_governance_record["summary"]["open_pull_requests"].update(
+        {
+            "total_count": 1,
+            "allowed_numbers": [129],
+            "allowed_count": 1,
+            "allowed": [
+                {
+                    "number": 129,
+                    "title": "Require Cachet repository branding evidence",
+                    "draft": False,
+                    "html_url": "https://github.com/owner/document-kv-cache/pull/129",
+                    "head_ref": "require-cachet-branding",
+                    "base_ref": "main",
+                }
+            ],
+        }
+    )
+    github_governance = _write_json(source_dir / "github-governance.json", github_governance_record)
     repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
 
     bundle = build_release_bundle(
@@ -282,10 +300,141 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert json.loads((bundle_dir / pr_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert github_artifact["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
     assert github_artifact["bundled_path"] == "github_governance.json"
-    assert json.loads((bundle_dir / github_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+    bundled_governance = json.loads((bundle_dir / github_artifact["bundled_path"]).read_text(encoding="utf-8"))
+    assert bundled_governance["ok"] is True
+    assert bundled_governance["summary"]["open_pull_requests"]["allowed"][0]["number"] == 129
     assert hygiene_artifact["record_type"] == REPOSITORY_HYGIENE_RECORD_TYPE
     assert hygiene_artifact["bundled_path"] == "repository_hygiene.json"
     assert json.loads((bundle_dir / hygiene_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_build_release_bundle_rejects_inconsistent_allowed_open_pull_request_summary(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    github_governance_record = _github_governance_cli_record(ok=True)
+    github_governance_record["summary"]["open_pull_requests"].update(
+        {
+            "total_count": 1,
+            "allowed_numbers": [129],
+            "allowed_count": 2,
+            "allowed": [
+                {
+                    "number": 129,
+                    "title": "Require Cachet repository branding evidence",
+                    "draft": False,
+                    "html_url": "https://github.com/owner/document-kv-cache/pull/129",
+                    "head_ref": "require-cachet-branding",
+                    "base_ref": "main",
+                }
+            ],
+        }
+    )
+    github_governance = _write_json(tmp_path / "github-governance.json", github_governance_record)
+
+    with pytest.raises(ValueError, match="open_pull_requests.allowed_count must match allowed length"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=github_governance,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_build_release_bundle_rejects_missing_allowed_open_pull_request_summary(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    github_governance_record = _github_governance_cli_record(ok=True)
+    github_governance_record["summary"]["open_pull_requests"].update(
+        {
+            "total_count": 1,
+            "allowed_numbers": [129],
+            "allowed_count": 0,
+            "allowed": [],
+            "unexpected_count": 0,
+            "unexpected": [],
+        }
+    )
+    github_governance = _write_json(tmp_path / "github-governance.json", github_governance_record)
+
+    with pytest.raises(ValueError, match="open_pull_requests.total_count must equal allowed_count plus unexpected_count"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=github_governance,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_build_release_bundle_rejects_mismatched_allowed_open_pull_request_summary_number(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    github_governance_record = _github_governance_cli_record(ok=True)
+    github_governance_record["summary"]["open_pull_requests"].update(
+        {
+            "total_count": 1,
+            "allowed_numbers": [129],
+            "allowed_count": 1,
+            "allowed": [
+                {
+                    "number": 999,
+                    "title": "Different pull request",
+                    "draft": False,
+                    "html_url": "https://github.com/owner/document-kv-cache/pull/999",
+                    "head_ref": "different-pr",
+                    "base_ref": "main",
+                }
+            ],
+            "unexpected_count": 0,
+            "unexpected": [],
+        }
+    )
+    github_governance = _write_json(tmp_path / "github-governance.json", github_governance_record)
+
+    with pytest.raises(ValueError, match="open_pull_requests.allowed numbers must be listed in allowed_numbers"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=github_governance,
+            output_dir=tmp_path / "bundle",
+        )
+
+
+def test_build_release_bundle_rejects_malformed_allowed_open_pull_request_numbers(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    github_governance_record = _github_governance_cli_record(ok=True)
+    github_governance_record["summary"]["open_pull_requests"].update(
+        {
+            "total_count": 1,
+            "allowed_numbers": [129, "x"],
+            "allowed_count": 1,
+            "allowed": [
+                {
+                    "number": 129,
+                    "title": "Require Cachet repository branding evidence",
+                    "draft": False,
+                    "html_url": "https://github.com/owner/document-kv-cache/pull/129",
+                    "head_ref": "require-cachet-branding",
+                    "base_ref": "main",
+                }
+            ],
+            "unexpected_count": 0,
+            "unexpected": [],
+        }
+    )
+    github_governance = _write_json(tmp_path / "github-governance.json", github_governance_record)
+
+    with pytest.raises(ValueError, match="open_pull_requests.allowed_numbers must be an array"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=github_governance,
+            output_dir=tmp_path / "bundle",
+        )
 
 
 def test_build_release_bundle_rejects_pr_evidence_sidecars_with_extra_keys(tmp_path):
@@ -2552,6 +2701,8 @@ def _github_governance_cli_record(*, ok: bool):
             "checked": ok,
             "total_count": 0,
             "allowed_numbers": [],
+            "allowed_count": 0,
+            "allowed": [],
             "unexpected_count": 0,
             "unexpected": [],
             "truncated": False,

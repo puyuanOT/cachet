@@ -194,8 +194,15 @@ def _github_open_pull_requests_summary(
             "error": str(exc),
             "error_status_code": status_code,
             "allowed_numbers": allowed_numbers,
+            "allowed_count": 0,
+            "allowed": [],
         }
     total_count = len(open_pull_requests)
+    allowed = [
+        _pull_request_summary(pull_request)
+        for pull_request in open_pull_requests
+        if _pull_request_number(pull_request) in allowed_numbers
+    ]
     unexpected = [
         _pull_request_summary(pull_request)
         for pull_request in open_pull_requests
@@ -205,6 +212,8 @@ def _github_open_pull_requests_summary(
         "checked": True,
         "total_count": total_count,
         "allowed_numbers": allowed_numbers,
+        "allowed_count": len(allowed),
+        "allowed": allowed,
         "unexpected_count": len(unexpected),
         "unexpected": unexpected,
         "truncated": total_count >= 100,
