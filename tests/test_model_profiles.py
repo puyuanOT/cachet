@@ -104,6 +104,39 @@ def test_custom_model_profile_registry_extends_aliases_without_mutating_builtins
     assert layout.bytes_per_token == future_profile.bytes_per_token("bf16")
 
 
+def test_model_profile_registry_accepts_generator_aliases_and_rejects_collisions():
+    custom_profile = KVModelProfile(
+        model_id="custom:4b",
+        architecture="CustomForCausalLM",
+        num_layers=24,
+        num_query_heads=32,
+        num_kv_heads=4,
+        head_size=128,
+        max_context_tokens=65536,
+        default_layout_version="custom-v1",
+    )
+    conflicting_profile = KVModelProfile(
+        model_id="qwen3:4b-instruct",
+        architecture="ConflictingQwenForCausalLM",
+        num_layers=24,
+        num_query_heads=32,
+        num_kv_heads=4,
+        head_size=128,
+        max_context_tokens=65536,
+        default_layout_version="custom-qwen-v1",
+    )
+    registry = default_model_profile_registry()
+
+    extended = registry.with_profile(custom_profile, aliases=(alias for alias in ("Custom/4B",)))
+
+    assert extended.get("Custom/4B") is custom_profile
+    assert "Custom/4B" not in registry
+    with pytest.raises(ValueError, match="already registered"):
+        registry.with_profile(custom_profile, aliases=(QWEN3_4B_INSTRUCT_HF_MODEL_ID,))
+    with pytest.raises(ValueError, match="already registered"):
+        registry.with_profile(conflicting_profile)
+
+
 def test_model_profile_definition_round_trips_future_model_artifact(tmp_path):
     future_profile = KVModelProfile(
         model_id="minimax:m2.5-4b",
@@ -182,14 +215,23 @@ def test_model_profile_definition_rejects_malformed_artifacts():
 
 
 def test_model_profile_registry_rejects_invalid_entries():
-    with pytest.raises(TypeError, match="aliases must be a tuple of strings"):
+    with pytest.raises(TypeError, match="aliases must be an iterable of strings"):
         default_model_profile_registry().with_profile(QWEN3_4B_INSTRUCT_PROFILE, aliases="abc")  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="aliases must be an iterable of strings"):
+        default_model_profile_registry().with_profile(QWEN3_4B_INSTRUCT_PROFILE, aliases=1)  # type: ignore[arg-type]
 
     with pytest.raises(TypeError, match="aliases must be strings"):
         default_model_profile_registry().with_profile(QWEN3_4B_INSTRUCT_PROFILE, aliases=(1,))  # type: ignore[arg-type]
 
     with pytest.raises(ValueError, match="aliases must be non-empty"):
         default_model_profile_registry().with_profile(QWEN3_4B_INSTRUCT_PROFILE, aliases=("",))
+
+    with pytest.raises(ValueError, match="aliases must be unique"):
+        default_model_profile_registry().with_profile(
+            QWEN3_4B_INSTRUCT_PROFILE,
+            aliases=("Qwen/Qwen3-4B", "Qwen/Qwen3-4B"),
+        )
 
     with pytest.raises(TypeError, match="profile must be a KVModelProfile"):
         default_model_profile_registry().with_profile(object())  # type: ignore[arg-type]

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -215,12 +215,15 @@ class ModelProfileRegistry:
             supported = ", ".join(sorted(self.profiles))
             raise KeyError(f"Unknown model profile {model_id!r}; supported profiles: {supported}") from exc
 
-    def with_profile(self, profile: KVModelProfile, *, aliases: tuple[str, ...] = ()) -> ModelProfileRegistry:
+    def with_profile(self, profile: KVModelProfile, *, aliases: Iterable[str] = ()) -> ModelProfileRegistry:
         if not isinstance(profile, KVModelProfile):
             raise TypeError("profile must be a KVModelProfile")
         aliases = _validated_aliases(aliases)
         entries = dict(self.profiles)
         for model_id in (profile.model_id, *aliases):
+            existing_profile = entries.get(model_id)
+            if existing_profile is not None and existing_profile != profile:
+                raise ValueError(f"model profile alias {model_id!r} is already registered")
             entries[model_id] = profile
         return ModelProfileRegistry(entries)
 
@@ -316,15 +319,19 @@ def read_model_profile_definition_json(path: str | Path) -> ModelProfileDefiniti
     return model_profile_definition_from_record(record)
 
 
-def _validated_aliases(aliases: tuple[str, ...]) -> tuple[str, ...]:
-    if isinstance(aliases, str):
-        raise TypeError("aliases must be a tuple of strings")
+def _validated_aliases(aliases: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(aliases, (str, bytes, bytearray, memoryview)) or not isinstance(aliases, Iterable):
+        raise TypeError("aliases must be an iterable of strings")
     normalized = []
+    seen = set()
     for alias in tuple(aliases):
         if not isinstance(alias, str):
             raise TypeError("model profile aliases must be strings")
         if not alias:
             raise ValueError("model profile aliases must be non-empty")
+        if alias in seen:
+            raise ValueError("model profile aliases must be unique")
+        seen.add(alias)
         normalized.append(alias)
     return tuple(normalized)
 
