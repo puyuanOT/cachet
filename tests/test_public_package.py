@@ -124,7 +124,7 @@ def test_public_document_package_reexports_core_api():
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
-    from document_kv_cache import databricks_job
+    from document_kv_cache import databricks_job, databricks_runs
 
     assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
@@ -172,7 +172,8 @@ def test_public_document_package_reexports_core_api():
     assert build_single_node_g5_cluster is databricks_job.build_single_node_g5_cluster
     assert validate_aws_g5_node_type is databricks_job.validate_aws_g5_node_type
     assert DatabricksVLLMSmokeJobConfig is restaurant_kv_serving.DatabricksVLLMSmokeJobConfig
-    assert DatabricksWorkspaceConfig is restaurant_kv_serving.DatabricksWorkspaceConfig
+    assert DatabricksWorkspaceConfig is databricks_runs.DatabricksWorkspaceConfig
+    assert issubclass(restaurant_kv_serving.DatabricksWorkspaceConfig, databricks_runs.DatabricksWorkspaceConfig)
     assert DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
     assert DocumentChunkType is restaurant_kv_serving.DocumentChunkType
     assert DocumentKVRequest is restaurant_kv_serving.DocumentKVRequest
@@ -232,7 +233,7 @@ def test_public_document_package_reexports_core_api():
         build_databricks_vllm_smoke_run_submit_payload
         is restaurant_kv_serving.build_databricks_vllm_smoke_run_submit_payload
     )
-    assert databricks_workspace_config_from_env is restaurant_kv_serving.databricks_workspace_config_from_env
+    assert databricks_workspace_config_from_env is databricks_runs.databricks_workspace_config_from_env
     assert build_release_bundle is restaurant_kv_serving.build_release_bundle
     assert chunk_type_role is restaurant_kv_serving.chunk_type_role
     assert chunk_type_sort_order is restaurant_kv_serving.chunk_type_sort_order
@@ -262,11 +263,8 @@ def test_public_document_package_reexports_core_api():
     assert serving_environment_profile_to_record is restaurant_kv_serving.serving_environment_profile_to_record
     assert serving_environment_profiles is restaurant_kv_serving.serving_environment_profiles
     assert serving_environment_profiles_to_record is restaurant_kv_serving.serving_environment_profiles_to_record
-    assert summarize_databricks_run is restaurant_kv_serving.summarize_databricks_run
-    assert (
-        summarize_databricks_run_submit_payload
-        is restaurant_kv_serving.summarize_databricks_run_submit_payload
-    )
+    assert summarize_databricks_run is databricks_runs.summarize_databricks_run
+    assert summarize_databricks_run_submit_payload is databricks_runs.summarize_databricks_run_submit_payload
     assert pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
     assert pr_evidence_to_record is restaurant_kv_serving.pr_evidence_to_record
     assert "DocumentKVRequest" in dir(document_kv_cache)
@@ -563,7 +561,9 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert legacy_vllm_smoke.VLLMSmokeBenchmarkConfig is vllm_smoke.VLLMSmokeBenchmarkConfig
     assert legacy_vllm_smoke.run_vllm_smoke_benchmark is not vllm_smoke.run_vllm_smoke_benchmark
     assert "run" not in vllm_smoke.__all__
-    assert databricks_runs.DatabricksWorkspaceConfig is restaurant_kv_serving.DatabricksWorkspaceConfig
+    assert issubclass(restaurant_kv_serving.DatabricksWorkspaceConfig, databricks_runs.DatabricksWorkspaceConfig)
+    assert databricks_runs.DatabricksWorkspaceConfig.__module__ == "document_kv_cache.databricks_runs"
+    assert restaurant_kv_serving.DatabricksWorkspaceConfig.__module__ == "restaurant_kv_serving.databricks_runs"
     assert issubclass(restaurant_kv_serving.DatabricksBenchmarkJobConfig, databricks_job.DatabricksBenchmarkJobConfig)
     assert issubclass(
         restaurant_kv_serving.DatabricksSingleNodeG5ClusterConfig,

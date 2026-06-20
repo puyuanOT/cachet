@@ -1,0 +1,44 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the Databricks runs ownership inversion and found one credential-hygiene issue: Databricks HTTP error bodies could echo bearer credentials and the CLI could persist that exception text in --output-json. The document-owned implementation now redacts the configured Databricks token and generic Bearer credentials before raising HTTP errors, regression tests cover direct API and CLI JSON-output paths, and GPT-5.5 re-review approved the branch.",
+  "issues": [
+    {
+      "resolution": "Added token and bearer-credential redaction before formatting Databricks HTTP errors, mirrored the private compatibility wrapper, and added direct plus CLI output-json regression coverage.",
+      "severity": "P1",
+      "summary": "Databricks HTTP error bodies could persist echoed credentials in CLI JSON output."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document Databricks runs implementation ownership",
+    "legacy Databricks runs compatibility wrapper",
+    "Databricks HTTP error credential redaction",
+    "legacy module execution and helper monkeypatch migration hooks",
+    "public package compatibility tests",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_runs.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/databricks_runs.py src/restaurant_kv_serving/databricks_runs.py src/document_kv_cache/__init__.py tests/test_databricks_runs.py tests/test_public_package.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review and re-review after resolving the credential-redaction finding"
+  ],
+  "what_changed": [
+    "Moved Databricks run submit/get/status implementation into document_kv_cache.databricks_runs.",
+    "Routed document_kv_cache root Databricks run symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.databricks_runs into a compatibility wrapper over the document module.",
+    "Preserved legacy module execution, public and private helper monkeypatch behavior, pickle support, slotted config layout, and the previous legacy star-import surface.",
+    "Added Databricks HTTP error redaction for echoed configured tokens and Bearer credentials."
+  ],
+  "why": "The generalized package should own Databricks run submission and status inspection because these helpers are shared by benchmark and release workflows. Keeping legacy compatibility makes this an incremental, behavior-preserving step toward retiring restaurant-specific implementation ownership."
+}

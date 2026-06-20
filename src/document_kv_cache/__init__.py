@@ -95,6 +95,40 @@ _DOCUMENT_ROOT_EXPORTS = {
         "write_databricks_run_submit_json",
     ),
     "write_databricks_runner_script": ("document_kv_cache.databricks_job", "write_databricks_runner_script"),
+    "DEFAULT_DATABRICKS_HOST_ENV": ("document_kv_cache.databricks_runs", "DEFAULT_DATABRICKS_HOST_ENV"),
+    "DEFAULT_DATABRICKS_TOKEN_ENV": ("document_kv_cache.databricks_runs", "DEFAULT_DATABRICKS_TOKEN_ENV"),
+    "DEFAULT_DATABRICKS_TIMEOUT_SECONDS": (
+        "document_kv_cache.databricks_runs",
+        "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+    ),
+    "DATABRICKS_RUN_STATUS_RECORD_TYPE": (
+        "document_kv_cache.databricks_runs",
+        "DATABRICKS_RUN_STATUS_RECORD_TYPE",
+    ),
+    "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE": (
+        "document_kv_cache.databricks_runs",
+        "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
+    ),
+    "DatabricksWorkspaceConfig": ("document_kv_cache.databricks_runs", "DatabricksWorkspaceConfig"),
+    "databricks_workspace_config_from_env": (
+        "document_kv_cache.databricks_runs",
+        "databricks_workspace_config_from_env",
+    ),
+    "submit_databricks_run": ("document_kv_cache.databricks_runs", "submit_databricks_run"),
+    "get_databricks_run": ("document_kv_cache.databricks_runs", "get_databricks_run"),
+    "summarize_databricks_run": ("document_kv_cache.databricks_runs", "summarize_databricks_run"),
+    "summarize_databricks_run_submit_payload": (
+        "document_kv_cache.databricks_runs",
+        "summarize_databricks_run_submit_payload",
+    ),
+    "write_databricks_run_response_json": (
+        "document_kv_cache.databricks_runs",
+        "write_databricks_run_response_json",
+    ),
+    "read_databricks_run_submit_payload": (
+        "document_kv_cache.databricks_runs",
+        "read_databricks_run_submit_payload",
+    ),
 }
 
 _legacy_package = import_module(_LEGACY_PACKAGE)
