@@ -1,0 +1,41 @@
+{
+  "files": {
+    "pr-evidence/v1-evidence-unexpected-arms/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 requested preserving V1BenchmarkEvidence positional compatibility by appending unexpected_arms after unexpected_datasets; the field order was fixed, verification was rerun, and the reviewer approved.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/benchmarks.py",
+        "src/document_kv_cache/benchmark_runner.py",
+        "src/document_kv_cache/release_evidence.py",
+        "tests/test_benchmarks.py",
+        "tests/test_benchmark_runner.py",
+        "tests/test_release_evidence.py",
+        "tests/test_release_bundle.py",
+        "README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_benchmarks.py tests/test_benchmark_runner.py tests/test_release_evidence.py tests/test_release_bundle.py -q -> 154 passed",
+        "git diff --check -> passed",
+        "poetry check -> passed",
+        "poetry run pytest -q -> 880 passed",
+        "poetry install --dry-run -> passed",
+        "poetry build -> passed"
+      ],
+      "what_changed": [
+        "Added unexpected_arms to V1 benchmark evidence and issue reporting.",
+        "Serialized unexpected_arms in benchmark run v1_evidence records.",
+        "Required release evidence to keep unexpected_arms empty.",
+        "Added tests and docs for the expected-arm-only V1 evidence contract."
+      ],
+      "why": "V1 release evidence should fail closed when extra benchmark arms are present, rather than silently treating mixed-arm reports as release-evaluable."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

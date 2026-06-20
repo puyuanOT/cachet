@@ -581,9 +581,9 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
 - `summarize_measurements` produces per-dataset/per-arm latency and quality rows.
 - `compare_to_baseline` reports cache speedups and quality deltas against `baseline_prefill`.
 - `evaluate_v1_benchmark_evidence` marks whether the report is release-evaluable:
-  all four V1 datasets, baseline/cache rows, comparisons with speedups and
-  quality deltas, successful latency measurements, and quality rates must be
-  present.
+  all four V1 datasets, only the expected baseline/cache arms, comparisons with
+  speedups and quality deltas, successful latency measurements, and quality
+  rates must be present.
 
 The package intentionally does not own model execution. Databricks jobs, vLLM adapters, SGLang adapters, or local harnesses provide `BenchmarkEngine` implementations; the package keeps dataset parsing, prompt pairing, error capture, summaries, and baseline comparison consistent.
 
@@ -780,7 +780,7 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
 This emits suite metadata, per-request measurements, per-dataset quality/latency
 summaries, cache-vs-baseline comparisons, and a `v1_evidence` block. Smoke runs
 against one dataset are allowed, but `v1_evidence.ok` is false until all required
-V1 datasets and metrics are present. With the default `/v1/completions`
+V1 datasets, expected arms, and metrics are present. With the default `/v1/completions`
 endpoint, the runner accepts server roots such as `http://localhost:8000` or
 OpenAI-style bases such as `http://localhost:8000/v1` without generating
 `/v1/v1/completions`. Custom `--endpoint` and `--cache-endpoint` values are

@@ -243,6 +243,7 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
     assert "hotpotqa:baseline_prefill" in record["v1_evidence"]["missing_report_rows"]
     assert "hotpotqa" in record["v1_evidence"]["missing_comparisons"]
     assert record["v1_evidence"]["comparisons_without_metrics"] == []
+    assert record["v1_evidence"]["unexpected_arms"] == []
 
 
 def test_benchmark_run_result_to_record_uses_result_arm_ids_for_v1_evidence():
@@ -271,6 +272,7 @@ def test_benchmark_run_result_to_record_uses_result_arm_ids_for_v1_evidence():
     assert "biography:kv_reuse" not in record["v1_evidence"]["missing_report_rows"]
     assert "hotpotqa:full_prefill" in record["v1_evidence"]["missing_report_rows"]
     assert all("baseline_prefill" not in row for row in record["v1_evidence"]["missing_report_rows"])
+    assert record["v1_evidence"]["unexpected_arms"] == []
 
 
 def test_run_openai_compatible_v1_benchmark_uses_factory_for_baseline_and_cache(tmp_path):

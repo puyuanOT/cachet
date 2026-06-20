@@ -246,6 +246,7 @@ class V1BenchmarkEvidence:
     rows_without_latency: tuple[str, ...]
     rows_without_quality: tuple[str, ...]
     unexpected_datasets: tuple[str, ...] = ()
+    unexpected_arms: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -256,6 +257,7 @@ class V1BenchmarkEvidence:
             or self.rows_without_successful_requests
             or self.rows_without_latency
             or self.rows_without_quality
+            or self.unexpected_arms
             or self.unexpected_datasets
         )
 
@@ -277,6 +279,8 @@ class V1BenchmarkEvidence:
             issues.append(f"rows without latency evidence: {', '.join(self.rows_without_latency)}")
         if self.rows_without_quality:
             issues.append(f"rows without quality evidence: {', '.join(self.rows_without_quality)}")
+        if self.unexpected_arms:
+            issues.append(f"unexpected arms: {', '.join(self.unexpected_arms)}")
         if self.unexpected_datasets:
             issues.append(f"unexpected datasets: {', '.join(self.unexpected_datasets)}")
         return tuple(issues)
@@ -396,7 +400,13 @@ def evaluate_v1_benchmark_evidence(
         if comparison.baseline_arm_id == baseline_arm_id and comparison.cache_arm_id == cache_arm_id
     }
     required_datasets_set = set(required)
+    expected_arms = {baseline_arm_id, cache_arm_id}
     observed_datasets = {row.dataset for row in rows}.union(comparison.dataset for comparison in comparisons)
+    observed_arms = {row.arm_id for row in rows}.union(
+        arm_id
+        for comparison in comparisons
+        for arm_id in (comparison.baseline_arm_id, comparison.cache_arm_id)
+    )
     existing_required_rows = tuple(rows_by_key[key] for key in required_row_keys if key in rows_by_key)
     return V1BenchmarkEvidence(
         required_datasets=required,
@@ -429,6 +439,7 @@ def evaluate_v1_benchmark_evidence(
             for row in existing_required_rows
             if row.exact_match_rate is None or row.answer_found_rate is None
         ),
+        unexpected_arms=tuple(sorted(observed_arms.difference(expected_arms))),
         unexpected_datasets=tuple(sorted(observed_datasets.difference(required_datasets_set))),
     )
 
