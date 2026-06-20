@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/legacy-benchmark-plan-facade-defaults/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved with no merge-blocking findings after checking import-order isolation, legacy hooks, class identity, recursion safety, CLI output, and package/star import compatibility.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/restaurant_kv_serving/benchmark_plan.py",
+        "tests/test_benchmark_plan.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_benchmark_plan.py::test_legacy_benchmark_plan_import_order_does_not_capture_public_monkeypatch tests/test_benchmark_plan.py::test_legacy_benchmark_plan_main_isolates_dataclass_method_globals tests/test_benchmark_plan.py::test_legacy_benchmark_plan_without_patches_returns_public_dataclass_instances tests/test_benchmark_plan.py::test_legacy_benchmark_plan_main_respects_legacy_namespace_monkeypatch tests/test_benchmark_plan.py::test_legacy_benchmark_plan_saved_original_wrapper_does_not_recurse -q",
+        "poetry run pytest tests/test_benchmark_plan.py -q",
+        "poetry run pytest tests/test_public_package.py tests/test_project_governance.py -q",
+        "python -m py_compile src/restaurant_kv_serving/benchmark_plan.py tests/test_benchmark_plan.py",
+        "git diff --check",
+        "poetry run pytest",
+        "poetry check",
+        "poetry build"
+      ],
+      "what_changed": [
+        "Loaded clean document_kv_cache.benchmark_plan defaults for the legacy benchmark-plan facade.",
+        "Preserved legacy benchmark-plan monkeypatch hooks while avoiding import-order capture of public module monkeypatches.",
+        "Added regression coverage for public benchmark-plan monkeypatches applied before importing the legacy facade."
+      ],
+      "why": "Keeps the legacy restaurant namespace safe during migration while continuing to move implementation ownership into document_kv_cache."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
