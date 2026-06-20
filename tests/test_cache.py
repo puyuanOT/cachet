@@ -1,6 +1,8 @@
 import importlib
 from dataclasses import replace
 
+import pytest
+
 from document_kv_cache.cache import ByteLRU, CacheTier, ChunkCache, ChunkCacheResult, ChunkCacheStats
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.models import DocumentChunkType, KVCacheKey
@@ -35,6 +37,59 @@ def test_byte_lru_oversized_replacement_updates_byte_accounting():
     assert len(cache) == 0
 
 
+@pytest.mark.parametrize(
+    ("max_bytes", "message"),
+    (
+        (-1, "max_bytes must be non-negative"),
+        (True, "max_bytes must be a non-negative integer"),
+        (4.0, "max_bytes must be a non-negative integer"),
+    ),
+)
+def test_byte_lru_rejects_invalid_byte_budgets(max_bytes, message):
+    with pytest.raises(ValueError, match=message):
+        ByteLRU(max_bytes=max_bytes)
+
+
+def test_byte_lru_copies_bytes_like_values_to_immutable_bytes():
+    payload = bytearray(b"alpha")
+    cache = ByteLRU(max_bytes=64)
+
+    cache.put("a", payload)
+    payload[:] = b"xxxxx"
+
+    cached = cache.get("a")
+    assert cached == b"alpha"
+    assert type(cached) is bytes
+
+
+@pytest.mark.parametrize(
+    ("key_value", "payload", "message"),
+    (
+        ("", b"payload", "cache key must be non-empty"),
+        (123, b"payload", "cache key must be non-empty"),
+        ("a", 3, "cache value must be bytes-like"),
+    ),
+)
+def test_byte_lru_rejects_invalid_keys_and_payloads(key_value, payload, message):
+    cache = ByteLRU(max_bytes=64)
+
+    with pytest.raises(ValueError, match=message):
+        cache.put(key_value, payload)
+
+
+@pytest.mark.parametrize("lookup", ("get", "peek"))
+def test_byte_lru_rejects_invalid_lookup_keys(lookup):
+    cache = ByteLRU(max_bytes=64)
+
+    with pytest.raises(ValueError, match="cache key must be non-empty"):
+        getattr(cache, lookup)("")
+
+
+def test_chunk_cache_rejects_invalid_local_disk_budget(tmp_path):
+    with pytest.raises(ValueError, match="local_max_bytes must be a non-negative integer"):
+        ChunkCache(cpu_max_bytes=0, local_dir=tmp_path / "chunk-cache", local_max_bytes=True)
+
+
 def test_chunk_cache_reports_cpu_hit_stats(tmp_path):
     ref = write_kvpack(
         tmp_path / "cpu.kvpack",
@@ -58,6 +113,45 @@ def test_chunk_cache_reports_cpu_hit_stats(tmp_path):
         local_bytes=0,
         local_max_bytes=None,
     )
+
+
+def test_chunk_cache_normalizes_cold_loader_payload_to_immutable_bytes(tmp_path):
+    mutable_payload = bytearray(b"alpha")
+    ref = write_kvpack(
+        tmp_path / "loader-normalized.kvpack",
+        [
+            PackChunk(
+                key=key("loader"),
+                payload=bytes(mutable_payload),
+                token_count=2,
+                dtype="int8",
+                layout_version="v1",
+            )
+        ],
+        align_bytes=1,
+    )[0]
+    cache = ChunkCache(cpu_max_bytes=1024, local_dir=tmp_path / "chunk-cache")
+
+    result = cache.get_or_load_with_tier(ref, lambda _: mutable_payload)
+    mutable_payload[:] = b"xxxxx"
+    cached = cache.get_or_load_with_tier(ref, lambda _: b"unused")
+
+    assert result == ChunkCacheResult(payload=b"alpha", tier=CacheTier.COLD_STORAGE)
+    assert type(result.payload) is bytes
+    assert cached == ChunkCacheResult(payload=b"alpha", tier=CacheTier.CPU)
+    assert next((tmp_path / "chunk-cache").rglob("*.chunk")).read_bytes() == b"alpha"
+
+
+def test_chunk_cache_rejects_non_bytes_like_cold_loader_payload(tmp_path):
+    ref = write_kvpack(
+        tmp_path / "bad-loader.kvpack",
+        [PackChunk(key=key("loader"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1")],
+        align_bytes=1,
+    )[0]
+    cache = ChunkCache(cpu_max_bytes=1024)
+
+    with pytest.raises(ValueError, match="loader payload must be bytes-like"):
+        cache.get_or_load_with_tier(ref, lambda _: 3)
 
 
 def test_chunk_cache_result_reports_serving_tier_for_cold_cpu_and_local_hits(tmp_path):
@@ -152,6 +246,44 @@ def test_chunk_cache_get_many_deduplicates_cold_refs_within_one_batch(tmp_path):
     assert batch_calls == [("a", "b")]
     assert cache.stats().cold_misses == 2
     assert cache.stats().cpu_hits == 2
+
+
+def test_chunk_cache_get_many_normalizes_batch_loader_payloads_to_immutable_bytes(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "batch-normalized.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    payloads = [bytearray(b"alpha"), bytearray(b"beta")]
+    cache = ChunkCache(cpu_max_bytes=1024)
+
+    results = cache.get_many_or_load_with_tier(
+        refs,
+        lambda ref: b"unused",
+        batch_loader=lambda batch: payloads,
+    )
+    payloads[0][:] = b"xxxxx"
+    payloads[1][:] = b"yyyy"
+    cached = cache.get_many_or_load_with_tier(refs, lambda ref: b"unused")
+
+    assert [result.payload for result in results] == [b"alpha", b"beta"]
+    assert [type(result.payload) for result in results] == [bytes, bytes]
+    assert [result.payload for result in cached] == [b"alpha", b"beta"]
+
+
+def test_chunk_cache_get_many_rejects_non_bytes_like_batch_loader_payload(tmp_path):
+    ref = write_kvpack(
+        tmp_path / "bad-batch-loader.kvpack",
+        [PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1")],
+        align_bytes=1,
+    )[0]
+    cache = ChunkCache(cpu_max_bytes=1024)
+
+    with pytest.raises(ValueError, match="batch_loader payload must be bytes-like"):
+        cache.get_many_or_load_with_tier((ref,), lambda item: b"unused", batch_loader=lambda batch: (3,))
 
 
 def test_chunk_cache_get_many_duplicate_tiers_follow_configured_cache_capacity(tmp_path):
