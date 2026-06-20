@@ -167,6 +167,17 @@ _DOCUMENT_ROOT_EXPORTS = {
         "write_engine_kv_connector_probe_result_json",
     ),
     "load_engine_kv_probe_factory": ("document_kv_cache.engine_probe", "load_engine_kv_probe_factory"),
+    "RangeReader": ("document_kv_cache.storage", "RangeReader"),
+    "MemoryRangeReader": ("document_kv_cache.storage", "MemoryRangeReader"),
+    "DiskRangeReader": ("document_kv_cache.storage", "DiskRangeReader"),
+    "UnityCatalogVolumeRangeReader": (
+        "document_kv_cache.storage",
+        "UnityCatalogVolumeRangeReader",
+    ),
+    "RoutedRangeReader": ("document_kv_cache.storage", "RoutedRangeReader"),
+    "local_path": ("document_kv_cache.storage", "local_path"),
+    "unity_catalog_volume_path": ("document_kv_cache.storage", "unity_catalog_volume_path"),
+    "is_real_uc_volume_root": ("document_kv_cache.storage", "is_real_uc_volume_root"),
 }
 
 _legacy_package = import_module(_LEGACY_PACKAGE)
@@ -175,6 +186,7 @@ __all__ = [
     for name in getattr(_legacy_package, "__all__", ())
     if name not in _LEGACY_ROOT_EXPORTS
 ]
+__all__.extend(name for name in _DOCUMENT_ROOT_EXPORTS if name not in __all__)
 
 
 def __getattr__(name: str) -> Any:

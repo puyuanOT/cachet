@@ -1,0 +1,50 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the storage ownership inversion and found two compatibility gaps: legacy reader classes inherited document class methods that could be affected by public monkeypatches, and document root storage helpers were lazily routed but absent from root star-imports. The legacy wrapper now owns the relevant constructor and mutation methods, document root __all__ includes the document storage exports, and regression tests cover both fixes before merge.",
+  "issues": [
+    {
+      "resolution": "Overrode MemoryRangeReader.__init__, MemoryRangeReader.put, DiskRangeReader.__init__, and UnityCatalogVolumeRangeReader.__init__ in the legacy wrapper and added a regression that monkeypatches the public class methods.",
+      "severity": "P2",
+      "summary": "Public document class monkeypatches could still affect legacy reader construction and mutation through inherited methods."
+    },
+    {
+      "resolution": "Extended document_kv_cache root __all__ with explicit document-owned root exports and added star-import assertions for storage readers and helpers.",
+      "severity": "P3",
+      "summary": "Document root storage helpers were routed for attribute access but omitted from root star-imports."
+    }
+  ],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document storage implementation ownership",
+    "legacy storage compatibility wrapper",
+    "UC Volume and DBFS path resolution",
+    "checksum-validated range reads",
+    "document root storage exports",
+    "legacy/public star-import compatibility",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_storage.py tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/storage.py src/restaurant_kv_serving/storage.py src/document_kv_cache/__init__.py tests/test_storage.py tests/test_public_package.py tests/test_project_governance.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review and re-review after resolving storage compatibility findings"
+  ],
+  "what_changed": [
+    "Moved memory, disk, Unity Catalog Volume, and routed range reader implementation into document_kv_cache.storage.",
+    "Routed document_kv_cache root storage symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.storage into a compatibility wrapper over the document module.",
+    "Preserved UC Volume and DBFS path confinement, checksum validation, legacy helper monkeypatch behavior, and the previous legacy star-import surface.",
+    "Added regressions for legacy class monkeypatch isolation and document root star-import storage exports."
+  ],
+  "why": "The generalized package should own KV shard access and URI resolution because those paths are core to document-generic cache materialization. Keeping legacy compatibility makes this an incremental, behavior-preserving step toward retiring restaurant-specific implementation ownership."
+}
