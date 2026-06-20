@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review approved with no findings; reviewer also reran the console-script probe and confirmed verified_console_scripts=28.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/README.md",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry install -E test plus console-script probe -> verified_console_scripts=28",
+    "poetry run pytest tests/test_project_governance.py tests/test_public_package.py -q -> 37 passed",
+    "poetry run pytest -q -> 705 passed",
+    "git diff --check -> passed",
+    "poetry check -> All set",
+    "poetry build -> built sdist and wheel"
+  ],
+  "what_changed": [
+    "Added a CI gate that reads [project.scripts] from pyproject.toml and runs --help on each installed console script after Poetry install.",
+    "Updated GitHub workflow documentation and governance tests to require the installed entry-point check."
+  ],
+  "why": "The package goal requires an intuitive installed CLI/API surface; this prevents stale or broken console script metadata from passing CI."
+}
