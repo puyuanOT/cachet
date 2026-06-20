@@ -554,6 +554,9 @@ steps, and estimated GPU bytes. It intentionally omits raw KV payload bytes.
 therefore requires an adapter-readable `payload_uri` (or an external
 `handle_uri`) by default; use the in-process `EngineAdapterRequest` directly
 when the connector already has access to `ready.payload`.
+The handoff writer accepts ordinary filesystem paths plus `disk:`, `file:`,
+`dbfs:`, `/dbfs/...`, `/Volumes/...`, and `uc-volume:` paths so Databricks jobs
+can place handoff records beside local-NVMe or Unity Catalog payloads.
 `read_engine_adapter_request_json` validates the schema, expected backend,
 payload source, layout geometry, and contiguous byte/token segments before a
 connector consumes the record. `read_engine_adapter_payload` reads absolute
