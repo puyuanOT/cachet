@@ -798,7 +798,10 @@ present for each vLLM/SGLang backend. Each native probe must also report the
 pinned runtime engine version and include serving-engine package/version
 metadata matching the `document_kv_cache.serving_env` backend profile. Each
 action descriptor must validate against the reserve/copy/bind/release schema and
-the same one-byte Qwen3 GQA layout contract.
+the same one-byte Qwen3 GQA layout contract. For each backend, release evidence
+also cross-checks that the connector-action sidecar describes the same request,
+block count, copied token count, copied byte count, and copied segment count as
+the native probe record it audits.
 The V1 benchmark artifact must identify itself with
 `record_type=document_kv.benchmark_run.v1`; storage, engine-probe, and
 connector-action artifacts have matching record-type checks. Successful V1

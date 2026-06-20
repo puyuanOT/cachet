@@ -229,6 +229,45 @@ def test_evaluate_release_evidence_rejects_duplicate_valid_engine_probe_backend(
     assert any("duplicate engine probe backends: vllm" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_probe_action_request_mismatch():
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM, request_id="different-vllm-request"),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert evidence.engine_probe_backends == REQUIRED_ENGINE_PROBE_BACKENDS
+    assert evidence.engine_action_backends == REQUIRED_ENGINE_PROBE_BACKENDS
+    assert any("request_id mismatch between engine probe and connector actions" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_rejects_probe_action_token_and_byte_mismatch():
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM, total_tokens=2),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("copied_tokens mismatch between engine probe and connector actions" in issue for issue in evidence.issues)
+    assert any("copied_bytes mismatch between engine probe and connector actions" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_missing_or_non_qwen3_gqa_engine_probe_layout():
     missing_layout = _probe_record(ServingBackend.VLLM)
     missing_layout.pop("layout")
@@ -1281,17 +1320,19 @@ def _probe_record(backend: ServingBackend, *, layout=None):
     )
 
 
-def _actions_record(backend: ServingBackend, *, layout=None):
+def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, total_tokens: int = 1):
     layout = layout or layout_for_model("qwen3:4b-instruct")
-    request_id = f"{backend.value}-probe"
+    request_id = request_id or f"{backend.value}-probe"
+    total_blocks = max(1, (total_tokens + layout.block_size - 1) // layout.block_size)
+    total_bytes = total_tokens * layout.bytes_per_token
     return engine_kv_connector_actions_to_record(
         EngineKVConnectorActions(
             reservation=EngineKVReservationAction(
                 backend=backend,
                 request_id=request_id,
-                total_blocks=1,
-                total_tokens=1,
-                estimated_gpu_bytes=layout.bytes_per_token,
+                total_blocks=total_blocks,
+                total_tokens=total_tokens,
+                estimated_gpu_bytes=total_bytes,
                 layout=layout,
                 adapter_ids=("base",),
             ),
@@ -1303,14 +1344,14 @@ def _actions_record(backend: ServingBackend, *, layout=None):
                     chunk_id="chunk-1",
                     payload_index=None,
                     source_byte_start=0,
-                    source_byte_length=layout.bytes_per_token,
+                    source_byte_length=total_bytes,
                     global_byte_start=0,
-                    global_byte_end=layout.bytes_per_token,
+                    global_byte_end=total_bytes,
                     token_start=0,
-                    token_count=1,
-                    token_end=1,
+                    token_count=total_tokens,
+                    token_end=total_tokens,
                     first_block_index=0,
-                    last_block_index_exclusive=1,
+                    last_block_index_exclusive=total_blocks,
                 ),
             ),
             bind=EngineKVBindAction(
