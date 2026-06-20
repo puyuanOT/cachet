@@ -1,0 +1,41 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the materializer ownership inversion for byte-offset validation, segmented materialization behavior, cache-tier normalization, alias-based legacy compatibility, root exports, star imports, and circular-import risk before merge.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document materializer implementation ownership",
+    "legacy materializer compatibility wrapper",
+    "contiguous payload materialization",
+    "segmented payload materialization",
+    "segment offset validation",
+    "cache tier normalization",
+    "document root materializer exports",
+    "legacy/public star-import compatibility",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_planner_materializer.py tests/test_scheduler.py tests/test_engine.py tests/test_workflow.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/materializer.py src/restaurant_kv_serving/materializer.py src/document_kv_cache/__init__.py tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review before merge"
+  ],
+  "what_changed": [
+    "Moved MaterializedKV, SegmentedMaterializedKV, KVMaterializer, and materializer validation helpers into document_kv_cache.materializer.",
+    "Routed document_kv_cache root materializer symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.materializer into a compatibility wrapper that aliases document-owned materializer objects and normalize_segment_tiers.",
+    "Preserved contiguous and segmented materialization behavior, cache-tier reporting, segment offset validation, and the previous legacy star-import surface.",
+    "Added regressions for document materializer ownership, legacy alias compatibility, and root materializer star-imports."
+  ],
+  "why": "The generalized package should own KV materialization because assembling selected document chunks into serving-ready payloads is core to document-generic cache reuse. Keeping legacy aliases makes this an incremental, behavior-preserving step for existing restaurant imports."
+}

@@ -1,3 +1,4 @@
+import importlib
 from dataclasses import MISSING, fields, replace
 
 import pytest
@@ -366,6 +367,43 @@ def test_segmented_materialized_kv_validates_payload_lengths_and_totals(tmp_path
             materialization_seconds=0.0,
             segment_tiers=(CacheTier.LOCAL_DISK,),
         )
+
+
+def test_materializer_public_module_owns_implementation_and_legacy_aliases_it():
+    public_materializer = importlib.import_module("document_kv_cache.materializer")
+    legacy_materializer = importlib.import_module("restaurant_kv_serving.materializer")
+
+    assert public_materializer.MaterializedKV.__module__ == "document_kv_cache.materializer"
+    assert public_materializer.SegmentedMaterializedKV.__module__ == "document_kv_cache.materializer"
+    assert public_materializer.KVMaterializer.__module__ == "document_kv_cache.materializer"
+    assert legacy_materializer.MaterializedKV is public_materializer.MaterializedKV
+    assert legacy_materializer.SegmentedMaterializedKV is public_materializer.SegmentedMaterializedKV
+    assert legacy_materializer.KVMaterializer is public_materializer.KVMaterializer
+    assert legacy_materializer.normalize_segment_tiers is public_materializer.normalize_segment_tiers
+
+
+def test_materializer_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
+    public_namespace: dict[str, object] = {}
+    legacy_namespace: dict[str, object] = {}
+
+    exec("from document_kv_cache.materializer import *", public_namespace)
+    exec("from restaurant_kv_serving.materializer import *", legacy_namespace)
+
+    assert set(public_namespace) >= {"MaterializedKV", "SegmentedMaterializedKV", "KVMaterializer"}
+    assert "normalize_segment_tiers" not in public_namespace
+    assert "time" not in public_namespace
+    assert set(legacy_namespace) >= {
+        "time",
+        "dataclass",
+        "CacheTier",
+        "ChunkCache",
+        "MaterializationPlan",
+        "RangeReader",
+        "MaterializedKV",
+        "SegmentedMaterializedKV",
+        "KVMaterializer",
+        "normalize_segment_tiers",
+    }
 
 
 def test_plan_segment_validates_output_positions(tmp_path):

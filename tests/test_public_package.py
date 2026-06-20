@@ -51,8 +51,10 @@ def test_public_document_package_reexports_core_api():
         EngineKVProbeConfig,
         EngineKVProbeFactory,
         KVCacheKey,
+        KVMaterializer,
         KVStorageLayout,
         MODEL_PROFILE_RECORD_TYPE,
+        MaterializedKV,
         ModelProfileDefinition,
         ModelProfileRegistry,
         QWEN3_4B_INSTRUCT_PROFILE,
@@ -79,6 +81,7 @@ def test_public_document_package_reexports_core_api():
         ReleaseEvidenceArtifactSource,
         ReleaseBundle,
         ReleaseBundleArtifact,
+        SegmentedMaterializedKV,
         ServingEnvironmentProfile,
         DOCUMENT_CHUNK_TYPES,
         LEGACY_RESTAURANT_CHUNK_TYPES,
@@ -127,7 +130,7 @@ def test_public_document_package_reexports_core_api():
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
-    from document_kv_cache import cache, databricks_job, databricks_runs, engine_probe
+    from document_kv_cache import cache, databricks_job, databricks_runs, engine_probe, materializer
 
     assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
@@ -190,8 +193,12 @@ def test_public_document_package_reexports_core_api():
     assert issubclass(restaurant_kv_serving.EngineKVProbeConfig, engine_probe.EngineKVProbeConfig)
     assert EngineKVProbeFactory is engine_probe.EngineKVProbeFactory
     assert KVCacheKey is restaurant_kv_serving.KVCacheKey
+    assert KVMaterializer is materializer.KVMaterializer
+    assert KVMaterializer is restaurant_kv_serving.KVMaterializer
     assert KVStorageLayout is restaurant_kv_serving.KVStorageLayout
     assert kv_storage_layout_from_value is restaurant_kv_serving.kv_storage_layout_from_value
+    assert MaterializedKV is materializer.MaterializedKV
+    assert MaterializedKV is restaurant_kv_serving.MaterializedKV
     assert MODEL_PROFILE_RECORD_TYPE is restaurant_kv_serving.MODEL_PROFILE_RECORD_TYPE
     assert ModelProfileDefinition is restaurant_kv_serving.ModelProfileDefinition
     assert ModelProfileRegistry is restaurant_kv_serving.ModelProfileRegistry
@@ -218,6 +225,8 @@ def test_public_document_package_reexports_core_api():
     assert ReleaseEvidenceArtifactSource is restaurant_kv_serving.ReleaseEvidenceArtifactSource
     assert ReleaseBundle is restaurant_kv_serving.ReleaseBundle
     assert ReleaseBundleArtifact is restaurant_kv_serving.ReleaseBundleArtifact
+    assert SegmentedMaterializedKV is materializer.SegmentedMaterializedKV
+    assert SegmentedMaterializedKV is restaurant_kv_serving.SegmentedMaterializedKV
     assert ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
     assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
     assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
@@ -313,6 +322,9 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "ReleaseEvidenceArtifactSource" in document_kv_cache.__all__
     assert "PullRequestEvidence" in document_kv_cache.__all__
     assert "ModelProfileDefinition" in document_kv_cache.__all__
+    assert "MaterializedKV" in document_kv_cache.__all__
+    assert "SegmentedMaterializedKV" in document_kv_cache.__all__
+    assert "KVMaterializer" in document_kv_cache.__all__
     assert "ReleaseBundle" in document_kv_cache.__all__
     assert "ReleaseBundleArtifact" in document_kv_cache.__all__
     assert "ServingEnvironmentProfile" in document_kv_cache.__all__
@@ -647,6 +659,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
     serving_env = importlib.import_module("document_kv_cache.serving_env")
     storage = importlib.import_module("document_kv_cache.storage")
+    materializer = importlib.import_module("document_kv_cache.materializer")
     model_profiles = importlib.import_module("document_kv_cache.model_profiles")
     service = importlib.import_module("document_kv_cache.service")
     workflow = importlib.import_module("document_kv_cache.workflow")
@@ -705,6 +718,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     ]
     assert kvpack.__all__ == ["PackChunk", "LocalRangeReader", "write_kvpack"]
     assert cache.__all__ == ["CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"]
+    assert materializer.__all__ == ["MaterializedKV", "SegmentedMaterializedKV", "KVMaterializer"]
     assert storage.__all__ == [
         "RangeReader",
         "MemoryRangeReader",
@@ -746,6 +760,9 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["CacheTier"] is cache.CacheTier
     assert root_star_namespace["ByteLRU"] is cache.ByteLRU
     assert root_star_namespace["ChunkCache"] is cache.ChunkCache
+    assert root_star_namespace["MaterializedKV"] is materializer.MaterializedKV
+    assert root_star_namespace["SegmentedMaterializedKV"] is materializer.SegmentedMaterializedKV
+    assert root_star_namespace["KVMaterializer"] is materializer.KVMaterializer
     assert root_star_namespace["local_path"] is storage.local_path
     assert root_star_namespace["unity_catalog_volume_path"] is storage.unity_catalog_volume_path
     assert root_star_namespace["is_real_uc_volume_root"] is storage.is_real_uc_volume_root
@@ -820,7 +837,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert "DocumentKVWorkflow" in workflow.__all__
     assert "CacheAdapterArtifact" in workflow.__all__
 
-    for module in (kvpack, openai_compatible, workflow):
+    for module in (kvpack, materializer, openai_compatible, workflow):
         assert "reexport_public" not in dir(module)
         assert "Path" not in module.__all__
         assert "dataclass" not in module.__all__
