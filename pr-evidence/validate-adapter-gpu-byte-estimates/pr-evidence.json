@@ -1,0 +1,37 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer Galileo the 2nd approved the scoped adapter validation diff with no findings. The reviewer confirmed that the direct EngineKVInjectionPlan and EngineKVReservationAction constructors now share the serialized-record non-negative integer semantics for estimated_gpu_bytes.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/engine_adapters.py",
+    "tests/test_engine_adapters.py",
+    "pr-evidence/validate-adapter-gpu-byte-estimates/README.md",
+    "pr-evidence/validate-adapter-gpu-byte-estimates/pr-evidence.json",
+    "pr-evidence/validate-adapter-gpu-byte-estimates/pr-evidence-validation.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine_adapters.py -> 65 passed",
+    "poetry run pytest -> 816 passed",
+    "poetry check -> All set",
+    "poetry run python -m compileall -q src -> passed",
+    "poetry run pytest tests/test_pr_evidence.py tests/test_project_governance.py -q -> 55 passed",
+    "git diff --check -> passed",
+    "poetry run ruff check . -> unavailable locally: Command not found: ruff",
+    "poetry run mypy src tests -> unavailable locally: pyenv: mypy: command not found",
+    "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-validate-adapter-gpu-byte-estimates-hygiene-final.json -> ok=true",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json /tmp/document-kv-validate-adapter-gpu-byte-estimates-all-evidence.json -> ok=true, file_count=138",
+    "GPT-5.5 reviewer approved branch validate-adapter-gpu-byte-estimates with no findings"
+  ],
+  "what_changed": [
+    "Centralized engine-adapter non-negative integer validation for estimated GPU byte fields.",
+    "Made direct EngineKVInjectionPlan construction reject boolean, float, string, and negative estimated_gpu_bytes values.",
+    "Made direct EngineKVReservationAction construction reject boolean, float, string, and negative estimated_gpu_bytes values.",
+    "Added regression coverage for the direct dataclass construction paths."
+  ],
+  "why": "Serving-engine adapters should reject malformed GPU byte budgets before they reach reservation or scheduling logic, and direct dataclass construction should use the same validation semantics as serialized handoff records."
+}
