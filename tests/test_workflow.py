@@ -139,6 +139,58 @@ def config(*, cache_method: CacheGenerationMethod = CacheGenerationMethod.VANILL
     )
 
 
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"model_id": ""}, "model_id"),
+        ({"lora_id": ""}, "lora_id"),
+        ({"prompt_template_version": ""}, "prompt_template_version"),
+        ({"dtype": ""}, "dtype"),
+        ({"layout_version": ""}, "layout_version"),
+        ({"cache_method": ""}, "cache_method"),
+        ({"cache_method": object()}, "cache_method"),
+    ),
+)
+def test_cache_build_config_rejects_invalid_identity_fields(overrides, message):
+    values = {
+        "model_id": "qwen3:4b-instruct",
+        "lora_id": "base",
+        "prompt_template_version": "v1",
+        "dtype": "int8",
+        "layout_version": "toy-one-byte-v1",
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        CacheBuildConfig(**values)
+
+
+def test_cache_build_config_normalizes_known_cache_method_strings():
+    cfg = CacheBuildConfig(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        dtype="int8",
+        layout_version="toy-one-byte-v1",
+        cache_method="kv_packet",
+    )
+
+    assert cfg.cache_method is CacheGenerationMethod.KV_PACKET
+
+
+def test_cache_build_config_preserves_non_empty_custom_cache_method_strings():
+    cfg = CacheBuildConfig(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        dtype="int8",
+        layout_version="toy-one-byte-v1",
+        cache_method="vendor_custom_method",
+    )
+
+    assert cfg.cache_method == "vendor_custom_method"
+
+
 def request_for(document_id: str) -> DocumentKVRequest:
     return DocumentKVRequest(
         request_id="req-1",
@@ -934,6 +986,37 @@ def test_workflow_records_non_vanilla_cache_generation_method(tmp_path):
 
     assert result.cache_method == CacheGenerationMethod.KV_PACKET
     assert result.training_artifacts is None
+
+
+def test_workflow_preserves_custom_cache_method_into_engine_handle(tmp_path):
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+    )
+    document = SourceDocument.from_texts(document_id="doc-a", static_text="static", chunks={"section-1": "body"})
+
+    result = workflow.generate_cache(
+        documents=(document,),
+        generator=ByteAlignedGenerator(),
+        config=CacheBuildConfig(
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            dtype="int8",
+            layout_version="toy-one-byte-v1",
+            cache_method="vendor_custom_method",
+        ),
+        shard_uri=tmp_path / "custom-method-cache.kvpack",
+        align_bytes=1,
+    )
+    ready = workflow.prepare_for_engine(
+        request_for("doc-a"),
+        layout=one_byte_layout(),
+        cache_method=result.cache_method,
+    )
+
+    assert result.cache_method == "vendor_custom_method"
+    assert ready.handle.cache_method == "vendor_custom_method"
 
 
 def test_training_artifacts_validate_adapter_artifact_identity():
