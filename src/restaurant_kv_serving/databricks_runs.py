@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util as _importlib_util
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
+import sys as _sys
 from threading import RLock
 from types import FunctionType
 from typing import Any, Protocol
@@ -19,6 +21,26 @@ import urllib.request
 from document_kv_cache._reexport import reexport_public
 
 import document_kv_cache.databricks_runs as _document_module
+
+
+def _load_document_defaults_module():
+    module_path = Path(_document_module.__file__)
+    module_name = "_restaurant_kv_serving_databricks_runs_document_defaults"
+    spec = _importlib_util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load document databricks_runs defaults from {module_path}")
+    module = _importlib_util.module_from_spec(spec)
+    _sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_document_defaults_module = _load_document_defaults_module()
+_DOCUMENT_DEFAULTS = {
+    name: value
+    for name, value in vars(_document_defaults_module).items()
+    if not name.startswith("__")
+}
 
 __all__ = reexport_public(
     "document_kv_cache.databricks_runs",
@@ -59,12 +81,105 @@ __all__ += [
     "urllib",
 ]
 
-DATABRICKS_TERMINAL_LIFE_CYCLE_STATES = _document_module.DATABRICKS_TERMINAL_LIFE_CYCLE_STATES
-DatabricksHTTPResponse = _document_module.DatabricksHTTPResponse
-DatabricksURLOpener = _document_module.DatabricksURLOpener
+_PUBLIC_EXPORT_NAMES = frozenset(
+    {
+        "DEFAULT_DATABRICKS_HOST_ENV",
+        "DEFAULT_DATABRICKS_TOKEN_ENV",
+        "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+        "DATABRICKS_RUN_STATUS_RECORD_TYPE",
+        "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
+        "DATABRICKS_TERMINAL_LIFE_CYCLE_STATES",
+        "DatabricksHTTPResponse",
+        "DatabricksURLOpener",
+    }
+)
 
 
-class DatabricksWorkspaceConfig(_document_module.DatabricksWorkspaceConfig):
+def _is_pristine_public_class(name: str) -> bool:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    return (
+        isinstance(live_value, type)
+        and live_value.__module__ == _document_module.__name__
+        and live_value.__qualname__ == default_value.__qualname__
+        and _class_fingerprint(live_value) == _class_fingerprint(default_value)
+    )
+
+
+def _class_fingerprint(value: type) -> tuple[tuple[str, Any], ...]:
+    return tuple(
+        (name, _class_attribute_fingerprint(name, attribute))
+        for name, attribute in sorted(vars(value).items())
+        if name not in {"__doc__", "__module__", "_abc_impl"}
+    )
+
+
+def _class_attribute_fingerprint(name: str, value: Any) -> Any:
+    if name == "__dataclass_fields__":
+        return _dataclass_field_fingerprint(value)
+    if name == "__dataclass_params__":
+        return repr(value)
+    if isinstance(value, property):
+        return (
+            "property",
+            _function_fingerprint(value.fget),
+            _function_fingerprint(value.fset),
+            _function_fingerprint(value.fdel),
+            value.__doc__,
+        )
+    if hasattr(value, "__objclass__") and hasattr(value, "__name__"):
+        return ("descriptor", type(value).__qualname__, value.__name__)
+    if isinstance(value, dict):
+        return tuple(sorted(value.items()))
+    function_fingerprint = _function_fingerprint(value)
+    if function_fingerprint is not None:
+        return ("function", function_fingerprint)
+    return value
+
+
+def _function_fingerprint(value: Any) -> tuple[Any, ...] | None:
+    code = getattr(value, "__code__", None)
+    if code is None:
+        return None
+    return (
+        code.co_argcount,
+        code.co_kwonlyargcount,
+        code.co_posonlyargcount,
+        code.co_names,
+        code.co_varnames,
+        code.co_consts,
+        code.co_code,
+        getattr(value, "__defaults__", None),
+        getattr(value, "__kwdefaults__", None),
+    )
+
+
+def _dataclass_field_fingerprint(value: Mapping[str, Any]) -> tuple[tuple[str, Any, Any], ...]:
+    return tuple(
+        (name, field.default, field.default_factory)
+        for name, field in value.items()
+    )
+
+
+def _public_class_base(name: str):
+    if _is_pristine_public_class(name):
+        return getattr(_document_module, name)
+    return _DOCUMENT_DEFAULTS[name]
+
+
+def _public_export_default(name: str) -> Any:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    if isinstance(live_value, type) and _is_pristine_public_class(name):
+        return live_value
+    return live_value if live_value == default_value else default_value
+
+
+for _name in _PUBLIC_EXPORT_NAMES:
+    globals()[_name] = _public_export_default(_name)
+
+
+class DatabricksWorkspaceConfig(_public_class_base("DatabricksWorkspaceConfig")):
     __slots__ = ()
 
     def __post_init__(self) -> None:
@@ -258,11 +373,6 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "_write_error_record_or_stdout": _write_error_record_or_stdout,
     "main": main,
 }
-_DOCUMENT_DEFAULTS = {
-    name: value
-    for name, value in vars(_document_module).items()
-    if not name.startswith("__")
-}
 _PATCH_LOCK = RLock()
 _LEGACY_PATCH_NAMES = tuple(name for name in _DOCUMENT_DEFAULTS if name in globals())
 
@@ -293,7 +403,7 @@ def _isolated_document_namespace() -> dict[str, Any]:
 
 
 def _is_document_function(value: Any) -> bool:
-    return isinstance(value, FunctionType) and value.__globals__ is vars(_document_module)
+    return isinstance(value, FunctionType) and value.__globals__ is vars(_document_defaults_module)
 
 
 def _clone_document_function(function: FunctionType, namespace: dict[str, Any]) -> FunctionType:
