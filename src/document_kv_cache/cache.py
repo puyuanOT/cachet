@@ -32,11 +32,34 @@ class ChunkCacheStats:
     local_bytes: int
     local_max_bytes: int | None
 
+    def __post_init__(self) -> None:
+        for field_name in (
+            "cpu_hits",
+            "local_hits",
+            "cold_misses",
+            "cpu_items",
+            "cpu_bytes",
+            "cpu_max_bytes",
+            "local_items",
+            "local_bytes",
+        ):
+            _validate_non_negative_int(field_name, getattr(self, field_name))
+        if self.local_max_bytes is not None:
+            _validate_non_negative_int("local_max_bytes", self.local_max_bytes)
+
 
 @dataclass(frozen=True, slots=True)
 class ChunkCacheResult:
     payload: bytes
     tier: CacheTier
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "payload", _coerce_cache_payload(self.payload, label="cache result payload"))
+        try:
+            tier = self.tier if isinstance(self.tier, CacheTier) else CacheTier(self.tier)
+        except (TypeError, ValueError):
+            raise ValueError("cache result tier must be a valid CacheTier") from None
+        object.__setattr__(self, "tier", tier)
 
 
 class ByteLRU:
