@@ -57,6 +57,7 @@ def test_public_document_package_reexports_core_api():
         CacheRequest,
         KVCacheKey,
         KVMaterializer,
+        KVModelProfile,
         KVStorageLayout,
         ManifestStore,
         MODEL_PROFILE_RECORD_TYPE,
@@ -155,6 +156,7 @@ def test_public_document_package_reexports_core_api():
         engine_protocol,
         engine_probe,
         materializer,
+        model_profiles,
         service,
     )
 
@@ -257,9 +259,18 @@ def test_public_document_package_reexports_core_api():
     assert ManifestStore is restaurant_kv_serving.ManifestStore
     assert MaterializedKV is materializer.MaterializedKV
     assert MaterializedKV is restaurant_kv_serving.MaterializedKV
+    assert MODEL_PROFILE_RECORD_TYPE is model_profiles.MODEL_PROFILE_RECORD_TYPE
     assert MODEL_PROFILE_RECORD_TYPE is restaurant_kv_serving.MODEL_PROFILE_RECORD_TYPE
+    assert KVModelProfile is model_profiles.KVModelProfile
+    assert KVModelProfile is restaurant_kv_serving.KVModelProfile
+    assert KVModelProfile.__module__ == "document_kv_cache.model_profiles"
+    assert ModelProfileDefinition is model_profiles.ModelProfileDefinition
     assert ModelProfileDefinition is restaurant_kv_serving.ModelProfileDefinition
+    assert ModelProfileDefinition.__module__ == "document_kv_cache.model_profiles"
+    assert ModelProfileRegistry is model_profiles.ModelProfileRegistry
     assert ModelProfileRegistry is restaurant_kv_serving.ModelProfileRegistry
+    assert ModelProfileRegistry.__module__ == "document_kv_cache.model_profiles"
+    assert QWEN3_4B_INSTRUCT_PROFILE is model_profiles.QWEN3_4B_INSTRUCT_PROFILE
     assert QWEN3_4B_INSTRUCT_PROFILE is restaurant_kv_serving.QWEN3_4B_INSTRUCT_PROFILE
     assert GPT55_REVIEW_OUTCOMES is restaurant_kv_serving.GPT55_REVIEW_OUTCOMES
     assert PR_EVIDENCE_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_RECORD_TYPE
@@ -331,19 +342,27 @@ def test_public_document_package_reexports_core_api():
     assert release_evidence_input_status_to_record is restaurant_kv_serving.release_evidence_input_status_to_record
     assert evaluate_storage_benchmark_evidence is restaurant_kv_serving.evaluate_storage_benchmark_evidence
     assert engine_probe_targets_to_record is restaurant_kv_serving.engine_probe_targets_to_record
+    assert default_model_profile_registry is model_profiles.default_model_profile_registry
     assert default_model_profile_registry is restaurant_kv_serving.default_model_profile_registry
     assert evaluate_pr_evidence is restaurant_kv_serving.evaluate_pr_evidence
     assert evaluate_pr_evidence_directory is restaurant_kv_serving.evaluate_pr_evidence_directory
     assert evaluate_pr_evidence_file is restaurant_kv_serving.evaluate_pr_evidence_file
+    assert model_profile_definition_from_record is model_profiles.model_profile_definition_from_record
     assert model_profile_definition_from_record is restaurant_kv_serving.model_profile_definition_from_record
+    assert model_profile_definition_from_record.__module__ == "document_kv_cache.model_profiles"
+    assert model_profile_definition_to_record is model_profiles.model_profile_definition_to_record
     assert model_profile_definition_to_record is restaurant_kv_serving.model_profile_definition_to_record
+    assert model_profile_definition_to_record.__module__ == "document_kv_cache.model_profiles"
+    assert read_model_profile_definition_json is model_profiles.read_model_profile_definition_json
     assert read_model_profile_definition_json is restaurant_kv_serving.read_model_profile_definition_json
     assert read_databricks_engine_probe_targets_json is restaurant_kv_serving.read_databricks_engine_probe_targets_json
     assert (
         read_databricks_engine_probe_targets_file_json
         is restaurant_kv_serving.read_databricks_engine_probe_targets_file_json
     )
+    assert write_model_profile_definition_json is model_profiles.write_model_profile_definition_json
     assert write_model_profile_definition_json is restaurant_kv_serving.write_model_profile_definition_json
+    assert write_model_profile_definition_json.__module__ == "document_kv_cache.model_profiles"
     assert write_engine_probe_targets_json is restaurant_kv_serving.write_engine_probe_targets_json
     assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
     assert serving_environment_profile is restaurant_kv_serving.serving_environment_profile
@@ -629,9 +648,14 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert engine_probe.EngineKVProbeConfig.__module__ == "document_kv_cache.engine_probe"
     assert restaurant_kv_serving.EngineKVProbeConfig.__module__ == "restaurant_kv_serving.engine_probe"
     assert model_profiles.ModelProfileRegistry is restaurant_kv_serving.ModelProfileRegistry
+    assert model_profiles.ModelProfileRegistry.__module__ == "document_kv_cache.model_profiles"
     assert model_profiles.ModelProfileDefinition is restaurant_kv_serving.ModelProfileDefinition
+    assert model_profiles.ModelProfileDefinition.__module__ == "document_kv_cache.model_profiles"
+    assert model_profiles.KVModelProfile is restaurant_kv_serving.KVModelProfile
+    assert model_profiles.KVModelProfile.__module__ == "document_kv_cache.model_profiles"
     assert model_profiles.MODEL_PROFILE_RECORD_TYPE is restaurant_kv_serving.MODEL_PROFILE_RECORD_TYPE
     assert model_profiles.layout_for_model is restaurant_kv_serving.layout_for_model
+    assert model_profiles.layout_for_model.__module__ == "document_kv_cache.model_profiles"
     assert (
         model_profiles.model_profile_definition_to_record
         is restaurant_kv_serving.model_profile_definition_to_record
