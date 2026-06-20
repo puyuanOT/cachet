@@ -13,8 +13,10 @@ def test_public_document_package_reexports_core_api():
     from document_kv_cache import (
         AdmissionQueue,
         BENCHMARK_RUN_RECORD_TYPE,
+        ByteLRU,
         CacheGenerationMethod,
         CacheTier,
+        ChunkCache,
         ChunkCacheResult,
         ChunkCacheStats,
         DATABRICKS_RUN_STATUS_RECORD_TYPE,
@@ -125,14 +127,19 @@ def test_public_document_package_reexports_core_api():
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
-    from document_kv_cache import databricks_job, databricks_runs, engine_probe
+    from document_kv_cache import cache, databricks_job, databricks_runs, engine_probe
 
     assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
+    assert ByteLRU is cache.ByteLRU
     assert CacheGenerationMethod is restaurant_kv_serving.CacheGenerationMethod
     assert CacheGenerationMethod.KV_PACKET.value == "kv_packet"
+    assert CacheTier is cache.CacheTier
     assert CacheTier is restaurant_kv_serving.CacheTier
+    assert ChunkCache is cache.ChunkCache
+    assert ChunkCacheResult is cache.ChunkCacheResult
     assert ChunkCacheResult is restaurant_kv_serving.ChunkCacheResult
+    assert ChunkCacheStats is cache.ChunkCacheStats
     assert ChunkCacheStats is restaurant_kv_serving.ChunkCacheStats
     assert DATABRICKS_RUN_STATUS_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_STATUS_RECORD_TYPE
     assert DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
@@ -312,6 +319,8 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "StorageBenchmarkConfig" in document_kv_cache.__all__
     assert "StorageBenchmarkEvidence" in document_kv_cache.__all__
     assert "StorageBenchmarkPlanConfig" in document_kv_cache.__all__
+    assert "ByteLRU" in document_kv_cache.__all__
+    assert "ChunkCache" in document_kv_cache.__all__
     assert "ChunkCacheResult" in document_kv_cache.__all__
     assert "SUPPORTED_STORAGE_BENCHMARK_READERS" in document_kv_cache.__all__
     assert "DEDICATED_DATABRICKS_DATA_SECURITY_MODE" in document_kv_cache.__all__
@@ -734,6 +743,9 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     exec("from document_kv_cache import *", root_star_namespace)
     assert root_star_namespace["DiskRangeReader"] is storage.DiskRangeReader
     assert root_star_namespace["MemoryRangeReader"] is storage.MemoryRangeReader
+    assert root_star_namespace["CacheTier"] is cache.CacheTier
+    assert root_star_namespace["ByteLRU"] is cache.ByteLRU
+    assert root_star_namespace["ChunkCache"] is cache.ChunkCache
     assert root_star_namespace["local_path"] is storage.local_path
     assert root_star_namespace["unity_catalog_volume_path"] is storage.unity_catalog_volume_path
     assert root_star_namespace["is_real_uc_volume_root"] is storage.is_real_uc_volume_root
@@ -819,6 +831,8 @@ def test_package_level_submodule_imports_use_document_namespace_after_symbol_loo
     from document_kv_cache import cache
 
     assert cache.__name__ == "document_kv_cache.cache"
+    assert CacheTier is cache.CacheTier
+    assert cache.CacheTier.__module__ == "document_kv_cache.cache"
     assert cache.CacheTier is restaurant_kv_serving.CacheTier
     assert cache.ChunkCacheResult is restaurant_kv_serving.ChunkCacheResult
 

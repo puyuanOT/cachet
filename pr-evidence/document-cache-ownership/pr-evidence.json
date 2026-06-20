@@ -1,0 +1,40 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the cache ownership inversion for tiered cache behavior, alias-based legacy compatibility, root exports, star imports, and circular-import risk before merge.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document cache implementation ownership",
+    "legacy cache compatibility wrapper",
+    "CPU byte LRU behavior",
+    "local disk cache reuse and eviction",
+    "cache tier observability",
+    "document root cache exports",
+    "legacy/public star-import compatibility",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_cache.py tests/test_planner_materializer.py tests/test_engine.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/cache.py src/restaurant_kv_serving/cache.py src/document_kv_cache/__init__.py tests/test_cache.py tests/test_public_package.py tests/test_project_governance.py",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "GPT-5.5 review before merge"
+  ],
+  "what_changed": [
+    "Moved CacheTier, ChunkCacheStats, ChunkCacheResult, ByteLRU, and ChunkCache implementation into document_kv_cache.cache.",
+    "Routed document_kv_cache root cache symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.cache into a compatibility wrapper that aliases the document-owned cache objects.",
+    "Preserved CPU/local-disk cache behavior, stale payload protection via checksums, local-disk LRU budget eviction, and the previous legacy star-import surface.",
+    "Added regressions for document cache ownership, legacy alias compatibility, and root cache star-imports."
+  ],
+  "why": "The generalized package should own tiered cache behavior because CPU and local-disk cache reuse are core to document-generic KV materialization and serving latency. Keeping legacy aliases makes the move incremental and behavior-preserving for existing restaurant imports."
+}

@@ -1,3 +1,4 @@
+import importlib
 from dataclasses import replace
 
 from document_kv_cache.cache import ByteLRU, CacheTier, ChunkCache, ChunkCacheResult, ChunkCacheStats
@@ -173,3 +174,42 @@ def test_chunk_cache_reloads_corrupted_local_file(tmp_path):
     assert local_path.read_bytes() == b"valid"
     assert second_cache.stats().local_hits == 0
     assert second_cache.stats().cold_misses == 1
+
+
+def test_cache_public_module_owns_implementation_and_legacy_aliases_it():
+    public_cache = importlib.import_module("document_kv_cache.cache")
+    legacy_cache = importlib.import_module("restaurant_kv_serving.cache")
+
+    assert public_cache.CacheTier.__module__ == "document_kv_cache.cache"
+    assert public_cache.ByteLRU.__module__ == "document_kv_cache.cache"
+    assert public_cache.ChunkCache.__module__ == "document_kv_cache.cache"
+    assert legacy_cache.CacheTier is public_cache.CacheTier
+    assert legacy_cache.ChunkCacheResult is public_cache.ChunkCacheResult
+    assert legacy_cache.ChunkCacheStats is public_cache.ChunkCacheStats
+    assert legacy_cache.ByteLRU is public_cache.ByteLRU
+    assert legacy_cache.ChunkCache is public_cache.ChunkCache
+
+
+def test_cache_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
+    public_namespace: dict[str, object] = {}
+    legacy_namespace: dict[str, object] = {}
+
+    exec("from document_kv_cache.cache import *", public_namespace)
+    exec("from restaurant_kv_serving.cache import *", legacy_namespace)
+
+    assert set(public_namespace) >= {"CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"}
+    assert "hashlib" not in public_namespace
+    assert set(legacy_namespace) >= {
+        "hashlib",
+        "OrderedDict",
+        "Callable",
+        "dataclass",
+        "StrEnum",
+        "Path",
+        "ChunkRef",
+        "CacheTier",
+        "ChunkCacheResult",
+        "ChunkCacheStats",
+        "ByteLRU",
+        "ChunkCache",
+    }
