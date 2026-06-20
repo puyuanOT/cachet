@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5/high approved the final engine ownership move with no blocking findings; the re-review confirmed document-owned implementation, legacy reexports, root/public identity coverage, import-order smoke checks, and preservation of broad legacy module helper attributes.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/engine.py",
+    "src/restaurant_kv_serving/engine.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine.py tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py -> 94 passed",
+    "poetry run pytest -> 630 passed",
+    "poetry check -> All set!",
+    "git diff --check -> passed",
+    "poetry build -> built sdist and wheel",
+    "secret scan -> only expected fake LangSmith fixture patterns in tests/test_project_governance.py"
+  ],
+  "what_changed": [
+    "Moved engine-ready request implementation into document_kv_cache.engine.",
+    "Replaced restaurant_kv_serving.engine with a compatibility wrapper over document_kv_cache.engine.",
+    "Pointed document_kv_cache root engine exports at the document-owned module and added public surface tests."
+  ],
+  "why": "Continue the package ownership migration from restaurant-specific modules to the document-generic namespace without breaking legacy imports."
+}

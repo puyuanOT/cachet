@@ -47,6 +47,7 @@ def test_public_document_package_reexports_core_api():
         DocumentChunkType,
         DocumentKVRequest,
         DiskRangeReader,
+        EngineReadyRequest,
         EngineProbePlanConfig,
         EngineKVProbeConfig,
         EngineKVProbeFactory,
@@ -86,6 +87,7 @@ def test_public_document_package_reexports_core_api():
         ReleaseBundle,
         ReleaseBundleArtifact,
         SegmentedMaterializedKV,
+        ServingEngineConnector,
         ServingEnvironmentProfile,
         DOCUMENT_CHUNK_TYPES,
         LEGACY_RESTAURANT_CHUNK_TYPES,
@@ -99,6 +101,8 @@ def test_public_document_package_reexports_core_api():
         build_databricks_run_submit_payload,
         build_databricks_storage_benchmark_run_submit_payload,
         build_databricks_vllm_smoke_run_submit_payload,
+        build_engine_ready_request,
+        build_handle_from_materialized,
         build_single_node_g5_cluster,
         build_release_bundle,
         chunk_type_role,
@@ -134,7 +138,7 @@ def test_public_document_package_reexports_core_api():
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
-    from document_kv_cache import cache, databricks_job, databricks_runs, engine_probe, materializer
+    from document_kv_cache import cache, databricks_job, databricks_runs, engine, engine_probe, materializer
 
     assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
@@ -192,6 +196,9 @@ def test_public_document_package_reexports_core_api():
     assert DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
     assert DocumentChunkType is restaurant_kv_serving.DocumentChunkType
     assert DocumentKVRequest is restaurant_kv_serving.DocumentKVRequest
+    assert EngineReadyRequest is engine.EngineReadyRequest
+    assert EngineReadyRequest is restaurant_kv_serving.EngineReadyRequest
+    assert EngineReadyRequest.__module__ == "document_kv_cache.engine"
     assert EngineProbePlanConfig is restaurant_kv_serving.EngineProbePlanConfig
     assert EngineKVProbeConfig is engine_probe.EngineKVProbeConfig
     assert issubclass(restaurant_kv_serving.EngineKVProbeConfig, engine_probe.EngineKVProbeConfig)
@@ -234,6 +241,8 @@ def test_public_document_package_reexports_core_api():
     assert ReleaseBundleArtifact is restaurant_kv_serving.ReleaseBundleArtifact
     assert SegmentedMaterializedKV is materializer.SegmentedMaterializedKV
     assert SegmentedMaterializedKV is restaurant_kv_serving.SegmentedMaterializedKV
+    assert ServingEngineConnector is engine.ServingEngineConnector
+    assert ServingEngineConnector is restaurant_kv_serving.ServingEngineConnector
     assert ServingEnvironmentProfile is restaurant_kv_serving.ServingEnvironmentProfile
     assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
     assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
@@ -258,6 +267,12 @@ def test_public_document_package_reexports_core_api():
         build_databricks_vllm_smoke_run_submit_payload
         is restaurant_kv_serving.build_databricks_vllm_smoke_run_submit_payload
     )
+    assert build_engine_ready_request is engine.build_engine_ready_request
+    assert build_engine_ready_request is restaurant_kv_serving.build_engine_ready_request
+    assert build_engine_ready_request.__module__ == "document_kv_cache.engine"
+    assert build_handle_from_materialized is engine.build_handle_from_materialized
+    assert build_handle_from_materialized is restaurant_kv_serving.build_handle_from_materialized
+    assert build_handle_from_materialized.__module__ == "document_kv_cache.engine"
     assert databricks_workspace_config_from_env is databricks_runs.databricks_workspace_config_from_env
     assert build_release_bundle is restaurant_kv_serving.build_release_bundle
     assert chunk_type_role is restaurant_kv_serving.chunk_type_role
@@ -663,6 +678,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
 
 def test_public_document_submodules_have_curated_star_import_surfaces():
     cache = importlib.import_module("document_kv_cache.cache")
+    engine = importlib.import_module("document_kv_cache.engine")
     engine_adapters = importlib.import_module("document_kv_cache.engine_adapters")
     kvpack = importlib.import_module("document_kv_cache.kvpack")
     manifest = importlib.import_module("document_kv_cache.manifest")
@@ -677,6 +693,16 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     service = importlib.import_module("document_kv_cache.service")
     workflow = importlib.import_module("document_kv_cache.workflow")
 
+    assert engine.__all__ == [
+        "EngineReadyRequest",
+        "ServingEngineConnector",
+        "build_handle_from_materialized",
+        "build_engine_ready_request",
+    ]
+    legacy_engine = importlib.import_module("restaurant_kv_serving.engine")
+    assert legacy_engine.EngineReadyRequest is engine.EngineReadyRequest
+    assert legacy_engine.build_engine_ready_request is engine.build_engine_ready_request
+    assert legacy_engine.build_handle_from_materialized is engine.build_handle_from_materialized
     assert engine_adapters.__all__ == [
         "EngineAdapterRequest",
         "EngineAdapterSpec",
@@ -820,6 +846,10 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["MaterializedKV"] is materializer.MaterializedKV
     assert root_star_namespace["SegmentedMaterializedKV"] is materializer.SegmentedMaterializedKV
     assert root_star_namespace["KVMaterializer"] is materializer.KVMaterializer
+    assert root_star_namespace["EngineReadyRequest"] is engine.EngineReadyRequest
+    assert root_star_namespace["ServingEngineConnector"] is engine.ServingEngineConnector
+    assert root_star_namespace["build_engine_ready_request"] is engine.build_engine_ready_request
+    assert root_star_namespace["build_handle_from_materialized"] is engine.build_handle_from_materialized
     assert root_star_namespace["local_path"] is storage.local_path
     assert root_star_namespace["unity_catalog_volume_path"] is storage.unity_catalog_volume_path
     assert root_star_namespace["is_real_uc_volume_root"] is storage.is_real_uc_volume_root
