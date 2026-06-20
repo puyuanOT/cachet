@@ -862,8 +862,8 @@ def test_github_ci_workflow_runs_pr_quality_gate():
         "- main",
         "permissions:",
         "contents: read",
-        "actions/checkout@v4",
-        "actions/setup-python@v5",
+        "actions/checkout@v6",
+        "actions/setup-python@v6",
         'python-version: "3.11"',
     ):
         assert required in text
