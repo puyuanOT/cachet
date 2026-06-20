@@ -452,6 +452,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.native_probe_factories",
         "NATIVE_PROBE_ADAPTER_CONTRACT",
     ),
+    "NATIVE_PROBE_FACTORIES_RECORD_TYPE": (
+        "document_kv_cache.native_probe_factories",
+        "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
+    ),
     "SGLANG_NATIVE_PROBE_FACTORY": (
         "document_kv_cache.native_probe_factories",
         "SGLANG_NATIVE_PROBE_FACTORY",
@@ -499,6 +503,10 @@ _DOCUMENT_ROOT_EXPORTS = {
     "vllm_native_probe_factory": (
         "document_kv_cache.native_probe_factories",
         "vllm_native_probe_factory",
+    ),
+    "write_builtin_native_probe_factories_record_json": (
+        "document_kv_cache.native_probe_factories",
+        "write_builtin_native_probe_factories_record_json",
     ),
     "EngineReadyRequest": ("document_kv_cache.engine", "EngineReadyRequest"),
     "ServingEngineConnector": ("document_kv_cache.engine", "ServingEngineConnector"),

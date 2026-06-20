@@ -325,6 +325,10 @@ _EXPORTS = {
         "restaurant_kv_serving.native_probe_factories",
         "NATIVE_PROBE_ADAPTER_CONTRACT",
     ),
+    "NATIVE_PROBE_FACTORIES_RECORD_TYPE": (
+        "restaurant_kv_serving.native_probe_factories",
+        "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
+    ),
     "OpenAICompatibleCompletionEngine": (
         "restaurant_kv_serving.openai_compatible",
         "OpenAICompatibleCompletionEngine",
@@ -676,6 +680,10 @@ _EXPORTS = {
         "restaurant_kv_serving.native_probe_factories",
         "vllm_native_probe_factory",
     ),
+    "write_builtin_native_probe_factories_record_json": (
+        "restaurant_kv_serving.native_probe_factories",
+        "write_builtin_native_probe_factories_record_json",
+    ),
     "validate_engine_adapter_request_record": (
         "restaurant_kv_serving.engine_adapters",
         "validate_engine_adapter_request_record",
@@ -938,6 +946,7 @@ __all__ = [
     "ModelProfileDefinition",
     "ModelProfileRegistry",
     "NATIVE_PROBE_ADAPTER_CONTRACT",
+    "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
     "OpenAICompatibleCompletionEngine",
@@ -1102,6 +1111,7 @@ __all__ = [
     "write_engine_adapter_request_json",
     "write_engine_kv_connector_probe_result_json",
     "write_engine_kv_connector_actions_record_json",
+    "write_builtin_native_probe_factories_record_json",
     "write_pr_evidence_json",
     "write_model_profile_definition_json",
     "write_release_evidence_json",

@@ -402,6 +402,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "NATIVE_PROBE_ADAPTER_CONTRACT",
+    "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
     "SGLANG_NATIVE_PROBE_FACTORY",
