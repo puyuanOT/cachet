@@ -1039,6 +1039,15 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "untracked-repository-hygiene.json",
         untracked_repository_hygiene_record,
     )
+    undocumented_repository_hygiene_record = _repository_hygiene_record(ok=True)
+    undocumented_repository_hygiene_record["missing_directory_documentation_paths"] = ["src/new_module"]
+    undocumented_repository_hygiene_record["issues"] = [
+        "directories missing README.md or package docstring: src/new_module"
+    ]
+    undocumented_repository_hygiene = _write_json(
+        tmp_path / "undocumented-repository-hygiene.json",
+        undocumented_repository_hygiene_record,
+    )
 
     with pytest.raises(ValueError, match="package wheel artifact source_path"):
         build_release_bundle(
@@ -1567,6 +1576,16 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             repository_hygiene_json=untracked_repository_hygiene,
             output_dir=tmp_path / "untracked-repository-hygiene-bundle",
+        )
+
+    with pytest.raises(ValueError, match="missing_directory_documentation_paths must be an empty array"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            repository_hygiene_json=undocumented_repository_hygiene,
+            output_dir=tmp_path / "undocumented-repository-hygiene-bundle",
         )
 
     with pytest.raises(ValueError, match="unsupported keys"):
@@ -2724,6 +2743,8 @@ def _repository_hygiene_record(*, ok: bool):
         "forbidden_tracked_paths": [] if ok else ["dist/document_kv_cache-0.2.0-py3-none-any.whl"],
         "forbidden_untracked_paths": [],
         "dirty_tracked_paths": [],
+        "documentation_checked_directory_paths": [".", "src", "src/document_kv_cache", "tests"],
+        "missing_directory_documentation_paths": [],
         "untracked_path_count": 0,
         "issues": [] if ok else ["forbidden generated or secret-like tracked artifacts"],
     }

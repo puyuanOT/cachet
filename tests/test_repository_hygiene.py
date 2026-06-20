@@ -37,6 +37,10 @@ def test_repository_hygiene_record_uses_current_repository_policy():
     assert record["missing_gitignore_patterns"] == []
     assert record["forbidden_tracked_paths"] == []
     assert record["forbidden_untracked_paths"] == []
+    assert record["missing_directory_documentation_paths"] == []
+    assert "." in record["documentation_checked_directory_paths"]
+    assert "src/document_kv_cache" in record["documentation_checked_directory_paths"]
+    assert "tests" in record["documentation_checked_directory_paths"]
     assert record["tracked_path_count"] > 0
     assert record["untracked_path_count"] >= 0
     assert set(record["required_gitignore_patterns"]) == set(REQUIRED_GITIGNORE_PATTERNS)
@@ -83,6 +87,7 @@ def test_repository_hygiene_reports_untracked_forbidden_artifacts_from_git(tmp_p
 
 
 def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_artifacts(tmp_path):
+    (tmp_path / "README.md").write_text("documented root\n", encoding="utf-8")
     evidence = evaluate_repository_hygiene_paths(
         repository_root=tmp_path,
         tracked_paths=(
@@ -103,6 +108,8 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
     assert record["ok"] is False
     assert ".env" in record["missing_gitignore_patterns"]
     assert ".env.example" not in record["forbidden_tracked_paths"]
+    assert record["documentation_checked_directory_paths"] == ["."]
+    assert record["missing_directory_documentation_paths"] == []
     assert record["forbidden_tracked_paths"] == [
         "dist/document_kv_cache-0.2.0-py3-none-any.whl",
         "src/document_kv_cache/__pycache__/cache.pyc",
@@ -120,6 +127,60 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
     assert any(issue.startswith("forbidden generated or secret-like tracked artifacts:") for issue in record["issues"])
     assert any(issue.startswith("forbidden generated or secret-like untracked artifacts:") for issue in record["issues"])
     assert any(issue.startswith("dirty tracked paths:") for issue in record["issues"])
+
+
+def test_repository_hygiene_reports_missing_directory_documentation(tmp_path):
+    (tmp_path / "README.md").write_text("documented root\n", encoding="utf-8")
+    (tmp_path / "documented").mkdir()
+    (tmp_path / "documented" / "__init__.py").write_text('"""Documented package."""\n', encoding="utf-8")
+    (tmp_path / "undocumented").mkdir()
+
+    evidence = evaluate_repository_hygiene_paths(
+        repository_root=tmp_path,
+        tracked_paths=(
+            "documented/__init__.py",
+            "undocumented/source.py",
+        ),
+        gitignore_lines=REQUIRED_GITIGNORE_PATTERNS,
+    )
+    record = repository_hygiene_to_record(evidence)
+
+    assert record["ok"] is False
+    assert record["documentation_checked_directory_paths"] == [".", "documented", "undocumented"]
+    assert record["missing_directory_documentation_paths"] == ["undocumented"]
+    assert any(
+        issue == "directories missing README.md or package docstring: undocumented"
+        for issue in record["issues"]
+    )
+
+
+def test_repository_hygiene_skips_tooling_output_directories_for_documentation(tmp_path):
+    (tmp_path / "README.md").write_text("documented root\n", encoding="utf-8")
+    for relative_path in (
+        ".tox/py/state.txt",
+        ".nox/session/log.txt",
+        "coverage/index.html",
+    ):
+        path = tmp_path / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("generated\n", encoding="utf-8")
+
+    evidence = evaluate_repository_hygiene_paths(
+        repository_root=tmp_path,
+        tracked_paths=(),
+        untracked_paths=(
+            ".tox/py/state.txt",
+            ".nox/session/log.txt",
+            "coverage/index.html",
+        ),
+        gitignore_lines=REQUIRED_GITIGNORE_PATTERNS,
+    )
+    record = repository_hygiene_to_record(evidence)
+
+    assert record["ok"] is True
+    assert record["documentation_checked_directory_paths"] == ["."]
+    assert record["missing_directory_documentation_paths"] == []
+    assert record["untracked_path_count"] == 3
 
 
 def _git(cwd: Path, *args: str) -> None:

@@ -81,7 +81,8 @@ new document modules depend on restaurant-owned implementations.
   artifacts, including the pinned serving-engine package/version metadata.
 - `repository_hygiene.py` emits a release-readiness sidecar proving `.gitignore`
   coverage and absence of tracked or untracked generated/secret-like artifacts
-  that Git exposes.
+  that Git exposes, plus README/package-docstring coverage for repository
+  directories.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.
