@@ -20,10 +20,12 @@ from document_kv_cache.serving_env import (
     VLLM_SERVING_ENVIRONMENT_PROFILE,
     VLLM_VERSION,
     ServingEnvironmentProfile,
+    main,
     serving_environment_profile,
     serving_environment_profile_to_record,
     serving_environment_profiles,
     serving_environment_profiles_to_record,
+    write_serving_environment_profiles_record_json,
 )
 from restaurant_kv_serving.engine_adapters import ServingBackend
 
@@ -42,8 +44,14 @@ __all__ = [
     "VLLM_DEPENDENCY_CONSTRAINTS",
     "VLLM_SERVING_ENVIRONMENT_PROFILE",
     "VLLM_VERSION",
+    "main",
     "serving_environment_profile",
     "serving_environment_profile_to_record",
     "serving_environment_profiles",
     "serving_environment_profiles_to_record",
+    "write_serving_environment_profiles_record_json",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

@@ -1481,10 +1481,12 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "VLLM_DEPENDENCY_CONSTRAINTS",
         "VLLM_SERVING_ENVIRONMENT_PROFILE",
         "VLLM_VERSION",
+        "main",
         "serving_environment_profile",
         "serving_environment_profile_to_record",
         "serving_environment_profiles",
         "serving_environment_profiles_to_record",
+        "write_serving_environment_profiles_record_json",
     ]
     legacy_serving_env = importlib.import_module("restaurant_kv_serving.serving_env")
     assert legacy_serving_env.__all__ == serving_env.__all__
@@ -1633,6 +1635,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-pr-evidence": "document_kv_cache.pr_evidence:main",
         "document-kv-github-governance": "document_kv_cache.github_governance:main",
         "document-kv-repository-hygiene": "document_kv_cache.repository_hygiene:main",
+        "document-kv-serving-env": "document_kv_cache.serving_env:main",
         "document-kv-native-probe-factories": "document_kv_cache.native_probe_factories:main",
         "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
         "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
@@ -1647,6 +1650,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "restaurant-kv-release-evidence": "restaurant_kv_serving.release_evidence:main",
         "restaurant-kv-release-bundle": "restaurant_kv_serving.release_bundle:main",
         "restaurant-kv-pr-evidence": "restaurant_kv_serving.pr_evidence:main",
+        "restaurant-kv-serving-env": "restaurant_kv_serving.serving_env:main",
         "restaurant-kv-engine-probe": "restaurant_kv_serving.engine_probe:main",
         "restaurant-kv-engine-probe-databricks-job": "restaurant_kv_serving.databricks_engine_probe_job:main",
         "restaurant-kv-vllm-smoke": "restaurant_kv_serving.vllm_smoke:main",
