@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review approved HEAD against origin/main with no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "release_bundle.py",
+    "tests",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_bundle.py tests/test_project_governance.py tests/test_public_package.py -q",
+    "poetry check",
+    "poetry build",
+    "poetry install --dry-run",
+    "poetry install --dry-run --extras databricks --extras test",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check origin/main..HEAD",
+    "poetry run pytest -q"
+  ],
+  "what_changed": [
+    "release bundle wheel METADATA Name validation now accepts PEP-normalized package-name spellings"
+  ],
+  "why": "release bundles should validate tested wheel identity without rejecting valid package metadata spelling variants"
+}
