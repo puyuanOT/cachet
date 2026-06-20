@@ -191,6 +191,8 @@ _DOCUMENT_ROOT_EXPORTS = {
     "chunk_type_role": ("document_kv_cache.models", "chunk_type_role"),
     "chunk_type_sort_order": ("document_kv_cache.models", "chunk_type_sort_order"),
     "chunk_types_for_request": ("document_kv_cache.models", "chunk_types_for_request"),
+    "ManifestStore": ("document_kv_cache.manifest", "ManifestStore"),
+    "InMemoryManifestStore": ("document_kv_cache.manifest", "InMemoryManifestStore"),
     "MaterializedKV": ("document_kv_cache.materializer", "MaterializedKV"),
     "SegmentedMaterializedKV": ("document_kv_cache.materializer", "SegmentedMaterializedKV"),
     "KVMaterializer": ("document_kv_cache.materializer", "KVMaterializer"),

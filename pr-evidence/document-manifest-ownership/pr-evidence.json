@@ -1,0 +1,40 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the manifest ownership inversion for behavior compatibility, deterministic chunk-type sorting, keys_for_restaurant compatibility, import cycles after the models move, curated document exports, broad legacy star imports, root alias behavior, tests, and governance allowlist scope; it reported no findings and approved the diff.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document manifest implementation ownership",
+    "legacy manifest compatibility wrapper",
+    "manifest lookup protocol",
+    "in-memory manifest storage",
+    "document root manifest exports",
+    "document/legacy star-import compatibility",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "python -m py_compile src/document_kv_cache/manifest.py src/restaurant_kv_serving/manifest.py src/document_kv_cache/__init__.py tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest tests/test_planner_materializer.py tests/test_engine.py tests/test_workflow.py tests/test_engine_adapters.py tests/test_engine_probe.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "PYTHONPATH=src python import sanity check for document and legacy manifest aliases",
+    "GPT-5.5 review before merge"
+  ],
+  "what_changed": [
+    "Moved ManifestStore and InMemoryManifestStore into document_kv_cache.manifest.",
+    "Routed document_kv_cache root manifest symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.manifest into a compatibility wrapper that aliases document-owned manifest objects and preserves broad legacy star-import behavior.",
+    "Preserved manifest get/put_many behavior, deterministic keys_for_document sorting, and the legacy keys_for_restaurant alias.",
+    "Added regressions for document manifest ownership, legacy alias compatibility, curated document star imports, broad legacy star imports, root manifest exports, and the governance allowlist."
+  ],
+  "why": "The generalized package should own manifest lookup because runtime planning, materialization, and serving need document-generic chunk references independent of the old restaurant package. Keeping legacy aliases makes this an incremental, behavior-preserving step for existing integrations."
+}

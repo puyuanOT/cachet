@@ -471,6 +471,47 @@ def test_models_star_import_surfaces_are_curated_for_document_and_preserved_for_
     }
 
 
+def test_manifest_public_module_owns_implementation_and_legacy_aliases_it(tmp_path):
+    public_manifest = importlib.import_module("document_kv_cache.manifest")
+    legacy_manifest = importlib.import_module("restaurant_kv_serving.manifest")
+    ref = write_kvpack(
+        tmp_path / "manifest-ownership.kvpack",
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"body", 4, "fp8", "v1")],
+        align_bytes=1,
+    )[0]
+
+    manifest = public_manifest.InMemoryManifestStore([ref])
+
+    assert public_manifest.ManifestStore.__module__ == "document_kv_cache.manifest"
+    assert public_manifest.InMemoryManifestStore.__module__ == "document_kv_cache.manifest"
+    assert legacy_manifest.ManifestStore is public_manifest.ManifestStore
+    assert legacy_manifest.InMemoryManifestStore is public_manifest.InMemoryManifestStore
+    assert manifest.keys_for_document("doc-a") == [ref.key]
+    assert manifest.keys_for_restaurant("doc-a") == [ref.key]
+
+
+def test_manifest_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
+    public_namespace: dict[str, object] = {}
+    legacy_namespace: dict[str, object] = {}
+
+    exec("from document_kv_cache.manifest import *", public_namespace)
+    exec("from restaurant_kv_serving.manifest import *", legacy_namespace)
+
+    assert set(public_namespace) >= {"ManifestStore", "InMemoryManifestStore"}
+    assert "Iterable" not in public_namespace
+    assert "Protocol" not in public_namespace
+    assert set(legacy_namespace) >= {
+        "Iterable",
+        "Protocol",
+        "CacheChunkType",
+        "ChunkRef",
+        "KVCacheKey",
+        "chunk_type_sort_order",
+        "ManifestStore",
+        "InMemoryManifestStore",
+    }
+
+
 def test_plan_segment_validates_output_positions(tmp_path):
     plan = document_plan(tmp_path, (b"abc",))
     ref = plan.segments[0].ref
