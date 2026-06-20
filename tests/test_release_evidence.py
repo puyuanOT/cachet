@@ -455,6 +455,41 @@ def test_evaluate_release_evidence_rejects_non_numeric_comparison_metrics():
     assert any("answer_found_delta must be a finite number" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_out_of_bounds_comparison_quality_deltas():
+    v1_record = _v1_record(ok=True)
+    v1_record["comparisons"][0] = {
+        **v1_record["comparisons"][0],
+        "exact_match_delta": 1.1,
+    }
+    v1_record["comparisons"][1] = {
+        **v1_record["comparisons"][1],
+        "answer_found_delta": -1.1,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "v1 benchmark comparison biography exact_match_delta must be a finite number between -1 and 1" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "v1 benchmark comparison hotpotqa answer_found_delta must be a finite number between -1 and 1" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_duplicate_summary_and_malformed_v1_identities():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"].append(

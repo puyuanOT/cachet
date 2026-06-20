@@ -1021,8 +1021,11 @@ def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> N
                     f"v1 benchmark comparison {dataset_value} {metric_name} must be a positive finite number"
                 )
         for metric_name in ("exact_match_delta", "answer_found_delta"):
-            if not _is_finite_number(comparison.get(metric_name)):
-                issues.append(f"v1 benchmark comparison {dataset_value} {metric_name} must be a finite number")
+            _validate_rate_delta(
+                comparison.get(metric_name),
+                f"v1 benchmark comparison {dataset_value} {metric_name}",
+                issues,
+            )
     missing = sorted(set(SUPPORTED_V1_DATASETS).difference(comparison_datasets))
     if missing:
         issues.append(f"v1 benchmark comparisons missing required datasets: {', '.join(missing)}")
@@ -1234,6 +1237,11 @@ def _validate_optional_rate(value: Any, label: str, issues: list[str]) -> None:
         return
     if not _is_finite_number(value) or value < 0 or value > 1:
         issues.append(f"{label} must be a finite rate between 0 and 1")
+
+
+def _validate_rate_delta(value: Any, label: str, issues: list[str]) -> None:
+    if not _is_finite_number(value) or value < -1 or value > 1:
+        issues.append(f"{label} must be a finite number between -1 and 1")
 
 
 def _is_positive_int(value: Any) -> bool:
