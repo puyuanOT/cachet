@@ -1578,6 +1578,10 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "sglang",
         "vllm",
     }
+    assert project["urls"] == {
+        "Repository": "https://github.com/puyuanOT/document-kv-cache",
+        "Issues": "https://github.com/puyuanOT/document-kv-cache/issues",
+    }
     assert {
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",

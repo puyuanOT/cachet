@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 focused review approved the project URL metadata slice with no merge-blocking findings. The review confirmed the PEP 621 Repository and Issues URLs are valid, covered by governance/public-package tests, and emitted into the built wheel metadata as Project-URL entries.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "pyproject.toml",
+    "tests/test_project_governance.py",
+    "tests/test_public_package.py",
+    "pr-evidence/package-project-urls/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py tests/test_public_package.py -q -k \"project_metadata_exposes_repository or project_metadata_uses_cachet_brand or public_package_name\"",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret scan over README.md, CONTRIBUTING.md, pyproject.toml, src, tests, databricks, pr-evidence, and .github",
+    "GPT-5.5 focused review"
+  ],
+  "what_changed": [
+    "Added PEP 621 project URLs for the document-kv-cache GitHub repository and issue tracker.",
+    "Added governance and public-package assertions that pin the published Repository and Issues URLs."
+  ],
+  "why": "Open-source package metadata should point users from the published package to the canonical repository and issue tracker."
+}
