@@ -194,6 +194,53 @@ def test_source_document_validates_and_normalizes_public_inputs():
         SourceDocument(document_id="doc-a", chunks=(chunk,), metadata={"title": object()})  # type: ignore[dict-item]
 
 
+def test_source_document_from_text_builds_single_document_chunk():
+    document = SourceDocument.from_text(
+        document_id="doc-a",
+        text="one long document",
+        metadata={"title": "Doc A"},
+        chunk_metadata={"section": "body"},
+    )
+
+    assert document.document_id == "doc-a"
+    assert document.metadata == {"title": "Doc A"}
+    assert len(document.chunks) == 1
+    assert document.chunks[0] == SourceChunk(
+        chunk_id="document",
+        text="one long document",
+        chunk_type=DocumentChunkType.DOCUMENT_CHUNK,
+        metadata={"section": "body"},
+    )
+
+
+def test_source_document_from_text_accepts_custom_chunk_identity_and_type():
+    document = SourceDocument.from_text(
+        document_id="doc-a",
+        text="static profile",
+        chunk_id="profile",
+        chunk_type="document_static",
+    )
+
+    assert document.chunks == (
+        SourceChunk(
+            chunk_id="profile",
+            text="static profile",
+            chunk_type=DocumentChunkType.DOCUMENT_STATIC,
+        ),
+    )
+
+
+def test_source_document_from_text_reuses_source_chunk_validation():
+    with pytest.raises(TypeError, match="text must be a string"):
+        SourceDocument.from_text(document_id="doc-a", text=object())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="chunk_id must be a non-empty string"):
+        SourceDocument.from_text(document_id="doc-a", text="body", chunk_id="")
+    with pytest.raises(ValueError, match="chunk_type must be one of"):
+        SourceDocument.from_text(document_id="doc-a", text="body", chunk_type="bad-type")
+    with pytest.raises(ValueError, match="chunk_metadata.source must be a string"):
+        SourceDocument.from_text(document_id="doc-a", text="body", chunk_metadata={"source": 1})  # type: ignore[dict-item]
+
+
 def test_source_document_from_texts_validates_helper_inputs():
     document = SourceDocument.from_texts(
         document_id="doc-a",

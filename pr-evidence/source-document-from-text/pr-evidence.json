@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved with no blocking findings and confirmed the default chunk id plus README request example match planner behavior.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/workflow.py",
+    "tests/test_workflow.py",
+    "README.md",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_workflow.py tests/test_project_governance.py -q -> 66 passed",
+    "git diff --check -> passed",
+    "poetry run pytest -q -> 886 passed",
+    "poetry check -> passed",
+    "poetry install --dry-run -> passed",
+    "poetry build -> passed"
+  ],
+  "what_changed": [
+    "Added `SourceDocument.from_text(...)` for single-document, single-chunk cache generation inputs.",
+    "Documented the one-text workflow path in the README Workflow API example with a matching `DocumentKVRequest`.",
+    "Added workflow and governance tests for the new helper and documentation example."
+  ],
+  "why": "Cachet should provide an intuitive API for arbitrary textual documents, not only lower-level chunk maps. A one-call text constructor makes the common path easier while keeping the existing chunked API intact."
+}

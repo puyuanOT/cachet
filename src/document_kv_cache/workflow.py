@@ -50,6 +50,30 @@ class SourceDocument:
         object.__setattr__(self, "metadata", _metadata_dict("metadata", self.metadata))
 
     @classmethod
+    def from_text(
+        cls,
+        *,
+        document_id: str,
+        text: str,
+        chunk_id: str = "document",
+        chunk_type: DocumentChunkType | str = DocumentChunkType.DOCUMENT_CHUNK,
+        metadata: Mapping[str, str] | None = None,
+        chunk_metadata: Mapping[str, str] | None = None,
+    ) -> "SourceDocument":
+        return cls(
+            document_id=document_id,
+            chunks=(
+                SourceChunk(
+                    chunk_id=chunk_id,
+                    text=text,
+                    chunk_type=chunk_type,
+                    metadata={} if chunk_metadata is None else _metadata_dict("chunk_metadata", chunk_metadata),
+                ),
+            ),
+            metadata={} if metadata is None else metadata,
+        )
+
+    @classmethod
     def from_texts(
         cls,
         *,
