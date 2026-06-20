@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import subprocess
@@ -83,10 +84,29 @@ FORBIDDEN_TRACKED_ARTIFACT_PATTERNS = (
     "*.tmp",
 )
 ALLOWED_FORBIDDEN_TRACKED_ARTIFACTS = frozenset({".env.example"})
+GENERATED_OR_TOOLING_DIRECTORY_NAMES = frozenset(
+    {
+        ".coverage",
+        ".git",
+        ".hypothesis",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "__pycache__",
+        "build",
+        "coverage",
+        "dist",
+        "htmlcov",
+    }
+)
 
 __all__ = [
     "ALLOWED_FORBIDDEN_TRACKED_ARTIFACTS",
     "FORBIDDEN_TRACKED_ARTIFACT_PATTERNS",
+    "GENERATED_OR_TOOLING_DIRECTORY_NAMES",
     "REPOSITORY_HYGIENE_RECORD_TYPE",
     "REQUIRED_GITIGNORE_PATTERNS",
     "RepositoryHygieneEvidence",
@@ -107,6 +127,8 @@ class RepositoryHygieneEvidence:
     forbidden_tracked_paths: tuple[str, ...]
     forbidden_untracked_paths: tuple[str, ...]
     dirty_tracked_paths: tuple[str, ...]
+    documentation_checked_directory_paths: tuple[str, ...]
+    missing_directory_documentation_paths: tuple[str, ...]
     tracked_path_count: int
     untracked_path_count: int
     issues: tuple[str, ...] = field(default_factory=tuple)
@@ -146,6 +168,22 @@ class RepositoryHygieneEvidence:
             "dirty_tracked_paths",
             _string_tuple(self.dirty_tracked_paths, "dirty_tracked_paths"),
         )
+        object.__setattr__(
+            self,
+            "documentation_checked_directory_paths",
+            _string_tuple(
+                self.documentation_checked_directory_paths,
+                "documentation_checked_directory_paths",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "missing_directory_documentation_paths",
+            _string_tuple(
+                self.missing_directory_documentation_paths,
+                "missing_directory_documentation_paths",
+            ),
+        )
         if not isinstance(self.repository_root, str) or not self.repository_root:
             raise ValueError("repository_root must be non-empty")
         if type(self.tracked_path_count) is not int or self.tracked_path_count < 0:
@@ -158,6 +196,7 @@ class RepositoryHygieneEvidence:
             forbidden_tracked_paths=self.forbidden_tracked_paths,
             forbidden_untracked_paths=self.forbidden_untracked_paths,
             dirty_tracked_paths=self.dirty_tracked_paths,
+            missing_directory_documentation_paths=self.missing_directory_documentation_paths,
         )
         object.__setattr__(self, "issues", _dedupe_strings((*explicit_issues, *semantic_issues)))
 
@@ -201,6 +240,28 @@ def evaluate_repository_hygiene_paths(
     forbidden_untracked_paths = tuple(
         sorted(path for path in normalized_untracked_paths if _is_forbidden_tracked_artifact(path))
     )
+    documentation_checked_directory_paths = _documentation_checked_directory_paths(
+        root,
+        (
+            *(
+                path
+                for path in normalized_tracked_paths
+                if not _is_forbidden_tracked_artifact(path)
+                and not _is_generated_or_tooling_path(path)
+            ),
+            *(
+                path
+                for path in normalized_untracked_paths
+                if not _is_forbidden_tracked_artifact(path)
+                and not _is_generated_or_tooling_path(path)
+            ),
+        ),
+    )
+    missing_directory_documentation_paths = tuple(
+        directory
+        for directory in documentation_checked_directory_paths
+        if not _directory_has_documentation(root, directory)
+    )
     return RepositoryHygieneEvidence(
         repository_root=str(root),
         required_gitignore_patterns=REQUIRED_GITIGNORE_PATTERNS,
@@ -209,6 +270,8 @@ def evaluate_repository_hygiene_paths(
         forbidden_tracked_paths=forbidden_tracked_paths,
         forbidden_untracked_paths=forbidden_untracked_paths,
         dirty_tracked_paths=normalized_dirty_tracked_paths,
+        documentation_checked_directory_paths=documentation_checked_directory_paths,
+        missing_directory_documentation_paths=missing_directory_documentation_paths,
         tracked_path_count=len(normalized_tracked_paths),
         untracked_path_count=len(normalized_untracked_paths),
     )
@@ -226,6 +289,8 @@ def repository_hygiene_to_record(evidence: RepositoryHygieneEvidence) -> dict[st
         "forbidden_tracked_paths": list(evidence.forbidden_tracked_paths),
         "forbidden_untracked_paths": list(evidence.forbidden_untracked_paths),
         "dirty_tracked_paths": list(evidence.dirty_tracked_paths),
+        "documentation_checked_directory_paths": list(evidence.documentation_checked_directory_paths),
+        "missing_directory_documentation_paths": list(evidence.missing_directory_documentation_paths),
         "issues": list(evidence.issues),
         "untracked_path_count": evidence.untracked_path_count,
     }
@@ -246,6 +311,7 @@ def _semantic_issues(
     forbidden_tracked_paths: Sequence[str],
     forbidden_untracked_paths: Sequence[str],
     dirty_tracked_paths: Sequence[str],
+    missing_directory_documentation_paths: Sequence[str],
 ) -> tuple[str, ...]:
     issues: list[str] = []
     if missing_gitignore_patterns:
@@ -259,6 +325,11 @@ def _semantic_issues(
         )
     if dirty_tracked_paths:
         issues.append("dirty tracked paths: " + ", ".join(dirty_tracked_paths))
+    if missing_directory_documentation_paths:
+        issues.append(
+            "directories missing README.md or package docstring: "
+            + ", ".join(missing_directory_documentation_paths)
+        )
     return tuple(issues)
 
 
@@ -310,6 +381,38 @@ def _is_forbidden_tracked_artifact(path: str) -> bool:
     ):
         return False
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in FORBIDDEN_TRACKED_ARTIFACT_PATTERNS)
+
+
+def _is_generated_or_tooling_path(path: str) -> bool:
+    return any(part in GENERATED_OR_TOOLING_DIRECTORY_NAMES or part.endswith(".egg-info") for part in Path(path).parts)
+
+
+def _documentation_checked_directory_paths(repository_root: Path, paths: Sequence[str]) -> tuple[str, ...]:
+    directories = {"."}
+    for path in paths:
+        relative_path = Path(path)
+        for parent in relative_path.parents:
+            if str(parent) == ".":
+                directories.add(".")
+                break
+            directories.add(parent.as_posix())
+    return tuple(sorted(directory for directory in directories if (repository_root / directory).exists()))
+
+
+def _directory_has_documentation(repository_root: Path, directory: str) -> bool:
+    path = repository_root if directory == "." else repository_root / directory
+    return (path / "README.md").is_file() or bool(_package_docstring(path))
+
+
+def _package_docstring(path: Path) -> str | None:
+    init_file = path / "__init__.py"
+    if not init_file.is_file():
+        return None
+    try:
+        module = ast.parse(init_file.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return None
+    return ast.get_docstring(module)
 
 
 def _string_tuple(values: Sequence[str], field_name: str) -> tuple[str, ...]:

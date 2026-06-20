@@ -304,6 +304,8 @@ _REPOSITORY_HYGIENE_KEYS = frozenset(
         "forbidden_tracked_paths",
         "forbidden_untracked_paths",
         "dirty_tracked_paths",
+        "documentation_checked_directory_paths",
+        "missing_directory_documentation_paths",
         "untracked_path_count",
         "issues",
     }
@@ -1140,6 +1142,22 @@ def _repository_hygiene_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, 
         issues.append("repository hygiene sidecar forbidden_untracked_paths must be an empty array")
     if record.get("dirty_tracked_paths") != []:
         issues.append("repository hygiene sidecar dirty_tracked_paths must be an empty array")
+    issues.extend(
+        _list_of_strings_field(
+            record,
+            "documentation_checked_directory_paths",
+            "repository hygiene sidecar",
+        )
+    )
+    issues.extend(
+        _list_of_strings_field(
+            record,
+            "missing_directory_documentation_paths",
+            "repository hygiene sidecar",
+        )
+    )
+    if record.get("missing_directory_documentation_paths") != []:
+        issues.append("repository hygiene sidecar missing_directory_documentation_paths must be an empty array")
     if record.get("issues") != []:
         issues.append("repository hygiene sidecar issues must be an empty array")
     return _dedupe_strings(issues)

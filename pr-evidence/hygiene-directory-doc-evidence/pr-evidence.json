@@ -1,0 +1,23 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found that the directory documentation scan would require docs for generated/tooling directories like .tox, .nox, and coverage. The branch now mirrors the governance generated/tooling directory exclusions for documentation scanning, includes regression coverage, and GPT-5.5 approved the re-review with only the existing sidecar-completeness trust model as residual risk.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "repository_hygiene sidecar schema and release_bundle validation, with focused README documentation and regression tests."
+  ],
+  "verification": [
+    "poetry run pytest tests/test_repository_hygiene.py tests/test_release_bundle.py tests/test_project_governance.py -q -> 88 passed",
+    "git diff --check && poetry run pytest -q -> 878 passed",
+    "poetry check && poetry install --dry-run && poetry build -> success; generated dist removed",
+    "GPT-5.5 review initially requested generated/tooling directory exclusions; patch added .tox/.nox/coverage regression coverage and re-review approved."
+  ],
+  "what_changed": [
+    "Added directory documentation coverage to repository hygiene sidecars and release bundle validation."
+  ],
+  "why": "Release handoffs should prove repository hygiene includes README or package-docstring coverage for every non-generated tracked or exposed untracked directory."
+}
