@@ -3,7 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Protocol
 
-from document_kv_cache.models import CacheChunkType, ChunkRef, KVCacheKey, chunk_type_sort_order
+from document_kv_cache.models import (
+    CacheChunkType,
+    ChunkRef,
+    ChunkType,
+    DocumentChunkType,
+    KVCacheKey,
+    chunk_type_sort_order,
+)
 
 
 __all__ = ["ManifestStore", "InMemoryManifestStore"]
@@ -14,7 +21,7 @@ class ManifestStore(Protocol):
 
     def put_many(self, refs: Iterable[ChunkRef]) -> None: ...
 
-    def keys_for_document(self, document_id: str, chunk_type: CacheChunkType | None = None) -> list[KVCacheKey]: ...
+    def keys_for_document(self, document_id: str, chunk_type: CacheChunkType | str | None = None) -> list[KVCacheKey]: ...
 
 
 class InMemoryManifestStore:
@@ -35,10 +42,13 @@ class InMemoryManifestStore:
             raise KeyError(f"Missing manifest entry for {key.storage_key()}") from exc
 
     def put_many(self, refs: Iterable[ChunkRef]) -> None:
-        for ref in refs:
+        refs_tuple = _chunk_refs_tuple(refs)
+        for ref in refs_tuple:
             self._refs[ref.key] = ref
 
-    def keys_for_document(self, document_id: str, chunk_type: CacheChunkType | None = None) -> list[KVCacheKey]:
+    def keys_for_document(self, document_id: str, chunk_type: CacheChunkType | str | None = None) -> list[KVCacheKey]:
+        _validate_document_id(document_id)
+        chunk_type = _normalize_chunk_type_filter(chunk_type)
         keys = [key for key in self._refs if key.document_id == document_id]
         if chunk_type is not None:
             keys = [key for key in keys if key.chunk_type == chunk_type]
@@ -47,5 +57,35 @@ class InMemoryManifestStore:
             key=lambda item: (chunk_type_sort_order(item.chunk_type), item.chunk_type.value, item.chunk_id),
         )
 
-    def keys_for_restaurant(self, restaurant_id: str, chunk_type: CacheChunkType | None = None) -> list[KVCacheKey]:
+    def keys_for_restaurant(self, restaurant_id: str, chunk_type: CacheChunkType | str | None = None) -> list[KVCacheKey]:
         return self.keys_for_document(restaurant_id, chunk_type)
+
+
+def _chunk_refs_tuple(refs: Iterable[ChunkRef]) -> tuple[ChunkRef, ...]:
+    if isinstance(refs, (str, bytes, bytearray)):
+        raise TypeError("refs must be an iterable of ChunkRef instances")
+    refs_tuple = tuple(refs)
+    for ref in refs_tuple:
+        if not isinstance(ref, ChunkRef):
+            raise TypeError("refs entries must be ChunkRef instances")
+    return refs_tuple
+
+
+def _validate_document_id(document_id: object) -> None:
+    if not isinstance(document_id, str) or not document_id:
+        raise ValueError("document_id must be non-empty")
+    if "|" in document_id:
+        raise ValueError("document_id must not contain '|'")
+
+
+def _normalize_chunk_type_filter(chunk_type: CacheChunkType | str | None) -> CacheChunkType | None:
+    if chunk_type is None or isinstance(chunk_type, (ChunkType, DocumentChunkType)):
+        return chunk_type
+    if isinstance(chunk_type, str):
+        for enum_type in (DocumentChunkType, ChunkType):
+            try:
+                return enum_type(chunk_type)
+            except ValueError:
+                continue
+        raise ValueError("chunk_type must be one of the known document or legacy chunk types")
+    raise TypeError("chunk_type must be a CacheChunkType, string, or None")
