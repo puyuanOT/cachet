@@ -262,6 +262,50 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.serving_env",
         "serving_environment_profiles_to_record",
     ),
+    "NativeProbeFactoryInspection": (
+        "document_kv_cache.native_probe_factories",
+        "NativeProbeFactoryInspection",
+    ),
+    "NativeProbeFactoryUnavailable": (
+        "document_kv_cache.native_probe_factories",
+        "NativeProbeFactoryUnavailable",
+    ),
+    "SGLANG_NATIVE_PROBE_FACTORY": (
+        "document_kv_cache.native_probe_factories",
+        "SGLANG_NATIVE_PROBE_FACTORY",
+    ),
+    "VLLM_NATIVE_PROBE_FACTORY": (
+        "document_kv_cache.native_probe_factories",
+        "VLLM_NATIVE_PROBE_FACTORY",
+    ),
+    "builtin_native_probe_factories_to_record": (
+        "document_kv_cache.native_probe_factories",
+        "builtin_native_probe_factories_to_record",
+    ),
+    "builtin_native_probe_factory_path": (
+        "document_kv_cache.native_probe_factories",
+        "builtin_native_probe_factory_path",
+    ),
+    "inspect_builtin_native_probe_factories": (
+        "document_kv_cache.native_probe_factories",
+        "inspect_builtin_native_probe_factories",
+    ),
+    "inspect_builtin_native_probe_factory": (
+        "document_kv_cache.native_probe_factories",
+        "inspect_builtin_native_probe_factory",
+    ),
+    "native_probe_factory_inspection_to_record": (
+        "document_kv_cache.native_probe_factories",
+        "native_probe_factory_inspection_to_record",
+    ),
+    "sglang_native_probe_factory": (
+        "document_kv_cache.native_probe_factories",
+        "sglang_native_probe_factory",
+    ),
+    "vllm_native_probe_factory": (
+        "document_kv_cache.native_probe_factories",
+        "vllm_native_probe_factory",
+    ),
     "EngineReadyRequest": ("document_kv_cache.engine", "EngineReadyRequest"),
     "ServingEngineConnector": ("document_kv_cache.engine", "ServingEngineConnector"),
     "build_engine_ready_request": ("document_kv_cache.engine", "build_engine_ready_request"),

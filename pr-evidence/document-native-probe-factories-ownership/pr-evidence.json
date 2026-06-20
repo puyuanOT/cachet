@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5/high reviewed the native probe factory ownership move for public API drift, legacy __all__/star-import compatibility, dataclass module ownership, factory paths, fail-closed behavior, root exports, and test coverage; it reported no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/native_probe_factories.py",
+    "src/restaurant_kv_serving/native_probe_factories.py",
+    "src/document_kv_cache/__init__.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_native_probe_factories.py tests/test_engine_probe.py tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py",
+    "git diff --check",
+    "poetry run pytest",
+    "poetry check",
+    "repository secret scan over README.md CONTRIBUTING.md pyproject.toml src tests databricks pr-evidence .github; only expected fake LangSmith governance fixtures were reported",
+    "poetry build",
+    "GPT-5.5/high focused review"
+  ],
+  "what_changed": [
+    "Moved the built-in native probe factory implementation into `document_kv_cache.native_probe_factories` with document-owned factory paths and diagnostics records.",
+    "Replaced `restaurant_kv_serving.native_probe_factories` with a compatibility wrapper that preserves its curated `__all__`, root exports, and legacy helper attributes outside star imports.",
+    "Added document root exports plus public package and governance coverage for the moved native probe factory surface."
+  ],
+  "why": "Native probe factory diagnostics are part of the document-generic engine integration contract and should be owned by `document_kv_cache` while keeping existing restaurant namespace imports working during migration."
+}
