@@ -12,6 +12,7 @@ from types import MappingProxyType
 from typing import Any
 
 from document_kv_cache.engine_adapters import (
+    EngineAdapterRequest,
     EngineKVBlockManagerProbe,
     EngineKVConnectorProbeResult,
     EngineKVInjectionPlan,
@@ -42,6 +43,7 @@ __all__ = [
     "EngineKVProbeFactoryResult",
     "run_engine_kv_connector_probe",
     "read_engine_adapter_payload",
+    "write_engine_adapter_payload",
     "write_engine_kv_connector_actions_record_json",
     "write_engine_kv_connector_probe_result_json",
     "load_engine_kv_probe_factory",
@@ -226,6 +228,28 @@ def read_engine_adapter_payload(payload_uri: str, *, expected_bytes: int | None 
     if expected_bytes is not None and len(payload) != expected_bytes:
         raise ValueError(f"Engine adapter payload length {len(payload)} != expected {expected_bytes}")
     return payload
+
+
+def write_engine_adapter_payload(request: EngineAdapterRequest, payload_uri: str) -> Path:
+    """Write a materialized adapter payload to local disk, DBFS, or a UC Volume path."""
+
+    if not isinstance(request, EngineAdapterRequest):
+        raise TypeError("request must be an EngineAdapterRequest")
+    _validate_local_payload_uri(payload_uri)
+    request.ready_request.validate()
+    output_path = local_path(payload_uri)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("wb") as payload_file:
+        if isinstance(request.ready_request.payload, bytes):
+            payload_file.write(request.ready_request.payload)
+        else:
+            for segment_payload in request.ready_request.payload:
+                payload_file.write(segment_payload)
+    payload_bytes = output_path.stat().st_size
+    expected_bytes = request.ready_request.handle.total_bytes
+    if payload_bytes != expected_bytes:
+        raise ValueError(f"Engine adapter payload length {payload_bytes} != expected {expected_bytes}")
+    return output_path
 
 
 def write_engine_kv_connector_actions_record_json(

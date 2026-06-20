@@ -34,6 +34,7 @@ from document_kv_cache.engine_probe import (
     EngineKVProbeConfig,
     read_engine_adapter_payload,
     run_engine_kv_connector_probe,
+    write_engine_adapter_payload,
 )
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
@@ -117,11 +118,11 @@ def request() -> DocumentKVRequest:
 
 def write_handoff_and_payload(tmp_path, *, segmented: bool = True) -> tuple[object, object]:
     ready = service(tmp_path).prepare_for_engine(request(), layout=layout(), segmented=segmented)
-    payload = b"".join(ready.payload) if isinstance(ready.payload, tuple) else ready.payload
     payload_path = tmp_path / "req-1.kv"
-    payload_path.write_bytes(payload)
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    write_engine_adapter_payload(adapter_request, f"disk:{payload_path}")
     handoff_path = write_engine_adapter_request_json(
-        build_engine_adapter_request(ready, spec=vllm_adapter_spec()),
+        adapter_request,
         tmp_path / "handoff.json",
         payload_uri=f"disk:{payload_path}",
     )
@@ -461,6 +462,37 @@ def test_read_engine_adapter_payload_validates_local_uri_and_size(tmp_path):
         read_engine_adapter_payload("uc-volume:/../../etc/passwd")
     with pytest.raises(ValueError, match="cannot contain"):
         read_engine_adapter_payload("/Volumes/catalog/schema/volume/../secret.kv")
+
+
+@pytest.mark.parametrize("segmented", (False, True))
+def test_write_engine_adapter_payload_writes_validated_request_payload(tmp_path, segmented):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout(), segmented=segmented)
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    payload_path = tmp_path / "payloads" / f"{'segmented' if segmented else 'merged'}.kv"
+    expected_payload = b"".join(ready.payload) if isinstance(ready.payload, tuple) else ready.payload
+
+    output_path = write_engine_adapter_payload(adapter_request, f"disk:{payload_path}")
+
+    assert output_path == payload_path
+    assert payload_path.read_bytes() == expected_payload
+    assert (
+        read_engine_adapter_payload(f"disk:{payload_path}", expected_bytes=ready.handle.total_bytes)
+        == expected_payload
+    )
+
+
+def test_write_engine_adapter_payload_rejects_unsupported_or_relative_uri(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+
+    with pytest.raises(ValueError, match="absolute path"):
+        write_engine_adapter_payload(adapter_request, "relative.kv")
+    with pytest.raises(ValueError, match="absolute paths"):
+        write_engine_adapter_payload(adapter_request, "disk:relative.kv")
+    with pytest.raises(ValueError, match="disk:"):
+        write_engine_adapter_payload(adapter_request, "s3://bucket/payload.kv")
+    with pytest.raises(TypeError, match="EngineAdapterRequest"):
+        write_engine_adapter_payload(ready, f"disk:{tmp_path / 'payload.kv'}")  # type: ignore[arg-type]
 
 
 def test_public_engine_probe_main_respects_document_namespace_hooks(monkeypatch, tmp_path):
@@ -874,6 +906,7 @@ def test_engine_probe_star_import_surfaces_are_stable():
         "EngineKVProbeFactoryResult",
         "run_engine_kv_connector_probe",
         "read_engine_adapter_payload",
+        "write_engine_adapter_payload",
         "write_engine_kv_connector_actions_record_json",
         "write_engine_kv_connector_probe_result_json",
         "load_engine_kv_probe_factory",

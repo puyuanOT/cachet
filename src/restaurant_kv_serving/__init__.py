@@ -599,6 +599,10 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_probe",
         "read_engine_adapter_payload",
     ),
+    "write_engine_adapter_payload": (
+        "restaurant_kv_serving.engine_probe",
+        "write_engine_adapter_payload",
+    ),
     "release_evidence_to_record": (
         "restaurant_kv_serving.release_evidence",
         "release_evidence_to_record",
@@ -1108,6 +1112,7 @@ __all__ = [
     "validate_engine_kv_connector_probe_record",
     "validate_engine_kv_connector_actions",
     "view_engine_adapter_payload",
+    "write_engine_adapter_payload",
     "write_engine_adapter_request_json",
     "write_engine_kv_connector_probe_result_json",
     "write_engine_kv_connector_actions_record_json",
