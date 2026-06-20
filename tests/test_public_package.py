@@ -335,6 +335,7 @@ def test_public_document_package_reexports_core_api():
     assert PreparedRequest is restaurant_kv_serving.PreparedRequest
     assert PreparedRequest.__module__ == "document_kv_cache.admission"
     assert PullRequestEvidence is restaurant_kv_serving.PullRequestEvidence
+    assert PullRequestEvidence.__module__ == "document_kv_cache.pr_evidence"
     assert ReleaseEvidence is restaurant_kv_serving.ReleaseEvidence
     assert ReleaseBundlePlanConfig is restaurant_kv_serving.ReleaseBundlePlanConfig
     assert ReleaseEvidenceInputFileStatus is restaurant_kv_serving.ReleaseEvidenceInputFileStatus
@@ -403,8 +404,11 @@ def test_public_document_package_reexports_core_api():
     assert default_model_profile_registry is model_profiles.default_model_profile_registry
     assert default_model_profile_registry is restaurant_kv_serving.default_model_profile_registry
     assert evaluate_pr_evidence is restaurant_kv_serving.evaluate_pr_evidence
+    assert evaluate_pr_evidence.__module__ == "document_kv_cache.pr_evidence"
     assert evaluate_pr_evidence_directory is restaurant_kv_serving.evaluate_pr_evidence_directory
+    assert evaluate_pr_evidence_directory.__module__ == "document_kv_cache.pr_evidence"
     assert evaluate_pr_evidence_file is restaurant_kv_serving.evaluate_pr_evidence_file
+    assert evaluate_pr_evidence_file.__module__ == "document_kv_cache.pr_evidence"
     assert model_profile_definition_from_record is model_profiles.model_profile_definition_from_record
     assert model_profile_definition_from_record is restaurant_kv_serving.model_profile_definition_from_record
     assert model_profile_definition_from_record.__module__ == "document_kv_cache.model_profiles"
@@ -448,7 +452,9 @@ def test_public_document_package_reexports_core_api():
     assert summarize_databricks_run is databricks_runs.summarize_databricks_run
     assert summarize_databricks_run_submit_payload is databricks_runs.summarize_databricks_run_submit_payload
     assert pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
+    assert pr_evidence_validation_to_record.__module__ == "document_kv_cache.pr_evidence"
     assert pr_evidence_to_record is restaurant_kv_serving.pr_evidence_to_record
+    assert pr_evidence_to_record.__module__ == "document_kv_cache.pr_evidence"
     assert "DocumentKVRequest" in dir(document_kv_cache)
 
 
@@ -752,10 +758,15 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert pr_evidence.PR_EVIDENCE_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_RECORD_TYPE
     assert pr_evidence.PR_EVIDENCE_VALIDATION_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_VALIDATION_RECORD_TYPE
     assert pr_evidence.PullRequestEvidence is restaurant_kv_serving.PullRequestEvidence
+    assert pr_evidence.PullRequestEvidence.__module__ == "document_kv_cache.pr_evidence"
     assert pr_evidence.evaluate_pr_evidence is restaurant_kv_serving.evaluate_pr_evidence
+    assert pr_evidence.evaluate_pr_evidence.__module__ == "document_kv_cache.pr_evidence"
     assert pr_evidence.evaluate_pr_evidence_directory is restaurant_kv_serving.evaluate_pr_evidence_directory
+    assert pr_evidence.evaluate_pr_evidence_directory.__module__ == "document_kv_cache.pr_evidence"
     assert pr_evidence.evaluate_pr_evidence_file is restaurant_kv_serving.evaluate_pr_evidence_file
+    assert pr_evidence.evaluate_pr_evidence_file.__module__ == "document_kv_cache.pr_evidence"
     assert pr_evidence.pr_evidence_validation_to_record is restaurant_kv_serving.pr_evidence_validation_to_record
+    assert pr_evidence.pr_evidence_validation_to_record.__module__ == "document_kv_cache.pr_evidence"
     assert native_probe_factories.NativeProbeFactoryInspection is restaurant_kv_serving.NativeProbeFactoryInspection
     assert (
         native_probe_factories.NativeProbeFactoryInspection.__module__
@@ -1097,6 +1108,38 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "write_pr_evidence_json",
         "main",
     ]
+    legacy_pr_evidence = importlib.import_module("restaurant_kv_serving.pr_evidence")
+    pr_evidence_legacy_star_namespace = {}
+    exec("from restaurant_kv_serving.pr_evidence import *", pr_evidence_legacy_star_namespace)
+    assert not hasattr(legacy_pr_evidence, "__all__")
+    assert sorted(k for k in pr_evidence_legacy_star_namespace if not k.startswith("__")) == [
+        "Any",
+        "GPT55_REVIEW_OUTCOMES",
+        "Mapping",
+        "PR_EVIDENCE_RECORD_TYPE",
+        "PR_EVIDENCE_VALIDATION_RECORD_TYPE",
+        "Path",
+        "PullRequestEvidence",
+        "Sequence",
+        "annotations",
+        "argparse",
+        "dataclass",
+        "evaluate_pr_evidence",
+        "evaluate_pr_evidence_directory",
+        "evaluate_pr_evidence_file",
+        "evaluate_pr_evidence_record",
+        "field",
+        "json",
+        "local_path",
+        "main",
+        "pr_evidence_to_record",
+        "pr_evidence_validation_to_record",
+        "write_pr_evidence_json",
+    ]
+    assert legacy_pr_evidence.PullRequestEvidence is pr_evidence.PullRequestEvidence
+    assert legacy_pr_evidence.evaluate_pr_evidence is pr_evidence.evaluate_pr_evidence
+    assert legacy_pr_evidence._semantic_issues is pr_evidence._semantic_issues
+    assert legacy_pr_evidence.local_path is storage.local_path
     assert serving_env.__all__ == [
         "FASTAPI_CONSTRAINT",
         "HUGGINGFACE_HUB_CONSTRAINT",
