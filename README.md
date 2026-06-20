@@ -203,6 +203,10 @@ The generator is intentionally injected. Real implementations can use Qwen, vLLM
 `ADAPTER_TRAINED`, `KV_PACKET`, or `CUSTOM` so benchmark reports and downstream
 engine adapters can distinguish training-free caches from adapter-trained or
 packet-style caches without changing the manifest key schema.
+`DocumentKVRequest` freezes the selected document/chunk map at construction
+time: mapping values become immutable tuples and the mapping itself is read-only.
+This prevents a queued request from changing if caller-owned lists or dicts are
+mutated while the materializer or engine adapter is still preparing the payload.
 Training-aware generators can return `TrainingArtifacts` with either simple
 `adapter_ids` or richer `CacheAdapterArtifact` entries that record the adapter
 URI, method, and metadata. `prepare_for_engine(..., training_artifacts=result.training_artifacts)`

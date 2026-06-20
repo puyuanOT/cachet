@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import copy
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 try:
@@ -26,6 +27,7 @@ __all__ = [
     "DocumentChunkRole",
     "CacheGenerationMethod",
     "DocumentChunkMap",
+    "FrozenDocumentChunkMap",
     "CacheChunkType",
     "CacheChunkTypeSet",
     "DOCUMENT_CHUNK_TYPES",
@@ -71,7 +73,67 @@ class CacheGenerationMethod(StrEnum):
 
 ChunkId: TypeAlias = str | int
 DocumentChunkMap: TypeAlias = Mapping[str, Sequence[ChunkId]]
+NormalizedDocumentChunkMap: TypeAlias = Mapping[str, tuple[ChunkId, ...]]
 CacheChunkType: TypeAlias = ChunkType | DocumentChunkType
+
+
+class FrozenDocumentChunkMap(dict[str, tuple[ChunkId, ...]]):
+    """Read-only dict used by request objects after chunk-map normalization."""
+
+    __slots__ = ()
+
+    def __init__(
+        self,
+        items: Mapping[str, Sequence[ChunkId]] | Sequence[tuple[str, Sequence[ChunkId]]] = (),
+        *,
+        field_name: str = "FrozenDocumentChunkMap",
+    ) -> None:
+        item_mapping = items if isinstance(items, Mapping) else dict(items)
+        dict.__init__(self, _normalize_chunk_map_items(field_name, item_mapping.items()))
+
+    def __setitem__(self, key: str, value: tuple[ChunkId, ...]) -> None:
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def __delitem__(self, key: str) -> None:
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def clear(self) -> None:
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def pop(self, *args: object) -> object:
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def popitem(self) -> tuple[str, tuple[ChunkId, ...]]:
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def setdefault(self, *args: object, **kwargs: object) -> object:
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def update(self, *args: object, **kwargs: object) -> None:
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def __ior__(self, other: object) -> "FrozenDocumentChunkMap":
+        raise TypeError("FrozenDocumentChunkMap is immutable")
+
+    def copy(self) -> "FrozenDocumentChunkMap":
+        return self
+
+    def __copy__(self) -> "FrozenDocumentChunkMap":
+        return self
+
+    def __deepcopy__(self, memo: dict[int, object]) -> "FrozenDocumentChunkMap":
+        return FrozenDocumentChunkMap(
+            (
+                copy.deepcopy(document_id, memo),
+                copy.deepcopy(chunk_ids, memo),
+            )
+            for document_id, chunk_ids in self.items()
+        )
+
+    def __reduce__(
+        self,
+    ) -> tuple[type["FrozenDocumentChunkMap"], tuple[tuple[tuple[str, tuple[ChunkId, ...]], ...]]]:
+        return (type(self), (tuple(self.items()),))
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,7 +289,11 @@ class DocumentKVRequest:
             include_static=self.include_static,
             task_prefix_id=self.task_prefix_id,
         )
-        _validate_chunk_map("document_chunks", self.document_chunks)
+        object.__setattr__(
+            self,
+            "document_chunks",
+            _normalize_chunk_map("document_chunks", self.document_chunks),
+        )
 
     @property
     def selected_document_ids(self) -> tuple[str, ...]:
@@ -259,7 +325,11 @@ class RestaurantKVRequest:
             include_static=self.include_static,
             task_prefix_id=self.task_prefix_id,
         )
-        _validate_chunk_map("restaurant_reviews", self.restaurant_reviews)
+        object.__setattr__(
+            self,
+            "restaurant_reviews",
+            _normalize_chunk_map("restaurant_reviews", self.restaurant_reviews),
+        )
 
     @property
     def document_chunks(self) -> DocumentChunkMap:
@@ -389,16 +459,26 @@ def _validate_request_metadata(
         raise ValueError("task_prefix_id must be non-empty when provided")
 
 
-def _validate_chunk_map(name: str, value: DocumentChunkMap) -> None:
+def _normalize_chunk_map(name: str, value: DocumentChunkMap) -> NormalizedDocumentChunkMap:
     if not isinstance(value, Mapping):
         raise TypeError(f"{name} must be a mapping")
-    for document_id, chunk_ids in value.items():
+    return FrozenDocumentChunkMap(value, field_name=name)
+
+
+def _normalize_chunk_map_items(
+    name: str,
+    items: Iterable[tuple[str, Sequence[ChunkId]]],
+) -> dict[str, tuple[ChunkId, ...]]:
+    normalized: dict[str, tuple[ChunkId, ...]] = {}
+    for document_id, chunk_ids in items:
         if not _is_non_empty_string(document_id):
             raise ValueError(f"{name} keys must be non-empty strings")
         if isinstance(chunk_ids, (str, bytes, bytearray, memoryview)) or not isinstance(chunk_ids, Sequence):
             raise TypeError(f"{name} values must be sequences of chunk ids")
         for chunk_id in chunk_ids:
             _validate_chunk_id(name, chunk_id)
+        normalized[document_id] = tuple(chunk_ids)
+    return normalized
 
 
 def _validate_chunk_id(name: str, value: object) -> None:
