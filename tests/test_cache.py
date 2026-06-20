@@ -310,6 +310,70 @@ def test_chunk_cache_get_many_duplicate_tiers_follow_configured_cache_capacity(t
     assert cache.stats().cpu_hits == 0
 
 
+def test_chunk_cache_get_many_does_not_pre_read_local_hit_while_grouping(tmp_path, monkeypatch):
+    refs = write_kvpack(
+        tmp_path / "batch-cache-local-boundary.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    reader = DiskRangeReader()
+    cache_dir = tmp_path / "chunk-cache"
+    cache = ChunkCache(cpu_max_bytes=0, local_dir=cache_dir)
+    assert cache.get_or_load_with_tier(refs[1], reader.read).tier == CacheTier.COLD_STORAGE
+    cache = ChunkCache(cpu_max_bytes=0, local_dir=cache_dir)
+    local_read_count = 0
+    path_read_bytes = type(cache_dir).read_bytes
+
+    def count_chunk_reads(path):
+        nonlocal local_read_count
+        if path.suffix == ".chunk":
+            local_read_count += 1
+        return path_read_bytes(path)
+
+    monkeypatch.setattr(type(cache_dir), "read_bytes", count_chunk_reads)
+
+    results = cache.get_many_or_load_with_tier((refs[0], refs[1]), reader.read, batch_loader=reader.read_many)
+
+    assert [result.tier for result in results] == [CacheTier.COLD_STORAGE, CacheTier.LOCAL_DISK]
+    assert [result.payload for result in results] == [b"alpha", b"beta"]
+    assert local_read_count == 1
+    assert cache.stats().local_hits == 1
+    assert cache.stats().cold_misses == 1
+
+
+def test_chunk_cache_get_many_reloads_corrupted_local_boundary(tmp_path):
+    refs = write_kvpack(
+        tmp_path / "batch-cache-corrupt-local-boundary.kvpack",
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="int8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"beta", token_count=2, dtype="int8", layout_version="v1"),
+        ],
+        align_bytes=1,
+    )
+    reader = DiskRangeReader()
+    cache_dir = tmp_path / "chunk-cache"
+    first_cache = ChunkCache(cpu_max_bytes=0, local_dir=cache_dir)
+    assert first_cache.get_or_load_with_tier(refs[1], reader.read).tier == CacheTier.COLD_STORAGE
+    next(cache_dir.rglob("*.chunk")).write_bytes(b"bad")
+    second_cache = ChunkCache(cpu_max_bytes=0, local_dir=cache_dir)
+    batch_calls: list[tuple[str, ...]] = []
+
+    def batch_loader(batch):
+        batch_calls.append(tuple(ref.key.chunk_id for ref in batch))
+        return reader.read_many(batch)
+
+    results = second_cache.get_many_or_load_with_tier((refs[0], refs[1]), reader.read, batch_loader=batch_loader)
+
+    assert [result.payload for result in results] == [b"alpha", b"beta"]
+    assert [result.tier for result in results] == [CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE]
+    assert batch_calls == [("a",), ("b",)]
+    assert second_cache.stats().local_hits == 0
+    assert second_cache.stats().cold_misses == 2
+
+
 def test_chunk_cache_get_many_preserves_interleaved_local_eviction_order(tmp_path):
     refs = write_kvpack(
         tmp_path / "batch-cache-interleaved-eviction.kvpack",

@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/avoid-double-local-cache-probe-reads/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED - No findings; tier accounting and corruption handling remain anchored in _get_cached_result(...), LRU behavior is preserved, and the grouping change is the intended existence-only local boundary split.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/cache.py",
+        "tests/test_cache.py"
+      ],
+      "verification": [
+        "python -m py_compile src/document_kv_cache/cache.py tests/test_cache.py -> passed",
+        "poetry run pytest tests/test_cache.py -q -> 30 passed",
+        "poetry run pytest tests/test_cache.py tests/test_public_package.py tests/test_project_governance.py -q -> 75 passed",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 1127 passed",
+        "poetry build -> passed",
+        "poetry check && poetry install --dry-run -> passed / All set",
+        "poetry run python console script import check -> checked 50 console scripts"
+      ],
+      "what_changed": [
+        "Avoided duplicate local-disk payload reads while grouping batched chunk-cache materialization."
+      ],
+      "why": "Mixed cold/local KV-cache requests should not read large local NVMe chunk files just to decide batch boundaries; actual local-hit validation still happens once when the cached chunk is returned."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
