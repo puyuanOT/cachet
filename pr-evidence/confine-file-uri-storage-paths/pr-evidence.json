@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED: relative file: paths are confined only when a root is configured; absolute file: paths and no-root compatibility are preserved, and legacy helper overrides still work.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/storage.py",
+    "src/restaurant_kv_serving/storage.py",
+    "tests/test_storage.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_storage.py -q -> 67 passed",
+    "git diff --check -> clean",
+    "poetry run pytest tests/test_storage.py tests/test_public_package.py tests/test_project_governance.py -q -> 112 passed",
+    "python -m py_compile src/document_kv_cache/storage.py src/restaurant_kv_serving/storage.py tests/test_storage.py -> passed",
+    "poetry run pytest -q -> 1025 passed",
+    "poetry build -> passed",
+    "poetry check -> All set",
+    "poetry install --dry-run -> passed"
+  ],
+  "what_changed": [
+    "Confined relative file: storage URIs under configured disk roots."
+  ],
+  "why": "Dynamic disk-backed KV cache loading should apply the same root escape protection to relative file: URIs as plain relative and disk: paths."
+}
