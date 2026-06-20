@@ -245,6 +245,29 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert json.loads((bundle_dir / hygiene_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
 
 
+def test_build_release_bundle_accepts_pep440_equivalent_wheel_version_spellings(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    package_wheel = _write_wheel(
+        source_dir / "document_kv_cache-1.0_post1-py3-none-any.whl",
+        metadata_version="1.0.post1",
+        dist_info_prefix="document_kv_cache-1.0_post1.dist-info",
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        package_wheel=package_wheel,
+        output_dir=tmp_path / "bundle",
+    )
+    record = release_bundle_to_record(bundle)
+
+    wheel_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "package_wheel")
+    assert wheel_artifact["bundled_path"] == package_wheel.name
+
+
 def test_build_release_bundle_strict_v1_rejects_incomplete_release_artifact_set(tmp_path):
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)
@@ -825,6 +848,21 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=wrong_name_wheel,
             output_dir=tmp_path / "bad-wheel-metadata-name-bundle",
+        )
+
+    mismatched_metadata_version_wheel = _write_wheel(
+        tmp_path / "mismatched-metadata-version-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        metadata_version="0.2.1",
+        dist_info_prefix="document_kv_cache-0.2.0.dist-info",
+    )
+    with pytest.raises(ValueError, match="METADATA Version must match wheel filename"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=mismatched_metadata_version_wheel,
+            output_dir=tmp_path / "bad-wheel-metadata-version-mismatch-bundle",
         )
 
     missing_version_wheel = _write_wheel(

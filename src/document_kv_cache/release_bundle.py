@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from packaging.version import InvalidVersion, Version
+
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
     RELEASE_EVIDENCE_RECORD_TYPE,
@@ -1402,7 +1404,7 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
         return ("package wheel artifact must contain exactly one .dist-info/METADATA file",)
     with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
         metadata_payload = wheel_zip.read(metadata_names[0])
-    return _wheel_metadata_issues(metadata_payload)
+    return _wheel_metadata_issues(metadata_payload, filename_match=filename_match)
 
 
 def _root_dist_info_prefixes(names: Sequence[str]) -> set[str]:
@@ -1428,7 +1430,7 @@ def _wheel_dist_info_prefix_issues(prefix: str, *, filename_match: re.Match[str]
     return ()
 
 
-def _wheel_metadata_issues(payload: bytes) -> tuple[str, ...]:
+def _wheel_metadata_issues(payload: bytes, *, filename_match: re.Match[str] | None) -> tuple[str, ...]:
     try:
         metadata = _metadata_headers(payload.decode("utf-8"))
     except UnicodeDecodeError:
@@ -1439,7 +1441,16 @@ def _wheel_metadata_issues(payload: bytes) -> tuple[str, ...]:
         return (f"package wheel artifact METADATA Name must be {RELEASE_BUNDLE_PACKAGE_NAME!r}",)
     if not version:
         return ("package wheel artifact METADATA Version must be non-empty",)
+    if filename_match is not None and not _wheel_versions_match(filename_match.group("version"), version):
+        return ("package wheel artifact METADATA Version must match wheel filename",)
     return ()
+
+
+def _wheel_versions_match(filename_version: str, metadata_version: str) -> bool:
+    try:
+        return Version(filename_version) == Version(metadata_version)
+    except InvalidVersion:
+        return filename_version == metadata_version
 
 
 def _metadata_headers(text: str) -> dict[str, str]:

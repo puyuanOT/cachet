@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/tighten-wheel-version-provenance.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "Initial GPT-5.5 review found raw version comparison could reject PEP 440-equivalent wheel spellings. Fixed by using packaging.version.Version with an explicit runtime dependency and added normalized-version regression coverage; re-review approved.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "release_bundle.py",
+        "pyproject.toml",
+        "tests",
+        "README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py tests/test_project_governance.py tests/test_public_package.py -q",
+        "poetry check",
+        "poetry build",
+        "poetry install --dry-run",
+        "poetry install --dry-run --extras databricks --extras test",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check origin/main..HEAD",
+        "poetry run pytest -q"
+      ],
+      "what_changed": [
+        "release bundle wheel validation now compares normalized wheel filename and METADATA versions",
+        "package metadata documents the normalized wheel version requirement"
+      ],
+      "why": "release bundles should not accept tested wheel artifacts whose filename and package metadata describe different versions"
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
