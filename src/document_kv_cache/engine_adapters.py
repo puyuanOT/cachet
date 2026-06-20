@@ -387,27 +387,33 @@ class EngineKVSegmentCopyAction:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cache_tier", _cache_tier_from_value(self.cache_tier, field_name="cache_tier"))
-        if not self.request_id:
-            raise ValueError("request_id must be non-empty")
-        if not self.document_id:
-            raise ValueError("document_id must be non-empty")
-        if not self.chunk_type:
-            raise ValueError("chunk_type must be non-empty")
-        if not self.chunk_id:
-            raise ValueError("chunk_id must be non-empty")
-        if self.payload_index is not None and self.payload_index < 0:
-            raise ValueError("payload_index must be non-negative or None")
-        if self.source_byte_start < 0:
-            raise ValueError("source_byte_start must be non-negative")
+        _validate_nonempty_str_value(self.request_id, field_name="request_id")
+        _validate_nonempty_str_value(self.document_id, field_name="document_id")
+        _validate_nonempty_str_value(self.chunk_type, field_name="chunk_type")
+        _validate_nonempty_str_value(self.chunk_id, field_name="chunk_id")
+        if self.payload_index is not None:
+            _validate_nonnegative_int_value(self.payload_index, field_name="payload_index")
+        for field_name in (
+            "source_byte_start",
+            "source_byte_length",
+            "global_byte_start",
+            "global_byte_end",
+            "token_start",
+            "token_count",
+            "token_end",
+            "first_block_index",
+            "last_block_index_exclusive",
+        ):
+            _validate_nonnegative_int_value(getattr(self, field_name), field_name=field_name)
         if self.source_byte_length <= 0:
             raise ValueError("source_byte_length must be positive")
-        if self.global_byte_start < 0 or self.global_byte_end <= self.global_byte_start:
-            raise ValueError("global byte range must be positive")
-        if self.token_start < 0 or self.token_count <= 0:
-            raise ValueError("token range must be positive")
+        if self.global_byte_start + self.source_byte_length != self.global_byte_end:
+            raise ValueError("global_byte_end does not match global_byte_start + source_byte_length")
+        if self.token_count <= 0:
+            raise ValueError("token_count must be positive")
         if self.token_start + self.token_count != self.token_end:
             raise ValueError("token_end does not match token_start + token_count")
-        if self.first_block_index < 0 or self.last_block_index_exclusive <= self.first_block_index:
+        if self.last_block_index_exclusive <= self.first_block_index:
             raise ValueError("block range must be positive")
         if not isinstance(self.content_hash, str):
             raise TypeError("content_hash must be a string")

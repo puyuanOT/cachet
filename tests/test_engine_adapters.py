@@ -18,6 +18,7 @@ from document_kv_cache.engine_adapters import (
     EngineKVConnectorProbeResult,
     EngineKVInjectionPlan,
     EngineKVReservationAction,
+    EngineKVSegmentCopyAction,
     EngineKVSegmentBinding,
     PayloadMode,
     ServingBackend,
@@ -109,6 +110,27 @@ def segment_binding(
         first_block_index=first_block_index,
         last_block_index_exclusive=last_block_index_exclusive,
     )
+
+
+def copy_action(**overrides) -> EngineKVSegmentCopyAction:
+    values = {
+        "request_id": "req-1",
+        "document_id": "doc-a",
+        "chunk_type": "document_chunk",
+        "chunk_id": "section-1",
+        "payload_index": None,
+        "source_byte_start": 0,
+        "source_byte_length": TEST_BYTES_PER_TOKEN,
+        "global_byte_start": 0,
+        "global_byte_end": TEST_BYTES_PER_TOKEN,
+        "token_start": 0,
+        "token_count": 1,
+        "token_end": 1,
+        "first_block_index": 0,
+        "last_block_index_exclusive": 1,
+    }
+    values.update(overrides)
+    return EngineKVSegmentCopyAction(**values)
 
 
 def injection_plan_kwargs(**overrides):
@@ -1683,6 +1705,34 @@ def test_engine_kv_segment_binding_rejects_invalid_public_fields(overrides, erro
 
     with pytest.raises((TypeError, ValueError), match=error_match):
         EngineKVSegmentBinding(**values)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_match"),
+    [
+        ({"request_id": ""}, "request_id"),
+        ({"request_id": 123}, "request_id must be a non-empty string"),
+        ({"document_id": ""}, "document_id"),
+        ({"chunk_type": ""}, "chunk_type"),
+        ({"chunk_id": ""}, "chunk_id"),
+        ({"payload_index": -1}, "payload_index must be a non-negative integer"),
+        ({"payload_index": True}, "payload_index must be a non-negative integer"),
+        ({"source_byte_start": 0.0}, "source_byte_start must be a non-negative integer"),
+        ({"source_byte_start": False}, "source_byte_start must be a non-negative integer"),
+        ({"source_byte_length": 0, "global_byte_end": 0}, "source_byte_length must be positive"),
+        ({"global_byte_end": TEST_BYTES_PER_TOKEN + 1}, "global_byte_end does not match"),
+        ({"token_start": -1}, "token_start must be a non-negative integer"),
+        ({"token_count": 0, "token_end": 0}, "token_count must be positive"),
+        ({"token_end": 2}, "token_end does not match"),
+        ({"first_block_index": False}, "first_block_index must be a non-negative integer"),
+        ({"last_block_index_exclusive": 0}, "block range must be positive"),
+        ({"content_hash": object()}, "content_hash must be a string"),
+        ({"cache_tier": "gpu"}, "cache_tier"),
+    ],
+)
+def test_engine_kv_segment_copy_action_rejects_invalid_public_fields(overrides, error_match):
+    with pytest.raises((TypeError, ValueError), match=error_match):
+        copy_action(**overrides)
 
 
 @pytest.mark.parametrize(
