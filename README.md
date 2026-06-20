@@ -238,6 +238,21 @@ request = DocumentKVRequest.for_document_chunks(
 )
 ```
 
+Use `DocumentKVRequest.for_document_selection(...)` when one request selects
+chunks from more than one document:
+
+```python
+request = DocumentKVRequest.for_document_selection(
+    request_id="req-1",
+    task_id="qa",
+    model_id="qwen3:4b-instruct",
+    lora_id="base",
+    prompt_template_version="v1",
+    document_chunks={"doc-a": ("review-2",), "doc-b": ("review-1",)},
+    static_chunk_id="profile",
+)
+```
+
 The generator is intentionally injected. Real implementations can use Qwen, vLLM prefill workers, or future KV Packet training while this package keeps the orchestration and storage contract stable.
 `CacheGenerationMethod` labels the generation path as `VANILLA_PREFILL`,
 `ADAPTER_TRAINED`, `KV_PACKET`, or `CUSTOM` so benchmark reports and downstream

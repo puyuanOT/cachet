@@ -307,6 +307,42 @@ def test_document_kv_request_for_document_chunks_allows_static_opt_out():
     assert request.include_static is False
 
 
+def test_document_kv_request_for_document_selection_builds_multi_document_selection():
+    chunk_ids = ["section-1", 2]
+    selection = {"doc-a": chunk_ids, "doc-b": ("intro",)}
+
+    request = DocumentKVRequest.for_document_selection(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_chunks=selection,
+        static_chunk_id="profile",
+        task_prefix_id="prefix",
+    )
+    chunk_ids.append("late-section")
+    selection["doc-c"] = ("late-section",)
+
+    assert request.document_chunks == {"doc-a": ("section-1", 2), "doc-b": ("intro",)}
+    assert request.selected_document_ids == ("doc-a", "doc-b")
+    assert request.include_static is True
+    assert request.static_chunk_id == "profile"
+    assert request.task_prefix_id == "prefix"
+
+
+def test_document_kv_request_for_document_selection_reuses_chunk_map_validation():
+    with pytest.raises(TypeError, match="document_chunks values"):
+        DocumentKVRequest.for_document_selection(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_chunks={"doc-a": "section-1"},  # type: ignore[dict-item]
+        )
+
+
 def test_document_kv_request_for_text_document_reuses_request_validation():
     with pytest.raises(ValueError, match="document_chunks keys"):
         DocumentKVRequest.for_text_document(
@@ -920,6 +956,35 @@ def test_document_request_uses_generic_chunk_aliases(tmp_path):
     assert manifest.keys_for_document("doc-a") == [segment.ref.key for segment in plan.segments[1:]]
     assert [item.name for item in DocumentChunkType] == ["TASK_PREFIX", "DOCUMENT_STATIC", "DOCUMENT_CHUNK"]
     assert [item.value for item in DocumentChunkType] == ["task_prefix", "document_static", "document_chunk"]
+
+
+def test_document_selection_helper_plans_multiple_documents(tmp_path):
+    chunks = [
+        PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_STATIC, "profile"), b"a:", 2, "fp8", "v1"),
+        PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-2"), b"a2", 2, "fp8", "v1"),
+        PackChunk(make_key("doc-b", DocumentChunkType.DOCUMENT_STATIC, "profile"), b"b:", 2, "fp8", "v1"),
+        PackChunk(make_key("doc-b", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"b1", 2, "fp8", "v1"),
+    ]
+    refs = write_kvpack(tmp_path / "multi-document.kvpack", chunks, align_bytes=1)
+    request = DocumentKVRequest.for_document_selection(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen35-4b-w8a8",
+        lora_id="selection",
+        prompt_template_version="v1",
+        document_chunks={"doc-a": ("section-2",), "doc-b": ("section-1",)},
+        static_chunk_id="profile",
+    )
+
+    plan = CachePlanner(InMemoryManifestStore(refs)).build_plan(request)
+
+    assert plan.selected_document_ids == ("doc-a", "doc-b")
+    assert [(segment.ref.key.document_id, segment.ref.key.chunk_id) for segment in plan.segments] == [
+        ("doc-a", "profile"),
+        ("doc-a", "section-2"),
+        ("doc-b", "profile"),
+        ("doc-b", "section-1"),
+    ]
 
 
 def test_materialization_plan_uses_document_id_metadata_with_legacy_alias_compatibility():
