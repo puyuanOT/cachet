@@ -903,7 +903,9 @@ sidecars to be terminal, successful, and attached to a hashed single-node AWS g5
 flag for release-bundle status sidecars; bundles reject raw Jobs API responses.
 PR evidence sidecars must be valid `document_kv.pr_evidence.v1` records with
 Refactor-skill evidence, completed GPT-5.5 review, and any GPT-5.5 findings
-marked resolved before they can enter the release bundle.
+marked resolved before they can enter the release bundle. They are also
+validated as closed schemas so ad hoc review notes or debug payloads stay out of
+the release handoff.
 Wheel artifacts must be valid wheels for `document-kv-cache` with non-empty
 package metadata, and the wheel filename, root `.dist-info` directory, and
 `METADATA` name/version must describe the same normalized package identity. The

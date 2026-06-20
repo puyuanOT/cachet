@@ -288,6 +288,23 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert json.loads((bundle_dir / hygiene_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
 
 
+def test_build_release_bundle_rejects_pr_evidence_sidecars_with_extra_keys(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    raw_pr_evidence_record = _pr_evidence_record(ok=True)
+    raw_pr_evidence_record["debug"] = {"accepted": False}
+    raw_pr_evidence = _write_json(tmp_path / "raw-pr-evidence.json", raw_pr_evidence_record)
+
+    with pytest.raises(ValueError, match="PR evidence sidecar has unsupported keys"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            pr_evidence_jsons=(raw_pr_evidence,),
+            output_dir=tmp_path / "raw-pr-evidence-bundle",
+        )
+
+
 def test_build_release_bundle_accepts_pep440_equivalent_wheel_version_spellings(tmp_path):
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)

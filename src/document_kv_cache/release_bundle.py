@@ -228,6 +228,22 @@ _BENCHMARK_PLAN_SOURCE_KEYS = frozenset(
         "command_count",
     }
 )
+_PR_EVIDENCE_SIDECAR_KEYS = frozenset(
+    {
+        "record_type",
+        "ok",
+        "what_changed",
+        "why",
+        "scope",
+        "verification",
+        "refactor_skill_applied",
+        "gpt55_review_completed",
+        "gpt55_review_findings_resolved",
+        "gpt55_review_outcome",
+        "gpt55_review_summary",
+        "issues",
+    }
+)
 _GITHUB_GOVERNANCE_WRAPPER_KEYS = frozenset({"ok", "summary"})
 _GITHUB_GOVERNANCE_SUMMARY_KEYS = frozenset(
     {
@@ -819,6 +835,7 @@ def _preflight_sidecar_issues(
 def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     evidence = evaluate_pr_evidence_record(record)
     issues = list(evidence.issues)
+    issues.extend(_unexpected_keys(record, _PR_EVIDENCE_SIDECAR_KEYS, "PR evidence sidecar"))
     if record.get("record_type") != PR_EVIDENCE_RECORD_TYPE:
         issues.append(f"PR evidence sidecar record_type must be {PR_EVIDENCE_RECORD_TYPE!r}")
     if record.get("ok") is not True:
