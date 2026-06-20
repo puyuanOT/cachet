@@ -150,6 +150,46 @@ def test_build_release_bundle_plan_execution_stays_out_of_release_sidecar_matchi
     assert record["artifacts"][-1]["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
 
 
+def test_build_release_bundle_rejects_plan_execution_sidecars_with_extra_keys(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    raw_execution_record = _plan_execution_record(ok=True)
+    raw_execution_record["debug"] = {"accepted": False}
+    raw_execution_path = _write_json(tmp_path / "raw-plan-execution.json", raw_execution_record)
+    raw_command_record = _plan_execution_record(ok=True)
+    raw_command_record["commands"][0]["debug"] = {"accepted": False}
+    raw_command_path = _write_json(tmp_path / "raw-plan-command.json", raw_command_record)
+    raw_plan_source_record = _plan_execution_record(ok=True)
+    raw_plan_source_record["plan_source"]["debug"] = {"accepted": False}
+    raw_plan_source_path = _write_json(tmp_path / "raw-plan-source.json", raw_plan_source_record)
+
+    for plan_execution_path, error_match, bundle_name in (
+        (
+            raw_execution_path,
+            "benchmark plan execution sidecar has unsupported keys",
+            "raw-plan-execution-bundle",
+        ),
+        (
+            raw_command_path,
+            r"benchmark plan execution sidecar commands\[0\] has unsupported keys",
+            "raw-plan-command-bundle",
+        ),
+        (
+            raw_plan_source_path,
+            "benchmark plan execution sidecar plan_source has unsupported keys",
+            "raw-plan-source-bundle",
+        ),
+    ):
+        with pytest.raises(ValueError, match=error_match):
+            build_release_bundle(
+                v1_benchmark_json=artifacts["v1"],
+                storage_benchmark_json=artifacts["storage"],
+                engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+                engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+                plan_execution_jsons=(plan_execution_path,),
+                output_dir=tmp_path / bundle_name,
+            )
+
+
 def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_matching(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"

@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no findings and approved the benchmark plan execution sidecar key guard slice.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/release_bundle.py",
+    "tests/test_release_bundle.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_bundle.py::test_build_release_bundle_rejects_plan_execution_sidecars_with_extra_keys -q",
+    "poetry run pytest tests/test_release_bundle.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check"
+  ],
+  "what_changed": [
+    "Rejected unsupported top-level keys in benchmark plan execution sidecars during bundle validation",
+    "Rejected unsupported keys in benchmark plan execution command entries",
+    "Rejected unsupported keys in benchmark plan source provenance records"
+  ],
+  "why": "Keep V1 release bundles schema-tight so debug or stale benchmark-plan execution payload fields cannot enter the audited release handoff."
+}
