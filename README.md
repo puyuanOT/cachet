@@ -604,9 +604,9 @@ python -m document_kv_cache.benchmark_plan \
   --engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json \
   --engine-probe-use-builtin-factories \
   --release-evidence-output-json /data/release-evidence.json \
+  --release-preflight-output-json /data/release-inputs.json \
   --release-bundle-output-dir /data/document-kv-release-bundle \
   --release-bundle-output-json /data/release-bundle-manifest.json \
-  --release-bundle-preflight-json /data/release-inputs.json \
   --release-bundle-plan-execution-json /data/plan-execution.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status.json \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
@@ -655,6 +655,12 @@ Add `--native-probe-factories-output-json` to the benchmark plan to emit the
 matching `document_kv.native_probe_factories.v1` diagnostics sidecar; when
 release-bundle assembly is also enabled, the generated sidecar is included in
 the bundle automatically.
+Add `--release-preflight-output-json` to the benchmark plan to emit the
+matching `document_kv.release_evidence_inputs.v1` sidecar before release
+validation; when release-bundle assembly is also enabled, the generated
+preflight sidecar is included in the bundle automatically. Use
+`--release-bundle-preflight-json` only when the preflight sidecar was generated
+outside the command plan.
 If native probe and connector-action records already exist, skip the planned
 probe flags and pass them directly with repeatable `--release-engine-probe-json`
 and `--release-engine-actions-json`.
@@ -674,7 +680,7 @@ version and carries the serving-engine package/version metadata from
 `document_kv_cache.serving_env`. Add
 `--release-bundle-output-dir` to append `document_kv_cache.release_bundle`
 after that validation step; the bundle command copies the validated V1,
-storage, engine-probe, release-evidence artifacts plus any supplied preflight,
+storage, engine-probe, release-evidence artifacts plus any generated or supplied preflight,
 plan-execution, Databricks run-status, wheel, PR-evidence, GitHub governance,
 and native-probe factory diagnostics sidecars into a checksummed handoff
 directory. For ad hoc local conversion, use `dataset_prep`

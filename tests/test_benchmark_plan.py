@@ -90,6 +90,9 @@ def test_benchmark_plan_config_keeps_native_probe_field_positional_compatibility
     assert field_names.index("repository_hygiene_output_json") < field_names.index(
         "github_governance_output_json"
     )
+    assert field_names.index("github_governance_output_json") < field_names.index(
+        "release_preflight_output_json"
+    )
 
 
 def release_action_jsons(tmp_path):
@@ -1151,6 +1154,166 @@ def test_benchmark_plan_rejects_native_probe_factories_output_path_collisions(tm
         )
 
 
+def test_build_v1_benchmark_plan_can_generate_and_bundle_release_preflight(tmp_path):
+    release_preflight_json = str(tmp_path / "release-inputs.json")
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+        ),
+        release_preflight_output_json=release_preflight_json,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    preflight_command = next(command for command in plan.commands if command.name == "preflight-release-evidence")
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert [command.name for command in plan.commands][-5:] == [
+        "run-benchmark",
+        "run-storage-benchmark",
+        "preflight-release-evidence",
+        "validate-release-evidence",
+        "build-release-bundle",
+    ]
+    assert record["release_preflight_output_json"] == release_preflight_json
+    assert record["release_bundle"]["preflight_json"] == release_preflight_json
+    assert preflight_command.argv[:3] == ("python", "-m", "document_kv_cache.release_evidence")
+    assert "--preflight-only" in preflight_command.argv
+    assert preflight_command.argv[preflight_command.argv.index("--preflight-output-json") + 1] == (
+        release_preflight_json
+    )
+    assert "--output-json" not in preflight_command.argv
+    assert preflight_command.argv.count("--engine-probe-json") == 2
+    assert preflight_command.argv.count("--engine-actions-json") == 2
+    assert bundle_command.argv.count("--preflight-json") == 1
+    assert bundle_command.argv[bundle_command.argv.index("--preflight-json") + 1] == release_preflight_json
+
+
+def test_build_v1_benchmark_plan_allows_equivalent_generated_release_preflight_bundle_path(tmp_path):
+    release_preflight_json = str(tmp_path / "release-inputs.json")
+    equivalent_release_preflight_json = str(tmp_path / "subdir" / ".." / "release-inputs.json")
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+            preflight_json=equivalent_release_preflight_json,
+        ),
+        release_preflight_output_json=release_preflight_json,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert record["release_bundle"]["preflight_json"] == release_preflight_json
+    assert bundle_command.argv.count("--preflight-json") == 1
+    assert bundle_command.argv[bundle_command.argv.index("--preflight-json") + 1] == release_preflight_json
+
+
+def test_benchmark_plan_rejects_conflicting_generated_release_preflight_bundle_path(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="release bundle preflight_json must match release_preflight_output_json",
+    ):
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            storage_benchmark=StorageBenchmarkPlanConfig(
+                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                output_json=str(tmp_path / "storage.json"),
+                readers=("memory", "disk", "unity_catalog"),
+                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            ),
+            release_evidence=ReleaseEvidencePlanConfig(
+                output_json=str(tmp_path / "release-evidence.json"),
+                engine_probe_jsons=(
+                    str(tmp_path / "vllm-probe.json"),
+                    str(tmp_path / "sglang-probe.json"),
+                ),
+                engine_actions_jsons=release_action_jsons(tmp_path),
+            ),
+            release_bundle=ReleaseBundlePlanConfig(
+                output_dir=str(tmp_path / "release-bundle"),
+                output_json=str(tmp_path / "release-bundle-manifest.json"),
+                preflight_json=str(tmp_path / "other-release-inputs.json"),
+            ),
+            release_preflight_output_json=str(tmp_path / "release-inputs.json"),
+        )
+
+
+def test_benchmark_plan_release_preflight_requires_release_evidence(tmp_path):
+    with pytest.raises(ValueError, match="release_preflight_output_json requires release_evidence"):
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            release_preflight_output_json=str(tmp_path / "release-inputs.json"),
+        )
+
+
+def test_benchmark_plan_rejects_release_preflight_output_path_collisions(tmp_path):
+    with pytest.raises(ValueError, match="output paths must be distinct"):
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            storage_benchmark=StorageBenchmarkPlanConfig(
+                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                output_json=str(tmp_path / "storage.json"),
+            ),
+            release_evidence=ReleaseEvidencePlanConfig(
+                output_json=str(tmp_path / "release-evidence.json"),
+                engine_probe_jsons=(
+                    str(tmp_path / "vllm-probe.json"),
+                    str(tmp_path / "sglang-probe.json"),
+                ),
+                engine_actions_jsons=release_action_jsons(tmp_path),
+            ),
+            release_preflight_output_json=str(tmp_path / "storage.json"),
+        )
+
+
 def test_benchmark_plan_rejects_repository_hygiene_output_path_collisions(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
@@ -2149,6 +2312,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
             "--release-evidence-output-json",
             str(tmp_path / "release-evidence.json"),
+            "--release-preflight-output-json",
+            str(tmp_path / "release-inputs.json"),
             "--release-engine-probe-json",
             str(tmp_path / "vllm-probe.json"),
             "--release-engine-probe-json",
@@ -2193,11 +2358,12 @@ def test_main_can_include_release_bundle_command(tmp_path):
     bundle_argv = record["commands"][-1]["argv"]
 
     assert exit_code == 0
-    assert [command["name"] for command in record["commands"]][-6:] == [
+    assert [command["name"] for command in record["commands"]][-7:] == [
         "run-storage-benchmark",
         "inspect-github-governance",
         "inspect-repository-hygiene",
         "inspect-native-probe-factories",
+        "preflight-release-evidence",
         "validate-release-evidence",
         "build-release-bundle",
     ]
@@ -2210,11 +2376,16 @@ def test_main_can_include_release_bundle_command(tmp_path):
     native_argv = next(
         command["argv"] for command in record["commands"] if command["name"] == "inspect-native-probe-factories"
     )
+    preflight_argv = next(
+        command["argv"] for command in record["commands"] if command["name"] == "preflight-release-evidence"
+    )
     assert record["release_bundle_output_dir"] == str(tmp_path / "release-bundle")
     assert record["github_governance_output_json"] == str(tmp_path / "github-governance.json")
     assert record["repository_hygiene_output_json"] == str(tmp_path / "repository-hygiene.json")
     assert record["native_probe_factories_output_json"] == str(tmp_path / "native-probe-factories.json")
+    assert record["release_preflight_output_json"] == str(tmp_path / "release-inputs.json")
     assert record["release_bundle"]["release_evidence_json"] == str(tmp_path / "release-evidence.json")
+    assert record["release_bundle"]["preflight_json"] == str(tmp_path / "release-inputs.json")
     assert record["release_bundle"]["engine_actions_jsons"] == [
         str(tmp_path / "vllm-actions.json"),
         str(tmp_path / "sglang-actions.json"),
@@ -2234,10 +2405,17 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert hygiene_argv[hygiene_argv.index("--output-json") + 1] == str(tmp_path / "repository-hygiene.json")
     assert native_argv[:3] == [sys.executable, "-m", "document_kv_cache.native_probe_factories"]
     assert native_argv[native_argv.index("--output-json") + 1] == str(tmp_path / "native-probe-factories.json")
+    assert preflight_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_evidence"]
+    assert "--preflight-only" in preflight_argv
+    assert preflight_argv[preflight_argv.index("--preflight-output-json") + 1] == str(
+        tmp_path / "release-inputs.json"
+    )
     assert bundle_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_bundle"]
     assert bundle_argv.count("--engine-probe-json") == 2
     assert bundle_argv.count("--engine-actions-json") == 2
     assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")
+    assert bundle_argv[bundle_argv.index("--preflight-json") + 1] == str(tmp_path / "release-inputs.json")
+    assert bundle_argv.count("--preflight-json") == 1
     assert bundle_argv[bundle_argv.index("--github-governance-json") + 1] == str(
         tmp_path / "github-governance.json"
     )
