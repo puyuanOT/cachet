@@ -377,6 +377,39 @@ def test_evaluate_release_evidence_rejects_wrong_comparison_arms_and_missing_qua
     assert any("exact_match_delta" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_non_numeric_comparison_metrics():
+    v1_record = _v1_record(ok=True)
+    v1_record["comparisons"][0] = {
+        **v1_record["comparisons"][0],
+        "ttft_speedup": "fast",
+        "time_to_completion_speedup": 0.0,
+        "exact_match_delta": float("nan"),
+        "answer_found_delta": True,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("ttft_speedup must be a positive finite number" in issue for issue in evidence.issues)
+    assert any(
+        "time_to_completion_speedup must be a positive finite number" in issue
+        for issue in evidence.issues
+    )
+    assert any("exact_match_delta must be a finite number" in issue for issue in evidence.issues)
+    assert any("answer_found_delta must be a finite number" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_stub_measurement_rows():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"] = [{}]

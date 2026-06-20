@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/v1-comparison-metric-validation.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped diff with no findings, noting that the validator now rejects missing, non-numeric, boolean, NaN/inf, zero, and negative speedups while allowing finite signed quality deltas.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/release_evidence.py",
+        "tests/test_release_evidence.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_release_evidence.py tests/test_release_bundle.py -> 78 passed",
+        "python -m py_compile src/document_kv_cache/release_evidence.py tests/test_release_evidence.py -> clean",
+        "git diff --check -> clean",
+        "poetry run pytest -q -> 775 passed",
+        "poetry check -> All set",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-comparison-metric-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+        "GPT-5.5 reviewer approved branch v1-comparison-metric-validation with no findings"
+      ],
+      "what_changed": [
+        "Required strict V1 release-evidence comparison rows to carry positive finite latency speedups.",
+        "Required strict V1 release-evidence comparison rows to carry finite numeric quality deltas.",
+        "Documented the stricter V1 comparison metric contract and added a regression test for string, boolean, NaN, and zero values."
+      ],
+      "why": "Release artifacts must not be able to pass strict V1 validation with malformed comparison metrics, because those metrics are the quality and efficiency summary used to compare document KV-cache reuse with no-cache prefill."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
