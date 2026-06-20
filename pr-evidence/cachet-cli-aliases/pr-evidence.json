@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED - The Cachet aliases are complete, install through project.scripts, and mirror document-owned targets without removing legacy restaurant-kv compatibility.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "pyproject.toml",
+    "README.md",
+    "src/document_kv_cache/README.md",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_public_package.py::test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases tests/test_project_governance.py::test_document_package_readme_lists_public_modules_and_console_scripts -q -> 2 passed",
+    "poetry run pytest tests/test_public_package.py tests/test_project_governance.py -q -> 45 passed",
+    "poetry check && poetry install --dry-run -> passed / All set",
+    "poetry run pytest -q -> 1046 passed",
+    "poetry build -> passed",
+    "installed console script check over all scripts -> checked 50 console scripts",
+    "git diff --check -> clean"
+  ],
+  "what_changed": [
+    "Added Cachet-branded console script aliases for document-owned CLI entry points."
+  ],
+  "why": "Cachet is the product brand, so installed users should discover branded workflow commands while document-kv and legacy restaurant aliases remain compatible."
+}

@@ -1674,7 +1674,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     poetry = pyproject["tool"]["poetry"]
     scripts = project["scripts"]
     artifact_includes = poetry["include"]
-    expected_scripts = {
+    expected_document_scripts = {
         "document-kv-benchmark-plan": "document_kv_cache.benchmark_plan:main",
         "document-kv-run-benchmark-plan": "document_kv_cache.benchmark_plan_executor:main",
         "document-kv-databricks-job": "document_kv_cache.databricks_job:main",
@@ -1693,6 +1693,12 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
         "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
         "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
+    }
+    expected_cachet_scripts = {
+        script_name.replace("document-kv-", "cachet-", 1): target
+        for script_name, target in expected_document_scripts.items()
+    }
+    expected_legacy_scripts = {
         "restaurant-kv-benchmark-plan": "restaurant_kv_serving.benchmark_plan:main",
         "restaurant-kv-run-benchmark-plan": "restaurant_kv_serving.benchmark_plan_executor:main",
         "restaurant-kv-databricks-job": "restaurant_kv_serving.databricks_job:main",
@@ -1707,6 +1713,11 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "restaurant-kv-engine-probe-databricks-job": "restaurant_kv_serving.databricks_engine_probe_job:main",
         "restaurant-kv-vllm-smoke": "restaurant_kv_serving.vllm_smoke:main",
         "restaurant-kv-vllm-smoke-databricks-job": "restaurant_kv_serving.databricks_vllm_smoke_job:main",
+    }
+    expected_scripts = {
+        **expected_cachet_scripts,
+        **expected_document_scripts,
+        **expected_legacy_scripts,
     }
     expected_includes = [
         {
@@ -1763,3 +1774,5 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     }
     assert artifact_includes == expected_includes
     assert scripts == expected_scripts
+    assert scripts["cachet-benchmark-plan"] == scripts["document-kv-benchmark-plan"]
+    assert scripts["cachet-templates"] == scripts["document-kv-templates"]

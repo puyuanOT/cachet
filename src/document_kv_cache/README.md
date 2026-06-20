@@ -126,6 +126,27 @@ The public package owns these document-branded CLI entry points:
 - `document-kv-vllm-smoke`
 - `document-kv-vllm-smoke-databricks-job`
 
+Cachet-branded aliases point to the same document-owned entry points:
+
+- `cachet-benchmark-plan`
+- `cachet-run-benchmark-plan`
+- `cachet-databricks-job`
+- `cachet-databricks-runs`
+- `cachet-storage-benchmark`
+- `cachet-storage-benchmark-databricks-job`
+- `cachet-templates`
+- `cachet-release-evidence`
+- `cachet-release-bundle`
+- `cachet-pr-evidence`
+- `cachet-github-governance`
+- `cachet-repository-hygiene`
+- `cachet-serving-env`
+- `cachet-native-probe-factories`
+- `cachet-engine-probe`
+- `cachet-engine-probe-databricks-job`
+- `cachet-vllm-smoke`
+- `cachet-vllm-smoke-databricks-job`
+
 Legacy `restaurant-kv-*` aliases remain packaged only for downstream migration.
 
 ## Optional Extras
