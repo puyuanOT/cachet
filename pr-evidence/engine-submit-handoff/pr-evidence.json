@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved with no findings and confirmed the helper keeps connector submit failure semantics and serving/scheduling ownership with the connector.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/service.py",
+    "src/document_kv_cache/workflow.py",
+    "tests/test_engine.py",
+    "tests/test_workflow.py",
+    "tests/test_project_governance.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine.py tests/test_workflow.py tests/test_project_governance.py tests/test_public_package.py -q -> 105 passed",
+    "poetry run pytest -q -> 903 passed",
+    "git diff --check -> passed",
+    "poetry check -> passed",
+    "poetry install --dry-run -> passed",
+    "poetry build -> passed"
+  ],
+  "what_changed": [
+    "Added `prepare_and_submit_to_engine(...)` to `DocumentKVService` for validated `EngineReadyRequest` preparation plus connector submission.",
+    "Added the same end-to-end helper to `DocumentKVWorkflow`, including training-artifact adapter propagation through the existing preparation path.",
+    "Documented the vLLM/SGLang connector handoff helper and added service/workflow tests."
+  ],
+  "why": "Cachet needs an intuitive workflow that reaches the established serving-engine handoff boundary while keeping scheduling and decode inside vLLM, SGLang, or other connector implementations."
+}

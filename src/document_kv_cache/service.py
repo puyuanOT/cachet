@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from document_kv_cache.admission import AdmissionQueue, PreparedRequest
-from document_kv_cache.engine import EngineReadyRequest, _normalize_gpu_byte_multiplier, build_engine_ready_request
+from document_kv_cache.engine import (
+    EngineReadyRequest,
+    ServingEngineConnector,
+    _normalize_gpu_byte_multiplier,
+    build_engine_ready_request,
+)
 from document_kv_cache.engine_protocol import KVLayout
 from document_kv_cache.materializer import KVMaterializer
 from document_kv_cache.models import CacheGenerationMethod
@@ -65,6 +70,30 @@ class DocumentKVService:
             adapter_ids=adapter_ids,
             kv_gpu_bytes_per_payload_byte=self.kv_gpu_bytes_per_payload_byte,
         )
+
+    def prepare_and_submit_to_engine(
+        self,
+        request: CacheRequest,
+        *,
+        connector: ServingEngineConnector,
+        layout: KVLayout,
+        handle_uri: str | None = None,
+        metadata: Mapping[str, str] | None = None,
+        cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+        adapter_ids: tuple[str, ...] = (),
+        segmented: bool = False,
+    ) -> EngineReadyRequest:
+        ready = self.prepare_for_engine(
+            request,
+            layout=layout,
+            handle_uri=handle_uri,
+            metadata=metadata,
+            cache_method=cache_method,
+            adapter_ids=adapter_ids,
+            segmented=segmented,
+        )
+        connector.submit(ready)
+        return ready
 
 
 RestaurantKVService = DocumentKVService

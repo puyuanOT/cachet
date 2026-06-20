@@ -299,6 +299,21 @@ ready = service.prepare_for_engine(
 )
 ```
 
+If the integration already has a vLLM or SGLang connector object implementing
+the small `ServingEngineConnector` protocol, use
+`prepare_and_submit_to_engine(...)` to keep preparation and handoff together:
+
+```python
+ready = workflow.prepare_and_submit_to_engine(
+    request,
+    connector=vllm_connector,
+    layout=qwen3_layout,
+    metadata={"engine": "vllm"},
+    adapter_ids=("selection-lora",),
+    segmented=True,
+)
+```
+
 The `EngineReadyRequest` contains the loaded payload, per-segment cache-tier
 attribution, and a validated `KVCacheHandle` with contiguous token and byte
 segments. vLLM and SGLang integrations should consume that handle, reserve
