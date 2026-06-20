@@ -2,31 +2,37 @@
 
 from __future__ import annotations
 
-import argparse
-import hashlib
-import json
-import subprocess
-import sys
+import importlib.util
 from collections.abc import Mapping, Sequence
-from contextvars import ContextVar
-from dataclasses import dataclass
 from pathlib import Path
+import sys
+from threading import RLock as _RLock
+from types import FunctionType as _FunctionType
 from typing import Any
 
-from document_kv_cache.benchmark_plan_executor import (
-    BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
-    BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
-    BenchmarkCommandResult,
-    benchmark_command_results_to_record as _document_benchmark_command_results_to_record,
-    benchmark_plan_source_payload_to_record as _document_benchmark_plan_source_payload_to_record,
-)
-from restaurant_kv_serving.storage import local_path
+import document_kv_cache.benchmark_plan_executor as _document_module
 
 
-_PRELOADED_PLAN_PAYLOAD: ContextVar[tuple[str, bytes] | None] = ContextVar(
-    "_PRELOADED_PLAN_PAYLOAD",
-    default=None,
-)
+def _load_document_defaults_module():
+    module_path = Path(_document_module.__file__)
+    module_name = "_restaurant_kv_serving_benchmark_plan_executor_document_defaults"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load document benchmark_plan_executor defaults from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_document_defaults_module = _load_document_defaults_module()
+
+
+for _name, _value in vars(_document_defaults_module).items():
+    if _name != "__all__" and not _name.startswith("__"):
+        globals()[_name] = _value
+
+BenchmarkCommandResult = _document_module.BenchmarkCommandResult
 
 
 def execute_benchmark_job_plan(
@@ -35,22 +41,7 @@ def execute_benchmark_job_plan(
     dry_run: bool = False,
     cwd: str | Path | None = None,
 ) -> tuple[BenchmarkCommandResult, ...]:
-    commands = tuple(_commands_from_plan(plan))
-    results: list[BenchmarkCommandResult] = []
-    for name, argv in commands:
-        runtime_argv = _runtime_argv(argv)
-        if dry_run:
-            results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=0, skipped=True))
-            continue
-        try:
-            completed = subprocess.run(runtime_argv, cwd=str(cwd) if cwd is not None else None, check=False)
-        except OSError as exc:
-            results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=127, error=str(exc)))
-            break
-        results.append(BenchmarkCommandResult(name=name, argv=runtime_argv, returncode=completed.returncode))
-        if completed.returncode != 0:
-            break
-    return tuple(results)
+    return _call_document_function("execute_benchmark_job_plan", plan, dry_run=dry_run, cwd=cwd)
 
 
 def execute_benchmark_job_plan_json(
@@ -59,7 +50,7 @@ def execute_benchmark_job_plan_json(
     dry_run: bool = False,
     cwd: str | Path | None = None,
 ) -> tuple[BenchmarkCommandResult, ...]:
-    return execute_benchmark_job_plan(_plan_from_payload(_plan_payload_for(path)), dry_run=dry_run, cwd=cwd)
+    return _call_document_function("execute_benchmark_job_plan_json", path, dry_run=dry_run, cwd=cwd)
 
 
 def benchmark_command_results_to_record(
@@ -67,115 +58,115 @@ def benchmark_command_results_to_record(
     *,
     plan_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return _document_benchmark_command_results_to_record(results, plan_source=plan_source)
+    return _call_document_function("benchmark_command_results_to_record", results, plan_source=plan_source)
 
 
 def benchmark_plan_source_to_record(path: str | Path) -> dict[str, Any]:
-    path_text = str(path)
-    payload = _read_plan_payload(path)
-    return benchmark_plan_source_payload_to_record(path_text, _driver_path(path), payload)
+    return _call_document_function("benchmark_plan_source_to_record", path)
 
 
 def benchmark_plan_source_payload_to_record(path: str, driver_path: str | Path, payload: bytes) -> dict[str, Any]:
-    return _document_benchmark_plan_source_payload_to_record(path, driver_path, payload)
+    return _call_document_function("benchmark_plan_source_payload_to_record", path, driver_path, payload)
 
 
 def write_benchmark_command_results_json(results: Sequence[BenchmarkCommandResult], path: str | Path) -> None:
-    output_path = _driver_path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(benchmark_command_results_to_record(results), indent=2, sort_keys=True) + "\n")
-
-
-def _commands_from_plan(plan: Mapping[str, Any]) -> list[tuple[str, tuple[str, ...]]]:
-    raw_commands = plan.get("commands")
-    if not isinstance(raw_commands, Sequence) or isinstance(raw_commands, (str, bytes)):
-        raise ValueError("Benchmark plan JSON must include a commands array")
-    commands: list[tuple[str, tuple[str, ...]]] = []
-    for index, raw_command in enumerate(raw_commands):
-        if not isinstance(raw_command, Mapping):
-            raise ValueError(f"commands[{index}] must be an object")
-        name = raw_command.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError(f"commands[{index}].name must be non-empty")
-        raw_argv = raw_command.get("argv")
-        if not isinstance(raw_argv, Sequence) or isinstance(raw_argv, (str, bytes)) or not raw_argv:
-            raise ValueError(f"commands[{index}].argv must be a non-empty array")
-        argv = tuple(_argv_item(item, command_index=index, item_index=item_index) for item_index, item in enumerate(raw_argv))
-        commands.append((name, argv))
-    return commands
-
-
-def _runtime_argv(argv: tuple[str, ...]) -> tuple[str, ...]:
-    if argv[0] in {"python", "python3"}:
-        return (sys.executable, *argv[1:])
-    return argv
-
-
-def _argv_item(value: Any, *, command_index: int, item_index: int) -> str:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"commands[{command_index}].argv[{item_index}] must be a non-empty string")
-    return value
-
-
-def _driver_path(path: str | Path) -> Path:
-    return local_path(str(path))
-
-
-def _read_plan_payload(path: str | Path) -> bytes:
-    return _driver_path(path).read_bytes()
-
-
-def _plan_payload_for(path: str | Path) -> bytes:
-    preloaded = _PRELOADED_PLAN_PAYLOAD.get()
-    path_text = str(path)
-    if preloaded is not None and preloaded[0] == path_text:
-        return preloaded[1]
-    return _read_plan_payload(path)
-
-
-def _plan_from_payload(payload: bytes) -> Mapping[str, Any]:
-    plan = json.loads(payload.decode("utf-8"))
-    if not isinstance(plan, Mapping):
-        raise ValueError("Benchmark plan JSON root must be an object")
-    return plan
+    return _call_document_function("write_benchmark_command_results_json", results, path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Execute a V1 benchmark command plan JSON.")
-    parser.add_argument("--plan-json", required=True, help="Benchmark plan JSON produced by benchmark_plan.")
-    parser.add_argument("--cwd", help="Optional working directory for all plan commands.")
-    parser.add_argument("--dry-run", action="store_true", help="Validate and report commands without running them.")
-    parser.add_argument("--result-json", help="Optional path for command execution result JSON.")
-    args = parser.parse_args(argv)
-
-    try:
-        plan_payload = _read_plan_payload(args.plan_json)
-        plan_source = benchmark_plan_source_payload_to_record(args.plan_json, _driver_path(args.plan_json), plan_payload)
-        token = _PRELOADED_PLAN_PAYLOAD.set((args.plan_json, plan_payload))
-        try:
-            results = execute_benchmark_job_plan_json(args.plan_json, dry_run=args.dry_run, cwd=args.cwd)
-        finally:
-            _PRELOADED_PLAN_PAYLOAD.reset(token)
-        record = benchmark_command_results_to_record(results)
-        record.setdefault("plan_source", plan_source)
-        if args.result_json:
-            write_benchmark_command_results_json(results, args.result_json)
-            _patch_result_json_plan_source(args.result_json, record["plan_source"])
-        else:
-            print(json.dumps(record, indent=2, sort_keys=True))
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
-        return 1
-    return 0 if record["ok"] else 2
+    return _call_document_function("main", argv)
 
 
-def _patch_result_json_plan_source(path: str | Path, plan_source: Mapping[str, Any]) -> None:
-    output_path = _driver_path(path)
-    record = json.loads(output_path.read_text(encoding="utf-8"))
-    if not isinstance(record, dict):
-        raise ValueError("command execution result JSON root must be an object")
-    record.setdefault("plan_source", dict(plan_source))
-    output_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+_DEFAULT_COMPAT_FUNCTIONS = {
+    "execute_benchmark_job_plan": execute_benchmark_job_plan,
+    "execute_benchmark_job_plan_json": execute_benchmark_job_plan_json,
+    "benchmark_command_results_to_record": benchmark_command_results_to_record,
+    "benchmark_plan_source_to_record": benchmark_plan_source_to_record,
+    "benchmark_plan_source_payload_to_record": benchmark_plan_source_payload_to_record,
+    "write_benchmark_command_results_json": write_benchmark_command_results_json,
+    "main": main,
+}
+_DOCUMENT_DEFAULTS = {
+    name: value
+    for name, value in vars(_document_defaults_module).items()
+    if name != "__all__" and not name.startswith("__")
+}
+_PATCH_LOCK = _RLock()
+_LEGACY_PATCH_NAMES = tuple(name for name in _DOCUMENT_DEFAULTS if name in globals())
+
+
+def _call_document_function(name: str, *args, **kwargs):
+    excluded_names = {name}
+    with _PATCH_LOCK:
+        return _isolated_document_namespace(excluded_names=excluded_names)[name](*args, **kwargs)
+
+
+def _document_global_for_legacy(name: str):
+    if name not in globals():
+        return _DOCUMENT_DEFAULTS[name]
+    if name == "BenchmarkCommandResult":
+        return _document_module.BenchmarkCommandResult
+    current = globals()[name]
+    if _DEFAULT_COMPAT_FUNCTIONS.get(name) is current:
+        return _DOCUMENT_DEFAULTS[name]
+    return current
+
+
+def _isolated_document_namespace(*, excluded_names: set[str]) -> dict[str, Any]:
+    namespace = dict(_DOCUMENT_DEFAULTS)
+    has_legacy_overrides = False
+    for name in _LEGACY_PATCH_NAMES:
+        if name in namespace and name not in excluded_names:
+            value = _document_global_for_legacy(name)
+            namespace[name] = value
+            has_legacy_overrides = has_legacy_overrides or value is not _DOCUMENT_DEFAULTS[name]
+    for name, value in tuple(namespace.items()):
+        if _is_document_function(value):
+            namespace[name] = _clone_document_function(value, namespace)
+    if not has_legacy_overrides:
+        return namespace
+    for name, value in tuple(namespace.items()):
+        if _is_document_class(value):
+            namespace[name] = _clone_document_class(value, namespace)
+    return namespace
+
+
+def _is_document_function(value: Any) -> bool:
+    return isinstance(value, _FunctionType) and value.__globals__ is vars(_document_defaults_module)
+
+
+def _is_document_class(value: Any) -> bool:
+    return isinstance(value, type) and value.__module__ == _document_defaults_module.__name__
+
+
+def _clone_document_function(function: _FunctionType, namespace: dict[str, Any]) -> _FunctionType:
+    clone = _FunctionType(function.__code__, namespace, function.__name__, function.__defaults__, function.__closure__)
+    clone.__kwdefaults__ = function.__kwdefaults__
+    clone.__annotations__ = dict(function.__annotations__)
+    clone.__doc__ = function.__doc__
+    clone.__module__ = function.__module__
+    return clone
+
+
+def _clone_document_class(cls: type, namespace: dict[str, Any]) -> type:
+    attrs: dict[str, Any] = {
+        "__module__": cls.__module__,
+        "__doc__": cls.__doc__,
+        "__slots__": (),
+    }
+    for name, value in vars(cls).items():
+        if _is_document_function(value):
+            attrs[name] = _clone_document_function(value, namespace)
+        elif isinstance(value, property):
+            attrs[name] = _clone_document_property(value, namespace)
+    return type(cls.__name__, (cls,), attrs)
+
+
+def _clone_document_property(prop: property, namespace: dict[str, Any]) -> property:
+    fget = _clone_document_function(prop.fget, namespace) if _is_document_function(prop.fget) else prop.fget
+    fset = _clone_document_function(prop.fset, namespace) if _is_document_function(prop.fset) else prop.fset
+    fdel = _clone_document_function(prop.fdel, namespace) if _is_document_function(prop.fdel) else prop.fdel
+    return property(fget, fset, fdel, prop.__doc__)
 
 
 if __name__ == "__main__":  # pragma: no cover

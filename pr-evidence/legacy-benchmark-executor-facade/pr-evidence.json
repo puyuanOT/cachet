@@ -1,0 +1,25 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 review found an import-order isolation blocker where the legacy facade could capture public monkeypatches as defaults. The facade now loads pristine document defaults from disk, preserves public BenchmarkCommandResult identity, and adds a regression test. Re-review approved with no blockers.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "restaurant_kv_serving.benchmark_plan_executor compatibility facade and benchmark plan executor tests."
+  ],
+  "verification": [
+    "poetry run pytest",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "secret scan completed; only existing detector fixtures and prior evidence text matched, no live credentials found"
+  ],
+  "what_changed": [
+    "Replaced the duplicated restaurant benchmark-plan executor implementation with a document-owned compatibility facade.",
+    "Added an import-order regression test proving legacy defaults do not capture public document-module monkeypatches installed before legacy import."
+  ],
+  "why": "The generalized package should own benchmark plan execution in document_kv_cache while restaurant_kv_serving remains a migration-only compatibility namespace."
+}
