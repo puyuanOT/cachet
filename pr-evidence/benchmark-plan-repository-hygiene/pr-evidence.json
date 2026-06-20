@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found a positional-compatibility issue from inserting repository_hygiene_output_json before native_probe_factories_output_json; the field was moved after the existing native-probe field, a regression test was added, and GPT-5.5 re-review approved.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.benchmark_plan CLI/config/record generation, benchmark-plan tests, README workflow documentation"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmark_plan.py -> 72 passed",
+    "poetry run pytest -q -> 726 passed",
+    "git diff --check -> passed",
+    "poetry run python -m compileall -q src tests -> passed",
+    "poetry run python -m document_kv_cache.benchmark_plan --help -> passed"
+  ],
+  "what_changed": [
+    "Benchmark plans can generate repository hygiene sidecars and auto-bundle them as release hygiene evidence."
+  ],
+  "why": "Release bundle command plans should generate the repository hygiene evidence they need instead of requiring an out-of-band sidecar path."
+}

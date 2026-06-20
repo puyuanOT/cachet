@@ -3,6 +3,7 @@ import os
 import pickle
 import subprocess
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,14 @@ def planned_release_probe_cli_args(tmp_path):
         "--release-evidence-output-json",
         str(tmp_path / "release-evidence.json"),
     ]
+
+
+def test_benchmark_plan_config_keeps_native_probe_field_positional_compatibility():
+    field_names = [field.name for field in fields(BenchmarkPlanConfig)]
+
+    assert field_names.index("native_probe_factories_output_json") < field_names.index(
+        "repository_hygiene_output_json"
+    )
 
 
 def release_action_jsons(tmp_path):
@@ -308,6 +317,137 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert "--repository-hygiene-json" in bundle_command.argv
     assert "--native-probe-factories-json" in bundle_command.argv
     assert "--overwrite" in bundle_command.argv
+
+
+def test_build_v1_benchmark_plan_can_generate_and_bundle_repository_hygiene(tmp_path):
+    repository_hygiene_json = str(tmp_path / "repository-hygiene.json")
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+        ),
+        repository_hygiene_output_json=repository_hygiene_json,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    hygiene_command = next(command for command in plan.commands if command.name == "inspect-repository-hygiene")
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert [command.name for command in plan.commands][-5:] == [
+        "run-benchmark",
+        "run-storage-benchmark",
+        "inspect-repository-hygiene",
+        "validate-release-evidence",
+        "build-release-bundle",
+    ]
+    assert record["repository_hygiene_output_json"] == repository_hygiene_json
+    assert record["release_bundle"]["repository_hygiene_json"] == repository_hygiene_json
+    assert hygiene_command.argv == (
+        "python",
+        "-m",
+        "document_kv_cache.repository_hygiene",
+        "--repository-root",
+        ".",
+        "--output-json",
+        repository_hygiene_json,
+    )
+    assert bundle_command.argv.count("--repository-hygiene-json") == 1
+    assert bundle_command.argv[bundle_command.argv.index("--repository-hygiene-json") + 1] == (
+        repository_hygiene_json
+    )
+
+
+def test_build_v1_benchmark_plan_allows_equivalent_generated_repository_hygiene_bundle_path(tmp_path):
+    repository_hygiene_json = str(tmp_path / "repository-hygiene.json")
+    equivalent_repository_hygiene_json = str(tmp_path / "subdir" / ".." / "repository-hygiene.json")
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+            repository_hygiene_json=equivalent_repository_hygiene_json,
+        ),
+        repository_hygiene_output_json=repository_hygiene_json,
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert record["release_bundle"]["repository_hygiene_json"] == repository_hygiene_json
+    assert bundle_command.argv.count("--repository-hygiene-json") == 1
+    assert bundle_command.argv[bundle_command.argv.index("--repository-hygiene-json") + 1] == (
+        repository_hygiene_json
+    )
+
+
+def test_benchmark_plan_rejects_conflicting_generated_repository_hygiene_bundle_path(tmp_path):
+    with pytest.raises(
+        ValueError,
+        match="release bundle repository_hygiene_json must match repository_hygiene_output_json",
+    ):
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            storage_benchmark=StorageBenchmarkPlanConfig(
+                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                output_json=str(tmp_path / "storage.json"),
+                readers=("memory", "disk", "unity_catalog"),
+                uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            ),
+            release_evidence=ReleaseEvidencePlanConfig(
+                output_json=str(tmp_path / "release-evidence.json"),
+                engine_probe_jsons=(
+                    str(tmp_path / "vllm-probe.json"),
+                    str(tmp_path / "sglang-probe.json"),
+                ),
+                engine_actions_jsons=release_action_jsons(tmp_path),
+            ),
+            release_bundle=ReleaseBundlePlanConfig(
+                output_dir=str(tmp_path / "release-bundle"),
+                output_json=str(tmp_path / "release-bundle-manifest.json"),
+                repository_hygiene_json=str(tmp_path / "other-repository-hygiene.json"),
+            ),
+            repository_hygiene_output_json=str(tmp_path / "repository-hygiene.json"),
+        )
 
 
 def test_build_v1_benchmark_plan_can_generate_and_bundle_native_probe_factories(tmp_path):
@@ -876,6 +1016,21 @@ def test_benchmark_plan_rejects_native_probe_factories_output_path_collisions(tm
                 output_json=str(tmp_path / "storage.json"),
             ),
             native_probe_factories_output_json=str(tmp_path / "storage.json"),
+        )
+
+
+def test_benchmark_plan_rejects_repository_hygiene_output_path_collisions(tmp_path):
+    with pytest.raises(ValueError, match="output paths must be distinct"):
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            storage_benchmark=StorageBenchmarkPlanConfig(
+                workspace_dir="/local_disk0/document-kv-storage-benchmark",
+                output_json=str(tmp_path / "storage.json"),
+            ),
+            repository_hygiene_output_json=str(tmp_path / "storage.json"),
         )
 
 
@@ -1873,6 +2028,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "github-governance.json"),
             "--release-bundle-repository-hygiene-json",
             str(tmp_path / "repository-hygiene.json"),
+            "--repository-hygiene-output-json",
+            str(tmp_path / "repository-hygiene.json"),
             "--release-bundle-native-probe-factories-json",
             str(tmp_path / "native-probe-factories.json"),
             "--native-probe-factories-output-json",
@@ -1887,16 +2044,21 @@ def test_main_can_include_release_bundle_command(tmp_path):
     bundle_argv = record["commands"][-1]["argv"]
 
     assert exit_code == 0
-    assert [command["name"] for command in record["commands"]][-4:] == [
+    assert [command["name"] for command in record["commands"]][-5:] == [
         "run-storage-benchmark",
+        "inspect-repository-hygiene",
         "inspect-native-probe-factories",
         "validate-release-evidence",
         "build-release-bundle",
     ]
+    hygiene_argv = next(
+        command["argv"] for command in record["commands"] if command["name"] == "inspect-repository-hygiene"
+    )
     native_argv = next(
         command["argv"] for command in record["commands"] if command["name"] == "inspect-native-probe-factories"
     )
     assert record["release_bundle_output_dir"] == str(tmp_path / "release-bundle")
+    assert record["repository_hygiene_output_json"] == str(tmp_path / "repository-hygiene.json")
     assert record["native_probe_factories_output_json"] == str(tmp_path / "native-probe-factories.json")
     assert record["release_bundle"]["release_evidence_json"] == str(tmp_path / "release-evidence.json")
     assert record["release_bundle"]["engine_actions_jsons"] == [
@@ -1911,6 +2073,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["release_bundle"]["native_probe_factories_jsons"] == [
         str(tmp_path / "native-probe-factories.json")
     ]
+    assert hygiene_argv[:3] == [sys.executable, "-m", "document_kv_cache.repository_hygiene"]
+    assert hygiene_argv[hygiene_argv.index("--repository-root") + 1] == "."
+    assert hygiene_argv[hygiene_argv.index("--output-json") + 1] == str(tmp_path / "repository-hygiene.json")
     assert native_argv[:3] == [sys.executable, "-m", "document_kv_cache.native_probe_factories"]
     assert native_argv[native_argv.index("--output-json") + 1] == str(tmp_path / "native-probe-factories.json")
     assert bundle_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_bundle"]
@@ -1923,6 +2088,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert bundle_argv[bundle_argv.index("--repository-hygiene-json") + 1] == str(
         tmp_path / "repository-hygiene.json"
     )
+    assert bundle_argv.count("--repository-hygiene-json") == 1
     assert bundle_argv[bundle_argv.index("--native-probe-factories-json") + 1] == str(
         tmp_path / "native-probe-factories.json"
     )
