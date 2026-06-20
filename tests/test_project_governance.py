@@ -135,6 +135,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_openai_compatible.py": {
         "restaurant_kv_serving.openai_compatible",
     },
+    "tests/test_pr_evidence.py": {
+        "restaurant_kv_serving.pr_evidence",
+    },
     "tests/test_planner_materializer.py": {
         "restaurant_kv_serving.manifest",
         "restaurant_kv_serving.materializer",
@@ -152,6 +155,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.live_server",
         "restaurant_kv_serving.native_probe_factories",
         "restaurant_kv_serving.openai_compatible",
+        "restaurant_kv_serving.pr_evidence",
         "restaurant_kv_serving.serving_env",
         "restaurant_kv_serving.vllm_smoke",
         "restaurant_kv_serving.workflow",

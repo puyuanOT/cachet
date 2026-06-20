@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer Volta found a legacy CLI monkeypatch regression; the facade was fixed with LegacyMainBridge and new regression tests, then Volta approved the corrected diff.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/pr_evidence.py",
+    "src/restaurant_kv_serving/pr_evidence.py",
+    "tests/test_pr_evidence.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_pr_evidence.py tests/test_public_package.py tests/test_project_governance.py tests/test_release_bundle.py tests/test_benchmark_plan.py",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "Repository secret scan over source, tests, Databricks, evidence, and GitHub workflow paths reported only expected fake LangSmith governance fixtures."
+  ],
+  "what_changed": [
+    "Moved PR evidence implementation into document_kv_cache.pr_evidence",
+    "Replaced restaurant_kv_serving.pr_evidence with a compatibility facade preserving legacy star imports and CLI hook behavior",
+    "Added regression tests for document ownership and legacy PR evidence compatibility"
+  ],
+  "why": "PR traceability belongs to the document-generic governance surface while legacy restaurant imports remain supported during migration."
+}
