@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
@@ -105,8 +106,7 @@ def build_engine_ready_request(
     adapter_ids: tuple[str, ...] = (),
     kv_gpu_bytes_per_payload_byte: float = 1.0,
 ) -> EngineReadyRequest:
-    if kv_gpu_bytes_per_payload_byte < 0:
-        raise ValueError("kv_gpu_bytes_per_payload_byte must be non-negative")
+    gpu_byte_multiplier = _normalize_gpu_byte_multiplier(kv_gpu_bytes_per_payload_byte)
     handle = build_handle_from_materialized(
         materialized,
         layout=layout,
@@ -118,11 +118,22 @@ def build_engine_ready_request(
     ready_request = EngineReadyRequest(
         handle=handle,
         payload=_payload(materialized),
-        estimated_gpu_bytes=int(handle.total_bytes * kv_gpu_bytes_per_payload_byte),
+        estimated_gpu_bytes=int(handle.total_bytes * gpu_byte_multiplier),
         segment_tiers=materialized.segment_tiers,
     )
     ready_request.validate()
     return ready_request
+
+
+def _normalize_gpu_byte_multiplier(kv_gpu_bytes_per_payload_byte: float) -> float:
+    if isinstance(kv_gpu_bytes_per_payload_byte, bool) or not isinstance(kv_gpu_bytes_per_payload_byte, int | float):
+        raise TypeError("kv_gpu_bytes_per_payload_byte must be numeric")
+    multiplier = float(kv_gpu_bytes_per_payload_byte)
+    if not math.isfinite(multiplier):
+        raise ValueError("kv_gpu_bytes_per_payload_byte must be finite")
+    if multiplier < 0:
+        raise ValueError("kv_gpu_bytes_per_payload_byte must be non-negative")
+    return multiplier
 
 
 def _segment_from_plan(index: int, materialized: MaterializedKV | SegmentedMaterializedKV) -> KVSegment:

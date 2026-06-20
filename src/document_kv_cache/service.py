@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from document_kv_cache.admission import AdmissionQueue, PreparedRequest
-from document_kv_cache.engine import EngineReadyRequest, build_engine_ready_request
+from document_kv_cache.engine import EngineReadyRequest, _normalize_gpu_byte_multiplier, build_engine_ready_request
 from document_kv_cache.engine_protocol import KVLayout
 from document_kv_cache.materializer import KVMaterializer
 from document_kv_cache.models import CacheGenerationMethod
@@ -26,12 +26,10 @@ class DocumentKVService:
         admission_queue: AdmissionQueue,
         kv_gpu_bytes_per_payload_byte: float = 1.0,
     ) -> None:
-        if kv_gpu_bytes_per_payload_byte < 0:
-            raise ValueError("kv_gpu_bytes_per_payload_byte must be non-negative")
         self.planner = planner
         self.materializer = materializer
         self.admission_queue = admission_queue
-        self.kv_gpu_bytes_per_payload_byte = kv_gpu_bytes_per_payload_byte
+        self.kv_gpu_bytes_per_payload_byte = _normalize_gpu_byte_multiplier(kv_gpu_bytes_per_payload_byte)
 
     def prepare_and_enqueue(self, request: CacheRequest) -> bool:
         plan = self.planner.build_plan(request)

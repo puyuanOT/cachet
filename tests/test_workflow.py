@@ -571,17 +571,27 @@ def test_workflow_engine_handoff_accepts_explicit_gpu_multiplier(tmp_path):
     assert ready.estimated_gpu_bytes == 3 * ready.handle.total_bytes
 
 
-def test_workflow_engine_handoff_rejects_negative_gpu_multiplier():
+@pytest.mark.parametrize(
+    ("multiplier", "error_type", "message"),
+    [
+        (True, TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        ("1.0", TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        (float("nan"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
+        (float("inf"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
+        (-1.0, ValueError, "kv_gpu_bytes_per_payload_byte must be non-negative"),
+    ],
+)
+def test_workflow_engine_handoff_rejects_invalid_gpu_multiplier(multiplier, error_type, message):
     workflow = DocumentKVWorkflow(
         manifest=InMemoryManifestStore(),
         materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
     )
 
-    with pytest.raises(ValueError, match="kv_gpu_bytes_per_payload_byte"):
+    with pytest.raises(error_type, match=message):
         workflow.prepare_for_engine(
             request_for("doc-a"),
             layout=one_byte_layout(),
-            kv_gpu_bytes_per_payload_byte=-1.0,
+            kv_gpu_bytes_per_payload_byte=multiplier,
         )
 
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from document_kv_cache.engine import EngineReadyRequest, KVLayout, build_engine_ready_request
+from document_kv_cache.engine import EngineReadyRequest, KVLayout, _normalize_gpu_byte_multiplier, build_engine_ready_request
 from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout_from_value
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import ManifestStore
@@ -255,9 +255,7 @@ class DocumentKVWorkflow:
             multiplier = self.service.kv_gpu_bytes_per_payload_byte
         else:
             multiplier = 1.0
-        if multiplier < 0:
-            raise ValueError("kv_gpu_bytes_per_payload_byte must be non-negative")
-        return multiplier
+        return _normalize_gpu_byte_multiplier(multiplier)
 
     def _preparation_dependencies(self) -> tuple[CachePlanner, KVMaterializer]:
         if self.service is not None:

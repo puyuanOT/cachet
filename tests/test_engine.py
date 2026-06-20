@@ -171,19 +171,39 @@ def test_build_handle_rejects_layout_metadata_mismatches(tmp_path):
         )
 
 
-def test_build_engine_ready_request_rejects_negative_gpu_multiplier(tmp_path):
+@pytest.mark.parametrize(
+    ("multiplier", "error_type", "message"),
+    [
+        (True, TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        ("1.0", TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        (float("nan"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
+        (float("inf"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
+        (-1.0, ValueError, "kv_gpu_bytes_per_payload_byte must be non-negative"),
+    ],
+)
+def test_build_engine_ready_request_rejects_invalid_gpu_multiplier(tmp_path, multiplier, error_type, message):
     document_service = service(tmp_path)
     materialized = document_service.materializer.materialize(document_service.planner.build_plan(request()))
 
-    with pytest.raises(ValueError, match="kv_gpu_bytes_per_payload_byte"):
+    with pytest.raises(error_type, match=message):
         build_engine_ready_request(
             materialized,
             layout=layout(),
-            kv_gpu_bytes_per_payload_byte=-1.0,
+            kv_gpu_bytes_per_payload_byte=multiplier,
         )
 
 
-def test_service_rejects_negative_gpu_multiplier(tmp_path):
+@pytest.mark.parametrize(
+    ("multiplier", "error_type", "message"),
+    [
+        (True, TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        ("1.0", TypeError, "kv_gpu_bytes_per_payload_byte must be numeric"),
+        (float("nan"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
+        (float("inf"), ValueError, "kv_gpu_bytes_per_payload_byte must be finite"),
+        (-1.0, ValueError, "kv_gpu_bytes_per_payload_byte must be non-negative"),
+    ],
+)
+def test_service_rejects_invalid_gpu_multiplier(tmp_path, multiplier, error_type, message):
     refs = write_kvpack(
         tmp_path / "engine.kvpack",
         [
@@ -199,12 +219,12 @@ def test_service_rejects_negative_gpu_multiplier(tmp_path):
         align_bytes=1,
     )
 
-    with pytest.raises(ValueError, match="kv_gpu_bytes_per_payload_byte"):
+    with pytest.raises(error_type, match=message):
         DocumentKVService(
             planner=CachePlanner(InMemoryManifestStore(refs)),
             materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=1024), reader=DiskRangeReader()),
             admission_queue=AdmissionQueue(max_pending_gpu_bytes=4096),
-            kv_gpu_bytes_per_payload_byte=-1.0,
+            kv_gpu_bytes_per_payload_byte=multiplier,
         )
 
 
