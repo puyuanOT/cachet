@@ -1,15 +1,15 @@
 # `document_kv_cache`
 
 This is the public import package for Document KV Cache. It provides
-document-namespaced modules and is becoming the implementation owner one module
-at a time while older Databricks jobs and tests continue to import the legacy
-`restaurant_kv_serving` compatibility package.
+document-namespaced modules that own the implementation while older Databricks
+jobs and tests continue to import the legacy `restaurant_kv_serving`
+compatibility package.
 
 Public submodules such as `document_kv_cache.benchmark_plan`,
 `document_kv_cache.storage`, `document_kv_cache.storage_benchmark`, and
-`document_kv_cache.workflow` are real wrapper modules with
-`document_kv_cache.*` module identity. New documentation and examples should use
-this package name. The legacy package can be removed after downstream jobs
+`document_kv_cache.workflow` are the canonical implementation modules with
+`document_kv_cache.*` module identity. New documentation and examples should
+use this package name. The legacy package can be removed after downstream jobs
 finish migrating.
 
 The package root keeps `__all__` document-first for `from document_kv_cache
@@ -19,11 +19,10 @@ but are not advertised by root star imports.
 
 ## Public Module Map
 
-Some files in this package are still thin public wrappers over implementation
-modules in `restaurant_kv_serving`. They intentionally keep module import paths
-and CLI targets under the document-generic namespace while the migration is
-incremental. Document-owned modules now define their own exported classes and
-functions, and wrappers are retired one PR slice at a time.
+Public files in this package define the document-owned classes, functions,
+records, and CLI targets. Legacy restaurant import paths are maintained in the
+separate `restaurant_kv_serving` compatibility package rather than by making
+new document modules depend on restaurant-owned implementations.
 
 - `admission.py` exposes pending GPU-memory admission controls.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
@@ -84,8 +83,8 @@ functions, and wrappers are retired one PR slice at a time.
 - `workflow.py` coordinates optional training, cache generation, manifest
   registration, materialization, and serving preparation.
 
-`_reexport.py` is the private helper used by these wrappers and is not part of
-the public API.
+`_reexport.py` is a private helper used by compatibility facades and is not
+part of the public API.
 
 ## Compatibility-Only Modules
 

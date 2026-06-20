@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found one stale legacy README paragraph that said this package owns engine-probe payload loading, descriptor validation, and probe records. The paragraph now names document_kv_cache.engine_probe as the owner, and the governance test rejects the stale phrase. The follow-up GPT-5.5 review approved the slice.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/README.md",
+    "src/restaurant_kv_serving/README.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/package-readme-migration-sync/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_document_package_readme_lists_public_modules_and_console_scripts tests/test_project_governance.py::test_legacy_package_readme_describes_migration_shims_not_new_implementation_owner tests/test_project_governance.py -q",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret scan over README.md, CONTRIBUTING.md, pyproject.toml, src, tests, databricks, pr-evidence, and .github",
+    "GPT-5.5 focused review"
+  ],
+  "what_changed": [
+    "Updated the document package README to describe public document modules as canonical implementation modules rather than wrappers over restaurant-owned code.",
+    "Updated the legacy restaurant package README to describe migration shims that forward to document-owned implementations, with scheduler.py identified as the old admission-helper shim.",
+    "Added governance checks that reject stale wrapper/ownership wording in package README files."
+  ],
+  "why": "The package documentation needs to match the current migration state so contributors and downstream users understand that new code should depend on document_kv_cache and that restaurant_kv_serving is compatibility-only."
+}
