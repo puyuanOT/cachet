@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -75,7 +75,7 @@ def build_handle_from_materialized(
     handle_uri: str | None = None,
     metadata: Mapping[str, str] | None = None,
     cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
-    adapter_ids: tuple[str, ...] = (),
+    adapter_ids: Iterable[str] = (),
 ) -> KVCacheHandle:
     request_id = materialized.plan.request.request_id
     _validate_layout_matches_materialized(materialized, layout)
@@ -87,7 +87,7 @@ def build_handle_from_materialized(
         segments=segments,
         total_tokens=materialized.plan.total_tokens,
         total_bytes=_total_bytes(materialized),
-        metadata=metadata or {},
+        metadata={} if metadata is None else metadata,
         cache_method=_cache_method_value(cache_method),
         adapter_ids=adapter_ids,
     )
@@ -102,7 +102,7 @@ def build_engine_ready_request(
     handle_uri: str | None = None,
     metadata: Mapping[str, str] | None = None,
     cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
-    adapter_ids: tuple[str, ...] = (),
+    adapter_ids: Iterable[str] = (),
     kv_gpu_bytes_per_payload_byte: float = 1.0,
 ) -> EngineReadyRequest:
     gpu_byte_multiplier = _normalize_gpu_byte_multiplier(kv_gpu_bytes_per_payload_byte)

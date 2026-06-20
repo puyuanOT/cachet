@@ -5,7 +5,13 @@ import pytest
 from document_kv_cache.admission import AdmissionQueue
 from document_kv_cache.cache import CacheTier, ChunkCache
 from document_kv_cache.engine import EngineReadyRequest, build_engine_ready_request, build_handle_from_materialized
-from document_kv_cache.engine_protocol import AttentionMechanism, KVLayout, KVStorageLayout, dtype_byte_width
+from document_kv_cache.engine_protocol import (
+    AttentionMechanism,
+    KVLayout,
+    KVSegment,
+    KVStorageLayout,
+    dtype_byte_width,
+)
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer
@@ -143,6 +149,95 @@ def test_build_handle_from_materialized_kv_segments(tmp_path):
     )
     assert ready.segment_tiers == materialized.segment_tiers
     assert ready.segment_tiers == (CacheTier.COLD_STORAGE, CacheTier.COLD_STORAGE)
+
+
+def test_build_handle_normalizes_metadata_and_adapter_ids(tmp_path):
+    document_service = service(tmp_path)
+    materialized = document_service.materializer.materialize(document_service.planner.build_plan(request()))
+
+    handle = build_handle_from_materialized(
+        materialized,
+        layout=layout(),
+        metadata={"engine": "vllm"},
+        adapter_ids=(adapter for adapter in ("qa-lora",)),
+    )
+
+    assert handle.metadata == {"engine": "vllm"}
+    with pytest.raises(TypeError):
+        handle.metadata["engine"] = "sglang"  # type: ignore[index]
+    assert handle.adapter_ids == ("qa-lora",)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "error_type", "message"),
+    [
+        ("request_id", 123, ValueError, "request_id must be non-empty"),
+        ("handle_uri", "", ValueError, "handle_uri must be non-empty"),
+        ("layout", object(), TypeError, "layout must be a KVLayout"),
+        ("segments", [], TypeError, "segments must be a tuple"),
+        ("segments", ("bad",), TypeError, "segments entries must be KVSegment"),
+        ("total_tokens", True, ValueError, "total_tokens must be a non-negative integer"),
+        ("total_bytes", -1, ValueError, "total_bytes must be non-negative"),
+        ("cache_method", 123, ValueError, "cache_method must be non-empty"),
+    ],
+)
+def test_kv_cache_handle_rejects_invalid_public_fields(tmp_path, field_name, value, error_type, message):
+    document_service = service(tmp_path)
+    materialized = document_service.materializer.materialize(document_service.planner.build_plan(request()))
+    handle = build_handle_from_materialized(materialized, layout=layout())
+
+    with pytest.raises(error_type, match=message):
+        replace(handle, **{field_name: value}).validate()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error_type", "message"),
+    [
+        ({"metadata": {1: "bad"}}, TypeError, "metadata keys and values"),
+        ({"metadata": {"ok": 1}}, TypeError, "metadata keys and values"),
+        ({"metadata": []}, TypeError, "metadata must be a mapping"),
+        ({"adapter_ids": "lora"}, TypeError, "adapter_ids must be an ordered iterable"),
+        ({"adapter_ids": {"lora": "ignored"}}, TypeError, "adapter_ids must be an ordered iterable"),
+        ({"adapter_ids": {"lora"}}, TypeError, "adapter_ids must be an ordered iterable"),
+        ({"adapter_ids": (1,)}, ValueError, "adapter_ids entries"),
+        ({"adapter_ids": ("lora", "lora")}, ValueError, "adapter_ids entries must be unique"),
+    ],
+)
+def test_build_handle_rejects_invalid_metadata_and_adapter_ids(tmp_path, kwargs, error_type, message):
+    document_service = service(tmp_path)
+    materialized = document_service.materializer.materialize(document_service.planner.build_plan(request()))
+
+    with pytest.raises(error_type, match=message):
+        build_handle_from_materialized(materialized, layout=layout(), **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "message"),
+    [
+        ("document_id", "", "segment.document_id must be non-empty"),
+        ("chunk_type", object(), "segment.chunk_type must be non-empty"),
+        ("chunk_id", "", "segment.chunk_id must be non-empty"),
+        ("token_start", True, "segment.token_start must be a non-negative integer"),
+        ("token_count", -1, "segment.token_count must be non-negative"),
+        ("byte_start", "0", "segment.byte_start must be a non-negative integer"),
+        ("byte_length", -1, "segment.byte_length must be non-negative"),
+        ("content_hash", object(), "segment.content_hash must be a string"),
+    ],
+)
+def test_kv_segment_validation_rejects_invalid_public_fields(field_name, value, message):
+    segment = KVSegment(
+        document_id="doc-a",
+        chunk_type="document_chunk",
+        chunk_id="section-1",
+        token_start=0,
+        token_count=1,
+        byte_start=0,
+        byte_length=TEST_BYTES_PER_TOKEN,
+        content_hash="hash",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        replace(segment, **{field_name: value}).validate()
 
 
 def test_service_prepares_engine_ready_request_with_segmented_payload(tmp_path):

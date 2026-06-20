@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Set as AbstractSet
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
@@ -201,6 +201,17 @@ class KVSegment:
     def byte_end(self) -> int:
         return self.byte_start + self.byte_length
 
+    def validate(self) -> None:
+        _validate_nonempty_string("segment.document_id", self.document_id)
+        _validate_nonempty_string("segment.chunk_type", self.chunk_type)
+        _validate_nonempty_string("segment.chunk_id", self.chunk_id)
+        _validate_nonnegative_integer("segment.token_start", self.token_start)
+        _validate_nonnegative_integer("segment.token_count", self.token_count)
+        _validate_nonnegative_integer("segment.byte_start", self.byte_start)
+        _validate_nonnegative_integer("segment.byte_length", self.byte_length)
+        if not isinstance(self.content_hash, str):
+            raise ValueError("segment.content_hash must be a string")
+
 
 @dataclass(frozen=True, slots=True)
 class KVCacheHandle:
@@ -214,29 +225,31 @@ class KVCacheHandle:
     cache_method: str = "vanilla_prefill"
     adapter_ids: tuple[str, ...] = field(default_factory=tuple)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", MappingProxyType(_validated_string_mapping("metadata", self.metadata)))
+        object.__setattr__(self, "adapter_ids", _normalized_adapter_ids(self.adapter_ids))
+
     def validate(self) -> None:
+        if not isinstance(self.layout, KVLayout):
+            raise TypeError("layout must be a KVLayout")
         self.layout.validate()
-        if not self.request_id:
-            raise ValueError("request_id must be non-empty")
-        if not self.handle_uri:
-            raise ValueError("handle_uri must be non-empty")
-        if self.total_tokens < 0:
-            raise ValueError("total_tokens must be non-negative")
-        if self.total_bytes < 0:
-            raise ValueError("total_bytes must be non-negative")
-        if not self.cache_method:
-            raise ValueError("cache_method must be non-empty")
+        _validate_nonempty_string("request_id", self.request_id)
+        _validate_nonempty_string("handle_uri", self.handle_uri)
+        if not isinstance(self.segments, tuple):
+            raise TypeError("segments must be a tuple of KVSegment")
+        _validate_nonnegative_integer("total_tokens", self.total_tokens)
+        _validate_nonnegative_integer("total_bytes", self.total_bytes)
+        _validate_nonempty_string("cache_method", self.cache_method)
         token_cursor = 0
         byte_cursor = 0
         for segment in self.segments:
+            if not isinstance(segment, KVSegment):
+                raise TypeError("segments entries must be KVSegment")
+            segment.validate()
             if segment.token_start != token_cursor:
                 raise ValueError(f"Non-contiguous token segment {segment.chunk_id}")
             if segment.byte_start != byte_cursor:
                 raise ValueError(f"Non-contiguous byte segment {segment.chunk_id}")
-            if segment.token_count < 0:
-                raise ValueError(f"Segment {segment.chunk_id} token_count must be non-negative")
-            if segment.byte_length < 0:
-                raise ValueError(f"Segment {segment.chunk_id} byte_length must be non-negative")
             token_cursor = segment.token_end
             byte_cursor = segment.byte_end
         if token_cursor != self.total_tokens:
@@ -250,6 +263,13 @@ def _validate_nonempty_string(name: str, value: object) -> None:
         raise ValueError(f"{name} must be non-empty")
 
 
+def _validate_nonnegative_integer(name: str, value: object) -> None:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+
+
 def _validate_positive_integer(name: str, value: object) -> None:
     if type(value) is not int:
         raise ValueError(f"{name} must be a positive integer")
@@ -261,3 +281,34 @@ def _validate_optional_positive_integer(name: str, value: object) -> None:
     if value is None:
         return
     _validate_positive_integer(name, value)
+
+
+def _validated_string_mapping(name: str, value: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    invalid = [
+        key
+        for key, item in value.items()
+        if not isinstance(key, str) or not isinstance(item, str)
+    ]
+    if invalid:
+        raise TypeError(f"{name} keys and values must be strings")
+    return dict(value)
+
+
+def _normalized_adapter_ids(adapter_ids: Iterable[str]) -> tuple[str, ...]:
+    if (
+        isinstance(adapter_ids, (str, bytes, bytearray, memoryview, Mapping, AbstractSet))
+        or not isinstance(adapter_ids, Iterable)
+    ):
+        raise TypeError("adapter_ids must be an ordered iterable of strings")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for adapter_id in adapter_ids:
+        if not isinstance(adapter_id, str) or not adapter_id:
+            raise ValueError("adapter_ids entries must be non-empty strings")
+        if adapter_id in seen:
+            raise ValueError("adapter_ids entries must be unique")
+        seen.add(adapter_id)
+        normalized.append(adapter_id)
+    return tuple(normalized)

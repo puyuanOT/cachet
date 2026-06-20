@@ -1,0 +1,37 @@
+{
+  "files": {
+    "pr-evidence/harden-kv-cache-handle-validation/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "CHANGES REQUESTED on adapter_ids mapping/set inputs; resolved by rejecting Mapping/Set and adding regression tests; re-review APPROVED.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/engine_protocol.py",
+        "src/document_kv_cache/engine.py",
+        "src/document_kv_cache/service.py",
+        "tests/test_engine.py",
+        "tests/test_engine_adapters.py"
+      ],
+      "verification": [
+        "python -m py_compile src/document_kv_cache/engine_protocol.py src/document_kv_cache/engine.py src/document_kv_cache/service.py tests/test_engine.py tests/test_engine_adapters.py -> passed",
+        "git diff --check -> clean",
+        "poetry run pytest tests/test_engine.py tests/test_engine_adapters.py -q -> 186 passed",
+        "poetry run pytest tests/test_engine.py tests/test_engine_adapters.py tests/test_public_package.py tests/test_project_governance.py -q -> 231 passed",
+        "poetry check && poetry install --dry-run -> passed / All set",
+        "poetry run python console script import check -> checked 50 console scripts",
+        "poetry run pytest -q -> 1072 passed",
+        "poetry build -> passed"
+      ],
+      "what_changed": [
+        "Hardened KVCacheHandle and KVSegment validation at the engine handoff boundary."
+      ],
+      "why": "vLLM/SGLang adapters should receive immutable string metadata, ordered unique adapter ids, valid segment collections, and validated primitive handle fields before native engine handoff."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
