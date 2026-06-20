@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
 import hashlib
 import io
 import json
@@ -1403,6 +1405,7 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
             names = wheel_zip.namelist()
             dist_info_prefixes = tuple(sorted(_root_dist_info_prefixes(names)))
             metadata_names = tuple(name for name in names if _is_root_dist_info_file(name, "METADATA"))
+            record_names = tuple(name for name in names if _is_root_dist_info_file(name, "RECORD"))
             wheel_names = tuple(name for name in names if _is_root_dist_info_file(name, "WHEEL"))
     except zipfile.BadZipFile:
         return ("package wheel artifact must be a valid wheel zip payload",)
@@ -1415,12 +1418,21 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
         return ("package wheel artifact must contain .dist-info/WHEEL metadata",)
     if len(metadata_names) != 1:
         return ("package wheel artifact must contain exactly one .dist-info/METADATA file",)
+    if len(record_names) != 1:
+        return ("package wheel artifact must contain exactly one .dist-info/RECORD file",)
     with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
         wheel_payload = wheel_zip.read(wheel_names[0])
         metadata_payload = wheel_zip.read(metadata_names[0])
+        record_payload = wheel_zip.read(record_names[0])
+        record_issues = _wheel_record_issues(
+            record_payload,
+            wheel_zip=wheel_zip,
+            required_paths=(wheel_names[0], metadata_names[0], record_names[0]),
+        )
     return (
         *_wheel_file_issues(wheel_payload),
         *_wheel_metadata_issues(metadata_payload, filename_match=filename_match),
+        *record_issues,
     )
 
 
@@ -1478,6 +1490,93 @@ def _wheel_file_issues(payload: bytes) -> tuple[str, ...]:
     if "py3-none-any" not in tags:
         issues.append("package wheel artifact WHEEL metadata Tag must include py3-none-any")
     return tuple(issues)
+
+
+def _wheel_record_issues(
+    payload: bytes,
+    *,
+    wheel_zip: zipfile.ZipFile,
+    required_paths: Sequence[str],
+) -> tuple[str, ...]:
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return ("package wheel artifact RECORD must be UTF-8 text",)
+    if not text.strip():
+        return ("package wheel artifact RECORD must be non-empty",)
+
+    issues: list[str] = []
+    zip_names = frozenset(wheel_zip.namelist())
+    recorded_paths: set[str] = set()
+    package_payload_paths: set[str] = set()
+    for row in csv.reader(io.StringIO(text)):
+        if not row:
+            continue
+        if len(row) != 3:
+            issues.append("package wheel artifact RECORD rows must have path, hash, and size columns")
+            continue
+        path, hash_value, size_value = (column.strip() for column in row)
+        if not path:
+            issues.append("package wheel artifact RECORD rows must include a non-empty path")
+            continue
+        if path in recorded_paths:
+            issues.append(f"package wheel artifact RECORD path {path!r} must be listed only once")
+            continue
+        recorded_paths.add(path)
+        if path.startswith("document_kv_cache/") and not path.endswith("/"):
+            package_payload_paths.add(path)
+        if path not in zip_names:
+            issues.append(f"package wheel artifact RECORD path {path!r} must exist in the wheel")
+            continue
+        issues.extend(_wheel_record_file_field_issues(wheel_zip, path, hash_value=hash_value, size_value=size_value))
+
+    missing_required = tuple(path for path in required_paths if path not in recorded_paths)
+    if missing_required:
+        missing = ", ".join(repr(path) for path in missing_required)
+        issues.append(f"package wheel artifact RECORD must list required wheel files: {missing}")
+    unrecorded_paths = tuple(sorted(name for name in zip_names if not name.endswith("/") and name not in recorded_paths))
+    if unrecorded_paths:
+        missing = ", ".join(repr(path) for path in unrecorded_paths)
+        issues.append(f"package wheel artifact RECORD must list every wheel file: {missing}")
+    if not package_payload_paths:
+        issues.append("package wheel artifact RECORD must list the document_kv_cache package payload")
+    return tuple(issues)
+
+
+def _wheel_record_file_field_issues(
+    wheel_zip: zipfile.ZipFile,
+    path: str,
+    *,
+    hash_value: str,
+    size_value: str,
+) -> tuple[str, ...]:
+    is_record_file = path.endswith(".dist-info/RECORD")
+    issues: list[str] = []
+    if not is_record_file and not hash_value:
+        issues.append(f"package wheel artifact RECORD path {path!r} must include a hash")
+    if hash_value:
+        issues.extend(_wheel_record_hash_issues(wheel_zip, path, hash_value))
+    if not is_record_file and not size_value:
+        issues.append(f"package wheel artifact RECORD path {path!r} must include a size")
+    if size_value:
+        try:
+            parsed_size = int(size_value)
+        except ValueError:
+            issues.append(f"package wheel artifact RECORD path {path!r} size must be an integer")
+        else:
+            if parsed_size != wheel_zip.getinfo(path).file_size:
+                issues.append(f"package wheel artifact RECORD path {path!r} size must match the wheel payload")
+    return tuple(issues)
+
+
+def _wheel_record_hash_issues(wheel_zip: zipfile.ZipFile, path: str, hash_value: str) -> tuple[str, ...]:
+    algorithm, separator, encoded_digest = hash_value.partition("=")
+    if separator != "=" or algorithm != "sha256" or not encoded_digest:
+        return (f"package wheel artifact RECORD path {path!r} hash must use sha256=<urlsafe-base64-digest>",)
+    actual_digest = base64.urlsafe_b64encode(hashlib.sha256(wheel_zip.read(path)).digest()).decode("ascii").rstrip("=")
+    if encoded_digest != actual_digest:
+        return (f"package wheel artifact RECORD path {path!r} hash must match the wheel payload",)
+    return ()
 
 
 def _wheel_versions_match(filename_version: str, metadata_version: str) -> bool:

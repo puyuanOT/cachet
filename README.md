@@ -876,7 +876,8 @@ Wheel artifacts must be valid wheels for `document-kv-cache` with non-empty
 package metadata, and the wheel filename, root `.dist-info` directory, and
 `METADATA` name/version must describe the same normalized package identity. The
 wheel's `WHEEL` metadata must also describe a pure Python `py3-none-any`
-artifact.
+artifact, and the wheel `RECORD` manifest must list the package payload plus the
+required `.dist-info` metadata with matching hashes and sizes.
 
 Capture repository governance status as a separate release-readiness sidecar.
 The command reads the GitHub token from an environment variable, records
