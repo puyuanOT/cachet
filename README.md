@@ -607,7 +607,6 @@ python -m document_kv_cache.benchmark_plan \
   --release-preflight-output-json /data/release-inputs.json \
   --release-bundle-output-dir /data/document-kv-release-bundle \
   --release-bundle-output-json /data/release-bundle-manifest.json \
-  --release-bundle-plan-execution-json /data/plan-execution.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status.json \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
@@ -681,9 +680,13 @@ version and carries the serving-engine package/version metadata from
 `--release-bundle-output-dir` to append `document_kv_cache.release_bundle`
 after that validation step; the bundle command copies the validated V1,
 storage, engine-probe, release-evidence artifacts plus any generated or supplied preflight,
-plan-execution, Databricks run-status, wheel, PR-evidence, GitHub governance,
-and native-probe factory diagnostics sidecars into a checksummed handoff
-directory. For ad hoc local conversion, use `dataset_prep`
+Databricks run-status, wheel, PR-evidence, GitHub governance, and native-probe
+factory diagnostics sidecars into a checksummed handoff directory. The benchmark
+plan executor writes `plan-execution.json` only after the planned commands
+finish, so the final strict release bundle should be built as a separate
+post-execution command with
+`--plan-execution-json /data/plan-execution.json --require-complete-v1`.
+For ad hoc local conversion, use `dataset_prep`
 directly:
 
 ```bash
@@ -821,6 +824,7 @@ python -m document_kv_cache.release_bundle \
   --github-governance-json github-governance.json \
   --repository-hygiene-json repository-hygiene.json \
   --native-probe-factories-json native-probe-factories.json \
+  --require-complete-v1 \
   --output-dir document-kv-release-bundle \
   --output-json release-bundle-manifest.json
 ```
@@ -833,6 +837,11 @@ the exact benchmark plan JSON, `--package-wheel` to include the exact wheel
 tested on the target AWS g5 runtime, and repeat `--pr-evidence-json` to carry PR
 traceability records alongside the benchmark, storage, engine-probe,
 connector-action, release-evidence, and preflight artifacts. Add
+`--require-complete-v1` for release publishing; this strict mode refuses to
+build a V1 bundle unless the release evidence, preflight, benchmark-plan
+execution, Databricks run-status, tested wheel, PR evidence, GitHub governance,
+repository hygiene, and native-probe factory diagnostics sidecars are all
+present. Add
 `--github-governance-json` to
 include the repository visibility and branch-protection sidecar emitted by
 `document_kv_cache.github_governance`; the bundle rejects it unless the

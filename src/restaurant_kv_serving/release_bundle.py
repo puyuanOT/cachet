@@ -62,6 +62,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--github-governance-json")
     parser.add_argument("--repository-hygiene-json")
     parser.add_argument("--native-probe-factories-json", action="append", default=[])
+    parser.add_argument(
+        "--require-complete-v1",
+        action="store_true",
+        help=(
+            "Require the full V1 release artifact set: release/preflight sidecars, "
+            "plan execution, Databricks status, tested wheel, PR evidence, governance, "
+            "repository hygiene, and native probe factory diagnostics."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
     parser.add_argument("--overwrite", action="store_true")
@@ -84,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         github_governance_json=args.github_governance_json,
         repository_hygiene_json=args.repository_hygiene_json,
         native_probe_factories_jsons=args.native_probe_factories_json,
+        require_complete_v1=args.require_complete_v1,
         output_dir=args.output_dir,
         overwrite=args.overwrite,
     )
