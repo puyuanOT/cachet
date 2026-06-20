@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped benchmark measurement validation diff with no findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmarks.py",
+    "tests/test_benchmarks.py"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_benchmarks.py tests/test_benchmark_runner.py -> 48 passed",
+    "python -m py_compile src/document_kv_cache/benchmarks.py tests/test_benchmarks.py -> clean",
+    "git diff --check -> clean",
+    "poetry run pytest -q -> 781 passed",
+    "poetry check -> All set",
+    "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-measurement-finite-hygiene-final.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+    "GPT-5.5 reviewer approved branch benchmark-measurement-finite-values with no findings"
+  ],
+  "what_changed": [
+    "Rejected non-integer and boolean benchmark token counts at InferenceMeasurement construction.",
+    "Rejected non-finite, negative, and boolean benchmark latency values at InferenceMeasurement construction.",
+    "Added regression coverage for NaN, infinity, boolean latency, float token, boolean token, and negative token values."
+  ],
+  "why": "V1 benchmark summaries and release evidence should be built from well-formed measurement rows, so malformed latency or token values should fail at the benchmark model boundary before they can contaminate quality and latency comparisons."
+}

@@ -331,3 +331,39 @@ def test_measurements_validate_latency_values():
         measurement(arm_id="baseline_prefill", ttft=-1.0, ttc=1.0)
     with pytest.raises(ValueError, match="time_to_completion_seconds"):
         measurement(arm_id="baseline_prefill", ttft=2.0, ttc=1.0)
+
+
+@pytest.mark.parametrize("bad_latency", (float("nan"), float("inf"), True))
+def test_measurements_reject_non_finite_and_boolean_latency_values(bad_latency):
+    with pytest.raises(ValueError, match="ttft_seconds must be a non-negative finite number"):
+        measurement(arm_id="baseline_prefill", ttft=bad_latency, ttc=2.0)
+
+    with pytest.raises(ValueError, match="time_to_completion_seconds must be a non-negative finite number"):
+        measurement(arm_id="baseline_prefill", ttft=1.0, ttc=bad_latency)
+
+
+@pytest.mark.parametrize("bad_tokens", (-1, 1.5, True))
+def test_measurements_reject_non_integer_token_counts(bad_tokens):
+    with pytest.raises(ValueError, match="prompt_tokens must be a non-negative integer"):
+        InferenceMeasurement(
+            example_id="example-1",
+            dataset="biography",
+            arm_id=BASELINE_PREFILL_ARM,
+            prompt_tokens=bad_tokens,
+            completion_tokens=1,
+            ttft_seconds=0.0,
+            time_to_completion_seconds=0.0,
+            output_text="",
+        )
+
+    with pytest.raises(ValueError, match="completion_tokens must be a non-negative integer"):
+        InferenceMeasurement(
+            example_id="example-1",
+            dataset="biography",
+            arm_id=BASELINE_PREFILL_ARM,
+            prompt_tokens=1,
+            completion_tokens=bad_tokens,
+            ttft_seconds=0.0,
+            time_to_completion_seconds=0.0,
+            output_text="",
+        )
