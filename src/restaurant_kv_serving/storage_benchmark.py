@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util as _importlib_util
 import json
 import shutil
+import sys as _sys
 import time
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from importlib import import_module as _import_module
 from pathlib import Path
+from threading import RLock as _RLock
+from types import FunctionType as _FunctionType
 from typing import Any
 
+import document_kv_cache.storage_benchmark as _document_module
 from document_kv_cache.storage_benchmark import (
     RELEASE_STORAGE_BENCHMARK_READERS,
     STORAGE_BENCHMARK_RECORD_TYPE,
     SUPPORTED_STORAGE_BENCHMARK_READERS,
-    StorageBenchmarkConfig,
-    StorageBenchmarkEvidence,
-    StorageBenchmarkResult,
-    StorageReaderBenchmarkResult,
 )
 from restaurant_kv_serving.kvpack import PackChunk, write_kvpack
 from restaurant_kv_serving.models import ChunkRef, DocumentChunkType, KVCacheKey
@@ -32,61 +32,77 @@ from restaurant_kv_serving.storage import (
     local_path,
 )
 
-_document_module = _import_module("document_kv_cache.storage_benchmark")
 
-_reader_result_to_record = _document_module._reader_result_to_record
+def _load_document_defaults_module():
+    module_path = Path(_document_module.__file__)
+    module_name = "_restaurant_kv_serving_storage_benchmark_document_defaults"
+    spec = _importlib_util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load document storage_benchmark defaults from {module_path}")
+    module = _importlib_util.module_from_spec(spec)
+    _sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_document_defaults_module = _load_document_defaults_module()
+_DOCUMENT_DEFAULTS = {
+    name: value
+    for name, value in vars(_document_defaults_module).items()
+    if name != "__all__" and not name.startswith("__")
+}
+_PUBLIC_CLASS_NAMES = frozenset(
+    {
+        "StorageBenchmarkConfig",
+        "StorageBenchmarkEvidence",
+        "StorageBenchmarkResult",
+        "StorageReaderBenchmarkResult",
+    }
+)
+_PUBLIC_SURFACE_NAMES = _PUBLIC_CLASS_NAMES | frozenset(
+    {
+        "STORAGE_BENCHMARK_RECORD_TYPE",
+        "SUPPORTED_STORAGE_BENCHMARK_READERS",
+        "RELEASE_STORAGE_BENCHMARK_READERS",
+    }
+)
+
+
+for _name, _value in vars(_document_defaults_module).items():
+    if _name != "__all__" and not _name.startswith("__"):
+        globals()[_name] = _value
+
+
+def _is_pristine_public_value(name: str) -> bool:
+    live_value = getattr(_document_module, name)
+    default_value = _DOCUMENT_DEFAULTS[name]
+    if name in _PUBLIC_CLASS_NAMES:
+        return (
+            isinstance(live_value, type)
+            and live_value.__module__ == _document_module.__name__
+            and live_value.__qualname__ == default_value.__qualname__
+        )
+    return live_value == default_value
+
+
+def _public_surface_default(name: str) -> Any:
+    if _is_pristine_public_value(name):
+        return getattr(_document_module, name)
+    return _DOCUMENT_DEFAULTS[name]
+
+
+for _name in _PUBLIC_SURFACE_NAMES:
+    globals()[_name] = _public_surface_default(_name)
+
+_INITIAL_PUBLIC_SURFACE = {name: globals()[name] for name in _PUBLIC_SURFACE_NAMES}
 
 
 def run_storage_benchmark(config: StorageBenchmarkConfig) -> StorageBenchmarkResult:
-    workspace_dir = local_path(str(config.workspace_dir))
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-    shard_path = workspace_dir / "storage-benchmark.kvpack"
-    refs = write_kvpack(
-        shard_path,
-        _synthetic_chunks(config.chunk_count, config.chunk_bytes),
-        align_bytes=config.align_bytes,
-    )
-    reader_refs = _reader_refs(config, refs, workspace_dir)
-    results = tuple(
-        _benchmark_reader(
-            reader_id=reader_id,
-            reader=reader,
-            refs=refs_for_reader,
-            repeats=config.repeats,
-            parallelism=config.parallelism,
-        )
-        for reader_id, reader, refs_for_reader in reader_refs
-        if reader_id in config.readers
-    )
-    uc_volume_root = _uc_volume_root_for_record(config, workspace_dir)
-    return StorageBenchmarkResult(
-        config=config,
-        shard_uri=shard_path.as_posix(),
-        uc_volume_root=uc_volume_root,
-        results=results,
-    )
+    return _call_document_function("run_storage_benchmark", config)
 
 
 def storage_benchmark_result_to_record(result: StorageBenchmarkResult) -> dict[str, Any]:
-    evidence = evaluate_storage_benchmark_evidence(result)
-    release_evidence = evaluate_release_storage_benchmark_evidence(result)
-    return {
-        "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
-        "benchmark_id": result.config.benchmark_id,
-        "workspace_dir": str(result.config.workspace_dir),
-        "shard_uri": result.shard_uri,
-        "uc_volume_root": result.uc_volume_root,
-        "uc_volume_is_real": _is_real_uc_volume_root(result.uc_volume_root),
-        "chunk_count": result.config.chunk_count,
-        "chunk_bytes": result.config.chunk_bytes,
-        "repeats": result.config.repeats,
-        "parallelism": result.config.parallelism,
-        "align_bytes": result.config.align_bytes,
-        "readers": list(result.config.readers),
-        "results": [_reader_result_to_record(reader_result) for reader_result in result.results],
-        "storage_evidence": storage_benchmark_evidence_to_record(evidence),
-        "release_storage_evidence": storage_benchmark_evidence_to_record(release_evidence),
-    }
+    return _call_document_function("storage_benchmark_result_to_record", result)
 
 
 def evaluate_storage_benchmark_evidence(
@@ -95,252 +111,116 @@ def evaluate_storage_benchmark_evidence(
     required_readers: Sequence[str] | None = None,
     require_real_uc_volume: bool = False,
 ) -> StorageBenchmarkEvidence:
-    required = tuple(required_readers) if required_readers is not None else tuple(result.config.readers)
-    if not required:
-        raise ValueError("required_readers must be non-empty")
-    if any(not isinstance(reader, str) or not reader for reader in required):
-        raise ValueError("required_readers entries must be non-empty strings")
-    unsupported = sorted(set(required).difference(SUPPORTED_STORAGE_BENCHMARK_READERS))
-    if unsupported:
-        raise ValueError(f"Unsupported storage benchmark readers: {unsupported}")
-    by_reader = {reader_result.reader_id: reader_result for reader_result in result.results}
-    missing_readers = tuple(reader for reader in required if reader not in by_reader)
-    readers_with_errors = tuple(
-        reader
-        for reader in required
-        if reader in by_reader and by_reader[reader].errors > 0
-    )
-    readers_without_latency = tuple(
-        reader
-        for reader in required
-        if reader in by_reader
-        and (by_reader[reader].latency_p50_seconds is None or by_reader[reader].latency_p95_seconds is None)
-    )
-    readers_without_throughput = tuple(
-        reader
-        for reader in required
-        if reader in by_reader
-        and (
-            by_reader[reader].throughput_bytes_per_second is None
-            or by_reader[reader].throughput_bytes_per_second <= 0
-        )
-    )
-    return StorageBenchmarkEvidence(
-        required_readers=required,
-        missing_readers=missing_readers,
-        readers_with_errors=readers_with_errors,
-        readers_without_latency=readers_without_latency,
-        readers_without_throughput=readers_without_throughput,
+    return _call_document_function(
+        "evaluate_storage_benchmark_evidence",
+        result,
+        required_readers=required_readers,
         require_real_uc_volume=require_real_uc_volume,
-        uc_volume_root=result.uc_volume_root,
-        uc_volume_is_real=_is_real_uc_volume_root(result.uc_volume_root),
     )
 
 
 def evaluate_release_storage_benchmark_evidence(result: StorageBenchmarkResult) -> StorageBenchmarkEvidence:
-    return evaluate_storage_benchmark_evidence(
-        result,
-        required_readers=RELEASE_STORAGE_BENCHMARK_READERS,
-        require_real_uc_volume=True,
-    )
+    return _call_document_function("evaluate_release_storage_benchmark_evidence", result)
 
 
 def storage_benchmark_evidence_to_record(evidence: StorageBenchmarkEvidence) -> dict[str, Any]:
-    return {
-        "ok": evidence.ok,
-        "required_readers": list(evidence.required_readers),
-        "missing_readers": list(evidence.missing_readers),
-        "readers_with_errors": list(evidence.readers_with_errors),
-        "readers_without_latency": list(evidence.readers_without_latency),
-        "readers_without_throughput": list(evidence.readers_without_throughput),
-        "require_real_uc_volume": evidence.require_real_uc_volume,
-        "uc_volume_root": evidence.uc_volume_root,
-        "uc_volume_is_real": evidence.uc_volume_is_real,
-        "issues": list(evidence.issues),
-    }
+    return _call_document_function("storage_benchmark_evidence_to_record", evidence)
 
 
 def write_storage_benchmark_result_json(result: StorageBenchmarkResult, path: str | Path) -> None:
-    output_path = local_path(str(path))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(storage_benchmark_result_to_record(result), indent=2, sort_keys=True) + "\n")
+    return _call_document_function("write_storage_benchmark_result_json", result, path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Benchmark document KV-cache storage readers.")
-    parser.add_argument("--workspace-dir", required=True, help="Directory for synthetic shard artifacts.")
-    parser.add_argument("--benchmark-id", default="storage-reader-benchmark")
-    parser.add_argument("--chunk-count", type=int, default=64)
-    parser.add_argument("--chunk-bytes", type=int, default=1024 * 1024)
-    parser.add_argument("--repeats", type=int, default=4)
-    parser.add_argument("--parallelism", type=int, default=4)
-    parser.add_argument(
-        "--reader",
-        action="append",
-        choices=SUPPORTED_STORAGE_BENCHMARK_READERS,
-        help="Reader to benchmark. Repeat for multiple readers; defaults to all readers.",
-    )
-    parser.add_argument("--align-bytes", type=int, default=4096)
-    parser.add_argument("--uc-volume-root", help="Optional real UC Volume root, usually /Volumes/catalog/schema/volume.")
-    parser.add_argument("--output-json", help="Write the benchmark result JSON to this path instead of stdout.")
-    args = parser.parse_args(argv)
-
-    try:
-        config = StorageBenchmarkConfig(
-            workspace_dir=args.workspace_dir,
-            benchmark_id=args.benchmark_id,
-            chunk_count=args.chunk_count,
-            chunk_bytes=args.chunk_bytes,
-            repeats=args.repeats,
-            parallelism=args.parallelism,
-            readers=tuple(args.reader) if args.reader else SUPPORTED_STORAGE_BENCHMARK_READERS,
-            align_bytes=args.align_bytes,
-            uc_volume_root=args.uc_volume_root,
-        )
-        result = run_storage_benchmark(config)
-        if args.output_json:
-            write_storage_benchmark_result_json(result, args.output_json)
-        else:
-            print(json.dumps(storage_benchmark_result_to_record(result), indent=2, sort_keys=True))
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
-        return 1
-    return 0
+    return _call_document_function("main", argv)
 
 
-def _reader_refs(
-    config: StorageBenchmarkConfig,
-    refs: Sequence[ChunkRef],
-    workspace_dir: Path,
-) -> tuple[tuple[str, Any, tuple[ChunkRef, ...]], ...]:
-    readers = []
-    if "memory" in config.readers:
-        memory_uri = "memory:storage-benchmark.kvpack"
-        shard_bytes = local_path(refs[0].shard_uri).read_bytes()
-        memory_refs = tuple(_replace_shard_uri(ref, memory_uri) for ref in refs)
-        readers.append(("memory", MemoryRangeReader({memory_uri: shard_bytes}), memory_refs))
-    if "disk" in config.readers:
-        readers.append(("disk", DiskRangeReader(), tuple(refs)))
-    if "unity_catalog" in config.readers:
-        uc_root = Path(config.uc_volume_root) if config.uc_volume_root is not None else workspace_dir / "uc-volume"
-        uc_root.mkdir(parents=True, exist_ok=True)
-        uc_shard = uc_root / "storage-benchmark.kvpack"
-        shutil.copyfile(local_path(refs[0].shard_uri), uc_shard)
-        uc_refs = tuple(_replace_shard_uri(ref, uc_shard.name) for ref in refs)
-        readers.append(("unity_catalog", UnityCatalogVolumeRangeReader(volume_root=uc_root), uc_refs))
-    return tuple(readers)
+_DEFAULT_COMPAT_FUNCTIONS = {
+    "run_storage_benchmark": run_storage_benchmark,
+    "storage_benchmark_result_to_record": storage_benchmark_result_to_record,
+    "evaluate_storage_benchmark_evidence": evaluate_storage_benchmark_evidence,
+    "evaluate_release_storage_benchmark_evidence": evaluate_release_storage_benchmark_evidence,
+    "storage_benchmark_evidence_to_record": storage_benchmark_evidence_to_record,
+    "write_storage_benchmark_result_json": write_storage_benchmark_result_json,
+    "main": main,
+}
+_PATCH_LOCK = _RLock()
+_LEGACY_PATCH_NAMES = tuple(name for name in _DOCUMENT_DEFAULTS if name in globals())
 
 
-def _uc_volume_root_for_record(config: StorageBenchmarkConfig, workspace_dir: Path) -> str | None:
-    if "unity_catalog" not in config.readers:
-        return None
-    root = Path(config.uc_volume_root) if config.uc_volume_root is not None else workspace_dir / "uc-volume"
-    return root.as_posix()
+def _call_document_function(name: str, *args, **kwargs):
+    excluded_names = {name}
+    with _PATCH_LOCK:
+        return _isolated_document_namespace(excluded_names=excluded_names)[name](*args, **kwargs)
 
 
-def _is_real_uc_volume_root(uc_volume_root: str | None) -> bool | None:
-    return is_real_uc_volume_root(uc_volume_root)
+def _document_global_for_legacy(name: str):
+    if name not in globals():
+        return _DOCUMENT_DEFAULTS[name]
+    current = globals()[name]
+    if name in _PUBLIC_SURFACE_NAMES and _INITIAL_PUBLIC_SURFACE.get(name) is current:
+        return current
+    if _DEFAULT_COMPAT_FUNCTIONS.get(name) is current:
+        return _DOCUMENT_DEFAULTS[name]
+    return current
 
 
-def _replace_shard_uri(ref: ChunkRef, shard_uri: str) -> ChunkRef:
-    return ChunkRef(
-        key=ref.key,
-        shard_uri=shard_uri,
-        byte_offset=ref.byte_offset,
-        byte_length=ref.byte_length,
-        token_count=ref.token_count,
-        dtype=ref.dtype,
-        layout_version=ref.layout_version,
-        checksum=ref.checksum,
-        storage_layout=ref.storage_layout,
-    )
+def _isolated_document_namespace(*, excluded_names: set[str]) -> dict[str, Any]:
+    namespace = dict(_DOCUMENT_DEFAULTS)
+    has_legacy_overrides = False
+    for name in _LEGACY_PATCH_NAMES:
+        if name in namespace and name not in excluded_names:
+            value = _document_global_for_legacy(name)
+            namespace[name] = value
+            has_legacy_overrides = has_legacy_overrides or value is not _DOCUMENT_DEFAULTS[name]
+    for name, value in tuple(namespace.items()):
+        if _is_document_function(value):
+            namespace[name] = _clone_document_function(value, namespace)
+    if not has_legacy_overrides:
+        return namespace
+    for name, value in tuple(namespace.items()):
+        if _is_document_class(value):
+            namespace[name] = _clone_document_class(value, namespace)
+    return namespace
 
 
-def _synthetic_chunks(chunk_count: int, chunk_bytes: int) -> tuple[PackChunk, ...]:
-    chunks: list[PackChunk] = []
-    for index in range(chunk_count):
-        chunks.append(
-            PackChunk(
-                key=KVCacheKey.for_document(
-                    model_id="qwen3:4b-instruct",
-                    lora_id="base",
-                    prompt_template_version="storage-benchmark",
-                    document_id=f"doc-{index:06d}",
-                    chunk_type=DocumentChunkType.DOCUMENT_CHUNK,
-                    chunk_id="chunk-0000",
-                ),
-                payload=_payload_for(index, chunk_bytes),
-                token_count=1,
-                dtype="int8",
-                layout_version="storage-benchmark-v1",
-            )
-        )
-    return tuple(chunks)
+def _is_document_function(value: Any) -> bool:
+    return isinstance(value, _FunctionType) and value.__globals__ is vars(_document_defaults_module)
 
 
-def _payload_for(index: int, chunk_bytes: int) -> bytes:
-    pattern = f"document-kv-cache:{index:08d}:".encode("ascii")
-    repeats = (chunk_bytes // len(pattern)) + 1
-    return (pattern * repeats)[:chunk_bytes]
+def _is_document_class(value: Any) -> bool:
+    return isinstance(value, type) and value.__module__ == _document_defaults_module.__name__
 
 
-def _benchmark_reader(
-    *,
-    reader_id: str,
-    reader: Any,
-    refs: Sequence[ChunkRef],
-    repeats: int,
-    parallelism: int,
-) -> StorageReaderBenchmarkResult:
-    scheduled_refs = tuple(ref for _ in range(repeats) for ref in refs)
-    started = time.perf_counter()
-    if parallelism == 1:
-        observations = tuple(_read_once(reader, ref) for ref in scheduled_refs)
-    else:
-        with ThreadPoolExecutor(max_workers=parallelism) as executor:
-            observations = tuple(executor.map(lambda ref: _read_once(reader, ref), scheduled_refs))
-    wall_seconds = time.perf_counter() - started
-    latencies = [duration for duration, _, error in observations if error is None]
-    total_bytes = sum(byte_count for _, byte_count, error in observations if error is None)
-    errors = sum(1 for _, _, error in observations if error is not None)
-    return StorageReaderBenchmarkResult(
-        reader_id=reader_id,
-        total_reads=len(scheduled_refs),
-        total_bytes=total_bytes,
-        parallelism=parallelism,
-        wall_seconds=wall_seconds,
-        latency_mean_seconds=(sum(latencies) / len(latencies)) if latencies else None,
-        latency_p50_seconds=_percentile(latencies, 0.50),
-        latency_p95_seconds=_percentile(latencies, 0.95),
-        throughput_bytes_per_second=(total_bytes / wall_seconds) if wall_seconds > 0 else None,
-        errors=errors,
-    )
+def _clone_document_function(function: _FunctionType, namespace: dict[str, Any]) -> _FunctionType:
+    clone = _FunctionType(function.__code__, namespace, function.__name__, function.__defaults__, function.__closure__)
+    clone.__kwdefaults__ = function.__kwdefaults__
+    clone.__annotations__ = dict(function.__annotations__)
+    clone.__doc__ = function.__doc__
+    clone.__module__ = function.__module__
+    return clone
 
 
-def _read_once(reader: Any, ref: ChunkRef) -> tuple[float, int, str | None]:
-    started = time.perf_counter()
-    try:
-        payload = reader.read(ref)
-    except Exception as exc:  # pragma: no cover - exercised by callers with custom readers.
-        return time.perf_counter() - started, 0, f"{type(exc).__name__}: {exc}"
-    return time.perf_counter() - started, len(payload), None
+def _clone_document_class(cls: type, namespace: dict[str, Any]) -> type:
+    attrs: dict[str, Any] = {
+        "__module__": cls.__module__,
+        "__doc__": cls.__doc__,
+        "__slots__": (),
+    }
+    for name, value in vars(cls).items():
+        if _is_document_function(value):
+            attrs[name] = _clone_document_function(value, namespace)
+        elif isinstance(value, property):
+            attrs[name] = _clone_document_property(value, namespace)
+    return type(cls.__name__, (cls,), attrs)
 
 
-def _percentile(values: Sequence[float], percentile: float) -> float | None:
-    if not values:
-        return None
-    sorted_values = sorted(values)
-    if len(sorted_values) == 1:
-        return sorted_values[0]
-    index = percentile * (len(sorted_values) - 1)
-    lower = int(index)
-    upper = min(lower + 1, len(sorted_values) - 1)
-    weight = index - lower
-    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+def _clone_document_property(prop: property, namespace: dict[str, Any]) -> property:
+    fget = _clone_document_function(prop.fget, namespace) if _is_document_function(prop.fget) else prop.fget
+    fset = _clone_document_function(prop.fset, namespace) if _is_document_function(prop.fset) else prop.fset
+    fdel = _clone_document_function(prop.fdel, namespace) if _is_document_function(prop.fdel) else prop.fdel
+    return property(fget, fset, fdel, prop.__doc__)
 
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
-
-
-del _import_module
