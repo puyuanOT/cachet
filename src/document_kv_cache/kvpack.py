@@ -51,8 +51,14 @@ class PackChunk:
 LocalRangeReader = DiskRangeReader
 
 
-def write_kvpack(path: str | Path, chunks: Iterable[PackChunk], *, align_bytes: int = 4096) -> list[ChunkRef]:
-    return _write_kvpack(path, chunks, align_bytes=align_bytes, path_resolver=local_path)
+def write_kvpack(
+    path: str | Path,
+    chunks: Iterable[PackChunk],
+    *,
+    align_bytes: int = 4096,
+    path_resolver: Callable[[str], Path] | None = None,
+) -> list[ChunkRef]:
+    return _write_kvpack(path, chunks, align_bytes=align_bytes, path_resolver=path_resolver or local_path)
 
 
 def _write_kvpack(

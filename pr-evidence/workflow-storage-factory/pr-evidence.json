@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially found that relative `shard_uri` values did not round-trip through configured disk/UC roots; the writer now uses a matching storage path resolver, regression tests were added, and GPT-5.5 approved the updated branch.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/workflow.py",
+    "src/document_kv_cache/kvpack.py",
+    "tests/test_workflow.py",
+    "tests/test_project_governance.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_workflow.py tests/test_project_governance.py tests/test_kvpack.py -q -> 84 passed",
+    "poetry run pytest -q -> 901 passed",
+    "git diff --check -> passed",
+    "poetry check -> passed",
+    "poetry install --dry-run -> passed",
+    "poetry build -> passed"
+  ],
+  "what_changed": [
+    "Added `DocumentKVWorkflow.with_storage(...)` to wire the standard memory, disk, and Unity Catalog reader stack with CPU/local cache settings.",
+    "Added a root-aware `write_kvpack(...)` path resolver hook so workflow cache generation and routed reads agree for relative shard URIs.",
+    "Documented the storage-wired workflow path and added disk-root/UC-root regression tests."
+  ],
+  "why": "Cachet needs an intuitive end-to-end workflow API for arbitrary documents that exposes storage-agnostic Memory, Disk, and Unity Catalog loading without forcing users to assemble low-level materializer objects."
+}

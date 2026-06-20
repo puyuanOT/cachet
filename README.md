@@ -180,7 +180,13 @@ Minimal shape:
 
 ```python
 layout = layout_for_model("qwen3:4b-instruct")
-workflow = DocumentKVWorkflow(manifest=manifest, materializer=materializer)
+workflow = DocumentKVWorkflow.with_storage(
+    manifest=manifest,
+    cpu_cache_bytes=2 * 1024**3,
+    local_cache_dir="/local_disk0/document-kv-cache",
+    local_cache_bytes=200 * 1024**3,
+    uc_volume_root="/Volumes/catalog/schema/volume",
+)
 document = SourceDocument.from_text(
     document_id="doc-a",
     text="Long source document text...",
@@ -214,6 +220,12 @@ ready = workflow.prepare_for_engine(
     cache_method=result.cache_method,
 )
 ```
+
+When `with_storage(...)` is used, relative `shard_uri` values passed to
+`generate_cache(...)` are written under `uc_volume_root` when it is configured;
+otherwise they resolve under `disk_root` or the current filesystem path. The
+manifest keeps the logical URI so the routed reader can load the same shard
+during `prepare(...)`.
 
 For documents that are already split into static context and reusable content
 chunks, use `SourceDocument.from_texts(...)` with
