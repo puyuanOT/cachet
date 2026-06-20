@@ -810,8 +810,11 @@ report rows must carry positive prompt-token, completion-token, and
 output-throughput summaries, so zero-token or summary-only benchmark stubs
 cannot pass release evidence. The release JSON output also includes
 `artifact_sources` entries for the exact V1 benchmark, storage benchmark,
-engine-probe, and connector-action files that were evaluated, so release records
-remain auditable after artifacts are copied into durable storage.
+engine-probe, and connector-action files that were evaluated, including
+`size_bytes` and `sha256` fingerprints, so release records remain auditable
+after artifacts are copied into durable storage. Release bundles still re-run
+validation for older sidecars without fingerprints; when fingerprints are
+present, they must match the bundled input payloads.
 
 To create that durable handoff directory, bundle the validated inputs together
 with checksums:
