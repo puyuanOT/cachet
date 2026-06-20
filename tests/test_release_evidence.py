@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -664,40 +665,40 @@ def test_evaluate_release_evidence_files_reads_json_artifacts(tmp_path):
 
     assert evidence.ok
     assert release_evidence_to_record(evidence)["artifact_sources"] == [
-        {
-            "role": "v1_benchmark",
-            "path": str(v1_path),
-            "record_type": BENCHMARK_RUN_RECORD_TYPE,
-        },
-        {
-            "role": "storage_benchmark",
-            "path": str(storage_path),
-            "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
-        },
-        {
-            "role": "engine_probe",
-            "path": str(vllm_path),
-            "record_type": "document_kv.engine_kv_connector_probe.v1",
-            "backend": "vllm",
-        },
-        {
-            "role": "engine_probe",
-            "path": str(sglang_path),
-            "record_type": "document_kv.engine_kv_connector_probe.v1",
-            "backend": "sglang",
-        },
-        {
-            "role": "engine_connector_actions",
-            "path": str(vllm_actions_path),
-            "record_type": "document_kv.engine_kv_connector_actions.v1",
-            "backend": "vllm",
-        },
-        {
-            "role": "engine_connector_actions",
-            "path": str(sglang_actions_path),
-            "record_type": "document_kv.engine_kv_connector_actions.v1",
-            "backend": "sglang",
-        },
+        _artifact_source_record(
+            v1_path,
+            role="v1_benchmark",
+            record_type=BENCHMARK_RUN_RECORD_TYPE,
+        ),
+        _artifact_source_record(
+            storage_path,
+            role="storage_benchmark",
+            record_type=STORAGE_BENCHMARK_RECORD_TYPE,
+        ),
+        _artifact_source_record(
+            vllm_path,
+            role="engine_probe",
+            record_type="document_kv.engine_kv_connector_probe.v1",
+            backend="vllm",
+        ),
+        _artifact_source_record(
+            sglang_path,
+            role="engine_probe",
+            record_type="document_kv.engine_kv_connector_probe.v1",
+            backend="sglang",
+        ),
+        _artifact_source_record(
+            vllm_actions_path,
+            role="engine_connector_actions",
+            record_type="document_kv.engine_kv_connector_actions.v1",
+            backend="vllm",
+        ),
+        _artifact_source_record(
+            sglang_actions_path,
+            role="engine_connector_actions",
+            record_type="document_kv.engine_kv_connector_actions.v1",
+            backend="sglang",
+        ),
     ]
 
 
@@ -980,6 +981,10 @@ def test_release_evidence_artifact_source_validates_json_safe_schema(tmp_path):
         ReleaseEvidenceArtifactSource(role="v1_benchmark", path="v1.json", backend="vllm")
     with pytest.raises(ValueError, match="Unsupported artifact backend"):
         ReleaseEvidenceArtifactSource(role="engine_probe", path="probe.json", backend="triton")
+    with pytest.raises(ValueError, match="size_bytes"):
+        ReleaseEvidenceArtifactSource(role="v1_benchmark", path="v1.json", size_bytes=-1)
+    with pytest.raises(ValueError, match="sha256"):
+        ReleaseEvidenceArtifactSource(role="v1_benchmark", path="v1.json", sha256="abc")
 
 
 def test_public_release_evidence_cli_writes_json_and_returns_readiness_status(tmp_path):
@@ -1017,16 +1022,16 @@ def test_public_release_evidence_cli_writes_json_and_returns_readiness_status(tm
     assert record["record_type"] == RELEASE_EVIDENCE_RECORD_TYPE
     assert record["ok"] is False
     assert record["artifact_sources"] == [
-        {
-            "role": "v1_benchmark",
-            "path": str(v1_path),
-            "record_type": BENCHMARK_RUN_RECORD_TYPE,
-        },
-        {
-            "role": "storage_benchmark",
-            "path": str(storage_path),
-            "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
-        },
+        _artifact_source_record(
+            v1_path,
+            role="v1_benchmark",
+            record_type=BENCHMARK_RUN_RECORD_TYPE,
+        ),
+        _artifact_source_record(
+            storage_path,
+            role="storage_benchmark",
+            record_type=STORAGE_BENCHMARK_RECORD_TYPE,
+        ),
     ]
     assert "sglang" in record["missing_engine_probe_backends"]
 
@@ -1371,3 +1376,17 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
 
 def _write_json(path: Path, record) -> None:
     path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def _artifact_source_record(path: Path, *, role: str, record_type: str, backend: str | None = None) -> dict[str, object]:
+    payload = path.read_bytes()
+    record: dict[str, object] = {
+        "role": role,
+        "path": str(path),
+        "record_type": record_type,
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    if backend is not None:
+        record["backend"] = backend
+    return record

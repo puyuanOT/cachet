@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
@@ -78,6 +79,8 @@ class ReleaseEvidenceArtifactSource:
     path: str | Path
     record_type: str | None = None
     backend: str | None = None
+    size_bytes: int | None = None
+    sha256: str | None = None
 
     def __post_init__(self) -> None:
         if self.role not in RELEASE_EVIDENCE_ARTIFACT_ROLES:
@@ -92,6 +95,10 @@ class ReleaseEvidenceArtifactSource:
             raise ValueError("backend can only be set for engine backend artifact sources")
         if self.backend is not None and self.backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
             raise ValueError(f"Unsupported artifact backend {self.backend!r}")
+        if self.size_bytes is not None and (type(self.size_bytes) is not int or self.size_bytes < 0):
+            raise ValueError("size_bytes must be a non-negative integer when provided")
+        if self.sha256 is not None and not _is_sha256_hex_digest(self.sha256):
+            raise ValueError("sha256 must be a 64-character lowercase hex digest when provided")
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,11 +411,13 @@ def _artifact_sources_for_records(
             role="v1_benchmark",
             path=str(v1_benchmark_json),
             record_type=_optional_str(v1_record.get("record_type")),
+            **_artifact_source_fingerprint(v1_benchmark_json),
         ),
         ReleaseEvidenceArtifactSource(
             role="storage_benchmark",
             path=str(storage_benchmark_json),
             record_type=_optional_str(storage_record.get("record_type")),
+            **_artifact_source_fingerprint(storage_benchmark_json),
         ),
     ]
     for path, record in zip(engine_probe_jsons, engine_probe_records, strict=True):
@@ -418,6 +427,7 @@ def _artifact_sources_for_records(
                 path=str(path),
                 record_type=_optional_str(record.get("record_type")),
                 backend=_optional_backend(record.get("backend")),
+                **_artifact_source_fingerprint(path),
             )
         )
     for path, record in zip(engine_actions_jsons, engine_action_records, strict=True):
@@ -427,9 +437,18 @@ def _artifact_sources_for_records(
                 path=str(path),
                 record_type=_optional_str(record.get("record_type")),
                 backend=_optional_backend(record.get("backend")),
+                **_artifact_source_fingerprint(path),
             )
         )
     return tuple(sources)
+
+
+def _artifact_source_fingerprint(path: str | Path) -> dict[str, int | str]:
+    payload = local_path(str(path)).read_bytes()
+    return {
+        "size_bytes": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def _artifact_source_to_record(source: ReleaseEvidenceArtifactSource) -> dict[str, Any]:
@@ -441,6 +460,10 @@ def _artifact_source_to_record(source: ReleaseEvidenceArtifactSource) -> dict[st
         record["record_type"] = source.record_type
     if source.backend is not None:
         record["backend"] = source.backend
+    if source.size_bytes is not None:
+        record["size_bytes"] = source.size_bytes
+    if source.sha256 is not None:
+        record["sha256"] = source.sha256
     return record
 
 
@@ -500,6 +523,14 @@ def _optional_str(value: Any) -> str | None:
 def _optional_backend(value: Any) -> str | None:
     backend = _optional_str(value)
     return backend if backend in REQUIRED_ENGINE_PROBE_BACKENDS else None
+
+
+def _is_sha256_hex_digest(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:

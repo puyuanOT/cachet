@@ -1489,6 +1489,43 @@ def test_build_release_bundle_rejects_stale_release_evidence_or_preflight_sideca
         )
 
 
+def test_build_release_bundle_rejects_release_evidence_for_changed_same_path_artifacts(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    changed_v1_record = _v1_record(ok=True)
+    changed_v1_record["audit_note"] = "same path, new content"
+    _write_json(Path(artifacts["v1"]), changed_v1_record)
+
+    with pytest.raises(ValueError, match="artifact_sources must match"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            release_evidence_json=artifacts["evidence"],
+            output_dir=tmp_path / "changed-artifact-bundle",
+        )
+
+
+def test_build_release_bundle_accepts_legacy_release_evidence_without_source_fingerprints(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    legacy_evidence_record = json.loads(Path(artifacts["evidence"]).read_text(encoding="utf-8"))
+    for source in legacy_evidence_record["artifact_sources"]:
+        source.pop("size_bytes")
+        source.pop("sha256")
+    legacy_evidence_path = _write_json(tmp_path / "legacy-release-evidence.json", legacy_evidence_record)
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        release_evidence_json=legacy_evidence_path,
+        output_dir=tmp_path / "legacy-evidence-bundle",
+    )
+
+    assert any(artifact.role == "release_evidence" for artifact in bundle.artifacts)
+
+
 def test_build_release_bundle_preflights_output_collisions_before_copying(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
     bundle_dir = tmp_path / "bundle"

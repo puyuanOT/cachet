@@ -1662,6 +1662,8 @@ def _artifact_source_identity(artifact: _PreparedReleaseBundleArtifact) -> dict[
     identity: dict[str, Any] = {
         "role": artifact.role,
         "path": artifact.source_path,
+        "size_bytes": len(artifact.payload),
+        "sha256": hashlib.sha256(artifact.payload).hexdigest(),
     }
     if (record_type := _artifact_record_type(artifact)) is not None:
         identity["record_type"] = record_type
@@ -1701,7 +1703,12 @@ def _matches_expected_records(actual: Any, expected: Sequence[Mapping[str, Any]]
 
 
 def _record_contains(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
-    return all(actual.get(key) == value for key, value in expected.items())
+    for key, value in expected.items():
+        if key in ("size_bytes", "sha256") and key not in actual:
+            continue
+        if actual.get(key) != value:
+            return False
+    return True
 
 
 def _artifact_record(role: str, payload: bytes, source_path: str) -> Mapping[str, Any] | None:
