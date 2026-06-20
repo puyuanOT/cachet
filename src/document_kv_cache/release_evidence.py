@@ -20,6 +20,8 @@ from document_kv_cache.benchmarks import (
 )
 from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
 from document_kv_cache.engine_adapters import (
+    ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
+    ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
     ServingBackend,
     validate_engine_kv_connector_actions_record,
     validate_engine_kv_connector_probe_record,
@@ -157,6 +159,7 @@ class ReleaseEvidenceInputStatus:
     unreadable_paths: tuple[str, ...]
     missing_engine_probe_backends: tuple[str, ...]
     missing_engine_action_backends: tuple[str, ...]
+    invalid_record_type_paths: tuple[str, ...] = ()
     required_engine_probe_backends: tuple[str, ...] = REQUIRED_ENGINE_PROBE_BACKENDS
     required_engine_action_backends: tuple[str, ...] = REQUIRED_ENGINE_PROBE_BACKENDS
 
@@ -171,6 +174,8 @@ class ReleaseEvidenceInputStatus:
             issues.append(f"missing input paths: {', '.join(self.missing_paths)}")
         if self.unreadable_paths:
             issues.append(f"unreadable input paths: {', '.join(self.unreadable_paths)}")
+        if self.invalid_record_type_paths:
+            issues.append(f"invalid input record types: {', '.join(self.invalid_record_type_paths)}")
         if self.missing_engine_probe_backends:
             issues.append(f"missing engine probe backends: {', '.join(self.missing_engine_probe_backends)}")
         if self.missing_engine_action_backends:
@@ -183,6 +188,11 @@ class ReleaseEvidenceInputStatus:
         object.__setattr__(self, "input_files", tuple(self.input_files))
         object.__setattr__(self, "missing_paths", _validated_str_tuple(self.missing_paths, "missing_paths"))
         object.__setattr__(self, "unreadable_paths", _validated_str_tuple(self.unreadable_paths, "unreadable_paths"))
+        object.__setattr__(
+            self,
+            "invalid_record_type_paths",
+            _validated_str_tuple(self.invalid_record_type_paths, "invalid_record_type_paths"),
+        )
         object.__setattr__(
             self,
             "missing_engine_probe_backends",
@@ -315,20 +325,34 @@ def inspect_release_evidence_input_files(
     )
     missing_paths = tuple(status.path for status in input_files if not status.exists)
     unreadable_paths = tuple(status.path for status in input_files if status.exists and not status.readable_json)
+    invalid_record_type_paths = tuple(
+        status.path
+        for status in input_files
+        if status.exists
+        and status.readable_json
+        and status.record_type != _expected_record_type_for_role(status.role)
+    )
     present_probe_backends = {
         status.backend
         for status in input_files
-        if status.role == "engine_probe" and status.readable_json and status.backend is not None
+        if status.role == "engine_probe"
+        and status.readable_json
+        and status.record_type == _expected_record_type_for_role(status.role)
+        and status.backend is not None
     }
     present_action_backends = {
         status.backend
         for status in input_files
-        if status.role == "engine_connector_actions" and status.readable_json and status.backend is not None
+        if status.role == "engine_connector_actions"
+        and status.readable_json
+        and status.record_type == _expected_record_type_for_role(status.role)
+        and status.backend is not None
     }
     return ReleaseEvidenceInputStatus(
         input_files=tuple(input_files),
         missing_paths=missing_paths,
         unreadable_paths=unreadable_paths,
+        invalid_record_type_paths=invalid_record_type_paths,
         missing_engine_probe_backends=tuple(backend for backend in required_backends if backend not in present_probe_backends),
         missing_engine_action_backends=tuple(
             backend for backend in required_action_backends if backend not in present_action_backends
@@ -365,6 +389,7 @@ def release_evidence_input_status_to_record(status: ReleaseEvidenceInputStatus) 
         "required_engine_action_backends": list(status.required_engine_action_backends),
         "missing_paths": list(status.missing_paths),
         "unreadable_paths": list(status.unreadable_paths),
+        "invalid_record_type_paths": list(status.invalid_record_type_paths),
         "missing_engine_probe_backends": list(status.missing_engine_probe_backends),
         "missing_engine_action_backends": list(status.missing_engine_action_backends),
         "input_files": [_input_file_status_to_record(input_file) for input_file in status.input_files],
@@ -498,13 +523,22 @@ def _inspect_release_evidence_input_file(role: str, path: str | Path) -> Release
         record = json.loads(local.read_text(encoding="utf-8"))
         if not isinstance(record, Mapping):
             raise ValueError("JSON root must be an object")
+        expected_record_type = _expected_record_type_for_role(role)
+        observed_record_type = _optional_str(record.get("record_type"))
+        error = None
+        if observed_record_type != expected_record_type:
+            error = (
+                f"record_type {observed_record_type!r} does not match role {role!r}; "
+                f"expected {expected_record_type}"
+            )
         return ReleaseEvidenceInputFileStatus(
             role=role,
             path=path_text,
             exists=True,
             readable_json=True,
-            record_type=_optional_str(record.get("record_type")),
+            record_type=observed_record_type,
             backend=_optional_backend(record.get("backend")) if role in _ENGINE_BACKEND_ARTIFACT_ROLES else None,
+            error=error,
         )
     except Exception as exc:
         return ReleaseEvidenceInputFileStatus(
@@ -514,6 +548,18 @@ def _inspect_release_evidence_input_file(role: str, path: str | Path) -> Release
             readable_json=False,
             error=f"{type(exc).__name__}: {exc}",
         )
+
+
+def _expected_record_type_for_role(role: str) -> str:
+    if role == "v1_benchmark":
+        return BENCHMARK_RUN_RECORD_TYPE
+    if role == "storage_benchmark":
+        return STORAGE_BENCHMARK_RECORD_TYPE
+    if role == "engine_probe":
+        return ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE
+    if role == "engine_connector_actions":
+        return ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE
+    raise ValueError(f"Unsupported artifact role {role!r}")
 
 
 def _optional_str(value: Any) -> str | None:

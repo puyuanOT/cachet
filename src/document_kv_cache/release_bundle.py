@@ -753,6 +753,7 @@ def _preflight_sidecar_issues(
     for field_name in (
         "missing_paths",
         "unreadable_paths",
+        "invalid_record_type_paths",
         "missing_engine_probe_backends",
         "missing_engine_action_backends",
         "issues",
