@@ -18,7 +18,11 @@ from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
 )
 from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
-from document_kv_cache.engine_adapters import ServingBackend, validate_engine_kv_connector_probe_record
+from document_kv_cache.engine_adapters import (
+    ServingBackend,
+    validate_engine_kv_connector_actions_record,
+    validate_engine_kv_connector_probe_record,
+)
 from document_kv_cache.engine_protocol import (
     AttentionMechanism,
     KVLayout,
@@ -59,7 +63,13 @@ __all__ = [
 RELEASE_EVIDENCE_RECORD_TYPE = "document_kv.release_evidence.v1"
 RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE = "document_kv.release_evidence_inputs.v1"
 REQUIRED_ENGINE_PROBE_BACKENDS = tuple(backend.value for backend in ServingBackend)
-RELEASE_EVIDENCE_ARTIFACT_ROLES = ("v1_benchmark", "storage_benchmark", "engine_probe")
+RELEASE_EVIDENCE_ARTIFACT_ROLES = (
+    "v1_benchmark",
+    "storage_benchmark",
+    "engine_probe",
+    "engine_connector_actions",
+)
+_ENGINE_BACKEND_ARTIFACT_ROLES = frozenset({"engine_probe", "engine_connector_actions"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,8 +88,8 @@ class ReleaseEvidenceArtifactSource:
             raise ValueError("path must be non-empty")
         if self.record_type is not None and (not isinstance(self.record_type, str) or not self.record_type):
             raise ValueError("record_type must be non-empty when provided")
-        if self.backend is not None and self.role != "engine_probe":
-            raise ValueError("backend can only be set for engine_probe artifact sources")
+        if self.backend is not None and self.role not in _ENGINE_BACKEND_ARTIFACT_ROLES:
+            raise ValueError("backend can only be set for engine backend artifact sources")
         if self.backend is not None and self.backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
             raise ValueError(f"Unsupported artifact backend {self.backend!r}")
 
@@ -91,9 +101,13 @@ class ReleaseEvidence:
     engine_probe_backends: tuple[str, ...]
     missing_engine_probe_backends: tuple[str, ...]
     invalid_engine_probe_records: tuple[str, ...]
+    engine_action_backends: tuple[str, ...]
+    missing_engine_action_backends: tuple[str, ...]
+    invalid_engine_action_records: tuple[str, ...]
     issues: tuple[str, ...]
     artifact_sources: tuple[ReleaseEvidenceArtifactSource, ...] = ()
     duplicate_engine_probe_backends: tuple[str, ...] = ()
+    duplicate_engine_action_backends: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -121,8 +135,8 @@ class ReleaseEvidenceInputFileStatus:
             raise ValueError("readable_json must be boolean")
         if self.record_type is not None and (not isinstance(self.record_type, str) or not self.record_type):
             raise ValueError("record_type must be non-empty when provided")
-        if self.backend is not None and self.role != "engine_probe":
-            raise ValueError("backend can only be set for engine_probe input files")
+        if self.backend is not None and self.role not in _ENGINE_BACKEND_ARTIFACT_ROLES:
+            raise ValueError("backend can only be set for engine backend input files")
         if self.backend is not None and self.backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
             raise ValueError(f"Unsupported artifact backend {self.backend!r}")
         if self.error is not None and (not isinstance(self.error, str) or not self.error):
@@ -135,7 +149,9 @@ class ReleaseEvidenceInputStatus:
     missing_paths: tuple[str, ...]
     unreadable_paths: tuple[str, ...]
     missing_engine_probe_backends: tuple[str, ...]
+    missing_engine_action_backends: tuple[str, ...]
     required_engine_probe_backends: tuple[str, ...] = REQUIRED_ENGINE_PROBE_BACKENDS
+    required_engine_action_backends: tuple[str, ...] = REQUIRED_ENGINE_PROBE_BACKENDS
 
     @property
     def ok(self) -> bool:
@@ -150,6 +166,8 @@ class ReleaseEvidenceInputStatus:
             issues.append(f"unreadable input paths: {', '.join(self.unreadable_paths)}")
         if self.missing_engine_probe_backends:
             issues.append(f"missing engine probe backends: {', '.join(self.missing_engine_probe_backends)}")
+        if self.missing_engine_action_backends:
+            issues.append(f"missing engine action backends: {', '.join(self.missing_engine_action_backends)}")
         return tuple(issues)
 
     def __post_init__(self) -> None:
@@ -165,8 +183,18 @@ class ReleaseEvidenceInputStatus:
         )
         object.__setattr__(
             self,
+            "missing_engine_action_backends",
+            _validated_backend_tuple(self.missing_engine_action_backends, "missing_engine_action_backends"),
+        )
+        object.__setattr__(
+            self,
             "required_engine_probe_backends",
             _validated_required_backends(self.required_engine_probe_backends),
+        )
+        object.__setattr__(
+            self,
+            "required_engine_action_backends",
+            _validated_required_backends(self.required_engine_action_backends),
         )
 
 
@@ -175,10 +203,13 @@ def evaluate_release_evidence(
     storage_benchmark_record: Mapping[str, Any],
     *,
     engine_probe_records: Sequence[Mapping[str, Any]] = (),
+    engine_action_records: Sequence[Mapping[str, Any]] = (),
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
+    required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     artifact_sources: Sequence[ReleaseEvidenceArtifactSource] = (),
 ) -> ReleaseEvidence:
     required_backends = _validated_required_backends(required_engine_probe_backends)
+    required_action_backends = _validated_required_backends(required_engine_action_backends)
     artifact_source_tuple = _validated_artifact_sources(artifact_sources)
     issues: list[str] = []
     v1_issues = _v1_benchmark_issues(v1_benchmark_record)
@@ -194,6 +225,14 @@ def evaluate_release_evidence(
         issues.append(f"duplicate engine probe backends: {', '.join(duplicate_probe_backends)}")
     issues.extend(f"invalid engine probe record: {issue}" for issue in invalid_probe_records)
 
+    action_backends, invalid_action_records, duplicate_action_backends = _engine_action_evidence(engine_action_records)
+    missing_action_backends = tuple(backend for backend in required_action_backends if backend not in action_backends)
+    if missing_action_backends:
+        issues.append(f"missing engine action backends: {', '.join(missing_action_backends)}")
+    if duplicate_action_backends:
+        issues.append(f"duplicate engine action backends: {', '.join(duplicate_action_backends)}")
+    issues.extend(f"invalid engine action record: {issue}" for issue in invalid_action_records)
+
     return ReleaseEvidence(
         v1_benchmark_ok=not v1_issues,
         storage_benchmark_ok=not storage_issues,
@@ -201,6 +240,10 @@ def evaluate_release_evidence(
         missing_engine_probe_backends=missing_probe_backends,
         duplicate_engine_probe_backends=duplicate_probe_backends,
         invalid_engine_probe_records=invalid_probe_records,
+        engine_action_backends=action_backends,
+        missing_engine_action_backends=missing_action_backends,
+        duplicate_engine_action_backends=duplicate_action_backends,
+        invalid_engine_action_records=invalid_action_records,
         issues=tuple(issues),
         artifact_sources=artifact_source_tuple,
     )
@@ -211,14 +254,17 @@ def evaluate_release_evidence_files(
     v1_benchmark_json: str | Path,
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
+    engine_actions_jsons: Sequence[str | Path] = (),
 ) -> ReleaseEvidence:
     v1_record = _read_json_record(v1_benchmark_json)
     storage_record = _read_json_record(storage_benchmark_json)
     engine_probe_records = tuple(_read_json_record(path) for path in engine_probe_jsons)
+    engine_action_records = tuple(_read_json_record(path) for path in engine_actions_jsons)
     return evaluate_release_evidence(
         v1_record,
         storage_record,
         engine_probe_records=engine_probe_records,
+        engine_action_records=engine_action_records,
         artifact_sources=_artifact_sources_for_records(
             v1_benchmark_json=v1_benchmark_json,
             v1_record=v1_record,
@@ -226,6 +272,8 @@ def evaluate_release_evidence_files(
             storage_record=storage_record,
             engine_probe_jsons=engine_probe_jsons,
             engine_probe_records=engine_probe_records,
+            engine_actions_jsons=engine_actions_jsons,
+            engine_action_records=engine_action_records,
         ),
     )
 
@@ -235,14 +283,21 @@ def inspect_release_evidence_input_files(
     v1_benchmark_json: str | Path,
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
+    engine_actions_jsons: Sequence[str | Path] = (),
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
+    required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
 ) -> ReleaseEvidenceInputStatus:
     required_backends = _validated_required_backends(required_engine_probe_backends)
+    required_action_backends = _validated_required_backends(required_engine_action_backends)
     input_files = [
         _inspect_release_evidence_input_file("v1_benchmark", v1_benchmark_json),
         _inspect_release_evidence_input_file("storage_benchmark", storage_benchmark_json),
     ]
     input_files.extend(_inspect_release_evidence_input_file("engine_probe", path) for path in engine_probe_jsons)
+    input_files.extend(
+        _inspect_release_evidence_input_file("engine_connector_actions", path)
+        for path in engine_actions_jsons
+    )
     missing_paths = tuple(status.path for status in input_files if not status.exists)
     unreadable_paths = tuple(status.path for status in input_files if status.exists and not status.readable_json)
     present_probe_backends = {
@@ -250,12 +305,21 @@ def inspect_release_evidence_input_files(
         for status in input_files
         if status.role == "engine_probe" and status.readable_json and status.backend is not None
     }
+    present_action_backends = {
+        status.backend
+        for status in input_files
+        if status.role == "engine_connector_actions" and status.readable_json and status.backend is not None
+    }
     return ReleaseEvidenceInputStatus(
         input_files=tuple(input_files),
         missing_paths=missing_paths,
         unreadable_paths=unreadable_paths,
         missing_engine_probe_backends=tuple(backend for backend in required_backends if backend not in present_probe_backends),
+        missing_engine_action_backends=tuple(
+            backend for backend in required_action_backends if backend not in present_action_backends
+        ),
         required_engine_probe_backends=required_backends,
+        required_engine_action_backends=required_action_backends,
     )
 
 
@@ -269,6 +333,10 @@ def release_evidence_to_record(evidence: ReleaseEvidence) -> dict[str, Any]:
         "missing_engine_probe_backends": list(evidence.missing_engine_probe_backends),
         "duplicate_engine_probe_backends": list(evidence.duplicate_engine_probe_backends),
         "invalid_engine_probe_records": list(evidence.invalid_engine_probe_records),
+        "engine_action_backends": list(evidence.engine_action_backends),
+        "missing_engine_action_backends": list(evidence.missing_engine_action_backends),
+        "duplicate_engine_action_backends": list(evidence.duplicate_engine_action_backends),
+        "invalid_engine_action_records": list(evidence.invalid_engine_action_records),
         "artifact_sources": [_artifact_source_to_record(source) for source in evidence.artifact_sources],
         "issues": list(evidence.issues),
     }
@@ -279,9 +347,11 @@ def release_evidence_input_status_to_record(status: ReleaseEvidenceInputStatus) 
         "record_type": RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
         "ok": status.ok,
         "required_engine_probe_backends": list(status.required_engine_probe_backends),
+        "required_engine_action_backends": list(status.required_engine_action_backends),
         "missing_paths": list(status.missing_paths),
         "unreadable_paths": list(status.unreadable_paths),
         "missing_engine_probe_backends": list(status.missing_engine_probe_backends),
+        "missing_engine_action_backends": list(status.missing_engine_action_backends),
         "input_files": [_input_file_status_to_record(input_file) for input_file in status.input_files],
         "issues": list(status.issues),
     }
@@ -318,6 +388,8 @@ def _artifact_sources_for_records(
     storage_record: Mapping[str, Any],
     engine_probe_jsons: Sequence[str | Path],
     engine_probe_records: Sequence[Mapping[str, Any]],
+    engine_actions_jsons: Sequence[str | Path],
+    engine_action_records: Sequence[Mapping[str, Any]],
 ) -> tuple[ReleaseEvidenceArtifactSource, ...]:
     sources = [
         ReleaseEvidenceArtifactSource(
@@ -335,6 +407,15 @@ def _artifact_sources_for_records(
         sources.append(
             ReleaseEvidenceArtifactSource(
                 role="engine_probe",
+                path=str(path),
+                record_type=_optional_str(record.get("record_type")),
+                backend=_optional_backend(record.get("backend")),
+            )
+        )
+    for path, record in zip(engine_actions_jsons, engine_action_records, strict=True):
+        sources.append(
+            ReleaseEvidenceArtifactSource(
+                role="engine_connector_actions",
                 path=str(path),
                 record_type=_optional_str(record.get("record_type")),
                 backend=_optional_backend(record.get("backend")),
@@ -392,7 +473,7 @@ def _inspect_release_evidence_input_file(role: str, path: str | Path) -> Release
             exists=True,
             readable_json=True,
             record_type=_optional_str(record.get("record_type")),
-            backend=_optional_backend(record.get("backend")) if role == "engine_probe" else None,
+            backend=_optional_backend(record.get("backend")) if role in _ENGINE_BACKEND_ARTIFACT_ROLES else None,
         )
     except Exception as exc:
         return ReleaseEvidenceInputFileStatus(
@@ -507,6 +588,29 @@ def _engine_probe_evidence(
         try:
             validate_engine_kv_connector_probe_record(record)
             _validate_release_engine_probe_record(record)
+        except Exception as exc:
+            invalid_records.append(f"{label}: {type(exc).__name__}: {exc}")
+            continue
+        if label in backends:
+            if label not in duplicate_backends:
+                duplicate_backends.append(label)
+            continue
+        backends.append(label)
+    return tuple(backends), tuple(invalid_records), tuple(duplicate_backends)
+
+
+def _engine_action_evidence(
+    records: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    backends: list[str] = []
+    duplicate_backends: list[str] = []
+    invalid_records: list[str] = []
+    for index, record in enumerate(records):
+        backend = record.get("backend")
+        label = str(backend) if isinstance(backend, str) and backend else f"record[{index}]"
+        try:
+            validate_engine_kv_connector_actions_record(record)
+            _validate_release_engine_action_record(record)
         except Exception as exc:
             invalid_records.append(f"{label}: {type(exc).__name__}: {exc}")
             continue
@@ -723,6 +827,15 @@ def _validate_release_engine_probe_record(record: Mapping[str, Any]) -> None:
     _validate_probe_serving_profile_metadata(record, backend)
 
 
+def _validate_release_engine_action_record(record: Mapping[str, Any]) -> None:
+    backend = _required_str(record, "backend")
+    reservation = _required_mapping(record, "reservation")
+    if reservation.get("backend") != backend:
+        raise ValueError("Engine KV action reservation.backend must match backend")
+    layout = _release_action_layout(record)
+    _validate_v1_qwen3_probe_layout(layout)
+
+
 def _validate_probe_serving_profile_metadata(record: Mapping[str, Any], backend: str) -> None:
     metadata = record.get("metadata")
     if not isinstance(metadata, Mapping):
@@ -762,6 +875,29 @@ def _release_probe_layout(record: Mapping[str, Any]) -> KVLayout:
         storage_layout=kv_storage_layout_from_value(
             _required_str(layout, "storage_layout"),
             field_name="layout.storage_layout",
+        ),
+    )
+
+
+def _release_action_layout(record: Mapping[str, Any]) -> KVLayout:
+    reservation = _required_mapping(record, "reservation")
+    layout = _required_mapping(reservation, "layout")
+    return KVLayout(
+        model_id=_required_str(layout, "model_id"),
+        lora_id=_required_str(layout, "lora_id"),
+        layout_version=_required_str(layout, "layout_version"),
+        dtype=_required_str(layout, "dtype"),
+        num_layers=_required_positive_int(layout, "num_layers"),
+        block_size=_required_positive_int(layout, "block_size"),
+        bytes_per_token=_required_positive_int(layout, "bytes_per_token"),
+        num_query_heads=_required_positive_int(layout, "num_query_heads"),
+        num_kv_heads=_required_positive_int(layout, "num_kv_heads"),
+        head_size=_required_positive_int(layout, "head_size"),
+        kv_stride_bytes=_required_positive_int(layout, "kv_stride_bytes"),
+        shares_kv_storage=_required_bool(layout, "shares_kv_storage"),
+        storage_layout=kv_storage_layout_from_value(
+            _required_str(layout, "storage_layout"),
+            field_name="reservation.layout.storage_layout",
         ),
     )
 
@@ -838,6 +974,13 @@ def _required_str(record: Mapping[str, Any], key: str) -> str:
     return value
 
 
+def _required_mapping(record: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = record.get(key)
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} must be a mapping")
+    return value
+
+
 def _required_positive_int(record: Mapping[str, Any], key: str) -> int:
     value = record.get(key)
     if not _is_positive_int(value):
@@ -864,6 +1007,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument("--storage-benchmark-json", required=True)
     parser.add_argument("--engine-probe-json", action="append", default=[])
+    parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--output-json", help="Write the release evidence JSON to this path instead of stdout.")
     parser.add_argument("--preflight-output-json", help="Write release-evidence input file status JSON before validation.")
     parser.add_argument("--preflight-only", action="store_true", help="Only inspect input file availability and record types.")
@@ -875,6 +1019,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 v1_benchmark_json=args.v1_benchmark_json,
                 storage_benchmark_json=args.storage_benchmark_json,
                 engine_probe_jsons=tuple(args.engine_probe_json),
+                engine_actions_jsons=tuple(args.engine_actions_json),
             )
             if args.preflight_output_json:
                 write_release_evidence_input_status_json(input_status, args.preflight_output_json)
@@ -886,6 +1031,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             v1_benchmark_json=args.v1_benchmark_json,
             storage_benchmark_json=args.storage_benchmark_json,
             engine_probe_jsons=tuple(args.engine_probe_json),
+            engine_actions_jsons=tuple(args.engine_actions_json),
         )
         if args.output_json:
             write_release_evidence_json(evidence, args.output_json)

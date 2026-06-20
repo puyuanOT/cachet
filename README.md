@@ -711,6 +711,8 @@ python -m document_kv_cache.release_evidence \
   --storage-benchmark-json storage-benchmark.json \
   --engine-probe-json vllm-probe.json \
   --engine-probe-json sglang-probe.json \
+  --engine-actions-json vllm-connector-actions.json \
+  --engine-actions-json sglang-connector-actions.json \
   --output-json release-evidence.json
 ```
 
@@ -722,25 +724,29 @@ python -m document_kv_cache.release_evidence \
   --v1-benchmark-json v1-results.json \
   --storage-benchmark-json storage-benchmark.json \
   --engine-probe-json vllm-probe.json \
+  --engine-actions-json vllm-connector-actions.json \
   --preflight-only \
   --preflight-output-json release-inputs.json
 ```
 
 The command returns exit code `0` only when the V1 benchmark is AWS g5/Qwen3,
 the storage benchmark has strict Memory + Disk + real UC Volume evidence, and
-exactly one native engine probe record is present for each vLLM/SGLang backend.
-Each native probe must also report the pinned runtime engine version and include
-serving-engine package/version metadata matching the
-`document_kv_cache.serving_env` backend profile.
+exactly one native engine probe record plus one connector action descriptor is
+present for each vLLM/SGLang backend. Each native probe must also report the
+pinned runtime engine version and include serving-engine package/version
+metadata matching the `document_kv_cache.serving_env` backend profile. Each
+action descriptor must validate against the reserve/copy/bind/release schema and
+the same one-byte Qwen3 GQA layout contract.
 The V1 benchmark artifact must identify itself with
-`record_type=document_kv.benchmark_run.v1`; storage and engine-probe artifacts
-have matching record-type checks. Successful V1 measurement rows must carry
-positive prompt and completion token counts, and report rows must carry positive
-prompt-token, completion-token, and output-throughput summaries, so zero-token
-or summary-only benchmark stubs cannot pass release evidence. The release JSON output also includes
-`artifact_sources` entries for the exact V1 benchmark, storage benchmark, and
-engine-probe files that were evaluated, so release records remain auditable
-after artifacts are copied into durable storage.
+`record_type=document_kv.benchmark_run.v1`; storage, engine-probe, and
+connector-action artifacts have matching record-type checks. Successful V1
+measurement rows must carry positive prompt and completion token counts, and
+report rows must carry positive prompt-token, completion-token, and
+output-throughput summaries, so zero-token or summary-only benchmark stubs
+cannot pass release evidence. The release JSON output also includes
+`artifact_sources` entries for the exact V1 benchmark, storage benchmark,
+engine-probe, and connector-action files that were evaluated, so release records
+remain auditable after artifacts are copied into durable storage.
 
 To create that durable handoff directory, bundle the validated inputs together
 with checksums:
@@ -751,6 +757,8 @@ python -m document_kv_cache.release_bundle \
   --storage-benchmark-json storage-benchmark.json \
   --engine-probe-json vllm-probe.json \
   --engine-probe-json sglang-probe.json \
+  --engine-actions-json vllm-connector-actions.json \
+  --engine-actions-json sglang-connector-actions.json \
   --release-evidence-json release-evidence.json \
   --preflight-json release-inputs.json \
   --plan-execution-json plan-execution.json \
@@ -769,7 +777,8 @@ backend where applicable, size, and SHA-256 for every artifact. Add
 the exact benchmark plan JSON, `--package-wheel` to include the exact wheel
 tested on the target AWS g5 runtime, and repeat `--pr-evidence-json` to carry PR
 traceability records alongside the benchmark, storage, engine-probe,
-release-evidence, and preflight artifacts. Add `--github-governance-json` to
+connector-action, release-evidence, and preflight artifacts. Add
+`--github-governance-json` to
 include the repository visibility and branch-protection sidecar emitted by
 `document_kv_cache.github_governance`; the bundle rejects it unless the
 governance record is release-ready. Repeat

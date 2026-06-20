@@ -52,6 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument("--storage-benchmark-json", required=True)
     parser.add_argument("--engine-probe-json", action="append", default=[])
+    parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--release-evidence-json")
     parser.add_argument("--preflight-json")
     parser.add_argument("--plan-execution-json", action="append", default=[])
@@ -71,6 +72,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         v1_benchmark_json=args.v1_benchmark_json,
         storage_benchmark_json=args.storage_benchmark_json,
         engine_probe_jsons=args.engine_probe_json,
+        engine_actions_jsons=args.engine_actions_json,
         release_evidence_json=args.release_evidence_json,
         preflight_json=args.preflight_json,
         plan_execution_jsons=args.plan_execution_json,

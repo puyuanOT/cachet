@@ -52,6 +52,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
     "storage_benchmark",
     "engine_probe",
+    "engine_connector_actions",
     "release_evidence",
     "preflight",
     "plan_execution",
@@ -204,8 +205,8 @@ class ReleaseBundleArtifact:
             raise ValueError("size_bytes must be a non-negative integer")
         if self.record_type is not None and (not isinstance(self.record_type, str) or not self.record_type):
             raise ValueError("record_type must be non-empty when provided")
-        if self.backend is not None and self.role != "engine_probe":
-            raise ValueError("backend can only be set for engine_probe artifacts")
+        if self.backend is not None and self.role not in ("engine_probe", "engine_connector_actions"):
+            raise ValueError("backend can only be set for engine backend artifacts")
         if self.backend is not None and self.backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
             raise ValueError(f"Unsupported artifact backend {self.backend!r}")
 
@@ -232,6 +233,7 @@ def build_release_bundle(
     storage_benchmark_json: str | Path,
     output_dir: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
+    engine_actions_jsons: Sequence[str | Path] = (),
     release_evidence_json: str | Path | None = None,
     preflight_json: str | Path | None = None,
     plan_execution_jsons: Sequence[str | Path] = (),
@@ -250,6 +252,7 @@ def build_release_bundle(
         v1_benchmark_json=v1_benchmark_json,
         storage_benchmark_json=storage_benchmark_json,
         engine_probe_jsons=engine_probe_jsons,
+        engine_actions_jsons=engine_actions_jsons,
         release_evidence_json=release_evidence_json,
         preflight_json=preflight_json,
         plan_execution_jsons=plan_execution_jsons,
@@ -307,6 +310,7 @@ def _release_bundle_sources(
     v1_benchmark_json: str | Path,
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path],
+    engine_actions_jsons: Sequence[str | Path],
     release_evidence_json: str | Path | None,
     preflight_json: str | Path | None,
     plan_execution_jsons: Sequence[str | Path],
@@ -320,6 +324,7 @@ def _release_bundle_sources(
         ("storage_benchmark", storage_benchmark_json),
     ]
     sources.extend(("engine_probe", path) for path in engine_probe_jsons)
+    sources.extend(("engine_connector_actions", path) for path in engine_actions_jsons)
     if release_evidence_json is not None:
         sources.append(("release_evidence", release_evidence_json))
     if preflight_json is not None:
@@ -355,7 +360,7 @@ def _copy_release_bundle_artifact(
         record_type=_artifact_record_type(prepared),
         backend=(
             _optional_backend(prepared.record.get("backend"))
-            if prepared.role == "engine_probe" and prepared.record is not None
+            if prepared.role in ("engine_probe", "engine_connector_actions") and prepared.record is not None
             else None
         ),
     )
@@ -382,15 +387,19 @@ def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleAr
     v1_record = _single_record_for_role(artifacts, "v1_benchmark")
     storage_record = _single_record_for_role(artifacts, "storage_benchmark")
     engine_probe_records = tuple(artifact.record for artifact in artifacts if artifact.role == "engine_probe")
+    engine_action_records = tuple(
+        artifact.record for artifact in artifacts if artifact.role == "engine_connector_actions"
+    )
     evidence = evaluate_release_evidence(
         v1_record,
         storage_record,
         engine_probe_records=engine_probe_records,
+        engine_action_records=engine_action_records,
     )
     release_input_artifacts = tuple(
         artifact
         for artifact in artifacts
-        if artifact.role in ("v1_benchmark", "storage_benchmark", "engine_probe")
+        if artifact.role in ("v1_benchmark", "storage_benchmark", "engine_probe", "engine_connector_actions")
     )
     issues = list(evidence.issues)
     for artifact in artifacts:
@@ -455,10 +464,15 @@ def _release_evidence_sidecar_issues(
         issues.append("release evidence sidecar storage_benchmark_ok must be true")
     if not _matches_required_backend_set(record.get("engine_probe_backends")):
         issues.append("release evidence sidecar engine_probe_backends must match required backends")
+    if not _matches_required_backend_set(record.get("engine_action_backends")):
+        issues.append("release evidence sidecar engine_action_backends must match required backends")
     for field_name in (
         "missing_engine_probe_backends",
         "duplicate_engine_probe_backends",
         "invalid_engine_probe_records",
+        "missing_engine_action_backends",
+        "duplicate_engine_action_backends",
+        "invalid_engine_action_records",
         "issues",
     ):
         if record.get(field_name) not in ([], ()):
@@ -479,10 +493,13 @@ def _preflight_sidecar_issues(
         issues.append("preflight sidecar ok must be true")
     if not _matches_required_backend_set(record.get("required_engine_probe_backends")):
         issues.append("preflight sidecar required_engine_probe_backends must match required backends")
+    if not _matches_required_backend_set(record.get("required_engine_action_backends")):
+        issues.append("preflight sidecar required_engine_action_backends must match required backends")
     for field_name in (
         "missing_paths",
         "unreadable_paths",
         "missing_engine_probe_backends",
+        "missing_engine_action_backends",
         "issues",
     ):
         if record.get(field_name) not in ([], ()):
@@ -1117,7 +1134,7 @@ def _artifact_source_identity(artifact: _PreparedReleaseBundleArtifact) -> dict[
     if (record_type := _artifact_record_type(artifact)) is not None:
         identity["record_type"] = record_type
     if (
-        artifact.role == "engine_probe"
+        artifact.role in ("engine_probe", "engine_connector_actions")
         and artifact.record is not None
         and (backend := _optional_backend(artifact.record.get("backend"))) is not None
     ):
@@ -1191,6 +1208,10 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         backend = _optional_backend(record.get("backend")) if record is not None else None
         backend = backend or f"record_{index + 1:02d}"
         return f"engine_probe_{index + 1:02d}_{backend}.json"
+    if role == "engine_connector_actions":
+        backend = _optional_backend(record.get("backend")) if record is not None else None
+        backend = backend or f"record_{index + 1:02d}"
+        return f"engine_connector_actions_{index + 1:02d}_{backend}.json"
     if role == "v1_benchmark":
         return "v1_benchmark.json"
     if role == "storage_benchmark":
@@ -1262,6 +1283,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument("--storage-benchmark-json", required=True)
     parser.add_argument("--engine-probe-json", action="append", default=[])
+    parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--release-evidence-json")
     parser.add_argument("--preflight-json")
     parser.add_argument("--plan-execution-json", action="append", default=[])
@@ -1281,6 +1303,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         v1_benchmark_json=args.v1_benchmark_json,
         storage_benchmark_json=args.storage_benchmark_json,
         engine_probe_jsons=args.engine_probe_json,
+        engine_actions_jsons=args.engine_actions_json,
         release_evidence_json=args.release_evidence_json,
         preflight_json=args.preflight_json,
         plan_execution_jsons=args.plan_execution_json,

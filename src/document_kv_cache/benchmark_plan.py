@@ -133,6 +133,7 @@ class StorageBenchmarkPlanConfig:
 class ReleaseEvidencePlanConfig:
     output_json: str
     engine_probe_jsons: tuple[str, ...] = ()
+    engine_actions_jsons: tuple[str, ...] = ()
     storage_benchmark_json: str | None = None
 
     def __post_init__(self) -> None:
@@ -143,9 +144,15 @@ class ReleaseEvidencePlanConfig:
         canonical_probe_paths = tuple(_canonical_artifact_path(path) for path in self.engine_probe_jsons)
         if len(set(canonical_probe_paths)) != len(canonical_probe_paths):
             raise ValueError("release evidence engine_probe_jsons entries must be distinct")
+        if any(not path for path in self.engine_actions_jsons):
+            raise ValueError("release evidence engine_actions_jsons entries must be non-empty")
+        canonical_action_paths = tuple(_canonical_artifact_path(path) for path in self.engine_actions_jsons)
+        if len(set(canonical_action_paths)) != len(canonical_action_paths):
+            raise ValueError("release evidence engine_actions_jsons entries must be distinct")
         if self.storage_benchmark_json is not None and not self.storage_benchmark_json:
             raise ValueError("release evidence storage_benchmark_json must be non-empty when provided")
         object.__setattr__(self, "engine_probe_jsons", tuple(self.engine_probe_jsons))
+        object.__setattr__(self, "engine_actions_jsons", tuple(self.engine_actions_jsons))
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +197,7 @@ class EngineProbePlanConfig:
     handoff_json: str
     probe_factory: str
     output_json: str
+    actions_output_json: str | None = None
     payload_uri: str | None = None
     engine_version: str | None = None
     allow_non_native_probe: bool = False
@@ -203,6 +211,8 @@ class EngineProbePlanConfig:
             raise ValueError("engine probe probe_factory must be non-empty")
         if not self.output_json:
             raise ValueError("engine probe output_json must be non-empty")
+        if self.actions_output_json is not None and not self.actions_output_json:
+            raise ValueError("engine probe actions_output_json must be non-empty when provided")
         if self.payload_uri is not None and not self.payload_uri:
             raise ValueError("engine probe payload_uri must be non-empty when provided")
         if self.engine_version is not None and not self.engine_version:
@@ -286,10 +296,31 @@ class BenchmarkPlanConfig:
             raise ValueError("release_evidence requires engine_probe_jsons or planned engine_probes")
         if (
             self.release_evidence is not None
+            and not self.release_evidence.engine_actions_jsons
+            and not self.engine_probes
+        ):
+            raise ValueError("release_evidence requires engine_actions_jsons or planned engine_probes")
+        if (
+            self.release_evidence is not None
             and not self.release_evidence.engine_probe_jsons
             and self.engine_probes
         ):
             _validate_release_planned_engine_probes(self.engine_probes)
+            missing_backends = set(_required_engine_probe_backends()).difference(
+                probe.backend.value for probe in self.engine_probes
+            )
+            if missing_backends:
+                raise ValueError(
+                    "release_evidence requires planned engine_probes for all release backends: "
+                    f"{sorted(missing_backends)}"
+                )
+        if (
+            self.release_evidence is not None
+            and not self.release_evidence.engine_actions_jsons
+            and self.engine_probes
+        ):
+            _validate_release_planned_engine_probes(self.engine_probes)
+            _validate_release_planned_engine_probe_actions(self.engine_probes)
             missing_backends = set(_required_engine_probe_backends()).difference(
                 probe.backend.value for probe in self.engine_probes
             )
@@ -307,9 +338,23 @@ class BenchmarkPlanConfig:
                 "release_evidence requires explicit engine_probe_jsons for all release backends: "
                 f"{list(_required_engine_probe_backends())}"
             )
+        if (
+            self.release_evidence is not None
+            and self.release_evidence.engine_actions_jsons
+            and len(self.release_evidence.engine_actions_jsons) != len(_required_engine_probe_backends())
+        ):
+            raise ValueError(
+                "release_evidence requires explicit engine_actions_jsons for all release backends: "
+                f"{list(_required_engine_probe_backends())}"
+            )
         if self.release_evidence is not None and self.release_evidence.engine_probe_jsons:
             _validate_explicit_release_probe_paths_do_not_use_planned_debug_outputs(
                 self.release_evidence.engine_probe_jsons,
+                self.engine_probes,
+            )
+        if self.release_evidence is not None and self.release_evidence.engine_actions_jsons:
+            _validate_explicit_release_action_paths_do_not_use_planned_debug_outputs(
+                self.release_evidence.engine_actions_jsons,
                 self.engine_probes,
             )
         if (
@@ -404,6 +449,11 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
             if plan.config.release_evidence is not None
             else []
         ),
+        "release_engine_actions_jsons": (
+            list(_release_engine_action_jsons(plan.config))
+            if plan.config.release_evidence is not None
+            else []
+        ),
         "release_bundle_output_dir": (
             plan.config.release_bundle.output_dir
             if plan.config.release_bundle is not None
@@ -425,6 +475,7 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
                 "handoff_json": probe.handoff_json,
                 "probe_factory": probe.probe_factory,
                 "output_json": probe.output_json,
+                "actions_output_json": probe.actions_output_json,
                 "payload_uri": probe.payload_uri,
                 "engine_version": probe.engine_version,
                 "allow_non_native_probe": probe.allow_non_native_probe,
@@ -593,6 +644,8 @@ def _engine_probe_command(config: BenchmarkPlanConfig, probe_config: EngineProbe
     )
     if probe_config.payload_uri is not None:
         argv = (*argv, "--payload-uri", probe_config.payload_uri)
+    if probe_config.actions_output_json is not None:
+        argv = (*argv, "--actions-output-json", probe_config.actions_output_json)
     if probe_config.engine_version is not None:
         argv = (*argv, "--engine-version", probe_config.engine_version)
     if probe_config.allow_non_native_probe:
@@ -619,6 +672,8 @@ def _release_evidence_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     )
     for engine_probe_json in _release_engine_probe_jsons(config):
         argv = (*argv, "--engine-probe-json", engine_probe_json)
+    for engine_action_json in _release_engine_action_jsons(config):
+        argv = (*argv, "--engine-actions-json", engine_action_json)
     return BenchmarkCommand(name="validate-release-evidence", argv=argv)
 
 
@@ -646,6 +701,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     )
     for engine_probe_json in _release_engine_probe_jsons(config):
         argv = (*argv, "--engine-probe-json", engine_probe_json)
+    for engine_action_json in _release_engine_action_jsons(config):
+        argv = (*argv, "--engine-actions-json", engine_action_json)
     if bundle_config.preflight_json is not None:
         argv = (*argv, "--preflight-json", bundle_config.preflight_json)
     for plan_execution_json in bundle_config.plan_execution_jsons:
@@ -676,6 +733,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "v1_benchmark_json": config.benchmark_output_json,
         "storage_benchmark_json": _release_storage_benchmark_json(config),
         "engine_probe_jsons": list(_release_engine_probe_jsons(config)),
+        "engine_actions_jsons": list(_release_engine_action_jsons(config)),
         "release_evidence_json": release_config.output_json,
         "preflight_json": bundle_config.preflight_json,
         "plan_execution_jsons": list(bundle_config.plan_execution_jsons),
@@ -696,6 +754,19 @@ def _release_engine_probe_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
     if not config.engine_probes:
         raise ValueError("release_evidence requires engine_probe_jsons or planned engine_probes")
     return tuple(probe.output_json for probe in config.engine_probes)
+
+
+def _release_engine_action_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
+    release_config = config.release_evidence
+    if release_config is None:
+        raise ValueError("release_evidence must be configured")
+    if release_config.engine_actions_jsons:
+        return release_config.engine_actions_jsons
+    if not config.engine_probes:
+        raise ValueError("release_evidence requires engine_actions_jsons or planned engine_probes")
+    if any(probe.actions_output_json is None for probe in config.engine_probes):
+        raise ValueError("release_evidence requires planned engine probes to write connector action descriptors")
+    return tuple(probe.actions_output_json for probe in config.engine_probes if probe.actions_output_json is not None)
 
 
 def _release_storage_benchmark_json(config: BenchmarkPlanConfig) -> str:
@@ -733,6 +804,15 @@ def _validate_release_planned_engine_probes(engine_probes: Sequence[EngineProbeP
         )
 
 
+def _validate_release_planned_engine_probe_actions(engine_probes: Sequence[EngineProbePlanConfig]) -> None:
+    missing_actions = sorted(probe.backend.value for probe in engine_probes if probe.actions_output_json is None)
+    if missing_actions:
+        raise ValueError(
+            "release_evidence requires planned engine probes to write connector action descriptors for "
+            f"{missing_actions}; set actions_output_json or pass explicit --release-engine-actions-json artifacts"
+        )
+
+
 def _validate_explicit_release_probe_paths_do_not_use_planned_debug_outputs(
     release_engine_probe_jsons: Sequence[str],
     engine_probes: Sequence[EngineProbePlanConfig],
@@ -747,6 +827,25 @@ def _validate_explicit_release_probe_paths_do_not_use_planned_debug_outputs(
     if unsafe_aliases:
         raise ValueError(
             "release_evidence explicit engine_probe_jsons must not point at planned debug engine probe outputs: "
+            f"{sorted(unsafe_aliases)}"
+        )
+
+
+def _validate_explicit_release_action_paths_do_not_use_planned_debug_outputs(
+    release_engine_actions_jsons: Sequence[str],
+    engine_probes: Sequence[EngineProbePlanConfig],
+) -> None:
+    release_paths = {_canonical_artifact_path(path) for path in release_engine_actions_jsons}
+    unsafe_aliases = [
+        f"{probe.backend.value}={probe.actions_output_json}"
+        for probe in engine_probes
+        if probe.actions_output_json is not None
+        and (probe.engine_version is not None or probe.allow_non_native_probe)
+        and _canonical_artifact_path(probe.actions_output_json) in release_paths
+    ]
+    if unsafe_aliases:
+        raise ValueError(
+            "release_evidence explicit engine_actions_jsons must not point at planned debug engine probe outputs: "
             f"{sorted(unsafe_aliases)}"
         )
 
@@ -783,6 +882,11 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
     output_paths.extend(
         (f"engine_probes[{probe.backend.value}].output_json", probe.output_json)
         for probe in config.engine_probes
+    )
+    output_paths.extend(
+        (f"engine_probes[{probe.backend.value}].actions_output_json", probe.actions_output_json)
+        for probe in config.engine_probes
+        if probe.actions_output_json is not None
     )
     if config.release_evidence is not None:
         output_paths.append(("release_evidence.output_json", config.release_evidence.output_json))
@@ -837,6 +941,7 @@ def _validate_engine_probe_targets(
             "release-safe engine_probe_targets require exactly the release backends; "
             f"missing={missing_backends}, unexpected={unexpected_backends}"
         )
+    _validate_release_planned_engine_probe_actions(engine_probes)
 
 
 def _engine_probe_target_to_record(probe: EngineProbePlanConfig) -> dict[str, Any]:
@@ -850,6 +955,8 @@ def _engine_probe_target_to_record(probe: EngineProbePlanConfig) -> dict[str, An
     }
     if probe.payload_uri is not None:
         record["payload_uri"] = probe.payload_uri
+    if probe.actions_output_json is not None:
+        record["actions_output_json"] = probe.actions_output_json
     if probe.engine_version is not None:
         record["engine_version"] = probe.engine_version
     return record
@@ -935,6 +1042,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Output JSON path for a planned engine probe backend.",
     )
     parser.add_argument(
+        "--engine-probe-actions-output-json",
+        action="append",
+        metavar="BACKEND=PATH",
+        help="Connector actions JSON sidecar path for a planned engine probe backend.",
+    )
+    parser.add_argument(
         "--engine-probe-payload-uri",
         action="append",
         metavar="BACKEND=URI",
@@ -966,6 +1079,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--release-engine-probe-json",
         action="append",
         help="Native vLLM/SGLang engine probe JSON path. Repeat for each backend.",
+    )
+    parser.add_argument(
+        "--release-engine-actions-json",
+        action="append",
+        help="Native vLLM/SGLang connector actions JSON path. Repeat for each backend.",
     )
     parser.add_argument(
         "--release-storage-benchmark-json",
@@ -1140,6 +1258,10 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
     handoff_jsons = _named_value_map(args.engine_probe_handoff_json or (), "--engine-probe-handoff-json")
     factories = _named_value_map(args.engine_probe_factory or (), "--engine-probe-factory")
     output_jsons = _named_value_map(args.engine_probe_output_json or (), "--engine-probe-output-json")
+    actions_output_jsons = _named_value_map(
+        args.engine_probe_actions_output_json or (),
+        "--engine-probe-actions-output-json",
+    )
     payload_uris = _named_value_map(args.engine_probe_payload_uri or (), "--engine-probe-payload-uri")
     engine_versions = _named_value_map(args.engine_probe_engine_version or (), "--engine-probe-engine-version")
     metadata = _named_value_lists(args.engine_probe_metadata or (), "--engine-probe-metadata")
@@ -1149,6 +1271,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
         if (
             factories
             or output_jsons
+            or actions_output_jsons
             or payload_uris
             or engine_versions
             or metadata
@@ -1163,6 +1286,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
         factories = _fill_missing_builtin_engine_probe_factories(backends, factories)
     _require_matching_backend_keys(backends, factories, "--engine-probe-factory")
     _require_matching_backend_keys(backends, output_jsons, "--engine-probe-output-json")
+    _require_subset_backend_keys(backends, actions_output_jsons, "--engine-probe-actions-output-json")
     _require_subset_backend_keys(backends, payload_uris, "--engine-probe-payload-uri")
     _require_subset_backend_keys(backends, engine_versions, "--engine-probe-engine-version")
     _require_subset_backend_keys(backends, metadata, "--engine-probe-metadata")
@@ -1176,6 +1300,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             handoff_json=handoff_jsons[backend],
             probe_factory=factories[backend],
             output_json=output_jsons[backend],
+            actions_output_json=actions_output_jsons.get(backend),
             payload_uri=payload_uris.get(backend),
             engine_version=engine_versions.get(backend),
             allow_non_native_probe=backend in non_native_backends,
@@ -1206,15 +1331,22 @@ def _release_evidence_config_from_cli(
         return None
     if not args.release_engine_probe_json and not has_planned_engine_probes:
         raise ValueError("release evidence requires --release-engine-probe-json or planned engine probes")
+    if not args.release_engine_actions_json and not has_planned_engine_probes:
+        raise ValueError("release evidence requires --release-engine-actions-json or planned engine probes")
     return ReleaseEvidencePlanConfig(
         output_json=args.release_evidence_output_json,
         engine_probe_jsons=tuple(args.release_engine_probe_json or ()),
+        engine_actions_jsons=tuple(args.release_engine_actions_json or ()),
         storage_benchmark_json=args.release_storage_benchmark_json,
     )
 
 
 def _has_release_evidence_options(args: argparse.Namespace) -> bool:
-    return args.release_engine_probe_json is not None or args.release_storage_benchmark_json is not None
+    return (
+        args.release_engine_probe_json is not None
+        or args.release_engine_actions_json is not None
+        or args.release_storage_benchmark_json is not None
+    )
 
 
 def _release_bundle_config_from_cli(

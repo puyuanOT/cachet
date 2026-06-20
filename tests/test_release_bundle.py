@@ -19,8 +19,20 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
 )
-from document_kv_cache.engine_adapters import EngineKVConnectorProbeResult, PayloadMode, ServingBackend
-from document_kv_cache.engine_adapters import engine_kv_connector_probe_result_to_record
+from document_kv_cache.engine_adapters import (
+    EngineKVBindAction,
+    EngineKVConnectorActions,
+    EngineKVConnectorProbeResult,
+    EngineKVReleaseAction,
+    EngineKVReservationAction,
+    EngineKVSegmentCopyAction,
+    PayloadMode,
+    ServingBackend,
+)
+from document_kv_cache.engine_adapters import (
+    engine_kv_connector_actions_to_record,
+    engine_kv_connector_probe_result_to_record,
+)
 from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
@@ -57,6 +69,7 @@ def test_build_release_bundle_copies_artifacts_and_writes_checksummed_manifest(t
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
         release_evidence_json=artifacts["evidence"],
         preflight_json=artifacts["preflight"],
         output_dir=bundle_dir,
@@ -66,16 +79,23 @@ def test_build_release_bundle_copies_artifacts_and_writes_checksummed_manifest(t
     assert record == release_bundle_to_record(bundle)
     assert record["record_type"] == RELEASE_BUNDLE_RECORD_TYPE
     assert record["ok"] is True
-    assert record["artifact_count"] == 6
+    assert record["artifact_count"] == 8
     assert [artifact["role"] for artifact in record["artifacts"]] == [
         "v1_benchmark",
         "storage_benchmark",
         "engine_probe",
         "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
         "release_evidence",
         "preflight",
     ]
-    assert [artifact.get("backend") for artifact in record["artifacts"][2:4]] == ["vllm", "sglang"]
+    assert [artifact.get("backend") for artifact in record["artifacts"][2:6]] == [
+        "vllm",
+        "sglang",
+        "vllm",
+        "sglang",
+    ]
 
     for artifact in record["artifacts"]:
         source_payload = Path(artifact["source_path"]).read_bytes()
@@ -95,6 +115,7 @@ def test_build_release_bundle_plan_execution_stays_out_of_release_sidecar_matchi
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
         release_evidence_json=artifacts["evidence"],
         preflight_json=artifacts["preflight"],
         plan_execution_jsons=(plan_execution,),
@@ -107,6 +128,8 @@ def test_build_release_bundle_plan_execution_stays_out_of_release_sidecar_matchi
         "storage_benchmark",
         "engine_probe",
         "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
         "release_evidence",
         "preflight",
         "plan_execution",
@@ -124,6 +147,7 @@ def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_mat
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
         release_evidence_json=artifacts["evidence"],
         preflight_json=artifacts["preflight"],
         databricks_run_status_jsons=(run_status,),
@@ -136,13 +160,15 @@ def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_mat
         "storage_benchmark",
         "engine_probe",
         "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
         "release_evidence",
         "preflight",
         "databricks_run_status",
     ]
     status_artifact = record["artifacts"][-1]
     assert status_artifact["record_type"] == DATABRICKS_RUN_STATUS_RECORD_TYPE
-    assert status_artifact["bundled_path"] == "databricks_run_status_07.json"
+    assert status_artifact["bundled_path"] == "databricks_run_status_09.json"
     bundled_record = json.loads((bundle_dir / status_artifact["bundled_path"]).read_text(encoding="utf-8"))
     assert bundled_record["summary"]["succeeded"] is True
 
@@ -160,6 +186,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
         plan_execution_jsons=(plan_execution,),
         package_wheel=package_wheel,
         pr_evidence_jsons=(pr_evidence,),
@@ -173,15 +200,17 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
         "storage_benchmark",
         "engine_probe",
         "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
         "plan_execution",
         "package_wheel",
         "pr_evidence",
         "github_governance",
     ]
-    execution_artifact = record["artifacts"][4]
-    wheel_artifact = record["artifacts"][5]
-    pr_artifact = record["artifacts"][6]
-    github_artifact = record["artifacts"][7]
+    execution_artifact = record["artifacts"][6]
+    wheel_artifact = record["artifacts"][7]
+    pr_artifact = record["artifacts"][8]
+    github_artifact = record["artifacts"][9]
     assert execution_artifact["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
     assert json.loads((bundle_dir / execution_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert wheel_artifact["bundled_path"] == package_wheel.name
@@ -341,6 +370,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=bad_wheel,
             output_dir=tmp_path / "bad-wheel-bundle",
         )
@@ -351,6 +381,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=invalid_named_wheel,
             output_dir=tmp_path / "bad-wheel-name-bundle",
         )
@@ -361,6 +392,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=invalid_build_tag_wheel,
             output_dir=tmp_path / "bad-wheel-build-tag-bundle",
         )
@@ -372,6 +404,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=valid_named_bad_payload,
             output_dir=tmp_path / "bad-wheel-payload-bundle",
         )
@@ -385,6 +418,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=nested_dist_info_wheel,
             output_dir=tmp_path / "bad-wheel-nested-dist-info-bundle",
         )
@@ -398,6 +432,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=mismatched_dist_info_wheel,
             output_dir=tmp_path / "bad-wheel-dist-info-version-bundle",
         )
@@ -411,6 +446,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=wrong_name_wheel,
             output_dir=tmp_path / "bad-wheel-metadata-name-bundle",
         )
@@ -425,6 +461,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=missing_version_wheel,
             output_dir=tmp_path / "bad-wheel-metadata-version-bundle",
         )
@@ -434,6 +471,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             pr_evidence_jsons=(failed_pr_evidence,),
             output_dir=tmp_path / "bad-pr-evidence-bundle",
         )
@@ -443,6 +481,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             pr_evidence_jsons=(unresolved_review_pr_evidence,),
             output_dir=tmp_path / "unresolved-review-pr-evidence-bundle",
         )
@@ -452,6 +491,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=failed_github_governance,
             output_dir=tmp_path / "failed-github-governance-bundle",
         )
@@ -461,6 +501,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=internal_github_governance,
             output_dir=tmp_path / "internal-github-governance-bundle",
         )
@@ -470,6 +511,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=raw_response_github_governance,
             output_dir=tmp_path / "raw-response-github-governance-bundle",
         )
@@ -485,6 +527,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
                 v1_benchmark_json=artifacts["v1"],
                 storage_benchmark_json=artifacts["storage"],
                 engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
                 github_governance_json=raw_payload_path,
                 output_dir=tmp_path / bundle_name,
             )
@@ -494,6 +537,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=raw_allowed_summary_field_github_governance,
             output_dir=tmp_path / "raw-allowed-summary-field-github-governance-bundle",
         )
@@ -503,6 +547,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=raw_contexts_github_governance,
             output_dir=tmp_path / "raw-contexts-github-governance-bundle",
         )
@@ -512,6 +557,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             plan_execution_jsons=(failed_plan_execution,),
             output_dir=tmp_path / "bad-plan-execution-bundle",
         )
@@ -524,6 +570,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             plan_execution_jsons=(bad_returncode_path,),
             output_dir=tmp_path / "bad-plan-returncode-bundle",
         )
@@ -533,6 +580,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(failed_run_status,),
             output_dir=tmp_path / "bad-databricks-status-bundle",
         )
@@ -542,6 +590,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(raw_response_run_status,),
             output_dir=tmp_path / "raw-response-databricks-status-bundle",
         )
@@ -551,6 +600,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(missing_submit_payload_status,),
             output_dir=tmp_path / "missing-submit-payload-databricks-status-bundle",
         )
@@ -560,6 +610,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(non_g5_submit_payload_status,),
             output_dir=tmp_path / "non-g5-submit-payload-databricks-status-bundle",
         )
@@ -569,6 +620,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(empty_tasks_status,),
             output_dir=tmp_path / "empty-tasks-databricks-status-bundle",
         )
@@ -578,6 +630,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(nested_raw_status,),
             output_dir=tmp_path / "nested-raw-databricks-status-bundle",
         )
@@ -587,6 +640,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(raw_object_in_allowed_field,),
             output_dir=tmp_path / "raw-object-in-allowed-field-databricks-status-bundle",
         )
@@ -596,6 +650,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(raw_object_in_wrapper_action,),
             output_dir=tmp_path / "raw-object-in-wrapper-action-databricks-status-bundle",
         )
@@ -609,6 +664,7 @@ def test_build_release_bundle_rejects_existing_outputs_without_overwrite(tmp_pat
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
         output_dir=bundle_dir,
     )
 
@@ -617,6 +673,7 @@ def test_build_release_bundle_rejects_existing_outputs_without_overwrite(tmp_pat
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             output_dir=bundle_dir,
         )
 
@@ -624,11 +681,12 @@ def test_build_release_bundle_rejects_existing_outputs_without_overwrite(tmp_pat
         v1_benchmark_json=artifacts["v1"],
         storage_benchmark_json=artifacts["storage"],
         engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
         output_dir=bundle_dir,
         overwrite=True,
     )
 
-    assert len(bundle.artifacts) == 4
+    assert len(bundle.artifacts) == 6
 
 
 def test_build_release_bundle_rejects_inputs_that_fail_release_evidence_validation(tmp_path):
@@ -642,6 +700,7 @@ def test_build_release_bundle_rejects_inputs_that_fail_release_evidence_validati
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             output_dir=tmp_path / "bundle",
         )
 
@@ -682,6 +741,7 @@ def test_build_release_bundle_rejects_failed_release_evidence_or_preflight_sidec
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             release_evidence_json=failed_evidence_path,
             output_dir=tmp_path / "evidence-bundle",
         )
@@ -691,6 +751,7 @@ def test_build_release_bundle_rejects_failed_release_evidence_or_preflight_sidec
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             preflight_json=failed_preflight_path,
             output_dir=tmp_path / "preflight-bundle",
         )
@@ -705,6 +766,7 @@ def test_build_release_bundle_rejects_stale_release_evidence_or_preflight_sideca
             v1_benchmark_json=current_artifacts["v1"],
             storage_benchmark_json=current_artifacts["storage"],
             engine_probe_jsons=(current_artifacts["vllm"], current_artifacts["sglang"]),
+            engine_actions_jsons=(current_artifacts["vllm_actions"], current_artifacts["sglang_actions"]),
             release_evidence_json=stale_artifacts["evidence"],
             output_dir=tmp_path / "stale-evidence-bundle",
         )
@@ -714,6 +776,7 @@ def test_build_release_bundle_rejects_stale_release_evidence_or_preflight_sideca
             v1_benchmark_json=current_artifacts["v1"],
             storage_benchmark_json=current_artifacts["storage"],
             engine_probe_jsons=(current_artifacts["vllm"], current_artifacts["sglang"]),
+            engine_actions_jsons=(current_artifacts["vllm_actions"], current_artifacts["sglang_actions"]),
             preflight_json=stale_artifacts["preflight"],
             output_dir=tmp_path / "stale-preflight-bundle",
         )
@@ -730,6 +793,7 @@ def test_build_release_bundle_preflights_output_collisions_before_copying(tmp_pa
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             output_dir=bundle_dir,
         )
 
@@ -811,6 +875,10 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
             str(artifacts["vllm"]),
             "--engine-probe-json",
             str(artifacts["sglang"]),
+            "--engine-actions-json",
+            str(artifacts["vllm_actions"]),
+            "--engine-actions-json",
+            str(artifacts["sglang_actions"]),
             "--github-governance-json",
             str(github_governance),
             "--output-dir",
@@ -983,16 +1051,20 @@ def _write_release_ready_artifacts(source_dir: Path) -> dict[str, Path]:
         "storage": _write_json(source_dir / "storage.json", _storage_record(ok=True)),
         "vllm": _write_json(source_dir / "vllm-probe.json", _probe_record(ServingBackend.VLLM)),
         "sglang": _write_json(source_dir / "sglang-probe.json", _probe_record(ServingBackend.SGLANG)),
+        "vllm_actions": _write_json(source_dir / "vllm-actions.json", _actions_record(ServingBackend.VLLM)),
+        "sglang_actions": _write_json(source_dir / "sglang-actions.json", _actions_record(ServingBackend.SGLANG)),
     }
     evidence = evaluate_release_evidence_files(
         v1_benchmark_json=paths["v1"],
         storage_benchmark_json=paths["storage"],
         engine_probe_jsons=(paths["vllm"], paths["sglang"]),
+        engine_actions_jsons=(paths["vllm_actions"], paths["sglang_actions"]),
     )
     status = inspect_release_evidence_input_files(
         v1_benchmark_json=paths["v1"],
         storage_benchmark_json=paths["storage"],
         engine_probe_jsons=(paths["vllm"], paths["sglang"]),
+        engine_actions_jsons=(paths["vllm_actions"], paths["sglang_actions"]),
     )
     paths["evidence"] = source_dir / "release-evidence.json"
     paths["preflight"] = source_dir / "release-inputs.json"
@@ -1127,6 +1199,53 @@ def _probe_record(backend: ServingBackend):
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE: profile.engine_package,
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION: profile.engine_version,
             },
+        )
+    )
+
+
+def _actions_record(backend: ServingBackend, *, layout=None):
+    layout = layout or layout_for_model("qwen3:4b-instruct")
+    request_id = f"{backend.value}-probe"
+    return engine_kv_connector_actions_to_record(
+        EngineKVConnectorActions(
+            reservation=EngineKVReservationAction(
+                backend=backend,
+                request_id=request_id,
+                total_blocks=1,
+                total_tokens=1,
+                estimated_gpu_bytes=layout.bytes_per_token,
+                layout=layout,
+                adapter_ids=("base",),
+            ),
+            copies=(
+                EngineKVSegmentCopyAction(
+                    request_id=request_id,
+                    document_id="doc-a",
+                    chunk_type="document_chunk",
+                    chunk_id="chunk-1",
+                    payload_index=None,
+                    source_byte_start=0,
+                    source_byte_length=layout.bytes_per_token,
+                    global_byte_start=0,
+                    global_byte_end=layout.bytes_per_token,
+                    token_start=0,
+                    token_count=1,
+                    token_end=1,
+                    first_block_index=0,
+                    last_block_index_exclusive=1,
+                ),
+            ),
+            bind=EngineKVBindAction(
+                request_id=request_id,
+                handle_uri=f"engine://{backend.value}/{request_id}",
+                cache_method="vanilla",
+                adapter_ids=("base",),
+                metadata={
+                    "engine.backend": backend.value,
+                    "engine.connector_package": backend.value,
+                },
+            ),
+            release=EngineKVReleaseAction(request_id=request_id),
         )
     )
 
