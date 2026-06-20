@@ -25,6 +25,7 @@ from document_kv_cache.engine_adapters import (
     read_engine_adapter_request_json,
     validate_engine_kv_connector_probe_record,
     view_engine_adapter_payload,
+    write_engine_adapter_request_json,
 )
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage import local_path
@@ -43,6 +44,7 @@ __all__ = [
     "EngineKVProbeFactoryResult",
     "run_engine_kv_connector_probe",
     "read_engine_adapter_payload",
+    "write_engine_adapter_handoff_bundle",
     "write_engine_adapter_payload",
     "write_engine_kv_connector_actions_record_json",
     "write_engine_kv_connector_probe_result_json",
@@ -250,6 +252,46 @@ def write_engine_adapter_payload(request: EngineAdapterRequest, payload_uri: str
     if payload_bytes != expected_bytes:
         raise ValueError(f"Engine adapter payload length {payload_bytes} != expected {expected_bytes}")
     return output_path
+
+
+def write_engine_adapter_handoff_bundle(
+    request: EngineAdapterRequest,
+    handoff_json: str | Path,
+    *,
+    payload_uri: str,
+    require_external_payload_uri: bool = True,
+) -> tuple[Path, Path]:
+    """Write a coordinated engine handoff JSON and payload file.
+
+    Returns ``(handoff_path, payload_path)``. The payload is written first so a
+    visible handoff record always points at materialized bytes.
+    """
+
+    payload_path = _resolved_local_path(payload_uri)
+    handoff_path = _resolved_local_path(str(handoff_json))
+    if _local_paths_collide(payload_path, handoff_path):
+        raise ValueError("handoff_json and payload_uri must resolve to different files")
+    payload_path = write_engine_adapter_payload(request, payload_uri)
+    handoff_path = write_engine_adapter_request_json(
+        request,
+        handoff_json,
+        payload_uri=payload_uri,
+        require_external_payload_uri=require_external_payload_uri,
+    )
+    return handoff_path, payload_path
+
+
+def _resolved_local_path(uri: str) -> Path:
+    return local_path(uri).expanduser().resolve(strict=False)
+
+
+def _local_paths_collide(first: Path, second: Path) -> bool:
+    if first == second:
+        return True
+    try:
+        return first.samefile(second)
+    except FileNotFoundError:
+        return False
 
 
 def write_engine_kv_connector_actions_record_json(

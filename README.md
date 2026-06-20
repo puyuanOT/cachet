@@ -348,8 +348,7 @@ from document_kv_cache import (
     read_engine_adapter_request_json,
     view_engine_adapter_payload,
     vllm_adapter_spec,
-    write_engine_adapter_payload,
-    write_engine_adapter_request_json,
+    write_engine_adapter_handoff_bundle,
 )
 
 adapter_request = build_engine_adapter_request(
@@ -358,8 +357,7 @@ adapter_request = build_engine_adapter_request(
 )
 handoff_record = engine_adapter_request_to_record(adapter_request)
 payload_path = Path("/local_disk0/document-kv-cache/req-123.kv")
-write_engine_adapter_payload(adapter_request, f"disk:{payload_path}")
-write_engine_adapter_request_json(
+handoff_path, written_payload_path = write_engine_adapter_handoff_bundle(
     adapter_request,
     "req-123-handoff.json",
     payload_uri=f"disk:{payload_path}",
@@ -545,14 +543,16 @@ into a JSON-serializable handoff artifact with `record_type`
 contains the handle URI, payload source descriptor, model layout, token/byte
 segment boundaries, per-segment cache-tier attribution, adapter ids, required
 steps, and estimated GPU bytes. It intentionally omits raw KV payload bytes.
-`write_engine_adapter_payload` writes the already materialized payload bytes for
-a validated adapter request to an absolute local path, `disk:`, `file:`,
-`dbfs:`, or UC Volume URI, preserving the merged byte stream that connector
-records reference.
-`write_engine_adapter_request_json`
-therefore requires an adapter-readable `payload_uri` (or an external
-`handle_uri`) by default; use the in-process `EngineAdapterRequest` directly
-when the connector already has access to `ready.payload`.
+`write_engine_adapter_handoff_bundle` writes the already materialized payload
+bytes for a validated adapter request plus the JSON handoff record that points
+at them. Payload bytes go to an absolute local path, `disk:`, `file:`, `dbfs:`,
+or UC Volume URI, preserving the merged byte stream that connector records
+reference; the JSON writer therefore records an adapter-readable `payload_uri`
+(or an external `handle_uri`) by default. Lower-level
+`write_engine_adapter_payload` and `write_engine_adapter_request_json` helpers
+remain available for workflows that intentionally manage the two artifacts
+separately, and in-process connectors can consume `EngineAdapterRequest`
+directly when they already have access to `ready.payload`.
 The handoff writer accepts ordinary filesystem paths plus `disk:`, `file:`,
 `dbfs:`, `/dbfs/...`, `/Volumes/...`, and `uc-volume:` paths so Databricks jobs
 can place handoff records beside local-NVMe or Unity Catalog payloads.

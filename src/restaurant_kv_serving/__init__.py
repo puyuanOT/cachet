@@ -599,6 +599,10 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_probe",
         "read_engine_adapter_payload",
     ),
+    "write_engine_adapter_handoff_bundle": (
+        "restaurant_kv_serving.engine_probe",
+        "write_engine_adapter_handoff_bundle",
+    ),
     "write_engine_adapter_payload": (
         "restaurant_kv_serving.engine_probe",
         "write_engine_adapter_payload",
@@ -1112,6 +1116,7 @@ __all__ = [
     "validate_engine_kv_connector_probe_record",
     "validate_engine_kv_connector_actions",
     "view_engine_adapter_payload",
+    "write_engine_adapter_handoff_bundle",
     "write_engine_adapter_payload",
     "write_engine_adapter_request_json",
     "write_engine_kv_connector_probe_result_json",

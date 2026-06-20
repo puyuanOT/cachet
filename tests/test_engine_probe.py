@@ -19,6 +19,7 @@ from document_kv_cache.engine_adapters import (
     build_engine_adapter_request,
     engine_kv_connector_actions_from_record,
     engine_kv_connector_probe_result_to_record,
+    read_engine_adapter_request_json,
     validate_engine_kv_connector_probe_record,
     vllm_adapter_spec,
     write_engine_adapter_request_json,
@@ -34,6 +35,7 @@ from document_kv_cache.engine_probe import (
     EngineKVProbeConfig,
     read_engine_adapter_payload,
     run_engine_kv_connector_probe,
+    write_engine_adapter_handoff_bundle,
     write_engine_adapter_payload,
 )
 from document_kv_cache.kvpack import PackChunk, write_kvpack
@@ -495,6 +497,96 @@ def test_write_engine_adapter_payload_rejects_unsupported_or_relative_uri(tmp_pa
         write_engine_adapter_payload(ready, f"disk:{tmp_path / 'payload.kv'}")  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("segmented", (False, True))
+def test_write_engine_adapter_handoff_bundle_writes_payload_and_record(tmp_path, segmented):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout(), segmented=segmented)
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    handoff_path = tmp_path / "handoffs" / "req-1.json"
+    payload_path = tmp_path / "payloads" / "req-1.kv"
+    payload_uri = f"disk:{payload_path}"
+    expected_payload = b"".join(ready.payload) if isinstance(ready.payload, tuple) else ready.payload
+
+    written_handoff_path, written_payload_path = write_engine_adapter_handoff_bundle(
+        adapter_request,
+        f"disk:{handoff_path}",
+        payload_uri=payload_uri,
+    )
+
+    assert written_handoff_path == handoff_path
+    assert written_payload_path == payload_path
+    assert payload_path.read_bytes() == expected_payload
+    record = read_engine_adapter_request_json(handoff_path, expected_backend=ServingBackend.VLLM)
+    assert record["payload_source"]["uri"] == payload_uri
+    assert record["payload_source"]["total_bytes"] == ready.handle.total_bytes
+    assert record["payload_mode"] == ("segmented" if segmented else "merged")
+    assert read_engine_adapter_payload(payload_uri, expected_bytes=ready.handle.total_bytes) == expected_payload
+
+
+def test_write_engine_adapter_handoff_bundle_rejects_non_adapter_request(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+
+    with pytest.raises(TypeError, match="EngineAdapterRequest"):
+        write_engine_adapter_handoff_bundle(  # type: ignore[arg-type]
+            ready,
+            tmp_path / "handoff.json",
+            payload_uri=f"disk:{tmp_path / 'payload.kv'}",
+        )
+
+
+@pytest.mark.parametrize(
+    ("handoff_value", "payload_value"),
+    (
+        ("absolute", "disk"),
+        ("disk", "absolute"),
+        ("file", "disk"),
+    ),
+)
+def test_write_engine_adapter_handoff_bundle_rejects_same_resolved_destination(
+    tmp_path,
+    handoff_value,
+    payload_value,
+):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    shared_path = tmp_path / "shared-output"
+    values = {
+        "absolute": str(shared_path),
+        "disk": f"disk:{shared_path}",
+        "file": f"file:{shared_path}",
+    }
+
+    with pytest.raises(ValueError, match="different files"):
+        write_engine_adapter_handoff_bundle(
+            adapter_request,
+            values[handoff_value],
+            payload_uri=values[payload_value],
+        )
+
+    assert not shared_path.exists()
+
+
+def test_write_engine_adapter_handoff_bundle_rejects_existing_hardlink_collision(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    payload_path = tmp_path / "payload.kv"
+    handoff_path = tmp_path / "handoff.json"
+    payload_path.write_bytes(b"existing")
+    try:
+        handoff_path.hardlink_to(payload_path)
+    except OSError as exc:
+        pytest.skip(f"hard links are unavailable in this filesystem: {exc}")
+
+    with pytest.raises(ValueError, match="different files"):
+        write_engine_adapter_handoff_bundle(
+            adapter_request,
+            handoff_path,
+            payload_uri=f"disk:{payload_path}",
+        )
+
+    assert payload_path.read_bytes() == b"existing"
+    assert handoff_path.read_bytes() == b"existing"
+
+
 def test_public_engine_probe_main_respects_document_namespace_hooks(monkeypatch, tmp_path):
     output_path = tmp_path / "probe.json"
     calls = {}
@@ -906,6 +998,7 @@ def test_engine_probe_star_import_surfaces_are_stable():
         "EngineKVProbeFactoryResult",
         "run_engine_kv_connector_probe",
         "read_engine_adapter_payload",
+        "write_engine_adapter_handoff_bundle",
         "write_engine_adapter_payload",
         "write_engine_kv_connector_actions_record_json",
         "write_engine_kv_connector_probe_result_json",

@@ -668,7 +668,7 @@ def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
     }
 
     assert "adapter_storage" not in example
-    assert "write_engine_adapter_payload(adapter_request" in example
+    assert "write_engine_adapter_handoff_bundle(" in example
     assert ".open(\"wb\")" not in example
     assert "payload = read_engine_adapter_payload(" in example
     assert "expected_bytes=record[\"payload_source\"][\"total_bytes\"]" in example
