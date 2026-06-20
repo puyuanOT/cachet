@@ -323,6 +323,43 @@ def test_workflow_generates_and_prepares_single_text_document(tmp_path):
     assert materialized.payload == b"doc-a:document:hello from one text document"
 
 
+def test_workflow_generates_and_prepares_selected_document_chunks(tmp_path):
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow(
+        manifest=manifest,
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+    )
+    document = SourceDocument.from_texts(
+        document_id="doc-a",
+        static_text="profile",
+        chunks={"review-1": "first review", "review-2": "second review"},
+    )
+    request = DocumentKVRequest.for_document_chunks(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+        chunk_ids=("review-2",),
+    )
+
+    result = workflow.generate_cache(
+        documents=(document,),
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri=tmp_path / "selected-document-chunks.kvpack",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(request)
+
+    assert result.chunk_count == 3
+    assert request.document_chunks == {"doc-a": ("review-2",)}
+    assert b"doc-a:static:profile" in materialized.payload
+    assert b"doc-a:review-2:second review" in materialized.payload
+    assert b"doc-a:review-1:first review" not in materialized.payload
+
+
 def test_workflow_invokes_optional_training_adapter(tmp_path):
     trainer = RecordingTrainer()
     workflow = DocumentKVWorkflow(

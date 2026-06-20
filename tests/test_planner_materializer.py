@@ -234,6 +234,52 @@ def test_document_kv_request_for_text_document_matches_source_document_default_c
     assert request.include_static is False
     assert request.selected_document_ids == ("doc-a",)
 
+    custom = DocumentKVRequest.for_text_document(
+        request_id="req-2",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+        chunk_id="body",
+    )
+
+    assert custom.document_chunks == {"doc-a": ("body",)}
+
+
+def test_document_kv_request_for_document_chunks_builds_single_document_selection():
+    request = DocumentKVRequest.for_document_chunks(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+        chunk_ids=("section-1", 2),
+        task_prefix_id="prefix",
+    )
+
+    assert request.document_chunks == {"doc-a": ("section-1", 2)}
+    assert request.include_static is True
+    assert request.task_prefix_id == "prefix"
+    assert request.selected_document_ids == ("doc-a",)
+
+
+def test_document_kv_request_for_document_chunks_allows_static_opt_out():
+    request = DocumentKVRequest.for_document_chunks(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+        chunk_ids=("section-1",),
+        include_static=False,
+    )
+
+    assert request.document_chunks == {"doc-a": ("section-1",)}
+    assert request.include_static is False
+
 
 def test_document_kv_request_for_text_document_reuses_request_validation():
     with pytest.raises(ValueError, match="document_chunks keys"):
@@ -254,6 +300,29 @@ def test_document_kv_request_for_text_document_reuses_request_validation():
             prompt_template_version="v1",
             document_id="doc-a",
             chunk_id="",
+        )
+
+
+def test_document_kv_request_for_document_chunks_reuses_request_validation():
+    with pytest.raises(TypeError, match="document_chunks values"):
+        DocumentKVRequest.for_document_chunks(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+            chunk_ids="section-1",  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="document_chunks chunk ids"):
+        DocumentKVRequest.for_document_chunks(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+            chunk_ids=("",),
         )
 
 

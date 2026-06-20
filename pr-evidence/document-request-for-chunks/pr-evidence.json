@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "APPROVED by GPT-5.5/high review: narrow additive helper preserves request contract, existing validation, immutable chunk-map normalization, and README/workflow coverage.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/models.py",
+    "tests/test_planner_materializer.py",
+    "tests/test_workflow.py",
+    "tests/test_project_governance.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_planner_materializer.py tests/test_workflow.py tests/test_project_governance.py -q (99 passed)",
+    "poetry run pytest -q (893 passed)",
+    "git diff --check",
+    "poetry check",
+    "poetry install --dry-run",
+    "poetry build"
+  ],
+  "what_changed": [
+    "Added DocumentKVRequest.for_document_chunks(...) for single-document multi-chunk selections.",
+    "Refactored DocumentKVRequest.for_text_document(...) to delegate to the multi-chunk helper while preserving include_static=False.",
+    "Documented the multi-chunk workflow and added model, workflow, and README governance tests."
+  ],
+  "why": "Makes Cachet easier to use for arbitrary documents split into static context and reusable chunks without bypassing immutable request normalization."
+}
