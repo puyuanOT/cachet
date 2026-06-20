@@ -1948,37 +1948,8 @@ def _v1_record(*, ok: bool):
             "hardware_target": "aws-g5",
             "model_id": "qwen3:4b-instruct",
         },
-        "measurements": [
-            {
-                "example_id": f"{dataset}-1",
-                "dataset": dataset,
-                "arm_id": arm,
-                "prompt_tokens": 1024,
-                "completion_tokens": 16,
-                "ttft_seconds": 1.0,
-                "time_to_completion_seconds": 2.0,
-                "answer_found": True,
-                "error": None,
-            }
-            for dataset in datasets
-            for arm in arms
-        ],
-        "report_rows": [
-            {
-                "dataset": dataset,
-                "arm_id": arm,
-                "requests": 1,
-                "errors": 0,
-                "prompt_tokens_mean": 1024.0,
-                "completion_tokens_mean": 16.0,
-                "ttft": {"p50": 1.0, "p95": 1.0},
-                "time_to_completion": {"p50": 2.0, "p95": 2.0},
-                "answer_found_rate": 1.0,
-                "output_tokens_per_second": 8.0,
-            }
-            for dataset in datasets
-            for arm in arms
-        ],
+        "measurements": [_v1_measurement_record(dataset, arm) for dataset in datasets for arm in arms],
+        "report_rows": [_v1_report_row_record(dataset, arm) for dataset in datasets for arm in arms],
         "comparisons": [
             {
                 "dataset": dataset,
@@ -2003,6 +1974,54 @@ def _v1_record(*, ok: bool):
             "unexpected_datasets": [],
             "issues": [] if ok else ["missing report rows: hotpotqa:baseline_prefill"],
         },
+    }
+
+
+def _v1_measurement_record(dataset: str, arm: str):
+    prompt_tokens = 1024 if arm == "baseline_prefill" else 128
+    return {
+        "example_id": f"{dataset}-1",
+        "dataset": dataset,
+        "arm_id": arm,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": 16,
+        "ttft_seconds": 1.0,
+        "time_to_completion_seconds": 2.0,
+        "answer_found": True,
+        "error": None,
+        "metadata": _v1_measurement_metadata(arm),
+    }
+
+
+def _v1_report_row_record(dataset: str, arm: str):
+    prompt_tokens = 1024.0 if arm == "baseline_prefill" else 128.0
+    return {
+        "dataset": dataset,
+        "arm_id": arm,
+        "requests": 1,
+        "errors": 0,
+        "prompt_tokens_mean": prompt_tokens,
+        "completion_tokens_mean": 16.0,
+        "ttft": {"p50": 1.0, "p95": 1.0},
+        "time_to_completion": {"p50": 2.0, "p95": 2.0},
+        "answer_found_rate": 1.0,
+        "output_tokens_per_second": 8.0,
+    }
+
+
+def _v1_measurement_metadata(arm: str):
+    if arm == "baseline_prefill":
+        return {
+            "prompt_text_mode": "logical",
+            "prompt_token_source": "logical",
+            "logical_prompt_tokens": "1024",
+            "runtime_prompt_tokens": "1024",
+        }
+    return {
+        "prompt_text_mode": "runtime",
+        "prompt_token_source": "server_usage",
+        "logical_prompt_tokens": "1024",
+        "runtime_prompt_tokens": "128",
     }
 
 

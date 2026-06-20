@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/v1-benchmark-token-context-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved 3184902 with no blocking findings; PR evidence can mark gpt55_review_outcome=clean.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/openai_compatible.py",
+        "src/document_kv_cache/release_evidence.py",
+        "tests/test_openai_compatible.py",
+        "tests/test_release_evidence.py",
+        "tests/test_release_bundle.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_openai_compatible.py tests/test_release_evidence.py tests/test_release_bundle.py tests/test_benchmark_runner.py -> 115 passed",
+        "python -m py_compile src/document_kv_cache/openai_compatible.py src/document_kv_cache/release_evidence.py -> clean",
+        "poetry run pytest -q -> 774 passed",
+        "poetry check -> All set",
+        "git diff --check -> clean",
+        "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/document-kv-token-context-hygiene.json -> ok=true, forbidden_tracked_paths=[], forbidden_untracked_paths=[], dirty_tracked_paths=[], untracked_path_count=0",
+        "GPT-5.5 reviewer reran poetry run pytest -q tests/test_openai_compatible.py tests/test_release_evidence.py tests/test_release_bundle.py tests/test_benchmark_runner.py -> 115 passed"
+      ],
+      "what_changed": [
+        "Recorded logical_prompt_tokens and runtime_prompt_tokens metadata for OpenAI-compatible benchmark generations.",
+        "Required strict V1 release evidence to prove baseline runs use the full prompt and cache runs use a smaller runtime suffix.",
+        "Updated release fixtures, regression tests, and README benchmark documentation for prompt-token context evidence."
+      ],
+      "why": "Latency comparisons for long-context KV-cache serving are only interpretable when release artifacts prove both the full logical context size and the runtime suffix size used by cached inference."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

@@ -827,6 +827,7 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
             issues.append(f"v1 benchmark measurement {dataset}:{arm_id} must not have an error")
         if measurement.get("answer_found") is not None and type(measurement.get("answer_found")) is not bool:
             issues.append(f"v1 benchmark measurement {dataset}:{arm_id} answer_found must be boolean when present")
+        _validate_v1_measurement_token_context(measurement, dataset=dataset, arm_id=arm_id, issues=issues)
     expected = {
         (dataset, arm_id)
         for dataset in SUPPORTED_V1_DATASETS
@@ -835,6 +836,37 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
     missing = sorted(f"{dataset}:{arm_id}" for dataset, arm_id in expected.difference(measurement_keys))
     if missing:
         issues.append(f"v1 benchmark measurements missing required dataset/arm pairs: {', '.join(missing)}")
+
+
+def _validate_v1_measurement_token_context(
+    measurement: Mapping[str, Any],
+    *,
+    dataset: Any,
+    arm_id: Any,
+    issues: list[str],
+) -> None:
+    label = f"v1 benchmark measurement {dataset}:{arm_id}"
+    metadata = measurement.get("metadata")
+    if not isinstance(metadata, Mapping):
+        issues.append(f"{label} metadata must include prompt token context")
+        return
+    prompt_text_mode = metadata.get("prompt_text_mode")
+    if prompt_text_mode not in {"logical", "runtime"}:
+        issues.append(f"{label} metadata.prompt_text_mode must be 'logical' or 'runtime'")
+    if not isinstance(metadata.get("prompt_token_source"), str) or not metadata["prompt_token_source"]:
+        issues.append(f"{label} metadata.prompt_token_source must be non-empty")
+    logical_prompt_tokens = _positive_int_metadata(metadata.get("logical_prompt_tokens"))
+    runtime_prompt_tokens = _positive_int_metadata(metadata.get("runtime_prompt_tokens"))
+    if logical_prompt_tokens is None:
+        issues.append(f"{label} metadata.logical_prompt_tokens must be a positive integer")
+    if runtime_prompt_tokens is None:
+        issues.append(f"{label} metadata.runtime_prompt_tokens must be a positive integer")
+    if logical_prompt_tokens is None or runtime_prompt_tokens is None:
+        return
+    if arm_id == BASELINE_PREFILL_ARM and runtime_prompt_tokens != logical_prompt_tokens:
+        issues.append(f"{label} baseline runtime_prompt_tokens must equal logical_prompt_tokens")
+    if arm_id == CACHE_REUSE_ARM and runtime_prompt_tokens >= logical_prompt_tokens:
+        issues.append(f"{label} cache runtime_prompt_tokens must be smaller than logical_prompt_tokens")
 
 
 def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> None:
@@ -1029,6 +1061,16 @@ def _matches_release_storage_readers(value: Any) -> bool:
 
 def _is_positive_int(value: Any) -> bool:
     return type(value) is int and value > 0
+
+
+def _positive_int_metadata(value: Any) -> int | None:
+    if _is_positive_int(value):
+        return value
+    if isinstance(value, str) and value.isdecimal():
+        parsed = int(value)
+        if parsed > 0:
+            return parsed
+    return None
 
 
 def _is_non_negative_number(value: Any) -> bool:

@@ -558,7 +558,7 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
 - `build_v1_benchmark_plan` and the `benchmark_plan` CLI emit a portable command plan that prepares all four V1 datasets, runs the OpenAI-compatible benchmark on AWS g5/Qwen3, and can append storage-reader benchmarking on the same node.
 - `benchmark_plan_executor` and `databricks_job` let managed job runners execute that plan on single-node AWS g5 Databricks clusters; `databricks_runs` can submit/check those payloads using credentials supplied only through environment variables.
 - `run_benchmark_suite` executes caller-provided baseline and KV-cache engines against the same logical prompt parts and emits `InferenceMeasurement` rows. Cache engines receive the runtime suffix as `prompt_text`; the full logical prompt remains available as `logical_prompt_text`.
-- `InferenceMeasurement` records prompt tokens, completion tokens, TTFT, time-to-completion, generated text, expected answer, and errors.
+- `InferenceMeasurement` records prompt tokens, completion tokens, TTFT, time-to-completion, generated text, expected answer, and errors. OpenAI-compatible V1 measurements also carry `logical_prompt_tokens` and `runtime_prompt_tokens` metadata so release evidence proves the no-cache baseline saw the full prompt and the KV-cache arm generated from a smaller runtime suffix.
 - `summarize_measurements` produces per-dataset/per-arm latency and quality rows.
 - `compare_to_baseline` reports cache speedups and quality deltas against `baseline_prefill`.
 - `evaluate_v1_benchmark_evidence` marks whether the report is release-evaluable:
@@ -582,7 +582,7 @@ engine = OpenAICompatibleCompletionEngine(
 
 Streaming responses provide TTFT; non-streaming responses report TTFT equal to total completion latency. If the server omits usage fields, the engine falls back to a simple token counter that callers can replace with a tokenizer-aware implementation.
 
-By default this engine posts the full logical prompt, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers and for platform-managed prefix caching. Set `prompt_text_mode="runtime"` only when the server endpoint is a KV-aware adapter or proxy that binds the cached prefix out of band and expects only the runtime suffix in the `prompt` field.
+By default this engine posts the full logical prompt, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers and for platform-managed prefix caching. Set `prompt_text_mode="runtime"` only when the server endpoint is a KV-aware adapter or proxy that binds the cached prefix out of band and expects only the runtime suffix in the `prompt` field. The engine records both logical and runtime prompt-token counts in measurement metadata; strict V1 release evidence rejects cache measurements whose runtime prompt is not smaller than the logical prompt.
 
 To run the V1 benchmark contract against existing OpenAI-compatible vLLM or SGLang servers, generate a reproducible command plan for all four datasets:
 
