@@ -274,6 +274,12 @@ class _PreparedReleaseBundleArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class _WheelPackageIdentity:
+    package_name: str
+    package_version: str
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseBundleArtifact:
     role: str
     source_path: str
@@ -282,6 +288,8 @@ class ReleaseBundleArtifact:
     sha256: str
     record_type: str | None = None
     backend: str | None = None
+    package_name: str | None = None
+    package_version: str | None = None
 
     def __post_init__(self) -> None:
         if self.role not in RELEASE_BUNDLE_ARTIFACT_ROLES:
@@ -300,6 +308,14 @@ class ReleaseBundleArtifact:
             raise ValueError("backend can only be set for engine backend artifacts")
         if self.backend is not None and self.backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
             raise ValueError(f"Unsupported artifact backend {self.backend!r}")
+        if (self.package_name is None) != (self.package_version is None):
+            raise ValueError("package_name and package_version must be provided together")
+        if self.package_name is not None and self.role != "package_wheel":
+            raise ValueError("package identity can only be set for package wheel artifacts")
+        for field_name in ("package_name", "package_version"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError(f"{field_name} must be non-empty when provided")
 
 
 @dataclass(frozen=True, slots=True)
@@ -468,6 +484,7 @@ def _copy_release_bundle_artifact(
         raise FileExistsError(f"Release bundle artifact already exists: {destination}")
     if not _same_path(local_source_path, destination):
         destination.write_bytes(prepared.payload)
+    wheel_identity = _package_wheel_identity(prepared.payload) if prepared.role == "package_wheel" else None
     return ReleaseBundleArtifact(
         role=prepared.role,
         source_path=prepared.source_path,
@@ -480,6 +497,8 @@ def _copy_release_bundle_artifact(
             if prepared.role in ("engine_probe", "engine_connector_actions") and prepared.record is not None
             else None
         ),
+        package_name=wheel_identity.package_name if wheel_identity is not None else None,
+        package_version=wheel_identity.package_version if wheel_identity is not None else None,
     )
 
 
@@ -1580,6 +1599,27 @@ def _wheel_metadata_license_issues(metadata: Mapping[str, str]) -> tuple[str, ..
     return tuple(issues)
 
 
+def _package_wheel_identity(payload: bytes) -> _WheelPackageIdentity | None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
+            metadata_names = tuple(
+                name for name in wheel_zip.namelist() if _is_root_dist_info_file(name, "METADATA")
+            )
+            if len(metadata_names) != 1:
+                return None
+            metadata = _metadata_headers(wheel_zip.read(metadata_names[0]).decode("utf-8"))
+    except (zipfile.BadZipFile, KeyError, UnicodeDecodeError):
+        return None
+    name = metadata.get("name")
+    version = metadata.get("version")
+    if not name or not version:
+        return None
+    return _WheelPackageIdentity(
+        package_name=canonicalize_name(name),
+        package_version=version,
+    )
+
+
 def _wheel_license_file_issues(names: Sequence[str], *, dist_info_prefix: str) -> tuple[str, ...]:
     expected_path = f"{dist_info_prefix}/licenses/{RELEASE_BUNDLE_PACKAGE_LICENSE_FILE}"
     if expected_path not in names:
@@ -1922,6 +1962,10 @@ def _artifact_to_record(artifact: ReleaseBundleArtifact) -> dict[str, Any]:
         record["record_type"] = artifact.record_type
     if artifact.backend is not None:
         record["backend"] = artifact.backend
+    if artifact.package_name is not None:
+        record["package_name"] = artifact.package_name
+    if artifact.package_version is not None:
+        record["package_version"] = artifact.package_version
     return record
 
 

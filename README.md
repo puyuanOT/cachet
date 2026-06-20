@@ -854,7 +854,8 @@ python -m document_kv_cache.release_bundle \
 
 The bundle directory contains byte-for-byte copies of each JSON artifact plus a
 `manifest.json` with the original path, bundled relative path, record type,
-backend where applicable, size, and SHA-256 for every artifact. Add
+backend where applicable, package name/version for wheel artifacts, size, and
+SHA-256 for every artifact. Add
 `--plan-execution-json` to include the command execution summary that identifies
 the exact benchmark plan JSON, `--package-wheel` to include the exact wheel
 tested on the target AWS g5 runtime, and repeat `--pr-evidence-json` to carry PR
@@ -892,7 +893,11 @@ marked resolved before they can enter the release bundle.
 Wheel artifacts must be valid wheels for `document-kv-cache` with non-empty
 package metadata, and the wheel filename, root `.dist-info` directory, and
 `METADATA` name/version must describe the same normalized package identity. The
-wheel's `WHEEL` metadata must also describe a pure Python `py3-none-any`
+release bundle manifest records the normalized package name and package version
+for the copied wheel so the tested package can be audited without reopening the
+wheel archive. Strict V1 release bundles also require the wheel version to match
+the current project version from `pyproject.toml` or installed package metadata.
+The wheel's `WHEEL` metadata must also describe a pure Python `py3-none-any`
 artifact, and the wheel `RECORD` manifest must list the package payload plus the
 required `.dist-info` metadata with matching hashes and sizes. Wheel zip members
 must use unique file paths so the `RECORD` manifest cannot hide duplicate

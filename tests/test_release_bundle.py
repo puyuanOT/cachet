@@ -235,6 +235,8 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert json.loads((bundle_dir / execution_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert wheel_artifact["bundled_path"] == package_wheel.name
     assert "record_type" not in wheel_artifact
+    assert wheel_artifact["package_name"] == "document-kv-cache"
+    assert wheel_artifact["package_version"] == "0.2.0"
     assert (bundle_dir / wheel_artifact["bundled_path"]).read_bytes() == package_wheel.read_bytes()
     assert pr_artifact["record_type"] == "document_kv.pr_evidence.v1"
     assert json.loads((bundle_dir / pr_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
@@ -267,6 +269,8 @@ def test_build_release_bundle_accepts_pep440_equivalent_wheel_version_spellings(
 
     wheel_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "package_wheel")
     assert wheel_artifact["bundled_path"] == package_wheel.name
+    assert wheel_artifact["package_name"] == "document-kv-cache"
+    assert wheel_artifact["package_version"] == "1.0.post1"
 
 
 def test_build_release_bundle_accepts_normalized_wheel_metadata_name(tmp_path):
@@ -289,6 +293,8 @@ def test_build_release_bundle_accepts_normalized_wheel_metadata_name(tmp_path):
 
     wheel_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "package_wheel")
     assert wheel_artifact["bundled_path"] == package_wheel.name
+    assert wheel_artifact["package_name"] == "document-kv-cache"
+    assert wheel_artifact["package_version"] == "0.2.0"
 
 
 def test_build_release_bundle_strict_v1_rejects_incomplete_release_artifact_set(tmp_path):
@@ -1707,6 +1713,25 @@ def test_release_bundle_dataclasses_validate_json_safe_schema():
             size_bytes=1,
             sha256="a" * 64,
             backend="vllm",
+        )
+    with pytest.raises(ValueError, match="provided together"):
+        ReleaseBundleArtifact(
+            role="package_wheel",
+            source_path="x",
+            bundled_path="x",
+            size_bytes=1,
+            sha256="a" * 64,
+            package_name="document-kv-cache",
+        )
+    with pytest.raises(ValueError, match="package identity can only"):
+        ReleaseBundleArtifact(
+            role="v1_benchmark",
+            source_path="x",
+            bundled_path="x",
+            size_bytes=1,
+            sha256="a" * 64,
+            package_name="document-kv-cache",
+            package_version="0.2.0",
         )
     with pytest.raises(TypeError, match="artifacts"):
         ReleaseBundle(output_dir="/tmp/bundle", manifest_path="/tmp/bundle/manifest.json", artifacts=(object(),))
