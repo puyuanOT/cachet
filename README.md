@@ -1115,6 +1115,9 @@ plus a sanitized `document_kv.databricks_run_submit_payload.v1` hash and cluster
 summary when `--submit-payload-json` is supplied, so polling automation does not
 need to parse or persist the full Jobs API response. Add `--include-response`
 only when debugging requires the raw `runs/get` payload.
+Use `validate_databricks_run_status_sidecar` or
+`databricks_run_status_sidecar_issues` to preflight release-oriented run-status
+sidecars before assembling a release bundle.
 
 Workspace-specific automation can still POST the payload itself after applying
 the organization’s auth, cluster policy, and asset-upload conventions. Teams

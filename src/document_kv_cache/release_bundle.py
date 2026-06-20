@@ -32,7 +32,8 @@ from document_kv_cache.benchmark_plan_executor import (
 )
 from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
-    DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
+    databricks_run_status_record,
+    databricks_run_status_sidecar_issues,
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.native_probe_factories import (
@@ -114,68 +115,6 @@ _WHEEL_FILENAME_RE = re.compile(
     r"-(?P<python_tag>[A-Za-z0-9_.]+)"
     r"-(?P<abi_tag>[A-Za-z0-9_.]+)"
     r"-(?P<platform_tag>[A-Za-z0-9_.]+)\.whl$"
-)
-_DATABRICKS_RUN_STATUS_WRAPPER_KEYS = frozenset({"ok", "action", "summary"})
-_DATABRICKS_RUN_STATUS_KEYS = frozenset(
-    {
-        "record_type",
-        "run_id",
-        "run_name",
-        "run_page_url",
-        "life_cycle_state",
-        "result_state",
-        "state_message",
-        "start_time",
-        "end_time",
-        "terminal",
-        "succeeded",
-        "active_task_key",
-        "task_count",
-        "tasks",
-        "cluster_id",
-        "submit_payload",
-    }
-)
-_DATABRICKS_RUN_STATUS_TASK_KEYS = frozenset(
-    {
-        "task_key",
-        "run_id",
-        "life_cycle_state",
-        "result_state",
-        "state_message",
-        "cluster_id",
-        "start_time",
-        "end_time",
-    }
-)
-_DATABRICKS_SUBMIT_PAYLOAD_KEYS = frozenset(
-    {
-        "record_type",
-        "source_path",
-        "sha256",
-        "run_name",
-        "task_count",
-        "task_keys",
-        "tasks",
-        "node_type_ids",
-        "driver_node_type_ids",
-        "spark_versions",
-        "data_security_modes",
-        "single_node",
-        "aws_g5_node_type",
-    }
-)
-_DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS = frozenset(
-    {
-        "task_key",
-        "node_type_id",
-        "driver_node_type_id",
-        "spark_version",
-        "data_security_mode",
-        "num_workers",
-        "single_node",
-        "purpose",
-    }
 )
 _RELEASE_EVIDENCE_SIDECAR_KEYS = frozenset(
     {
@@ -621,7 +560,7 @@ def _validate_release_bundle_inputs(
             if artifact.record is None:
                 issues.append("Databricks run status sidecar must be JSON")
                 continue
-            issues.extend(_databricks_run_status_sidecar_issues(artifact.record))
+            issues.extend(databricks_run_status_sidecar_issues(artifact.record))
         elif artifact.role == "package_wheel":
             issues.extend(
                 _package_wheel_issues(
@@ -675,7 +614,7 @@ def _missing_strict_v1_databricks_purpose_labels(
     for artifact in artifacts:
         if artifact.role != "databricks_run_status" or artifact.record is None:
             continue
-        status_record = _databricks_run_status_record(artifact.record)
+        status_record = databricks_run_status_record(artifact.record)
         if status_record is None:
             continue
         submit_payload = status_record.get("submit_payload")
@@ -1203,238 +1142,6 @@ def _plan_source_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(issues)
 
 
-def _databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    status_record = _databricks_run_status_record(record)
-    issues: list[str] = []
-    if "response" in record:
-        issues.append("Databricks run status sidecar must not include the raw Jobs API response")
-    issues.extend(_databricks_run_status_container_key_issues(record))
-    issues.extend(_databricks_run_status_wrapper_field_issues(record))
-    if status_record is None:
-        issues.append("Databricks run status sidecar must be a status record or databricks_runs get --summary output")
-        return _dedupe_strings(issues)
-    issues.extend(_unexpected_keys(status_record, _DATABRICKS_RUN_STATUS_KEYS, "Databricks run status sidecar summary"))
-    issues.extend(_databricks_run_status_field_issues(status_record))
-    if status_record.get("record_type") != DATABRICKS_RUN_STATUS_RECORD_TYPE:
-        issues.append(f"Databricks run status sidecar record_type must be {DATABRICKS_RUN_STATUS_RECORD_TYPE!r}")
-    if status_record.get("terminal") is not True:
-        issues.append("Databricks run status sidecar terminal must be true")
-    if status_record.get("succeeded") is not True:
-        issues.append("Databricks run status sidecar succeeded must be true")
-    if status_record.get("life_cycle_state") != "TERMINATED":
-        issues.append("Databricks run status sidecar life_cycle_state must be 'TERMINATED'")
-    if status_record.get("result_state") != "SUCCESS":
-        issues.append("Databricks run status sidecar result_state must be 'SUCCESS'")
-    run_id = status_record.get("run_id")
-    if not ((type(run_id) is int and run_id >= 0) or (isinstance(run_id, str) and run_id)):
-        issues.append("Databricks run status sidecar run_id must be a non-negative integer or non-empty string")
-    task_count = status_record.get("task_count")
-    tasks = status_record.get("tasks")
-    if type(task_count) is not int or task_count <= 0:
-        issues.append("Databricks run status sidecar task_count must be a positive integer")
-    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)) or not tasks:
-        issues.append("Databricks run status sidecar tasks must be a non-empty array")
-    else:
-        if type(task_count) is int and task_count > 0 and len(tasks) != task_count:
-            issues.append("Databricks run status sidecar task_count must match tasks length")
-        issues.extend(_databricks_run_status_task_issues(tasks))
-    submit_payload = status_record.get("submit_payload")
-    if not isinstance(submit_payload, Mapping):
-        issues.append("Databricks run status sidecar submit_payload must be an object")
-    else:
-        issues.extend(_databricks_submit_payload_sidecar_issues(submit_payload, tasks=tasks))
-    return _dedupe_strings(issues)
-
-
-def _databricks_run_status_record(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
-        return record
-    summary = record.get("summary")
-    if (
-        record.get("ok") is True
-        and summary is not None
-        and isinstance(summary, Mapping)
-        and summary.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE
-    ):
-        return summary
-    return None
-
-
-def _databricks_run_status_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
-    issues: list[str] = []
-    for index, task in enumerate(tasks):
-        if not isinstance(task, Mapping):
-            issues.append(f"Databricks run status sidecar tasks[{index}] must be an object")
-            continue
-        issues.extend(
-            _unexpected_keys(task, _DATABRICKS_RUN_STATUS_TASK_KEYS, f"Databricks run status sidecar tasks[{index}]")
-        )
-        issues.extend(_databricks_run_status_task_field_issues(task, index=index))
-        if not isinstance(task.get("task_key"), str) or not task["task_key"]:
-            issues.append(f"Databricks run status sidecar tasks[{index}].task_key must be non-empty")
-        if task.get("life_cycle_state") != "TERMINATED":
-            issues.append(f"Databricks run status sidecar tasks[{index}].life_cycle_state must be 'TERMINATED'")
-        if task.get("result_state") != "SUCCESS":
-            issues.append(f"Databricks run status sidecar tasks[{index}].result_state must be 'SUCCESS'")
-    return tuple(issues)
-
-
-def _databricks_submit_payload_sidecar_issues(
-    record: Mapping[str, Any],
-    *,
-    tasks: Any,
-) -> tuple[str, ...]:
-    issues: list[str] = []
-    issues.extend(_unexpected_keys(record, _DATABRICKS_SUBMIT_PAYLOAD_KEYS, "Databricks run status sidecar submit_payload"))
-    issues.extend(_databricks_submit_payload_field_issues(record))
-    if record.get("record_type") != DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE:
-        issues.append(
-            f"Databricks run status sidecar submit_payload.record_type must be {DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE!r}"
-        )
-    source_path = record.get("source_path")
-    if not isinstance(source_path, str) or not source_path:
-        issues.append("Databricks run status sidecar submit_payload.source_path must be non-empty")
-    if not isinstance(record.get("sha256"), str) or not _SHA256_HEX_RE.fullmatch(record["sha256"]):
-        issues.append("Databricks run status sidecar submit_payload.sha256 must be a 64-character lowercase hex digest")
-    if record.get("single_node") is not True:
-        issues.append("Databricks run status sidecar submit_payload.single_node must be true")
-    if record.get("aws_g5_node_type") is not True:
-        issues.append("Databricks run status sidecar submit_payload.aws_g5_node_type must be true")
-    task_count = record.get("task_count")
-    payload_tasks = record.get("tasks")
-    if type(task_count) is not int or task_count <= 0:
-        issues.append("Databricks run status sidecar submit_payload.task_count must be a positive integer")
-    if not isinstance(payload_tasks, Sequence) or isinstance(payload_tasks, (str, bytes, bytearray)) or not payload_tasks:
-        issues.append("Databricks run status sidecar submit_payload.tasks must be a non-empty array")
-    else:
-        if type(task_count) is int and task_count > 0 and len(payload_tasks) != task_count:
-            issues.append("Databricks run status sidecar submit_payload.task_count must match tasks length")
-        issues.extend(_databricks_submit_payload_task_issues(payload_tasks))
-    data_security_modes = record.get("data_security_modes")
-    if not isinstance(data_security_modes, Sequence) or isinstance(data_security_modes, (str, bytes, bytearray)):
-        issues.append("Databricks run status sidecar submit_payload.data_security_modes must be an array")
-    elif "SINGLE_USER" not in data_security_modes:
-        issues.append("Databricks run status sidecar submit_payload.data_security_modes must include SINGLE_USER")
-    if isinstance(tasks, Sequence) and not isinstance(tasks, (str, bytes, bytearray)):
-        status_task_keys = _task_key_list(tasks)
-        payload_task_keys = _task_key_list(record.get("tasks"))
-        if not status_task_keys:
-            issues.append("Databricks run status sidecar tasks must include task keys")
-        if not payload_task_keys:
-            issues.append("Databricks run status sidecar submit_payload.tasks must include task keys")
-        if status_task_keys and payload_task_keys and status_task_keys != payload_task_keys:
-            issues.append("Databricks run status sidecar submit_payload.task_keys must match status task keys")
-    if isinstance(record.get("task_keys"), Sequence) and not isinstance(record.get("task_keys"), (str, bytes, bytearray)):
-        declared_task_keys = [key for key in record["task_keys"] if isinstance(key, str) and key]
-        payload_task_keys = _task_key_list(record.get("tasks"))
-        if declared_task_keys != payload_task_keys:
-            issues.append("Databricks run status sidecar submit_payload.task_keys must match submit_payload.tasks")
-    return tuple(issues)
-
-
-def _databricks_submit_payload_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
-    issues: list[str] = []
-    for index, task in enumerate(tasks):
-        if not isinstance(task, Mapping):
-            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}] must be an object")
-            continue
-        issues.extend(
-            _unexpected_keys(
-                task,
-                _DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS,
-                f"Databricks run status sidecar submit_payload.tasks[{index}]",
-            )
-        )
-        issues.extend(_databricks_submit_payload_task_field_issues(task, index=index))
-        if not isinstance(task.get("task_key"), str) or not task["task_key"]:
-            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].task_key must be non-empty")
-        for field_name in ("node_type_id", "driver_node_type_id"):
-            value = task.get(field_name)
-            if not isinstance(value, str) or not value.startswith("g5."):
-                issues.append(
-                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g5 node type"
-                )
-        if task.get("single_node") is not True:
-            issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].single_node must be true")
-        if task.get("data_security_mode") != "SINGLE_USER":
-            issues.append(
-                f"Databricks run status sidecar submit_payload.tasks[{index}].data_security_mode must be 'SINGLE_USER'"
-            )
-    return tuple(issues)
-
-
-def _databricks_run_status_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    issues: list[str] = []
-    issues.extend(_required_str_field(record, "record_type", "Databricks run status sidecar"))
-    issues.extend(_run_id_field_issues(record, "run_id", "Databricks run status sidecar"))
-    for field_name in ("run_name", "run_page_url", "state_message", "active_task_key", "cluster_id"):
-        issues.extend(_optional_str_field(record, field_name, "Databricks run status sidecar"))
-    for field_name in ("life_cycle_state", "result_state"):
-        issues.extend(_required_str_field(record, field_name, "Databricks run status sidecar"))
-    for field_name in ("start_time", "end_time"):
-        issues.extend(_optional_int_field(record, field_name, "Databricks run status sidecar"))
-    for field_name in ("terminal", "succeeded"):
-        issues.extend(_bool_field(record, field_name, "Databricks run status sidecar"))
-    return tuple(issues)
-
-
-def _databricks_run_status_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
-    label = f"Databricks run status sidecar tasks[{index}]"
-    issues: list[str] = []
-    issues.extend(_required_str_field(task, "task_key", label))
-    issues.extend(_run_id_field_issues(task, "run_id", label))
-    for field_name in ("life_cycle_state", "result_state"):
-        issues.extend(_required_str_field(task, field_name, label))
-    for field_name in ("state_message", "cluster_id"):
-        issues.extend(_optional_str_field(task, field_name, label))
-    for field_name in ("start_time", "end_time"):
-        issues.extend(_optional_int_field(task, field_name, label))
-    return tuple(issues)
-
-
-def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    issues: list[str] = []
-    for field_name in ("record_type", "source_path"):
-        issues.extend(_required_str_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    issues.extend(_optional_str_field(record, "run_name", "Databricks run status sidecar submit_payload"))
-    for field_name in ("task_keys", "node_type_ids", "driver_node_type_ids", "spark_versions", "data_security_modes"):
-        issues.extend(_list_of_strings_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    for field_name in ("single_node", "aws_g5_node_type"):
-        issues.extend(_bool_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    return tuple(issues)
-
-
-def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
-    label = f"Databricks run status sidecar submit_payload.tasks[{index}]"
-    issues: list[str] = []
-    for field_name in ("task_key", "node_type_id", "driver_node_type_id", "spark_version", "data_security_mode"):
-        issues.extend(_required_str_field(task, field_name, label))
-    issues.extend(_optional_str_field(task, "purpose", label))
-    if type(task.get("num_workers")) is not int:
-        issues.append(f"{label}.num_workers must be an integer")
-    issues.extend(_bool_field(task, "single_node", label))
-    return tuple(issues)
-
-
-def _databricks_run_status_container_key_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
-        return ()
-    return _unexpected_keys(record, _DATABRICKS_RUN_STATUS_WRAPPER_KEYS, "Databricks run status sidecar wrapper")
-
-
-def _databricks_run_status_wrapper_field_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    if record.get("record_type") == DATABRICKS_RUN_STATUS_RECORD_TYPE:
-        return ()
-    issues: list[str] = []
-    if record.get("ok") is not True:
-        issues.append("Databricks run status sidecar wrapper.ok must be true")
-    if record.get("action") != "get":
-        issues.append("Databricks run status sidecar wrapper.action must be 'get'")
-    if not isinstance(record.get("summary"), Mapping):
-        issues.append("Databricks run status sidecar wrapper.summary must be an object")
-    return tuple(issues)
-
-
 def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
     unexpected = sorted(str(key) for key in record if key not in allowed_keys)
     if not unexpected:
@@ -1508,16 +1215,6 @@ def _list_of_non_negative_ints_field(record: Mapping[str, Any], field_name: str,
     ):
         return ()
     return (f"{label}.{field_name} must be an array of non-negative integers",)
-
-
-def _task_key_list(tasks: Any) -> list[str]:
-    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)):
-        return []
-    return [
-        task["task_key"]
-        for task in tasks
-        if isinstance(task, Mapping) and isinstance(task.get("task_key"), str) and task["task_key"]
-    ]
 
 
 def _package_wheel_issues(
@@ -1994,7 +1691,7 @@ def _artifact_record_type(artifact: _PreparedReleaseBundleArtifact) -> str | Non
     if artifact.record is None:
         return None
     if artifact.role == "databricks_run_status":
-        status_record = _databricks_run_status_record(artifact.record)
+        status_record = databricks_run_status_record(artifact.record)
         return _optional_str(status_record.get("record_type")) if status_record is not None else None
     if artifact.role == "github_governance":
         governance_record = _github_governance_record(artifact.record)

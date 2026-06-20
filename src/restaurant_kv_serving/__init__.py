@@ -629,6 +629,18 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "summarize_databricks_run_submit_payload",
     ),
+    "databricks_run_status_record": (
+        "restaurant_kv_serving.databricks_runs",
+        "databricks_run_status_record",
+    ),
+    "databricks_run_status_sidecar_issues": (
+        "restaurant_kv_serving.databricks_runs",
+        "databricks_run_status_sidecar_issues",
+    ),
+    "validate_databricks_run_status_sidecar": (
+        "restaurant_kv_serving.databricks_runs",
+        "validate_databricks_run_status_sidecar",
+    ),
     "summarize_measurements": ("restaurant_kv_serving.benchmarks", "summarize_measurements"),
     "serving_environment_profile": ("restaurant_kv_serving.serving_env", "serving_environment_profile"),
     "serving_environment_profile_to_record": (
@@ -1001,6 +1013,8 @@ __all__ = [
     "chunk_types_for_request",
     "dataset_spec",
     "default_benchmark_arms",
+    "databricks_run_status_record",
+    "databricks_run_status_sidecar_issues",
     "databricks_workspace_config_from_env",
     "document_kv_cache_arm",
     "dtype_byte_width",
@@ -1064,6 +1078,7 @@ __all__ = [
     "storage_benchmark_result_to_record",
     "storage_benchmark_evidence_to_record",
     "validate_aws_g5_node_type",
+    "validate_databricks_run_status_sidecar",
     "v1_dataset_specs",
     "validate_v1_dataset",
     "vllm_adapter_spec",

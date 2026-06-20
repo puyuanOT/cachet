@@ -64,6 +64,9 @@ __all__ += [
     "get_databricks_run",
     "summarize_databricks_run",
     "summarize_databricks_run_submit_payload",
+    "databricks_run_status_record",
+    "databricks_run_status_sidecar_issues",
+    "validate_databricks_run_status_sidecar",
     "write_databricks_run_response_json",
     "read_databricks_run_submit_payload",
     "main",
@@ -259,6 +262,18 @@ def summarize_databricks_run_submit_payload(
     )
 
 
+def databricks_run_status_record(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    return _call_document_function("databricks_run_status_record", record)
+
+
+def databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    return _call_document_function("databricks_run_status_sidecar_issues", record)
+
+
+def validate_databricks_run_status_sidecar(record: Mapping[str, Any]) -> None:
+    return _call_document_function("validate_databricks_run_status_sidecar", record)
+
+
 def _databricks_api_json(
     config: DatabricksWorkspaceConfig,
     method: str,
@@ -355,6 +370,9 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "read_databricks_run_submit_payload": read_databricks_run_submit_payload,
     "summarize_databricks_run": summarize_databricks_run,
     "summarize_databricks_run_submit_payload": summarize_databricks_run_submit_payload,
+    "databricks_run_status_record": databricks_run_status_record,
+    "databricks_run_status_sidecar_issues": databricks_run_status_sidecar_issues,
+    "validate_databricks_run_status_sidecar": validate_databricks_run_status_sidecar,
     "_databricks_api_json": _databricks_api_json,
     "_task_summary": _task_summary,
     "_submit_payload_task_summary": _submit_payload_task_summary,
