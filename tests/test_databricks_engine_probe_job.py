@@ -938,6 +938,140 @@ def test_legacy_engine_probe_job_config_respects_legacy_backend_monkeypatch(monk
         raise AssertionError("expected legacy backend monkeypatch to be observed")
 
 
+def test_legacy_engine_probe_job_ignores_preimport_document_backend_monkeypatch():
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+    script = f"""
+import json
+import document_kv_cache.databricks_engine_probe_job as public_job
+
+def broken_backend(value):
+    raise RuntimeError(f"unexpected import-order backend hook for {{value}}")
+
+public_job._serving_backend = broken_backend
+
+import restaurant_kv_serving.databricks_engine_probe_job as legacy_job
+
+config = legacy_job.DatabricksEngineProbeJobConfig(
+    handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+    probe_factory="vllm_probe:build_probe",
+    output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+    runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+    expected_backend="vllm",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+print(json.dumps({{"backend": config.expected_backend.value}}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"backend": "vllm"}
+
+
+def test_legacy_engine_probe_job_uses_source_config_base_when_public_class_is_replaced_before_import():
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+    script = f"""
+import json
+import document_kv_cache.databricks_engine_probe_job as public_job
+
+public_job.DatabricksEngineProbeJobConfig = object
+
+import restaurant_kv_serving.databricks_engine_probe_job as legacy_job
+
+config = legacy_job.DatabricksEngineProbeJobConfig(
+    handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+    probe_factory="vllm_probe:build_probe",
+    output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+    runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+    expected_backend="vllm",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+print(json.dumps({{"backend": config.expected_backend.value, "module": type(config).__module__}}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "backend": "vllm",
+        "module": "restaurant_kv_serving.databricks_engine_probe_job",
+    }
+
+
+def test_legacy_engine_probe_job_matrix_uses_source_target_base_when_public_class_is_replaced_before_import():
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+    script = f"""
+import json
+import document_kv_cache.databricks_engine_probe_job as public_job
+
+public_job.DatabricksEngineProbeTargetConfig = object
+
+import restaurant_kv_serving.databricks_engine_probe_job as legacy_job
+
+target = legacy_job.DatabricksEngineProbeTargetConfig(
+    expected_backend="vllm",
+    handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+    probe_factory="vllm_probe:build_probe",
+    output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+)
+config = legacy_job.DatabricksEngineProbeMatrixJobConfig(
+    probe_targets=(target,),
+    runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+
+try:
+    legacy_job.DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(object(),),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        single_user_name={SINGLE_USER_NAME!r},
+    )
+except TypeError as exc:
+    invalid_error = str(exc)
+else:
+    invalid_error = "<none>"
+
+print(json.dumps({{
+    "backend": config.probe_targets[0].expected_backend.value,
+    "target_module": type(config.probe_targets[0]).__module__,
+    "invalid_error": invalid_error,
+}}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "backend": "vllm",
+        "target_module": "restaurant_kv_serving.databricks_engine_probe_job",
+        "invalid_error": "probe_targets entries must be DatabricksEngineProbeTargetConfig",
+    }
+
+
 def test_legacy_engine_probe_job_direct_writer_respects_legacy_build_monkeypatch(monkeypatch, tmp_path):
     output_path = tmp_path / "payload.json"
 
