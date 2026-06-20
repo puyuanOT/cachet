@@ -46,6 +46,7 @@ def test_public_document_package_reexports_core_api():
         DocumentChunkRole,
         DocumentChunkType,
         DocumentKVRequest,
+        DocumentKVService,
         DiskRangeReader,
         EngineReadyRequest,
         EngineProbePlanConfig,
@@ -138,7 +139,7 @@ def test_public_document_package_reexports_core_api():
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
     )
-    from document_kv_cache import cache, databricks_job, databricks_runs, engine, engine_probe, materializer
+    from document_kv_cache import cache, databricks_job, databricks_runs, engine, engine_probe, materializer, service
 
     assert AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert BENCHMARK_RUN_RECORD_TYPE is restaurant_kv_serving.BENCHMARK_RUN_RECORD_TYPE
@@ -196,6 +197,9 @@ def test_public_document_package_reexports_core_api():
     assert DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
     assert DocumentChunkType is restaurant_kv_serving.DocumentChunkType
     assert DocumentKVRequest is restaurant_kv_serving.DocumentKVRequest
+    assert DocumentKVService is service.DocumentKVService
+    assert DocumentKVService is restaurant_kv_serving.DocumentKVService
+    assert DocumentKVService.__module__ == "document_kv_cache.service"
     assert EngineReadyRequest is engine.EngineReadyRequest
     assert EngineReadyRequest is restaurant_kv_serving.EngineReadyRequest
     assert EngineReadyRequest.__module__ == "document_kv_cache.engine"
@@ -808,6 +812,9 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert models.MaterializationPlan.__module__ == "document_kv_cache.models"
     assert models.DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
     assert models.chunk_type_role is restaurant_kv_serving.chunk_type_role
+    assert service.__all__ == ["CacheRequest", "DocumentKVService"]
+    assert service.DocumentKVService.__module__ == "document_kv_cache.service"
+    assert restaurant_kv_serving.DocumentKVService is service.DocumentKVService
     assert "DocumentKVService" in service.__all__
     assert "RestaurantKVRequest" not in models.__all__
     assert "RestaurantKVService" not in service.__all__
@@ -815,6 +822,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert models.RestaurantKVRequest is restaurant_kv_serving.RestaurantKVRequest
     assert models.ChunkType is restaurant_kv_serving.ChunkType
     assert service.RestaurantKVService is restaurant_kv_serving.RestaurantKVService
+    assert service.RestaurantKVService is service.DocumentKVService
     star_namespace: dict[str, object] = {}
     exec(
         "from document_kv_cache.models import *\n"
@@ -850,6 +858,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["ServingEngineConnector"] is engine.ServingEngineConnector
     assert root_star_namespace["build_engine_ready_request"] is engine.build_engine_ready_request
     assert root_star_namespace["build_handle_from_materialized"] is engine.build_handle_from_materialized
+    assert root_star_namespace["DocumentKVService"] is service.DocumentKVService
     assert root_star_namespace["local_path"] is storage.local_path
     assert root_star_namespace["unity_catalog_volume_path"] is storage.unity_catalog_volume_path
     assert root_star_namespace["is_real_uc_volume_root"] is storage.is_real_uc_volume_root
