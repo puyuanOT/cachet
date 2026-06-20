@@ -1606,6 +1606,42 @@ def test_build_release_bundle_rejects_preflight_sidecars_with_invalid_record_typ
         )
 
 
+def test_build_release_bundle_rejects_release_evidence_or_preflight_sidecars_with_extra_keys(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    release_evidence_record = json.loads(artifacts["evidence"].read_text(encoding="utf-8"))
+    release_evidence_record["debug"] = {"accepted": False}
+    release_evidence_path = _write_json(
+        tmp_path / "release-evidence-extra-key.json",
+        release_evidence_record,
+    )
+    preflight_record = json.loads(artifacts["preflight"].read_text(encoding="utf-8"))
+    preflight_record["debug"] = {"accepted": False}
+    preflight_path = _write_json(
+        tmp_path / "preflight-extra-key.json",
+        preflight_record,
+    )
+
+    with pytest.raises(ValueError, match="release evidence sidecar has unsupported keys"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            release_evidence_json=release_evidence_path,
+            output_dir=tmp_path / "release-evidence-extra-key-bundle",
+        )
+
+    with pytest.raises(ValueError, match="preflight sidecar has unsupported keys"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            preflight_json=preflight_path,
+            output_dir=tmp_path / "preflight-extra-key-bundle",
+        )
+
+
 def test_build_release_bundle_rejects_stale_release_evidence_or_preflight_sidecars(tmp_path):
     current_artifacts = _write_release_ready_artifacts(tmp_path / "current")
     stale_artifacts = _write_release_ready_artifacts(tmp_path / "stale")
