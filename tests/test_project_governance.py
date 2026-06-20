@@ -396,6 +396,18 @@ def test_repository_directories_have_readme_or_package_docstring():
     assert missing_docs == []
 
 
+def test_source_layout_readme_reflects_document_owned_implementation():
+    text = (REPO_ROOT / "src" / "README.md").read_text(encoding="utf-8")
+    compact_text = " ".join(text.split())
+
+    assert "Cachet, the document KV-cache library" in compact_text
+    assert "distribution package is `document-kv-cache`" in text
+    assert "public import namespace is `document_kv_cache`" in text
+    assert "`document_kv_cache/` is the canonical implementation" in text
+    assert "`restaurant_kv_serving/` remains packaged as a migration-only compatibility" in compact_text
+    assert "contains the current implementation" not in text
+
+
 def test_packaged_template_root_readmes_explain_subfolders():
     template_roots = [
         REPO_ROOT / "src" / "document_kv_cache" / "templates",
@@ -591,6 +603,22 @@ def _markdown_section(text: str, heading: str) -> str:
     start = text.index(start_marker)
     next_heading = text.find("\n## ", start + len(start_marker))
     return text[start:] if next_heading == -1 else text[start:next_heading]
+
+
+def test_readme_documents_cachet_brand_and_scope():
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    purpose = _markdown_section(text, "Purpose And Scope")
+    compact_purpose = " ".join(purpose.split())
+
+    assert text.startswith("# Cachet: Document KV Cache")
+    assert "Cachet is a reusable document KV-cache orchestration package" in text
+    assert "Cachet is the product brand" in text
+    assert "The package publishes as `document-kv-cache`" in text
+    assert "`document_kv_cache` import path" in text
+    assert "applications that repeatedly serve long, mostly stable document context" in compact_purpose
+    assert "Biography, HotpotQA, MusiQue, and Needle-in-a-Haystack" in compact_purpose
+    assert "standard no-cache prefill baseline" in compact_purpose
+    assert "vLLM, SGLang, or another established serving engine owns scheduling" in compact_purpose
 
 
 def test_readme_development_commands_use_public_package_branding():
