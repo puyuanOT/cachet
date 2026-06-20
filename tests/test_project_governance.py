@@ -621,6 +621,15 @@ def test_readme_documents_cachet_brand_and_scope():
     assert "vLLM, SGLang, or another established serving engine owns scheduling" in compact_purpose
 
 
+def test_project_metadata_uses_cachet_brand_without_renaming_distribution():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    project = pyproject["project"]
+
+    assert project["name"] == "document-kv-cache"
+    assert "Cachet document KV-cache" in project["description"]
+    assert "cachet" in project["keywords"]
+
+
 def test_readme_development_commands_use_public_package_branding():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     development_section = _markdown_section(text, "Development")

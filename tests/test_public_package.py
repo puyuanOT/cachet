@@ -1564,11 +1564,14 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     ]
 
     assert project["name"] == "document-kv-cache"
-    assert project["description"] == "Document KV-cache orchestration and materialization for long-context LLM serving."
+    assert project["description"] == (
+        "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
+    )
     assert project["requires-python"] == ">=3.11,<4.0"
     assert project["authors"] == [{"name": "OpenTable Data Science"}]
     assert set(project["keywords"]) == {
         "databricks",
+        "cachet",
         "kv-cache",
         "llm-serving",
         "long-context",

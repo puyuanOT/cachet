@@ -5,13 +5,13 @@ build-backend = "poetry.core.masonry.api"
 [project]
 name = "document-kv-cache"
 version = "0.2.0"
-description = "Document KV-cache orchestration and materialization for long-context LLM serving."
+description = "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
 readme = "README.md"
 requires-python = ">=3.11,<4.0"
 authors = [
   { name = "OpenTable Data Science" },
 ]
-keywords = ["kv-cache", "llm-serving", "long-context", "vllm", "sglang", "databricks"]
+keywords = ["cachet", "kv-cache", "llm-serving", "long-context", "vllm", "sglang", "databricks"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",

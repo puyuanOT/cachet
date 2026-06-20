@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 focused review approved the package metadata branding slice with no merge-blocking findings. The review noted that the change preserves the document-kv-cache distribution name while making Cachet discoverable in metadata, and that governance/public-package tests cover the touched surface.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "pyproject.toml",
+    "tests/test_project_governance.py",
+    "tests/test_public_package.py",
+    "pr-evidence/cachet-project-metadata/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py tests/test_public_package.py -q -k \"cachet_brand or project_metadata_uses_cachet_brand or public_package_name\"",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret scan over README.md, CONTRIBUTING.md, pyproject.toml, src, tests, databricks, pr-evidence, and .github",
+    "GPT-5.5 focused review"
+  ],
+  "what_changed": [
+    "Updated PEP 621 package metadata so the document-kv-cache description includes the Cachet brand.",
+    "Added cachet to the package keyword list for package discovery.",
+    "Added governance and public-package assertions that preserve the document-kv-cache distribution name while requiring Cachet-branded metadata."
+  ],
+  "why": "The README now documents Cachet as the product brand, so package metadata should expose that brand consistently without renaming the published distribution or import namespace."
+}
