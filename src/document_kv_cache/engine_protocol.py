@@ -48,6 +48,8 @@ class KVStorageLayout(StrEnum):
 
 
 def dtype_byte_width(dtype: str) -> int:
+    if not isinstance(dtype, str):
+        raise ValueError("dtype must be a string")
     try:
         return DTYPE_BYTE_WIDTHS[dtype.lower()]
     except KeyError as exc:
@@ -115,29 +117,20 @@ class KVLayout:
         return self.num_layers * self.num_kv_heads * self.head_size * 2 * dtype_byte_width(self.dtype)
 
     def validate(self) -> None:
-        if not self.model_id:
-            raise ValueError("model_id must be non-empty")
-        if not self.lora_id:
-            raise ValueError("lora_id must be non-empty")
-        if not self.layout_version:
-            raise ValueError("layout_version must be non-empty")
-        if not self.dtype:
-            raise ValueError("dtype must be non-empty")
+        _validate_nonempty_string("model_id", self.model_id)
+        _validate_nonempty_string("lora_id", self.lora_id)
+        _validate_nonempty_string("layout_version", self.layout_version)
+        _validate_nonempty_string("dtype", self.dtype)
         dtype_byte_width(self.dtype)
-        if self.num_layers <= 0:
-            raise ValueError("num_layers must be positive")
-        if self.block_size <= 0:
-            raise ValueError("block_size must be positive")
-        if self.bytes_per_token <= 0:
-            raise ValueError("bytes_per_token must be positive")
-        if self.num_query_heads is not None and self.num_query_heads <= 0:
-            raise ValueError("num_query_heads must be positive")
-        if self.num_kv_heads is not None and self.num_kv_heads <= 0:
-            raise ValueError("num_kv_heads must be positive")
-        if self.head_size is not None and self.head_size <= 0:
-            raise ValueError("head_size must be positive")
-        if self.kv_stride_bytes is not None and self.kv_stride_bytes <= 0:
-            raise ValueError("kv_stride_bytes must be positive")
+        _validate_positive_integer("num_layers", self.num_layers)
+        _validate_positive_integer("block_size", self.block_size)
+        _validate_positive_integer("bytes_per_token", self.bytes_per_token)
+        _validate_optional_positive_integer("num_query_heads", self.num_query_heads)
+        _validate_optional_positive_integer("num_kv_heads", self.num_kv_heads)
+        _validate_optional_positive_integer("head_size", self.head_size)
+        _validate_optional_positive_integer("kv_stride_bytes", self.kv_stride_bytes)
+        if type(self.shares_kv_storage) is not bool:
+            raise ValueError("shares_kv_storage must be a boolean")
         attention_fields = (
             self.num_query_heads,
             self.num_kv_heads,
@@ -250,3 +243,21 @@ class KVCacheHandle:
             raise ValueError(f"Segment tokens {token_cursor} != total_tokens {self.total_tokens}")
         if byte_cursor != self.total_bytes:
             raise ValueError(f"Segment bytes {byte_cursor} != total_bytes {self.total_bytes}")
+
+
+def _validate_nonempty_string(name: str, value: object) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name} must be non-empty")
+
+
+def _validate_positive_integer(name: str, value: object) -> None:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be a positive integer")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive")
+
+
+def _validate_optional_positive_integer(name: str, value: object) -> None:
+    if value is None:
+        return
+    _validate_positive_integer(name, value)
