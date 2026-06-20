@@ -20,6 +20,7 @@ def test_gitignore_covers_local_build_cache_and_secret_artifacts():
     }
 
     assert set(REQUIRED_GITIGNORE_PATTERNS).issubset(ignored_lines)
+    assert ".ipynb_checkpoints/" in ignored_lines
 
 
 def test_no_generated_artifacts_are_tracked():
@@ -93,6 +94,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         tracked_paths=(
             ".env.example",
             "dist/document_kv_cache-0.2.0-py3-none-any.whl",
+            "notebooks/.ipynb_checkpoints/debug-checkpoint.ipynb",
             "src/document_kv_cache/__pycache__/cache.pyc",
         ),
         untracked_paths=(
@@ -112,6 +114,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
     assert record["missing_directory_documentation_paths"] == []
     assert record["forbidden_tracked_paths"] == [
         "dist/document_kv_cache-0.2.0-py3-none-any.whl",
+        "notebooks/.ipynb_checkpoints/debug-checkpoint.ipynb",
         "src/document_kv_cache/__pycache__/cache.pyc",
     ]
     assert record["forbidden_untracked_paths"] == [
@@ -181,6 +184,27 @@ def test_repository_hygiene_skips_tooling_output_directories_for_documentation(t
     assert record["documentation_checked_directory_paths"] == ["."]
     assert record["missing_directory_documentation_paths"] == []
     assert record["untracked_path_count"] == 3
+
+
+def test_repository_hygiene_rejects_checkpoint_artifacts_without_requiring_directory_docs(tmp_path):
+    (tmp_path / "README.md").write_text("documented root\n", encoding="utf-8")
+    checkpoint = "notebooks/.ipynb_checkpoints/exploration-checkpoint.ipynb"
+    path = tmp_path / checkpoint
+    path.parent.mkdir(parents=True)
+    path.write_text("generated\n", encoding="utf-8")
+
+    evidence = evaluate_repository_hygiene_paths(
+        repository_root=tmp_path,
+        tracked_paths=(),
+        untracked_paths=(checkpoint,),
+        gitignore_lines=REQUIRED_GITIGNORE_PATTERNS,
+    )
+    record = repository_hygiene_to_record(evidence)
+
+    assert record["ok"] is False
+    assert record["forbidden_untracked_paths"] == [checkpoint]
+    assert record["documentation_checked_directory_paths"] == ["."]
+    assert record["missing_directory_documentation_paths"] == []
 
 
 def _git(cwd: Path, *args: str) -> None:

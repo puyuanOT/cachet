@@ -1,0 +1,38 @@
+{
+  "files": {
+    "pr-evidence/ignore-notebook-checkpoints/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 requested aligning the governance directory scanner with checkpoint generated-directory handling and exercising checkpoint paths through repository hygiene evaluation; both fixes were applied, verification was rerun, and the reviewer approved.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        ".gitignore",
+        "src/document_kv_cache/repository_hygiene.py",
+        "tests/test_repository_hygiene.py",
+        "tests/test_project_governance.py",
+        "README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_repository_hygiene.py tests/test_project_governance.py -q -> 47 passed",
+        "git diff --check -> passed",
+        "poetry run pytest -q -> 882 passed",
+        "poetry check -> passed",
+        "poetry install --dry-run -> passed",
+        "poetry build -> passed"
+      ],
+      "what_changed": [
+        "Added `.ipynb_checkpoints/` to the required `.gitignore` policy.",
+        "Rejected tracked or untracked notebook checkpoint artifacts in repository hygiene evidence.",
+        "Aligned the governance directory scanner so checkpoint folders do not require README files.",
+        "Documented checkpoint handling in the repository hygiene README section."
+      ],
+      "why": "Databricks and Jupyter exploratory runs can generate checkpoint folders; Cachet release hygiene should reject those generated artifacts while avoiding false directory-documentation failures."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
