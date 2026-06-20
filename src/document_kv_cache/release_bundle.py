@@ -74,6 +74,17 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "repository_hygiene",
     "native_probe_factories",
 )
+STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
+    ("release_evidence", 1, "release evidence sidecar"),
+    ("preflight", 1, "preflight sidecar"),
+    ("plan_execution", 1, "benchmark plan execution sidecar"),
+    ("databricks_run_status", 1, "Databricks run-status sidecar"),
+    ("package_wheel", 1, "tested package wheel"),
+    ("pr_evidence", 1, "PR evidence sidecar"),
+    ("github_governance", 1, "GitHub governance sidecar"),
+    ("repository_hygiene", 1, "repository hygiene sidecar"),
+    ("native_probe_factories", 1, "native probe factory diagnostics sidecar"),
+)
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
     r"^(?P<distribution>[A-Za-z0-9_.]+)-"
@@ -297,8 +308,11 @@ def build_release_bundle(
     github_governance_json: str | Path | None = None,
     repository_hygiene_json: str | Path | None = None,
     native_probe_factories_jsons: Sequence[str | Path] = (),
+    require_complete_v1: bool = False,
     overwrite: bool = False,
 ) -> ReleaseBundle:
+    if type(require_complete_v1) is not bool:
+        raise ValueError("require_complete_v1 must be boolean")
     bundle_dir = local_path(str(output_dir))
     bundle_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME
@@ -323,6 +337,8 @@ def build_release_bundle(
         _prepare_release_bundle_artifact(role=role, source_path=source_path, index=index)
         for index, (role, source_path) in enumerate(sources)
     )
+    if require_complete_v1:
+        _validate_strict_v1_release_bundle_completeness(prepared_artifacts)
     _validate_release_bundle_inputs(prepared_artifacts)
     _preflight_release_bundle_destinations(
         prepared_artifacts=prepared_artifacts,
@@ -510,6 +526,24 @@ def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleAr
             issues.extend(_native_probe_factories_sidecar_issues(artifact.record))
     if issues:
         raise ValueError(f"Release bundle inputs are not release-ready: {'; '.join(issues)}")
+
+
+def _validate_strict_v1_release_bundle_completeness(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> None:
+    role_counts = {role: 0 for role in RELEASE_BUNDLE_ARTIFACT_ROLES}
+    for artifact in artifacts:
+        role_counts[artifact.role] = role_counts.get(artifact.role, 0) + 1
+    missing = [
+        label
+        for role, minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
+        if role_counts.get(role, 0) < minimum_count
+    ]
+    if missing:
+        raise ValueError(
+            "Strict V1 release bundle requires "
+            f"{', '.join(missing)}"
+        )
 
 
 def _single_record_for_role(
@@ -1519,6 +1553,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--github-governance-json")
     parser.add_argument("--repository-hygiene-json")
     parser.add_argument("--native-probe-factories-json", action="append", default=[])
+    parser.add_argument(
+        "--require-complete-v1",
+        action="store_true",
+        help=(
+            "Require the full V1 release artifact set: release/preflight sidecars, "
+            "plan execution, Databricks status, tested wheel, PR evidence, governance, "
+            "repository hygiene, and native probe factory diagnostics."
+        ),
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
     parser.add_argument("--overwrite", action="store_true")
@@ -1541,6 +1584,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         github_governance_json=args.github_governance_json,
         repository_hygiene_json=args.repository_hygiene_json,
         native_probe_factories_jsons=args.native_probe_factories_json,
+        require_complete_v1=args.require_complete_v1,
         output_dir=args.output_dir,
         overwrite=args.overwrite,
     )

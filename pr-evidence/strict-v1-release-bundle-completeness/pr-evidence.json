@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Franklin found two issues: generated benchmark plans could not self-bundle their final plan-execution sidecar under strict mode, and the generated-plan README example omitted/blurred strict release guidance. Resolved by keeping strict completeness on the direct release-bundle API/CLIs only and documenting the post-execution strict bundle step. Franklin re-reviewed and approved the revised diff as clean.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_bundle.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "README.md",
+    "src/document_kv_cache/README.md",
+    "tests/test_release_bundle.py"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_release_bundle.py tests/test_benchmark_plan.py tests/test_project_governance.py -> 136 passed",
+    "poetry run pytest -q -> 741 passed",
+    "poetry run python -m compileall -q src tests -> passed",
+    "git diff --check -> passed"
+  ],
+  "what_changed": [
+    "Added strict V1 release-bundle completeness validation for direct release publishing.",
+    "Threaded --require-complete-v1 through public and legacy release-bundle CLIs.",
+    "Documented the two-phase plan-execution then strict-bundle workflow."
+  ],
+  "why": "Strict completeness should not let partial V1 release bundles look release-ready."
+}

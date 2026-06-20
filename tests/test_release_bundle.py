@@ -151,7 +151,10 @@ def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_mat
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
     artifacts = _write_release_ready_artifacts(source_dir)
-    run_status = _write_json(source_dir / "databricks-run-status.json", _databricks_run_status_cli_record(succeeded=True))
+    run_status = _write_json(
+        source_dir / "databricks-run-status.json",
+        _databricks_run_status_cli_record(succeeded=True),
+    )
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
@@ -238,6 +241,81 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert hygiene_artifact["record_type"] == REPOSITORY_HYGIENE_RECORD_TYPE
     assert hygiene_artifact["bundled_path"] == "repository_hygiene.json"
     assert json.loads((bundle_dir / hygiene_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_build_release_bundle_strict_v1_rejects_incomplete_release_artifact_set(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+
+    with pytest.raises(ValueError, match="require_complete_v1 must be boolean"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            output_dir=tmp_path / "strict-invalid-flag-bundle",
+            require_complete_v1=1,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="Strict V1 release bundle requires .*preflight sidecar"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            release_evidence_json=artifacts["evidence"],
+            output_dir=tmp_path / "strict-incomplete-bundle",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
+    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
+    run_status = _write_json(source_dir / "databricks-run-status.json", _databricks_run_status_cli_record(succeeded=True))
+    pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
+    github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
+    repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
+    native_probe_factories = _write_json(source_dir / "native-probe-factories.json", _native_probe_factories_record())
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        release_evidence_json=artifacts["evidence"],
+        preflight_json=artifacts["preflight"],
+        plan_execution_jsons=(plan_execution,),
+        databricks_run_status_jsons=(run_status,),
+        package_wheel=package_wheel,
+        pr_evidence_jsons=(pr_evidence,),
+        github_governance_json=github_governance,
+        repository_hygiene_json=repository_hygiene,
+        native_probe_factories_jsons=(native_probe_factories,),
+        output_dir=bundle_dir,
+        require_complete_v1=True,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert record["ok"] is True
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "storage_benchmark",
+        "engine_probe",
+        "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
+        "release_evidence",
+        "preflight",
+        "plan_execution",
+        "databricks_run_status",
+        "package_wheel",
+        "pr_evidence",
+        "github_governance",
+        "repository_hygiene",
+        "native_probe_factories",
+    ]
 
 
 def test_build_release_bundle_can_include_native_probe_factories(tmp_path):
@@ -1161,6 +1239,7 @@ def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsy
 
     def fake_builder(**kwargs):
         assert kwargs["output_dir"] == str(tmp_path / "bundle")
+        assert kwargs["require_complete_v1"] is True
         return fake_bundle
 
     def fake_serializer(bundle):
@@ -1176,6 +1255,7 @@ def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsy
             "v1.json",
             "--storage-benchmark-json",
             "storage.json",
+            "--require-complete-v1",
             "--output-dir",
             str(tmp_path / "bundle"),
         ]

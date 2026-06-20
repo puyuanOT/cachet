@@ -73,7 +73,8 @@ new document modules depend on restaurant-owned implementations.
 - `release_bundle.py` copies validated release evidence, optional benchmark
   plan execution records, Databricks run-status records, package wheels, and
   PR-evidence, release preflight, GitHub-governance, repository-hygiene, and
-  native-probe factory diagnostics sidecars into a checksummed durable bundle.
+  native-probe factory diagnostics sidecars into a checksummed durable bundle;
+  strict V1 mode requires the full release artifact set before publishing.
 - `release_evidence.py` validates V1 benchmark, storage, and native engine-probe
   artifacts, including the pinned serving-engine package/version metadata.
 - `repository_hygiene.py` emits a release-readiness sidecar proving `.gitignore`
