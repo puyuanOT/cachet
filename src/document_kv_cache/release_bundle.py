@@ -66,6 +66,10 @@ RELEASE_BUNDLE_MANIFEST_FILENAME = "manifest.json"
 RELEASE_BUNDLE_PACKAGE_NAME = "document-kv-cache"
 RELEASE_BUNDLE_PACKAGE_LICENSE_EXPRESSION = "Apache-2.0"
 RELEASE_BUNDLE_PACKAGE_LICENSE_FILE = "LICENSE"
+RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
+    "document_kv_cache/py.typed",
+    "restaurant_kv_serving/py.typed",
+)
 RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
     "storage_benchmark",
@@ -1428,6 +1432,9 @@ def _wheel_zip_payload_issues(payload: bytes, *, filename_match: re.Match[str] |
     license_issues = _wheel_license_file_issues(names, dist_info_prefix=dist_info_prefixes[0])
     if license_issues:
         return license_issues
+    typed_marker_issues = _wheel_typed_marker_issues(names)
+    if typed_marker_issues:
+        return typed_marker_issues
     with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
         wheel_payload = wheel_zip.read(wheel_names[0])
         metadata_payload = wheel_zip.read(metadata_names[0])
@@ -1518,6 +1525,15 @@ def _wheel_license_file_issues(names: Sequence[str], *, dist_info_prefix: str) -
     if expected_path not in names:
         return (f"package wheel artifact must contain license file {expected_path!r}",)
     return ()
+
+
+def _wheel_typed_marker_issues(names: Sequence[str]) -> tuple[str, ...]:
+    wheel_paths = set(names)
+    return tuple(
+        f"package wheel artifact must contain typed marker file {path!r}"
+        for path in RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS
+        if path not in wheel_paths
+    )
 
 
 def _wheel_file_issues(payload: bytes) -> tuple[str, ...]:
