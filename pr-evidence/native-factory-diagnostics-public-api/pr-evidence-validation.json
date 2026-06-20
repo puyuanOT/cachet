@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/native-factory-diagnostics-public-api/evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 approved the native factory diagnostics public API patch with no blocking findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/native_probe_factories.py",
+        "src/restaurant_kv_serving/native_probe_factories.py",
+        "src/document_kv_cache/__init__.py",
+        "src/restaurant_kv_serving/__init__.py",
+        "src/cachet/__init__.pyi",
+        "tests/test_public_package.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_public_package.py tests/test_native_probe_factories.py -q -> 17 passed",
+        "git diff --check -> passed",
+        "poetry run pytest -q -> 1149 passed",
+        "poetry check && poetry install --dry-run -> passed"
+      ],
+      "what_changed": [
+        "Added NATIVE_PROBE_FACTORIES_RECORD_TYPE to the curated native_probe_factories star-import surface and legacy compatibility wrapper.",
+        "Exposed NATIVE_PROBE_FACTORIES_RECORD_TYPE and write_builtin_native_probe_factories_record_json through the document_kv_cache and restaurant_kv_serving root facades.",
+        "Updated the Cachet type stub and public-package tests so typed branded imports match runtime facade exports."
+      ],
+      "why": "Native factory diagnostics are a release-planning artifact; users should be able to import the record type and JSON writer from the same public API surfaces as the rest of the native adapter contract."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

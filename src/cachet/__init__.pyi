@@ -310,6 +310,7 @@ from document_kv_cache.models import (
 
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT,
+    NATIVE_PROBE_FACTORIES_RECORD_TYPE as NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     NativeProbeFactoryInspection as NativeProbeFactoryInspection,
     NativeProbeFactoryUnavailable as NativeProbeFactoryUnavailable,
     SGLANG_NATIVE_PROBE_FACTORY as SGLANG_NATIVE_PROBE_FACTORY,
@@ -324,6 +325,7 @@ from document_kv_cache.native_probe_factories import (
     sglang_native_probe_factory as sglang_native_probe_factory,
     validate_native_probe_factories_record as validate_native_probe_factories_record,
     vllm_native_probe_factory as vllm_native_probe_factory,
+    write_builtin_native_probe_factories_record_json as write_builtin_native_probe_factories_record_json,
 )
 
 from document_kv_cache.openai_compatible import (

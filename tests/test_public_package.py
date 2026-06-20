@@ -111,6 +111,7 @@ def test_public_document_package_reexports_core_api():
         NativeProbeFactoryInspection,
         NativeProbeFactoryUnavailable,
         NATIVE_PROBE_ADAPTER_CONTRACT,
+        NATIVE_PROBE_FACTORIES_RECORD_TYPE,
         CacheAdapterArtifact,
         CacheBuildConfig,
         CacheGenerationResult,
@@ -185,6 +186,7 @@ def test_public_document_package_reexports_core_api():
         validate_native_probe_factories_record,
         vllm_adapter_spec,
         vllm_native_probe_factory,
+        write_builtin_native_probe_factories_record_json,
         summarize_databricks_run,
         summarize_databricks_run_submit_payload,
         databricks_run_status_record,
@@ -433,6 +435,8 @@ def test_public_document_package_reexports_core_api():
     assert NativeProbeFactoryUnavailable.__module__ == "document_kv_cache.native_probe_factories"
     assert NATIVE_PROBE_ADAPTER_CONTRACT is native_probe_factories.NATIVE_PROBE_ADAPTER_CONTRACT
     assert NATIVE_PROBE_ADAPTER_CONTRACT is restaurant_kv_serving.NATIVE_PROBE_ADAPTER_CONTRACT
+    assert NATIVE_PROBE_FACTORIES_RECORD_TYPE is native_probe_factories.NATIVE_PROBE_FACTORIES_RECORD_TYPE
+    assert NATIVE_PROBE_FACTORIES_RECORD_TYPE is restaurant_kv_serving.NATIVE_PROBE_FACTORIES_RECORD_TYPE
     assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
     assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
     assert SUPPORTED_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.SUPPORTED_STORAGE_BENCHMARK_READERS
@@ -550,6 +554,14 @@ def test_public_document_package_reexports_core_api():
     assert sglang_native_probe_factory is restaurant_kv_serving.sglang_native_probe_factory
     assert vllm_native_probe_factory is native_probe_factories.vllm_native_probe_factory
     assert vllm_native_probe_factory is restaurant_kv_serving.vllm_native_probe_factory
+    assert (
+        write_builtin_native_probe_factories_record_json
+        is native_probe_factories.write_builtin_native_probe_factories_record_json
+    )
+    assert (
+        write_builtin_native_probe_factories_record_json
+        is restaurant_kv_serving.write_builtin_native_probe_factories_record_json
+    )
     assert serving_environment_profile is restaurant_kv_serving.serving_environment_profile
     assert serving_environment_profile is serving_env.serving_environment_profile
     assert serving_environment_profile.__module__ == "document_kv_cache.serving_env"
@@ -739,7 +751,9 @@ def test_cachet_brand_facade_delegates_to_document_package():
         DocumentKVService,
         DocumentKVWorkflow,
         NATIVE_PROBE_ADAPTER_CONTRACT,
+        NATIVE_PROBE_FACTORIES_RECORD_TYPE,
         native_probe_adapter_contract_to_record,
+        write_builtin_native_probe_factories_record_json,
     )
 
     stub_text = (REPO_ROOT / "src" / "cachet" / "__init__.pyi").read_text(encoding="utf-8")
@@ -750,7 +764,12 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert DocumentKVService is document_kv_cache.DocumentKVService
     assert DocumentKVWorkflow is document_kv_cache.DocumentKVWorkflow
     assert NATIVE_PROBE_ADAPTER_CONTRACT is document_kv_cache.NATIVE_PROBE_ADAPTER_CONTRACT
+    assert NATIVE_PROBE_FACTORIES_RECORD_TYPE is document_kv_cache.NATIVE_PROBE_FACTORIES_RECORD_TYPE
     assert native_probe_adapter_contract_to_record is document_kv_cache.native_probe_adapter_contract_to_record
+    assert (
+        write_builtin_native_probe_factories_record_json
+        is document_kv_cache.write_builtin_native_probe_factories_record_json
+    )
     assert not hasattr(cachet, "storage")
     assert "storage" not in dir(cachet)
 
@@ -765,7 +784,12 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "import document_kv_cache.storage as storage" not in stub_text
     assert "CacheTier as CacheTier" in stub_text
     assert "NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT" in stub_text
+    assert "NATIVE_PROBE_FACTORIES_RECORD_TYPE as NATIVE_PROBE_FACTORIES_RECORD_TYPE" in stub_text
     assert "native_probe_adapter_contract_to_record as native_probe_adapter_contract_to_record" in stub_text
+    assert (
+        "write_builtin_native_probe_factories_record_json as write_builtin_native_probe_factories_record_json"
+        in stub_text
+    )
     assert "from document_kv_cache.models import" in stub_text
     assert "DocumentKVRequest as DocumentKVRequest" in stub_text
     assert "RestaurantKVRequest" not in stub_text
@@ -1592,6 +1616,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert "ServingBackend" not in legacy_serving_env.__all__
     assert native_probe_factories.__all__ == [
         "NATIVE_PROBE_ADAPTER_CONTRACT",
+        "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
         "NativeProbeFactoryInspection",
         "NativeProbeFactoryUnavailable",
         "SGLANG_NATIVE_PROBE_FACTORY",
