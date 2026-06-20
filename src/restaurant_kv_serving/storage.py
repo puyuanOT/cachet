@@ -124,7 +124,7 @@ def local_path(uri: str, *, root: str | Path | None = None) -> Path:
     if uri.startswith("disk:"):
         return local_path(uri[len("disk:") :], root=root)
     if uri.startswith("file:"):
-        return Path(uri[len("file:") :])
+        return _file_uri_path(uri[len("file:") :], root=root)
     if uri.startswith("dbfs:/"):
         return _join_confined(Path("/dbfs"), uri[len("dbfs:/") :], label="dbfs")
     if uri.startswith("uc-volume:"):
@@ -170,6 +170,13 @@ def _is_relative_uri(uri: str) -> bool:
     if ":" in uri:
         return False
     return not Path(uri).is_absolute()
+
+
+def _file_uri_path(raw_path: str, *, root: str | Path | None) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute() or root is None:
+        return path
+    return _join_confined(Path(root), raw_path, label="file")
 
 
 def _join_confined(root: Path, raw_relative_path: str, *, label: str) -> Path:
