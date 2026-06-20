@@ -1,0 +1,40 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewed the planner ownership inversion for task-prefix handling, static and content chunk ordering, token and byte cursors, selected document ids, legacy restaurant request behavior, import cycles after the models and manifest moves, curated document exports, broad legacy star imports, root alias behavior, tests, and governance allowlist scope; it reported no findings and approved the diff.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document planner implementation ownership",
+    "legacy planner compatibility wrapper",
+    "runtime materialization planning",
+    "document and legacy request planning",
+    "document root planner exports",
+    "document/legacy star-import compatibility",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "python -m py_compile src/document_kv_cache/planner.py src/restaurant_kv_serving/planner.py src/document_kv_cache/__init__.py tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest tests/test_planner_materializer.py tests/test_engine.py tests/test_workflow.py tests/test_engine_adapters.py tests/test_engine_probe.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "PYTHONPATH=src python import sanity check for document and legacy planner aliases",
+    "GPT-5.5 review before merge"
+  ],
+  "what_changed": [
+    "Moved CacheRequest and CachePlanner into document_kv_cache.planner.",
+    "Routed document_kv_cache root planner symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.planner into a compatibility wrapper that aliases document-owned planner objects and preserves broad legacy star-import behavior.",
+    "Preserved task-prefix planning, static and content chunk ordering, token and byte cursor accounting, selected_document_ids propagation, and legacy RestaurantKVRequest chunk-type mapping.",
+    "Added regressions for document planner ownership, legacy alias compatibility, curated document star imports, broad legacy star imports, root planner exports, and the governance allowlist."
+  ],
+  "why": "The generalized package should own runtime cache planning because serving requests need document-generic manifest lookups and materialization plans independent of the old restaurant package. Keeping legacy aliases makes this an incremental, behavior-preserving step for existing integrations."
+}

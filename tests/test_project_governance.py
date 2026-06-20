@@ -136,6 +136,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.manifest",
         "restaurant_kv_serving.materializer",
         "restaurant_kv_serving.models",
+        "restaurant_kv_serving.planner",
     },
     "tests/test_public_package.py": {
         "restaurant_kv_serving",

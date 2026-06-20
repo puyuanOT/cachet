@@ -193,6 +193,8 @@ _DOCUMENT_ROOT_EXPORTS = {
     "chunk_types_for_request": ("document_kv_cache.models", "chunk_types_for_request"),
     "ManifestStore": ("document_kv_cache.manifest", "ManifestStore"),
     "InMemoryManifestStore": ("document_kv_cache.manifest", "InMemoryManifestStore"),
+    "CacheRequest": ("document_kv_cache.planner", "CacheRequest"),
+    "CachePlanner": ("document_kv_cache.planner", "CachePlanner"),
     "MaterializedKV": ("document_kv_cache.materializer", "MaterializedKV"),
     "SegmentedMaterializedKV": ("document_kv_cache.materializer", "SegmentedMaterializedKV"),
     "KVMaterializer": ("document_kv_cache.materializer", "KVMaterializer"),
