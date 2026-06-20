@@ -339,7 +339,7 @@ class DocumentKVRequest:
         static_chunk_id: ChunkId = DEFAULT_STATIC_CHUNK_ID,
         task_prefix_id: str | None = None,
     ) -> "DocumentKVRequest":
-        return cls(
+        return cls.for_document_selection(
             request_id=request_id,
             task_id=task_id,
             model_id=model_id,
@@ -349,6 +349,32 @@ class DocumentKVRequest:
             include_static=include_static,
             static_chunk_id=static_chunk_id,
             task_prefix_id=task_prefix_id,
+        )
+
+    @classmethod
+    def for_document_selection(
+        cls,
+        *,
+        request_id: str,
+        task_id: str,
+        model_id: str,
+        lora_id: str,
+        prompt_template_version: str,
+        document_chunks: DocumentChunkMap,
+        include_static: bool = True,
+        static_chunk_id: ChunkId = DEFAULT_STATIC_CHUNK_ID,
+        task_prefix_id: str | None = None,
+    ) -> "DocumentKVRequest":
+        return cls(
+            request_id=request_id,
+            task_id=task_id,
+            model_id=model_id,
+            lora_id=lora_id,
+            prompt_template_version=prompt_template_version,
+            document_chunks=document_chunks,
+            include_static=include_static,
+            task_prefix_id=task_prefix_id,
+            static_chunk_id=static_chunk_id,
         )
 
     @property

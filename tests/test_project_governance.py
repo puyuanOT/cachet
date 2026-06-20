@@ -820,6 +820,7 @@ def test_readme_workflow_api_shows_single_text_document_helper():
     assert "DocumentKVRequest.for_text_document(" in workflow_api
     assert "SourceDocument.from_texts(" in workflow_api
     assert "DocumentKVRequest.for_document_chunks(" in workflow_api
+    assert "DocumentKVRequest.for_document_selection(" in workflow_api
     assert 'document_id="doc-a"' in workflow_api
 
 

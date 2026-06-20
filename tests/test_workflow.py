@@ -370,6 +370,55 @@ def test_workflow_generates_and_prepares_selected_document_chunks(tmp_path):
     assert b"doc-a:review-1:first review" not in materialized.payload
 
 
+def test_workflow_generates_and_prepares_multi_document_selection(tmp_path):
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow(
+        manifest=manifest,
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+    )
+    documents = (
+        SourceDocument.from_texts(
+            document_id="doc-a",
+            static_text="profile a",
+            static_chunk_id="profile",
+            chunks={"review-1": "first a", "review-2": "second a"},
+        ),
+        SourceDocument.from_texts(
+            document_id="doc-b",
+            static_text="profile b",
+            static_chunk_id="profile",
+            chunks={"review-1": "first b", "review-2": "second b"},
+        ),
+    )
+    request = DocumentKVRequest.for_document_selection(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_chunks={"doc-a": ("review-2",), "doc-b": ("review-1",)},
+        static_chunk_id="profile",
+    )
+
+    result = workflow.generate_cache(
+        documents=documents,
+        generator=EchoGenerator(),
+        config=config(),
+        shard_uri=tmp_path / "multi-document-selection.kvpack",
+        align_bytes=1,
+    )
+    materialized = workflow.prepare(request)
+
+    assert result.document_ids == ("doc-a", "doc-b")
+    assert request.selected_document_ids == ("doc-a", "doc-b")
+    assert b"doc-a:profile:profile a" in materialized.payload
+    assert b"doc-a:review-2:second a" in materialized.payload
+    assert b"doc-b:profile:profile b" in materialized.payload
+    assert b"doc-b:review-1:first b" in materialized.payload
+    assert b"doc-a:review-1:first a" not in materialized.payload
+    assert b"doc-b:review-2:second b" not in materialized.payload
+
+
 def test_workflow_invokes_optional_training_adapter(tmp_path):
     trainer = RecordingTrainer()
     workflow = DocumentKVWorkflow(
