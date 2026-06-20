@@ -947,6 +947,24 @@ def test_github_ci_workflow_verifies_installed_console_scripts():
     assert '[script_path, "--help"]' in text
 
 
+def test_github_ci_workflow_smokes_built_wheel_imports():
+    text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    workflow_readme = (REPO_ROOT / ".github" / "workflows" / "README.md").read_text(encoding="utf-8")
+
+    assert "Verify built wheel import smoke" in text
+    assert "python -m venv /tmp/cachet-wheel-smoke" in text
+    assert "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/document_kv_cache-*.whl" in text
+    assert "import cachet" in text
+    assert "import document_kv_cache" in text
+    assert "import restaurant_kv_serving" in text
+    assert "cachet.__all__ == document_kv_cache.__all__" in text
+    assert 'not hasattr(cachet, "RestaurantKVRequest")' in text
+    assert 'not hasattr(cachet, "storage")' in text
+    assert "/tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null" in text
+    assert "install the built wheel into a fresh venv" in workflow_readme
+    assert "`cachet`, `document_kv_cache`, and `restaurant_kv_serving`" in workflow_readme
+
+
 def test_gitignore_blocks_local_secrets_and_generated_artifacts():
     ignored = set((REPO_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
 
