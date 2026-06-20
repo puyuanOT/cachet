@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/github-governance-open-prs/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer Laplace approved after release-bundle validation was updated for open_pull_requests.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/github_governance.py",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_github_governance.py",
+        "tests/test_release_bundle.py",
+        "README.md"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_github_governance.py (12 passed)",
+        "poetry run pytest -q tests/test_release_bundle.py (18 passed)",
+        "git diff --check",
+        "poetry run python -m compileall -q src tests",
+        "poetry run pytest -q (719 passed)"
+      ],
+      "what_changed": [
+        "Added GitHub governance open pull-request summary and release readiness failures for unexpected open PRs.",
+        "Extended release-bundle validation to accept and validate the new open_pull_requests sidecar object.",
+        "Documented --allow-open-pull-request-number for current-PR sidecar generation."
+      ],
+      "why": "Release bundles should not quietly ship while stale pull requests remain open."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

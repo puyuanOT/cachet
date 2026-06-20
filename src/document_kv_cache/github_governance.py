@@ -105,11 +105,17 @@ def github_repository_config_from_env(
 def summarize_github_repository_governance(
     config: GitHubRepositoryConfig,
     *,
+    allowed_open_pull_request_numbers: Sequence[int] = (),
     opener: GitHubURLOpener = urllib.request.urlopen,
 ) -> dict[str, Any]:
     repository = _github_api_json(config, f"/repos/{_quote_path(config.repository)}", opener=opener)
     protection = _github_branch_protection_summary(config, opener=opener)
-    issues = _release_readiness_issues(repository, protection)
+    open_pull_requests = _github_open_pull_requests_summary(
+        config,
+        allowed_open_pull_request_numbers=allowed_open_pull_request_numbers,
+        opener=opener,
+    )
+    issues = _release_readiness_issues(repository, protection, open_pull_requests)
     return {
         "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
         "ok": not issues,
@@ -124,6 +130,7 @@ def summarize_github_repository_governance(
         "homepage": repository.get("homepage"),
         "topics": _sorted_texts(repository.get("topics")),
         "branch_protection": protection,
+        "open_pull_requests": open_pull_requests,
         "issues": issues,
     }
 
@@ -168,12 +175,70 @@ def _github_branch_protection_summary(
     }
 
 
+def _github_open_pull_requests_summary(
+    config: GitHubRepositoryConfig,
+    *,
+    allowed_open_pull_request_numbers: Sequence[int],
+    opener: GitHubURLOpener,
+) -> dict[str, Any]:
+    allowed_numbers = _positive_pull_request_numbers(allowed_open_pull_request_numbers)
+    path = f"/repos/{_quote_path(config.repository)}/pulls?state=open&per_page=100"
+    try:
+        open_pull_requests = _github_api_json_array(config, path, opener=opener)
+    except RuntimeError as exc:
+        status_code = getattr(exc, "status_code", None)
+        return {
+            "checked": False,
+            "error": str(exc),
+            "error_status_code": status_code,
+            "allowed_numbers": allowed_numbers,
+        }
+    total_count = len(open_pull_requests)
+    unexpected = [
+        _pull_request_summary(pull_request)
+        for pull_request in open_pull_requests
+        if _pull_request_number(pull_request) not in allowed_numbers
+    ]
+    return {
+        "checked": True,
+        "total_count": total_count,
+        "allowed_numbers": allowed_numbers,
+        "unexpected_count": len(unexpected),
+        "unexpected": unexpected,
+        "truncated": total_count >= 100,
+    }
+
+
 def _github_api_json(
     config: GitHubRepositoryConfig,
     path: str,
     *,
     opener: GitHubURLOpener,
 ) -> dict[str, Any]:
+    parsed = _github_api_json_value(config, path, opener=opener)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("GitHub response JSON must be an object")
+    return parsed
+
+
+def _github_api_json_array(
+    config: GitHubRepositoryConfig,
+    path: str,
+    *,
+    opener: GitHubURLOpener,
+) -> list[Any]:
+    parsed = _github_api_json_value(config, path, opener=opener)
+    if not isinstance(parsed, list):
+        raise RuntimeError("GitHub response JSON must be an array")
+    return parsed
+
+
+def _github_api_json_value(
+    config: GitHubRepositoryConfig,
+    path: str,
+    *,
+    opener: GitHubURLOpener,
+) -> Any:
     request = urllib.request.Request(
         f"{config.normalized_api_base_url}{path}",
         method="GET",
@@ -195,12 +260,14 @@ def _github_api_json(
         raise RuntimeError(f"GitHub request failed: {exc.reason}") from exc
     except json.JSONDecodeError as exc:
         raise RuntimeError("GitHub response was not valid JSON") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("GitHub response JSON must be an object")
     return parsed
 
 
-def _release_readiness_issues(repository: Mapping[str, Any], protection: Mapping[str, Any]) -> list[str]:
+def _release_readiness_issues(
+    repository: Mapping[str, Any],
+    protection: Mapping[str, Any],
+    open_pull_requests: Mapping[str, Any],
+) -> list[str]:
     issues: list[str] = []
     if repository.get("private") is True:
         issues.append("repository must be public before open-source release")
@@ -233,6 +300,18 @@ def _release_readiness_issues(repository: Mapping[str, Any], protection: Mapping
         issues.append("branch protection must block force-pushes")
     if protection.get("allow_deletions") is not False:
         issues.append("branch protection must block branch deletion")
+    if open_pull_requests.get("checked") is not True:
+        issues.append("open pull request inspection must succeed")
+    elif open_pull_requests.get("unexpected_count") != 0:
+        issues.append(
+            "repository must not have unexpected open pull requests: "
+            + ", ".join(
+                f"#{number}"
+                for number in _pull_request_numbers_from_summary(open_pull_requests.get("unexpected"))
+            )
+        )
+    if open_pull_requests.get("truncated") is True:
+        issues.append("open pull request inspection must not be truncated")
     return issues
 
 
@@ -256,6 +335,35 @@ def _redact_secret_text(text: str, *, token: str | None = None) -> str:
 def _valid_repository(value: str) -> bool:
     parts = value.split("/")
     return len(parts) == 2 and all(part for part in parts)
+
+
+def _positive_pull_request_numbers(values: Sequence[int]) -> list[int]:
+    return sorted(set(number for number in values if isinstance(number, int) and number > 0))
+
+
+def _pull_request_summary(value: Any) -> dict[str, Any]:
+    pull_request = _mapping(value)
+    head = _mapping(pull_request.get("head"))
+    base = _mapping(pull_request.get("base"))
+    return {
+        "number": _pull_request_number(pull_request),
+        "title": pull_request.get("title"),
+        "draft": pull_request.get("draft"),
+        "html_url": pull_request.get("html_url"),
+        "head_ref": head.get("ref"),
+        "base_ref": base.get("ref"),
+    }
+
+
+def _pull_request_number(value: Mapping[str, Any]) -> int | None:
+    number = value.get("number")
+    return number if isinstance(number, int) and number > 0 else None
+
+
+def _pull_request_numbers_from_summary(value: Any) -> list[int]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return []
+    return sorted(number for item in value if (number := _pull_request_number(_mapping(item))) is not None)
 
 
 def _quote_path(value: str) -> str:
@@ -299,6 +407,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--branch", default=DEFAULT_GITHUB_BRANCH)
     parser.add_argument("--api-base-url", default=DEFAULT_GITHUB_API_BASE_URL)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--allow-open-pull-request-number",
+        action="append",
+        type=int,
+        default=[],
+        help=(
+            "Allow this open pull-request number when deciding release readiness. "
+            "Repeat for a release sidecar produced before the current PR is merged."
+        ),
+    )
     parser.add_argument("--output-json", help="Write the governance status JSON to this path instead of stdout.")
     args = parser.parse_args(argv)
 
@@ -322,7 +440,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 api_base_url=args.api_base_url,
                 timeout_seconds=args.timeout_seconds,
             )
-        summary = summarize_github_repository_governance(config)
+        summary = summarize_github_repository_governance(
+            config,
+            allowed_open_pull_request_numbers=args.allow_open_pull_request_number,
+        )
         record = _success_record(summary)
         _write_or_print(record, args.output_json)
     except Exception as exc:
