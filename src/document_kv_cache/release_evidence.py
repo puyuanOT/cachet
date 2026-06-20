@@ -578,6 +578,12 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
             issues.append(f"v1 benchmark report row {dataset}:{arm_id} requests must be positive")
         if type(row.get("errors")) is not int or row["errors"] < 0:
             issues.append(f"v1 benchmark report row {dataset}:{arm_id} errors must be a non-negative integer")
+        elif _is_positive_int(row.get("requests")) and row["errors"] >= row["requests"]:
+            issues.append(f"v1 benchmark report row {dataset}:{arm_id} must include at least one successful request")
+        for metric_name in ("prompt_tokens_mean", "completion_tokens_mean", "output_tokens_per_second"):
+            value = row.get(metric_name)
+            if not _is_positive_number(value):
+                issues.append(f"v1 benchmark report row {dataset}:{arm_id} {metric_name} must be positive")
         for metric_name in ("ttft", "time_to_completion"):
             metric = row.get(metric_name)
             if not isinstance(metric, Mapping) or metric.get("p50") is None or metric.get("p95") is None:
@@ -613,8 +619,8 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         if arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
             issues.append(f"v1 benchmark measurement {index} has unsupported arm_id {arm_id!r}")
         for field_name in ("prompt_tokens", "completion_tokens"):
-            if type(measurement.get(field_name)) is not int or measurement[field_name] < 0:
-                issues.append(f"v1 benchmark measurement {dataset}:{arm_id} {field_name} must be a non-negative integer")
+            if not _is_positive_int(measurement.get(field_name)):
+                issues.append(f"v1 benchmark measurement {dataset}:{arm_id} {field_name} must be a positive integer")
         for field_name in ("ttft_seconds", "time_to_completion_seconds"):
             value = measurement.get(field_name)
             if not _is_non_negative_number(value):

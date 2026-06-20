@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review approved with no findings; reviewer confirmed token checks match V1 release evidence and emitted benchmark report records.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_evidence.py",
+    "tests/test_release_evidence.py",
+    "tests/test_release_bundle.py",
+    "README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_evidence.py -q -> 39 passed",
+    "poetry run pytest tests/test_release_evidence.py tests/test_release_bundle.py tests/test_benchmark_runner.py tests/test_benchmarks.py -q -> 97 passed",
+    "poetry run pytest tests/test_release_evidence.py tests/test_release_bundle.py tests/test_project_governance.py -q -> 86 passed",
+    "poetry run pytest -q -> 706 passed",
+    "git diff --check -> passed",
+    "poetry check -> All set",
+    "poetry build -> built sdist and wheel"
+  ],
+  "what_changed": [
+    "Tightened V1 release evidence so successful measurements must have positive prompt and completion token counts.",
+    "Required release report rows to include at least one successful request plus positive prompt-token, completion-token, and output-throughput summaries.",
+    "Updated release-bundle fixtures and README release-evidence documentation for the stricter token-volume gate."
+  ],
+  "why": "The V1 package goal requires real quality and latency evidence against no-cache prefill; zero-token or summary-only benchmark stubs should not pass release readiness."
+}
