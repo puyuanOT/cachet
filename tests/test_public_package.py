@@ -51,6 +51,8 @@ def test_public_document_package_reexports_core_api():
         EngineKVProbeConfig,
         EngineKVProbeFactory,
         InMemoryManifestStore,
+        CachePlanner,
+        CacheRequest,
         KVCacheKey,
         KVMaterializer,
         KVStorageLayout,
@@ -195,6 +197,7 @@ def test_public_document_package_reexports_core_api():
     assert issubclass(restaurant_kv_serving.EngineKVProbeConfig, engine_probe.EngineKVProbeConfig)
     assert EngineKVProbeFactory is engine_probe.EngineKVProbeFactory
     assert InMemoryManifestStore is restaurant_kv_serving.InMemoryManifestStore
+    assert CachePlanner is restaurant_kv_serving.CachePlanner
     assert KVCacheKey is restaurant_kv_serving.KVCacheKey
     assert KVMaterializer is materializer.KVMaterializer
     assert KVMaterializer is restaurant_kv_serving.KVMaterializer
@@ -361,6 +364,8 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "DocumentKVRequest" in document_kv_cache.__all__
     assert "ManifestStore" in document_kv_cache.__all__
     assert "InMemoryManifestStore" in document_kv_cache.__all__
+    assert "CacheRequest" in document_kv_cache.__all__
+    assert "CachePlanner" in document_kv_cache.__all__
     assert "DocumentKVService" in document_kv_cache.__all__
     assert "EngineProbePlanConfig" in document_kv_cache.__all__
     assert "DocumentChunkType" in document_kv_cache.__all__
@@ -662,6 +667,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     kvpack = importlib.import_module("document_kv_cache.kvpack")
     manifest = importlib.import_module("document_kv_cache.manifest")
     models = importlib.import_module("document_kv_cache.models")
+    planner = importlib.import_module("document_kv_cache.planner")
     openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
     serving_env = importlib.import_module("document_kv_cache.serving_env")
@@ -730,6 +736,9 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert manifest.InMemoryManifestStore.__module__ == "document_kv_cache.manifest"
     assert restaurant_kv_serving.ManifestStore is manifest.ManifestStore
     assert restaurant_kv_serving.InMemoryManifestStore is manifest.InMemoryManifestStore
+    assert planner.__all__ == ["CacheRequest", "CachePlanner"]
+    assert planner.CachePlanner.__module__ == "document_kv_cache.planner"
+    assert restaurant_kv_serving.CachePlanner is planner.CachePlanner
     assert materializer.__all__ == ["MaterializedKV", "SegmentedMaterializedKV", "KVMaterializer"]
     assert storage.__all__ == [
         "RangeReader",
@@ -800,6 +809,8 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["MaterializationPlan"] is models.MaterializationPlan
     assert root_star_namespace["ManifestStore"] is manifest.ManifestStore
     assert root_star_namespace["InMemoryManifestStore"] is manifest.InMemoryManifestStore
+    assert root_star_namespace["CacheRequest"] is planner.CacheRequest
+    assert root_star_namespace["CachePlanner"] is planner.CachePlanner
     assert root_star_namespace["MaterializedKV"] is materializer.MaterializedKV
     assert root_star_namespace["SegmentedMaterializedKV"] is materializer.SegmentedMaterializedKV
     assert root_star_namespace["KVMaterializer"] is materializer.KVMaterializer

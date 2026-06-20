@@ -512,6 +512,42 @@ def test_manifest_star_import_surfaces_are_curated_for_document_and_preserved_fo
     }
 
 
+def test_planner_public_module_owns_implementation_and_legacy_aliases_it(tmp_path):
+    public_planner = importlib.import_module("document_kv_cache.planner")
+    legacy_planner = importlib.import_module("restaurant_kv_serving.planner")
+    plan = document_plan(tmp_path, (b"alpha", b"beta"))
+
+    assert public_planner.CachePlanner.__module__ == "document_kv_cache.planner"
+    assert legacy_planner.CachePlanner is public_planner.CachePlanner
+    assert legacy_planner.CacheRequest is public_planner.CacheRequest
+    assert plan.total_tokens == 9
+    assert plan.total_bytes == 9
+    assert [segment.output_byte_start for segment in plan.segments] == [0, 5]
+
+
+def test_planner_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
+    public_namespace: dict[str, object] = {}
+    legacy_namespace: dict[str, object] = {}
+
+    exec("from document_kv_cache.planner import *", public_namespace)
+    exec("from restaurant_kv_serving.planner import *", legacy_namespace)
+
+    assert set(public_namespace) >= {"CacheRequest", "CachePlanner"}
+    assert "ManifestStore" not in public_namespace
+    assert "KVCacheKey" not in public_namespace
+    assert set(legacy_namespace) >= {
+        "ManifestStore",
+        "DocumentKVRequest",
+        "KVCacheKey",
+        "MaterializationPlan",
+        "PlanSegment",
+        "RestaurantKVRequest",
+        "chunk_types_for_request",
+        "CacheRequest",
+        "CachePlanner",
+    }
+
+
 def test_plan_segment_validates_output_positions(tmp_path):
     plan = document_plan(tmp_path, (b"abc",))
     ref = plan.segments[0].ref
