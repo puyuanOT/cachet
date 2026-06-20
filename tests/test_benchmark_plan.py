@@ -1,6 +1,9 @@
 import json
+import os
 import pickle
+import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +28,9 @@ from document_kv_cache.benchmark_plan import (
 from document_kv_cache.databricks_engine_probe_job import read_databricks_engine_probe_targets_json
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import SGLANG_NATIVE_PROBE_FACTORY, VLLM_NATIVE_PROBE_FACTORY
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def dataset_paths(tmp_path):
@@ -1096,6 +1102,78 @@ def test_legacy_benchmark_plan_saved_original_wrapper_does_not_recurse(monkeypat
     )
     assert exit_code == 0
     assert wrapped_calls == 1
+
+
+def test_legacy_benchmark_plan_import_order_does_not_capture_public_monkeypatch():
+    script = """
+import json
+from pathlib import Path
+import tempfile
+
+import document_kv_cache.benchmark_plan as public_benchmark_plan
+
+def public_validate_should_not_run(dataset):
+    raise AssertionError(f"legacy imported patched public validator for {dataset}")
+
+class FakeBenchmarkPlanConfig:
+    def __init__(self, *args, **kwargs):
+        raise AssertionError("legacy imported patched public config class")
+
+public_benchmark_plan.SUPPORTED_V1_DATASETS = ("custom",)
+public_benchmark_plan.validate_v1_dataset = public_validate_should_not_run
+public_benchmark_plan.BenchmarkPlanConfig = FakeBenchmarkPlanConfig
+
+import restaurant_kv_serving.benchmark_plan as legacy_benchmark_plan
+
+assert legacy_benchmark_plan.BenchmarkPlanConfig is not FakeBenchmarkPlanConfig
+assert legacy_benchmark_plan.SUPPORTED_V1_DATASETS == ("biography", "hotpotqa", "musique", "niah")
+dataset_path = legacy_benchmark_plan.BenchmarkDatasetPath(
+    dataset="biography",
+    raw_jsonl="raw.jsonl",
+    prepared_jsonl="prepared.jsonl",
+)
+assert dataset_path.dataset == "biography"
+
+try:
+    public_benchmark_plan.BenchmarkDatasetPath(
+        dataset="biography",
+        raw_jsonl="raw.jsonl",
+        prepared_jsonl="prepared.jsonl",
+    )
+except AssertionError:
+    pass
+else:
+    raise AssertionError("public monkeypatch was not installed")
+
+with tempfile.TemporaryDirectory() as raw_tmp:
+    tmp_path = Path(raw_tmp)
+    plan_json = tmp_path / "plan.json"
+    exit_code = legacy_benchmark_plan.main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+    assert exit_code == 0
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    assert record["datasets"][0]["dataset"] == "biography"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_benchmark_plan_document_module_owns_public_api():
