@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/reject-duplicate-wheel-members.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 approved the duplicate-member wheel validation PR with no findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_release_bundle.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py -q",
+        "poetry check",
+        "poetry build",
+        "poetry run pytest tests/test_release_bundle.py tests/test_project_governance.py tests/test_public_package.py -q",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check origin/main..HEAD",
+        "poetry run python - <<'PY' ... _package_wheel_issues(real built wheel) == ()",
+        "poetry run pytest -q"
+      ],
+      "what_changed": [
+        "Release bundles now reject duplicate non-directory file paths inside package wheel zip payloads before RECORD validation.",
+        "Wheel validation tests now cover duplicate document package, legacy package, and dist-info metadata members."
+      ],
+      "why": "Strict V1 release bundles should not bless wheels whose duplicate archive members make RECORD provenance ambiguous."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

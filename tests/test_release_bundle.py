@@ -994,6 +994,52 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-unrecorded-legacy-file-bundle",
         )
 
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        duplicate_document_member_wheel = _write_wheel(
+            tmp_path / "duplicate-document-member-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+            duplicate_entries=(("document_kv_cache/__init__.py", b"DUPLICATE = True\n"),),
+        )
+    with pytest.raises(ValueError, match="duplicate file paths"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=duplicate_document_member_wheel,
+            output_dir=tmp_path / "bad-wheel-duplicate-document-member-bundle",
+        )
+
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        duplicate_legacy_member_wheel = _write_wheel(
+            tmp_path / "duplicate-legacy-member-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+            extra_entries=(("restaurant_kv_serving/__init__.py", b""),),
+            duplicate_entries=(("restaurant_kv_serving/__init__.py", b"DUPLICATE = True\n"),),
+        )
+    with pytest.raises(ValueError, match="duplicate file paths"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=duplicate_legacy_member_wheel,
+            output_dir=tmp_path / "bad-wheel-duplicate-legacy-member-bundle",
+        )
+
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        duplicate_dist_info_member_wheel = _write_wheel(
+            tmp_path / "duplicate-dist-info-member-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+            duplicate_entries=(("document_kv_cache-0.2.0.dist-info/WHEEL", b"Wheel-Version: 1.0\n"),),
+        )
+    with pytest.raises(ValueError, match="duplicate file paths"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=duplicate_dist_info_member_wheel,
+            output_dir=tmp_path / "bad-wheel-duplicate-dist-info-member-bundle",
+        )
+
     nested_dist_info_wheel = _write_wheel(
         tmp_path / "nested-dist-info-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
         dist_info_prefix="nested/document_kv_cache-0.2.0.dist-info",
@@ -2037,6 +2083,7 @@ def _write_wheel(
     include_record: bool = True,
     record_lines: tuple[str, ...] | None = None,
     extra_entries: tuple[tuple[str, bytes], ...] = (),
+    duplicate_entries: tuple[tuple[str, bytes], ...] = (),
     wheel_metadata_lines: tuple[str, ...] = (
         "Wheel-Version: 1.0",
         "Generator: document-kv-cache test fixture",
@@ -2062,6 +2109,8 @@ def _write_wheel(
         for name, payload in wheel_entries:
             wheel_zip.writestr(name, payload)
         for name, payload in extra_entries:
+            wheel_zip.writestr(name, payload)
+        for name, payload in duplicate_entries:
             wheel_zip.writestr(name, payload)
         if include_record:
             if record_lines is None:
