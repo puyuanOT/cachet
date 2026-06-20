@@ -21,8 +21,15 @@ from document_kv_cache.service import DocumentKVService
 class SourceChunk:
     chunk_id: str
     text: str
-    chunk_type: DocumentChunkType = DocumentChunkType.DOCUMENT_CHUNK
+    chunk_type: DocumentChunkType | str = DocumentChunkType.DOCUMENT_CHUNK
     metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "chunk_id", _non_empty_string("chunk_id", self.chunk_id))
+        if not isinstance(self.text, str):
+            raise TypeError("text must be a string")
+        object.__setattr__(self, "chunk_type", _document_chunk_type(self.chunk_type))
+        object.__setattr__(self, "metadata", _metadata_dict("metadata", self.metadata))
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +37,17 @@ class SourceDocument:
     document_id: str
     chunks: tuple[SourceChunk, ...]
     metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "document_id", _non_empty_string("document_id", self.document_id))
+        chunks = tuple(self.chunks)
+        if not chunks:
+            raise ValueError("chunks must contain at least one SourceChunk")
+        for chunk in chunks:
+            if not isinstance(chunk, SourceChunk):
+                raise TypeError("chunks entries must be SourceChunk instances")
+        object.__setattr__(self, "chunks", chunks)
+        object.__setattr__(self, "metadata", _metadata_dict("metadata", self.metadata))
 
     @classmethod
     def from_texts(
@@ -40,6 +58,8 @@ class SourceDocument:
         static_text: str | None = None,
         metadata: Mapping[str, str] | None = None,
     ) -> "SourceDocument":
+        if not isinstance(chunks, Mapping):
+            raise TypeError("chunks must be a mapping")
         source_chunks: list[SourceChunk] = []
         if static_text is not None:
             source_chunks.append(
@@ -50,7 +70,11 @@ class SourceDocument:
                 )
             )
         source_chunks.extend(SourceChunk(chunk_id=chunk_id, text=text) for chunk_id, text in chunks.items())
-        return cls(document_id=document_id, chunks=tuple(source_chunks), metadata=dict(metadata or {}))
+        return cls(
+            document_id=document_id,
+            chunks=tuple(source_chunks),
+            metadata={} if metadata is None else metadata,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +341,28 @@ def _cache_method_value(cache_method: CacheGenerationMethod | str) -> str:
     if isinstance(cache_method, CacheGenerationMethod):
         return cache_method.value
     return str(cache_method)
+
+
+def _document_chunk_type(chunk_type: DocumentChunkType | str) -> DocumentChunkType:
+    if isinstance(chunk_type, DocumentChunkType):
+        return chunk_type
+    try:
+        return DocumentChunkType(str(chunk_type))
+    except ValueError as exc:
+        raise ValueError(f"chunk_type must be one of {[chunk_type.value for chunk_type in DocumentChunkType]}") from exc
+
+
+def _metadata_dict(name: str, metadata: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(metadata, Mapping):
+        raise TypeError(f"{name} must be a mapping")
+    normalized: dict[str, str] = {}
+    for key, value in metadata.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{name} keys must be non-empty strings")
+        if not isinstance(value, str):
+            raise ValueError(f"{name}.{key} must be a string")
+        normalized[key] = value
+    return normalized
 
 
 def _non_empty_string(name: str, value: object) -> str:
