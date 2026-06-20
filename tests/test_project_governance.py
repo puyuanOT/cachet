@@ -812,6 +812,15 @@ def test_readme_native_probe_diagnostics_include_serving_environment_profile():
     assert "target engine versions and dependency constraints" in compact_serving_handoff
 
 
+def test_readme_workflow_api_shows_single_text_document_helper():
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    workflow_api = _markdown_section(text, "Workflow API")
+
+    assert "SourceDocument.from_text(" in workflow_api
+    assert 'document_chunks={"doc-a": ["document"]}' in workflow_api
+    assert "include_static=False" in workflow_api
+
+
 def test_pull_request_template_captures_traceability_and_review_gates():
     text = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
 
