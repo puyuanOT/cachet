@@ -185,14 +185,13 @@ document = SourceDocument.from_text(
     document_id="doc-a",
     text="Long source document text...",
 )
-request = DocumentKVRequest(
+request = DocumentKVRequest.for_text_document(
     request_id="req-1",
     task_id="qa",
     model_id="qwen3:4b-instruct",
     lora_id="base",
     prompt_template_version="v1",
-    document_chunks={"doc-a": ["document"]},
-    include_static=False,
+    document_id="doc-a",
 )
 result = workflow.generate_cache(
     documents=(document,),

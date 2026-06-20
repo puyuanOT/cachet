@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved with no blocking findings and confirmed the helper preserves request validation while matching planner behavior for the default document chunk.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/models.py",
+    "tests/test_planner_materializer.py",
+    "tests/test_workflow.py",
+    "README.md",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_planner_materializer.py tests/test_workflow.py tests/test_project_governance.py -q -> 95 passed",
+    "git diff --check -> passed",
+    "poetry run pytest -q -> 889 passed",
+    "poetry check -> passed",
+    "poetry install --dry-run -> passed",
+    "poetry build -> passed"
+  ],
+  "what_changed": [
+    "Added `DocumentKVRequest.for_text_document(...)` for the common single-text serving request path.",
+    "Updated the README Workflow API example to pair `SourceDocument.from_text(...)` with the new request helper.",
+    "Added request, workflow, and README governance coverage for the helper."
+  ],
+  "why": "Cachet should make the simplest arbitrary-text workflow ergonomic end to end: source text construction, cache generation, request creation, and materialization should not require users to hand-write chunk maps."
+}

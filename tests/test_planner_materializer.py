@@ -220,6 +220,43 @@ def test_document_kv_request_validates_metadata_and_chunk_map():
         replace(request, document_chunks={"doc-a": [True]})  # type: ignore[list-item]
 
 
+def test_document_kv_request_for_text_document_matches_source_document_default_chunk():
+    request = DocumentKVRequest.for_text_document(
+        request_id="req-1",
+        task_id="qa",
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        document_id="doc-a",
+    )
+
+    assert request.document_chunks == {"doc-a": ("document",)}
+    assert request.include_static is False
+    assert request.selected_document_ids == ("doc-a",)
+
+
+def test_document_kv_request_for_text_document_reuses_request_validation():
+    with pytest.raises(ValueError, match="document_chunks keys"):
+        DocumentKVRequest.for_text_document(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="",
+        )
+    with pytest.raises(ValueError, match="document_chunks chunk ids"):
+        DocumentKVRequest.for_text_document(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+            chunk_id="",
+        )
+
+
 def test_frozen_document_chunk_map_normalizes_direct_construction():
     chunk_ids = ["section-1", 2]
     chunk_map = FrozenDocumentChunkMap({"doc-a": chunk_ids})

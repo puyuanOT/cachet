@@ -295,6 +295,30 @@ class DocumentKVRequest:
             _normalize_chunk_map("document_chunks", self.document_chunks),
         )
 
+    @classmethod
+    def for_text_document(
+        cls,
+        *,
+        request_id: str,
+        task_id: str,
+        model_id: str,
+        lora_id: str,
+        prompt_template_version: str,
+        document_id: str,
+        chunk_id: ChunkId = "document",
+        task_prefix_id: str | None = None,
+    ) -> "DocumentKVRequest":
+        return cls(
+            request_id=request_id,
+            task_id=task_id,
+            model_id=model_id,
+            lora_id=lora_id,
+            prompt_template_version=prompt_template_version,
+            document_chunks={document_id: (chunk_id,)},
+            include_static=False,
+            task_prefix_id=task_prefix_id,
+        )
+
     @property
     def selected_document_ids(self) -> tuple[str, ...]:
         return tuple(self.document_chunks.keys())
