@@ -244,6 +244,7 @@ from document_kv_cache import (
     engine_kv_connector_actions_to_record,
     engine_adapter_request_to_record,
     probe_engine_kv_connector_actions,
+    read_engine_adapter_payload,
     read_engine_adapter_request_json,
     view_engine_adapter_payload,
     vllm_adapter_spec,
@@ -274,7 +275,10 @@ record = read_engine_adapter_request_json(
     "req-123-handoff.json",
     expected_backend="vllm",
 )
-payload = adapter_storage.read_bytes(record["payload_source"]["uri"])
+payload = read_engine_adapter_payload(
+    record["payload_source"]["uri"],
+    expected_bytes=record["payload_source"]["total_bytes"],
+)
 payload_or_segments = view_engine_adapter_payload(record, payload)
 injection_plan = build_engine_kv_injection_plan(record, expected_backend="vllm")
 actions = build_engine_kv_connector_actions(injection_plan, payload_or_segments)
@@ -429,11 +433,14 @@ therefore requires an adapter-readable `payload_uri` (or an external
 when the connector already has access to `ready.payload`.
 `read_engine_adapter_request_json` validates the schema, expected backend,
 payload source, layout geometry, and contiguous byte/token segments before a
-connector consumes the record. `view_engine_adapter_payload` validates the
-loaded byte length and returns either one `memoryview` over the merged payload or
-per-segment `memoryview` slices matching the handle boundaries. Use
-`split_engine_adapter_payload` only when a connector needs independent `bytes`
-objects and can afford that extra copy. `build_engine_kv_injection_plan` derives a
+connector consumes the record. `read_engine_adapter_payload` reads absolute
+local paths, `disk:`, `file:`, `dbfs:`, or UC Volume payload URIs and checks the
+expected byte length before the connector views the payload.
+`view_engine_adapter_payload` validates the loaded byte length and returns
+either one `memoryview` over the merged payload or per-segment `memoryview`
+slices matching the handle boundaries. Use `split_engine_adapter_payload` only
+when a connector needs independent `bytes` objects and can afford that extra
+copy. `build_engine_kv_injection_plan` derives a
 reference reservation/copy map from the validated record: total native KV blocks
 to reserve from `layout.block_size`, source byte spans, destination token spans,
 block-index ranges, adapter ids, and engine metadata. Segment block ranges may

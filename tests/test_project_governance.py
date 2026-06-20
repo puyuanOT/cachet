@@ -605,6 +605,14 @@ def _markdown_section(text: str, heading: str) -> str:
     return text[start:] if next_heading == -1 else text[start:next_heading]
 
 
+def _first_python_fence_after(text: str, marker: str) -> str:
+    start = text.index(marker)
+    fence_start = text.index("```python", start)
+    code_start = text.index("\n", fence_start) + 1
+    fence_end = text.index("```", code_start)
+    return text[code_start:fence_end]
+
+
 def test_readme_documents_cachet_brand_and_scope():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     purpose = _markdown_section(text, "Purpose And Scope")
@@ -619,6 +627,27 @@ def test_readme_documents_cachet_brand_and_scope():
     assert "Biography, HotpotQA, MusiQue, and Needle-in-a-Haystack" in compact_purpose
     assert "standard no-cache prefill baseline" in compact_purpose
     assert "vLLM, SGLang, or another established serving engine owns scheduling" in compact_purpose
+
+
+def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
+    import document_kv_cache
+
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    example = _first_python_fence_after(text, "For engine-specific integration code")
+    tree = ast.parse(example)
+    document_imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "document_kv_cache"
+        for alias in node.names
+    }
+
+    assert "adapter_storage" not in example
+    assert "payload = read_engine_adapter_payload(" in example
+    assert "expected_bytes=record[\"payload_source\"][\"total_bytes\"]" in example
+    assert document_imports
+    missing_exports = sorted(name for name in document_imports if not hasattr(document_kv_cache, name))
+    assert missing_exports == []
 
 
 def test_project_metadata_uses_cachet_brand_without_renaming_distribution():
