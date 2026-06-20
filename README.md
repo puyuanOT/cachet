@@ -838,10 +838,10 @@ tested on the target AWS g5 runtime, and repeat `--pr-evidence-json` to carry PR
 traceability records alongside the benchmark, storage, engine-probe,
 connector-action, release-evidence, and preflight artifacts. Add
 `--require-complete-v1` for release publishing; this strict mode refuses to
-build a V1 bundle unless the release evidence, preflight, benchmark-plan
-execution, Databricks run-status, tested wheel, PR evidence, GitHub governance,
-repository hygiene, and native-probe factory diagnostics sidecars are all
-present. Add
+build a V1 bundle unless the release evidence, preflight, vLLM/SGLang connector
+action, benchmark-plan execution, Databricks run-status, tested wheel, PR
+evidence, GitHub governance, repository hygiene, and native-probe factory
+diagnostics sidecars are all present. Add
 `--github-governance-json` to
 include the repository visibility and branch-protection sidecar emitted by
 `document_kv_cache.github_governance`; the bundle rejects it unless the
@@ -1028,7 +1028,7 @@ pytest tests -q
 
 ## Remaining V1 Work
 
-- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, release evidence, preflight sidecar, GitHub governance sidecar, repository hygiene sidecar, native-probe factory diagnostics, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
+- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, connector-action sidecars, release evidence, preflight sidecar, GitHub governance sidecar, repository hygiene sidecar, native-probe factory diagnostics, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
 - Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.
