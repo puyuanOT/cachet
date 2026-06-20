@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review approved the focused bool-hardening diff with no requested changes; reviewer ran focused engine-probe tests and noted earlier full-suite failures were only from the incomplete evidence sidecar.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.engine_probe, restaurant_kv_serving.engine_probe, engine probe regression tests"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_engine_probe.py::test_engine_probe_native_probe_flags_must_be_boolean -q; poetry run pytest tests/test_engine_probe.py -q; poetry run pytest -q; poetry build"
+  ],
+  "what_changed": [
+    "Require engine probe native_probe flags to be real booleans on public and legacy probe config/result dataclasses."
+  ],
+  "why": "Native probe evidence is release-gating; truthy or falsey non-bool values should fail before a probe run can be treated as native evidence."
+}
