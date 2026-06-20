@@ -16,7 +16,7 @@ from document_kv_cache.engine import (
     build_engine_ready_request,
 )
 from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout_from_value
-from document_kv_cache.kvpack import PackChunk, write_kvpack
+from document_kv_cache.kvpack import PackChunk, write_kvpack, write_kvpack_bytes
 from document_kv_cache.manifest import ManifestStore
 from document_kv_cache.materializer import KVMaterializer, MaterializedKV, SegmentedMaterializedKV
 from document_kv_cache.models import (
@@ -243,12 +243,24 @@ class DocumentKVWorkflow:
         planner: CachePlanner | None = None,
         service: DocumentKVService | None = None,
         shard_path_resolver: Callable[[str], Path] | None = None,
+        memory_writer: MemoryRangeReader | None = None,
+        memory_writers: Sequence[MemoryRangeReader] = (),
     ) -> None:
         self.manifest = manifest
         self.planner = planner or CachePlanner(manifest)
         self.materializer = materializer
         self.service = service
         self.shard_path_resolver = shard_path_resolver
+        inferred_memory_writer = _active_memory_reader_for(materializer, service)
+        self._memory_generation_supported = inferred_memory_writer is not None
+        self.memory_writers = _dedupe_memory_writers(
+            tuple(
+                writer
+                for writer in (inferred_memory_writer, memory_writer, *memory_writers)
+                if writer is not None
+            )
+        )
+        self.memory_writer = self.memory_writers[0] if self.memory_writers else None
 
     @classmethod
     def with_storage(
@@ -269,6 +281,11 @@ class DocumentKVWorkflow:
             disk_root=disk_root,
             uc_volume_root=uc_volume_root,
         )
+        memory_reader = MemoryRangeReader(memory_blobs)
+        service_memory_reader = _memory_reader_for_materializer(service.materializer) if service is not None else None
+        if memory_blobs is not None and service_memory_reader is not None:
+            for shard_uri, payload in memory_blobs.items():
+                service_memory_reader.put(shard_uri, payload)
         return cls(
             manifest=manifest,
             planner=planner,
@@ -279,13 +296,18 @@ class DocumentKVWorkflow:
                     local_max_bytes=local_cache_bytes,
                 ),
                 reader=RoutedRangeReader(
-                    memory=MemoryRangeReader(memory_blobs),
+                    memory=memory_reader,
                     disk=DiskRangeReader(root=disk_root),
                     unity_catalog=UnityCatalogVolumeRangeReader(volume_root=uc_volume_root),
                 ),
             ),
             service=service,
             shard_path_resolver=shard_path_resolver,
+            memory_writers=_memory_writers_for(
+                memory_reader,
+                service=service,
+                service_memory_reader=service_memory_reader,
+            ),
         )
 
     def generate_cache(
@@ -301,14 +323,7 @@ class DocumentKVWorkflow:
         training_artifacts = trainer.fit(documents, config) if trainer is not None else None
         cache_method = _effective_cache_method(config, trainer)
         pack_chunks = tuple(self._iter_pack_chunks(documents, generator, config, training_artifacts))
-        refs = tuple(
-            write_kvpack(
-                shard_uri,
-                pack_chunks,
-                align_bytes=align_bytes,
-                path_resolver=self.shard_path_resolver,
-            )
-        )
+        refs = self._write_pack_chunks(shard_uri, pack_chunks, align_bytes=align_bytes)
         self.manifest.put_many(refs)
         return CacheGenerationResult(
             refs=refs,
@@ -421,6 +436,32 @@ class DocumentKVWorkflow:
                 )
                 self._validate_pack_chunk(document, chunk, config, pack_chunk)
                 yield pack_chunk
+
+    def _write_pack_chunks(
+        self,
+        shard_uri: str | Path,
+        pack_chunks: Sequence[PackChunk],
+        *,
+        align_bytes: int,
+    ) -> tuple[ChunkRef, ...]:
+        shard_uri_text = str(shard_uri)
+        if _is_memory_storage_uri(shard_uri_text):
+            if not self._memory_generation_supported:
+                raise ValueError("memory shard URIs require the active materializer to use memory storage")
+            if not self.memory_writers:
+                raise ValueError("memory shard URIs require at least one memory writer")
+            payload, refs = write_kvpack_bytes(shard_uri_text, pack_chunks, align_bytes=align_bytes)
+            for memory_writer in self.memory_writers:
+                memory_writer.put(shard_uri_text, payload)
+            return tuple(refs)
+        return tuple(
+            write_kvpack(
+                shard_uri,
+                pack_chunks,
+                align_bytes=align_bytes,
+                path_resolver=self.shard_path_resolver,
+            )
+        )
 
     @staticmethod
     def _validate_pack_chunk(
@@ -537,6 +578,54 @@ def _storage_shard_path_resolver(
 
 def _is_relative_storage_uri(shard_uri: str) -> bool:
     return ":" not in shard_uri and not Path(shard_uri).is_absolute()
+
+
+def _is_memory_storage_uri(shard_uri: str) -> bool:
+    return shard_uri.startswith("memory:") or shard_uri.startswith("mem:")
+
+
+def _memory_writers_for(
+    primary: MemoryRangeReader,
+    *,
+    service: DocumentKVService | None,
+    service_memory_reader: MemoryRangeReader | None,
+) -> tuple[MemoryRangeReader, ...]:
+    if service is None:
+        return (primary,)
+    if service_memory_reader is None:
+        return ()
+    return _dedupe_memory_writers((primary, service_memory_reader))
+
+
+def _active_memory_reader_for(
+    materializer: KVMaterializer,
+    service: DocumentKVService | None,
+) -> MemoryRangeReader | None:
+    if service is not None:
+        return _memory_reader_for_materializer(service.materializer)
+    return _memory_reader_for_materializer(materializer)
+
+
+def _memory_reader_for_materializer(materializer: KVMaterializer) -> MemoryRangeReader | None:
+    reader = materializer.reader
+    if isinstance(reader, MemoryRangeReader):
+        return reader
+    memory = getattr(reader, "memory", None)
+    if isinstance(memory, MemoryRangeReader):
+        return memory
+    return None
+
+
+def _dedupe_memory_writers(writers: Sequence[MemoryRangeReader]) -> tuple[MemoryRangeReader, ...]:
+    deduped: list[MemoryRangeReader] = []
+    seen: set[int] = set()
+    for writer in writers:
+        writer_id = id(writer)
+        if writer_id in seen:
+            continue
+        seen.add(writer_id)
+        deduped.append(writer)
+    return tuple(deduped)
 
 
 def _non_empty_string(name: str, value: object) -> str:

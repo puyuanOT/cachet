@@ -3,8 +3,9 @@ import importlib
 import pytest
 
 from document_kv_cache.engine_protocol import KVStorageLayout
-from document_kv_cache.kvpack import LocalRangeReader, PackChunk, write_kvpack
+from document_kv_cache.kvpack import LocalRangeReader, PackChunk, write_kvpack, write_kvpack_bytes
 from document_kv_cache.models import DocumentChunkType, KVCacheKey
+from document_kv_cache.storage import MemoryRangeReader
 
 
 def key(chunk_id: str) -> KVCacheKey:
@@ -55,6 +56,27 @@ def test_write_kvpack_copies_storage_layout_to_manifest_refs(tmp_path):
     )
 
     assert refs[0].storage_layout == KVStorageLayout.SEPARATE_KEY_VALUE
+
+
+def test_write_kvpack_bytes_builds_memory_readable_shard():
+    shard_uri = "memory:shard"
+    payload, refs = write_kvpack_bytes(
+        shard_uri,
+        [
+            PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="fp8", layout_version="v1"),
+            PackChunk(key=key("b"), payload=b"bravo", token_count=3, dtype="fp8", layout_version="v1"),
+        ],
+        align_bytes=8,
+    )
+    reader = MemoryRangeReader({shard_uri: payload})
+
+    assert [reader.read(ref) for ref in refs] == [b"alpha", b"bravo"]
+    assert refs[0].shard_uri == shard_uri
+    assert refs[1].byte_offset % 8 == 0
+    assert [ref.storage_layout for ref in refs] == [
+        KVStorageLayout.SEPARATE_KEY_VALUE,
+        KVStorageLayout.SEPARATE_KEY_VALUE,
+    ]
 
 
 def test_pack_chunk_rejects_invalid_payload_metadata():
@@ -117,6 +139,16 @@ def test_write_kvpack_rejects_invalid_alignment_before_output_file_is_opened(tmp
     assert not output_path.exists()
 
 
+@pytest.mark.parametrize("align_bytes", (0, 1.5, True))
+def test_write_kvpack_bytes_rejects_invalid_alignment(align_bytes):
+    with pytest.raises(ValueError, match="align_bytes"):
+        write_kvpack_bytes(
+            "memory:bad-align",
+            [PackChunk(key=key("a"), payload=b"alpha", token_count=2, dtype="fp8", layout_version="v1")],
+            align_bytes=align_bytes,
+        )
+
+
 def test_invalid_pack_chunk_payload_fails_before_output_file_is_opened(tmp_path):
     output_path = tmp_path / "invalid-payload.kvpack"
 
@@ -149,6 +181,7 @@ def test_kvpack_public_module_owns_implementation_and_legacy_aliases_it():
 
     assert public_kvpack.PackChunk.__module__ == "document_kv_cache.kvpack"
     assert public_kvpack.write_kvpack.__module__ == "document_kv_cache.kvpack"
+    assert public_kvpack.write_kvpack_bytes.__module__ == "document_kv_cache.kvpack"
     assert legacy_kvpack.PackChunk is public_kvpack.PackChunk
     assert legacy_kvpack.LocalRangeReader is legacy_kvpack.DiskRangeReader
     assert legacy_kvpack.write_kvpack.__module__ == "restaurant_kv_serving.kvpack"
@@ -183,7 +216,7 @@ def test_kvpack_star_import_surfaces_are_curated_for_document_and_preserved_for_
     exec("from document_kv_cache.kvpack import *", public_namespace)
     exec("from restaurant_kv_serving.kvpack import *", legacy_namespace)
 
-    assert set(public_namespace) >= {"PackChunk", "LocalRangeReader", "write_kvpack"}
+    assert set(public_namespace) >= {"PackChunk", "LocalRangeReader", "write_kvpack", "write_kvpack_bytes"}
     assert "hashlib" not in public_namespace
     assert "dataclass" not in public_namespace
     assert set(legacy_namespace) >= {

@@ -816,11 +816,15 @@ def test_readme_native_probe_diagnostics_include_serving_environment_profile():
 
 def test_readme_workflow_api_shows_single_text_document_helper():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    storage_backends = _markdown_section(text, "Storage Backends")
     workflow_api = _markdown_section(text, "Workflow API")
 
+    assert "MemoryRangeReader" in storage_backends
+    assert "memory:" in storage_backends
     assert "SourceDocument.from_text(" in workflow_api
     assert "DocumentKVWorkflow.with_storage(" in workflow_api
     assert "DocumentKVRequest.for_text_document(" in workflow_api
+    assert "memory:" in workflow_api
     assert "SourceDocument.from_texts(" in workflow_api
     assert "static_chunk_metadata=" in workflow_api
     assert "chunk_metadata=" in workflow_api
