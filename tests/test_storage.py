@@ -68,6 +68,22 @@ def chunk_ref(**overrides) -> ChunkRef:
     return ChunkRef(**values)
 
 
+class CustomBatchReader:
+    def __init__(self, payloads) -> None:
+        self.payloads = payloads
+
+    def read(self, ref: ChunkRef) -> bytes:
+        return b"unused"
+
+    def read_many(self, refs) -> object:
+        return self.payloads
+
+
+class CustomReadOnlyReader:
+    def read(self, ref: ChunkRef):
+        return bytearray(b"x")
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     (
@@ -296,6 +312,59 @@ def test_routed_range_reader_read_many_dispatches_mixed_backends(tmp_path):
     assert reader.read_many((memory_ref, refs[0], memory_ref)) == (b"memory", b"disk", b"memory")
 
 
+def test_routed_range_reader_rejects_batch_reader_single_bytes_payload():
+    first_ref = chunk_ref(
+        shard_uri="memory:bad-batch-a",
+        byte_length=1,
+        checksum=hashlib.sha256(b"a").hexdigest(),
+    )
+    second_ref = replace(
+        first_ref,
+        key=key("b"),
+        shard_uri="memory:bad-batch-b",
+        checksum=hashlib.sha256(b"b").hexdigest(),
+    )
+    reader = RoutedRangeReader(memory=CustomBatchReader(b"ab"))  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="sequence of bytes"):
+        reader.read_many((first_ref, second_ref))
+
+
+def test_routed_range_reader_rejects_batch_reader_wrong_payload_count():
+    first_ref = chunk_ref(shard_uri="memory:short-batch-a")
+    second_ref = replace(first_ref, key=key("b"), shard_uri="memory:short-batch-b")
+    reader = RoutedRangeReader(memory=CustomBatchReader((b"x",)))  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="wrong number of payloads"):
+        reader.read_many((first_ref, second_ref))
+
+
+def test_routed_range_reader_rejects_non_bytes_batch_payload_entries():
+    first_ref = chunk_ref(
+        shard_uri="memory:mixed-batch-a",
+        byte_length=1,
+        checksum=hashlib.sha256(b"a").hexdigest(),
+    )
+    second_ref = replace(
+        first_ref,
+        key=key("b"),
+        shard_uri="memory:mixed-batch-b",
+        checksum=hashlib.sha256(b"b").hexdigest(),
+    )
+    reader = RoutedRangeReader(memory=CustomBatchReader((b"a", bytearray(b"b"))))  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="payload 1 must be bytes"):
+        reader.read_many((first_ref, second_ref))
+
+
+def test_routed_range_reader_rejects_non_bytes_read_payload_entries():
+    ref = chunk_ref(shard_uri="memory:bad-read")
+    reader = RoutedRangeReader(memory=CustomReadOnlyReader())  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="payload 0 must be bytes"):
+        reader.read_many((ref,))
+
+
 def test_routed_range_reader_dispatches_relative_paths_to_configured_uc_root(tmp_path):
     volume_root = tmp_path / "Volumes" / "catalog" / "schema" / "volume"
     ref = write_kvpack(
@@ -467,6 +536,16 @@ def test_legacy_storage_class_methods_ignore_public_class_overrides(monkeypatch)
     assert memory_reader._blobs == {"memory:payload": b"payload"}
     assert disk_reader.root == Path("/tmp")
     assert uc_reader.root == Path("/Volumes/catalog/schema/volume")
+
+
+def test_legacy_routed_range_reader_rejects_batch_reader_single_bytes_payload():
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+    first_ref = chunk_ref(shard_uri="memory:legacy-bad-batch-a")
+    second_ref = replace(first_ref, key=key("b"), shard_uri="memory:legacy-bad-batch-b")
+    reader = legacy_storage.RoutedRangeReader(memory=CustomBatchReader(b"xx"))
+
+    with pytest.raises(TypeError, match="sequence of bytes"):
+        reader.read_many((first_ref, second_ref))
 
 
 def test_legacy_storage_ignores_public_helper_overrides_when_imported_later():
