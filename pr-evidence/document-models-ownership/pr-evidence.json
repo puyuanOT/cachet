@@ -1,0 +1,43 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewed the models ownership inversion for behavior compatibility, import cycles, curated document exports, broad legacy star imports, root alias behavior, storage-layout typing, and tests. The review found that the legacy models wrapper dropped the old ChunkId module attribute; ChunkId was restored in the wrapper and compatibility test, then GPT-5.5 approved with no remaining findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document model implementation ownership",
+    "legacy models compatibility wrapper",
+    "cache key and chunk reference validation",
+    "document and legacy request aliases",
+    "materialization plan validation",
+    "document root model exports",
+    "document/legacy star-import compatibility",
+    "PR evidence sidecar"
+  ],
+  "verification": [
+    "python -m py_compile src/document_kv_cache/models.py src/restaurant_kv_serving/models.py src/document_kv_cache/__init__.py tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py",
+    "poetry run pytest tests/test_planner_materializer.py tests/test_cache.py tests/test_storage.py tests/test_kvpack.py tests/test_scheduler.py tests/test_engine.py tests/test_workflow.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "python -m py_compile src/document_kv_cache/models.py src/restaurant_kv_serving/models.py tests/test_planner_materializer.py",
+    "poetry run pytest tests/test_planner_materializer.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "find src tests -name '*.py' -print0 | xargs -0 python -m py_compile",
+    "poetry run pytest -q",
+    "poetry check",
+    "git diff --check",
+    "poetry build",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence",
+    "repository secret scan over README, package metadata, source, tests, Databricks helpers, PR evidence, and GitHub metadata",
+    "PYTHONPATH=src python import sanity check for document and legacy model aliases",
+    "GPT-5.5 review before merge"
+  ],
+  "what_changed": [
+    "Moved cache key, chunk reference, request, plan, chunk type, and cache generation model definitions into document_kv_cache.models.",
+    "Routed document_kv_cache root model symbols to the document-owned module.",
+    "Turned restaurant_kv_serving.models into a compatibility wrapper that aliases document-owned model objects and preserves legacy-only ChunkType, ChunkId, and RestaurantKVRequest names.",
+    "Preserved document and legacy request behavior, storage-key validation, SHA-256 checksum validation, segment cursor validation, chunk-type role helpers, and previous legacy star-import compatibility.",
+    "Added regressions for document model ownership, legacy alias compatibility, curated document star imports, broad legacy star imports, root model exports, and the governance allowlist."
+  ],
+  "why": "The generalized package should own the data model layer because all cache generation, storage, planning, materialization, and serving paths depend on document-generic keys, chunk references, requests, and plans. Keeping legacy aliases makes this an incremental, behavior-preserving step for existing restaurant imports."
+}

@@ -729,10 +729,30 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "unity_catalog_volume_path",
         "is_real_uc_volume_root",
     ]
-    assert "DocumentKVRequest" in models.__all__
-    assert "DocumentChunkRole" in models.__all__
-    assert "chunk_type_role" in models.__all__
-    assert "chunk_type_sort_order" in models.__all__
+    assert models.__all__ == [
+        "DocumentChunkType",
+        "DocumentChunkRole",
+        "CacheGenerationMethod",
+        "DocumentChunkMap",
+        "CacheChunkType",
+        "CacheChunkTypeSet",
+        "DOCUMENT_CHUNK_TYPES",
+        "LEGACY_RESTAURANT_CHUNK_TYPES",
+        "KVCacheKey",
+        "ChunkRef",
+        "DocumentKVRequest",
+        "PlanSegment",
+        "MaterializationPlan",
+        "chunk_type_role",
+        "chunk_type_sort_order",
+        "chunk_types_for_request",
+    ]
+    assert models.DocumentChunkType.__module__ == "document_kv_cache.models"
+    assert models.DocumentChunkRole.__module__ == "document_kv_cache.models"
+    assert models.KVCacheKey.__module__ == "document_kv_cache.models"
+    assert models.ChunkRef.__module__ == "document_kv_cache.models"
+    assert models.DocumentKVRequest.__module__ == "document_kv_cache.models"
+    assert models.MaterializationPlan.__module__ == "document_kv_cache.models"
     assert models.DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
     assert models.chunk_type_role is restaurant_kv_serving.chunk_type_role
     assert "DocumentKVService" in service.__all__
@@ -760,6 +780,12 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["CacheTier"] is cache.CacheTier
     assert root_star_namespace["ByteLRU"] is cache.ByteLRU
     assert root_star_namespace["ChunkCache"] is cache.ChunkCache
+    assert root_star_namespace["DocumentChunkType"] is models.DocumentChunkType
+    assert root_star_namespace["DocumentChunkRole"] is models.DocumentChunkRole
+    assert root_star_namespace["KVCacheKey"] is models.KVCacheKey
+    assert root_star_namespace["ChunkRef"] is models.ChunkRef
+    assert root_star_namespace["DocumentKVRequest"] is models.DocumentKVRequest
+    assert root_star_namespace["MaterializationPlan"] is models.MaterializationPlan
     assert root_star_namespace["MaterializedKV"] is materializer.MaterializedKV
     assert root_star_namespace["SegmentedMaterializedKV"] is materializer.SegmentedMaterializedKV
     assert root_star_namespace["KVMaterializer"] is materializer.KVMaterializer

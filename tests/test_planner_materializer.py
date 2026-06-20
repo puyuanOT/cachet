@@ -406,6 +406,71 @@ def test_materializer_star_import_surfaces_are_curated_for_document_and_preserve
     }
 
 
+def test_models_public_module_owns_implementation_and_legacy_aliases_it():
+    public_models = importlib.import_module("document_kv_cache.models")
+    legacy_models = importlib.import_module("restaurant_kv_serving.models")
+
+    assert public_models.DocumentChunkType.__module__ == "document_kv_cache.models"
+    assert public_models.DocumentChunkRole.__module__ == "document_kv_cache.models"
+    assert public_models.CacheGenerationMethod.__module__ == "document_kv_cache.models"
+    assert public_models.KVCacheKey.__module__ == "document_kv_cache.models"
+    assert public_models.ChunkRef.__module__ == "document_kv_cache.models"
+    assert public_models.DocumentKVRequest.__module__ == "document_kv_cache.models"
+    assert public_models.PlanSegment.__module__ == "document_kv_cache.models"
+    assert public_models.MaterializationPlan.__module__ == "document_kv_cache.models"
+    assert legacy_models.DocumentChunkType is public_models.DocumentChunkType
+    assert legacy_models.DocumentChunkRole is public_models.DocumentChunkRole
+    assert legacy_models.CacheGenerationMethod is public_models.CacheGenerationMethod
+    assert legacy_models.KVCacheKey is public_models.KVCacheKey
+    assert legacy_models.ChunkRef is public_models.ChunkRef
+    assert legacy_models.DocumentKVRequest is public_models.DocumentKVRequest
+    assert legacy_models.PlanSegment is public_models.PlanSegment
+    assert legacy_models.MaterializationPlan is public_models.MaterializationPlan
+    assert legacy_models.ChunkType is public_models.ChunkType
+    assert legacy_models.RestaurantKVRequest is public_models.RestaurantKVRequest
+
+
+def test_models_star_import_surfaces_are_curated_for_document_and_preserved_for_legacy():
+    public_namespace: dict[str, object] = {}
+    legacy_namespace: dict[str, object] = {}
+
+    exec("from document_kv_cache.models import *", public_namespace)
+    exec("from restaurant_kv_serving.models import *", legacy_namespace)
+
+    assert set(public_namespace) >= {
+        "DocumentChunkType",
+        "DocumentChunkRole",
+        "CacheGenerationMethod",
+        "KVCacheKey",
+        "ChunkRef",
+        "DocumentKVRequest",
+        "PlanSegment",
+        "MaterializationPlan",
+        "chunk_type_role",
+        "chunk_type_sort_order",
+        "chunk_types_for_request",
+    }
+    assert "RestaurantKVRequest" not in public_namespace
+    assert "ChunkType" not in public_namespace
+    assert "dataclass" not in public_namespace
+    assert set(legacy_namespace) >= {
+        "Mapping",
+        "Sequence",
+        "dataclass",
+        "field",
+        "StrEnum",
+        "TypeAlias",
+        "KVStorageLayout",
+        "kv_storage_layout_from_value",
+        "ChunkType",
+        "ChunkId",
+        "RestaurantKVRequest",
+        "DocumentKVRequest",
+        "KVCacheKey",
+        "ChunkRef",
+    }
+
+
 def test_plan_segment_validates_output_positions(tmp_path):
     plan = document_plan(tmp_path, (b"abc",))
     ref = plan.segments[0].ref
