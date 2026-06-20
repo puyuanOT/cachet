@@ -33,6 +33,8 @@ def test_qwen3_builtin_profile_derives_gqa_layout():
     assert profile.kv_scalars_per_token == 36 * 8 * 128 * 2
     assert profile.bytes_per_token("int8") == 73728
     assert profile.bytes_per_token("bf16") == 147456
+    assert profile.default_shares_kv_storage is True
+    assert profile.default_storage_layout == KVStorageLayout.SHARED_KEY_VALUE
 
     layout = profile.to_layout(lora_id="selection-lora", dtype="int8")
 
@@ -164,6 +166,8 @@ def test_model_profile_definition_round_trips_future_model_artifact(tmp_path):
         default_dtype="int8",
         default_block_size=32,
         default_lora_id="base",
+        default_shares_kv_storage=False,
+        default_storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
         metadata={"status": "future-extension", "attention": "mqa"},
     )
     definition = ModelProfileDefinition(
@@ -190,6 +194,8 @@ def test_model_profile_definition_round_trips_future_model_artifact(tmp_path):
         "default_dtype": "int8",
         "default_block_size": 32,
         "default_lora_id": "base",
+        "default_shares_kv_storage": False,
+        "default_storage_layout": "separate_key_value",
         "metadata": {"attention": "mqa", "status": "future-extension"},
         "aliases": ["MiniMaxAI/MiniMax-M2.5-4B", "qwen3.5:4b-instruct"],
     }
@@ -202,6 +208,27 @@ def test_model_profile_definition_round_trips_future_model_artifact(tmp_path):
 
     assert layout.attention_mechanism == AttentionMechanism.MULTI_QUERY
     assert layout.bytes_per_token == 28 * 1 * 128 * 2 * 2
+    assert layout.shares_kv_storage is False
+    assert layout.storage_layout == KVStorageLayout.SEPARATE_KEY_VALUE
+
+
+def test_model_profile_definition_reads_legacy_records_with_shared_storage_defaults():
+    record = model_profile_definition_to_record(
+        ModelProfileDefinition(profile=QWEN3_4B_INSTRUCT_PROFILE, aliases=("Qwen/Qwen3-4B-Instruct-2507",))
+    )
+    legacy_record = {
+        key: value
+        for key, value in record.items()
+        if key not in {"default_shares_kv_storage", "default_storage_layout"}
+    }
+
+    definition = model_profile_definition_from_record(legacy_record)
+    layout = definition.profile.to_layout()
+
+    assert definition.profile.default_shares_kv_storage is True
+    assert definition.profile.default_storage_layout == KVStorageLayout.SHARED_KEY_VALUE
+    assert layout.shares_kv_storage is True
+    assert layout.storage_layout == KVStorageLayout.SHARED_KEY_VALUE
 
 
 def test_model_profile_definition_rejects_malformed_artifacts():
@@ -293,6 +320,30 @@ def test_model_profile_rejects_wrong_constructor_field_types():
     with pytest.raises(ValueError, match="default_lora_id"):
         KVModelProfile(**{**kwargs, "default_lora_id": 1})  # type: ignore[arg-type]
 
+    with pytest.raises(ValueError, match="default_shares_kv_storage"):
+        KVModelProfile(**{**kwargs, "default_shares_kv_storage": 1})  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="Unsupported default_storage_layout"):
+        KVModelProfile(**{**kwargs, "default_storage_layout": "packed"})
+
+    with pytest.raises(ValueError, match="default_shares_kv_storage requires"):
+        KVModelProfile(
+            **{
+                **kwargs,
+                "default_shares_kv_storage": True,
+                "default_storage_layout": KVStorageLayout.SEPARATE_KEY_VALUE,
+            }
+        )
+
+    with pytest.raises(ValueError, match="requires default_shares_kv_storage=True"):
+        KVModelProfile(
+            **{
+                **kwargs,
+                "default_shares_kv_storage": False,
+                "default_storage_layout": KVStorageLayout.SHARED_KEY_VALUE,
+            }
+        )
+
 
 def test_layout_overrides_preserve_invalid_explicit_values_for_validation():
     with pytest.raises(ValueError, match="Unsupported KV dtype"):
@@ -353,6 +404,47 @@ def test_profile_supports_mha_and_mqa_attention_modes():
     assert mqa.query_heads_per_kv_head == 4
     assert mqa.to_layout().attention_mechanism == AttentionMechanism.MULTI_QUERY
     assert mqa.to_layout(shares_kv_storage=False).storage_layout == KVStorageLayout.SEPARATE_KEY_VALUE
+
+
+def test_profile_default_storage_layout_controls_derived_layout():
+    separate_profile = KVModelProfile(
+        model_id="toy-separate",
+        architecture="ToyForCausalLM",
+        num_layers=2,
+        num_query_heads=4,
+        num_kv_heads=2,
+        head_size=8,
+        max_context_tokens=1024,
+        default_layout_version="toy-v1",
+        default_shares_kv_storage=False,
+        default_storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+    )
+    interleaved_profile = KVModelProfile(
+        model_id="toy-interleaved",
+        architecture="ToyForCausalLM",
+        num_layers=2,
+        num_query_heads=4,
+        num_kv_heads=2,
+        head_size=8,
+        max_context_tokens=1024,
+        default_layout_version="toy-v1",
+        default_shares_kv_storage=False,
+        default_storage_layout="interleaved_key_value",
+    )
+
+    separate_layout = separate_profile.to_layout()
+    interleaved_layout = interleaved_profile.to_layout()
+    explicit_interleaved_layout = separate_profile.to_layout(storage_layout=KVStorageLayout.INTERLEAVED_KEY_VALUE)
+    explicit_shared_layout = separate_profile.to_layout(shares_kv_storage=True)
+
+    assert separate_layout.shares_kv_storage is False
+    assert separate_layout.storage_layout == KVStorageLayout.SEPARATE_KEY_VALUE
+    assert interleaved_layout.shares_kv_storage is False
+    assert interleaved_layout.storage_layout == KVStorageLayout.INTERLEAVED_KEY_VALUE
+    assert explicit_interleaved_layout.shares_kv_storage is False
+    assert explicit_interleaved_layout.storage_layout == KVStorageLayout.INTERLEAVED_KEY_VALUE
+    assert explicit_shared_layout.shares_kv_storage is True
+    assert explicit_shared_layout.storage_layout == KVStorageLayout.SHARED_KEY_VALUE
 
 
 def test_profile_validation_rejects_invalid_attention_geometry():
