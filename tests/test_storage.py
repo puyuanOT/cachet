@@ -80,8 +80,11 @@ class CustomBatchReader:
 
 
 class CustomReadOnlyReader:
+    def __init__(self, payload=bytearray(b"x")) -> None:
+        self.payload = payload
+
     def read(self, ref: ChunkRef):
-        return bytearray(b"x")
+        return self.payload
 
 
 @pytest.mark.parametrize(
@@ -293,6 +296,14 @@ def test_routed_range_reader_dispatches_memory_and_disk(tmp_path):
 
     assert reader.read(memory_ref) == b"disk"
     assert reader.read(disk_ref) == b"disk"
+
+
+def test_routed_range_reader_rejects_non_bytes_single_read_payload():
+    ref = chunk_ref(shard_uri="memory:bad-single-read")
+    reader = RoutedRangeReader(memory=CustomReadOnlyReader(bytearray(b"x")))  # type: ignore[arg-type]
+
+    with pytest.raises(TypeError, match="RangeReader.read must return bytes"):
+        reader.read(ref)
 
 
 def test_routed_range_reader_read_many_dispatches_mixed_backends(tmp_path):
@@ -536,6 +547,15 @@ def test_legacy_storage_class_methods_ignore_public_class_overrides(monkeypatch)
     assert memory_reader._blobs == {"memory:payload": b"payload"}
     assert disk_reader.root == Path("/tmp")
     assert uc_reader.root == Path("/Volumes/catalog/schema/volume")
+
+
+def test_legacy_routed_range_reader_rejects_non_bytes_single_read_payload():
+    legacy_storage = importlib.import_module("restaurant_kv_serving.storage")
+    ref = chunk_ref(shard_uri="memory:legacy-bad-single-read")
+    reader = legacy_storage.RoutedRangeReader(memory=CustomReadOnlyReader(bytearray(b"x")))
+
+    with pytest.raises(TypeError, match="RangeReader.read must return bytes"):
+        reader.read(ref)
 
 
 def test_legacy_routed_range_reader_rejects_batch_reader_single_bytes_payload():
