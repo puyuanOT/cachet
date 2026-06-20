@@ -650,6 +650,29 @@ def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
     assert missing_exports == []
 
 
+def test_readme_model_profile_example_uses_portable_definition_artifact():
+    import document_kv_cache
+
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    example = _first_python_fence_after(text, "Future Qwen3.5, MiniMax")
+    tree = ast.parse(example)
+    document_imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module == "document_kv_cache"
+        for alias in node.names
+    }
+
+    assert "definition = ModelProfileDefinition(" in example
+    assert "with_definition(definition)" in example
+    assert "num_kv_heads=1" in example
+    assert "Provider/Future-MQA-4B" in example
+    assert "future-mqa-profile.json" in example
+    assert document_imports
+    missing_exports = sorted(name for name in document_imports if not hasattr(document_kv_cache, name))
+    assert missing_exports == []
+
+
 def test_project_metadata_uses_cachet_brand_without_renaming_distribution():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
