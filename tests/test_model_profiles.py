@@ -156,6 +156,9 @@ def test_model_profile_definition_rejects_malformed_artifacts():
     with pytest.raises(ValueError, match="record_type"):
         model_profile_definition_from_record({**valid_record, "record_type": "document_kv.other.v1"})
 
+    with pytest.raises(ValueError, match=r"model profile record has unsupported keys: \['debug'\]"):
+        model_profile_definition_from_record({**valid_record, "debug": {"accepted": False}})
+
     with pytest.raises(TypeError, match="aliases"):
         ModelProfileDefinition(profile=QWEN3_4B_INSTRUCT_PROFILE, aliases="Qwen/Qwen3-4B")  # type: ignore[arg-type]
 
