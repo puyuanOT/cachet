@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import inspect
 import json
 import subprocess
 import sys
@@ -141,10 +142,71 @@ def benchmark_plan_source_payload_to_record(path: str, driver_path: str | Path, 
     return record
 
 
-def write_benchmark_command_results_json(results: Sequence[BenchmarkCommandResult], path: str | Path) -> None:
+def write_benchmark_command_results_json(
+    results: Sequence[BenchmarkCommandResult],
+    path: str | Path,
+    *,
+    plan_source: Mapping[str, Any] | None = None,
+) -> None:
     output_path = _driver_path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(benchmark_command_results_to_record(results), indent=2, sort_keys=True) + "\n")
+    record = _benchmark_command_results_to_record(results, plan_source=plan_source)
+    output_path.write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n"
+    )
+
+
+def _benchmark_command_results_to_record(
+    results: Sequence[BenchmarkCommandResult],
+    *,
+    plan_source: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if _accepts_plan_source(benchmark_command_results_to_record):
+        record = benchmark_command_results_to_record(results, plan_source=plan_source)
+    else:
+        record = benchmark_command_results_to_record(results)
+    _ensure_plan_source(record, plan_source)
+    return record
+
+
+def _accepts_plan_source(function) -> bool:
+    try:
+        parameters = inspect.signature(function).parameters
+    except (TypeError, ValueError):
+        return True
+    return "plan_source" in parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+def _ensure_plan_source(record: dict[str, Any], plan_source: Mapping[str, Any] | None) -> None:
+    if plan_source is not None:
+        record.setdefault("plan_source", dict(plan_source))
+
+
+def _write_benchmark_command_results_json(
+    results: Sequence[BenchmarkCommandResult],
+    path: str | Path,
+    *,
+    plan_source: Mapping[str, Any] | None = None,
+) -> None:
+    if _accepts_plan_source(write_benchmark_command_results_json):
+        write_benchmark_command_results_json(results, path, plan_source=plan_source)
+        return
+    write_benchmark_command_results_json(results, path)
+    _patch_result_json_plan_source(path, plan_source)
+
+
+def _patch_result_json_plan_source(path: str | Path, plan_source: Mapping[str, Any] | None) -> None:
+    if plan_source is None:
+        return
+    output_path = _driver_path(path)
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict):
+        raise ValueError("command execution result JSON root must be an object")
+    _ensure_plan_source(record, plan_source)
+    output_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 
 
 def _commands_from_plan(plan: Mapping[str, Any]) -> list[tuple[str, tuple[str, ...]]]:
@@ -217,26 +279,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             results = execute_benchmark_job_plan_json(args.plan_json, dry_run=args.dry_run, cwd=args.cwd)
         finally:
             _PRELOADED_PLAN_PAYLOAD.reset(token)
-        record = benchmark_command_results_to_record(results)
-        record.setdefault("plan_source", plan_source)
+        record = _benchmark_command_results_to_record(results, plan_source=plan_source)
         if args.result_json:
-            write_benchmark_command_results_json(results, args.result_json)
-            _patch_result_json_plan_source(args.result_json, record["plan_source"])
+            _write_benchmark_command_results_json(results, args.result_json, plan_source=plan_source)
         else:
             print(json.dumps(record, indent=2, sort_keys=True))
     except Exception as exc:
         print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
         return 1
     return 0 if record["ok"] else 2
-
-
-def _patch_result_json_plan_source(path: str | Path, plan_source: Mapping[str, Any]) -> None:
-    output_path = _driver_path(path)
-    record = json.loads(output_path.read_text(encoding="utf-8"))
-    if not isinstance(record, dict):
-        raise ValueError("command execution result JSON root must be an object")
-    record.setdefault("plan_source", dict(plan_source))
-    output_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
 
 
 if __name__ == "__main__":  # pragma: no cover

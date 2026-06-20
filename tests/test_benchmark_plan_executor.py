@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 from textwrap import dedent
 
 import pytest
@@ -18,6 +19,7 @@ from document_kv_cache.benchmark_plan_executor import (
     execute_benchmark_job_plan,
     execute_benchmark_job_plan_json,
     main,
+    write_benchmark_command_results_json,
 )
 from restaurant_kv_serving.benchmark_plan_executor import _driver_path, _runtime_argv
 
@@ -60,6 +62,38 @@ def test_benchmark_command_results_record_can_include_plan_source():
 
     assert record["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
     assert record["plan_source"] == plan_source
+
+
+def test_write_benchmark_command_results_json_can_include_plan_source(tmp_path):
+    output_path = tmp_path / "nested" / "result.json"
+    plan_source = {"path": "dbfs:/benchmarks/plan.json", "sha256": "b" * 64}
+    results = execute_benchmark_job_plan(plan_for((sys.executable, "-c", "pass")), dry_run=True)
+
+    write_benchmark_command_results_json(results, output_path, plan_source=plan_source)
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
+    assert record["plan_source"] == plan_source
+
+
+def test_write_benchmark_command_results_json_preserves_old_serializer_hooks(monkeypatch, tmp_path):
+    output_path = tmp_path / "result.json"
+    plan_source = {"path": "dbfs:/benchmarks/plan.json", "sha256": "c" * 64}
+    results = execute_benchmark_job_plan(plan_for((sys.executable, "-c", "pass")), dry_run=True)
+
+    def fake_record(observed_results):
+        assert observed_results == results
+        return {"ok": True, "source": "old-serializer-hook"}
+
+    monkeypatch.setattr(public_plan_executor, "benchmark_command_results_to_record", fake_record)
+
+    public_plan_executor.write_benchmark_command_results_json(results, output_path, plan_source=plan_source)
+
+    assert json.loads(output_path.read_text(encoding="utf-8")) == {
+        "ok": True,
+        "source": "old-serializer-hook",
+        "plan_source": plan_source,
+    }
 
 
 def test_benchmark_plan_source_record_hashes_driver_visible_plan_json(tmp_path):
@@ -321,6 +355,58 @@ def test_legacy_plan_executor_result_json_respects_legacy_record_hook(monkeypatc
     assert json.loads(result_path.read_text(encoding="utf-8")) == {
         "ok": True,
         "source": "legacy-result-json-hook",
+        "plan_source": {"source": "legacy-plan-source-hook"},
+    }
+
+
+def test_public_plan_executor_result_json_preserves_old_writer_hook(monkeypatch, tmp_path):
+    plan_path = tmp_path / "plan.json"
+    result_path = tmp_path / "result.json"
+    plan_path.write_text(json.dumps(plan_for((sys.executable, "-c", "pass"))), encoding="utf-8")
+
+    def fake_writer(results, path):
+        assert results[0].ok is True
+        Path(path).write_text(json.dumps({"ok": True, "source": "public-writer-hook"}), encoding="utf-8")
+
+    monkeypatch.setattr(public_plan_executor, "write_benchmark_command_results_json", fake_writer)
+
+    exit_code = public_plan_executor.main(
+        ["--plan-json", str(plan_path), "--dry-run", "--result-json", str(result_path)]
+    )
+
+    assert exit_code == 0
+    record = json.loads(result_path.read_text(encoding="utf-8"))
+    assert record["source"] == "public-writer-hook"
+    assert record["plan_source"]["path"] == str(plan_path)
+
+
+def test_legacy_plan_executor_result_json_preserves_old_writer_hook(monkeypatch, tmp_path):
+    plan_path = tmp_path / "plan.json"
+    result_path = tmp_path / "result.json"
+    plan_path.write_text(json.dumps(plan_for((sys.executable, "-c", "pass"))), encoding="utf-8")
+
+    def fake_plan_source_payload_to_record(path, driver_path, payload):
+        return {"source": "legacy-plan-source-hook"}
+
+    def fake_writer(results, path):
+        assert results[0].ok is True
+        Path(path).write_text(json.dumps({"ok": True, "source": "legacy-writer-hook"}), encoding="utf-8")
+
+    monkeypatch.setattr(
+        legacy_plan_executor,
+        "benchmark_plan_source_payload_to_record",
+        fake_plan_source_payload_to_record,
+    )
+    monkeypatch.setattr(legacy_plan_executor, "write_benchmark_command_results_json", fake_writer)
+
+    exit_code = legacy_plan_executor.main(
+        ["--plan-json", str(plan_path), "--dry-run", "--result-json", str(result_path)]
+    )
+
+    assert exit_code == 0
+    assert json.loads(result_path.read_text(encoding="utf-8")) == {
+        "ok": True,
+        "source": "legacy-writer-hook",
         "plan_source": {"source": "legacy-plan-source-hook"},
     }
 

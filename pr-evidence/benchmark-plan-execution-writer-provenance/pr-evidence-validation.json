@@ -1,0 +1,30 @@
+{
+  "files": {
+    "pr-evidence/benchmark-plan-execution-writer-provenance/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewers found backward-compatibility gaps for old serializer and writer hooks. Both were fixed with compatibility dispatch plus regression tests, and final GPT-5.5 reviewer Pascal approved the PR as clean.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/benchmark_plan_executor.py; src/restaurant_kv_serving/benchmark_plan_executor.py; tests/test_benchmark_plan_executor.py"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_benchmark_plan_executor.py",
+        "poetry run pytest -q tests/test_benchmark_plan_executor.py tests/test_release_bundle.py tests/test_public_package.py",
+        "git diff --check",
+        "poetry run python -m compileall -q src tests",
+        "poetry run pytest -q"
+      ],
+      "what_changed": [
+        "Benchmark plan execution JSON writing now accepts plan_source directly while preserving old serializer and writer monkeypatch hooks."
+      ],
+      "why": "Release bundles require plan-execution provenance, and writing that provenance directly makes the execution artifact path less fragile while retaining compatibility for legacy Databricks test hooks."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
