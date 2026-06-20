@@ -20,6 +20,7 @@ from document_kv_cache.serving_env import (
 
 VLLM_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:vllm_native_probe_factory"
 SGLANG_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:sglang_native_probe_factory"
+NATIVE_PROBE_FACTORIES_RECORD_TYPE = "document_kv.native_probe_factories.v1"
 
 
 class NativeProbeFactoryUnavailable(RuntimeError):
@@ -128,7 +129,7 @@ def builtin_native_probe_factories_to_record() -> dict[str, Any]:
     """Serialize all built-in factory inspections as a stable diagnostics record."""
 
     return {
-        "record_type": "document_kv.native_probe_factories.v1",
+        "record_type": NATIVE_PROBE_FACTORIES_RECORD_TYPE,
         "factories": [
             native_probe_factory_inspection_to_record(inspection)
             for inspection in inspect_builtin_native_probe_factories()

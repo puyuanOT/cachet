@@ -28,7 +28,13 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
+from document_kv_cache.native_probe_factories import (
+    NATIVE_PROBE_FACTORIES_RECORD_TYPE,
+    SGLANG_NATIVE_PROBE_FACTORY,
+    VLLM_NATIVE_PROBE_FACTORY,
+)
 from document_kv_cache.pr_evidence import PR_EVIDENCE_RECORD_TYPE, evaluate_pr_evidence_record
+from document_kv_cache.serving_env import serving_environment_profile, serving_environment_profile_to_record
 from document_kv_cache.storage import local_path
 
 
@@ -60,6 +66,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "package_wheel",
     "pr_evidence",
     "github_governance",
+    "native_probe_factories",
 )
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
@@ -171,6 +178,23 @@ _GITHUB_REQUIRED_PULL_REQUEST_REVIEWS_KEYS = frozenset(
         "required_approving_review_count",
     }
 )
+_NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
+_NATIVE_PROBE_FACTORY_KEYS = frozenset(
+    {
+        "backend",
+        "factory_path",
+        "package_name",
+        "package_importable",
+        "package_version",
+        "serving_environment_profile",
+        "supported",
+        "reason",
+    }
+)
+_BUILTIN_NATIVE_PROBE_FACTORY_PATHS = {
+    "vllm": VLLM_NATIVE_PROBE_FACTORY,
+    "sglang": SGLANG_NATIVE_PROBE_FACTORY,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +265,7 @@ def build_release_bundle(
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
     github_governance_json: str | Path | None = None,
+    native_probe_factories_jsons: Sequence[str | Path] = (),
     overwrite: bool = False,
 ) -> ReleaseBundle:
     bundle_dir = local_path(str(output_dir))
@@ -260,6 +285,7 @@ def build_release_bundle(
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
         github_governance_json=github_governance_json,
+        native_probe_factories_jsons=native_probe_factories_jsons,
     )
     prepared_artifacts = tuple(
         _prepare_release_bundle_artifact(role=role, source_path=source_path, index=index)
@@ -318,6 +344,7 @@ def _release_bundle_sources(
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
     github_governance_json: str | Path | None,
+    native_probe_factories_jsons: Sequence[str | Path],
 ) -> tuple[tuple[str, str | Path], ...]:
     sources: list[tuple[str, str | Path]] = [
         ("v1_benchmark", v1_benchmark_json),
@@ -336,6 +363,7 @@ def _release_bundle_sources(
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
     if github_governance_json is not None:
         sources.append(("github_governance", github_governance_json))
+    sources.extend(("native_probe_factories", path) for path in native_probe_factories_jsons)
     return tuple(sources)
 
 
@@ -435,6 +463,11 @@ def _validate_release_bundle_inputs(artifacts: Sequence[_PreparedReleaseBundleAr
             issues.extend(_databricks_run_status_sidecar_issues(artifact.record))
         elif artifact.role == "package_wheel":
             issues.extend(_package_wheel_issues(artifact.source_path, artifact.payload))
+        elif artifact.role == "native_probe_factories":
+            if artifact.record is None:
+                issues.append("native probe factories sidecar must be JSON")
+                continue
+            issues.extend(_native_probe_factories_sidecar_issues(artifact.record))
     if issues:
         raise ValueError(f"Release bundle inputs are not release-ready: {'; '.join(issues)}")
 
@@ -695,6 +728,58 @@ def _plan_execution_command_issues(commands: Sequence[Any]) -> tuple[str, ...]:
             issues.append(f"benchmark plan execution sidecar commands[{index}].returncode must be 0")
         if command.get("error") is not None:
             issues.append(f"benchmark plan execution sidecar commands[{index}].error must be null")
+    return tuple(issues)
+
+
+def _native_probe_factories_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _NATIVE_PROBE_FACTORIES_KEYS, "native probe factories sidecar"))
+    if record.get("record_type") != NATIVE_PROBE_FACTORIES_RECORD_TYPE:
+        issues.append(
+            f"native probe factories sidecar record_type must be {NATIVE_PROBE_FACTORIES_RECORD_TYPE!r}"
+        )
+    factories = record.get("factories")
+    if not isinstance(factories, Sequence) or isinstance(factories, (str, bytes, bytearray)) or not factories:
+        issues.append("native probe factories sidecar factories must be a non-empty array")
+        return _dedupe_strings(issues)
+
+    backends: list[str] = []
+    for index, factory in enumerate(factories):
+        if not isinstance(factory, Mapping):
+            issues.append(f"native probe factories sidecar factories[{index}] must be an object")
+            continue
+        issues.extend(_native_probe_factory_issues(factory, index=index))
+        backend = factory.get("backend")
+        if isinstance(backend, str):
+            backends.append(backend)
+    if set(backends) != set(REQUIRED_ENGINE_PROBE_BACKENDS) or len(backends) != len(set(backends)):
+        issues.append("native probe factories sidecar backends must match required backends")
+    return _dedupe_strings(issues)
+
+
+def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
+    label = f"native probe factories sidecar factories[{index}]"
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(factory, _NATIVE_PROBE_FACTORY_KEYS, label))
+    backend = factory.get("backend")
+    if not isinstance(backend, str) or backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
+        issues.append(f"{label}.backend must be one of {list(REQUIRED_ENGINE_PROBE_BACKENDS)!r}")
+    else:
+        expected_factory_path = _BUILTIN_NATIVE_PROBE_FACTORY_PATHS.get(backend)
+        if factory.get("factory_path") != expected_factory_path:
+            issues.append(f"{label}.factory_path must match the built-in {backend} factory path")
+    for field_name in ("backend", "factory_path", "package_name", "reason"):
+        issues.extend(_required_str_field(factory, field_name, label))
+    issues.extend(_optional_str_field(factory, "package_version", label))
+    for field_name in ("package_importable", "supported"):
+        issues.extend(_bool_field(factory, field_name, label))
+    serving_profile = factory.get("serving_environment_profile")
+    if not isinstance(serving_profile, Mapping):
+        issues.append(f"{label}.serving_environment_profile must be an object")
+    elif isinstance(backend, str) and backend in REQUIRED_ENGINE_PROBE_BACKENDS:
+        expected_profile = serving_environment_profile_to_record(serving_environment_profile(backend))
+        if dict(serving_profile) != expected_profile:
+            issues.append(f"{label}.serving_environment_profile must match the built-in {backend} profile")
     return tuple(issues)
 
 
@@ -1230,6 +1315,8 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return f"pr_evidence_{index + 1:02d}.json"
     if role == "github_governance":
         return "github_governance.json"
+    if role == "native_probe_factories":
+        return f"native_probe_factories_{index + 1:02d}.json"
     raise ValueError(f"Unsupported release bundle artifact role {role!r}")
 
 
@@ -1291,6 +1378,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
     parser.add_argument("--github-governance-json")
+    parser.add_argument("--native-probe-factories-json", action="append", default=[])
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
     parser.add_argument("--overwrite", action="store_true")
@@ -1311,6 +1399,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
         github_governance_json=args.github_governance_json,
+        native_probe_factories_jsons=args.native_probe_factories_json,
         output_dir=args.output_dir,
         overwrite=args.overwrite,
     )
