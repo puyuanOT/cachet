@@ -102,6 +102,49 @@ def release_action_jsons(tmp_path):
     )
 
 
+def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config_overrides=None):
+    bundle_values = {
+        "output_dir": str(tmp_path / "release-bundle"),
+        "output_json": str(tmp_path / "release-bundle-manifest.json"),
+        "preflight_json": str(tmp_path / "release-inputs.json"),
+        "plan_execution_jsons": (str(tmp_path / "plan-execution.json"),),
+        "databricks_run_status_jsons": (str(tmp_path / "databricks-run-status.json"),),
+        "package_wheel": str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
+        "pr_evidence_jsons": (str(tmp_path / "pr-evidence.json"),),
+        "github_governance_json": str(tmp_path / "github-governance.json"),
+        "repository_hygiene_json": str(tmp_path / "repository-hygiene.json"),
+        "native_probe_factories_jsons": (str(tmp_path / "native-probe-factories.json"),),
+        "require_complete_v1": True,
+    }
+    if bundle_overrides is not None:
+        bundle_values.update(bundle_overrides)
+
+    config_values = {
+        "suite_id": "v1-g5",
+        "dataset_paths": dataset_paths(tmp_path),
+        "base_url": "http://localhost:8000",
+        "benchmark_output_json": str(tmp_path / "results.json"),
+        "storage_benchmark": StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        "release_evidence": ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+            engine_probe_jsons=(
+                str(tmp_path / "vllm-probe.json"),
+                str(tmp_path / "sglang-probe.json"),
+            ),
+            engine_actions_jsons=release_action_jsons(tmp_path),
+        ),
+        "release_bundle": ReleaseBundlePlanConfig(**bundle_values),
+    }
+    if config_overrides is not None:
+        config_values.update(config_overrides)
+    return BenchmarkPlanConfig(**config_values)
+
+
 def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_path):
     config = BenchmarkPlanConfig(
         suite_id="v1-g5",
@@ -360,6 +403,62 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
 
     assert record["release_bundle"]["require_complete_v1"] is False
     assert "--require-complete-v1" not in bundle_command.argv
+
+
+@pytest.mark.parametrize(
+    ("bundle_overrides", "config_overrides", "expected_missing"),
+    [
+        ({"preflight_json": None}, None, "preflight sidecar"),
+        ({"plan_execution_jsons": ()}, None, "benchmark plan execution sidecar"),
+        ({"databricks_run_status_jsons": ()}, None, "Databricks run-status sidecar"),
+        ({"package_wheel": None}, None, "tested package wheel"),
+        ({"pr_evidence_jsons": ()}, None, "PR evidence sidecar"),
+        ({"github_governance_json": None}, None, "GitHub governance sidecar"),
+        ({"repository_hygiene_json": None}, None, "repository hygiene sidecar"),
+        ({"native_probe_factories_jsons": ()}, None, "native probe factory diagnostics sidecar"),
+    ],
+)
+def test_benchmark_plan_rejects_incomplete_strict_release_bundle(
+    tmp_path,
+    bundle_overrides,
+    config_overrides,
+    expected_missing,
+):
+    with pytest.raises(ValueError, match="strict V1 release bundle plans require") as error:
+        strict_release_bundle_plan_config(
+            tmp_path,
+            bundle_overrides=bundle_overrides,
+            config_overrides=config_overrides,
+        )
+
+    assert expected_missing in str(error.value)
+
+
+def test_benchmark_plan_accepts_generated_strict_release_bundle_sidecars(tmp_path):
+    config = strict_release_bundle_plan_config(
+        tmp_path,
+        bundle_overrides={
+            "preflight_json": None,
+            "github_governance_json": None,
+            "repository_hygiene_json": None,
+            "native_probe_factories_jsons": (),
+        },
+        config_overrides={
+            "release_preflight_output_json": str(tmp_path / "release-inputs.json"),
+            "github_governance_output_json": str(tmp_path / "github-governance.json"),
+            "repository_hygiene_output_json": str(tmp_path / "repository-hygiene.json"),
+            "native_probe_factories_output_json": str(tmp_path / "native-probe-factories.json"),
+        },
+    )
+
+    record = benchmark_job_plan_to_record(build_v1_benchmark_plan(config))
+
+    assert record["release_bundle"]["preflight_json"] == str(tmp_path / "release-inputs.json")
+    assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
+    assert record["release_bundle"]["repository_hygiene_json"] == str(tmp_path / "repository-hygiene.json")
+    assert record["release_bundle"]["native_probe_factories_jsons"] == [
+        str(tmp_path / "native-probe-factories.json")
+    ]
 
 
 def test_build_v1_benchmark_plan_can_generate_and_bundle_github_governance(tmp_path):
@@ -2477,6 +2576,48 @@ def test_main_can_include_release_bundle_command(tmp_path):
     )
     assert "--require-complete-v1" in bundle_argv
     assert "--overwrite" in bundle_argv
+
+
+def test_main_rejects_incomplete_strict_release_bundle_command(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--storage-benchmark-workspace-dir",
+            "/local_disk0/document-kv-storage-benchmark",
+            "--storage-benchmark-output-json",
+            str(tmp_path / "storage.json"),
+            "--storage-benchmark-uc-volume-root",
+            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "--release-evidence-output-json",
+            str(tmp_path / "release-evidence.json"),
+            "--release-engine-probe-json",
+            str(tmp_path / "vllm-probe.json"),
+            "--release-engine-probe-json",
+            str(tmp_path / "sglang-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "vllm-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "sglang-actions.json"),
+            "--release-bundle-output-dir",
+            str(tmp_path / "release-bundle"),
+            "--release-bundle-require-complete-v1",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "strict V1 release bundle plans require" in record["error"]
+    assert "preflight sidecar" in record["error"]
+    assert "benchmark plan execution sidecar" in record["error"]
+    assert "tested package wheel" in record["error"]
 
 
 def test_main_rejects_plan_output_json_colliding_with_generated_artifact(capsys, tmp_path):
