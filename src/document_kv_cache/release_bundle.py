@@ -179,6 +179,39 @@ _DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS = frozenset(
         "purpose",
     }
 )
+_RELEASE_EVIDENCE_SIDECAR_KEYS = frozenset(
+    {
+        "record_type",
+        "ok",
+        "v1_benchmark_ok",
+        "storage_benchmark_ok",
+        "engine_probe_backends",
+        "missing_engine_probe_backends",
+        "duplicate_engine_probe_backends",
+        "invalid_engine_probe_records",
+        "engine_action_backends",
+        "missing_engine_action_backends",
+        "duplicate_engine_action_backends",
+        "invalid_engine_action_records",
+        "artifact_sources",
+        "issues",
+    }
+)
+_PREFLIGHT_SIDECAR_KEYS = frozenset(
+    {
+        "record_type",
+        "ok",
+        "required_engine_probe_backends",
+        "required_engine_action_backends",
+        "missing_paths",
+        "unreadable_paths",
+        "invalid_record_type_paths",
+        "missing_engine_probe_backends",
+        "missing_engine_action_backends",
+        "input_files",
+        "issues",
+    }
+)
 _GITHUB_GOVERNANCE_WRAPPER_KEYS = frozenset({"ok", "summary"})
 _GITHUB_GOVERNANCE_SUMMARY_KEYS = frozenset(
     {
@@ -709,6 +742,7 @@ def _release_evidence_sidecar_issues(
     release_input_artifacts: Sequence[_PreparedReleaseBundleArtifact],
 ) -> tuple[str, ...]:
     issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _RELEASE_EVIDENCE_SIDECAR_KEYS, "release evidence sidecar"))
     if record.get("record_type") != RELEASE_EVIDENCE_RECORD_TYPE:
         issues.append(f"release evidence sidecar record_type must be {RELEASE_EVIDENCE_RECORD_TYPE!r}")
     if record.get("ok") is not True:
@@ -742,6 +776,7 @@ def _preflight_sidecar_issues(
     release_input_artifacts: Sequence[_PreparedReleaseBundleArtifact],
 ) -> tuple[str, ...]:
     issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _PREFLIGHT_SIDECAR_KEYS, "preflight sidecar"))
     if record.get("record_type") != RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE:
         issues.append(f"preflight sidecar record_type must be {RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE!r}")
     if record.get("ok") is not True:

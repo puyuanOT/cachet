@@ -807,7 +807,9 @@ The preflight sidecar keeps malformed JSON, missing paths, and wrong
 role/record-type assignments separate. A readable JSON file with
 `document_kv.engine_kv_connector_actions.v1` in an `--engine-probe-json` slot is
 reported under `invalid_record_type_paths` instead of being treated as a valid
-probe input.
+probe input. Release bundles treat release-evidence and preflight sidecars as
+closed schemas, rejecting unsupported top-level keys before copying artifacts
+into the bundle.
 
 The command returns exit code `0` only when the V1 benchmark is AWS g5/Qwen3,
 the storage benchmark has strict Memory + Disk + real UC Volume evidence, and

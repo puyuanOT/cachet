@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/release-sidecar-key-guards/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer reported no findings and approved the release-bundle sidecar key guard slice.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/release_bundle.py",
+        "tests/test_release_bundle.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py::test_build_release_bundle_rejects_release_evidence_or_preflight_sidecars_with_extra_keys -q",
+        "poetry run pytest tests/test_release_bundle.py -q",
+        "poetry run pytest -q",
+        "poetry check",
+        "poetry run python -m compileall -q src tests",
+        "git diff --check"
+      ],
+      "what_changed": [
+        "Rejected unsupported top-level keys in release-evidence sidecars during bundle validation",
+        "Rejected unsupported top-level keys in preflight sidecars during bundle validation"
+      ],
+      "why": "Keep V1 release bundles schema-tight so debug or stale fields cannot be copied into release artifacts outside the audited sidecar contracts."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
