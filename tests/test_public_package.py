@@ -754,8 +754,14 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert release_bundle.build_release_bundle is restaurant_kv_serving.build_release_bundle
     assert release_evidence.RELEASE_EVIDENCE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_EVIDENCE_ARTIFACT_ROLES
     assert release_evidence.ReleaseEvidenceArtifactSource is restaurant_kv_serving.ReleaseEvidenceArtifactSource
+    assert release_evidence.ReleaseEvidenceArtifactSource.__module__ == "document_kv_cache.release_evidence"
     assert release_evidence.evaluate_release_evidence is restaurant_kv_serving.evaluate_release_evidence
+    assert release_evidence.evaluate_release_evidence.__module__ == "document_kv_cache.release_evidence"
     assert release_evidence.inspect_release_evidence_input_files is restaurant_kv_serving.inspect_release_evidence_input_files
+    assert (
+        release_evidence.inspect_release_evidence_input_files.__module__
+        == "document_kv_cache.release_evidence"
+    )
     assert pr_evidence.PR_EVIDENCE_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_RECORD_TYPE
     assert pr_evidence.PR_EVIDENCE_VALIDATION_RECORD_TYPE is restaurant_kv_serving.PR_EVIDENCE_VALIDATION_RECORD_TYPE
     assert pr_evidence.PullRequestEvidence is restaurant_kv_serving.PullRequestEvidence
@@ -880,6 +886,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     planner = importlib.import_module("document_kv_cache.planner")
     openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
+    release_evidence = importlib.import_module("document_kv_cache.release_evidence")
     serving_env = importlib.import_module("document_kv_cache.serving_env")
     storage = importlib.import_module("document_kv_cache.storage")
     materializer = importlib.import_module("document_kv_cache.materializer")
@@ -1002,6 +1009,30 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert not hasattr(legacy_storage_benchmark, "__all__")
     assert storage_benchmark.run_storage_benchmark.__module__ == "document_kv_cache.storage_benchmark"
     assert legacy_storage_benchmark.run_storage_benchmark.__module__ == "restaurant_kv_serving.storage_benchmark"
+    assert release_evidence.__all__ == [
+        "RELEASE_EVIDENCE_RECORD_TYPE",
+        "RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE",
+        "RELEASE_EVIDENCE_ARTIFACT_ROLES",
+        "REQUIRED_ENGINE_PROBE_BACKENDS",
+        "ReleaseEvidenceArtifactSource",
+        "ReleaseEvidence",
+        "ReleaseEvidenceInputFileStatus",
+        "ReleaseEvidenceInputStatus",
+        "evaluate_release_evidence",
+        "evaluate_release_evidence_files",
+        "inspect_release_evidence_input_files",
+        "release_evidence_input_status_to_record",
+        "release_evidence_to_record",
+        "write_release_evidence_input_status_json",
+        "write_release_evidence_json",
+        "main",
+    ]
+    legacy_release_evidence = importlib.import_module("restaurant_kv_serving.release_evidence")
+    assert not hasattr(legacy_release_evidence, "__all__")
+    assert release_evidence.ReleaseEvidence.__module__ == "document_kv_cache.release_evidence"
+    assert legacy_release_evidence.ReleaseEvidence is release_evidence.ReleaseEvidence
+    assert release_evidence.main.__module__ == "document_kv_cache.release_evidence"
+    assert legacy_release_evidence.main.__module__ == "restaurant_kv_serving.release_evidence"
     assert cache.__all__ == ["CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"]
     assert manifest.__all__ == ["ManifestStore", "InMemoryManifestStore"]
     assert manifest.ManifestStore.__module__ == "document_kv_cache.manifest"

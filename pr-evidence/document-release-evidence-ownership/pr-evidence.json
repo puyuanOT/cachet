@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved the release-evidence ownership move with no blocking findings. The review confirmed that the document module owns the implementation, the normalized AST matches the old legacy implementation after package-prefix rewrite, the legacy facade preserves top-level and star-import compatibility, legacy main keeps monkeypatchable globals local, release-bundle imports still resolve, and the document module has no direct restaurant_kv_serving imports.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_evidence.py",
+    "src/restaurant_kv_serving/release_evidence.py",
+    "tests/test_release_evidence.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "pr-evidence/document-release-evidence-ownership/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_evidence.py tests/test_public_package.py tests/test_project_governance.py -q",
+    "poetry run pytest",
+    "poetry check",
+    "poetry build",
+    "git diff --check",
+    "repository secret-pattern scan across docs, source, tests, databricks, pr-evidence, and GitHub metadata",
+    "PYTHONPATH=src python import-boundary probe for document and legacy release_evidence modules",
+    "GPT-5.5 focused review"
+  ],
+  "what_changed": [
+    "Moved release evidence validation implementation into document_kv_cache.release_evidence with a curated document __all__ surface.",
+    "Replaced restaurant_kv_serving.release_evidence with a compatibility facade that preserves the broad legacy import surface and owns a local main function.",
+    "Added regressions for document and legacy CLI serializer monkeypatch behavior, public module ownership, legacy facade star-import compatibility, and explicit legacy-test governance."
+  ],
+  "why": "Release evidence is part of the open-source package release gate, so its implementation should live in the document package while legacy restaurant imports continue to work during migration."
+}
