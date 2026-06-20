@@ -55,8 +55,10 @@ python -m document_kv_cache.benchmark_plan \
   --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
   --engine-probe-handoff-json vllm=/data/vllm-handoff.json \
   --engine-probe-output-json vllm=/data/vllm-engine-probe.json \
+  --engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json \
   --engine-probe-handoff-json sglang=/data/sglang-handoff.json \
   --engine-probe-output-json sglang=/data/sglang-engine-probe.json \
+  --engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json \
   --engine-probe-use-builtin-factories \
   --release-evidence-output-json /data/release-evidence.json \
   --plan-output-json /data/v1-plan.json \
@@ -69,11 +71,15 @@ and Disk reader latency/throughput are measured on the same AWS g5 node. The
 Unity Catalog reader is included only when a real `--storage-benchmark-uc-volume-root`
 is provided. Backend-keyed `--engine-probe-*` options append native
 `document_kv_cache.engine_probe` commands for vLLM and SGLang handoffs; release
-evidence automatically consumes those planned outputs. Planned probes consumed
-by release evidence cannot use debug-only `--engine-probe-engine-version` or
+evidence automatically consumes those planned probe and connector-action
+outputs. Planned probes consumed by release evidence must include
+`--engine-probe-actions-output-json` for each backend and cannot use debug-only
+`--engine-probe-engine-version` or
 `--allow-non-native-engine-probe`; use explicit `--release-engine-probe-json`
-records when a plan also contains debug probe commands. Existing probe JSONs can
-still be supplied directly with repeatable `--release-engine-probe-json`. When
+and `--release-engine-actions-json` records when a plan also contains debug
+probe commands. Existing native probe and connector-action JSONs can still be
+supplied directly with repeatable `--release-engine-probe-json` and
+`--release-engine-actions-json`. When
 `--engine-probe-use-builtin-factories` is present, missing factories are filled
 with package-owned vLLM/SGLang factory paths that fail closed until real
 backend-native block-manager adapters are available. When release-evidence

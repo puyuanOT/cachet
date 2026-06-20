@@ -613,6 +613,14 @@ def _first_python_fence_after(text: str, marker: str) -> str:
     return text[code_start:fence_end]
 
 
+def _first_bash_fence_after(text: str, marker: str) -> str:
+    start = text.index(marker)
+    fence_start = text.index("```bash", start)
+    code_start = text.index("\n", fence_start) + 1
+    fence_end = text.index("```", code_start)
+    return text[code_start:fence_end]
+
+
 def test_readme_documents_cachet_brand_and_scope():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     purpose = _markdown_section(text, "Purpose And Scope")
@@ -648,6 +656,30 @@ def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
     assert document_imports
     missing_exports = sorted(name for name in document_imports if not hasattr(document_kv_cache, name))
     assert missing_exports == []
+
+
+def test_readme_benchmark_plan_examples_include_release_actions_sidecars():
+    root_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    legacy_text = (REPO_ROOT / "src" / "restaurant_kv_serving" / "README.md").read_text(encoding="utf-8")
+    compact_root_text = " ".join(root_text.split())
+    compact_legacy_text = " ".join(legacy_text.split())
+    root_example = _first_bash_fence_after(root_text, "To run the V1 benchmark contract")
+    legacy_example = _first_bash_fence_after(legacy_text, "`benchmark_plan.py` emits")
+
+    for example in (root_example, legacy_example):
+        assert "--engine-probe-output-json vllm=/data/vllm-engine-probe.json" in example
+        assert "--engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json" in example
+        assert "--engine-probe-output-json sglang=/data/sglang-engine-probe.json" in example
+        assert "--engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json" in example
+        assert "--release-evidence-output-json /data/release-evidence.json" in example
+
+    assert "release evidence must include `--engine-probe-actions-output-json`" in compact_root_text
+    assert "actions_output_json" in root_text
+    assert "release evidence must include `--engine-probe-actions-output-json`" in compact_legacy_text
+    assert "native probe and connector-action records already exist" in compact_root_text
+    assert "Existing native probe and connector-action JSONs" in compact_legacy_text
+    assert "--release-engine-actions-json" in compact_root_text
+    assert "--release-engine-actions-json" in compact_legacy_text
 
 
 def test_readme_model_profile_example_uses_portable_definition_artifact():
