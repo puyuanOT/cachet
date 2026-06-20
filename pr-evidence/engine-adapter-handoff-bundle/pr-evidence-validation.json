@@ -1,0 +1,46 @@
+{
+  "files": {
+    "pr-evidence/engine-adapter-handoff-bundle/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer Boyle the 3rd initially found same-destination and hard-link collision risks; both were fixed with pre-write collision guards and regression tests, then the reviewer approved with no remaining findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/document_kv_cache/engine_probe.py",
+        "src/document_kv_cache/__init__.py",
+        "src/cachet/__init__.pyi",
+        "src/restaurant_kv_serving/engine_probe.py",
+        "src/restaurant_kv_serving/__init__.py",
+        "tests/test_engine_probe.py",
+        "tests/test_public_package.py",
+        "tests/test_project_governance.py",
+        "pr-evidence/engine-adapter-handoff-bundle/README.md",
+        "pr-evidence/engine-adapter-handoff-bundle/pr-evidence.json",
+        "pr-evidence/engine-adapter-handoff-bundle/pr-evidence-validation.json"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_engine_probe.py -q -> 34 passed",
+        "poetry run pytest tests/test_public_package.py tests/test_project_governance.py -q -> 47 passed",
+        "poetry run pytest -q -> 1164 passed",
+        "poetry check -> All set",
+        "git diff --check -> passed",
+        "poetry run python -m compileall -q src tests -> passed",
+        "GPT-5.5 reviewer approved branch engine-adapter-handoff-bundle-writer after collision findings were resolved"
+      ],
+      "what_changed": [
+        "Added write_engine_adapter_handoff_bundle(...) for coordinated payload and JSON handoff artifact writes.",
+        "Rejected handoff_json/payload_uri destination collisions before writing, including equivalent local URI spellings and existing hard links.",
+        "Exported the helper through the document package, Cachet type facade, and legacy compatibility namespace.",
+        "Updated README handoff guidance and public API/governance regression tests."
+      ],
+      "why": "Engine-serving integrations should have a safe public helper for producing the two durable handoff artifacts that vLLM/SGLang connector processes consume."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

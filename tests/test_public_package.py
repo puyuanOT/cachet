@@ -196,6 +196,7 @@ def test_public_document_package_reexports_core_api():
         validate_engine_kv_connector_actions_record,
         write_benchmark_job_plan_json,
         write_benchmark_job_plan_shell,
+        write_engine_adapter_handoff_bundle,
         write_engine_adapter_payload,
         write_engine_kv_connector_actions_record_json,
         write_model_profile_definition_json,
@@ -340,6 +341,7 @@ def test_public_document_package_reexports_core_api():
     assert build_engine_adapter_request is engine_adapters.build_engine_adapter_request
     assert build_engine_adapter_request is restaurant_kv_serving.build_engine_adapter_request
     assert build_engine_adapter_request.__module__ == "document_kv_cache.engine_adapters"
+    assert write_engine_adapter_handoff_bundle.__module__ == "document_kv_cache.engine_probe"
     assert write_engine_adapter_payload.__module__ == "document_kv_cache.engine_probe"
     assert vllm_adapter_spec is engine_adapters.vllm_adapter_spec
     assert vllm_adapter_spec is restaurant_kv_serving.vllm_adapter_spec
@@ -544,6 +546,12 @@ def test_public_document_package_reexports_core_api():
     assert validate_native_probe_factories_record is native_probe_factories.validate_native_probe_factories_record
     assert validate_native_probe_factories_record is restaurant_kv_serving.validate_native_probe_factories_record
     assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
+    assert write_engine_adapter_handoff_bundle is engine_probe.write_engine_adapter_handoff_bundle
+    assert write_engine_adapter_handoff_bundle.__module__ == "document_kv_cache.engine_probe"
+    assert (
+        restaurant_kv_serving.write_engine_adapter_handoff_bundle.__module__
+        == "restaurant_kv_serving.engine_probe"
+    )
     assert write_engine_adapter_payload is engine_probe.write_engine_adapter_payload
     assert write_engine_adapter_payload.__module__ == "document_kv_cache.engine_probe"
     assert restaurant_kv_serving.write_engine_adapter_payload.__module__ == "restaurant_kv_serving.engine_probe"
@@ -675,6 +683,7 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "write_benchmark_job_plan_json" in document_kv_cache.__all__
     assert "write_benchmark_job_plan_shell" in document_kv_cache.__all__
     assert "write_engine_probe_targets_json" in document_kv_cache.__all__
+    assert "write_engine_adapter_handoff_bundle" in document_kv_cache.__all__
     assert "write_engine_adapter_payload" in document_kv_cache.__all__
     assert "write_engine_kv_connector_actions_record_json" in document_kv_cache.__all__
     assert "read_databricks_engine_probe_targets_file_json" in document_kv_cache.__all__
@@ -721,6 +730,10 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
         star_namespace["write_engine_kv_connector_actions_record_json"]
         is document_kv_cache.write_engine_kv_connector_actions_record_json
     )
+    assert (
+        star_namespace["write_engine_adapter_handoff_bundle"]
+        is document_kv_cache.write_engine_adapter_handoff_bundle
+    )
     assert star_namespace["write_engine_adapter_payload"] is document_kv_cache.write_engine_adapter_payload
     assert (
         star_namespace["SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES"]
@@ -761,6 +774,7 @@ def test_cachet_brand_facade_delegates_to_document_package():
         NATIVE_PROBE_FACTORIES_RECORD_TYPE,
         native_probe_adapter_contract_to_record,
         write_builtin_native_probe_factories_record_json,
+        write_engine_adapter_handoff_bundle,
         write_engine_adapter_payload,
     )
 
@@ -774,6 +788,7 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert NATIVE_PROBE_ADAPTER_CONTRACT is document_kv_cache.NATIVE_PROBE_ADAPTER_CONTRACT
     assert NATIVE_PROBE_FACTORIES_RECORD_TYPE is document_kv_cache.NATIVE_PROBE_FACTORIES_RECORD_TYPE
     assert native_probe_adapter_contract_to_record is document_kv_cache.native_probe_adapter_contract_to_record
+    assert write_engine_adapter_handoff_bundle is document_kv_cache.write_engine_adapter_handoff_bundle
     assert write_engine_adapter_payload is document_kv_cache.write_engine_adapter_payload
     assert (
         write_builtin_native_probe_factories_record_json
@@ -799,6 +814,7 @@ def test_cachet_brand_facade_delegates_to_document_package():
         "write_builtin_native_probe_factories_record_json as write_builtin_native_probe_factories_record_json"
         in stub_text
     )
+    assert "write_engine_adapter_handoff_bundle as write_engine_adapter_handoff_bundle" in stub_text
     assert "write_engine_adapter_payload as write_engine_adapter_payload" in stub_text
     assert "from document_kv_cache.models import" in stub_text
     assert "DocumentKVRequest as DocumentKVRequest" in stub_text
@@ -1317,6 +1333,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "EngineKVProbeFactoryResult",
         "run_engine_kv_connector_probe",
         "read_engine_adapter_payload",
+        "write_engine_adapter_handoff_bundle",
         "write_engine_adapter_payload",
         "write_engine_kv_connector_actions_record_json",
         "write_engine_kv_connector_probe_result_json",

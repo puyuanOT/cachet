@@ -166,6 +166,7 @@ __all__ += [
     "EngineKVProbeConfig",
     "run_engine_kv_connector_probe",
     "read_engine_adapter_payload",
+    "write_engine_adapter_handoff_bundle",
     "write_engine_adapter_payload",
     "write_engine_kv_connector_actions_record_json",
     "write_engine_kv_connector_probe_result_json",
@@ -250,6 +251,22 @@ def write_engine_adapter_payload(request: EngineAdapterRequest, payload_uri: str
     return _call_document_function("write_engine_adapter_payload", request, payload_uri)
 
 
+def write_engine_adapter_handoff_bundle(
+    request: EngineAdapterRequest,
+    handoff_json: str | Path,
+    *,
+    payload_uri: str,
+    require_external_payload_uri: bool = True,
+) -> tuple[Path, Path]:
+    return _call_document_function(
+        "write_engine_adapter_handoff_bundle",
+        request,
+        handoff_json,
+        payload_uri=payload_uri,
+        require_external_payload_uri=require_external_payload_uri,
+    )
+
+
 def write_engine_kv_connector_probe_result_json(
     result: EngineKVConnectorProbeResult,
     path: str | Path,
@@ -304,6 +321,7 @@ def _validate_metadata_strings(metadata: Mapping[str, str]) -> None:
 _DEFAULT_COMPAT_FUNCTIONS = {
     "run_engine_kv_connector_probe": run_engine_kv_connector_probe,
     "read_engine_adapter_payload": read_engine_adapter_payload,
+    "write_engine_adapter_handoff_bundle": write_engine_adapter_handoff_bundle,
     "write_engine_adapter_payload": write_engine_adapter_payload,
     "write_engine_kv_connector_actions_record_json": write_engine_kv_connector_actions_record_json,
     "write_engine_kv_connector_probe_result_json": write_engine_kv_connector_probe_result_json,

@@ -235,6 +235,7 @@ from document_kv_cache.engine_probe import (
     load_engine_kv_probe_factory as load_engine_kv_probe_factory,
     read_engine_adapter_payload as read_engine_adapter_payload,
     run_engine_kv_connector_probe as run_engine_kv_connector_probe,
+    write_engine_adapter_handoff_bundle as write_engine_adapter_handoff_bundle,
     write_engine_adapter_payload as write_engine_adapter_payload,
     write_engine_kv_connector_actions_record_json as write_engine_kv_connector_actions_record_json,
     write_engine_kv_connector_probe_result_json as write_engine_kv_connector_probe_result_json,
