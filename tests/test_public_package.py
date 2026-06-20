@@ -50,9 +50,11 @@ def test_public_document_package_reexports_core_api():
         EngineProbePlanConfig,
         EngineKVProbeConfig,
         EngineKVProbeFactory,
+        InMemoryManifestStore,
         KVCacheKey,
         KVMaterializer,
         KVStorageLayout,
+        ManifestStore,
         MODEL_PROFILE_RECORD_TYPE,
         MaterializedKV,
         ModelProfileDefinition,
@@ -192,11 +194,13 @@ def test_public_document_package_reexports_core_api():
     assert EngineKVProbeConfig is engine_probe.EngineKVProbeConfig
     assert issubclass(restaurant_kv_serving.EngineKVProbeConfig, engine_probe.EngineKVProbeConfig)
     assert EngineKVProbeFactory is engine_probe.EngineKVProbeFactory
+    assert InMemoryManifestStore is restaurant_kv_serving.InMemoryManifestStore
     assert KVCacheKey is restaurant_kv_serving.KVCacheKey
     assert KVMaterializer is materializer.KVMaterializer
     assert KVMaterializer is restaurant_kv_serving.KVMaterializer
     assert KVStorageLayout is restaurant_kv_serving.KVStorageLayout
     assert kv_storage_layout_from_value is restaurant_kv_serving.kv_storage_layout_from_value
+    assert ManifestStore is restaurant_kv_serving.ManifestStore
     assert MaterializedKV is materializer.MaterializedKV
     assert MaterializedKV is restaurant_kv_serving.MaterializedKV
     assert MODEL_PROFILE_RECORD_TYPE is restaurant_kv_serving.MODEL_PROFILE_RECORD_TYPE
@@ -355,6 +359,8 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "read_databricks_engine_probe_targets_file_json" in document_kv_cache.__all__
     assert "summarize_databricks_run_submit_payload" in document_kv_cache.__all__
     assert "DocumentKVRequest" in document_kv_cache.__all__
+    assert "ManifestStore" in document_kv_cache.__all__
+    assert "InMemoryManifestStore" in document_kv_cache.__all__
     assert "DocumentKVService" in document_kv_cache.__all__
     assert "EngineProbePlanConfig" in document_kv_cache.__all__
     assert "DocumentChunkType" in document_kv_cache.__all__
@@ -654,6 +660,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     cache = importlib.import_module("document_kv_cache.cache")
     engine_adapters = importlib.import_module("document_kv_cache.engine_adapters")
     kvpack = importlib.import_module("document_kv_cache.kvpack")
+    manifest = importlib.import_module("document_kv_cache.manifest")
     models = importlib.import_module("document_kv_cache.models")
     openai_compatible = importlib.import_module("document_kv_cache.openai_compatible")
     pr_evidence = importlib.import_module("document_kv_cache.pr_evidence")
@@ -718,6 +725,11 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     ]
     assert kvpack.__all__ == ["PackChunk", "LocalRangeReader", "write_kvpack"]
     assert cache.__all__ == ["CacheTier", "ChunkCacheResult", "ChunkCacheStats", "ByteLRU", "ChunkCache"]
+    assert manifest.__all__ == ["ManifestStore", "InMemoryManifestStore"]
+    assert manifest.ManifestStore.__module__ == "document_kv_cache.manifest"
+    assert manifest.InMemoryManifestStore.__module__ == "document_kv_cache.manifest"
+    assert restaurant_kv_serving.ManifestStore is manifest.ManifestStore
+    assert restaurant_kv_serving.InMemoryManifestStore is manifest.InMemoryManifestStore
     assert materializer.__all__ == ["MaterializedKV", "SegmentedMaterializedKV", "KVMaterializer"]
     assert storage.__all__ == [
         "RangeReader",
@@ -786,6 +798,8 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert root_star_namespace["ChunkRef"] is models.ChunkRef
     assert root_star_namespace["DocumentKVRequest"] is models.DocumentKVRequest
     assert root_star_namespace["MaterializationPlan"] is models.MaterializationPlan
+    assert root_star_namespace["ManifestStore"] is manifest.ManifestStore
+    assert root_star_namespace["InMemoryManifestStore"] is manifest.InMemoryManifestStore
     assert root_star_namespace["MaterializedKV"] is materializer.MaterializedKV
     assert root_star_namespace["SegmentedMaterializedKV"] is materializer.SegmentedMaterializedKV
     assert root_star_namespace["KVMaterializer"] is materializer.KVMaterializer

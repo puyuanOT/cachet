@@ -133,6 +133,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.openai_compatible",
     },
     "tests/test_planner_materializer.py": {
+        "restaurant_kv_serving.manifest",
         "restaurant_kv_serving.materializer",
         "restaurant_kv_serving.models",
     },
