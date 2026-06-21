@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/keep-legacy-release-help-private/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "Goodall the 3rd reviewed the namespace follow-up with GPT-5.5, found no issues, and approved. The reviewer also verified star-import does not expose the public or private help constants from the legacy facade.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "Legacy release-bundle namespace hygiene only; CLI behavior and release-bundle validation remain unchanged."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py tests/test_public_package.py -q; poetry run pytest -q; poetry check; git diff --check; poetry run python -m compileall -q src tests; poetry run pytest tests/test_release_bundle.py::test_release_bundle_strict_release_help_stays_shared_between_public_and_legacy_clis tests/test_release_bundle.py::test_release_bundle_cli_help_documents_strict_release_requirements -q"
+      ],
+      "what_changed": [
+        "Kept the strict V1 release-bundle help constant private inside the legacy restaurant_kv_serving release-bundle facade while still reusing the canonical public text."
+      ],
+      "why": "The legacy module has no curated __all__, so imported non-underscore names become visible through star import; the shared help text should not expand the legacy public surface."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
