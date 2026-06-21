@@ -35,11 +35,15 @@ __all__ = reexport_public(
 
 __all__ += [
     "RESERVED_SINGLE_NODE_G5_TAG_KEYS",
+    "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
     "RUNNER_SCRIPT",
     "DatabricksSingleNodeG5ClusterConfig",
+    "DatabricksSingleNodeGPUClusterConfig",
     "DatabricksBenchmarkJobConfig",
     "validate_aws_g5_node_type",
+    "validate_aws_single_node_gpu_type",
     "build_single_node_g5_cluster",
+    "build_single_node_gpu_cluster",
     "build_databricks_run_submit_payload",
     "write_databricks_run_submit_json",
     "write_databricks_runner_script",
@@ -84,6 +88,7 @@ _PUBLIC_CONSTANT_NAMES = frozenset(
         "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
         "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
         "RESERVED_SINGLE_NODE_G5_TAG_KEYS",
+        "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
         "RUNNER_SCRIPT",
     }
 )
@@ -285,6 +290,9 @@ class DatabricksSingleNodeG5ClusterConfig(_public_class_base("DatabricksSingleNo
             raise ValueError(f"custom_tags cannot override reserved tags: {sorted(reserved_tags)!r}")
 
 
+DatabricksSingleNodeGPUClusterConfig = DatabricksSingleNodeG5ClusterConfig
+
+
 class DatabricksBenchmarkJobConfig(_public_class_base("DatabricksBenchmarkJobConfig")):
     __slots__ = ()
 
@@ -312,6 +320,9 @@ def validate_aws_g5_node_type(node_type_id: str) -> None:
     return _call_document_function("validate_aws_g5_node_type", node_type_id)
 
 
+validate_aws_single_node_gpu_type = validate_aws_g5_node_type
+
+
 def build_databricks_run_submit_payload(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
     return _call_document_function("build_databricks_run_submit_payload", config)
 
@@ -326,6 +337,9 @@ def write_databricks_runner_script(path: str | Path) -> None:
 
 def build_single_node_g5_cluster(config: DatabricksSingleNodeG5ClusterConfig) -> dict[str, Any]:
     return _call_document_function("build_single_node_g5_cluster", config)
+
+
+build_single_node_gpu_cluster = build_single_node_g5_cluster
 
 
 def _single_node_g5_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
@@ -350,10 +364,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 _DEFAULT_COMPAT_FUNCTIONS = {
     "validate_aws_g5_node_type": validate_aws_g5_node_type,
+    "validate_aws_single_node_gpu_type": validate_aws_single_node_gpu_type,
     "build_databricks_run_submit_payload": build_databricks_run_submit_payload,
     "write_databricks_run_submit_json": write_databricks_run_submit_json,
     "write_databricks_runner_script": write_databricks_runner_script,
     "build_single_node_g5_cluster": build_single_node_g5_cluster,
+    "build_single_node_gpu_cluster": build_single_node_gpu_cluster,
     "_single_node_g5_cluster": _single_node_g5_cluster,
     "_cluster_config_from_benchmark_job": _cluster_config_from_benchmark_job,
     "_is_single_user_mode": _is_single_user_mode,

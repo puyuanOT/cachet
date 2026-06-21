@@ -817,6 +817,22 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     legacy_star_namespace: dict[str, object] = {}
     exec("from restaurant_kv_serving import *", legacy_star_namespace)
     assert (
+        legacy_star_namespace["DatabricksSingleNodeGPUClusterConfig"]
+        is restaurant_kv_serving.DatabricksSingleNodeGPUClusterConfig
+    )
+    assert (
+        legacy_star_namespace["RESERVED_SINGLE_NODE_GPU_TAG_KEYS"]
+        is restaurant_kv_serving.RESERVED_SINGLE_NODE_GPU_TAG_KEYS
+    )
+    assert (
+        legacy_star_namespace["build_single_node_gpu_cluster"]
+        is restaurant_kv_serving.build_single_node_gpu_cluster
+    )
+    assert (
+        legacy_star_namespace["validate_aws_single_node_gpu_type"]
+        is restaurant_kv_serving.validate_aws_single_node_gpu_type
+    )
+    assert (
         legacy_star_namespace["ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE"]
         is restaurant_kv_serving.ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE
     )
@@ -1235,6 +1251,13 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         restaurant_kv_serving.DatabricksSingleNodeG5ClusterConfig,
         databricks_job.DatabricksSingleNodeG5ClusterConfig,
     )
+    assert (
+        restaurant_kv_serving.DatabricksSingleNodeGPUClusterConfig
+        is restaurant_kv_serving.DatabricksSingleNodeG5ClusterConfig
+    )
+    assert restaurant_kv_serving.RESERVED_SINGLE_NODE_GPU_TAG_KEYS is databricks_job.RESERVED_SINGLE_NODE_GPU_TAG_KEYS
+    assert restaurant_kv_serving.build_single_node_gpu_cluster is restaurant_kv_serving.build_single_node_g5_cluster
+    assert restaurant_kv_serving.validate_aws_single_node_gpu_type is restaurant_kv_serving.validate_aws_g5_node_type
     assert databricks_job.DatabricksBenchmarkJobConfig.__module__ == "document_kv_cache.databricks_job"
     assert restaurant_kv_serving.DatabricksBenchmarkJobConfig.__module__ == "restaurant_kv_serving.databricks_job"
     assert (

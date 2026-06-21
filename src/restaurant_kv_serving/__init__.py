@@ -90,6 +90,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_job",
         "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
     ),
+    "RESERVED_SINGLE_NODE_GPU_TAG_KEYS": (
+        "restaurant_kv_serving.databricks_job",
+        "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
+    ),
     "DEFAULT_HARDWARE_TARGET": ("restaurant_kv_serving.benchmarks", "DEFAULT_HARDWARE_TARGET"),
     "PLAN_VERSION": ("restaurant_kv_serving.benchmark_plan", "PLAN_VERSION"),
     "ENGINE_PROBE_TARGETS_RECORD_TYPE": (
@@ -230,6 +234,10 @@ _EXPORTS = {
     "DatabricksSingleNodeG5ClusterConfig": (
         "restaurant_kv_serving.databricks_job",
         "DatabricksSingleNodeG5ClusterConfig",
+    ),
+    "DatabricksSingleNodeGPUClusterConfig": (
+        "restaurant_kv_serving.databricks_job",
+        "DatabricksSingleNodeGPUClusterConfig",
     ),
     "DatabricksVLLMSmokeJobConfig": (
         "restaurant_kv_serving.databricks_vllm_smoke_job",
@@ -511,6 +519,7 @@ _EXPORTS = {
     ),
     "build_release_bundle": ("restaurant_kv_serving.release_bundle", "build_release_bundle"),
     "build_single_node_g5_cluster": ("restaurant_kv_serving.databricks_job", "build_single_node_g5_cluster"),
+    "build_single_node_gpu_cluster": ("restaurant_kv_serving.databricks_job", "build_single_node_gpu_cluster"),
     "build_handle_from_materialized": ("restaurant_kv_serving.engine", "build_handle_from_materialized"),
     "compare_to_baseline": ("restaurant_kv_serving.benchmarks", "compare_to_baseline"),
     "convert_v1_jsonl": ("restaurant_kv_serving.dataset_prep", "convert_v1_jsonl"),
@@ -718,6 +727,10 @@ _EXPORTS = {
         "storage_benchmark_evidence_to_record",
     ),
     "validate_aws_g5_node_type": ("restaurant_kv_serving.databricks_job", "validate_aws_g5_node_type"),
+    "validate_aws_single_node_gpu_type": (
+        "restaurant_kv_serving.databricks_job",
+        "validate_aws_single_node_gpu_type",
+    ),
     "v1_dataset_specs": ("restaurant_kv_serving.benchmarks", "v1_dataset_specs"),
     "validate_v1_dataset": ("restaurant_kv_serving.benchmarks", "validate_v1_dataset"),
     "validate_v1_hardware_target": ("restaurant_kv_serving.benchmarks", "validate_v1_hardware_target"),
@@ -877,6 +890,7 @@ __all__ = [
     "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
     "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
     "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
+    "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
     "DEFAULT_HARDWARE_TARGET",
     "PLAN_VERSION",
     "ENGINE_PROBE_TARGETS_RECORD_TYPE",
@@ -948,6 +962,7 @@ __all__ = [
     "DatabricksEngineProbeTargetConfig",
     "DatabricksEngineProbeTargetsFile",
     "DatabricksSingleNodeG5ClusterConfig",
+    "DatabricksSingleNodeGPUClusterConfig",
     "DatabricksVLLMSmokeJobConfig",
     "DatabricksStorageBenchmarkJobConfig",
     "DatabricksWorkspaceConfig",
@@ -1082,6 +1097,7 @@ __all__ = [
     "build_databricks_storage_benchmark_run_submit_payload",
     "build_release_bundle",
     "build_single_node_g5_cluster",
+    "build_single_node_gpu_cluster",
     "build_handle_from_materialized",
     "compare_to_baseline",
     "convert_v1_jsonl",
@@ -1157,6 +1173,7 @@ __all__ = [
     "storage_benchmark_result_to_record",
     "storage_benchmark_evidence_to_record",
     "validate_aws_g5_node_type",
+    "validate_aws_single_node_gpu_type",
     "validate_v1_hardware_target",
     "validate_databricks_run_status_sidecar",
     "v1_dataset_specs",

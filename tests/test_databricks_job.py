@@ -1012,13 +1012,14 @@ def test_legacy_databricks_job_reexports_document_owned_types():
         legacy_databricks_job.DatabricksBenchmarkJobConfig.__module__
         == "restaurant_kv_serving.databricks_job"
     )
-    document_only_aliases = {
-        "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
-        "DatabricksSingleNodeGPUClusterConfig",
-        "validate_aws_single_node_gpu_type",
-        "build_single_node_gpu_cluster",
-    }
-    assert set(public_databricks_job.__all__) - document_only_aliases < set(legacy_databricks_job.__all__)
+    assert set(public_databricks_job.__all__) < set(legacy_databricks_job.__all__)
+    assert legacy_databricks_job.RESERVED_SINGLE_NODE_GPU_TAG_KEYS is legacy_databricks_job.RESERVED_SINGLE_NODE_G5_TAG_KEYS
+    assert (
+        legacy_databricks_job.DatabricksSingleNodeGPUClusterConfig
+        is legacy_databricks_job.DatabricksSingleNodeG5ClusterConfig
+    )
+    assert legacy_databricks_job.validate_aws_single_node_gpu_type is legacy_databricks_job.validate_aws_g5_node_type
+    assert legacy_databricks_job.build_single_node_gpu_cluster is legacy_databricks_job.build_single_node_g5_cluster
 
 
 def test_legacy_databricks_job_config_pickle_uses_honest_legacy_module():
@@ -1057,20 +1058,24 @@ def test_legacy_databricks_job_keeps_previous_star_import_surface():
         "DEFAULT_DATABRICKS_TASK_KEY",
         "DatabricksBenchmarkJobConfig",
         "DatabricksSingleNodeG5ClusterConfig",
+        "DatabricksSingleNodeGPUClusterConfig",
         "Mapping",
         "Path",
         "RESERVED_SINGLE_NODE_G5_TAG_KEYS",
+        "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
         "RUNNER_SCRIPT",
         "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
         "Sequence",
         "argparse",
         "build_databricks_run_submit_payload",
         "build_single_node_g5_cluster",
+        "build_single_node_gpu_cluster",
         "dataclass",
         "field",
         "json",
         "main",
         "validate_aws_g5_node_type",
+        "validate_aws_single_node_gpu_type",
         "write_databricks_run_submit_json",
         "write_databricks_runner_script",
     }
