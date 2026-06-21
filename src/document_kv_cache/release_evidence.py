@@ -1400,6 +1400,12 @@ def _validate_v1_measurement_token_context(
         issues.append(f"{label} baseline runtime_prompt_tokens must equal logical_prompt_tokens")
     if arm_id == CACHE_REUSE_ARM and runtime_prompt_tokens >= logical_prompt_tokens:
         issues.append(f"{label} cache runtime_prompt_tokens must be smaller than logical_prompt_tokens")
+    prompt_tokens = measurement.get("prompt_tokens")
+    if _is_positive_int(prompt_tokens):
+        if arm_id == BASELINE_PREFILL_ARM and prompt_tokens != logical_prompt_tokens:
+            issues.append(f"{label} baseline prompt_tokens must equal metadata.logical_prompt_tokens")
+        elif arm_id == CACHE_REUSE_ARM and prompt_tokens != runtime_prompt_tokens:
+            issues.append(f"{label} cache prompt_tokens must equal metadata.runtime_prompt_tokens")
 
 
 def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> None:

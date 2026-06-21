@@ -987,6 +987,47 @@ def test_evaluate_release_evidence_rejects_wrong_prompt_text_mode_for_arm():
     )
 
 
+def test_evaluate_release_evidence_rejects_prompt_tokens_that_do_not_match_arm_context():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "prompt_tokens": 128,
+    }
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "prompt_tokens_mean": 128.0,
+    }
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "prompt_tokens": 1024,
+    }
+    v1_record["report_rows"][1] = {
+        **v1_record["report_rows"][1],
+        "prompt_tokens_mean": 1024.0,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:baseline_prefill baseline prompt_tokens must equal metadata.logical_prompt_tokens"
+        in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:document_kv_cache cache prompt_tokens must equal metadata.runtime_prompt_tokens"
+        in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_zero_token_volume_and_all_error_summary_rows():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
