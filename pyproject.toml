@@ -29,8 +29,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/puyuanOT/document-kv-cache"
-Issues = "https://github.com/puyuanOT/document-kv-cache/issues"
+Repository = "https://github.com/puyuanOT/cachet"
+Issues = "https://github.com/puyuanOT/cachet/issues"
 
 [project.optional-dependencies]
 databricks = [

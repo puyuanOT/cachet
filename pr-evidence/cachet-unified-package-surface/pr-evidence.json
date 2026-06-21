@@ -1,0 +1,40 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer Epicurus initially blocked on unresolvable adapter extras, runtime-only typed module aliases, python -m alias failure, dead future repo URLs, and docs contradiction; after fixes, Epicurus approved with no findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 302,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/302",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/cachet/",
+    "pyproject.toml",
+    "README.md",
+    "docs/README.md",
+    "docs/v1-requirements-matrix.md",
+    "src/README.md",
+    "src/document_kv_cache/README.md",
+    ".github/README.md",
+    ".github/workflows/ci.yml",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "python -m pytest tests/test_public_package.py tests/test_project_governance.py -q -> 52 passed",
+    "python -m pytest -q -> 1397 passed",
+    "poetry build -> built sdist and wheel",
+    "installed-wheel smoke for cachet/document_kv_cache/restaurant_kv_serving imports and cachet.workflow alias identity -> passed",
+    "installed-wheel python -m cachet.benchmark_plan --help -> passed",
+    "gh pr checks 302 --watch -> Test and build passed",
+    "GPT-5.5 high-reasoning review by Epicurus approved after findings were resolved"
+  ],
+  "what_changed": [
+    "Exposed public document modules through typed cachet.<module> facades while preserving document_kv_cache implementation module identity for runtime imports.",
+    "Renamed the GitHub repository to puyuanOT/cachet and updated project URLs/docs while keeping the transitional document-kv-cache distribution name.",
+    "Kept vLLM/SGLang serving-engine packages out of Cachet optional dependencies until adapter wheels are published or vendored under release-safe extras."
+  ],
+  "why": "Make Cachet the primary repository and import surface without breaking existing document_kv_cache imports, Databricks evidence paths, or native-probe validation."
+}

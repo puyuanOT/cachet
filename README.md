@@ -14,13 +14,14 @@ outside the inference engine:
 - admission metadata for external serving-engine connectors
 - local tests and Databricks benchmark support
 
-The package publishes as `document-kv-cache` and exposes the branded `cachet`
-root import facade plus the canonical `document_kv_cache` implementation import
-path. Cachet is the product brand; the Python distribution name stays explicit
-for package discovery and backward compatibility. Installed wheels expose
-`cachet-*` CLI aliases for the primary Cachet workflow commands as well as
-explicit `document-kv-*` command names. The legacy `restaurant_kv_serving`
-package and
+The package publishes through the transitional `document-kv-cache` distribution
+name and exposes the branded `cachet` root and `cachet.<module>` import
+facades over the canonical `document_kv_cache` implementation modules. Cachet
+is the product brand and primary repository identity; the distribution name
+stays explicit for package discovery and backward compatibility until the
+package-index migration is complete. Installed wheels expose `cachet-*` CLI
+aliases for the primary Cachet workflow commands as well as explicit
+`document-kv-*` command names. The legacy `restaurant_kv_serving` package and
 restaurant-specific aliases are still bundled as compatibility shims for
 existing benchmark jobs. New code should use the document-generic names:
 `DocumentKVRequest`, `DocumentChunkType.DOCUMENT_STATIC`,
@@ -43,7 +44,10 @@ The package deliberately stops at the engine handoff boundary. vLLM, SGLang, or
 another established serving engine owns scheduling, decode, LoRA execution, and
 native KV block management. Cachet provides the manifest, storage, materialized
 payload, admission metadata, benchmark evidence, and adapter contracts that let
-those engines reuse precomputed document context safely.
+those engines reuse precomputed document context safely. Cachet keeps the
+vLLM/SGLang adapter contracts and launch metadata in this package while the
+thin adapter wheels remain separately installable until they are published or
+vendored under the Cachet repository with release-safe extras.
 
 The current implementation and release gaps are tracked in
 `docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1
@@ -1237,7 +1241,7 @@ remain open:
 ```bash
 export GITHUB_TOKEN=...
 python -m document_kv_cache.github_governance \
-  --repository OWNER/document-kv-cache \
+  --repository OWNER/cachet \
   --output-json github-governance.json
 ```
 

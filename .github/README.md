@@ -21,7 +21,7 @@ curl -L -X PUT \
   -H "Accept: application/vnd.github+json" \
   -H "Authorization: Bearer $GITHUB_TOKEN" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
-  https://api.github.com/repos/OWNER/document-kv-cache/branches/main/protection \
+  https://api.github.com/repos/OWNER/cachet/branches/main/protection \
   --data @.github/main-branch-protection.json
 ```
 
