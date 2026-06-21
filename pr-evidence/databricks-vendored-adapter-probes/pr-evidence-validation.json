@@ -1,0 +1,41 @@
+{
+  "files": {
+    "pr-evidence/databricks-vendored-adapter-probes/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "APPROVED by GPT-5.5/high reviewer Godel with no findings; reviewer checked strict release-safe validation, custom extension wheel wording, stale adapter-wheel assumptions, and checked-in/package template sync.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 304,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/304",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "databricks/engine-probe/README.md",
+        "databricks/engine-probe/databricks.yml",
+        "src/document_kv_cache/databricks_engine_probe_job.py",
+        "src/document_kv_cache/templates/databricks/engine-probe/README.md",
+        "src/document_kv_cache/templates/databricks/engine-probe/databricks.yml",
+        "tests/test_databricks_engine_probe_job.py"
+      ],
+      "verification": [
+        "python -m pytest -q tests/test_databricks_engine_probe_job.py -> 81 passed",
+        "python -m pytest -q tests/test_benchmark_plan.py -> 110 passed",
+        "python -m pytest -q -> 1568 passed",
+        "poetry build -> passed",
+        "fresh venv wheel smoke imported cachet.adapters.vllm, cachet.adapters.sglang, vllm_kv_injection, sglang_kv_injection, and read the packaged engine-probe template -> wheel smoke ok",
+        "GitHub CI Test and build for PR #304 -> success"
+      ],
+      "what_changed": [
+        "Databricks engine-probe tests now prove the provider-backed vLLM path installs only the vLLM runtime package plus the Cachet wheel, with adapter imports supplied by the vendored modules in that wheel.",
+        "Stale standalone vllm_kv_injection/sglang_kv_injection wheel examples were renamed to custom extension wheel fixtures while preserving --extra-wheel-uri as an explicit extension hook.",
+        "Engine-probe CLI help, README guidance, and checked-in/package Databricks bundle templates now document that Cachet ships the built-in vLLM/SGLang adapter modules."
+      ],
+      "why": "After vendoring engine adapters into Cachet, Databricks release probes should not require separate adapter wheels before the native connector wiring is tested on AWS g6/L4."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
