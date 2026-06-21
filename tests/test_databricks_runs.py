@@ -232,6 +232,18 @@ def test_databricks_run_status_sidecar_validation_requires_submit_payload():
     )
 
 
+def test_databricks_run_status_sidecar_validation_requires_null_active_task_key_for_success():
+    status_record = _valid_databricks_run_status_record()
+    bad_record = {**status_record, "active_task_key": "run-benchmark"}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert (
+        "Databricks run status sidecar active_task_key must be null for successful terminal runs"
+        in issues
+    )
+
+
 def test_databricks_run_status_sidecar_validation_rejects_non_g5_or_mismatched_payload():
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))

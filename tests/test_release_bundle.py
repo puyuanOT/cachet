@@ -1053,6 +1053,12 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "missing-submit-payload-databricks-run-status.json",
         missing_submit_payload_status_record,
     )
+    active_task_key_status_record = _databricks_run_status_record(succeeded=True)
+    active_task_key_status_record["active_task_key"] = "run-benchmark"
+    active_task_key_status = _write_json(
+        tmp_path / "active-taskkey-databricks-run-status.json",
+        active_task_key_status_record,
+    )
     non_g5_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
     non_g5_submit_payload_status_record["submit_payload"]["aws_g5_node_type"] = False
     non_g5_submit_payload_status_record["submit_payload"]["tasks"][0]["node_type_id"] = "g6.4xlarge"
@@ -1907,6 +1913,16 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(missing_submit_payload_status,),
             output_dir=tmp_path / "missing-submit-payload-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match="active_task_key must be null for successful terminal runs"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            databricks_run_status_jsons=(active_task_key_status,),
+            output_dir=tmp_path / "active-taskkey-databricks-status-bundle",
         )
 
     with pytest.raises(ValueError, match="aws_g5_node_type"):
