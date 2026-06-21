@@ -1349,12 +1349,21 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
 
     assert "engine-probe/databricks.yml" in readme_text
     assert "cd databricks/engine-probe" in readme_text
-    assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in readme_text
-    assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in root_readme_text
-    assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in module_readme_text
+    assert "--provider-backed-vllm-native-probe" in readme_text
+    assert "--provider-backed-vllm-native-probe" in root_readme_text
+    assert "--provider-backed-vllm-native-probe" in module_readme_text
+    assert "--fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture" in readme_text
+    assert "--fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture" in root_readme_text
+    assert "--fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture" in module_readme_text
     assert "--var probe_factory=document_kv_cache.native_probe_factories:vllm_native_probe_factory" in readme_text
-    assert "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json" in readme_text
-    assert "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json" in root_readme_text
+    assert (
+        "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json"
+        in readme_text
+    )
+    assert (
+        "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json"
+        in root_readme_text
+    )
     assert "--var payload_uri=" in readme_text
     assert "--var payload_uri=" in probe_readme_text
     assert "--var actions_output_json=" in readme_text

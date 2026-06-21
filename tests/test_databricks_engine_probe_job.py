@@ -14,6 +14,7 @@ from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
     DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+    DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     DatabricksEngineProbeJobConfig,
@@ -34,6 +35,7 @@ from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
+    VLLM_NATIVE_PROBE_FACTORY,
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 
@@ -45,7 +47,7 @@ CUSTOM_VLLM_EXTENSION_WHEEL_URI = (
 CUSTOM_SGLANG_EXTENSION_WHEEL_URI = (
     "/Volumes/catalog/schema/volume/wheels/custom_sglang_probe_extension-0.1.0-py3-none-any.whl"
 )
-VLLM_RUNTIME_PACKAGE = "vllm==0.23.0"
+VLLM_RUNTIME_PACKAGE = DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE
 SGLANG_RUNTIME_PACKAGE = "sglang==0.5.10.post1"
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -1671,6 +1673,103 @@ def test_main_derives_single_engine_probe_handoff_from_fixture_output_dir(tmp_pa
     ]
 
 
+def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+
+    exit_code = main(
+        [
+            "--provider-backed-vllm-native-probe",
+            "--fixture-output-dir",
+            fixture_dir,
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-probe.json",
+            "--actions-output-json",
+            f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--wheel-uri",
+            WHEEL_URI,
+            "--node-type-id",
+            "g6.8xlarge",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--metadata",
+            "probe.source=qa-g6",
+            "--release-safe",
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    task = payload["tasks"][0]
+    cluster = task["new_cluster"]
+    parameters = task["spark_python_task"]["parameters"]
+
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["driver_node_type_id"] == "g6.8xlarge"
+    assert cluster["spark_env_vars"] == {
+        VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
+    }
+    assert parameters[parameters.index("--probe-factory") + 1] == VLLM_NATIVE_PROBE_FACTORY
+    assert parameters[parameters.index("--expected-backend") + 1] == "vllm"
+    assert _parameter_values(parameters, "--metadata") == [
+        "probe.source=qa-g6",
+        VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+    ]
+    assert _parameter_values(parameters, "--pip-package") == [VLLM_RUNTIME_PACKAGE]
+    assert _parameter_values(parameters, "--package-wheel-uri") == [WHEEL_URI]
+    assert "--allow-non-native-probe" not in parameters
+    assert "--engine-version" not in parameters
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_error"),
+    [
+        (("--expected-backend", "sglang"), "--expected-backend"),
+        (("--probe-factory", "custom_vllm_probe:build_probe"), "--probe-factory"),
+        (("--native-probe-delegate-factory", "custom_vllm_probe:build_delegate"), "--native-probe-delegate-factory"),
+        (
+            ("--metadata", "vllm_kv_injection.connector_factory=custom_vllm_probe:build_connector"),
+            VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+        ),
+        (("--extra-pip-package", "vllm==0.22.0"), VLLM_RUNTIME_PACKAGE),
+    ],
+)
+def test_main_provider_backed_vllm_preset_rejects_conflicting_values(
+    capsys,
+    tmp_path,
+    extra_args,
+    expected_error,
+):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--provider-backed-vllm-native-probe",
+            "--fixture-output-dir",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+            *extra_args,
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["error_type"] == "ValueError"
+    assert expected_error in output["error"]
+    assert not payload_path.exists()
+
+
 def test_main_writes_single_engine_probe_payload_with_native_delegate_env(tmp_path):
     payload_path = tmp_path / "payload.json"
 
@@ -2417,6 +2516,7 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME",
         "DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY",
         "DEFAULT_DATABRICKS_SPARK_VERSION",
+        "DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE",
         "DatabricksEngineProbeJobConfig",
         "DatabricksEngineProbeMatrixJobConfig",
         "DatabricksEngineProbeTargetConfig",

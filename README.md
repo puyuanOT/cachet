@@ -442,19 +442,25 @@ engine-probe runner and `runs/submit` payload:
 
 ```bash
 python -m document_kv_cache.databricks_engine_probe_job \
-  --handoff-json /Volumes/catalog/schema/volume/probes/vllm-handoff.json \
-  --probe-factory my_vllm_adapter.probes:build_probe \
+  --provider-backed-vllm-native-probe \
+  --fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
-  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
-  --payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv \
+  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
-  --expected-backend vllm \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json databricks-engine-probe-submit.json
 ```
+
+`--provider-backed-vllm-native-probe` is the preferred single-backend QA probe
+for the built-in vLLM path. It sets the Cachet vLLM probe factory, the
+`vllm_kv_injection.probe:build_native_connector_probe` delegate, the
+provider-backed connector metadata, `--expected-backend vllm`, and the pinned
+`vllm==0.23.0` runtime package. The fixture option writes deterministic Qwen3
+handoff/payload/action artifacts on the target node before the native probe
+runs.
 
 For release runs, prefer a two-backend probe target file and one release-safe
 Databricks payload so vLLM and SGLang exercise the same descriptor contract on
