@@ -195,6 +195,14 @@ for larger artifacts.
 
 ```bash
 cachet-databricks-runs \
+  --output-json engine-probe-stage-submit-plan.json \
+  stage-and-submit \
+  --payload-json engine-probe-runs-submit-reference.json \
+  --artifact run_engine_probe.py=dbfs:/benchmarks/run_engine_probe.py \
+  --require-payload-dbfs-artifacts \
+  --dry-run
+
+cachet-databricks-runs \
   --output-json engine-probe-stage-submit-response.json \
   stage-and-submit \
   --payload-json engine-probe-runs-submit-reference.json \

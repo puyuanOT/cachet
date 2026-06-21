@@ -1312,12 +1312,27 @@ job helper writes those paths as cluster `spark_env_vars`
 `DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY`) instead of passing them to the
 benchmark runner, so plan execution arguments remain stable.
 
+Dry-run a staged payload locally before any Databricks credentials or network
+requests are involved:
+
+```bash
+cachet-databricks-runs \
+  --output-json databricks-stage-submit-plan.json \
+  stage-and-submit \
+  --payload-json databricks-run-submit.json \
+  --artifact v1-plan.json=dbfs:/benchmarks/v1-plan.json \
+  --artifact run_plan.py=dbfs:/benchmarks/run_plan.py \
+  --require-payload-dbfs-artifacts \
+  --dry-run
+```
+
 Submit or inspect a generated payload with env-provided credentials, keeping
 tokens out of command arguments and JSON artifacts:
 
 ```bash
 export DATABRICKS_HOST=https://dbc-...cloud.databricks.com
 export DATABRICKS_TOKEN=...
+
 cachet-databricks-runs \
   --output-json databricks-stage-submit-response.json \
   stage-and-submit \

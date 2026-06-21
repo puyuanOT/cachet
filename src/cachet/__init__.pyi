@@ -149,6 +149,7 @@ from document_kv_cache.databricks_runs import (
     databricks_run_status_sidecar_issues as databricks_run_status_sidecar_issues,
     databricks_workspace_config_from_env as databricks_workspace_config_from_env,
     get_databricks_run as get_databricks_run,
+    plan_databricks_stage_and_submit as plan_databricks_stage_and_submit,
     put_databricks_dbfs_file as put_databricks_dbfs_file,
     read_databricks_run_submit_payload as read_databricks_run_submit_payload,
     stage_and_submit_databricks_run as stage_and_submit_databricks_run,

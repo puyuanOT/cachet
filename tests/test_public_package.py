@@ -224,6 +224,7 @@ def test_public_document_package_reexports_core_api():
         release_bundle_to_record,
         pr_evidence_validation_to_record,
         pr_evidence_to_record,
+        plan_databricks_stage_and_submit,
         put_databricks_dbfs_file,
         stage_and_submit_databricks_run,
         read_model_profile_definition_json,
@@ -597,6 +598,11 @@ def test_public_document_package_reexports_core_api():
     assert build_handle_from_materialized is restaurant_kv_serving.build_handle_from_materialized
     assert build_handle_from_materialized.__module__ == "document_kv_cache.engine"
     assert databricks_workspace_config_from_env is databricks_runs.databricks_workspace_config_from_env
+    assert plan_databricks_stage_and_submit is databricks_runs.plan_databricks_stage_and_submit
+    assert (
+        restaurant_kv_serving.plan_databricks_stage_and_submit.__module__
+        == "restaurant_kv_serving.databricks_runs"
+    )
     assert put_databricks_dbfs_file is databricks_runs.put_databricks_dbfs_file
     assert restaurant_kv_serving.put_databricks_dbfs_file.__module__ == "restaurant_kv_serving.databricks_runs"
     assert stage_and_submit_databricks_run is databricks_runs.stage_and_submit_databricks_run
@@ -837,6 +843,7 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "databricks_run_status_record" in document_kv_cache.__all__
     assert "databricks_run_status_sidecar_issues" in document_kv_cache.__all__
     assert "validate_databricks_run_status_sidecar" in document_kv_cache.__all__
+    assert "plan_databricks_stage_and_submit" in document_kv_cache.__all__
     assert "put_databricks_dbfs_file" in document_kv_cache.__all__
     assert "stage_and_submit_databricks_run" in document_kv_cache.__all__
     assert "build_v1_benchmark_plan" in document_kv_cache.__all__
@@ -1337,9 +1344,14 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert databricks_runs.databricks_run_status_record.__module__ == "document_kv_cache.databricks_runs"
     assert databricks_runs.databricks_run_status_sidecar_issues.__module__ == "document_kv_cache.databricks_runs"
     assert databricks_runs.validate_databricks_run_status_sidecar.__module__ == "document_kv_cache.databricks_runs"
+    assert databricks_runs.plan_databricks_stage_and_submit.__module__ == "document_kv_cache.databricks_runs"
     assert databricks_runs.put_databricks_dbfs_file.__module__ == "document_kv_cache.databricks_runs"
     assert databricks_runs.stage_and_submit_databricks_run.__module__ == "document_kv_cache.databricks_runs"
     assert restaurant_kv_serving.databricks_run_status_record.__module__ == "restaurant_kv_serving.databricks_runs"
+    assert (
+        restaurant_kv_serving.plan_databricks_stage_and_submit.__module__
+        == "restaurant_kv_serving.databricks_runs"
+    )
     assert restaurant_kv_serving.put_databricks_dbfs_file.__module__ == "restaurant_kv_serving.databricks_runs"
     assert (
         restaurant_kv_serving.stage_and_submit_databricks_run.__module__
