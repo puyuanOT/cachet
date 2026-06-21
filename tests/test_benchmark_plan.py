@@ -109,13 +109,21 @@ def release_action_jsons(tmp_path):
     )
 
 
+def databricks_run_status_jsons(tmp_path):
+    return (
+        str(tmp_path / "databricks-run-status-benchmark.json"),
+        str(tmp_path / "databricks-run-status-storage.json"),
+        str(tmp_path / "databricks-run-status-engine-probe.json"),
+    )
+
+
 def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config_overrides=None):
     bundle_values = {
         "output_dir": str(tmp_path / "release-bundle"),
         "output_json": str(tmp_path / "release-bundle-manifest.json"),
         "preflight_json": str(tmp_path / "release-inputs.json"),
         "plan_execution_jsons": (str(tmp_path / "plan-execution.json"),),
-        "databricks_run_status_jsons": (str(tmp_path / "databricks-run-status.json"),),
+        "databricks_run_status_jsons": databricks_run_status_jsons(tmp_path),
         "package_wheel": str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
         "pr_evidence_jsons": (str(tmp_path / "pr-evidence.json"),),
         "requirements_matrix_md": str(tmp_path / "v1-requirements-matrix.md"),
@@ -324,7 +332,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             output_json=str(tmp_path / "release-bundle-manifest.json"),
             preflight_json=str(tmp_path / "release-inputs.json"),
             plan_execution_jsons=(str(tmp_path / "plan-execution.json"),),
-            databricks_run_status_jsons=(str(tmp_path / "databricks-run-status.json"),),
+            databricks_run_status_jsons=databricks_run_status_jsons(tmp_path),
             package_wheel=str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
             pr_evidence_jsons=(str(tmp_path / "pr-evidence.json"),),
             requirements_matrix_md=str(tmp_path / "v1-requirements-matrix.md"),
@@ -353,7 +361,11 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert record["release_bundle_output_dir"] == str(tmp_path / "release-bundle")
     assert record["release_bundle_output_json"] == str(tmp_path / "release-bundle-manifest.json")
     assert record["release_bundle"] == {
-        "databricks_run_status_jsons": [str(tmp_path / "databricks-run-status.json")],
+        "databricks_run_status_jsons": [
+            str(tmp_path / "databricks-run-status-benchmark.json"),
+            str(tmp_path / "databricks-run-status-storage.json"),
+            str(tmp_path / "databricks-run-status-engine-probe.json"),
+        ],
         "engine_probe_jsons": [
             str(tmp_path / "vllm-probe.json"),
             str(tmp_path / "sglang-probe.json"),
@@ -448,7 +460,39 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
     [
         ({"preflight_json": None}, None, "preflight sidecar"),
         ({"plan_execution_jsons": ()}, None, "benchmark plan execution sidecar"),
-        ({"databricks_run_status_jsons": ()}, None, "Databricks run-status sidecar"),
+        (
+            {"databricks_run_status_jsons": ()},
+            None,
+            "exactly three distinct Databricks run-status sidecars",
+        ),
+        (
+            {"databricks_run_status_jsons": ("databricks-run-status-benchmark.json",)},
+            None,
+            "exactly three distinct Databricks run-status sidecars",
+        ),
+        (
+            {
+                "databricks_run_status_jsons": (
+                    "databricks-run-status-benchmark.json",
+                    "databricks-run-status-storage.json",
+                    "databricks-run-status-engine-probe.json",
+                    "databricks-run-status-extra.json",
+                )
+            },
+            None,
+            "exactly three distinct Databricks run-status sidecars",
+        ),
+        (
+            {
+                "databricks_run_status_jsons": (
+                    "databricks-run-status-benchmark.json",
+                    "databricks-run-status-benchmark.json",
+                    "databricks-run-status-engine-probe.json",
+                )
+            },
+            None,
+            "exactly three distinct Databricks run-status sidecars",
+        ),
         ({"package_wheel": None}, None, "tested package wheel"),
         ({"pr_evidence_jsons": ()}, None, "PR evidence sidecar"),
         ({"requirements_matrix_md": None}, None, "V1 requirements matrix"),
@@ -2657,7 +2701,11 @@ def test_main_can_include_release_bundle_command(tmp_path):
             "--release-bundle-plan-execution-json",
             str(tmp_path / "plan-execution.json"),
             "--release-bundle-databricks-run-status-json",
-            str(tmp_path / "databricks-run-status.json"),
+            str(tmp_path / "databricks-run-status-benchmark.json"),
+            "--release-bundle-databricks-run-status-json",
+            str(tmp_path / "databricks-run-status-storage.json"),
+            "--release-bundle-databricks-run-status-json",
+            str(tmp_path / "databricks-run-status-engine-probe.json"),
             "--release-bundle-package-wheel",
             str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
             "--release-bundle-pr-evidence-json",
@@ -2728,7 +2776,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
         str(tmp_path / "sglang-launch-config.json"),
     ]
     assert record["release_bundle"]["databricks_run_status_jsons"] == [
-        str(tmp_path / "databricks-run-status.json")
+        str(tmp_path / "databricks-run-status-benchmark.json"),
+        str(tmp_path / "databricks-run-status-storage.json"),
+        str(tmp_path / "databricks-run-status-engine-probe.json"),
     ]
     assert record["release_bundle"]["requirements_matrix_md"] == str(tmp_path / "v1-requirements-matrix.md")
     assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
