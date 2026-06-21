@@ -1020,11 +1020,12 @@ tested on the target AWS g5 runtime, and repeat `--pr-evidence-json` to carry PR
 traceability records alongside the benchmark, storage, engine-probe,
 connector-action, release-evidence, and preflight artifacts. Add
 `--require-complete-v1` for release publishing; this strict mode refuses to
-build a V1 bundle unless the release evidence, preflight, vLLM/SGLang connector
-action, benchmark-plan execution, Databricks run-status, tested wheel, PR
-evidence, GitHub governance, repository hygiene, and native-probe factory
-diagnostics sidecars are all present; the native factory diagnostics must also
-report supported built-in vLLM and SGLang factory entry points.
+build a V1 bundle unless the release evidence, preflight, vLLM/SGLang native
+engine-probe and connector-action, benchmark-plan execution, Databricks
+run-status, tested wheel, PR evidence, GitHub governance, repository hygiene,
+and native-probe factory diagnostics sidecars are all present; the native
+factory diagnostics must also report supported built-in vLLM and SGLang factory
+entry points.
 Benchmark-plan execution sidecars are validated as closed schemas, including
 each command entry and the embedded plan-source provenance record, before they
 are copied into the release bundle. Add

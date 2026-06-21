@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/strict-v1-engine-probe-completeness/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "Aquinas the 3rd approved/clean with no bugs, regressions, compatibility issues, or validation gaps; noted the PR evidence directory should be intentionally included before commit.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "release bundle strict V1 completeness gate, document and legacy CLI help, README release instructions, and release-bundle tests."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py -q; poetry run pytest tests/test_release_bundle.py tests/test_release_evidence.py tests/test_project_governance.py tests/test_public_package.py -q; poetry run pytest -q; poetry check; git diff --check; poetry run python -m compileall -q src tests"
+      ],
+      "what_changed": [
+        "Made strict V1 release bundles explicitly require both vLLM and SGLang native engine-probe sidecars before release publishing."
+      ],
+      "why": "The V1 release bundle requirement names native engine probes as required artifacts; strict mode should fail early and clearly when either probe sidecar is missing instead of relying on later release-evidence inference."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
