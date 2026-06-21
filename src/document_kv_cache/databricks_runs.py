@@ -454,9 +454,8 @@ def _sorted_unique_texts(values: Sequence[Any]) -> list[str]:
     return sorted({value for value in values if isinstance(value, str) and value})
 
 
-_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g5.", "g6.")
+_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g6.",)
 _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = {
-    "aws-g5": ("g5.",),
     "aws-g6-l4": ("g6.",),
 }
 
@@ -630,7 +629,7 @@ def _databricks_submit_payload_task_issues(
             value = task.get(field_name)
             if not _is_supported_aws_single_node_gpu_type(value):
                 issues.append(
-                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g5/g6 node type"
+                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g6/L4 node type"
                 )
             elif not _is_expected_aws_single_node_gpu_type(value, expected_hardware_target):
                 issues.append(
@@ -900,7 +899,7 @@ def main(argv: list[str] | None = None) -> int:
     get_parser.add_argument("--summary", action="store_true", help="Write only a compact run/task status summary.")
     get_parser.add_argument(
         "--submit-payload-json",
-        help="Attach a sanitized hash and AWS g5/g6 cluster summary for the runs/submit payload that launched this run.",
+        help="Attach a sanitized hash and AWS g6/L4 cluster summary for the runs/submit payload that launched this run.",
     )
     get_parser.add_argument(
         "--include-response",

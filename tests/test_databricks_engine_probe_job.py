@@ -63,7 +63,7 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         expected_backend=ServingBackend.VLLM,
         payload_uri="/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
-        node_type_id="g5.8xlarge",
+        node_type_id="g6.8xlarge",
         wheel_uri=WHEEL_URI,
         single_user_name=SINGLE_USER_NAME,
         engine_version="debug-vllm",
@@ -80,8 +80,8 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
     assert payload["run_name"] == DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
     assert task["task_key"] == DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY
     assert "libraries" not in task
-    assert cluster["node_type_id"] == "g5.8xlarge"
-    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["data_security_mode"] == "SINGLE_USER"
     assert cluster["single_user_name"] == SINGLE_USER_NAME
     assert cluster["num_workers"] == 0
@@ -164,7 +164,7 @@ def test_databricks_engine_probe_job_config_preserves_existing_positional_argume
         None,
         DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
         DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
-        "g5.4xlarge",
+        "g6.4xlarge",
         "15.4.x-gpu-ml-scala2.12",
         "SINGLE_USER",
         SINGLE_USER_NAME,
@@ -269,7 +269,7 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
         cluster = task["new_cluster"]
         parameters = task["spark_python_task"]["parameters"]
         assert "libraries" not in task
-        assert cluster["node_type_id"].startswith(("g5.", "g6."))
+        assert cluster["node_type_id"].startswith(("g6.",))
         assert cluster["driver_node_type_id"] == cluster["node_type_id"]
         assert cluster["data_security_mode"] == "SINGLE_USER"
         assert cluster["single_user_name"] == SINGLE_USER_NAME
@@ -307,7 +307,7 @@ def test_databricks_engine_probe_matrix_config_preserves_existing_positional_arg
         (_target("vllm"), _target("sglang")),
         "dbfs:/benchmarks/run_engine_probe.py",
         DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
-        "g5.4xlarge",
+        "g6.4xlarge",
         "15.4.x-gpu-ml-scala2.12",
         "SINGLE_USER",
         SINGLE_USER_NAME,
@@ -1920,7 +1920,7 @@ def test_legacy_engine_probe_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for an AWS g5/g6 engine probe." in result.stdout
+    assert "Emit a Databricks runs/submit payload for an AWS g6/L4 engine probe." in result.stdout
 
 
 def test_legacy_engine_probe_job_reexports_document_owned_types():

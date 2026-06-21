@@ -12,7 +12,7 @@ from document_kv_cache.workflow import SourceDocument
 
 SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
-SUPPORTED_V1_HARDWARE_TARGETS = ("aws-g6-l4", "aws-g5")
+SUPPORTED_V1_HARDWARE_TARGETS = ("aws-g6-l4",)
 DEFAULT_HARDWARE_TARGET = "aws-g6-l4"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"

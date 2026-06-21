@@ -89,9 +89,10 @@ def test_benchmark_suite_defaults_to_v1_contract():
     assert suite.model_id == DEFAULT_V1_MODEL_ID
     assert suite.hardware_target == DEFAULT_HARDWARE_TARGET
     assert DEFAULT_HARDWARE_TARGET == "aws-g6-l4"
-    assert SUPPORTED_V1_HARDWARE_TARGETS == ("aws-g6-l4", "aws-g5")
+    assert SUPPORTED_V1_HARDWARE_TARGETS == ("aws-g6-l4",)
     validate_v1_hardware_target("aws-g6-l4")
-    validate_v1_hardware_target("aws-g5")
+    with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
+        validate_v1_hardware_target("aws-g5")
     with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
         validate_v1_hardware_target("aws-g6e")
     assert suite.datasets == SUPPORTED_V1_DATASETS

@@ -15,14 +15,14 @@ These tests cover the document KV-cache orchestration package.
 - `test_workflow.py` verifies source-document cache generation, optional training, explicit cache-generation method labels, manifest registration, materialization, enqueue handoff, and workflow-level engine-ready handoff.
 - `test_benchmarks.py` verifies V1 dataset specs, prompt/context builders, measurements, quality helpers, summary rows, baseline-vs-cache comparisons, and release-evaluable evidence checks.
 - `test_dataset_prep.py` verifies raw Biography, HotpotQA, MusiQue, and NIAH conversion into canonical benchmark JSONL, including CLI and synthetic NIAH generation.
-- `test_benchmark_plan.py` verifies reproducible V1 dataset-preparation plus benchmark-runner command plans for AWS g5/g6/Qwen3 jobs.
+- `test_benchmark_plan.py` verifies reproducible V1 dataset-preparation plus benchmark-runner command plans for AWS g6/L4/Qwen3 jobs.
 - `test_benchmark_plan_executor.py` verifies command-plan validation, dry-run behavior, real subprocess execution, and result JSON emission.
-- `test_databricks_job.py` verifies AWS g5/g6 Databricks run-submit payload generation and runner-script rendering.
+- `test_databricks_job.py` verifies AWS g6/L4 Databricks run-submit payload generation and runner-script rendering.
 - `test_databricks_runs.py` verifies env-driven Databricks Jobs API submit/get helpers without using live credentials or network.
 - `test_github_governance.py` verifies env-driven GitHub repository governance checks without using live credentials or network.
-- `test_databricks_storage_benchmark_job.py` verifies AWS g5/g6 Databricks run-submit payload generation for storage-reader evidence.
-- `test_databricks_engine_probe_job.py` verifies AWS g5/g6 Databricks run-submit payload generation for native vLLM/SGLang engine-probe evidence.
-- `test_databricks_vllm_smoke_job.py` verifies AWS g5/g6 Databricks run-submit payload generation for the self-contained vLLM smoke job.
+- `test_databricks_storage_benchmark_job.py` verifies AWS g6/L4 Databricks run-submit payload generation for storage-reader evidence.
+- `test_databricks_engine_probe_job.py` verifies AWS g6/L4 Databricks run-submit payload generation for native vLLM/SGLang engine-probe evidence.
+- `test_databricks_vllm_smoke_job.py` verifies AWS g6/L4 Databricks run-submit payload generation for the self-contained vLLM smoke job.
 - `test_release_evidence.py` verifies the final release gate over V1 benchmark, storage benchmark, and native vLLM/SGLang probe JSON artifacts.
 - `test_release_bundle.py` verifies checksummed release-bundle packaging for validated benchmark, storage, engine-probe, release-evidence, and preflight JSON artifacts.
 - `test_benchmark_runner.py` verifies canonical JSONL loading and engine-agnostic benchmark execution.

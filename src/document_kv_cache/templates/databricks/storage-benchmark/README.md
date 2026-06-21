@@ -1,7 +1,7 @@
 # Storage Benchmark Bundle
 
 This standalone Databricks Asset Bundle template runs the storage-reader
-benchmark on a single AWS g5/g6 node. It produces
+benchmark on a single AWS g6/L4 node. It produces
 `document_kv.storage_benchmark.v1` evidence for memory, local disk, and Unity
 Catalog Volume readers.
 

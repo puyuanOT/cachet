@@ -188,7 +188,7 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert submit_payload["single_node"] is True
     assert submit_payload["aws_single_node_gpu_type"] is True
     assert submit_payload["aws_g5_node_type"] is True
-    assert submit_payload["node_type_ids"] == ["g5.4xlarge"]
+    assert submit_payload["node_type_ids"] == ["g6.4xlarge"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
     assert submit_payload["task_keys"] == ["run-benchmark"]
 
@@ -229,17 +229,17 @@ def test_databricks_run_status_sidecar_validation_rejects_expected_hardware_targ
 
     issues = databricks_run_status_sidecar_issues(
         status_record,
-        expected_hardware_target="aws-g6-l4",
+        expected_hardware_target="aws-g5",
     )
 
     assert (
         "Databricks run status sidecar submit_payload.tasks[0].node_type_id must match "
-        "hardware_target 'aws-g6-l4'"
+        "hardware_target 'aws-g5'"
         in issues
     )
     assert (
         "Databricks run status sidecar submit_payload.tasks[0].driver_node_type_id must match "
-        "hardware_target 'aws-g6-l4'"
+        "hardware_target 'aws-g5'"
         in issues
     )
 
@@ -247,9 +247,9 @@ def test_databricks_run_status_sidecar_validation_rejects_expected_hardware_targ
 def test_validate_databricks_run_status_sidecar_honors_expected_hardware_target():
     status_record = _valid_databricks_run_status_record()
 
-    validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g5")
-    with pytest.raises(ValueError, match=r"hardware_target 'aws-g6-l4'"):
-        validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g6-l4")
+    validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g6-l4")
+    with pytest.raises(ValueError, match=r"hardware_target 'aws-g5'"):
+        validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g5")
 
 
 def test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records():
@@ -319,7 +319,7 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
 
     assert "Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true" in issues
     assert (
-        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be an AWS g5/g6 node type"
+        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be an AWS g6/L4 node type"
         in issues
     )
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
@@ -370,8 +370,8 @@ def test_databricks_run_status_sidecar_validation_requires_submit_payload_task_p
 @pytest.mark.parametrize(
     ("summary_field", "bad_values"),
     [
-        ("node_type_ids", ["g5.12xlarge"]),
-        ("driver_node_type_ids", ["g5.12xlarge"]),
+        ("node_type_ids", ["g6.12xlarge"]),
+        ("driver_node_type_ids", ["g6.12xlarge"]),
         ("spark_versions", ["15.3.x-gpu-ml-scala2.12"]),
         ("data_security_modes", ["SINGLE_USER", "USER_ISOLATION"]),
     ],
@@ -908,19 +908,19 @@ def test_legacy_databricks_runs_forwards_expected_hardware_target_keyword():
 
     legacy_issues = legacy_databricks_runs.databricks_run_status_sidecar_issues(
         status_record,
-        expected_hardware_target="aws-g6-l4",
+        expected_hardware_target="aws-g5",
     )
     public_issues = public_databricks_runs.databricks_run_status_sidecar_issues(
         status_record,
-        expected_hardware_target="aws-g6-l4",
+        expected_hardware_target="aws-g5",
     )
 
     assert legacy_issues == public_issues
-    assert any("hardware_target 'aws-g6-l4'" in issue for issue in legacy_issues)
-    with pytest.raises(ValueError, match=r"hardware_target 'aws-g6-l4'"):
+    assert any("hardware_target 'aws-g5'" in issue for issue in legacy_issues)
+    with pytest.raises(ValueError, match=r"hardware_target 'aws-g5'"):
         legacy_databricks_runs.validate_databricks_run_status_sidecar(
             status_record,
-            expected_hardware_target="aws-g6-l4",
+            expected_hardware_target="aws-g5",
         )
 
 
@@ -1084,8 +1084,8 @@ def _single_node_g5_submit_payload():
                 "task_key": "run-benchmark",
                 "new_cluster": {
                     "spark_version": "15.4.x-gpu-ml-scala2.12",
-                    "node_type_id": "g5.4xlarge",
-                    "driver_node_type_id": "g5.4xlarge",
+                    "node_type_id": "g6.4xlarge",
+                    "driver_node_type_id": "g6.4xlarge",
                     "num_workers": 0,
                     "data_security_mode": "SINGLE_USER",
                     "custom_tags": {

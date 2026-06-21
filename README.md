@@ -454,7 +454,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
 
 For release runs, prefer a two-backend probe target file and one release-safe
 Databricks payload so vLLM and SGLang exercise the same descriptor contract on
-the same AWS g5/g6 policy:
+the same AWS g6/L4 policy:
 
 ```json
 {
@@ -724,7 +724,7 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
   trace dataset issues back to source files.
 - `normalize_v1_record`, `convert_v1_jsonl`, and `build_niah_record` prepare raw Biography, HotpotQA, MusiQue, and synthetic/source NIAH rows into that normalized JSONL contract.
 - `build_v1_benchmark_plan` and the `benchmark_plan` CLI emit a portable command plan that prepares all four V1 datasets, runs the OpenAI-compatible benchmark on AWS g6/L4/Qwen3, and can append storage-reader benchmarking on the same node.
-- `benchmark_plan_executor` and `databricks_job` let managed job runners execute that plan on single-node AWS g5/g6 Databricks clusters; `databricks_runs` can submit/check those payloads using credentials supplied only through environment variables.
+- `benchmark_plan_executor` and `databricks_job` let managed job runners execute that plan on single-node AWS g6/L4 Databricks clusters; `databricks_runs` can submit/check those payloads using credentials supplied only through environment variables.
 - `run_benchmark_suite` executes caller-provided baseline and KV-cache engines against the same logical prompt parts and emits `InferenceMeasurement` rows. Cache engines receive the runtime suffix as `prompt_text`; the full logical prompt remains available as `logical_prompt_text`.
 - `InferenceMeasurement` records prompt tokens, completion tokens, TTFT, time-to-completion, generated text, expected answer, and errors. OpenAI-compatible V1 measurements also carry `logical_prompt_tokens` and `runtime_prompt_tokens` metadata so release evidence proves the no-cache baseline saw the full prompt and the KV-cache arm generated from a smaller runtime suffix.
 - `summarize_measurements` produces per-dataset/per-arm latency and quality rows.
@@ -790,7 +790,7 @@ python -m document_kv_cache.benchmark_plan \
 The generated shell script runs `dataset_prep` for each raw file, invokes
 `benchmark_runner`, and, when `--storage-benchmark-workspace-dir` is provided,
 appends a `document_kv_cache.storage_benchmark` command. The storage command
-captures Memory and Disk reader latency/throughput on the same AWS g5/g6 node, and
+captures Memory and Disk reader latency/throughput on the same AWS g6/L4 node, and
 adds the Unity Catalog reader only when `--storage-benchmark-uc-volume-root`
 points at a real UC Volume. It writes `<suite-id>-storage-benchmark.json` under
 `--prepared-dir` unless `--storage-benchmark-output-json` is set. Backend-keyed
@@ -936,7 +936,7 @@ python -m document_kv_cache.vllm_smoke \
 ```
 
 To launch that same smoke through a Databricks managed task, upload the wheel
-and generated runner script, then emit a single-node AWS g5/g6 `runs/submit`
+and generated runner script, then emit a single-node AWS g6/L4 `runs/submit`
 payload:
 
 ```bash
@@ -997,7 +997,7 @@ probe input. Release bundles treat release-evidence and preflight sidecars as
 closed schemas, rejecting unsupported top-level keys before copying artifacts
 into the bundle.
 
-The command returns exit code `0` only when the V1 benchmark targets supported AWS g5/g6 hardware with Qwen3,
+The command returns exit code `0` only when the V1 benchmark targets supported AWS g6/L4 hardware with Qwen3,
 the storage benchmark has strict Memory + Disk + real UC Volume evidence, and
 exactly one native engine probe record plus one connector action descriptor is
 present for each vLLM/SGLang backend. V1 comparison rows must include finite
@@ -1090,7 +1090,7 @@ Repeat
 outputs, or extracted inner `summary` records, from the managed runs whose
 outputs are included in the bundle; release bundles require those status
 sidecars to be terminal, successful, free of active task keys, and attached to a
-hashed single-node AWS g5/g6 `SINGLE_USER` submit-payload summary whose task
+hashed single-node AWS g6/L4 `SINGLE_USER` submit-payload summary whose task
 summaries carry non-empty `purpose` tags and whose summary arrays match the task
 summaries. Do not use the `--include-response` debug flag for release-bundle
 status sidecars; bundles reject raw Jobs API responses.
@@ -1163,7 +1163,7 @@ until all required ignore patterns are present, no forbidden artifact paths are
 tracked or exposed as untracked, every non-generated tracked/untracked
 directory is documented, and no tracked files differ from `HEAD`.
 
-For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g5/g6 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers.
+For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g6/L4 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers.
 
 ```bash
 python -m document_kv_cache.databricks_job \
@@ -1218,13 +1218,13 @@ only when debugging requires the raw `runs/get` payload.
 Use `validate_databricks_run_status_sidecar` or
 `databricks_run_status_sidecar_issues` to preflight release-oriented run-status
 sidecars before assembling a release bundle. Pass
-`expected_hardware_target="aws-g6-l4"` for V1 release checks so stale g5/g6
+`expected_hardware_target="aws-g6-l4"` for V1 release checks so stale non-g6
 status sidecars cannot be reused across target profiles.
 
 Workspace-specific automation can still POST the payload itself after applying
 the organization’s auth, cluster policy, and asset-upload conventions. Teams
 that manage jobs declaratively can use the reference Databricks Asset Bundle in
-`databricks/databricks.yml`; it mirrors the same single-node AWS g5/g6 benchmark
+`databricks/databricks.yml`; it mirrors the same single-node AWS g6/L4 benchmark
 contract without embedding workspace credentials or paths.
 Standalone bundles for the runtime smoke, storage-reader benchmark, and native
 engine-probe evidence live under `databricks/vllm-smoke/`,
@@ -1262,7 +1262,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
 Workspace-specific automation can wrap this handoff by building or reusing the
 wheel, writing the plan and runner, uploading those small artifacts to the
 workspace storage layer, selecting a real UC Volume path for the storage-reader
-benchmark, and submitting the single-node AWS g5/g6 job. Raw
+benchmark, and submitting the single-node AWS g6/L4 job. Raw
 benchmark datasets should already be visible to the cluster as `disk:...`,
 `file:...`, `dbfs:/...`, `/dbfs/...`, `/Volumes/...`, `uc-volume:/...`, or `uc-volume://...` paths; the
 command plan normalizes those storage URIs on the Databricks driver before

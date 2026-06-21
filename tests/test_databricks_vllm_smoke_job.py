@@ -28,7 +28,7 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
         benchmark_id="v1-vllm-smoke-001",
         output_dir="/Volumes/catalog/schema/volume/v1-vllm-smoke",
         runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
-        node_type_id="g5.8xlarge",
+        node_type_id="g6.8xlarge",
         wheel_uri=WHEEL_URI,
         single_user_name=SINGLE_USER_NAME,
         max_tokens=48,
@@ -49,8 +49,8 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
     assert payload["run_name"] == DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     assert task["task_key"] == DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
     assert "libraries" not in task
-    assert cluster["node_type_id"] == "g5.8xlarge"
-    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["data_security_mode"] == "SINGLE_USER"
     assert cluster["single_user_name"] == SINGLE_USER_NAME
     assert cluster["num_workers"] == 0
@@ -477,7 +477,7 @@ def test_legacy_vllm_smoke_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for the AWS g5/g6 vLLM smoke." in result.stdout
+    assert "Emit a Databricks runs/submit payload for the AWS g6/L4 vLLM smoke." in result.stdout
 
 
 def test_legacy_vllm_smoke_job_reexports_document_owned_types():

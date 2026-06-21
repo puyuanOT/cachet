@@ -26,7 +26,7 @@ bundle with explicit variables:
 
 Include `--storage-benchmark-workspace-dir` and, when available,
 `--storage-benchmark-uc-volume-root` while generating the plan if you want the
-same AWS g5/g6 run to append the storage-reader benchmark after the V1 inference
+same AWS g6/L4 run to append the storage-reader benchmark after the V1 inference
 benchmark.
 
 ```bash

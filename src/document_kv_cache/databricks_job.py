@@ -28,7 +28,7 @@ SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
 )
 RESERVED_SINGLE_NODE_G5_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
 RESERVED_SINGLE_NODE_GPU_TAG_KEYS = RESERVED_SINGLE_NODE_G5_TAG_KEYS
-SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g5.", "g6.")
+SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g6.",)
 RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
@@ -163,8 +163,7 @@ def validate_aws_g5_node_type(node_type_id: str) -> None:
     if not node_type_id:
         raise ValueError("node_type_id must be non-empty")
     if not node_type_id.lower().startswith(SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES):
-        supported = ", ".join(prefix.rstrip(".") for prefix in SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES)
-        raise ValueError(f"node_type_id must be an AWS {supported} Databricks node type, got {node_type_id!r}")
+        raise ValueError(f"node_type_id must be an AWS g6/L4 Databricks node type, got {node_type_id!r}")
 
 
 validate_aws_single_node_gpu_type = validate_aws_g5_node_type

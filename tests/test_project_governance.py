@@ -830,7 +830,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     for required in (
         "vLLM/SGLang handoff boundary",
         "Memory, Disk, UC Volume, and routed readers",
-        "AWS g5",
+        "AWS g6/L4",
         "`qwen3:4b-instruct`",
         "Biography",
         "HotpotQA",
