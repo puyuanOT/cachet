@@ -1382,6 +1382,10 @@ def _validate_v1_measurement_token_context(
     prompt_text_mode = metadata.get("prompt_text_mode")
     if prompt_text_mode not in {"logical", "runtime"}:
         issues.append(f"{label} metadata.prompt_text_mode must be 'logical' or 'runtime'")
+    elif arm_id == BASELINE_PREFILL_ARM and prompt_text_mode != "logical":
+        issues.append(f"{label} baseline metadata.prompt_text_mode must be 'logical'")
+    elif arm_id == CACHE_REUSE_ARM and prompt_text_mode != "runtime":
+        issues.append(f"{label} cache metadata.prompt_text_mode must be 'runtime'")
     if not isinstance(metadata.get("prompt_token_source"), str) or not metadata["prompt_token_source"]:
         issues.append(f"{label} metadata.prompt_token_source must be non-empty")
     logical_prompt_tokens = _positive_int_metadata(metadata.get("logical_prompt_tokens"))

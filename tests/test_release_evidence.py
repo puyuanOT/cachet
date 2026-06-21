@@ -950,6 +950,43 @@ def test_evaluate_release_evidence_requires_prompt_token_context_metadata():
     assert any("cache runtime_prompt_tokens must be smaller than logical_prompt_tokens" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_wrong_prompt_text_mode_for_arm():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "metadata": {
+            **v1_record["measurements"][0]["metadata"],
+            "prompt_text_mode": "runtime",
+        },
+    }
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "metadata": {
+            **v1_record["measurements"][1]["metadata"],
+            "prompt_text_mode": "logical",
+        },
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:baseline_prefill baseline metadata.prompt_text_mode must be 'logical'" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:document_kv_cache cache metadata.prompt_text_mode must be 'runtime'" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_zero_token_volume_and_all_error_summary_rows():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
