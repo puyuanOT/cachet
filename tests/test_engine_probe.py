@@ -240,6 +240,46 @@ def test_run_engine_kv_connector_probe_writes_native_release_record(tmp_path, mo
     assert [copy["payload_index"] for copy in actions_record["copies"]] == [0, 1]
 
 
+def test_engine_probe_module_execution_accepts_named_module_factory_result(tmp_path, monkeypatch):
+    handoff_path, _ = write_handoff_and_payload(tmp_path, segmented=True)
+    output_path = tmp_path / "probe-record.json"
+    actions_output_path = tmp_path / "probe-actions.json"
+    probe_factory = write_probe_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="module_execution_factory_result",
+        engine_version="vllm-native-test",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "document_kv_cache.engine_probe",
+            "--handoff-json",
+            str(handoff_path),
+            "--probe-factory",
+            probe_factory,
+            "--output-json",
+            str(output_path),
+            "--actions-output-json",
+            str(actions_output_path),
+            "--expected-backend",
+            "vllm",
+        ],
+        capture_output=True,
+        env={**os.environ, "PYTHONPATH": f"src{os.pathsep}{tmp_path}"},
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["engine_version"] == "vllm-native-test"
+    assert record["native_probe"] is True
+    assert actions_output_path.exists()
+
+
 def test_run_engine_kv_connector_probe_does_not_write_actions_sidecar_on_probe_failure(
     tmp_path,
     monkeypatch,
