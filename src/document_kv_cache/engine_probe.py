@@ -173,9 +173,16 @@ def run_engine_kv_connector_probe(config: EngineKVProbeConfig) -> EngineKVConnec
         metadata=config.metadata,
     )
     factory_output = factory(factory_context)
-    if isinstance(factory_output, EngineKVProbeFactoryResult):
+    if _is_engine_kv_probe_factory_result(factory_output):
         probe = factory_output.probe
-        native_probe = config.native_probe and factory_output.native_probe
+        factory_native_probe = factory_output.native_probe
+        factory_metadata = factory_output.metadata
+        if type(factory_native_probe) is not bool:
+            raise TypeError("factory result native_probe must be boolean")
+        if not isinstance(factory_metadata, Mapping):
+            raise TypeError("factory result metadata must be a mapping")
+        _validate_metadata_strings(factory_metadata)
+        native_probe = config.native_probe and factory_native_probe
         if native_probe and config.engine_version is not None:
             raise ValueError("engine_version override is not allowed for native factory-result probes")
         engine_version = (
@@ -184,7 +191,7 @@ def run_engine_kv_connector_probe(config: EngineKVProbeConfig) -> EngineKVConnec
             else config.engine_version or factory_output.engine_version
         )
         metadata = {
-            **factory_output.metadata,
+            **factory_metadata,
             **config.metadata,
             **_probe_trace_metadata(config, payload_uri=payload_uri, backend=plan.backend),
         }
@@ -220,6 +227,12 @@ def run_engine_kv_connector_probe(config: EngineKVProbeConfig) -> EngineKVConnec
     if config.actions_output_json is not None:
         write_engine_kv_connector_actions_record_json(actions, config.actions_output_json)
     return result
+
+
+def _is_engine_kv_probe_factory_result(value: Any) -> bool:
+    if isinstance(value, EngineKVProbeFactoryResult):
+        return True
+    return all(hasattr(value, field_name) for field_name in ("probe", "engine_version", "native_probe", "metadata"))
 
 
 def read_engine_adapter_payload(payload_uri: str, *, expected_bytes: int | None = None) -> bytes:
