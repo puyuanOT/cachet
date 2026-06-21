@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import subprocess
 import sys
@@ -25,6 +26,7 @@ from document_kv_cache.vllm_smoke import (
     benchmark_failure_summary,
     build_benchmark_runner_args,
     build_metadata,
+    build_prompt_token_budget_rows,
     build_vllm_server_args,
     dataset_args,
     dependency_constraints,
@@ -136,6 +138,77 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
         "--dataset",
         f"niah={tmp_path / 'niah.jsonl'}",
     ]
+
+
+def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
+    dataset_paths = {}
+    for dataset in SMOKE_DATASETS:
+        path = tmp_path / f"{dataset}.jsonl"
+        path.write_text(
+            (
+                f'{{"dataset": "{dataset}", "example_id": "{dataset}-1", '
+                '"query": "Who is described?", "expected_answer": "Ada Lovelace", '
+                '"documents": [{"document_id": "ada", "text": "Ada Lovelace biography"}]}\n'
+            ),
+            encoding="utf-8",
+        )
+        dataset_paths[dataset] = path
+    config = VLLMSmokeBenchmarkConfig(benchmark_id="smoke-1", output_dir=tmp_path / "out")
+
+    rows = build_prompt_token_budget_rows(config, dataset_paths)
+
+    assert {row["dataset"] for row in rows} == set(SMOKE_DATASETS)
+    assert all("Documents:" in row["prompt"] for row in rows)
+    assert all("Who is described?" in row["prompt"] for row in rows)
+
+
+def test_validate_prompt_token_budget_writes_artifact_and_rejects_over_budget(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        max_model_len=32,
+        max_tokens=4,
+    )
+    dataset_paths = {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS}
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "build_prompt_token_budget_rows",
+        lambda cfg, paths: ({"dataset": "biography", "example_id": "bio-1", "prompt": "long prompt"},),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run_prompt_token_budget_probe",
+        lambda *args, **kwargs: {
+            "rows": [
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-1",
+                    "prompt_tokens": 40,
+                    "max_tokens": 4,
+                    "total_tokens": 44,
+                    "max_model_len": 32,
+                }
+            ],
+            "over_budget": [
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-1",
+                    "prompt_tokens": 40,
+                    "max_tokens": 4,
+                    "total_tokens": 44,
+                    "max_model_len": 32,
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match="Prepared vLLM benchmark prompts exceed"):
+        public_vllm_smoke.validate_prompt_token_budget(config, dataset_paths)
+
+    record = json.loads(config.prompt_token_budget_path.read_text(encoding="utf-8"))
+    assert record["over_budget"][0]["total_tokens"] == 44
 
 
 def test_benchmark_failure_summary_reports_row_errors(tmp_path):
@@ -481,6 +554,11 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(
         public_vllm_smoke,
+        "validate_prompt_token_budget",
+        lambda cfg, paths: calls.append(("validate_prompt_token_budget", cfg.benchmark_id, paths)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
         "start_vllm_server",
         lambda cfg, python, log_path: calls.append(("start_vllm_server", cfg.server_base_url, python, log_path))
         or fake_server,
@@ -513,6 +591,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
             str(tmp_path / "local" / "hf-cache"),
         ),
         ("write_smoke_datasets", config.local_dir),
+        ("validate_prompt_token_budget", "smoke-1", dataset_paths),
         ("start_vllm_server", "http://127.0.0.1:8123", config.venv_python, config.server_log_path),
         ("wait_for_server", fake_server, config.server_log_path, "http://127.0.0.1:8123", 480.0),
         ("copy", config.server_log_path, config.server_log_copy_path),
@@ -571,6 +650,11 @@ def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursi
     )
     monkeypatch.setattr(
         legacy_vllm_smoke,
+        "validate_prompt_token_budget",
+        lambda cfg, paths: calls.append(("validate_prompt_token_budget", cfg.benchmark_id)),
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
         "start_vllm_server",
         lambda cfg, python, log_path: calls.append(("start_vllm_server", log_path)) or fake_server,
     )
@@ -590,6 +674,7 @@ def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursi
     legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
 
     assert ("write_smoke_datasets", config.local_dir) in calls
+    assert ("validate_prompt_token_budget", "smoke-1") in calls
     assert ("run", build_benchmark_runner_args(config, dataset_paths)) in calls
     assert calls[-2:] == [
         ("terminate", fake_server),
