@@ -910,6 +910,7 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
             continue
         dataset_value = measurement.get("dataset")
         arm_id_value = measurement.get("arm_id")
+        example_id = measurement.get("example_id")
         dataset = _validate_v1_dataset(
             dataset_value,
             label=f"v1 benchmark measurement {index}",
@@ -922,6 +923,10 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         )
         if dataset is not None and arm_id is not None:
             measurement_keys.add((dataset, arm_id))
+        if not isinstance(example_id, str) or not example_id:
+            issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} example_id must be non-empty")
+        if not isinstance(measurement.get("output_text"), str):
+            issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} output_text must be a string")
         for field_name in ("prompt_tokens", "completion_tokens"):
             if not _is_positive_int(measurement.get(field_name)):
                 issues.append(

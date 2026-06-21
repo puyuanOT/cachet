@@ -677,6 +677,31 @@ def test_evaluate_release_evidence_rejects_malformed_measurement_quality_flags()
     assert any("answer_found must be boolean when present" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "example_id": "",
+    }
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "output_text": {"answer": "Ada Lovelace"},
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("biography:baseline_prefill example_id must be non-empty" in issue for issue in evidence.issues)
+    assert any("biography:document_kv_cache output_text must be a string" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_malformed_report_quality_rates():
     v1_record = _v1_record(ok=True)
     v1_record["report_rows"][0] = {
@@ -751,6 +776,8 @@ def test_evaluate_release_evidence_rejects_stub_measurement_rows():
 
     assert not evidence.ok
     assert any("unsupported dataset" in issue for issue in evidence.issues)
+    assert any("example_id" in issue for issue in evidence.issues)
+    assert any("output_text" in issue for issue in evidence.issues)
     assert any("prompt_tokens" in issue for issue in evidence.issues)
     assert any("missing required dataset/arm pairs" in issue for issue in evidence.issues)
 
@@ -1719,6 +1746,7 @@ def _v1_measurement_record(dataset: str, arm: str):
         "completion_tokens": 16,
         "ttft_seconds": 1.0,
         "time_to_completion_seconds": 2.0,
+        "output_text": "Ada Lovelace",
         "answer_found": True,
         "error": None,
         "metadata": _v1_measurement_metadata(arm),
