@@ -20,6 +20,7 @@ from document_kv_cache.vllm_smoke import (
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
+    parse_dataset_specs,
 )
 
 
@@ -92,6 +93,10 @@ class DatabricksVLLMSmokeJobConfig:
     server_host: str = SERVER_HOST
     server_port: int = SERVER_PORT
     client_host: str = SERVER_HOST
+    max_model_len: int = 4096
+    max_num_seqs: int = 2
+    gpu_memory_utilization: float = 0.85
+    dataset_specs: tuple[str, ...] = ()
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
@@ -125,6 +130,15 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("server_port must be between 1 and 65535")
         if not self.client_host:
             raise ValueError("client_host must be non-empty")
+        if self.max_model_len <= 0:
+            raise ValueError("max_model_len must be positive")
+        if self.max_num_seqs <= 0:
+            raise ValueError("max_num_seqs must be positive")
+        if not 0 < self.gpu_memory_utilization <= 1:
+            raise ValueError("gpu_memory_utilization must be in (0, 1]")
+        object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
+        if self.dataset_specs:
+            parse_dataset_specs(self.dataset_specs)
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
 
 
@@ -176,7 +190,7 @@ _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB = _cluster_config_from_vllm_smoke_jo
 
 
 def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
-    return [
+    parameters = [
         "--benchmark-id",
         config.benchmark_id,
         "--output-dir",
@@ -197,7 +211,16 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         str(config.server_port),
         "--client-host",
         config.client_host,
+        "--max-model-len",
+        str(config.max_model_len),
+        "--max-num-seqs",
+        str(config.max_num_seqs),
+        "--gpu-memory-utilization",
+        str(config.gpu_memory_utilization),
     ]
+    for dataset_spec in config.dataset_specs:
+        parameters.extend(["--dataset", dataset_spec])
+    return parameters
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -220,6 +243,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--server-host", default=SERVER_HOST)
     parser.add_argument("--server-port", type=int, default=SERVER_PORT)
     parser.add_argument("--client-host", default=SERVER_HOST)
+    parser.add_argument("--max-model-len", type=int, default=4096)
+    parser.add_argument("--max-num-seqs", type=int, default=2)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        default=None,
+        help="Prepared V1 benchmark dataset in DATASET=JSONL_PATH form. Repeat for all four V1 datasets.",
+    )
     parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
     parser.add_argument("--runner-script-output", help="Write the tiny vLLM smoke runner script to this path.")
     args = parser.parse_args(argv)
@@ -244,6 +276,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             server_host=args.server_host,
             server_port=args.server_port,
             client_host=args.client_host,
+            max_model_len=args.max_model_len,
+            max_num_seqs=args.max_num_seqs,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            dataset_specs=tuple(args.dataset or ()),
         )
         if args.runner_script_output:
             write_databricks_vllm_smoke_runner_script(args.runner_script_output)
