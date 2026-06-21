@@ -206,6 +206,8 @@ class DatabricksEngineProbeTargetConfig(_public_class_base("DatabricksEngineProb
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
             raise ValueError("actions_output_json must be non-empty when provided")
+        if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
+            raise ValueError("native_probe_delegate_factory must be non-empty when provided")
         if type(self.allow_non_native_probe) is not bool:
             raise ValueError("allow_non_native_probe must be a boolean")
         _validate_metadata_items(self.metadata)
@@ -261,6 +263,8 @@ class DatabricksEngineProbeJobConfig(_public_class_base("DatabricksEngineProbeJo
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
             raise ValueError("actions_output_json must be non-empty when provided")
+        if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
+            raise ValueError("native_probe_delegate_factory must be non-empty when provided")
         _validate_metadata_items(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
         _validate_release_safe_probe_job(self)

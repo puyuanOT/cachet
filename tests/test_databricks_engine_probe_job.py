@@ -28,6 +28,10 @@ from document_kv_cache.databricks_engine_probe_job import (
     write_databricks_engine_probe_runner_script,
 )
 from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.native_probe_factories import (
+    SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+    VLLM_NATIVE_PROBE_DELEGATE_ENV,
+)
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
@@ -124,6 +128,29 @@ def test_build_databricks_engine_probe_release_safe_payload_omits_debug_flags():
     assert "--allow-non-native-probe" not in parameters
 
 
+def test_build_databricks_engine_probe_payload_sets_native_delegate_env_var():
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        payload_uri="/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+        native_probe_delegate_factory="document_kv_vllm_native_adapter:build_probe",
+    )
+
+    payload = build_databricks_engine_probe_run_submit_payload(config)
+    task = payload["tasks"][0]
+
+    assert task["new_cluster"]["spark_env_vars"] == {
+        VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe"
+    }
+    assert "--native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
+
+
 def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required_backends():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
@@ -182,6 +209,42 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
         assert parameters == expected_parameters
         assert "--engine-version" not in parameters
         assert "--allow-non-native-probe" not in parameters
+
+
+def test_build_databricks_engine_probe_matrix_payload_sets_backend_delegate_env_vars():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(
+            _target(
+                "vllm",
+                probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                native_probe_delegate_factory="document_kv_vllm_native_adapter:build_probe",
+            ),
+            _target(
+                "sglang",
+                probe_factory="document_kv_cache.native_probe_factories:sglang_native_probe_factory",
+                native_probe_delegate_factory="document_kv_sglang_native_adapter:build_probe",
+            ),
+        ),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+
+    cluster_by_backend = {
+        task["spark_python_task"]["parameters"][
+            task["spark_python_task"]["parameters"].index("--expected-backend") + 1
+        ]: task["new_cluster"]
+        for task in payload["tasks"]
+    }
+    assert cluster_by_backend["vllm"]["spark_env_vars"] == {
+        VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe"
+    }
+    assert cluster_by_backend["sglang"]["spark_env_vars"] == {
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV: "document_kv_sglang_native_adapter:build_probe"
+    }
 
 
 def test_databricks_engine_probe_matrix_release_safe_requires_exact_backend_set():
@@ -264,6 +327,28 @@ def test_read_databricks_engine_probe_targets_json_accepts_object_and_aliases(tm
     assert targets[1].output_json == "/Volumes/catalog/schema/volume/probes/sglang-probe.json"
     assert targets[1].actions_output_json == "/Volumes/catalog/schema/volume/probes/sglang-actions.json"
     assert targets[1].metadata == ("probe.source=targets",)
+
+
+def test_read_databricks_engine_probe_targets_json_accepts_native_delegate_factory(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                    "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    "native_probe_delegate_factory": "document_kv_vllm_native_adapter:build_probe",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (target,) = read_databricks_engine_probe_targets_json(path)
+
+    assert target.native_probe_delegate_factory == "document_kv_vllm_native_adapter:build_probe"
 
 
 def test_read_databricks_engine_probe_targets_json_rejects_non_boolean_debug_flag(tmp_path):
@@ -617,6 +702,37 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
     assert "engine_probe" in runner_path.read_text(encoding="utf-8")
 
 
+def test_main_writes_single_engine_probe_payload_with_native_delegate_env(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+            "--probe-factory",
+            "document_kv_cache.native_probe_factories:sglang_native_probe_factory",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--expected-backend",
+            "sglang",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--native-probe-delegate-factory",
+            "document_kv_sglang_native_adapter:build_probe",
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert payload["tasks"][0]["new_cluster"]["spark_env_vars"] == {
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV: "document_kv_sglang_native_adapter:build_probe"
+    }
+
+
 def test_main_writes_engine_probe_matrix_payload_from_backend_config_json(tmp_path):
     backend_config_path = tmp_path / "probe-targets.json"
     payload_path = tmp_path / "payload.json"
@@ -706,6 +822,8 @@ def test_main_rejects_single_target_debug_flags_in_matrix_mode(tmp_path, capsys)
             "--release-safe",
             "--engine-version",
             "debug-vllm",
+            "--native-probe-delegate-factory",
+            "document_kv_vllm_native_adapter:build_probe",
             "--allow-non-native-probe",
         ]
     )
@@ -715,6 +833,7 @@ def test_main_rejects_single_target_debug_flags_in_matrix_mode(tmp_path, capsys)
     assert output["error_type"] == "ValueError"
     assert "--backend-config-json cannot be combined" in output["error"]
     assert "--engine-version" in output["error"]
+    assert "--native-probe-delegate-factory" in output["error"]
     assert "--allow-non-native-probe" in output["error"]
 
 

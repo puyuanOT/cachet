@@ -473,6 +473,15 @@ the same AWS g5 policy:
 }
 ```
 
+When the target uses Cachet's built-in reserved factory path, add
+`native_probe_delegate_factory` to that backend's target record. The Databricks
+payload helper maps it to the matching cluster `spark_env_vars` entry,
+`DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY` or
+`DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY`, rather than passing the delegate path
+as a runner argument. This keeps release target JSON stable while letting the
+managed serving environment provide the actual backend-native block-manager
+adapter.
+
 ```bash
 python -m document_kv_cache.databricks_engine_probe_job \
   --backend-config-json engine-probe-targets.json \
@@ -810,6 +819,12 @@ accepted by `document_kv_cache.databricks_engine_probe_job --backend-config-json
 The Databricks engine-probe job treats this target file as a closed schema:
 unsupported top-level target keys or per-probe keys are rejected before a
 run-submit payload is produced.
+Use `--engine-probe-native-delegate-factory BACKEND=MODULE:CALLABLE` when the
+planned target should run a built-in reserved vLLM/SGLang probe factory through
+a backend-native delegate on Databricks. The target JSON carries the delegate
+path, and the Databricks payload helper injects the corresponding
+`DOCUMENT_KV_*_NATIVE_PROBE_FACTORY` environment variable into that backend's
+single-node task cluster.
 Use `--engine-probe-targets-release-safe` for release jobs; it requires exactly
 one native vLLM probe and one native SGLang probe and rejects debug-only planned
 probe settings before writing the target file. Release-safe targets also carry

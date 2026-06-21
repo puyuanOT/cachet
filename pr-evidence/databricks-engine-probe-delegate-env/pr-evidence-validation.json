@@ -1,0 +1,34 @@
+{
+  "files": {
+    "pr-evidence/databricks-engine-probe-delegate-env/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer Gauss the 3rd approved with no findings after checking target schema/parsing, single-target payload generation, matrix target propagation, benchmark-plan target JSON output, legacy wrapper compatibility, tests, and docs.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md; src/document_kv_cache/README.md; src/document_kv_cache/benchmark_plan.py; src/document_kv_cache/databricks_engine_probe_job.py; src/restaurant_kv_serving/databricks_engine_probe_job.py; tests/test_benchmark_plan.py; tests/test_databricks_engine_probe_job.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_databricks_engine_probe_job.py tests/test_benchmark_plan.py tests/test_public_package.py tests/test_project_governance.py -q -> 186 passed",
+        "poetry run pytest -q -> 1189 passed",
+        "poetry check -> All set",
+        "git diff --check -> clean",
+        "poetry run python -m compileall -q src tests -> clean",
+        "poetry run python manual smoke confirmed vLLM and SGLang delegate paths map to DOCUMENT_KV_*_NATIVE_PROBE_FACTORY and are not runner parameters",
+        "GPT-5.5 reviewer Gauss the 3rd approved with no findings"
+      ],
+      "what_changed": [
+        "Added native_probe_delegate_factory support to Databricks engine-probe target/job config so built-in reserved probes can receive backend-native delegates through cluster spark_env_vars.",
+        "Carried benchmark-plan --engine-probe-native-delegate-factory values into generated engine-probe target JSON while preserving plan-record compatibility by omitting the optional field when unset.",
+        "Covered single-target, matrix-target, JSON parsing, CLI rejection, benchmark-plan target emission, docs, and legacy compatibility behavior."
+      ],
+      "why": "Managed AWS g5 Databricks engine-probe jobs need to run stable built-in vLLM/SGLang probe factory paths while injecting downstream native adapter factories through environment variables, avoiding manual run payload edits."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

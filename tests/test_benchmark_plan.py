@@ -2132,6 +2132,8 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             f"vllm={tmp_path / 'vllm-probe.json'}",
             "--engine-probe-actions-output-json",
             f"vllm={tmp_path / 'vllm-actions.json'}",
+            "--engine-probe-native-delegate-factory",
+            "vllm=document_kv_vllm_native_adapter:build_probe",
             "--engine-probe-payload-uri",
             f"vllm=disk:{tmp_path / 'vllm.kv'}",
             "--engine-probe-metadata",
@@ -2178,6 +2180,9 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     assert record["planned_engine_probes"][0]["backend"] == "sglang"
     assert record["planned_engine_probes"][0]["actions_output_json"] == str(tmp_path / "sglang-actions.json")
     assert record["planned_engine_probes"][1]["metadata"] == ["probe.source=cli"]
+    assert record["planned_engine_probes"][1]["native_probe_delegate_factory"] == (
+        "document_kv_vllm_native_adapter:build_probe"
+    )
     assert vllm_argv[vllm_argv.index("--expected-backend") + 1] == "vllm"
     assert vllm_argv[vllm_argv.index("--payload-uri") + 1] == f"disk:{tmp_path / 'vllm.kv'}"
     assert vllm_argv[vllm_argv.index("--actions-output-json") + 1] == str(tmp_path / "vllm-actions.json")
@@ -2195,7 +2200,13 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
         str(tmp_path / "vllm-actions.json"),
     ]
     assert targets_record["probes"][1]["metadata"] == ["probe.source=cli"]
+    assert targets_record["probes"][1]["native_probe_delegate_factory"] == (
+        "document_kv_vllm_native_adapter:build_probe"
+    )
     assert read_databricks_engine_probe_targets_json(targets_json)[1].metadata == ("probe.source=cli",)
+    assert read_databricks_engine_probe_targets_json(targets_json)[1].native_probe_delegate_factory == (
+        "document_kv_vllm_native_adapter:build_probe"
+    )
 
 
 def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_path):
