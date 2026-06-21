@@ -690,6 +690,10 @@ class _V1MeasurementAggregate:
     output_tokens_sum: int = 0
     time_to_completion_sum: float = 0.0
     throughput_count: int = 0
+    exact_match_true_count: int = 0
+    exact_match_count: int = 0
+    answer_found_true_count: int = 0
+    answer_found_count: int = 0
 
     @property
     def successes(self) -> int:
@@ -718,6 +722,8 @@ def _validate_v1_report_aggregates_match_measurements(
         prompt_tokens = measurement.get("prompt_tokens")
         completion_tokens = measurement.get("completion_tokens")
         time_to_completion = measurement.get("time_to_completion_seconds")
+        exact_match = measurement.get("exact_match")
+        answer_found = measurement.get("answer_found")
         if _is_positive_int(prompt_tokens):
             aggregate.prompt_tokens_sum += prompt_tokens
             aggregate.prompt_tokens_count += 1
@@ -728,6 +734,12 @@ def _validate_v1_report_aggregates_match_measurements(
             aggregate.output_tokens_sum += completion_tokens
             aggregate.time_to_completion_sum += float(time_to_completion)
             aggregate.throughput_count += 1
+        if type(exact_match) is bool:
+            aggregate.exact_match_true_count += int(exact_match)
+            aggregate.exact_match_count += 1
+        if type(answer_found) is bool:
+            aggregate.answer_found_true_count += int(answer_found)
+            aggregate.answer_found_count += 1
 
     for row in report_rows:
         if not isinstance(row, Mapping):
@@ -784,6 +796,28 @@ def _validate_v1_report_aggregates_match_measurements(
                     f"{throughput_label} must be absent when measurements have zero total "
                     "time_to_completion_seconds"
                 )
+        if (
+            row.get("exact_match_rate") is not None
+            and aggregate.exact_match_count == measurement_successes
+            and measurement_successes > 0
+        ):
+            _validate_v1_report_aggregate_number(
+                row.get("exact_match_rate"),
+                aggregate.exact_match_true_count / measurement_successes,
+                f"v1 benchmark report row {dataset}:{arm_id} exact_match_rate",
+                issues,
+            )
+        if (
+            row.get("answer_found_rate") is not None
+            and aggregate.answer_found_count == measurement_successes
+            and measurement_successes > 0
+        ):
+            _validate_v1_report_aggregate_number(
+                row.get("answer_found_rate"),
+                aggregate.answer_found_true_count / measurement_successes,
+                f"v1 benchmark report row {dataset}:{arm_id} answer_found_rate",
+                issues,
+            )
         for metric_name in ("ttft", "time_to_completion"):
             metric = row.get(metric_name)
             if not isinstance(metric, Mapping):
