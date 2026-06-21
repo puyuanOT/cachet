@@ -895,6 +895,22 @@ def test_databricks_runs_reexports_document_owned_api_with_legacy_subclass():
     assert "urllib" in legacy_databricks_runs.__all__
 
 
+def test_legacy_databricks_runs_forwards_expected_hardware_target_keyword():
+    status_record = _valid_databricks_run_status_record()
+
+    legacy_issues = legacy_databricks_runs.databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+    )
+    public_issues = public_databricks_runs.databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+    )
+
+    assert legacy_issues == public_issues
+    assert any("hardware_target 'aws-g6-l4'" in issue for issue in legacy_issues)
+
+
 def test_legacy_workspace_config_factory_returns_picklable_legacy_config():
     config = legacy_databricks_runs.databricks_workspace_config_from_env(
         environ={

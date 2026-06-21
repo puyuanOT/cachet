@@ -266,8 +266,16 @@ def databricks_run_status_record(record: Mapping[str, Any]) -> Mapping[str, Any]
     return _call_document_function("databricks_run_status_record", record)
 
 
-def databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    return _call_document_function("databricks_run_status_sidecar_issues", record)
+def databricks_run_status_sidecar_issues(
+    record: Mapping[str, Any],
+    *,
+    expected_hardware_target: str | None = None,
+) -> tuple[str, ...]:
+    return _call_document_function(
+        "databricks_run_status_sidecar_issues",
+        record,
+        expected_hardware_target=expected_hardware_target,
+    )
 
 
 def validate_databricks_run_status_sidecar(record: Mapping[str, Any]) -> None:
