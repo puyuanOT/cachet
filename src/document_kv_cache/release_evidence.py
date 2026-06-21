@@ -1101,6 +1101,7 @@ def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     issues: list[str] = []
     if record.get("record_type") != STORAGE_BENCHMARK_RECORD_TYPE:
         issues.append(f"storage benchmark record_type must be {STORAGE_BENCHMARK_RECORD_TYPE!r}")
+    _validate_storage_trace_fields(record, issues)
     if not _matches_release_storage_readers(record.get("readers")):
         issues.append("storage benchmark readers must include exactly Memory, Disk, and Unity Catalog")
     uc_volume_root = record.get("uc_volume_root")
@@ -1139,6 +1140,15 @@ def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if results is not None:
         _validate_storage_results(results, issues)
     return tuple(issues)
+
+
+def _validate_storage_trace_fields(record: Mapping[str, Any], issues: list[str]) -> None:
+    for field_name in ("benchmark_id", "workspace_dir", "shard_uri"):
+        if not isinstance(record.get(field_name), str) or not record[field_name]:
+            issues.append(f"storage benchmark {field_name} must be non-empty")
+    for field_name in ("chunk_count", "chunk_bytes", "repeats", "parallelism", "align_bytes"):
+        if not _is_positive_int(record.get(field_name)):
+            issues.append(f"storage benchmark {field_name} must be a positive integer")
 
 
 def _engine_probe_evidence(

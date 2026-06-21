@@ -1423,6 +1423,41 @@ def test_evaluate_release_evidence_rejects_minimal_storage_rows_and_missing_uc_r
     assert any("total_reads" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_missing_storage_trace_fields():
+    storage_record = _storage_record(ok=True)
+    storage_record["benchmark_id"] = ""
+    storage_record.pop("workspace_dir")
+    storage_record["shard_uri"] = None
+    storage_record["chunk_count"] = 0
+    storage_record["chunk_bytes"] = False
+    storage_record["repeats"] = -1
+    storage_record["parallelism"] = "2"
+    storage_record.pop("align_bytes")
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        storage_record,
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("storage benchmark benchmark_id must be non-empty" in issue for issue in evidence.issues)
+    assert any("storage benchmark workspace_dir must be non-empty" in issue for issue in evidence.issues)
+    assert any("storage benchmark shard_uri must be non-empty" in issue for issue in evidence.issues)
+    assert any("storage benchmark chunk_count must be a positive integer" in issue for issue in evidence.issues)
+    assert any("storage benchmark chunk_bytes must be a positive integer" in issue for issue in evidence.issues)
+    assert any("storage benchmark repeats must be a positive integer" in issue for issue in evidence.issues)
+    assert any("storage benchmark parallelism must be a positive integer" in issue for issue in evidence.issues)
+    assert any("storage benchmark align_bytes must be a positive integer" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_inconsistent_storage_uc_volume_metadata():
     storage_record = _storage_record(ok=True)
     storage_record["uc_volume_root"] = "/Volumes/catalog/schema/other-document-kv-storage-benchmark"
@@ -2313,6 +2348,14 @@ def _storage_record(*, ok: bool, uc_volume_is_real: bool = True):
     readers = ("memory", "disk", "unity_catalog")
     return {
         "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
+        "benchmark_id": "storage-release-smoke",
+        "workspace_dir": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace",
+        "shard_uri": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace/storage-benchmark.kvpack",
+        "chunk_count": 4,
+        "chunk_bytes": 1024,
+        "repeats": 1,
+        "parallelism": 2,
+        "align_bytes": 4096,
         "readers": list(readers),
         "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
         "results": [

@@ -2748,6 +2748,14 @@ def _storage_record(*, ok: bool):
     readers = ("memory", "disk", "unity_catalog")
     return {
         "record_type": STORAGE_BENCHMARK_RECORD_TYPE,
+        "benchmark_id": "storage-release-smoke",
+        "workspace_dir": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace",
+        "shard_uri": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark/workspace/storage-benchmark.kvpack",
+        "chunk_count": 4,
+        "chunk_bytes": 1024,
+        "repeats": 1,
+        "parallelism": 2,
+        "align_bytes": 4096,
         "readers": list(readers),
         "uc_volume_root": "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
         "results": [
