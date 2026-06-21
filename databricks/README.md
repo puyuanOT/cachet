@@ -5,7 +5,7 @@ execution. The templates are intentionally workspace-agnostic: they do not embed
 workspace URLs, tokens, catalogs, or upload paths.
 
 - `databricks.yml` defines the V1 document KV-cache benchmark job on a
-  single-node AWS `g5` or `g6` GPU cluster.
+  single-node AWS `g6`/L4 GPU cluster.
 - `vllm-smoke/databricks.yml` defines a smaller managed smoke job for the
   self-contained Qwen3/vLLM server check.
 - `storage-benchmark/databricks.yml` defines a standalone Memory/Disk/Unity
@@ -26,7 +26,7 @@ bundle with explicit variables:
 
 Include `--storage-benchmark-workspace-dir` and, when available,
 `--storage-benchmark-uc-volume-root` while generating the plan if you want the
-same AWS g5/g6 run to append the storage-reader benchmark after the V1 inference
+same AWS g6/L4 run to append the storage-reader benchmark after the V1 inference
 benchmark.
 
 ```bash

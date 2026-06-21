@@ -1,7 +1,7 @@
 # Engine Probe Bundle
 
 This standalone Databricks Asset Bundle template runs one native vLLM or SGLang
-engine-probe job on a single AWS g5/g6 node. It is for release evidence after an
+engine-probe job on a single AWS g6/L4 node. It is for release evidence after an
 engine adapter has produced a `document_kv.engine_adapter_request.v1` handoff and
 either a workspace-specific native probe factory or a Cachet built-in factory
 plus backend-native delegate.

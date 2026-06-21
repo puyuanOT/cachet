@@ -113,7 +113,7 @@ def benchmark_request() -> BenchmarkEngineRequest:
     return BenchmarkEngineRequest(
         suite_id="suite",
         model_id="qwen3:4b-instruct",
-        hardware_target="aws-g5",
+        hardware_target="aws-g6-l4",
         example=example,
         arm=document_kv_cache_arm(),
         prompt_parts=build_prompt_parts(example),

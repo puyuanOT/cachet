@@ -87,7 +87,7 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
     }
 
 
-def test_evaluate_release_evidence_accepts_supported_g5_hardware_target():
+def test_evaluate_release_evidence_rejects_unsupported_g5_hardware_target():
     evidence = evaluate_release_evidence(
         _v1_record(ok=True, hardware_target="aws-g5"),
         _storage_record(ok=True),
@@ -101,7 +101,8 @@ def test_evaluate_release_evidence_accepts_supported_g5_hardware_target():
         ),
     )
 
-    assert evidence.ok
+    assert not evidence.ok
+    assert any("hardware_target" in issue for issue in evidence.issues)
 
 
 def test_evaluate_release_evidence_reports_missing_and_invalid_artifacts():

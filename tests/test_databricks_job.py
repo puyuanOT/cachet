@@ -90,14 +90,14 @@ def test_build_single_node_g5_cluster_is_reusable_with_custom_purpose():
     cluster = build_single_node_g5_cluster(
         DatabricksSingleNodeG5ClusterConfig(
             purpose="document-kv-vllm-smoke",
-            node_type_id="g5.8xlarge",
+            node_type_id="g6.8xlarge",
             single_user_name=SINGLE_USER_NAME,
             custom_tags={"team": "document-kv"},
         )
     )
 
-    assert cluster["node_type_id"] == "g5.8xlarge"
-    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["custom_tags"] == {
         "ResourceClass": "SingleNode",
         "purpose": "document-kv-vllm-smoke",
@@ -178,11 +178,13 @@ def test_databricks_config_keeps_single_user_name_for_dedicated_clusters():
     assert payload["tasks"][0]["new_cluster"]["single_user_name"] == SINGLE_USER_NAME
 
 
-def test_validate_aws_g5_node_type_accepts_g5_and_g6_gpu_families():
-    validate_aws_g5_node_type("g5.xlarge")
+def test_validate_aws_g5_node_type_alias_accepts_only_g6_l4_family():
     validate_aws_g5_node_type("g6.8xlarge")
 
-    with pytest.raises(ValueError, match="AWS g5, g6"):
+    with pytest.raises(ValueError, match="AWS g6/L4"):
+        validate_aws_g5_node_type("g5.xlarge")
+
+    with pytest.raises(ValueError, match="AWS g6/L4"):
         validate_aws_g5_node_type("g6e.8xlarge")
 
 
@@ -192,7 +194,6 @@ def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
     assert validate_aws_single_node_gpu_type is validate_aws_g5_node_type
     assert build_single_node_gpu_cluster is build_single_node_g5_cluster
 
-    validate_aws_single_node_gpu_type("g5.xlarge")
     validate_aws_single_node_gpu_type("g6.8xlarge")
 
 
@@ -587,7 +588,7 @@ import restaurant_kv_serving.databricks_job as legacy_databricks_job
 
 assert legacy_databricks_job.DatabricksBenchmarkJobConfig is not FakeDatabricksBenchmarkJobConfig
 assert legacy_databricks_job.DEFAULT_AWS_G5_NODE_TYPE == "g6.8xlarge"
-legacy_databricks_job.validate_aws_g5_node_type("g5.xlarge")
+legacy_databricks_job.validate_aws_g5_node_type("g6.8xlarge")
 
 with tempfile.TemporaryDirectory() as raw_tmp:
     tmp_path = Path(raw_tmp)
@@ -1167,7 +1168,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert "--sglang-native-probe-delegate-factory" in readme_text
     assert "--var vllm_native_probe_delegate_factory=" in readme_text
     assert "--var sglang_native_probe_delegate_factory=" in readme_text
-    assert "single-node AWS `g5` or `g6` GPU cluster" in readme_text
+    assert "single-node AWS `g6`/L4 GPU cluster" in readme_text
     assert "document_kv_cache/templates/databricks/" in readme_text
 
 
@@ -1233,7 +1234,7 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
     assert "cd databricks/vllm-smoke" in readme_text
     assert "does not require full V1 raw datasets" in " ".join(readme_text.split())
     assert "smallest runtime check" in " ".join(smoke_readme_text.split())
-    assert "target AWS g5/g6 Databricks runtime" in packaged_smoke_readme_text
+    assert "target AWS g6/L4 Databricks runtime" in packaged_smoke_readme_text
 
 
 def test_databricks_engine_probe_asset_bundle_template_is_independent_and_release_safe():
@@ -1333,7 +1334,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "native vLLM or SGLang" in probe_readme_text
-    assert "target AWS g5/g6 Databricks runtime" in packaged_probe_readme_text
+    assert "target AWS g6/L4 Databricks runtime" in packaged_probe_readme_text
     assert "uploaded payload URI" in packaged_probe_readme_text
     assert "document_kv.engine_kv_connector_actions.v1" in packaged_probe_readme_text
     assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in packaged_probe_readme_text

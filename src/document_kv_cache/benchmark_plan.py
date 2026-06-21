@@ -478,7 +478,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
         benchmark_command=_benchmark_runner_command(config),
         post_benchmark_commands=tuple(post_benchmark_commands),
         notes=(
-            "Run these commands on an AWS g5/g6-compatible environment with the target server already listening.",
+            "Run these commands on an AWS g6/L4-compatible environment with the target server already listening.",
             "The benchmark compares baseline full-prefill requests with the document KV-cache arm.",
             "When configured, the storage-reader benchmark runs after inference to capture selected reader load evidence on the same node.",
             "When configured, GitHub governance inspection runs before release validation and can be bundled as release governance evidence.",

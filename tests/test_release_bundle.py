@@ -725,7 +725,7 @@ def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_misma
         )
 
     error = str(exc_info.value)
-    assert "hardware_target 'aws-g6-l4'" in error
+    assert "AWS g6/L4 node type" in error
     assert "g5.4xlarge" not in error
 
 
