@@ -137,6 +137,9 @@ class BenchmarkSuite:
             raise ValueError("datasets must include at least one V1 dataset")
         for dataset in datasets:
             validate_v1_dataset(dataset)
+        duplicate_datasets = _duplicate_labels(datasets)
+        if duplicate_datasets:
+            raise ValueError(f"datasets contain duplicate V1 dataset ids: {', '.join(duplicate_datasets)}")
         object.__setattr__(self, "examples", examples)
         object.__setattr__(self, "datasets", datasets)
         example_datasets = {example.dataset for example in examples}
@@ -239,6 +242,9 @@ class V1BenchmarkEvidence:
     required_datasets: tuple[str, ...]
     baseline_arm_id: str
     cache_arm_id: str
+    duplicate_required_datasets: tuple[str, ...]
+    duplicate_report_rows: tuple[str, ...]
+    duplicate_comparisons: tuple[str, ...]
     missing_report_rows: tuple[str, ...]
     missing_comparisons: tuple[str, ...]
     comparisons_without_metrics: tuple[str, ...]
@@ -253,6 +259,9 @@ class V1BenchmarkEvidence:
         return not (
             self.missing_report_rows
             or self.missing_comparisons
+            or self.duplicate_required_datasets
+            or self.duplicate_report_rows
+            or self.duplicate_comparisons
             or self.comparisons_without_metrics
             or self.rows_without_successful_requests
             or self.rows_without_latency
@@ -264,6 +273,12 @@ class V1BenchmarkEvidence:
     @property
     def issues(self) -> tuple[str, ...]:
         issues: list[str] = []
+        if self.duplicate_required_datasets:
+            issues.append(f"duplicate required datasets: {', '.join(self.duplicate_required_datasets)}")
+        if self.duplicate_report_rows:
+            issues.append(f"duplicate report rows: {', '.join(self.duplicate_report_rows)}")
+        if self.duplicate_comparisons:
+            issues.append(f"duplicate comparisons: {', '.join(self.duplicate_comparisons)}")
         if self.missing_report_rows:
             issues.append(f"missing report rows: {', '.join(self.missing_report_rows)}")
         if self.missing_comparisons:
@@ -388,18 +403,20 @@ def evaluate_v1_benchmark_evidence(
     required = tuple(required_datasets)
     for dataset in required:
         validate_v1_dataset(dataset)
+    duplicate_required_datasets = _duplicate_labels(required)
+    unique_required = _dedupe_preserve_order(required)
     required_row_keys = tuple(
         (dataset, arm_id)
-        for dataset in required
+        for dataset in unique_required
         for arm_id in (baseline_arm_id, cache_arm_id)
     )
-    rows_by_key = {(row.dataset, row.arm_id): row for row in rows}
-    comparisons_by_dataset = {
-        comparison.dataset: comparison
-        for comparison in comparisons
-        if comparison.baseline_arm_id == baseline_arm_id and comparison.cache_arm_id == cache_arm_id
-    }
-    required_datasets_set = set(required)
+    rows_by_key, duplicate_report_rows = _report_rows_by_key(rows)
+    comparisons_by_dataset, duplicate_comparisons = _comparisons_by_dataset(
+        comparisons,
+        baseline_arm_id=baseline_arm_id,
+        cache_arm_id=cache_arm_id,
+    )
+    required_datasets_set = set(unique_required)
     expected_arms = {baseline_arm_id, cache_arm_id}
     observed_datasets = {row.dataset for row in rows}.union(comparison.dataset for comparison in comparisons)
     observed_arms = {row.arm_id for row in rows}.union(
@@ -412,15 +429,18 @@ def evaluate_v1_benchmark_evidence(
         required_datasets=required,
         baseline_arm_id=baseline_arm_id,
         cache_arm_id=cache_arm_id,
+        duplicate_required_datasets=duplicate_required_datasets,
+        duplicate_report_rows=duplicate_report_rows,
+        duplicate_comparisons=duplicate_comparisons,
         missing_report_rows=tuple(
             _row_key(dataset, arm_id)
             for dataset, arm_id in required_row_keys
             if (dataset, arm_id) not in rows_by_key
         ),
-        missing_comparisons=tuple(dataset for dataset in required if dataset not in comparisons_by_dataset),
+        missing_comparisons=tuple(dataset for dataset in unique_required if dataset not in comparisons_by_dataset),
         comparisons_without_metrics=tuple(
             dataset
-            for dataset in required
+            for dataset in unique_required
             if (comparison := comparisons_by_dataset.get(dataset)) is not None
             and _comparison_has_missing_metrics(comparison)
         ),
@@ -658,6 +678,73 @@ def _comparison_has_missing_metrics(comparison: BenchmarkComparison) -> bool:
 
 def _row_key(dataset: str, arm_id: str) -> str:
     return f"{dataset}:{arm_id}"
+
+
+def _comparison_key(comparison: BenchmarkComparison) -> str:
+    return f"{comparison.dataset}:{comparison.baseline_arm_id}->{comparison.cache_arm_id}"
+
+
+def _duplicate_labels(labels: Iterable[str]) -> tuple[str, ...]:
+    seen = set()
+    duplicate_seen = set()
+    duplicates = []
+    for label in labels:
+        if label in seen and label not in duplicate_seen:
+            duplicate_seen.add(label)
+            duplicates.append(label)
+        seen.add(label)
+    return tuple(duplicates)
+
+
+def _dedupe_preserve_order(values: Iterable[str]) -> tuple[str, ...]:
+    seen = set()
+    deduped = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append(value)
+    return tuple(deduped)
+
+
+def _report_rows_by_key(
+    rows: Sequence[BenchmarkReportRow],
+) -> tuple[dict[tuple[str, str], BenchmarkReportRow], tuple[str, ...]]:
+    rows_by_key = {}
+    duplicate_labels = []
+    duplicate_seen = set()
+    for row in rows:
+        key = (row.dataset, row.arm_id)
+        label = _row_key(row.dataset, row.arm_id)
+        if key in rows_by_key:
+            if label not in duplicate_seen:
+                duplicate_seen.add(label)
+                duplicate_labels.append(label)
+            continue
+        rows_by_key[key] = row
+    return rows_by_key, tuple(duplicate_labels)
+
+
+def _comparisons_by_dataset(
+    comparisons: Sequence[BenchmarkComparison],
+    *,
+    baseline_arm_id: str,
+    cache_arm_id: str,
+) -> tuple[dict[str, BenchmarkComparison], tuple[str, ...]]:
+    comparisons_by_dataset = {}
+    duplicate_labels = []
+    duplicate_seen = set()
+    for comparison in comparisons:
+        if comparison.baseline_arm_id != baseline_arm_id or comparison.cache_arm_id != cache_arm_id:
+            continue
+        label = _comparison_key(comparison)
+        if comparison.dataset in comparisons_by_dataset:
+            if label not in duplicate_seen:
+                duplicate_seen.add(label)
+                duplicate_labels.append(label)
+            continue
+        comparisons_by_dataset[comparison.dataset] = comparison
+    return comparisons_by_dataset, tuple(duplicate_labels)
 
 
 def _join_sections(*sections: str) -> str:

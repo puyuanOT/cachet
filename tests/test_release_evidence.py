@@ -490,6 +490,56 @@ def test_evaluate_release_evidence_rejects_unexpected_v1_evidence_arms():
     assert "v1 benchmark evidence unexpected_arms must be empty" in evidence.issues
 
 
+def test_evaluate_release_evidence_rejects_duplicate_v1_evidence_identities():
+    v1_record = _v1_record(ok=True)
+    v1_record["v1_evidence"]["ok"] = False
+    v1_record["v1_evidence"]["duplicate_report_rows"] = ["biography:baseline_prefill"]
+    v1_record["v1_evidence"]["issues"] = ["duplicate report rows: biography:baseline_prefill"]
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert "v1 benchmark evidence duplicate_report_rows must be empty" in evidence.issues
+    assert "v1 benchmark evidence: duplicate report rows: biography:baseline_prefill" in evidence.issues
+
+
+def test_evaluate_release_evidence_allows_legacy_v1_evidence_without_duplicate_identity_fields():
+    v1_record = _v1_record(ok=True)
+    for field_name in (
+        "duplicate_required_datasets",
+        "duplicate_report_rows",
+        "duplicate_comparisons",
+    ):
+        v1_record["v1_evidence"].pop(field_name)
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert evidence.v1_benchmark_ok
+    assert not any("duplicate_" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_non_numeric_comparison_metrics():
     v1_record = _v1_record(ok=True)
     v1_record["comparisons"][0] = {
@@ -1643,6 +1693,9 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g5", model_id: str = "qw
         "v1_evidence": {
             "ok": ok,
             "required_datasets": list(datasets),
+            "duplicate_required_datasets": [],
+            "duplicate_report_rows": [],
+            "duplicate_comparisons": [],
             "missing_report_rows": [],
             "missing_comparisons": [],
             "comparisons_without_metrics": [],

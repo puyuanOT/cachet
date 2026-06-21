@@ -604,6 +604,13 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         if tuple(evidence.get("required_datasets", ())) != SUPPORTED_V1_DATASETS:
             issues.append("v1 benchmark evidence required_datasets must match the V1 release datasets")
         for field_name in (
+            "duplicate_required_datasets",
+            "duplicate_report_rows",
+            "duplicate_comparisons",
+        ):
+            if evidence.get(field_name, []) not in ([], ()):
+                issues.append(f"v1 benchmark evidence {field_name} must be empty")
+        for field_name in (
             "missing_report_rows",
             "missing_comparisons",
             "comparisons_without_metrics",

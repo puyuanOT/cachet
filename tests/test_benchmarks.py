@@ -187,6 +187,8 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         BenchmarkSuite(suite_id="v1", examples=("not-an-example",))
     with pytest.raises(ValueError, match="datasets must include"):
         BenchmarkSuite(suite_id="v1", examples=(example,), datasets=())
+    with pytest.raises(ValueError, match="duplicate V1 dataset ids: biography"):
+        BenchmarkSuite(suite_id="v1", examples=(example,), datasets=("biography", "biography"))
 
 
 def test_inference_measurement_validates_traceability_output_and_metadata():
@@ -464,6 +466,32 @@ def test_evaluate_v1_benchmark_evidence_rejects_comparisons_without_metrics():
     assert evidence.missing_comparisons == ()
     assert evidence.comparisons_without_metrics == SUPPORTED_V1_DATASETS
     assert any(issue.startswith("comparisons without speedup") for issue in evidence.issues)
+
+
+def test_evaluate_v1_benchmark_evidence_reports_duplicate_identities():
+    rows = summarize_measurements(
+        [
+            measurement(arm_id=BASELINE_PREFILL_ARM, dataset="biography", ttft=10.0, ttc=20.0),
+            measurement(arm_id=CACHE_REUSE_ARM, dataset="biography", ttft=2.0, ttc=8.0),
+        ]
+    )
+    duplicate_baseline = rows[0]
+    comparisons = compare_to_baseline(rows)
+    duplicate_comparison = comparisons[0]
+
+    evidence = evaluate_v1_benchmark_evidence(
+        (*rows, duplicate_baseline),
+        (*comparisons, duplicate_comparison),
+        required_datasets=("biography", "biography"),
+    )
+
+    assert not evidence.ok
+    assert evidence.duplicate_required_datasets == ("biography",)
+    assert evidence.duplicate_report_rows == ("biography:baseline_prefill",)
+    assert evidence.duplicate_comparisons == ("biography:baseline_prefill->document_kv_cache",)
+    assert "duplicate required datasets: biography" in evidence.issues
+    assert "duplicate report rows: biography:baseline_prefill" in evidence.issues
+    assert "duplicate comparisons: biography:baseline_prefill->document_kv_cache" in evidence.issues
 
 
 def test_evaluate_v1_benchmark_evidence_reports_unexpected_arms():

@@ -2673,6 +2673,9 @@ def _v1_record(*, ok: bool):
         "v1_evidence": {
             "ok": ok,
             "required_datasets": list(datasets),
+            "duplicate_required_datasets": [],
+            "duplicate_report_rows": [],
+            "duplicate_comparisons": [],
             "missing_report_rows": [],
             "missing_comparisons": [],
             "comparisons_without_metrics": [],
