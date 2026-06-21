@@ -3101,6 +3101,7 @@ def _probe_record(backend: ServingBackend):
             metadata={
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE: profile.engine_package,
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION: profile.engine_version,
+                **_runtime_contract_metadata(backend),
             },
         )
     )
@@ -3151,6 +3152,14 @@ def _actions_record(backend: ServingBackend, *, layout=None):
             release=EngineKVReleaseAction(request_id=request_id),
         )
     )
+
+
+def _runtime_contract_metadata(backend: ServingBackend) -> dict[str, str]:
+    if backend is ServingBackend.VLLM:
+        return {"vllm_kv_injection.runtime_contract": "vllm-kv-connector-v1"}
+    if backend is ServingBackend.SGLANG:
+        return {"sglang_kv_injection.runtime_contract": "sglang-runtime-cache"}
+    raise AssertionError(f"unsupported backend {backend}")
 
 
 STRICT_V1_DATABRICKS_RUN_STATUS_CASES = (
