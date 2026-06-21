@@ -89,6 +89,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "databricks_run_status",
     "package_wheel",
     "pr_evidence",
+    "requirements_matrix",
     "github_governance",
     "repository_hygiene",
     "native_probe_factories",
@@ -102,6 +103,7 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("databricks_run_status", 1, "Databricks run-status sidecar"),
     ("package_wheel", 1, "tested package wheel"),
     ("pr_evidence", 1, "PR evidence sidecar"),
+    ("requirements_matrix", 1, "V1 requirements matrix"),
     ("github_governance", 1, "GitHub governance sidecar"),
     ("repository_hygiene", 1, "repository hygiene sidecar"),
     ("native_probe_factories", 1, "native probe factory diagnostics sidecar"),
@@ -120,7 +122,27 @@ STRICT_V1_RELEASE_HELP = (
     "vLLM/SGLang native engine probes and connector actions, plan execution, "
     "Databricks status for benchmark/storage/engine-probe runs, tested wheel, "
     "PR evidence, governance, repository hygiene, and supported native probe "
-    "factory diagnostics."
+    "factory diagnostics, plus the V1 requirements matrix."
+)
+_REQUIRED_REQUIREMENTS_MATRIX_SNIPPETS = (
+    "# V1 Requirements Matrix",
+    "**Implemented:**",
+    "**Release-gated:**",
+    "**Remaining:**",
+    "vLLM/SGLang handoff boundary",
+    "Memory, Disk, UC Volume, and routed readers",
+    "`qwen3:4b-instruct`",
+    "Biography",
+    "HotpotQA",
+    "MusiQue",
+    "NIAH",
+    "`full_no_cache` baseline",
+    "MQA/GQA",
+    "KV Packet",
+    "Qwen3.5",
+    "MiniMax",
+    "complete strict release bundle",
+    "real vLLM and SGLang native block managers",
 )
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
@@ -355,6 +377,7 @@ def build_release_bundle(
     databricks_run_status_jsons: Sequence[str | Path] = (),
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
+    requirements_matrix_md: str | Path | None = None,
     github_governance_json: str | Path | None = None,
     repository_hygiene_json: str | Path | None = None,
     native_probe_factories_jsons: Sequence[str | Path] = (),
@@ -379,6 +402,7 @@ def build_release_bundle(
         databricks_run_status_jsons=databricks_run_status_jsons,
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
+        requirements_matrix_md=requirements_matrix_md,
         github_governance_json=github_governance_json,
         repository_hygiene_json=repository_hygiene_json,
         native_probe_factories_jsons=native_probe_factories_jsons,
@@ -453,6 +477,7 @@ def _release_bundle_sources(
     databricks_run_status_jsons: Sequence[str | Path],
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
+    requirements_matrix_md: str | Path | None,
     github_governance_json: str | Path | None,
     repository_hygiene_json: str | Path | None,
     native_probe_factories_jsons: Sequence[str | Path],
@@ -472,6 +497,8 @@ def _release_bundle_sources(
     if package_wheel is not None:
         sources.append(("package_wheel", package_wheel))
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
+    if requirements_matrix_md is not None:
+        sources.append(("requirements_matrix", requirements_matrix_md))
     if github_governance_json is not None:
         sources.append(("github_governance", github_governance_json))
     if repository_hygiene_json is not None:
@@ -566,6 +593,8 @@ def _validate_release_bundle_inputs(
                 issues.append("PR evidence sidecar must be JSON")
                 continue
             issues.extend(_pr_evidence_sidecar_issues(artifact.record))
+        elif artifact.role == "requirements_matrix":
+            issues.extend(_requirements_matrix_issues(artifact.source_path, artifact.payload))
         elif artifact.role == "github_governance":
             if artifact.record is None:
                 issues.append("GitHub governance sidecar must be JSON")
@@ -788,6 +817,23 @@ def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if evidence.refactor_skill_applied is not True:
         issues.append("PR evidence sidecar Refactor skill must be applied")
     return _dedupe_strings(issues)
+
+
+def _requirements_matrix_issues(source_path: str, payload: bytes) -> tuple[str, ...]:
+    issues: list[str] = []
+    if not source_path.endswith(".md"):
+        issues.append("requirements matrix artifact must be a Markdown file")
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return (f"requirements matrix artifact must be valid UTF-8 Markdown: {exc.reason}",)
+    if not text.strip():
+        issues.append("requirements matrix artifact must be non-empty")
+        return tuple(issues)
+    for snippet in _REQUIRED_REQUIREMENTS_MATRIX_SNIPPETS:
+        if snippet not in text:
+            issues.append(f"requirements matrix artifact must include {snippet!r}")
+    return tuple(issues)
 
 
 def _github_governance_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1748,7 +1794,7 @@ def _record_contains(actual: Mapping[str, Any], expected: Mapping[str, Any]) -> 
 
 
 def _artifact_record(role: str, payload: bytes, source_path: str) -> Mapping[str, Any] | None:
-    if role == "package_wheel":
+    if role in ("package_wheel", "requirements_matrix"):
         return None
     return _read_json_object(payload, source_path)
 
@@ -1803,6 +1849,8 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return Path(prepared.source_path).name
     if role == "pr_evidence":
         return f"pr_evidence_{index + 1:02d}.json"
+    if role == "requirements_matrix":
+        return "v1_requirements_matrix.md"
     if role == "github_governance":
         return "github_governance.json"
     if role == "repository_hygiene":
@@ -1873,6 +1921,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--databricks-run-status-json", action="append", default=[])
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
+    parser.add_argument("--requirements-matrix-md")
     parser.add_argument("--github-governance-json")
     parser.add_argument("--repository-hygiene-json")
     parser.add_argument("--native-probe-factories-json", action="append", default=[])
@@ -1900,6 +1949,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         databricks_run_status_jsons=args.databricks_run_status_json,
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
+        requirements_matrix_md=args.requirements_matrix_md,
         github_governance_json=args.github_governance_json,
         repository_hygiene_json=args.repository_hygiene_json,
         native_probe_factories_jsons=args.native_probe_factories_json,
