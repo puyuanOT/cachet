@@ -432,7 +432,7 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         "--gpu-memory-utilization",
         "0.85",
         "--trust-remote-code",
-        "--disable-log-requests",
+        "--no-enable-log-requests",
     ]
 
 
