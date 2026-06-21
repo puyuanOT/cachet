@@ -169,7 +169,7 @@ def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_p
 
     assert record["plan_version"] == "v1"
     assert record["model_id"] == "qwen3:4b-instruct"
-    assert record["hardware_target"] == "aws-g5"
+    assert record["hardware_target"] == "aws-g6-l4"
     assert [command.name for command in plan.preparation_commands] == [
         "prepare-biography",
         "prepare-hotpotqa",

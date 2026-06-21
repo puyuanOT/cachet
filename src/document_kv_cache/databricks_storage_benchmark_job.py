@@ -209,7 +209,7 @@ def _runner_parameters(config: DatabricksStorageBenchmarkJobConfig) -> list[str]
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Emit a Databricks runs/submit payload for an AWS g5 storage-reader benchmark."
+        description="Emit a Databricks runs/submit payload for an AWS g5/g6 storage-reader benchmark."
     )
     parser.add_argument("--workspace-dir", required=True, help="Cluster-local directory for synthetic shard artifacts.")
     parser.add_argument("--benchmark-output-json", required=True, help="Cluster-visible storage benchmark JSON output.")

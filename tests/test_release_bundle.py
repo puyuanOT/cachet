@@ -744,7 +744,8 @@ def test_build_release_bundle_strict_v1_rejects_wrong_plan_source_target(tmp_pat
     error = str(exc_info.value)
     assert "benchmark plan execution sidecar plan_source.plan_version must be 'v1'" in error
     assert "benchmark plan execution sidecar plan_source.model_id must be 'qwen3:4b-instruct'" in error
-    assert "benchmark plan execution sidecar plan_source.hardware_target must be 'aws-g5'" in error
+    assert "benchmark plan execution sidecar plan_source.hardware_target must be one of" in error
+    assert "benchmark plan execution sidecar plan_source.hardware_target must match V1 benchmark hardware_target" in error
     assert "benchmark plan execution sidecar plan_source.suite_id must be a non-empty string" in error
     assert "benchmark plan execution sidecar plan_source.command_count must be a positive integer" in error
 
@@ -1403,7 +1404,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         active_task_key_status_record,
     )
     non_g5_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
-    non_g5_submit_payload_status_record["submit_payload"]["aws_g5_node_type"] = False
+    non_g5_submit_payload_status_record["submit_payload"]["aws_single_node_gpu_type"] = False
     non_g5_submit_payload_status_record["submit_payload"]["tasks"][0]["node_type_id"] = "g6.4xlarge"
     non_g5_submit_payload_status = _write_json(
         tmp_path / "non-g5-submit-payload-databricks-run-status.json",
@@ -2268,7 +2269,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "active-taskkey-databricks-status-bundle",
         )
 
-    with pytest.raises(ValueError, match="aws_g5_node_type"):
+    with pytest.raises(ValueError, match="aws_single_node_gpu_type"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
@@ -2926,7 +2927,7 @@ def _v1_record(*, ok: bool, suite_id: str = "v1-suite"):
         "record_type": BENCHMARK_RUN_RECORD_TYPE,
         "suite": {
             "suite_id": suite_id,
-            "hardware_target": "aws-g5",
+            "hardware_target": "aws-g6-l4",
             "model_id": "qwen3:4b-instruct",
             "datasets": list(datasets),
             "examples": len(datasets),
@@ -3451,7 +3452,7 @@ def _plan_execution_record(*, ok: bool, suite_id: str = "v1-suite"):
             "plan_version": "v1",
             "suite_id": suite_id,
             "model_id": "qwen3:4b-instruct",
-            "hardware_target": "aws-g5",
+            "hardware_target": "aws-g6-l4",
             "command_count": 1,
         },
         "commands": [
@@ -3545,8 +3546,8 @@ def _databricks_run_submit_payload_record(
         "tasks": [
             {
                 "task_key": task_key,
-                "node_type_id": "g5.4xlarge",
-                "driver_node_type_id": "g5.4xlarge",
+                "node_type_id": "g6.8xlarge",
+                "driver_node_type_id": "g6.8xlarge",
                 "spark_version": "15.4.x-gpu-ml-scala2.12",
                 "data_security_mode": "SINGLE_USER",
                 "num_workers": 0,
@@ -3554,10 +3555,10 @@ def _databricks_run_submit_payload_record(
                 "purpose": purpose,
             }
         ],
-        "node_type_ids": ["g5.4xlarge"],
-        "driver_node_type_ids": ["g5.4xlarge"],
+        "node_type_ids": ["g6.8xlarge"],
+        "driver_node_type_ids": ["g6.8xlarge"],
         "spark_versions": ["15.4.x-gpu-ml-scala2.12"],
         "data_security_modes": ["SINGLE_USER"],
         "single_node": True,
-        "aws_g5_node_type": True,
+        "aws_single_node_gpu_type": True,
     }

@@ -219,6 +219,7 @@ def test_public_document_package_reexports_core_api():
         vllm_adapter_spec,
         vllm_native_probe_factory,
         write_builtin_native_probe_factories_record_json,
+        DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
         summarize_databricks_run,
         summarize_databricks_run_submit_payload,
         databricks_run_status_record,
@@ -302,6 +303,7 @@ def test_public_document_package_reexports_core_api():
     )
     assert DatabricksBenchmarkJobConfig is databricks_job.DatabricksBenchmarkJobConfig
     assert DatabricksSingleNodeG5ClusterConfig is databricks_job.DatabricksSingleNodeG5ClusterConfig
+    assert DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE == databricks_job.DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     assert build_databricks_run_submit_payload is databricks_job.build_databricks_run_submit_payload
     assert build_single_node_g5_cluster is databricks_job.build_single_node_g5_cluster
     assert validate_aws_g5_node_type is databricks_job.validate_aws_g5_node_type

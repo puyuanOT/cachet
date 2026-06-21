@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 
+from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -501,7 +502,7 @@ def build_benchmark_runner_args(
         "--model-id",
         SERVED_MODEL_NAME,
         "--hardware-target",
-        "aws-g5",
+        DEFAULT_HARDWARE_TARGET,
         "--max-tokens",
         str(config.max_tokens),
         "--timeout-seconds",
@@ -558,7 +559,7 @@ def tail(path: Path, *, lines: int = 120) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
-    parser = argparse.ArgumentParser(description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5.")
+    parser = argparse.ArgumentParser(description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g6/L4.")
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--max-tokens", type=int, default=32)

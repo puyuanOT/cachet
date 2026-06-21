@@ -186,6 +186,7 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert submit_payload["source_path"] == "/Volumes/catalog/schema/volume/payload.json"
     assert len(submit_payload["sha256"]) == 64
     assert submit_payload["single_node"] is True
+    assert submit_payload["aws_single_node_gpu_type"] is True
     assert submit_payload["aws_g5_node_type"] is True
     assert submit_payload["node_type_ids"] == ["g5.4xlarge"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
@@ -216,6 +217,7 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
         submit_payload_path="/Volumes/catalog/schema/volume/payload.json",
     )
 
+    assert summary["submit_payload"]["aws_single_node_gpu_type"] is True
     assert summary["submit_payload"]["aws_g5_node_type"] is True
     assert summary["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
     assert databricks_run_status_sidecar_issues(summary) == ()
@@ -277,6 +279,7 @@ def test_databricks_run_status_sidecar_validation_requires_null_active_task_key_
 def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mismatched_payload():
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["aws_single_node_gpu_type"] = False
     submit_payload["aws_g5_node_type"] = False
     submit_payload["tasks"][0]["task_key"] = "different-task"
     submit_payload["tasks"][0]["node_type_id"] = "g6e.8xlarge"
@@ -285,7 +288,7 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
 
     issues = databricks_run_status_sidecar_issues(bad_record)
 
-    assert "Databricks run status sidecar submit_payload.aws_g5_node_type must be true" in issues
+    assert "Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true" in issues
     assert (
         "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be an AWS g5/g6 node type"
         in issues
@@ -354,6 +357,7 @@ def test_summarize_databricks_run_submit_payload_reports_unsupported_gpu_multi_n
 
     assert summary["record_type"] == DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
     assert summary["single_node"] is False
+    assert summary["aws_single_node_gpu_type"] is False
     assert summary["aws_g5_node_type"] is False
 
 
@@ -526,6 +530,7 @@ def test_main_get_summary_can_include_submit_payload_provenance(monkeypatch, tmp
     assert record["summary"]["submit_payload"]["source_path"] == str(payload_path)
     assert record["summary"]["submit_payload"]["single_node"] is True
     assert record["summary"]["submit_payload"]["aws_g5_node_type"] is True
+    assert record["summary"]["submit_payload"]["aws_single_node_gpu_type"] is True
 
 
 def test_main_get_summary_can_include_raw_response_when_requested(monkeypatch, tmp_path):

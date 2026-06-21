@@ -87,6 +87,23 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
     }
 
 
+def test_evaluate_release_evidence_accepts_supported_g5_hardware_target():
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True, hardware_target="aws-g5"),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert evidence.ok
+
+
 def test_evaluate_release_evidence_reports_missing_and_invalid_artifacts():
     invalid_probe_record = {**_probe_record(ServingBackend.VLLM), "bound": False}
 
@@ -113,7 +130,7 @@ def test_evaluate_release_evidence_rejects_summary_only_stubs():
     evidence = evaluate_release_evidence(
         {
             "record_type": BENCHMARK_RUN_RECORD_TYPE,
-            "suite": {"hardware_target": "aws-g5", "model_id": "qwen3:4b-instruct"},
+            "suite": {"hardware_target": "aws-g6-l4", "model_id": "qwen3:4b-instruct"},
             "v1_evidence": {"ok": True, "required_datasets": ["biography", "hotpotqa", "musique", "niah"]},
         },
         {
@@ -2281,7 +2298,7 @@ def test_public_release_evidence_cli_rejects_wrong_v1_record_type(tmp_path):
     assert any("v1 benchmark record_type" in issue for issue in record["issues"])
 
 
-def _v1_record(*, ok: bool, hardware_target: str = "aws-g5", model_id: str = "qwen3:4b-instruct"):
+def _v1_record(*, ok: bool, hardware_target: str = "aws-g6-l4", model_id: str = "qwen3:4b-instruct"):
     datasets = ("biography", "hotpotqa", "musique", "niah")
     arms = ("baseline_prefill", "document_kv_cache")
     return {

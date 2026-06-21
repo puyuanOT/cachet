@@ -12,12 +12,14 @@ from document_kv_cache.workflow import SourceDocument
 
 SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
-DEFAULT_HARDWARE_TARGET = "aws-g5"
+SUPPORTED_V1_HARDWARE_TARGETS = ("aws-g6-l4", "aws-g5")
+DEFAULT_HARDWARE_TARGET = "aws-g6-l4"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"
 
 __all__ = [
     "SUPPORTED_V1_DATASETS",
+    "SUPPORTED_V1_HARDWARE_TARGETS",
     "DEFAULT_V1_MODEL_ID",
     "DEFAULT_HARDWARE_TARGET",
     "BASELINE_PREFILL_ARM",
@@ -47,6 +49,7 @@ __all__ = [
     "normalize_answer",
     "exact_match",
     "answer_found",
+    "validate_v1_hardware_target",
     "validate_v1_dataset",
 ]
 
@@ -494,6 +497,13 @@ def answer_found(output_text: str, expected_answer: str) -> bool:
 def validate_v1_dataset(dataset: str) -> None:
     if dataset not in SUPPORTED_V1_DATASETS:
         raise ValueError(f"Unsupported V1 dataset {dataset!r}; expected one of {SUPPORTED_V1_DATASETS}")
+
+
+def validate_v1_hardware_target(hardware_target: str) -> None:
+    if hardware_target not in SUPPORTED_V1_HARDWARE_TARGETS:
+        raise ValueError(
+            f"Unsupported V1 hardware target {hardware_target!r}; expected one of {SUPPORTED_V1_HARDWARE_TARGETS}"
+        )
 
 
 def _validate_non_empty_str(value: str, field_name: str) -> None:

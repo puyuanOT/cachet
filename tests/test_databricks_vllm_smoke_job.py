@@ -477,7 +477,7 @@ def test_legacy_vllm_smoke_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for the AWS g5 vLLM smoke." in result.stdout
+    assert "Emit a Databricks runs/submit payload for the AWS g5/g6 vLLM smoke." in result.stdout
 
 
 def test_legacy_vllm_smoke_job_reexports_document_owned_types():

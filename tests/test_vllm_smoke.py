@@ -102,7 +102,7 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     assert args[args.index("--suite-id") + 1] == "smoke-1"
     assert args[args.index("--base-url") + 1] == "http://127.0.0.1:8123"
     assert args[args.index("--model-id") + 1] == SERVED_MODEL_NAME
-    assert args[args.index("--hardware-target") + 1] == "aws-g5"
+    assert args[args.index("--hardware-target") + 1] == "aws-g6-l4"
     assert args[args.index("--output-json") + 1] == str(tmp_path / "out" / "v1-benchmark.json")
     assert "--server-usage" in args
     assert dataset_args(dataset_paths) == [
@@ -442,7 +442,7 @@ def test_legacy_vllm_smoke_module_execution_shows_help():
         text=True,
     )
 
-    assert "Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5." in completed.stdout
+    assert "Run a Qwen3/vLLM V1 benchmark smoke on Databricks g6/L4." in completed.stdout
 
 
 def test_public_vllm_smoke_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):

@@ -108,7 +108,7 @@ def test_benchmark_plan_source_record_hashes_driver_visible_plan_json(tmp_path):
         "plan_version": "v1",
         "suite_id": "suite-1",
         "model_id": "qwen3:4b-instruct",
-        "hardware_target": "aws-g5",
+        "hardware_target": "aws-g6-l4",
         "commands": [{"name": "command-1", "argv": [sys.executable, "-c", "pass"]}],
     }
     payload = json.dumps(plan, sort_keys=True).encode("utf-8")
@@ -125,7 +125,7 @@ def test_benchmark_plan_source_record_hashes_driver_visible_plan_json(tmp_path):
         "plan_version": "v1",
         "suite_id": "suite-1",
         "model_id": "qwen3:4b-instruct",
-        "hardware_target": "aws-g5",
+        "hardware_target": "aws-g6-l4",
         "command_count": 1,
     }
 
@@ -137,7 +137,7 @@ def test_main_hashes_the_plan_payload_that_was_executed(tmp_path):
         "plan_version": "v1",
         "suite_id": "original-suite",
         "model_id": "qwen3:4b-instruct",
-        "hardware_target": "aws-g5",
+        "hardware_target": "aws-g6-l4",
         "commands": [
             {
                 "name": "rewrite-plan",

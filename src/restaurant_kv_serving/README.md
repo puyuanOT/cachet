@@ -29,9 +29,9 @@ module paths, root exports, and selected monkeypatch hooks.
 - `dataset_prep.py` is a compatibility wrapper over `document_kv_cache.dataset_prep`, which owns Biography, HotpotQA, MusiQue, and NIAH normalization into the JSONL schema consumed by `benchmark_runner.py`, including synthetic NIAH generation.
 - `benchmark_plan.py` emits reproducible dataset-preparation and benchmark-runner command plans for AWS g5/Qwen3 V1 jobs.
 - `benchmark_plan_executor.py` executes a benchmark plan JSON command sequence, primarily for managed job runners.
-- `databricks_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks V1 benchmark job payload helper.
-- `databricks_storage_benchmark_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks storage-reader job payload helper.
-- `databricks_engine_probe_job.py` is a compatibility wrapper for the document-owned AWS g5 Databricks native vLLM/SGLang engine-probe job payload helper.
+- `databricks_job.py` is a compatibility wrapper for the document-owned AWS g5/g6 Databricks V1 benchmark job payload helper.
+- `databricks_storage_benchmark_job.py` is a compatibility wrapper for the document-owned AWS g5/g6 Databricks storage-reader job payload helper.
+- `databricks_engine_probe_job.py` is a compatibility wrapper for the document-owned AWS g5/g6 Databricks native vLLM/SGLang engine-probe job payload helper.
 - `databricks_runs.py` is a compatibility wrapper over `document_kv_cache.databricks_runs`, which submits generated Databricks payloads and checks run state using only `DATABRICKS_HOST` and `DATABRICKS_TOKEN` environment variables.
 - `benchmark_runner.py` is a compatibility wrapper over `document_kv_cache.benchmark_runner`, which owns canonical V1 JSONL loading, caller-provided or OpenAI-compatible vLLM/SGLang benchmark execution, and JSON measurement, summary, and comparison records.
 - `release_evidence.py` is a compatibility wrapper over `document_kv_cache.release_evidence`, which validates collected V1 benchmark, storage benchmark, and native vLLM/SGLang probe JSON artifacts before a release is called complete, and records the input artifact sources in the final release-evidence JSON.
@@ -42,7 +42,7 @@ module paths, root exports, and selected monkeypatch hooks.
 
 `openai_compatible.py` posts full logical prompts by default, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers and platform-managed prefix caching. Its `prompt_text_mode="runtime"` option is only for a KV-aware adapter or proxy that binds cached prefixes out of band and expects the runtime suffix in the `prompt` field.
 
-`benchmark_plan.py` emits the dataset-preparation and benchmark commands that should run on the target AWS g5/Qwen3 environment:
+`benchmark_plan.py` emits the dataset-preparation and benchmark commands that should run on the target AWS g6/L4/Qwen3 environment:
 
 ```bash
 python -m document_kv_cache.benchmark_plan \
@@ -68,7 +68,7 @@ python -m document_kv_cache.benchmark_plan \
 
 When storage benchmark flags are present, the plan appends
 `document_kv_cache.storage_benchmark` after the inference benchmark so Memory
-and Disk reader latency/throughput are measured on the same AWS g5 node. The
+and Disk reader latency/throughput are measured on the same AWS g5/g6 node. The
 Unity Catalog reader is included only when a real `--storage-benchmark-uc-volume-root`
 is provided. Backend-keyed `--engine-probe-*` options append native
 `document_kv_cache.engine_probe` commands for vLLM and SGLang handoffs; release
@@ -159,7 +159,7 @@ The optional `--actions-output-json` sidecar writes the validated
 `document_kv.engine_kv_connector_actions.v1` descriptor used by that native
 probe.
 
-To run the same native probe through a Databricks-managed AWS g5 task, generate
+To run the same native probe through a Databricks-managed AWS g6/L4 task, generate
 the small runner script and `runs/submit` payload:
 
 ```bash
@@ -182,7 +182,7 @@ Use `--release-safe` for release-evidence jobs so debug-only non-native probes
 and caller-supplied engine versions are rejected before the Databricks payload is
 written.
 
-For Databricks-managed execution, first upload the package wheel, the generated benchmark plan JSON, and the tiny runner script. Then emit a single-node AWS g5 `runs/submit` payload:
+For Databricks-managed execution, first upload the package wheel, the generated benchmark plan JSON, and the tiny runner script. Then emit a single-node AWS g5/g6 `runs/submit` payload:
 
 ```bash
 python -m document_kv_cache.databricks_job \
@@ -234,7 +234,7 @@ python -m document_kv_cache.storage_benchmark \
   --output-json storage-benchmark.json
 ```
 
-To run that storage benchmark as a Databricks-managed AWS g5 task, use:
+To run that storage benchmark as a Databricks-managed AWS g6/L4 task, use:
 
 ```bash
 python -m document_kv_cache.databricks_storage_benchmark_job \

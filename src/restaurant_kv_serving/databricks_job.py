@@ -20,6 +20,7 @@ import document_kv_cache.databricks_job as _document_module
 __all__ = reexport_public(
     "document_kv_cache.databricks_job",
     (
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
         "DEFAULT_AWS_G5_NODE_TYPE",
         "DEFAULT_DATABRICKS_SPARK_VERSION",
         "DEFAULT_DATABRICKS_RUN_NAME",
@@ -73,6 +74,7 @@ _DOCUMENT_DEFAULTS = {
 }
 _PUBLIC_CONSTANT_NAMES = frozenset(
     {
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
         "DEFAULT_AWS_G5_NODE_TYPE",
         "DEFAULT_DATABRICKS_SPARK_VERSION",
         "DEFAULT_DATABRICKS_RUN_NAME",
