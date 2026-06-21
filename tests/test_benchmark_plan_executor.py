@@ -194,7 +194,7 @@ def test_execute_benchmark_job_plan_json_loads_plan_file(tmp_path):
 def test_execute_benchmark_job_plan_accepts_generated_benchmark_plan_record(tmp_path):
     plan = build_v1_benchmark_plan(
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=tuple(
                 BenchmarkDatasetPath(
                     dataset=dataset,
