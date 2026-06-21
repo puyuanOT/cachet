@@ -775,7 +775,9 @@ python -m document_kv_cache.benchmark_plan \
   --release-preflight-output-json /data/release-inputs.json \
   --release-bundle-output-dir /data/document-kv-release-bundle \
   --release-bundle-output-json /data/release-bundle-manifest.json \
-  --release-bundle-databricks-run-status-json /data/databricks-run-status.json \
+  --release-bundle-databricks-run-status-json /data/databricks-run-status-benchmark.json \
+  --release-bundle-databricks-run-status-json /data/databricks-run-status-storage.json \
+  --release-bundle-databricks-run-status-json /data/databricks-run-status-engine-probe.json \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
   --github-governance-output-json /data/github-governance.json \
@@ -1040,7 +1042,9 @@ python -m document_kv_cache.release_bundle \
   --release-evidence-json release-evidence.json \
   --preflight-json release-inputs.json \
   --plan-execution-json plan-execution.json \
-  --databricks-run-status-json databricks-run-status.json \
+  --databricks-run-status-json databricks-run-status-benchmark.json \
+  --databricks-run-status-json databricks-run-status-storage.json \
+  --databricks-run-status-json databricks-run-status-engine-probe.json \
   --package-wheel dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
@@ -1065,9 +1069,10 @@ artifacts. Add
 `--require-complete-v1` for release publishing; this strict mode refuses to
 build a V1 bundle unless the release evidence, preflight, vLLM/SGLang native
 engine-probe, connector-action, and engine-launch-config sidecars,
-benchmark-plan execution, Databricks run-status, tested wheel, PR evidence, V1
-requirements matrix, GitHub governance, repository hygiene, and native-probe
-factory diagnostics sidecars are all present; the native factory diagnostics
+benchmark-plan execution, Databricks run-status sidecars for benchmark,
+storage, and engine-probe runs, tested wheel, PR evidence, V1 requirements
+matrix, GitHub governance, repository hygiene, and native-probe factory
+diagnostics sidecars are all present; the native factory diagnostics
 must also report supported built-in vLLM and SGLang factory entry points.
 Benchmark-plan execution sidecars are validated as closed schemas, including
 each command entry and the embedded plan-source provenance record, before they
@@ -1319,9 +1324,10 @@ type annotations after installation.
   artifact set: release evidence sidecar, preflight sidecar, vLLM/SGLang native
   engine probe sidecars, vLLM/SGLang connector action sidecars, vLLM/SGLang
   engine launch config sidecars, benchmark plan execution sidecar, Databricks
-  run-status sidecar, tested package wheel, PR evidence sidecar, V1 requirements
-  matrix, GitHub governance sidecar, repository hygiene sidecar, and native
-  probe factory diagnostics sidecar.
+  run-status sidecars for benchmark, storage, and engine-probe runs, tested
+  package wheel, PR evidence sidecar, V1 requirements matrix, GitHub governance
+  sidecar, repository hygiene sidecar, and native probe factory diagnostics
+  sidecar.
 - Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.

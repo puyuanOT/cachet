@@ -131,7 +131,11 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("engine_connector_actions", 2, "vLLM/SGLang connector action sidecars"),
     ("engine_launch_config", 2, "vLLM/SGLang engine launch config sidecars"),
     ("plan_execution", 1, "benchmark plan execution sidecar"),
-    ("databricks_run_status", 1, "Databricks run-status sidecar"),
+    (
+        "databricks_run_status",
+        3,
+        "Databricks run-status sidecars for benchmark, storage, and engine-probe runs",
+    ),
     ("package_wheel", 1, "tested package wheel"),
     ("pr_evidence", 1, "PR evidence sidecar"),
     ("requirements_matrix", 1, "V1 requirements matrix"),
@@ -723,11 +727,13 @@ def _validate_strict_v1_release_bundle_completeness(
     role_counts = {role: 0 for role in RELEASE_BUNDLE_ARTIFACT_ROLES}
     for artifact in artifacts:
         role_counts[artifact.role] = role_counts.get(artifact.role, 0) + 1
-    missing = [
-        label
-        for role, minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
-        if role_counts.get(role, 0) < minimum_count
-    ]
+    missing = []
+    for role, minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
+        count = role_counts.get(role, 0)
+        if role == "databricks_run_status" and count > 0:
+            continue
+        if count < minimum_count:
+            missing.append(label)
     if missing:
         raise ValueError(
             "Strict V1 release bundle requires "

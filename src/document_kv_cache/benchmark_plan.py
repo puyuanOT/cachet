@@ -33,6 +33,7 @@ DEFAULT_STORAGE_BENCHMARK_REPEATS = 4
 DEFAULT_STORAGE_BENCHMARK_PARALLELISM = 4
 DEFAULT_STORAGE_BENCHMARK_ALIGN_BYTES = 4096
 DEFAULT_STORAGE_BENCHMARK_PLAN_READERS = ("memory", "disk")
+STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_COUNT = 3
 
 __all__ = [
     "PLAN_VERSION",
@@ -1014,8 +1015,8 @@ def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None
         missing.append("preflight sidecar")
     if not bundle_config.plan_execution_jsons:
         missing.append("benchmark plan execution sidecar")
-    if not bundle_config.databricks_run_status_jsons:
-        missing.append("Databricks run-status sidecar")
+    if len(bundle_config.databricks_run_status_jsons) < STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_COUNT:
+        missing.append("Databricks run-status sidecars for benchmark, storage, and engine-probe runs")
     if bundle_config.package_wheel is None:
         missing.append("tested package wheel")
     if not bundle_config.pr_evidence_jsons:
