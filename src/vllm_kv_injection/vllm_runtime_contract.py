@@ -39,6 +39,7 @@ VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS = (
     "get_kv_connector_stats",
     "get_required_kvcache_layout",
     "handle_preemptions",
+    "has_pending_push_work",
     "has_connector_metadata",
     "on_new_request",
     "register_cross_layers_kv_cache",

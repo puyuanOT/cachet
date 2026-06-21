@@ -76,6 +76,7 @@ def test_vllm_kv_connector_v1_contract_record_documents_runtime_lifecycle():
     assert "build_prom_metrics" in record["optional_methods"]
     assert "get_required_kvcache_layout" in record["optional_methods"]
     assert "handle_preemptions" in record["optional_methods"]
+    assert "has_pending_push_work" in record["optional_methods"]
     assert "register_cross_layers_kv_cache" in record["optional_methods"]
     assert "update_connector_output" in record["optional_methods"]
     validate_vllm_kv_connector_v1_contract_record(record)
