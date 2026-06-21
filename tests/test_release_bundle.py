@@ -1066,6 +1066,14 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "missing-purpose-submit-payload-databricks-run-status.json",
         missing_purpose_submit_payload_status_record,
     )
+    stale_summary_submit_payload_status_record = _databricks_run_status_record(succeeded=True)
+    stale_summary_submit_payload_status_record["submit_payload"]["spark_versions"] = [
+        "15.3.x-gpu-ml-scala2.12"
+    ]
+    stale_summary_submit_payload_status = _write_json(
+        tmp_path / "stale-summary-submit-payload-databricks-run-status.json",
+        stale_summary_submit_payload_status_record,
+    )
     empty_tasks_status_record = _databricks_run_status_record(succeeded=True)
     empty_tasks_status_record["task_count"] = 0
     empty_tasks_status_record["tasks"] = []
@@ -1919,6 +1927,16 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             databricks_run_status_jsons=(missing_purpose_submit_payload_status,),
             output_dir=tmp_path / "missing-purpose-submit-payload-databricks-status-bundle",
+        )
+
+    with pytest.raises(ValueError, match=r"submit_payload\.spark_versions must match submit_payload\.tasks"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            databricks_run_status_jsons=(stale_summary_submit_payload_status,),
+            output_dir=tmp_path / "stale-summary-submit-payload-databricks-status-bundle",
         )
 
     with pytest.raises(ValueError, match="tasks must be a non-empty array"):

@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Dalton the 3rd approved the final patch, including the Databricks summary-array validator/docs/tests and pr-evidence/validate-databricks-submit-summary-arrays files.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/databricks_runs.py",
+    "tests/test_databricks_runs.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py",
+    "pr-evidence/validate-databricks-submit-summary-arrays/README.md",
+    "pr-evidence/validate-databricks-submit-summary-arrays/pr-evidence.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_runs.py::test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records tests/test_databricks_runs.py::test_databricks_run_status_sidecar_validation_matches_submit_payload_summary_arrays tests/test_release_bundle.py::test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_github_governance tests/test_project_governance.py::test_readme_release_bundle_documents_artifact_validation_contracts -q",
+    "poetry run pytest tests/test_databricks_runs.py tests/test_release_bundle.py tests/test_project_governance.py -q",
+    "poetry run pytest tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence"
+  ],
+  "what_changed": [
+    "Required Databricks run-status submit_payload summary arrays to match values summarized from submit_payload.tasks.",
+    "Documented the summary-array integrity requirement in the release-bundle README contract."
+  ],
+  "why": "Release bundles carry compact Databricks sidecars, so generated summary metadata must stay tied to the task-level payload evidence it summarizes."
+}

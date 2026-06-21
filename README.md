@@ -1048,8 +1048,9 @@ outputs, or extracted inner `summary` records, from the managed runs whose
 outputs are included in the bundle; release bundles require those status
 sidecars to be terminal, successful, and attached to a hashed single-node AWS g5
 `SINGLE_USER` submit-payload summary whose task summaries carry non-empty
-`purpose` tags. Do not use the `--include-response` debug flag for
-release-bundle status sidecars; bundles reject raw Jobs API responses.
+`purpose` tags and whose summary arrays match the task summaries. Do not use
+the `--include-response` debug flag for release-bundle status sidecars; bundles
+reject raw Jobs API responses.
 PR evidence sidecars must be valid `document_kv.pr_evidence.v1` records with
 Refactor-skill evidence, completed GPT-5.5 review, and any GPT-5.5 findings
 marked resolved before they can enter the release bundle. They are also
