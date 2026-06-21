@@ -113,6 +113,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     ),
     "DEFAULT_DATABRICKS_RUN_NAME": ("document_kv_cache.databricks_job", "DEFAULT_DATABRICKS_RUN_NAME"),
     "DEFAULT_DATABRICKS_TASK_KEY": ("document_kv_cache.databricks_job", "DEFAULT_DATABRICKS_TASK_KEY"),
+    "DEFAULT_DATABRICKS_PURPOSE": ("document_kv_cache.databricks_job", "DEFAULT_DATABRICKS_PURPOSE"),
     "DEFAULT_DATABRICKS_DATA_SECURITY_MODE": (
         "document_kv_cache.databricks_job",
         "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",

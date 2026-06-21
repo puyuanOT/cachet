@@ -11,6 +11,7 @@ import document_kv_cache.databricks_job as public_databricks_job
 import restaurant_kv_serving.databricks_job as legacy_databricks_job
 from document_kv_cache.databricks_job import (
     DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
+    DEFAULT_DATABRICKS_PURPOSE,
     DatabricksBenchmarkJobConfig,
     DatabricksSingleNodeG5ClusterConfig,
     build_single_node_g5_cluster,
@@ -64,6 +65,7 @@ def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
     assert cluster["spark_conf"]["spark.databricks.cluster.profile"] == "singleNode"
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
     assert cluster["custom_tags"]["ResourceClass"] == "SingleNode"
+    assert cluster["custom_tags"]["purpose"] == DEFAULT_DATABRICKS_PURPOSE
     assert cluster["custom_tags"]["team"] == "document-kv"
     assert task["spark_python_task"] == {
         "python_file": "dbfs:/benchmarks/run_plan.py",
@@ -930,6 +932,7 @@ def test_legacy_databricks_job_keeps_previous_star_import_surface():
         "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
         "DEFAULT_AWS_G5_NODE_TYPE",
         "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
+        "DEFAULT_DATABRICKS_PURPOSE",
         "DEFAULT_DATABRICKS_RUN_NAME",
         "DEFAULT_DATABRICKS_SPARK_VERSION",
         "DEFAULT_DATABRICKS_TASK_KEY",
@@ -1009,7 +1012,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
         "spark.databricks.cluster.profile": "singleNode",
     }
     assert cluster["custom_tags"]["ResourceClass"] == "SingleNode"
-    assert cluster["custom_tags"]["purpose"] == "document-kv-v1-benchmark"
+    assert cluster["custom_tags"]["purpose"] == DEFAULT_DATABRICKS_PURPOSE
     assert cluster["spark_env_vars"] == {
         "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY": "${var.vllm_native_probe_delegate_factory}",
         "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY": "${var.sglang_native_probe_delegate_factory}",
