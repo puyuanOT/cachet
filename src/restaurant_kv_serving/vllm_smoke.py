@@ -133,6 +133,7 @@ def run_prompt_token_budget_probe(
     model_id: str,
     max_model_len: int,
     max_tokens: int,
+    timeout_seconds: float,
     env: dict[str, str] | None = None,
 ):
     return _call_document_function(
@@ -142,6 +143,7 @@ def run_prompt_token_budget_probe(
         model_id=model_id,
         max_model_len=max_model_len,
         max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
         env=env,
     )
 

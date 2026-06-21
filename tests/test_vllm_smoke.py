@@ -32,6 +32,7 @@ from document_kv_cache.vllm_smoke import (
     dependency_constraints,
     parse_args,
     parse_dataset_specs,
+    run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
     smoke_dataset_records,
 )
@@ -209,6 +210,83 @@ def test_validate_prompt_token_budget_writes_artifact_and_rejects_over_budget(mo
 
     record = json.loads(config.prompt_token_budget_path.read_text(encoding="utf-8"))
     assert record["over_budget"][0]["total_tokens"] == 44
+
+
+def test_validate_prompt_token_budget_writes_failed_probe_artifact(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+    dataset_paths = {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS}
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "build_prompt_token_budget_rows",
+        lambda cfg, paths: ({"dataset": "biography", "example_id": "bio-1", "prompt": "prompt"},),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run_prompt_token_budget_probe",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "error_type": "TimeoutExpired",
+            "error": "prompt token budget probe timed out after 180.0s",
+            "rows": [],
+            "over_budget": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="Prompt token budget probe failed"):
+        public_vllm_smoke.validate_prompt_token_budget(config, dataset_paths)
+
+    record = json.loads(config.prompt_token_budget_path.read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["error_type"] == "TimeoutExpired"
+
+
+def test_run_prompt_token_budget_probe_returns_timeout_record(monkeypatch, tmp_path):
+    def timeout_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["python"], timeout=3, output="partial out", stderr="partial err")
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", timeout_run)
+
+    record = run_prompt_token_budget_probe(
+        tmp_path / "python",
+        tmp_path / "input.jsonl",
+        model_id=HF_MODEL_ID,
+        max_model_len=32,
+        max_tokens=4,
+        timeout_seconds=3,
+    )
+
+    assert record["ok"] is False
+    assert record["error_type"] == "TimeoutExpired"
+    assert "partial out" in record["stdout_tail"]
+    assert "partial err" in record["stderr_tail"]
+
+
+def test_run_prompt_token_budget_probe_returns_nonzero_record(monkeypatch, tmp_path):
+    completed = subprocess.CompletedProcess(
+        args=["python"],
+        returncode=17,
+        stdout="not json",
+        stderr="tokenizer failed",
+    )
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", lambda *args, **kwargs: completed)
+
+    record = run_prompt_token_budget_probe(
+        tmp_path / "python",
+        tmp_path / "input.jsonl",
+        model_id=HF_MODEL_ID,
+        max_model_len=32,
+        max_tokens=4,
+        timeout_seconds=3,
+    )
+
+    assert record["ok"] is False
+    assert record["returncode"] == 17
+    assert record["error_type"] == "CalledProcessError"
+    assert "tokenizer failed" in record["stderr_tail"]
 
 
 def test_benchmark_failure_summary_reports_row_errors(tmp_path):

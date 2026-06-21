@@ -253,9 +253,15 @@ def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths
         model_id=HF_MODEL_ID,
         max_model_len=config.max_model_len,
         max_tokens=config.max_tokens,
+        timeout_seconds=config.import_probe_timeout_seconds,
         env=server_env(config),
     )
     write_json(config.prompt_token_budget_path, record)
+    if record.get("ok") is False:
+        raise RuntimeError(
+            f"Prompt token budget probe failed: {record.get('error') or record.get('error_type')}. "
+            f"See {config.prompt_token_budget_path}."
+        )
     over_budget = record.get("over_budget")
     if isinstance(over_budget, list) and over_budget:
         first = over_budget[0]
@@ -297,6 +303,7 @@ def run_prompt_token_budget_probe(
     model_id: str,
     max_model_len: int,
     max_tokens: int,
+    timeout_seconds: float,
     env: dict[str, str] | None = None,
 ) -> dict[str, object]:
     code = """
@@ -338,14 +345,43 @@ print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), fl
         str(max_tokens),
     ]
     print("+", " ".join([argv[0], "-c", "<prompt token budget probe>", *argv[3:]]), flush=True)
-    completed = subprocess.run(
-        argv,
-        check=True,
-        capture_output=True,
-        text=True,
-        env=env or os.environ.copy(),
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=env or os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "error_type": "TimeoutExpired",
+            "error": f"prompt token budget probe timed out after {timeout_seconds:.1f}s",
+            "stdout_tail": tail_text(exc.stdout),
+            "stderr_tail": tail_text(exc.stderr),
+            "rows": [],
+            "over_budget": [],
+        }
+    record = last_json_object(completed.stdout)
+    record.update(
+        {
+            "ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "stdout_tail": tail_text(completed.stdout),
+            "stderr_tail": tail_text(completed.stderr),
+        }
     )
-    return last_json_object(completed.stdout)
+    if completed.returncode != 0:
+        record.setdefault(
+            "error",
+            f"prompt token budget probe failed with return code {completed.returncode}",
+        )
+        record.setdefault("error_type", "CalledProcessError")
+        record.setdefault("rows", [])
+        record.setdefault("over_budget", [])
+    return record
 
 
 def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
