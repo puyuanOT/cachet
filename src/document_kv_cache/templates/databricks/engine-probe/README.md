@@ -16,7 +16,8 @@ unset by the built-in factories. When the delegate is the adapter-package
 wrapper `vllm_kv_injection.probe:build_native_connector_probe` or
 `sglang_kv_injection.probe:build_native_connector_probe`, set
 `native_probe_metadata` to the matching connector factory metadata:
-`vllm_kv_injection.connector_factory=module:factory` for vLLM or
+`vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
+for the built-in provider-backed vLLM path, or
 `sglang_kv_injection.connector_factory=module:factory` for SGLang. The Python
 Databricks helper remains the path for two-backend release-safe probe matrices.
 

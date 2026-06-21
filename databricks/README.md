@@ -28,6 +28,9 @@ Include `--storage-benchmark-workspace-dir` and, when available,
 `--storage-benchmark-uc-volume-root` while generating the plan if you want the
 same AWS g6/L4 run to append the storage-reader benchmark after the V1 inference
 benchmark.
+When generating `v1-plan.json` for the provider-backed vLLM native probe path,
+include:
+`--engine-probe-metadata vllm=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`.
 
 ```bash
 document-kv-databricks-job \
@@ -37,7 +40,7 @@ document-kv-databricks-job \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --execution-result-json-uri dbfs:/benchmarks/result.json \
-  --vllm-native-probe-delegate-factory my_vllm_adapter.probes:build_probe \
+  --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
   --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json runs-submit-reference.json
 
@@ -48,7 +51,7 @@ databricks bundle validate \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com \
   --var execution_result_json_uri=dbfs:/benchmarks/result.json \
-  --var vllm_native_probe_delegate_factory=my_vllm_adapter.probes:build_probe \
+  --var vllm_native_probe_delegate_factory=vllm_kv_injection.probe:build_native_connector_probe \
   --var sglang_native_probe_delegate_factory=my_sglang_adapter.probes:build_probe
 ```
 
@@ -163,12 +166,13 @@ cd databricks/engine-probe
 databricks bundle validate \
   --var runner_python_file=dbfs:/benchmarks/run_engine_probe.py \
   --var handoff_json=/Volumes/catalog/schema/volume/probes/vllm-handoff.json \
-  --var probe_factory=my_engine_adapter.probes:build_probe \
+  --var probe_factory=document_kv_cache.native_probe_factories:vllm_native_probe_factory \
   --var probe_output_json=/Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
   --var actions_output_json=/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --var payload_uri=/Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --var expected_backend=vllm \
-  --var native_probe_metadata=vllm_kv_injection.connector_factory=my_engine_adapter.probes:build_connector \
+  --var vllm_native_probe_delegate_factory=vllm_kv_injection.probe:build_native_connector_probe \
+  --var native_probe_metadata=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
