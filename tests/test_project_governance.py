@@ -805,13 +805,14 @@ def test_readme_remaining_work_keeps_serving_boundary_explicit():
     assert "Add vLLM and SGLang adapters" not in remaining_work
 
 
-def test_readme_release_bundle_documents_wheel_identity_manifest_fields():
+def test_readme_release_bundle_documents_artifact_validation_contracts():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     compact_text = " ".join(text.split())
 
     assert "package name/version for wheel artifacts" in compact_text
     assert "records the normalized package name and package version" in compact_text
     assert "current project version from `pyproject.toml` or installed package metadata" in compact_text
+    assert "task summaries carry non-empty `purpose` tags" in compact_text
 
 
 def test_readme_native_probe_diagnostics_include_serving_environment_profile():

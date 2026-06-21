@@ -251,6 +251,21 @@ def test_databricks_run_status_sidecar_validation_rejects_non_g5_or_mismatched_p
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
 
 
+@pytest.mark.parametrize("purpose", [None, ""])
+def test_databricks_run_status_sidecar_validation_requires_submit_payload_task_purpose(purpose):
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["tasks"][0]["purpose"] = purpose
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert (
+        "Databricks run status sidecar submit_payload.tasks[0].purpose must be a non-empty string"
+        in issues
+    )
+
+
 def test_summarize_databricks_run_submit_payload_reports_non_g5_multi_node_payload():
     payload = _single_node_g5_submit_payload()
     payload["tasks"][0]["new_cluster"]["node_type_id"] = "g6.4xlarge"
