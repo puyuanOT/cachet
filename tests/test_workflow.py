@@ -350,6 +350,25 @@ def test_source_document_validates_and_normalizes_public_inputs():
         SourceDocument(document_id="doc-a", chunks=(chunk,), metadata={"title": object()})  # type: ignore[dict-item]
 
 
+def test_source_document_rejects_duplicate_chunk_identities():
+    first = SourceChunk(chunk_id="section-1", text="first")
+    duplicate = SourceChunk(chunk_id="section-1", text="second")
+
+    with pytest.raises(ValueError, match="duplicate chunk identities") as exc_info:
+        SourceDocument(document_id="doc-a", chunks=(first, duplicate))
+
+    assert "document_chunk:section-1" in str(exc_info.value)
+
+
+def test_source_document_allows_same_chunk_id_for_different_chunk_types():
+    static = SourceChunk(chunk_id="shared", text="profile", chunk_type=DocumentChunkType.DOCUMENT_STATIC)
+    body = SourceChunk(chunk_id="shared", text="body", chunk_type=DocumentChunkType.DOCUMENT_CHUNK)
+
+    document = SourceDocument(document_id="doc-a", chunks=(static, body))
+
+    assert document.chunks == (static, body)
+
+
 def test_source_document_from_text_builds_single_document_chunk():
     document = SourceDocument.from_text(
         document_id="doc-a",
