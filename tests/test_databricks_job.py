@@ -193,6 +193,9 @@ def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
     assert DatabricksSingleNodeGPUClusterConfig is DatabricksSingleNodeG5ClusterConfig
     assert validate_aws_single_node_gpu_type is validate_aws_g5_node_type
     assert build_single_node_gpu_cluster is build_single_node_g5_cluster
+    assert DatabricksSingleNodeGPUClusterConfig.__name__ == "DatabricksSingleNodeGPUClusterConfig"
+    assert validate_aws_single_node_gpu_type.__name__ == "validate_aws_single_node_gpu_type"
+    assert build_single_node_gpu_cluster.__name__ == "build_single_node_gpu_cluster"
 
     validate_aws_single_node_gpu_type("g6.8xlarge")
 
