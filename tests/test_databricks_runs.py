@@ -341,6 +341,16 @@ def test_databricks_run_status_sidecar_validation_rejects_contradictory_gpu_flag
     )
 
 
+def test_databricks_run_status_sidecar_validation_accepts_legacy_gpu_flag_only():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    del submit_payload["aws_single_node_gpu_type"]
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    assert databricks_run_status_sidecar_issues(bad_record, expected_hardware_target="aws-g6-l4") == ()
+    validate_databricks_run_status_sidecar(bad_record, expected_hardware_target="aws-g6-l4")
+
+
 def test_databricks_run_status_sidecar_validation_matches_submit_payload_run_name():
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
