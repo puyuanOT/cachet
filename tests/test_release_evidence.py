@@ -944,6 +944,44 @@ def test_evaluate_release_evidence_rejects_duplicate_or_missing_storage_readers(
 
 
 @pytest.mark.parametrize(
+    ("mutate_results", "expected_issue"),
+    [
+        (
+            lambda results: results.append({**results[0]}),
+            "storage benchmark results duplicate readers: memory",
+        ),
+        (
+            lambda results: results.append({**results[0], "reader_id": "object_store"}),
+            "storage benchmark reader object_store is not a supported release reader",
+        ),
+        (
+            lambda results: results[0].__setitem__("reader_id", ""),
+            "storage benchmark results[0].reader_id must be a supported release reader",
+        ),
+    ],
+)
+def test_evaluate_release_evidence_rejects_invalid_storage_result_readers(mutate_results, expected_issue):
+    storage_record = _storage_record(ok=True)
+    mutate_results(storage_record["results"])
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        storage_record,
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert expected_issue in evidence.issues
+
+
+@pytest.mark.parametrize(
     "uc_volume_root",
     (
         "/Volumes/catalog/schema/volume/../secret",

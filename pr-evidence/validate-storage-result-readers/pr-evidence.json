@@ -1,0 +1,26 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer Peirce approved the storage result reader validation with no actionable findings after verifying focused tests, release evidence tests, storage benchmark tests, full suite, diff check, and poetry check.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_evidence.py",
+    "tests/test_release_evidence.py",
+    "pr-evidence/validate-storage-result-readers/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_evidence.py::test_evaluate_release_evidence_accepts_storage_readers_in_any_order tests/test_release_evidence.py::test_evaluate_release_evidence_rejects_duplicate_or_missing_storage_readers tests/test_release_evidence.py::test_evaluate_release_evidence_rejects_invalid_storage_result_readers -q -> 7 passed",
+    "poetry run pytest tests/test_release_evidence.py -q -> 57 passed",
+    "poetry run pytest tests/test_storage_benchmark.py -q -> 22 passed",
+    "git diff --check && poetry run pytest -q && poetry check && poetry run python -m compileall -q src tests -> 1228 passed; poetry check All set"
+  ],
+  "what_changed": [
+    "Rejected duplicate, empty, and unsupported storage benchmark result reader IDs in strict release evidence validation.",
+    "Added regression coverage for ambiguous storage result rows while preserving the storage benchmark output schema."
+  ],
+  "why": "Strict V1 release evidence should prove Memory, Disk, and Unity Catalog result rows directly, not just rely on top-level reader summaries when raw results contain duplicates or unexpected readers."
+}
