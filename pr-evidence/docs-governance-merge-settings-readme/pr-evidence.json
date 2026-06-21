@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Ptolemy the 3rd approved the final diff, including the package README/test sync and pr-evidence/docs-governance-merge-settings-readme files; validation returned ok=true.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/README.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/docs-governance-merge-settings-readme/README.md",
+    "pr-evidence/docs-governance-merge-settings-readme/pr-evidence.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_document_package_readme_lists_public_modules_and_console_scripts -q",
+    "poetry run pytest tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring -q",
+    "poetry run pytest tests/test_project_governance.py tests/test_release_bundle.py tests/test_github_governance.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence"
+  ],
+  "what_changed": [
+    "Updated the document_kv_cache package README to describe GitHub governance merge settings, auto-merge, and merged-branch cleanup evidence."
+  ],
+  "why": "Keep the public module map aligned with the release bundle governance checks that now enforce merge settings and branch cleanup."
+}

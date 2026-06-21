@@ -476,6 +476,9 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "`templates/databricks/`" in text
     assert "canonical implementation modules" in text
     assert "Public files in this package define the document-owned classes" in text
+    assert "merge-settings" in text
+    assert "auto-merge" in text
+    assert "merged-branch cleanup" in text
     assert "wrappers over implementation modules in `restaurant_kv_serving`" not in text
     assert "real wrapper modules" not in text
 

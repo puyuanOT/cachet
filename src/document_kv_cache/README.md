@@ -56,8 +56,9 @@ new document modules depend on restaurant-owned implementations.
   probe factory.
 - `engine_protocol.py` defines validated KV layout, segment, and handle data
   structures.
-- `github_governance.py` emits a GitHub repository visibility and branch
-  protection status record for release-readiness evidence.
+- `github_governance.py` emits GitHub repository visibility, branch
+  protection, merge-settings, auto-merge, and merged-branch cleanup status
+  records for release-readiness evidence.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
 - `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint.
