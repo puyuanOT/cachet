@@ -12,12 +12,17 @@ import restaurant_kv_serving.databricks_job as legacy_databricks_job
 from document_kv_cache.databricks_job import (
     DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_PURPOSE,
+    RESERVED_SINGLE_NODE_G5_TAG_KEYS,
+    RESERVED_SINGLE_NODE_GPU_TAG_KEYS,
     DatabricksBenchmarkJobConfig,
     DatabricksSingleNodeG5ClusterConfig,
-    build_single_node_g5_cluster,
+    DatabricksSingleNodeGPUClusterConfig,
     build_databricks_run_submit_payload,
+    build_single_node_g5_cluster,
+    build_single_node_gpu_cluster,
     main,
     validate_aws_g5_node_type,
+    validate_aws_single_node_gpu_type,
     write_databricks_runner_script,
     write_databricks_run_submit_json,
 )
@@ -179,6 +184,16 @@ def test_validate_aws_g5_node_type_accepts_g5_and_g6_gpu_families():
 
     with pytest.raises(ValueError, match="AWS g5, g6"):
         validate_aws_g5_node_type("g6e.8xlarge")
+
+
+def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
+    assert RESERVED_SINGLE_NODE_GPU_TAG_KEYS is RESERVED_SINGLE_NODE_G5_TAG_KEYS
+    assert DatabricksSingleNodeGPUClusterConfig is DatabricksSingleNodeG5ClusterConfig
+    assert validate_aws_single_node_gpu_type is validate_aws_g5_node_type
+    assert build_single_node_gpu_cluster is build_single_node_g5_cluster
+
+    validate_aws_single_node_gpu_type("g5.xlarge")
+    validate_aws_single_node_gpu_type("g6.8xlarge")
 
 
 def test_write_databricks_runner_script_imports_plan_executor(tmp_path):
@@ -997,7 +1012,13 @@ def test_legacy_databricks_job_reexports_document_owned_types():
         legacy_databricks_job.DatabricksBenchmarkJobConfig.__module__
         == "restaurant_kv_serving.databricks_job"
     )
-    assert set(public_databricks_job.__all__) < set(legacy_databricks_job.__all__)
+    document_only_aliases = {
+        "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
+        "DatabricksSingleNodeGPUClusterConfig",
+        "validate_aws_single_node_gpu_type",
+        "build_single_node_gpu_cluster",
+    }
+    assert set(public_databricks_job.__all__) - document_only_aliases < set(legacy_databricks_job.__all__)
 
 
 def test_legacy_databricks_job_config_pickle_uses_honest_legacy_module():

@@ -72,6 +72,7 @@ def test_public_document_package_reexports_core_api():
         RELEASE_BUNDLE_RECORD_TYPE,
         RELEASE_EVIDENCE_ARTIFACT_ROLES,
         SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE,
+        DatabricksSingleNodeGPUClusterConfig,
         DatabricksSingleNodeG5ClusterConfig,
         DatabricksVLLMSmokeJobConfig,
         DatabricksWorkspaceConfig,
@@ -170,6 +171,7 @@ def test_public_document_package_reexports_core_api():
         build_engine_kv_connector_actions,
         build_engine_ready_request,
         build_handle_from_materialized,
+        build_single_node_gpu_cluster,
         build_single_node_g5_cluster,
         build_release_bundle,
         build_v1_benchmark_plan,
@@ -227,6 +229,7 @@ def test_public_document_package_reexports_core_api():
         summarize_databricks_run_submit_payload,
         databricks_run_status_record,
         databricks_run_status_sidecar_issues,
+        validate_aws_single_node_gpu_type,
         validate_aws_g5_node_type,
         validate_databricks_run_status_sidecar,
         validate_engine_kv_connector_actions_record,
@@ -306,10 +309,16 @@ def test_public_document_package_reexports_core_api():
     )
     assert DatabricksBenchmarkJobConfig is databricks_job.DatabricksBenchmarkJobConfig
     assert DatabricksSingleNodeG5ClusterConfig is databricks_job.DatabricksSingleNodeG5ClusterConfig
+    assert DatabricksSingleNodeGPUClusterConfig is databricks_job.DatabricksSingleNodeGPUClusterConfig
+    assert DatabricksSingleNodeGPUClusterConfig is DatabricksSingleNodeG5ClusterConfig
     assert DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE == databricks_job.DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     assert build_databricks_run_submit_payload is databricks_job.build_databricks_run_submit_payload
     assert build_single_node_g5_cluster is databricks_job.build_single_node_g5_cluster
+    assert build_single_node_gpu_cluster is databricks_job.build_single_node_gpu_cluster
+    assert build_single_node_gpu_cluster is build_single_node_g5_cluster
     assert validate_aws_g5_node_type is databricks_job.validate_aws_g5_node_type
+    assert validate_aws_single_node_gpu_type is databricks_job.validate_aws_single_node_gpu_type
+    assert validate_aws_single_node_gpu_type is validate_aws_g5_node_type
     assert DatabricksVLLMSmokeJobConfig is restaurant_kv_serving.DatabricksVLLMSmokeJobConfig
     assert DatabricksWorkspaceConfig is databricks_runs.DatabricksWorkspaceConfig
     assert issubclass(restaurant_kv_serving.DatabricksWorkspaceConfig, databricks_runs.DatabricksWorkspaceConfig)
@@ -695,6 +704,10 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "DatabricksEngineProbeTargetsFile" in document_kv_cache.__all__
     assert "DatabricksStorageBenchmarkJobConfig" in document_kv_cache.__all__
     assert "DatabricksVLLMSmokeJobConfig" in document_kv_cache.__all__
+    assert "DatabricksSingleNodeGPUClusterConfig" in document_kv_cache.__all__
+    assert "RESERVED_SINGLE_NODE_GPU_TAG_KEYS" in document_kv_cache.__all__
+    assert "build_single_node_gpu_cluster" in document_kv_cache.__all__
+    assert "validate_aws_single_node_gpu_type" in document_kv_cache.__all__
     assert "ReleaseEvidence" in document_kv_cache.__all__
     assert "ReleaseBundlePlanConfig" in document_kv_cache.__all__
     assert "ReleaseEvidenceInputFileStatus" in document_kv_cache.__all__

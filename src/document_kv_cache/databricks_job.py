@@ -27,6 +27,7 @@ SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
     {DEFAULT_DATABRICKS_DATA_SECURITY_MODE, DEDICATED_DATABRICKS_DATA_SECURITY_MODE}
 )
 RESERVED_SINGLE_NODE_G5_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
+RESERVED_SINGLE_NODE_GPU_TAG_KEYS = RESERVED_SINGLE_NODE_G5_TAG_KEYS
 SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g5.", "g6.")
 RUNNER_SCRIPT = """from __future__ import annotations
 
@@ -70,10 +71,14 @@ __all__ = [
     "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
     "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
     "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
+    "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
     "DatabricksSingleNodeG5ClusterConfig",
+    "DatabricksSingleNodeGPUClusterConfig",
     "DatabricksBenchmarkJobConfig",
     "validate_aws_g5_node_type",
+    "validate_aws_single_node_gpu_type",
     "build_single_node_g5_cluster",
+    "build_single_node_gpu_cluster",
     "build_databricks_run_submit_payload",
     "write_databricks_run_submit_json",
     "write_databricks_runner_script",
@@ -111,6 +116,9 @@ class DatabricksSingleNodeG5ClusterConfig:
         reserved_tags = RESERVED_SINGLE_NODE_G5_TAG_KEYS.intersection(self.custom_tags)
         if reserved_tags:
             raise ValueError(f"custom_tags cannot override reserved tags: {sorted(reserved_tags)!r}")
+
+
+DatabricksSingleNodeGPUClusterConfig = DatabricksSingleNodeG5ClusterConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +165,9 @@ def validate_aws_g5_node_type(node_type_id: str) -> None:
     if not node_type_id.lower().startswith(SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES):
         supported = ", ".join(prefix.rstrip(".") for prefix in SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES)
         raise ValueError(f"node_type_id must be an AWS {supported} Databricks node type, got {node_type_id!r}")
+
+
+validate_aws_single_node_gpu_type = validate_aws_g5_node_type
 
 
 def build_databricks_run_submit_payload(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
@@ -209,6 +220,9 @@ def build_single_node_g5_cluster(config: DatabricksSingleNodeG5ClusterConfig) ->
     if _is_single_user_mode(config.data_security_mode):
         cluster["single_user_name"] = config.single_user_name
     return cluster
+
+
+build_single_node_gpu_cluster = build_single_node_g5_cluster
 
 
 def _single_node_g5_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
