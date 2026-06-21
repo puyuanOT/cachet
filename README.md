@@ -518,8 +518,10 @@ only one backend probe cluster at a time; the generated matrix payload adds
 Databricks task dependencies so each backend runs after the previous task.
 Use per-target `pip_packages` in the backend target file for engine runtime
 packages such as vLLM and SGLang, because current releases pin incompatible
-runtime stacks. The runner installs those PyPI package specs before the Cachet
-and adapter wheels.
+runtime stacks. The Cachet wheel supplies the built-in
+`vllm_kv_injection`/`sglang_kv_injection` adapter modules, so the runner
+installs those PyPI package specs before the Cachet wheel and any explicitly
+requested custom extension wheels.
 When `--actions-output-json` or a target `actions_output_json` is present, the
 runner also writes the validated `document_kv.engine_kv_connector_actions.v1`
 reserve/copy/bind/release descriptor next to the probe evidence. This sidecar is

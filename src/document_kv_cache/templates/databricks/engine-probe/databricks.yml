@@ -25,7 +25,7 @@ variables:
   native_probe_metadata:
     description: KEY=VALUE metadata for the native probe, such as vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector.
   wheel_uri:
-    description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
+    description: Cluster-supported Cachet wheel URI; this wheel includes the built-in vLLM/SGLang adapter modules.
   node_type_id:
     default: g6.8xlarge
     description: AWS g6/L4 node type for the single-node GPU engine probe.

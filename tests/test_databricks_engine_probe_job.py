@@ -39,8 +39,12 @@ from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENA
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
-VLLM_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/vllm_kv_injection-0.2.0-py3-none-any.whl"
-SGLANG_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/sglang_kv_injection-0.2.0-py3-none-any.whl"
+CUSTOM_VLLM_EXTENSION_WHEEL_URI = (
+    "/Volumes/catalog/schema/volume/wheels/custom_vllm_probe_extension-0.1.0-py3-none-any.whl"
+)
+CUSTOM_SGLANG_EXTENSION_WHEEL_URI = (
+    "/Volumes/catalog/schema/volume/wheels/custom_sglang_probe_extension-0.1.0-py3-none-any.whl"
+)
 VLLM_RUNTIME_PACKAGE = "vllm==0.23.0"
 SGLANG_RUNTIME_PACKAGE = "sglang==0.5.10.post1"
 SINGLE_USER_NAME = "user@example.com"
@@ -57,6 +61,10 @@ def _target(backend: str, **overrides):
     }
     values.update(overrides)
     return DatabricksEngineProbeTargetConfig(**values)
+
+
+def _parameter_values(parameters, flag):
+    return [parameters[index + 1] for index, value in enumerate(parameters[:-1]) if value == flag]
 
 
 def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
@@ -204,7 +212,7 @@ def test_build_databricks_engine_probe_payload_installs_extra_wheels_in_order():
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         expected_backend=ServingBackend.VLLM,
         wheel_uri=WHEEL_URI,
-        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI, SGLANG_ADAPTER_WHEEL_URI),
+        extra_wheel_uris=(CUSTOM_VLLM_EXTENSION_WHEEL_URI, CUSTOM_SGLANG_EXTENSION_WHEEL_URI),
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
     )
@@ -216,9 +224,9 @@ def test_build_databricks_engine_probe_payload_installs_extra_wheels_in_order():
         "--package-wheel-uri",
         WHEEL_URI,
         "--package-wheel-uri",
-        VLLM_ADAPTER_WHEEL_URI,
+        CUSTOM_VLLM_EXTENSION_WHEEL_URI,
         "--package-wheel-uri",
-        SGLANG_ADAPTER_WHEEL_URI,
+        CUSTOM_SGLANG_EXTENSION_WHEEL_URI,
     ]
 
 
@@ -230,7 +238,7 @@ def test_build_databricks_engine_probe_payload_installs_pip_packages_before_whee
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         expected_backend=ServingBackend.VLLM,
         wheel_uri=WHEEL_URI,
-        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI,),
+        extra_wheel_uris=(CUSTOM_VLLM_EXTENSION_WHEEL_URI,),
         extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
@@ -245,7 +253,7 @@ def test_build_databricks_engine_probe_payload_installs_pip_packages_before_whee
         "--package-wheel-uri",
         WHEEL_URI,
         "--package-wheel-uri",
-        VLLM_ADAPTER_WHEEL_URI,
+        CUSTOM_VLLM_EXTENSION_WHEEL_URI,
     ]
 
 
@@ -270,6 +278,36 @@ def test_build_databricks_engine_probe_payload_sets_native_delegate_env_var():
         VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe"
     }
     assert "--native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
+
+
+def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        payload_uri="/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+        wheel_uri=WHEEL_URI,
+        extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+        native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+        metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+    )
+
+    payload = build_databricks_engine_probe_run_submit_payload(config)
+    task = payload["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
+
+    assert task["new_cluster"]["spark_env_vars"] == {
+        VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
+    }
+    assert _parameter_values(parameters, "--pip-package") == [VLLM_RUNTIME_PACKAGE]
+    package_wheel_uris = _parameter_values(parameters, "--package-wheel-uri")
+    assert package_wheel_uris == [WHEEL_URI]
+    assert not any("vllm_kv_injection" in wheel_uri for wheel_uri in package_wheel_uris)
+    assert VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in _parameter_values(parameters, "--metadata")
 
 
 def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required_backends():
@@ -362,7 +400,7 @@ def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_
         probe_targets=(_target("vllm"), _target("sglang")),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
-        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI, SGLANG_ADAPTER_WHEEL_URI),
+        extra_wheel_uris=(CUSTOM_VLLM_EXTENSION_WHEEL_URI, CUSTOM_SGLANG_EXTENSION_WHEEL_URI),
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
     )
@@ -374,13 +412,13 @@ def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_
             "--package-wheel-uri",
             WHEEL_URI,
             "--package-wheel-uri",
-            VLLM_ADAPTER_WHEEL_URI,
+            CUSTOM_VLLM_EXTENSION_WHEEL_URI,
             "--package-wheel-uri",
-            SGLANG_ADAPTER_WHEEL_URI,
+            CUSTOM_SGLANG_EXTENSION_WHEEL_URI,
         ]
 
 
-def test_build_databricks_engine_probe_matrix_payload_installs_backend_pip_packages_per_task():
+def test_build_databricks_engine_probe_matrix_payload_installs_backend_pip_packages_and_cachet_wheel_per_task():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
             _target("vllm", pip_packages=(VLLM_RUNTIME_PACKAGE,)),
@@ -388,7 +426,6 @@ def test_build_databricks_engine_probe_matrix_payload_installs_backend_pip_packa
         ),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
-        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI, SGLANG_ADAPTER_WHEEL_URI),
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
         extra_pip_packages=("typing-extensions==4.15.0",),
@@ -402,30 +439,24 @@ def test_build_databricks_engine_probe_matrix_payload_installs_backend_pip_packa
         ]: task["spark_python_task"]["parameters"]
         for task in payload["tasks"]
     }
-    assert parameters_by_backend["vllm"][-10:] == [
+    assert parameters_by_backend["vllm"][-6:] == [
         "--pip-package",
         "typing-extensions==4.15.0",
         "--pip-package",
         VLLM_RUNTIME_PACKAGE,
         "--package-wheel-uri",
         WHEEL_URI,
-        "--package-wheel-uri",
-        VLLM_ADAPTER_WHEEL_URI,
-        "--package-wheel-uri",
-        SGLANG_ADAPTER_WHEEL_URI,
     ]
-    assert parameters_by_backend["sglang"][-10:] == [
+    assert parameters_by_backend["sglang"][-6:] == [
         "--pip-package",
         "typing-extensions==4.15.0",
         "--pip-package",
         SGLANG_RUNTIME_PACKAGE,
         "--package-wheel-uri",
         WHEEL_URI,
-        "--package-wheel-uri",
-        VLLM_ADAPTER_WHEEL_URI,
-        "--package-wheel-uri",
-        SGLANG_ADAPTER_WHEEL_URI,
     ]
+    assert _parameter_values(parameters_by_backend["vllm"], "--package-wheel-uri") == [WHEEL_URI]
+    assert _parameter_values(parameters_by_backend["sglang"], "--package-wheel-uri") == [WHEEL_URI]
 
 
 def test_build_databricks_engine_probe_matrix_payload_can_run_tasks_serially():
@@ -1507,7 +1538,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
             "--package-wheel-uri",
             "dbfs:/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
             "--package-wheel-uri",
-            "dbfs:/tmp/cachet/vllm_kv_injection-0.2.0-py3-none-any.whl",
+            "dbfs:/tmp/cachet/custom_vllm_probe_extension-0.1.0-py3-none-any.whl",
             "--handoff-json",
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
             "--expected-backend",
@@ -1523,7 +1554,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
     assert [Path(call[0]).resolve() for call in pip_calls] == [Path(sys.executable).resolve()] * 2
     assert [call[1:] for call in pip_calls] == [
         ["-m", "pip", "install", "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl"],
-        ["-m", "pip", "install", "/dbfs/tmp/cachet/vllm_kv_injection-0.2.0-py3-none-any.whl"],
+        ["-m", "pip", "install", "/dbfs/tmp/cachet/custom_vllm_probe_extension-0.1.0-py3-none-any.whl"],
     ]
     assert json.loads(task_args_path.read_text(encoding="utf-8")) == [
         "--handoff-json",
@@ -1577,7 +1608,7 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
             "--wheel-uri",
             WHEEL_URI,
             "--extra-wheel-uri",
-            VLLM_ADAPTER_WHEEL_URI,
+            CUSTOM_VLLM_EXTENSION_WHEEL_URI,
             "--output-json",
             str(payload_path),
             "--runner-script-output",
@@ -1594,7 +1625,7 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
         "--package-wheel-uri",
         WHEEL_URI,
         "--package-wheel-uri",
-        VLLM_ADAPTER_WHEEL_URI,
+        CUSTOM_VLLM_EXTENSION_WHEEL_URI,
     ]
     assert "engine_probe" in runner_path.read_text(encoding="utf-8")
 
