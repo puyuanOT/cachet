@@ -188,6 +188,10 @@ _DOCUMENT_ROOT_EXPORTS = {
     "submit_databricks_run": ("document_kv_cache.databricks_runs", "submit_databricks_run"),
     "get_databricks_run": ("document_kv_cache.databricks_runs", "get_databricks_run"),
     "put_databricks_dbfs_file": ("document_kv_cache.databricks_runs", "put_databricks_dbfs_file"),
+    "stage_and_submit_databricks_run": (
+        "document_kv_cache.databricks_runs",
+        "stage_and_submit_databricks_run",
+    ),
     "summarize_databricks_run": ("document_kv_cache.databricks_runs", "summarize_databricks_run"),
     "summarize_databricks_run_submit_payload": (
         "document_kv_cache.databricks_runs",

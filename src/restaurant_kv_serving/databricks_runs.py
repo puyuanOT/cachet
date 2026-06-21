@@ -64,6 +64,7 @@ __all__ += [
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
+    "stage_and_submit_databricks_run",
     "summarize_databricks_run",
     "summarize_databricks_run_submit_payload",
     "databricks_run_status_record",
@@ -249,6 +250,26 @@ def put_databricks_dbfs_file(
     )
 
 
+def stage_and_submit_databricks_run(
+    config: DatabricksWorkspaceConfig,
+    payload: dict[str, Any],
+    artifacts: Sequence[tuple[str | Path, str]],
+    *,
+    overwrite: bool = False,
+    require_payload_dbfs_artifacts: bool = False,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    return _call_document_function(
+        "stage_and_submit_databricks_run",
+        config,
+        payload,
+        artifacts,
+        overwrite=overwrite,
+        require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
+        opener=opener,
+    )
+
+
 def write_databricks_run_response_json(response: dict[str, Any], path: str | Path) -> None:
     return _call_document_function("write_databricks_run_response_json", response, path)
 
@@ -408,6 +429,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "submit_databricks_run": submit_databricks_run,
     "get_databricks_run": get_databricks_run,
     "put_databricks_dbfs_file": put_databricks_dbfs_file,
+    "stage_and_submit_databricks_run": stage_and_submit_databricks_run,
     "write_databricks_run_response_json": write_databricks_run_response_json,
     "read_databricks_run_submit_payload": read_databricks_run_submit_payload,
     "summarize_databricks_run": summarize_databricks_run,

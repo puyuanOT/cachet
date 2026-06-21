@@ -189,32 +189,28 @@ release-safe probe matrices.
 
 Small runner or wheel artifacts can be staged to DBFS with the same
 environment-provided Databricks credentials before submitting the generated
-payload. The helper writes an upload sidecar with the destination path, byte
-count, and SHA-256 digest; use a streaming upload tool or a UC Volume for larger
-artifacts.
+payload. `stage-and-submit` writes one sidecar with artifact upload provenance
+and the Databricks submit response; use a streaming upload tool or a UC Volume
+for larger artifacts.
 
 ```bash
 cachet-databricks-runs \
-  --output-json run-engine-probe-dbfs-put.json \
-  put-dbfs-file \
-  --local-path run_engine_probe.py \
-  --dbfs-path dbfs:/benchmarks/run_engine_probe.py \
-  --overwrite
+  --output-json engine-probe-stage-submit-response.json \
+  stage-and-submit \
+  --payload-json engine-probe-runs-submit-reference.json \
+  --artifact run_engine_probe.py=dbfs:/benchmarks/run_engine_probe.py \
+  --overwrite \
+  --require-payload-dbfs-artifacts
 ```
 
-Then submit or inspect generated payloads from a shell with `DATABRICKS_HOST` and
+Then inspect generated runs from a shell with `DATABRICKS_HOST` and
 `DATABRICKS_TOKEN` set:
 
 ```bash
 cachet-databricks-runs \
-  --output-json vllm-smoke-submit-response.json \
-  submit \
-  --payload-json vllm-smoke-runs-submit-reference.json
-
-cachet-databricks-runs \
-  --output-json vllm-smoke-run-status.json \
+  --output-json engine-probe-run-status.json \
   get \
   --run-id 123456789 \
   --summary \
-  --submit-payload-json vllm-smoke-runs-submit-reference.json
+  --submit-payload-json engine-probe-runs-submit-reference.json
 ```

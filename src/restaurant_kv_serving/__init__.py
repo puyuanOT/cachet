@@ -676,6 +676,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "put_databricks_dbfs_file",
     ),
+    "stage_and_submit_databricks_run": (
+        "restaurant_kv_serving.databricks_runs",
+        "stage_and_submit_databricks_run",
+    ),
     "pr_evidence_validation_to_record": (
         "restaurant_kv_serving.pr_evidence",
         "pr_evidence_validation_to_record",
@@ -1263,6 +1267,7 @@ __all__ = [
     "sglang_adapter_spec",
     "sglang_native_probe_factory",
     "split_engine_adapter_payload",
+    "stage_and_submit_databricks_run",
     "submit_databricks_run",
     "summarize_databricks_run",
     "summarize_databricks_run_submit_payload",
