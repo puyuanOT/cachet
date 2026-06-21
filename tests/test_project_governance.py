@@ -831,7 +831,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "HotpotQA",
         "MusiQue",
         "NIAH",
-        "`full_no_cache` baseline",
+        "`baseline_prefill` arm",
         "MQA/GQA",
         "KV Packet",
         "Qwen3.5",
