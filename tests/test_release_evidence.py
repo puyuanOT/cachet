@@ -790,6 +790,7 @@ def test_evaluate_release_evidence_rejects_malformed_report_quality_rates():
 def test_evaluate_release_evidence_allows_repeated_raw_measurements():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"].append({**v1_record["measurements"][0]})
+    v1_record["report_rows"][0] = {**v1_record["report_rows"][0], "requests": 2}
 
     evidence = evaluate_release_evidence(
         v1_record,
@@ -895,6 +896,28 @@ def test_evaluate_release_evidence_rejects_zero_token_volume_and_all_error_summa
     assert any("prompt_tokens_mean must be positive" in issue for issue in evidence.issues)
     assert any("completion_tokens_mean must be positive" in issue for issue in evidence.issues)
     assert any("output_tokens_per_second must be positive" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_rejects_report_row_count_mismatch():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "requests": 2,
+        "errors": 1,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("requests must match measurements" in issue for issue in evidence.issues)
+    assert any("errors must match measurements" in issue for issue in evidence.issues)
 
 
 def test_evaluate_release_evidence_rejects_impossible_latency_measurements_and_summaries():
