@@ -17,6 +17,8 @@ from document_kv_cache.benchmarks import (
     DEFAULT_V1_MODEL_ID,
     SUPPORTED_V1_DATASETS,
     BASELINE_PREFILL_ARM,
+    answer_found as _benchmark_answer_found,
+    exact_match as _benchmark_exact_match,
 )
 from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
 from document_kv_cache.engine_adapters import (
@@ -1319,6 +1321,12 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
                 issues.append(
                     f"v1 benchmark measurement {dataset_value}:{arm_id_value} {field_name} must be boolean"
                 )
+        _validate_v1_measurement_quality_labels(
+            measurement,
+            dataset=dataset_value,
+            arm_id=arm_id_value,
+            issues=issues,
+        )
         _validate_v1_measurement_token_context(
             measurement,
             dataset=dataset_value,
@@ -1333,6 +1341,30 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
     missing = sorted(f"{dataset}:{arm_id}" for dataset, arm_id in expected.difference(measurement_keys))
     if missing:
         issues.append(f"v1 benchmark measurements missing required dataset/arm pairs: {', '.join(missing)}")
+
+
+def _validate_v1_measurement_quality_labels(
+    measurement: Mapping[str, Any],
+    *,
+    dataset: Any,
+    arm_id: Any,
+    issues: list[str],
+) -> None:
+    output_text = measurement.get("output_text")
+    expected_answer = measurement.get("expected_answer")
+    exact_match = measurement.get("exact_match")
+    answer_found = measurement.get("answer_found")
+    if not isinstance(output_text, str) or not isinstance(expected_answer, str) or not expected_answer:
+        return
+    label = f"v1 benchmark measurement {dataset}:{arm_id}"
+    if type(exact_match) is bool:
+        expected_exact_match = _benchmark_exact_match(output_text, expected_answer)
+        if exact_match != expected_exact_match:
+            issues.append(f"{label} exact_match must match output_text and expected_answer")
+    if type(answer_found) is bool:
+        expected_answer_found = _benchmark_answer_found(output_text, expected_answer)
+        if answer_found != expected_answer_found:
+            issues.append(f"{label} answer_found must match output_text and expected_answer")
 
 
 def _validate_v1_measurement_token_context(

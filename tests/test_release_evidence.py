@@ -773,6 +773,31 @@ def test_evaluate_release_evidence_rejects_malformed_measurement_quality_flags()
     assert any("answer_found must be boolean" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_incorrect_measurement_quality_labels():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "exact_match": False,
+    }
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "answer_found": False,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("biography:baseline_prefill exact_match must match output_text" in issue for issue in evidence.issues)
+    assert any("biography:document_kv_cache answer_found must match output_text" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
