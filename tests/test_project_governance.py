@@ -805,6 +805,47 @@ def test_readme_remaining_work_keeps_serving_boundary_explicit():
     assert "Add vLLM and SGLang adapters" not in remaining_work
 
 
+def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
+    readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
+    compact_matrix = " ".join(matrix_text.split())
+
+    assert "docs/v1-requirements-matrix.md" in readme_text
+    assert "`v1-requirements-matrix.md`" in docs_readme
+    assert "Status values" in matrix_text
+    assert "**Implemented:**" in matrix_text
+    assert "**Release-gated:**" in matrix_text
+    assert "**Remaining:**" in matrix_text
+
+    for required in (
+        "vLLM/SGLang handoff boundary",
+        "Memory, Disk, UC Volume, and routed readers",
+        "AWS g5",
+        "`qwen3:4b-instruct`",
+        "Biography",
+        "HotpotQA",
+        "MusiQue",
+        "NIAH",
+        "`full_no_cache` baseline",
+        "MQA/GQA",
+        "KV Packet",
+        "Qwen3.5",
+        "MiniMax",
+        "Cachet",
+        "GPT-5.5 review",
+        "Refactor skill",
+        "one PR open",
+        "complete strict release bundle",
+        "real vLLM and SGLang native block managers",
+        "`restaurant_kv_serving` compatibility package",
+    ):
+        assert required in matrix_text
+
+    assert "Release-gated | `databricks_job.py`" in compact_matrix
+    assert "Run connector action descriptor validation" in matrix_text
+
+
 def test_readme_release_bundle_documents_artifact_validation_contracts():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     compact_text = " ".join(text.split())

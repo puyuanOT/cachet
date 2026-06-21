@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Hegel the 3rd reported a P1 review-state finding because the new docs were untracked; after marking the docs as intended additions, re-review approved the full diff with no remaining blocking issues.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/README.md",
+    "docs/v1-requirements-matrix.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/v1-requirements-matrix/README.md",
+    "pr-evidence/v1-requirements-matrix/pr-evidence.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring tests/test_project_governance.py::test_repository_text_files_do_not_contain_committed_credentials -q",
+    "poetry run pytest tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence"
+  ],
+  "what_changed": [
+    "Added a project-level V1 requirements matrix for the generalized Cachet package goal.",
+    "Linked the matrix from the README and added governance coverage for core requirements and remaining release gates."
+  ],
+  "why": "The active package goal spans storage, serving engines, benchmarks, model scope, documentation, and PR workflow, so maintainers need an auditable map from each requirement to current evidence and unfinished release work."
+}

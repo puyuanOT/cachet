@@ -45,6 +45,12 @@ native KV block management. Cachet provides the manifest, storage, materialized
 payload, admission metadata, benchmark evidence, and adapter contracts that let
 those engines reuse precomputed document context safely.
 
+The current implementation and release gaps are tracked in
+`docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1
+open-source package goal: it distinguishes repository-implemented requirements
+from target AWS g5/Unity Catalog evidence that still needs to be bundled before
+publication.
+
 ## Logical Model
 
 Each document can be represented by stable chunks and selectable chunks:
