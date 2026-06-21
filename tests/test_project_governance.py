@@ -1278,6 +1278,13 @@ def test_poetry_dependencies_use_exact_direct_pins():
         assert _is_exact_stable_version_pin(version), f"{name} is not exactly pinned to a stable version: {version}"
 
 
+def test_runtime_packaging_pin_stays_databricks_ml_compatible():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependency_versions = _collect_poetry_dependency_versions(pyproject)
+
+    assert dependency_versions["project.dependencies.packaging"] == "==23.2"
+
+
 def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = pyproject["project"].get("dependencies", ())
