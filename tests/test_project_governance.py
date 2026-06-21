@@ -416,10 +416,10 @@ def test_source_layout_readme_reflects_document_owned_implementation():
     compact_text = " ".join(text.split())
 
     assert "Cachet, the document KV-cache library" in compact_text
-    assert "distribution package is `document-kv-cache`" in text
-    assert "public import namespaces are the branded `cachet` facade" in text
+    assert "distribution package is still `document-kv-cache`" in text
+    assert "public product import namespace is the branded `cachet` facade" in compact_text
     assert "`cachet/` is the branded import facade" in text
-    assert "`document_kv_cache/` is the canonical implementation" in text
+    assert "`document_kv_cache/` is the canonical implementation and compatibility" in text
     assert "`restaurant_kv_serving/` remains packaged as a migration-only compatibility" in compact_text
     assert "contains the current implementation" not in text
 
@@ -481,6 +481,7 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "Cachet-branded aliases" in text
     assert "`templates/`" in text
     assert "`templates/databricks/`" in text
+    assert "compatibility-preserving implementation package" in text
     assert "canonical implementation modules" in text
     assert "Public files in this package define the document-owned classes" in text
     assert "merge-settings" in text
@@ -654,10 +655,12 @@ def test_readme_documents_cachet_brand_and_scope():
 
     assert text.startswith("# Cachet: Document KV Cache")
     assert "Cachet is a reusable document KV-cache orchestration package" in text
-    assert "Cachet is the product brand" in text
-    assert "The package publishes as `document-kv-cache`" in text
-    assert "branded `cachet` root import facade" in " ".join(text.split())
-    assert "canonical `document_kv_cache` implementation import path" in " ".join(text.split())
+    compact_text = " ".join(text.split())
+
+    assert "Cachet is the product brand and primary repository identity" in compact_text
+    assert "The package publishes through the transitional `document-kv-cache` distribution name" in compact_text
+    assert "branded `cachet` root and `cachet.<module>` import facades" in compact_text
+    assert "canonical `document_kv_cache` implementation modules" in compact_text
     assert "applications that repeatedly serve long, mostly stable document context" in compact_purpose
     assert "Biography, HotpotQA, MusiQue, and Needle-in-a-Haystack" in compact_purpose
     assert "standard no-cache prefill baseline" in compact_purpose
@@ -734,7 +737,7 @@ def test_readme_model_profile_example_uses_portable_definition_artifact():
     assert missing_exports == []
 
 
-def test_project_metadata_uses_cachet_brand_without_renaming_distribution():
+def test_project_metadata_uses_cachet_brand_with_transitional_distribution():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
 
@@ -766,8 +769,8 @@ def test_project_metadata_exposes_repository_and_issue_urls():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["urls"] == {
-        "Repository": "https://github.com/puyuanOT/document-kv-cache",
-        "Issues": "https://github.com/puyuanOT/document-kv-cache/issues",
+        "Repository": "https://github.com/puyuanOT/cachet",
+        "Issues": "https://github.com/puyuanOT/cachet/issues",
     }
 
 
@@ -1026,7 +1029,7 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert "import restaurant_kv_serving" in text
     assert "cachet.__all__ == document_kv_cache.__all__" in text
     assert 'not hasattr(cachet, "RestaurantKVRequest")' in text
-    assert 'not hasattr(cachet, "storage")' in text
+    assert "assert cachet.storage is document_kv_cache.storage" in text
     assert "/tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null" in text
     assert "install the built wheel into a fresh venv" in workflow_readme
     assert "`cachet`, `document_kv_cache`, and `restaurant_kv_serving`" in workflow_readme
@@ -1301,6 +1304,8 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
     assert "vllm" not in optional_dependency_names
     assert "sglang" not in optional_dependency_names
     assert "serving" not in optional_dependencies
+    assert optional_dependencies["vllm"] == ["vllm-kv-injection[vllm]==0.2.0"]
+    assert optional_dependencies["sglang"] == ["sglang-kv-injection[sglang]==0.2.0"]
 
 
 def test_public_and_legacy_packages_publish_pep561_markers():

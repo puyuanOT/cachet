@@ -83,6 +83,6 @@ jobs:
           assert cachet.DocumentKVRequest is document_kv_cache.DocumentKVRequest
           assert restaurant_kv_serving.DocumentKVRequest is document_kv_cache.DocumentKVRequest
           assert not hasattr(cachet, "RestaurantKVRequest")
-          assert not hasattr(cachet, "storage")
+          assert cachet.storage is document_kv_cache.storage
           PY
           /tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null

@@ -1,16 +1,17 @@
 # `document_kv_cache`
 
-This is the public import package for Document KV Cache. It provides
-document-namespaced modules that own the implementation while older Databricks
-jobs and tests continue to import the legacy `restaurant_kv_serving`
-compatibility package.
+This is the compatibility-preserving implementation package for Cachet. It
+provides document-namespaced modules that own the implementation while the
+branded `cachet` package exposes the user-facing root and `cachet.<module>`
+import surface.
 
 Public submodules such as `document_kv_cache.benchmark_plan`,
 `document_kv_cache.storage`, `document_kv_cache.storage_benchmark`, and
 `document_kv_cache.workflow` are the canonical implementation modules with
 `document_kv_cache.*` module identity. New documentation and examples should
-use this package name. The legacy package can be removed after downstream jobs
-finish migrating.
+prefer the Cachet aliases, while this namespace remains importable for existing
+benchmark evidence, Databricks runners, and downstream jobs. The legacy
+restaurant package can be removed after downstream jobs finish migrating.
 
 The package root keeps `__all__` document-first for `from document_kv_cache
 import *`; restaurant-specific compatibility aliases such as
@@ -118,7 +119,7 @@ part of the public API.
 
 ## Console Scripts
 
-The public package owns these document-branded CLI entry points:
+The implementation package owns these document-branded CLI entry points:
 
 - `document-kv-benchmark-plan`
 - `document-kv-native-probe-scaffold`
@@ -170,12 +171,13 @@ Legacy `restaurant-kv-*` aliases remain packaged only for downstream migration.
 
 ## Optional Extras
 
-The package keeps Databricks and test dependencies optional but exactly pinned.
-Use `databricks` for managed Databricks helpers and `test` for local
-verification. vLLM and SGLang are intentionally not Poetry extras because
-current releases pin incompatible Torch/Transformers stacks; install the target
-engine in a separate serving environment. `serving_env.py` exposes the pinned
-helper profiles used by smoke/probe jobs.
+The package keeps Databricks, adapter, and test dependencies optional but
+exactly pinned. Use `databricks` for managed Databricks helpers and `test` for
+local verification. Use `vllm` or `sglang` to install the thin Cachet adapter
+wheel for one serving engine plus that adapter's own engine extra. Do not
+install both engine extras into the same serving environment unless their
+upstream Torch/Transformers constraints have been reconciled. `serving_env.py`
+exposes the pinned helper profiles used by smoke/probe jobs.
 
 The branded `cachet` facade, canonical `document_kv_cache` implementation, and
 migration-only `restaurant_kv_serving` package all ship `py.typed` markers so

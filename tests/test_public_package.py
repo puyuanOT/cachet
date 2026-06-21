@@ -974,8 +974,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
         write_builtin_native_probe_factories_record_json
         is document_kv_cache.write_builtin_native_probe_factories_record_json
     )
-    assert not hasattr(cachet, "storage")
-    assert "storage" not in dir(cachet)
+    assert cachet.storage is document_kv_cache.storage
+    assert "storage" in dir(cachet)
 
     star_namespace: dict[str, object] = {}
     exec("from cachet import *", star_namespace)
@@ -1072,11 +1072,17 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         name: importlib.import_module(f"document_kv_cache.{name}")
         for name in public_submodules
     }
+    cachet_modules = {
+        name: importlib.import_module(f"cachet.{name}")
+        for name in public_submodules
+    }
 
     assert {name: module.__name__ for name, module in modules.items()} == {
         name: f"document_kv_cache.{name}"
         for name in public_submodules
     }
+    assert cachet_modules == modules
+    assert {name: getattr(cachet, name) for name in public_submodules} == modules
     benchmark_plan = modules["benchmark_plan"]
     benchmark_plan_executor = modules["benchmark_plan_executor"]
     benchmark_runner = modules["benchmark_runner"]
@@ -2183,8 +2189,8 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "vllm",
     }
     assert project["urls"] == {
-        "Repository": "https://github.com/puyuanOT/document-kv-cache",
-        "Issues": "https://github.com/puyuanOT/document-kv-cache/issues",
+        "Repository": "https://github.com/puyuanOT/cachet",
+        "Issues": "https://github.com/puyuanOT/cachet/issues",
     }
     assert {
         "Development Status :: 3 - Alpha",
