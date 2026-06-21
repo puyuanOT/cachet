@@ -1423,6 +1423,32 @@ def test_evaluate_release_evidence_rejects_minimal_storage_rows_and_missing_uc_r
     assert any("total_reads" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_inconsistent_storage_uc_volume_metadata():
+    storage_record = _storage_record(ok=True)
+    storage_record["uc_volume_root"] = "/Volumes/catalog/schema/other-document-kv-storage-benchmark"
+    storage_record["uc_volume_is_real"] = False
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        storage_record,
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("storage benchmark uc_volume_is_real must be true" in issue for issue in evidence.issues)
+    assert any(
+        "release evidence uc_volume_root must match storage benchmark uc_volume_root" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_impossible_storage_latency_rows():
     storage_record = _storage_record(ok=True)
     storage_record["results"][0] = {

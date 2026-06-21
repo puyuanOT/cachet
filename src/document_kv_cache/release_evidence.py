@@ -1103,8 +1103,11 @@ def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         issues.append(f"storage benchmark record_type must be {STORAGE_BENCHMARK_RECORD_TYPE!r}")
     if not _matches_release_storage_readers(record.get("readers")):
         issues.append("storage benchmark readers must include exactly Memory, Disk, and Unity Catalog")
-    if not _is_real_uc_volume_root(record.get("uc_volume_root")):
+    uc_volume_root = record.get("uc_volume_root")
+    if not _is_real_uc_volume_root(uc_volume_root):
         issues.append("storage benchmark uc_volume_root must be a real /Volumes/<catalog>/<schema>/<volume> path")
+    if record.get("uc_volume_is_real") is not True:
+        issues.append("storage benchmark uc_volume_is_real must be true")
     results = _sequence_or_issue(record, "results", issues)
     evidence = _mapping_or_issue(record, "release_storage_evidence", issues)
     if evidence is None:
@@ -1121,6 +1124,8 @@ def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         issues.append("storage benchmark release evidence must require a real UC Volume")
     if not _is_real_uc_volume_root(evidence.get("uc_volume_root")):
         issues.append("storage benchmark release evidence uc_volume_root must be a real UC Volume path")
+    if evidence.get("uc_volume_root") != uc_volume_root:
+        issues.append("storage benchmark release evidence uc_volume_root must match storage benchmark uc_volume_root")
     if not _matches_release_storage_readers(evidence.get("required_readers")):
         issues.append("storage benchmark release evidence required_readers must match the release readers")
     for field_name in (
