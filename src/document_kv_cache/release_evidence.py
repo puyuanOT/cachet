@@ -1138,7 +1138,7 @@ def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         if evidence.get(field_name) not in ([], ()):
             issues.append(f"storage benchmark release evidence {field_name} must be empty")
     if results is not None:
-        _validate_storage_results(results, issues)
+        _validate_storage_results(results, record, issues)
     return tuple(issues)
 
 
@@ -1571,10 +1571,15 @@ def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> N
         issues.append(f"v1 benchmark comparisons missing required datasets: {', '.join(missing)}")
 
 
-def _validate_storage_results(results: Sequence[Any], issues: list[str]) -> None:
+def _validate_storage_results(
+    results: Sequence[Any],
+    record: Mapping[str, Any],
+    issues: list[str],
+) -> None:
     if not results:
         issues.append("storage benchmark results must be non-empty")
         return
+    expected_total_reads, expected_total_bytes, expected_parallelism = _storage_result_expectations(record)
     by_reader = {}
     duplicate_readers: list[str] = []
     for index, result in enumerate(results):
@@ -1596,6 +1601,30 @@ def _validate_storage_results(results: Sequence[Any], issues: list[str]) -> None
         for field_name in ("total_reads", "total_bytes", "parallelism"):
             if not _is_positive_int(result.get(field_name)):
                 issues.append(f"storage benchmark reader {reader_label} {field_name} must be a positive integer")
+        _validate_storage_result_field(
+            result,
+            reader_label,
+            "total_reads",
+            expected_total_reads,
+            "chunk_count * repeats",
+            issues,
+        )
+        _validate_storage_result_field(
+            result,
+            reader_label,
+            "total_bytes",
+            expected_total_bytes,
+            "chunk_count * chunk_bytes * repeats",
+            issues,
+        )
+        _validate_storage_result_field(
+            result,
+            reader_label,
+            "parallelism",
+            expected_parallelism,
+            "storage benchmark parallelism",
+            issues,
+        )
         wall_seconds = result.get("wall_seconds")
         if not _is_positive_number(wall_seconds):
             issues.append(f"storage benchmark reader {reader_label} wall_seconds must be a positive finite number")
@@ -1628,6 +1657,36 @@ def _validate_storage_results(results: Sequence[Any], issues: list[str]) -> None
     missing = tuple(reader for reader in RELEASE_STORAGE_BENCHMARK_READERS if reader not in by_reader)
     if missing:
         issues.append(f"storage benchmark results missing required readers: {', '.join(missing)}")
+
+
+def _storage_result_expectations(record: Mapping[str, Any]) -> tuple[int | None, int | None, int | None]:
+    chunk_count = record.get("chunk_count")
+    chunk_bytes = record.get("chunk_bytes")
+    repeats = record.get("repeats")
+    parallelism = record.get("parallelism")
+    expected_total_reads = None
+    expected_total_bytes = None
+    if _is_positive_int(chunk_count) and _is_positive_int(repeats):
+        expected_total_reads = chunk_count * repeats
+        if _is_positive_int(chunk_bytes):
+            expected_total_bytes = expected_total_reads * chunk_bytes
+    expected_parallelism = parallelism if _is_positive_int(parallelism) else None
+    return expected_total_reads, expected_total_bytes, expected_parallelism
+
+
+def _validate_storage_result_field(
+    result: Mapping[str, Any],
+    reader_label: str,
+    field_name: str,
+    expected_value: int | None,
+    expected_label: str,
+    issues: list[str],
+) -> None:
+    value = result.get(field_name)
+    if expected_value is None or not _is_positive_int(value):
+        return
+    if value != expected_value:
+        issues.append(f"storage benchmark reader {reader_label} {field_name} must match {expected_label}")
 
 
 def _validate_release_engine_probe_record(record: Mapping[str, Any]) -> None:
