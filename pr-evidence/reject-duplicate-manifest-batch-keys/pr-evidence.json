@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the duplicate manifest batch-key guard with no actionable findings and verified planner/workflow tests.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/manifest.py",
+    "tests/test_planner_materializer.py",
+    "pr-evidence/reject-duplicate-manifest-batch-keys/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_planner_materializer.py::test_manifest_validates_refs_before_mutating_store tests/test_planner_materializer.py::test_manifest_rejects_duplicate_keys_in_single_batch_before_mutating_store tests/test_planner_materializer.py::test_manifest_allows_explicit_key_replacement_across_batches tests/test_planner_materializer.py::test_manifest_validates_and_normalizes_document_filters -q -> 4 passed",
+    "poetry run pytest tests/test_planner_materializer.py tests/test_workflow.py -q -> 106 passed",
+    "git diff --check && poetry run pytest -q && poetry check && poetry run python -m compileall -q src tests -> 1213 passed; poetry check All set"
+  ],
+  "what_changed": [
+    "Rejected duplicate manifest cache keys within one InMemoryManifestStore.put_many incoming batch before mutating the store."
+  ],
+  "why": "Generated document KV shards should not silently hide one chunk ref behind another when a single manifest batch accidentally contains the same model/lora/template/document/chunk key twice."
+}

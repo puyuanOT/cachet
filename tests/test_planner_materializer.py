@@ -477,6 +477,47 @@ def test_manifest_validates_refs_before_mutating_store(tmp_path):
     assert manifest.keys_for_document("doc-a") == []
 
 
+def test_manifest_rejects_duplicate_keys_in_single_batch_before_mutating_store(tmp_path):
+    first_ref = write_kvpack(
+        tmp_path / "first-manifest.kvpack",
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"first", 5, "fp8", "v1")],
+        align_bytes=1,
+    )[0]
+    duplicate_ref = write_kvpack(
+        tmp_path / "duplicate-manifest.kvpack",
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"second", 6, "fp8", "v1")],
+        align_bytes=1,
+    )[0]
+    manifest = InMemoryManifestStore()
+
+    with pytest.raises(ValueError, match="duplicate cache keys") as exc_info:
+        manifest.put_many([first_ref, duplicate_ref])
+
+    assert first_ref.key.storage_key() in str(exc_info.value)
+    assert manifest.keys_for_document("doc-a") == []
+    with pytest.raises(KeyError, match="Missing manifest entry"):
+        manifest.get(first_ref.key)
+
+
+def test_manifest_allows_explicit_key_replacement_across_batches(tmp_path):
+    first_ref = write_kvpack(
+        tmp_path / "first-update.kvpack",
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"first", 5, "fp8", "v1")],
+        align_bytes=1,
+    )[0]
+    replacement_ref = write_kvpack(
+        tmp_path / "replacement-update.kvpack",
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"second", 6, "fp8", "v1")],
+        align_bytes=1,
+    )[0]
+    manifest = InMemoryManifestStore([first_ref])
+
+    manifest.put_many([replacement_ref])
+
+    assert manifest.get(first_ref.key) == replacement_ref
+    assert manifest.keys_for_document("doc-a") == [replacement_ref.key]
+
+
 def test_manifest_validates_and_normalizes_document_filters(tmp_path):
     refs = write_kvpack(
         tmp_path / "filtered-manifest.kvpack",
