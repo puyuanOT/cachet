@@ -678,6 +678,32 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
 
 
+def test_build_release_bundle_strict_v1_accepts_matching_non_default_plan_source_suite_id(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir)
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=run_statuses,
+        suite_id="v1-release-suite-2026-06-21",
+    )
+
+    bundle = build_release_bundle(
+        **release_kwargs,
+        output_dir=bundle_dir,
+        require_complete_v1=True,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert record["ok"] is True
+    plan_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "plan_execution")
+    plan_record = json.loads((bundle_dir / plan_artifact["bundled_path"]).read_text(encoding="utf-8"))
+    v1_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "v1_benchmark")
+    v1_record = json.loads((bundle_dir / v1_artifact["bundled_path"]).read_text(encoding="utf-8"))
+    assert plan_record["plan_source"]["suite_id"] == "v1-release-suite-2026-06-21"
+    assert plan_record["plan_source"]["suite_id"] == v1_record["suite"]["suite_id"]
+
+
 def test_build_release_bundle_strict_v1_requires_requirements_matrix(tmp_path):
     source_dir = tmp_path / "sources"
     release_kwargs = _strict_v1_release_bundle_kwargs(
@@ -2802,10 +2828,10 @@ def _write_record(path: Path, record_type: str, *, backend: str | None = None) -
     return path
 
 
-def _write_release_ready_artifacts(source_dir: Path) -> dict[str, Path]:
+def _write_release_ready_artifacts(source_dir: Path, *, suite_id: str = "v1-suite") -> dict[str, Path]:
     source_dir.mkdir(parents=True, exist_ok=True)
     paths = {
-        "v1": _write_json(source_dir / "v1.json", _v1_record(ok=True)),
+        "v1": _write_json(source_dir / "v1.json", _v1_record(ok=True, suite_id=suite_id)),
         "storage": _write_json(source_dir / "storage.json", _storage_record(ok=True)),
         "vllm": _write_json(source_dir / "vllm-probe.json", _probe_record(ServingBackend.VLLM)),
         "sglang": _write_json(source_dir / "sglang-probe.json", _probe_record(ServingBackend.SGLANG)),
@@ -2831,13 +2857,13 @@ def _write_release_ready_artifacts(source_dir: Path) -> dict[str, Path]:
     return paths
 
 
-def _v1_record(*, ok: bool):
+def _v1_record(*, ok: bool, suite_id: str = "v1-suite"):
     datasets = ("biography", "hotpotqa", "musique", "niah")
     arms = ("baseline_prefill", "document_kv_cache")
     return {
         "record_type": BENCHMARK_RUN_RECORD_TYPE,
         "suite": {
-            "suite_id": "v1-suite",
+            "suite_id": suite_id,
             "hardware_target": "aws-g5",
             "model_id": "qwen3:4b-instruct",
             "datasets": list(datasets),
@@ -3059,10 +3085,15 @@ STRICT_V1_DATABRICKS_RUN_STATUS_CASES = (
 )
 
 
-def _strict_v1_release_bundle_kwargs(source_dir: Path, *, databricks_run_status_jsons: tuple[Path, ...]):
-    artifacts = _write_release_ready_artifacts(source_dir)
+def _strict_v1_release_bundle_kwargs(
+    source_dir: Path,
+    *,
+    databricks_run_status_jsons: tuple[Path, ...],
+    suite_id: str = "v1-suite",
+):
+    artifacts = _write_release_ready_artifacts(source_dir, suite_id=suite_id)
     package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
-    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
+    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True, suite_id=suite_id))
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
     requirements_matrix = _write_requirements_matrix(source_dir / "v1-requirements-matrix.md")
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
@@ -3343,7 +3374,7 @@ def _native_probe_factory_record(backend: str, factory_path: str, *, supported: 
     }
 
 
-def _plan_execution_record(*, ok: bool):
+def _plan_execution_record(*, ok: bool, suite_id: str = "v1-suite"):
     return {
         "record_type": BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
         "ok": ok,
@@ -3354,7 +3385,7 @@ def _plan_execution_record(*, ok: bool):
             "size_bytes": 512,
             "sha256": "a" * 64,
             "plan_version": "v1",
-            "suite_id": "v1-suite",
+            "suite_id": suite_id,
             "model_id": "qwen3:4b-instruct",
             "hardware_target": "aws-g5",
             "command_count": 1,
