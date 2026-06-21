@@ -2837,6 +2837,7 @@ def _native_probe_factory_record(backend: str, factory_path: str, *, supported: 
         "package_name": backend,
         "package_importable": supported,
         "package_version": f"{backend}-test-version" if supported else None,
+        "delegate_factory_path": f"tests.native_probe_factories:{backend}_probe_factory" if supported else None,
         "serving_environment_profile": serving_environment_profile_to_record(
             serving_environment_profile(backend)
         ),

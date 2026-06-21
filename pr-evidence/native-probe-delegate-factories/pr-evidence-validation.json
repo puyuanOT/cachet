@@ -1,0 +1,50 @@
+{
+  "files": {
+    "pr-evidence/native-probe-delegate-factories/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer Hypatia the 3rd identified recursion, public constructor compatibility, package importability, dotted/facade alias, and unhashable callable edge cases. Each finding was fixed with regression coverage, and the reviewer approved with no remaining findings.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "src/cachet/__init__.pyi",
+        "src/document_kv_cache/README.md",
+        "src/document_kv_cache/__init__.py",
+        "src/document_kv_cache/native_probe_factories.py",
+        "src/restaurant_kv_serving/__init__.py",
+        "src/restaurant_kv_serving/native_probe_factories.py",
+        "tests/test_native_probe_factories.py",
+        "tests/test_public_package.py",
+        "tests/test_release_bundle.py",
+        "pr-evidence/native-probe-delegate-factories/README.md",
+        "pr-evidence/native-probe-delegate-factories/pr-evidence.json",
+        "pr-evidence/native-probe-delegate-factories/pr-evidence-validation.json",
+        "pr-evidence/pr-evidence-sidecar-validation.json"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_native_probe_factories.py tests/test_release_bundle.py tests/test_public_package.py -q -> 81 passed",
+        "poetry run pytest -q -> 1185 passed",
+        "poetry check -> All set",
+        "git diff --check -> passed",
+        "poetry run python -m compileall -q src tests -> passed",
+        "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/native-probe-delegate-factories --output-json pr-evidence/native-probe-delegate-factories/pr-evidence-validation.json -> ok",
+        "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json pr-evidence/pr-evidence-sidecar-validation.json -> ok",
+        "GPT-5.5 reviewer approved branch native-probe-delegate-factories after findings were resolved"
+      ],
+      "what_changed": [
+        "Added public vLLM/SGLang native probe delegate environment constants and exported them through document_kv_cache, cachet, and restaurant_kv_serving.",
+        "Changed built-in native probe factories to fail closed until the backend package is importable with metadata and a loadable backend-native delegate factory is configured.",
+        "Recorded delegate_factory_path in native probe diagnostics and required a non-built-in delegate path for supported release records.",
+        "Rejected built-in self-delegation, cross-backend delegation, dotted-path spellings, public facade aliases, and loaded callable aliases that would recurse at runtime.",
+        "Added regression coverage for loadable delegates, unloadable delegates, importability mismatches, old positional dataclass construction, alias rejection, validation rejection, and unhashable callable delegates."
+      ],
+      "why": "Native engine integration needs stable public factory paths for release evidence while allowing real vLLM/SGLang block-manager adapters to live in the target serving environment."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
