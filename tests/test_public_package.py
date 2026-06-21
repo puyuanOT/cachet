@@ -905,6 +905,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
         "native_probe_factories",
         "openai_compatible",
         "planner",
+        "probe_fixtures",
         "pr_evidence",
         "release_bundle",
         "release_evidence",
@@ -937,6 +938,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     engine_probe = modules["engine_probe"]
     model_profiles = modules["model_profiles"]
     native_probe_factories = modules["native_probe_factories"]
+    probe_fixtures = modules["probe_fixtures"]
     storage = modules["storage"]
     storage_benchmark = modules["storage_benchmark"]
     template_resources = modules["template_resources"]
@@ -960,6 +962,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     legacy_dataset_prep = importlib.import_module("restaurant_kv_serving.dataset_prep")
     legacy_live_server = importlib.import_module("restaurant_kv_serving.live_server")
     legacy_storage_benchmark = importlib.import_module("restaurant_kv_serving.storage_benchmark")
+    legacy_probe_fixtures = importlib.import_module("restaurant_kv_serving.probe_fixtures")
     legacy_vllm_smoke = importlib.import_module("restaurant_kv_serving.vllm_smoke")
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
@@ -979,6 +982,9 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert restaurant_kv_serving.build_v1_benchmark_plan is legacy_benchmark_plan.build_v1_benchmark_plan
     assert restaurant_kv_serving.build_v1_benchmark_plan.__module__ == "restaurant_kv_serving.benchmark_plan"
     assert not hasattr(legacy_benchmark_plan, "__all__")
+    assert probe_fixtures.EngineProbeFixtureConfig.__module__ == "document_kv_cache.probe_fixtures"
+    assert legacy_probe_fixtures.EngineProbeFixtureConfig is probe_fixtures.EngineProbeFixtureConfig
+    assert legacy_probe_fixtures.write_qwen3_v1_engine_probe_fixture is probe_fixtures.write_qwen3_v1_engine_probe_fixture
     assert benchmark_plan_executor.BenchmarkCommandResult is restaurant_kv_serving.BenchmarkCommandResult
     assert benchmark_plan_executor.BenchmarkCommandResult.__module__ == "document_kv_cache.benchmark_plan_executor"
     assert benchmark_plan_executor.execute_benchmark_job_plan.__module__ == "document_kv_cache.benchmark_plan_executor"
@@ -1901,6 +1907,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-serving-env": "document_kv_cache.serving_env:main",
         "document-kv-native-probe-factories": "document_kv_cache.native_probe_factories:main",
         "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
+        "document-kv-engine-probe-fixture": "document_kv_cache.probe_fixtures:main",
         "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
         "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
         "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
@@ -1921,6 +1928,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "restaurant-kv-pr-evidence": "restaurant_kv_serving.pr_evidence:main",
         "restaurant-kv-serving-env": "restaurant_kv_serving.serving_env:main",
         "restaurant-kv-engine-probe": "restaurant_kv_serving.engine_probe:main",
+        "restaurant-kv-engine-probe-fixture": "restaurant_kv_serving.probe_fixtures:main",
         "restaurant-kv-engine-probe-databricks-job": "restaurant_kv_serving.databricks_engine_probe_job:main",
         "restaurant-kv-vllm-smoke": "restaurant_kv_serving.vllm_smoke:main",
         "restaurant-kv-vllm-smoke-databricks-job": "restaurant_kv_serving.databricks_vllm_smoke_job:main",

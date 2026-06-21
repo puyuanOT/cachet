@@ -74,6 +74,8 @@ new document modules depend on restaurant-owned implementations.
 - `openai_compatible.py` owns the stdlib-only streaming benchmark engine for
   vLLM/SGLang OpenAI-compatible APIs.
 - `planner.py` orders manifest chunks for runtime requests.
+- `probe_fixtures.py` writes deterministic Qwen3 V1 adapter handoff fixtures
+  for backend-native vLLM/SGLang connector development and probe debugging.
 - `pr_evidence.py` emits and validates closed-schema, machine-checkable PR
   traceability, Refactor-skill, and GPT-5.5 review evidence for the project
   workflow; recursive directory validation skips only clean validation-summary
@@ -128,6 +130,7 @@ The public package owns these document-branded CLI entry points:
 - `document-kv-serving-env`
 - `document-kv-native-probe-factories`
 - `document-kv-engine-probe`
+- `document-kv-engine-probe-fixture`
 - `document-kv-engine-probe-databricks-job`
 - `document-kv-vllm-smoke`
 - `document-kv-vllm-smoke-databricks-job`
@@ -149,6 +152,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-serving-env`
 - `cachet-native-probe-factories`
 - `cachet-engine-probe`
+- `cachet-engine-probe-fixture`
 - `cachet-engine-probe-databricks-job`
 - `cachet-vllm-smoke`
 - `cachet-vllm-smoke-databricks-job`
