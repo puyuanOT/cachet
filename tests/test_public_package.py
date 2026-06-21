@@ -112,6 +112,8 @@ def test_public_document_package_reexports_core_api():
         NativeProbeFactoryUnavailable,
         NATIVE_PROBE_ADAPTER_CONTRACT,
         NATIVE_PROBE_FACTORIES_RECORD_TYPE,
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+        VLLM_NATIVE_PROBE_DELEGATE_ENV,
         CacheAdapterArtifact,
         CacheBuildConfig,
         CacheGenerationResult,
@@ -441,6 +443,10 @@ def test_public_document_package_reexports_core_api():
     assert NATIVE_PROBE_ADAPTER_CONTRACT is restaurant_kv_serving.NATIVE_PROBE_ADAPTER_CONTRACT
     assert NATIVE_PROBE_FACTORIES_RECORD_TYPE is native_probe_factories.NATIVE_PROBE_FACTORIES_RECORD_TYPE
     assert NATIVE_PROBE_FACTORIES_RECORD_TYPE is restaurant_kv_serving.NATIVE_PROBE_FACTORIES_RECORD_TYPE
+    assert SGLANG_NATIVE_PROBE_DELEGATE_ENV == native_probe_factories.SGLANG_NATIVE_PROBE_DELEGATE_ENV
+    assert SGLANG_NATIVE_PROBE_DELEGATE_ENV == restaurant_kv_serving.SGLANG_NATIVE_PROBE_DELEGATE_ENV
+    assert VLLM_NATIVE_PROBE_DELEGATE_ENV == native_probe_factories.VLLM_NATIVE_PROBE_DELEGATE_ENV
+    assert VLLM_NATIVE_PROBE_DELEGATE_ENV == restaurant_kv_serving.VLLM_NATIVE_PROBE_DELEGATE_ENV
     assert DOCUMENT_CHUNK_TYPES is restaurant_kv_serving.DOCUMENT_CHUNK_TYPES
     assert LEGACY_RESTAURANT_CHUNK_TYPES is restaurant_kv_serving.LEGACY_RESTAURANT_CHUNK_TYPES
     assert SUPPORTED_STORAGE_BENCHMARK_READERS is restaurant_kv_serving.SUPPORTED_STORAGE_BENCHMARK_READERS
@@ -772,6 +778,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
         DocumentKVWorkflow,
         NATIVE_PROBE_ADAPTER_CONTRACT,
         NATIVE_PROBE_FACTORIES_RECORD_TYPE,
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+        VLLM_NATIVE_PROBE_DELEGATE_ENV,
         native_probe_adapter_contract_to_record,
         write_builtin_native_probe_factories_record_json,
         write_engine_adapter_handoff_bundle,
@@ -787,6 +795,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert DocumentKVWorkflow is document_kv_cache.DocumentKVWorkflow
     assert NATIVE_PROBE_ADAPTER_CONTRACT is document_kv_cache.NATIVE_PROBE_ADAPTER_CONTRACT
     assert NATIVE_PROBE_FACTORIES_RECORD_TYPE is document_kv_cache.NATIVE_PROBE_FACTORIES_RECORD_TYPE
+    assert SGLANG_NATIVE_PROBE_DELEGATE_ENV == document_kv_cache.SGLANG_NATIVE_PROBE_DELEGATE_ENV
+    assert VLLM_NATIVE_PROBE_DELEGATE_ENV == document_kv_cache.VLLM_NATIVE_PROBE_DELEGATE_ENV
     assert native_probe_adapter_contract_to_record is document_kv_cache.native_probe_adapter_contract_to_record
     assert write_engine_adapter_handoff_bundle is document_kv_cache.write_engine_adapter_handoff_bundle
     assert write_engine_adapter_payload is document_kv_cache.write_engine_adapter_payload
@@ -809,6 +819,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "CacheTier as CacheTier" in stub_text
     assert "NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT" in stub_text
     assert "NATIVE_PROBE_FACTORIES_RECORD_TYPE as NATIVE_PROBE_FACTORIES_RECORD_TYPE" in stub_text
+    assert "SGLANG_NATIVE_PROBE_DELEGATE_ENV as SGLANG_NATIVE_PROBE_DELEGATE_ENV" in stub_text
+    assert "VLLM_NATIVE_PROBE_DELEGATE_ENV as VLLM_NATIVE_PROBE_DELEGATE_ENV" in stub_text
     assert "native_probe_adapter_contract_to_record as native_probe_adapter_contract_to_record" in stub_text
     assert (
         "write_builtin_native_probe_factories_record_json as write_builtin_native_probe_factories_record_json"
@@ -1647,7 +1659,9 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
         "NativeProbeFactoryInspection",
         "NativeProbeFactoryUnavailable",
+        "SGLANG_NATIVE_PROBE_DELEGATE_ENV",
         "SGLANG_NATIVE_PROBE_FACTORY",
+        "VLLM_NATIVE_PROBE_DELEGATE_ENV",
         "VLLM_NATIVE_PROBE_FACTORY",
         "builtin_native_probe_factories_to_record",
         "builtin_native_probe_factory_path",

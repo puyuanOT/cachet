@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib import metadata, util
@@ -22,6 +23,7 @@ from document_kv_cache.engine_adapters import (
     ServingBackend,
 )
 from document_kv_cache.engine_probe import EngineKVProbeFactoryContext
+from document_kv_cache.engine_probe import load_engine_kv_probe_factory
 from document_kv_cache.serving_env import (
     serving_environment_profile,
     serving_environment_profile_to_record,
@@ -29,6 +31,8 @@ from document_kv_cache.serving_env import (
 
 VLLM_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:vllm_native_probe_factory"
 SGLANG_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:sglang_native_probe_factory"
+VLLM_NATIVE_PROBE_DELEGATE_ENV = "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY"
+SGLANG_NATIVE_PROBE_DELEGATE_ENV = "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY"
 NATIVE_PROBE_FACTORIES_RECORD_TYPE = "document_kv.native_probe_factories.v1"
 _REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS = ("vllm", "sglang")
 _NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
@@ -36,6 +40,7 @@ _NATIVE_PROBE_FACTORY_KEYS = frozenset(
     {
         "adapter_contract",
         "backend",
+        "delegate_factory_path",
         "factory_path",
         "package_name",
         "package_importable",
@@ -63,6 +68,20 @@ _BUILTIN_NATIVE_PROBE_FACTORY_PATHS = {
     "vllm": VLLM_NATIVE_PROBE_FACTORY,
     "sglang": SGLANG_NATIVE_PROBE_FACTORY,
 }
+_BUILTIN_NATIVE_PROBE_FACTORY_TARGETS = frozenset(
+    {
+        ("cachet", "sglang_native_probe_factory"),
+        ("cachet", "vllm_native_probe_factory"),
+        ("document_kv_cache", "sglang_native_probe_factory"),
+        ("document_kv_cache", "vllm_native_probe_factory"),
+        ("document_kv_cache.native_probe_factories", "vllm_native_probe_factory"),
+        ("document_kv_cache.native_probe_factories", "sglang_native_probe_factory"),
+        ("restaurant_kv_serving", "sglang_native_probe_factory"),
+        ("restaurant_kv_serving", "vllm_native_probe_factory"),
+        ("restaurant_kv_serving.native_probe_factories", "sglang_native_probe_factory"),
+        ("restaurant_kv_serving.native_probe_factories", "vllm_native_probe_factory"),
+    }
+)
 
 
 class NativeProbeFactoryUnavailable(RuntimeError):
@@ -80,6 +99,7 @@ class NativeProbeFactoryInspection:
     package_version: str | None
     supported: bool
     reason: str
+    delegate_factory_path: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", _serving_backend(self.backend))
@@ -91,6 +111,8 @@ class NativeProbeFactoryInspection:
             raise ValueError("package_importable must be a boolean")
         if self.package_version is not None and not self.package_version:
             raise ValueError("package_version must be non-empty when provided")
+        if self.delegate_factory_path is not None and not self.delegate_factory_path:
+            raise ValueError("delegate_factory_path must be non-empty when provided")
         if type(self.supported) is not bool:
             raise ValueError("supported must be a boolean")
         if not self.reason:
@@ -111,31 +133,62 @@ def builtin_native_probe_factory_path(backend: ServingBackend | str) -> str:
 def inspect_builtin_native_probe_factory(backend: ServingBackend | str) -> NativeProbeFactoryInspection:
     """Inspect the local environment for a built-in native probe target.
 
-    The package currently owns the evidence and handoff contract. The actual
-    vLLM/SGLang block-manager imports must be implemented by backend-specific
-    adapters before these factories can produce release evidence.
+    The package owns the evidence and handoff contract. The actual vLLM/SGLang
+    block-manager imports stay in a backend-specific adapter configured by the
+    matching delegate environment variable.
     """
 
     backend = _serving_backend(backend)
     package_name = _backend_package_name(backend)
     version = _package_version(package_name)
     package_importable = util.find_spec(package_name) is not None
+    delegate_factory_path = _delegate_factory_path_from_env(backend)
     if version is None and not package_importable:
         reason = f"{package_name!r} is not installed in this environment"
+        supported = False
+    elif not package_importable:
+        reason = f"{package_name} {version} package metadata is available but the package is not importable"
+        supported = False
     elif version is None:
         reason = f"{package_name!r} is importable but package metadata is unavailable"
-    else:
+        supported = False
+    elif delegate_factory_path is None:
         reason = (
-            f"{package_name} {version} is installed; a backend-native "
-            "Document KV block-manager adapter is still required"
+            f"{package_name} {version} is installed; set "
+            f"{_delegate_factory_env_name(backend)} to a backend-native "
+            "Document KV probe factory"
         )
+        supported = False
+    elif _is_builtin_native_probe_factory_path(delegate_factory_path):
+        reason = (
+            f"delegate native probe factory {delegate_factory_path!r} points at a built-in "
+            "Document KV factory; set the delegate to a backend-native block-manager adapter"
+        )
+        supported = False
+    else:
+        try:
+            delegate_factory = load_engine_kv_probe_factory(delegate_factory_path)
+        except Exception as exc:  # pragma: no cover - exact loader failures vary by adapter
+            reason = f"delegate native probe factory {delegate_factory_path!r} is unavailable: {exc}"
+            supported = False
+        else:
+            if _is_builtin_native_probe_factory(delegate_factory):
+                reason = (
+                    f"delegate native probe factory {delegate_factory_path!r} resolves to a built-in "
+                    "Document KV factory; set the delegate to a backend-native block-manager adapter"
+                )
+                supported = False
+            else:
+                reason = f"{package_name} {version} is installed; delegate native probe factory is loadable"
+                supported = True
     return NativeProbeFactoryInspection(
         backend=backend,
         factory_path=builtin_native_probe_factory_path(backend),
         package_name=package_name,
         package_importable=package_importable,
         package_version=version,
-        supported=False,
+        delegate_factory_path=delegate_factory_path,
+        supported=supported,
         reason=reason,
     )
 
@@ -153,6 +206,7 @@ def native_probe_factory_inspection_to_record(
         "package_name": inspection.package_name,
         "package_importable": inspection.package_importable,
         "package_version": inspection.package_version,
+        "delegate_factory_path": inspection.delegate_factory_path,
         "serving_environment_profile": serving_environment_profile_to_record(serving_profile),
         "supported": inspection.supported,
         "reason": inspection.reason,
@@ -234,23 +288,17 @@ def write_builtin_native_probe_factories_record_json(path: str | Path) -> None:
 
 
 def vllm_native_probe_factory(context: EngineKVProbeFactoryContext) -> Any:
-    """Reserved vLLM factory entry point.
-
-    This fails closed until a real vLLM block-manager adapter is implemented.
-    """
+    """Delegate to the configured vLLM-native block-manager probe factory."""
 
     _validate_context_backend(context, ServingBackend.VLLM)
-    raise NativeProbeFactoryUnavailable(inspect_builtin_native_probe_factory(ServingBackend.VLLM).reason)
+    return _load_delegate_factory(ServingBackend.VLLM)(context)
 
 
 def sglang_native_probe_factory(context: EngineKVProbeFactoryContext) -> Any:
-    """Reserved SGLang factory entry point.
-
-    This fails closed until a real SGLang block-manager adapter is implemented.
-    """
+    """Delegate to the configured SGLang-native block-manager probe factory."""
 
     _validate_context_backend(context, ServingBackend.SGLANG)
-    raise NativeProbeFactoryUnavailable(inspect_builtin_native_probe_factory(ServingBackend.SGLANG).reason)
+    return _load_delegate_factory(ServingBackend.SGLANG)(context)
 
 
 def _validate_context_backend(context: EngineKVProbeFactoryContext, expected: ServingBackend) -> None:
@@ -267,6 +315,45 @@ def _backend_package_name(backend: ServingBackend) -> str:
     if backend == ServingBackend.SGLANG:
         return "sglang"
     raise ValueError(f"Unsupported serving backend {backend!r}")
+
+
+def _delegate_factory_env_name(backend: ServingBackend) -> str:
+    if backend == ServingBackend.VLLM:
+        return VLLM_NATIVE_PROBE_DELEGATE_ENV
+    if backend == ServingBackend.SGLANG:
+        return SGLANG_NATIVE_PROBE_DELEGATE_ENV
+    raise ValueError(f"Unsupported serving backend {backend!r}")
+
+
+def _delegate_factory_path_from_env(backend: ServingBackend, environ: Mapping[str, str] | None = None) -> str | None:
+    env = os.environ if environ is None else environ
+    value = env.get(_delegate_factory_env_name(backend))
+    return value or None
+
+
+def _load_delegate_factory(backend: ServingBackend):
+    inspection = inspect_builtin_native_probe_factory(backend)
+    if not inspection.supported or inspection.delegate_factory_path is None:
+        raise NativeProbeFactoryUnavailable(inspection.reason)
+    return load_engine_kv_probe_factory(inspection.delegate_factory_path)
+
+
+def _is_builtin_native_probe_factory_path(factory_path: str) -> bool:
+    return _factory_path_target(factory_path) in _BUILTIN_NATIVE_PROBE_FACTORY_TARGETS
+
+
+def _is_builtin_native_probe_factory(factory: Any) -> bool:
+    return factory is vllm_native_probe_factory or factory is sglang_native_probe_factory
+
+
+def _factory_path_target(factory_path: str) -> tuple[str, str] | None:
+    if ":" in factory_path:
+        module_name, attribute_name = factory_path.split(":", maxsplit=1)
+    else:
+        module_name, _, attribute_name = factory_path.rpartition(".")
+    if not module_name or not attribute_name:
+        return None
+    return module_name, attribute_name
 
 
 def _package_version(package_name: str) -> str | None:
@@ -297,6 +384,7 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
     for field_name in ("backend", "factory_path", "package_name", "reason"):
         issues.extend(_required_str_field(factory, field_name, label))
     issues.extend(_optional_str_field(factory, "package_version", label))
+    issues.extend(_optional_str_field(factory, "delegate_factory_path", label))
     for field_name in ("package_importable", "supported"):
         issues.extend(_bool_field(factory, field_name, label))
     adapter_contract = factory.get("adapter_contract")
@@ -309,6 +397,13 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
             issues.append(f"{label}.package_importable must be true when supported is true")
         if not isinstance(factory.get("package_version"), str) or not factory["package_version"]:
             issues.append(f"{label}.package_version must be non-empty when supported is true")
+        if not isinstance(factory.get("delegate_factory_path"), str) or not factory["delegate_factory_path"]:
+            issues.append(f"{label}.delegate_factory_path must be non-empty when supported is true")
+        elif _is_builtin_native_probe_factory_path(factory["delegate_factory_path"]):
+            issues.append(
+                f"{label}.delegate_factory_path must not point at a built-in native probe factory "
+                "when supported is true"
+            )
     serving_profile = factory.get("serving_environment_profile")
     if not isinstance(serving_profile, Mapping):
         issues.append(f"{label}.serving_environment_profile must be an object")
@@ -405,7 +500,9 @@ __all__ = [
     "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
+    "SGLANG_NATIVE_PROBE_DELEGATE_ENV",
     "SGLANG_NATIVE_PROBE_FACTORY",
+    "VLLM_NATIVE_PROBE_DELEGATE_ENV",
     "VLLM_NATIVE_PROBE_FACTORY",
     "builtin_native_probe_factories_to_record",
     "builtin_native_probe_factory_path",

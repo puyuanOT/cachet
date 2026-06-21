@@ -372,6 +372,10 @@ _EXPORTS = {
         "restaurant_kv_serving.native_probe_factories",
         "SGLANG_NATIVE_PROBE_FACTORY",
     ),
+    "SGLANG_NATIVE_PROBE_DELEGATE_ENV": (
+        "restaurant_kv_serving.native_probe_factories",
+        "SGLANG_NATIVE_PROBE_DELEGATE_ENV",
+    ),
     "SegmentedMaterializedKV": ("restaurant_kv_serving.materializer", "SegmentedMaterializedKV"),
     "ServingEngineConnector": ("restaurant_kv_serving.engine", "ServingEngineConnector"),
     "ServingBackend": ("restaurant_kv_serving.engine_adapters", "ServingBackend"),
@@ -395,6 +399,10 @@ _EXPORTS = {
     "VLLM_NATIVE_PROBE_FACTORY": (
         "restaurant_kv_serving.native_probe_factories",
         "VLLM_NATIVE_PROBE_FACTORY",
+    ),
+    "VLLM_NATIVE_PROBE_DELEGATE_ENV": (
+        "restaurant_kv_serving.native_probe_factories",
+        "VLLM_NATIVE_PROBE_DELEGATE_ENV",
     ),
     "V1BenchmarkEvidence": ("restaurant_kv_serving.benchmarks", "V1BenchmarkEvidence"),
     "answer_found": ("restaurant_kv_serving.benchmarks", "answer_found"),
@@ -982,6 +990,7 @@ __all__ = [
     "ReleaseBundleArtifact",
     "RoutedRangeReader",
     "SGLANG_NATIVE_PROBE_FACTORY",
+    "SGLANG_NATIVE_PROBE_DELEGATE_ENV",
     "SegmentedMaterializedKV",
     "ServingEngineConnector",
     "ServingBackend",
@@ -1000,6 +1009,7 @@ __all__ = [
     "TrainingAdapter",
     "TrainingArtifacts",
     "VLLM_NATIVE_PROBE_FACTORY",
+    "VLLM_NATIVE_PROBE_DELEGATE_ENV",
     "V1BenchmarkEvidence",
     "answer_found",
     "baseline_prefill_arm",

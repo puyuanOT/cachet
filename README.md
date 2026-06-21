@@ -510,16 +510,22 @@ exact adapter boundary that produced it.
 `--allow-non-native-probe` exists only for local adapter debugging; release
 evidence rejects those records. Use `--release-safe` on the Databricks
 `runs/submit` helper to fail fast if debug-only probe flags are present.
-The built-in reserved vLLM/SGLang probe factories fail closed until real
-block-manager adapters exist, but
+The built-in reserved vLLM/SGLang probe factories fail closed unless the target
+serving environment has the backend package installed and points the matching
+delegate environment variable at a backend-native factory:
+`DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY=module:callable` or
+`DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. The public built-in
+factory paths stay stable for release bundles, while the delegate callable owns
+the actual vLLM/SGLang block-manager integration.
 `builtin_native_probe_factories_to_record()` reports that status together with
-the pinned isolated serving-environment profile for each backend. The same
-diagnostic record also includes an `adapter_contract` block naming the required
-engine handoff record, connector-action record, probe record, `qwen3-v1` layout,
-merged payload mode, and `native_probe=true` release requirement. Use that
-diagnostic record when preparing native adapter work so the target engine
-versions and dependency constraints stay tied to the probe entry points, and so
-the descriptor contract remains explicit:
+the pinned isolated serving-environment profile for each backend and the
+configured delegate path, if present. The same diagnostic record also includes
+an `adapter_contract` block naming the required engine handoff record,
+connector-action record, probe record, `qwen3-v1` layout, merged payload mode,
+and `native_probe=true` release requirement. Use that diagnostic record when
+preparing native adapter work so the target engine versions and dependency
+constraints stay tied to the probe entry points, the native delegate entry
+points stay visible, and the descriptor contract remains explicit:
 
 ```bash
 document-kv-serving-env \
