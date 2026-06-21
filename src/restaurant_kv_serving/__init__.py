@@ -148,6 +148,18 @@ _EXPORTS = {
         "restaurant_kv_serving.release_evidence",
         "REQUIRED_ENGINE_PROBE_BACKENDS",
     ),
+    "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE": (
+        "restaurant_kv_serving.engine_launch_config",
+        "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
+    ),
+    "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION": (
+        "restaurant_kv_serving.engine_launch_config",
+        "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
+    ),
+    "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS": (
+        "restaurant_kv_serving.engine_launch_config",
+        "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
+    ),
     "DEFAULT_V1_MODEL_ID": ("restaurant_kv_serving.benchmarks", "DEFAULT_V1_MODEL_ID"),
     "MODEL_PROFILE_RECORD_TYPE": (
         "restaurant_kv_serving.model_profiles",
@@ -250,6 +262,10 @@ _EXPORTS = {
     "DatabricksWorkspaceConfig": ("restaurant_kv_serving.databricks_runs", "DatabricksWorkspaceConfig"),
     "EngineAdapterRequest": ("restaurant_kv_serving.engine_adapters", "EngineAdapterRequest"),
     "EngineAdapterSpec": ("restaurant_kv_serving.engine_adapters", "EngineAdapterSpec"),
+    "EngineLaunchConfigEvidence": (
+        "restaurant_kv_serving.engine_launch_config",
+        "EngineLaunchConfigEvidence",
+    ),
     "EngineKVBlockManagerProbe": ("restaurant_kv_serving.engine_adapters", "EngineKVBlockManagerProbe"),
     "EngineKVBindAction": ("restaurant_kv_serving.engine_adapters", "EngineKVBindAction"),
     "EngineKVConnectorActions": ("restaurant_kv_serving.engine_adapters", "EngineKVConnectorActions"),
@@ -481,6 +497,14 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_adapters",
         "engine_kv_connector_probe_result_to_record",
     ),
+    "engine_launch_config_evidence_to_record": (
+        "restaurant_kv_serving.engine_launch_config",
+        "engine_launch_config_evidence_to_record",
+    ),
+    "engine_launch_config_record_issues": (
+        "restaurant_kv_serving.engine_launch_config",
+        "engine_launch_config_record_issues",
+    ),
     "engine_kv_connector_actions_from_record": (
         "restaurant_kv_serving.engine_adapters",
         "engine_kv_connector_actions_from_record",
@@ -571,6 +595,10 @@ _EXPORTS = {
         "restaurant_kv_serving.storage_benchmark",
         "evaluate_release_storage_benchmark_evidence",
     ),
+    "evaluate_engine_launch_config_evidence": (
+        "restaurant_kv_serving.engine_launch_config",
+        "evaluate_engine_launch_config_evidence",
+    ),
     "execute_benchmark_job_plan": (
         "restaurant_kv_serving.benchmark_plan_executor",
         "execute_benchmark_job_plan",
@@ -640,6 +668,10 @@ _EXPORTS = {
     "read_engine_adapter_request_json": (
         "restaurant_kv_serving.engine_adapters",
         "read_engine_adapter_request_json",
+    ),
+    "read_engine_launch_config_json": (
+        "restaurant_kv_serving.engine_launch_config",
+        "read_engine_launch_config_json",
     ),
     "read_engine_adapter_payload": (
         "restaurant_kv_serving.engine_probe",
@@ -747,6 +779,10 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_adapters",
         "validate_engine_adapter_request_record",
     ),
+    "validate_engine_launch_config_record": (
+        "restaurant_kv_serving.engine_launch_config",
+        "validate_engine_launch_config_record",
+    ),
     "validate_native_probe_factories_record": (
         "restaurant_kv_serving.native_probe_factories",
         "validate_native_probe_factories_record",
@@ -770,6 +806,10 @@ _EXPORTS = {
     "write_engine_adapter_request_json": (
         "restaurant_kv_serving.engine_adapters",
         "write_engine_adapter_request_json",
+    ),
+    "write_engine_launch_config_evidence_json": (
+        "restaurant_kv_serving.engine_launch_config",
+        "write_engine_launch_config_evidence_json",
     ),
     "write_engine_kv_connector_probe_result_json": (
         "restaurant_kv_serving.engine_probe",
@@ -905,6 +945,9 @@ __all__ = [
     "RELEASE_BUNDLE_MANIFEST_FILENAME",
     "RELEASE_BUNDLE_ARTIFACT_ROLES",
     "REQUIRED_ENGINE_PROBE_BACKENDS",
+    "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
+    "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
+    "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
     "DEFAULT_V1_MODEL_ID",
     "MODEL_PROFILE_RECORD_TYPE",
     "STORAGE_BENCHMARK_RECORD_TYPE",
@@ -968,6 +1011,7 @@ __all__ = [
     "DatabricksWorkspaceConfig",
     "EngineAdapterRequest",
     "EngineAdapterSpec",
+    "EngineLaunchConfigEvidence",
     "EngineKVBlockManagerProbe",
     "EngineKVBindAction",
     "EngineKVConnectorActions",
@@ -1085,6 +1129,8 @@ __all__ = [
     "engine_kv_connector_actions_from_record",
     "engine_kv_connector_actions_to_record",
     "engine_kv_connector_probe_result_to_record",
+    "engine_launch_config_evidence_to_record",
+    "engine_launch_config_record_issues",
     "engine_probe_targets_to_record",
     "build_niah_record",
     "build_prefill_prompt",
@@ -1124,6 +1170,7 @@ __all__ = [
     "evaluate_v1_benchmark_evidence",
     "evaluate_storage_benchmark_evidence",
     "evaluate_release_storage_benchmark_evidence",
+    "evaluate_engine_launch_config_evidence",
     "execute_benchmark_job_plan",
     "execute_benchmark_job_plan_json",
     "format_document_context",
@@ -1150,6 +1197,7 @@ __all__ = [
     "read_databricks_run_submit_payload",
     "read_model_profile_definition_json",
     "read_engine_adapter_request_json",
+    "read_engine_launch_config_json",
     "read_engine_adapter_payload",
     "release_evidence_to_record",
     "release_evidence_input_status_to_record",
@@ -1181,6 +1229,7 @@ __all__ = [
     "vllm_adapter_spec",
     "vllm_native_probe_factory",
     "validate_engine_adapter_request_record",
+    "validate_engine_launch_config_record",
     "validate_native_probe_factories_record",
     "validate_engine_kv_connector_actions_record",
     "validate_engine_kv_connector_probe_record",
@@ -1189,6 +1238,7 @@ __all__ = [
     "write_engine_adapter_handoff_bundle",
     "write_engine_adapter_payload",
     "write_engine_adapter_request_json",
+    "write_engine_launch_config_evidence_json",
     "write_engine_kv_connector_probe_result_json",
     "write_engine_kv_connector_actions_record_json",
     "write_builtin_native_probe_factories_record_json",

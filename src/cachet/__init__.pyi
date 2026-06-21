@@ -230,6 +230,19 @@ from document_kv_cache.engine_adapters import (
     write_engine_adapter_request_json as write_engine_adapter_request_json,
 )
 
+from document_kv_cache.engine_launch_config import (
+    ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE as ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE,
+    ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION as ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION,
+    REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS as REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
+    EngineLaunchConfigEvidence as EngineLaunchConfigEvidence,
+    engine_launch_config_evidence_to_record as engine_launch_config_evidence_to_record,
+    engine_launch_config_record_issues as engine_launch_config_record_issues,
+    evaluate_engine_launch_config_evidence as evaluate_engine_launch_config_evidence,
+    read_engine_launch_config_json as read_engine_launch_config_json,
+    validate_engine_launch_config_record as validate_engine_launch_config_record,
+    write_engine_launch_config_evidence_json as write_engine_launch_config_evidence_json,
+)
+
 from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND as ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND,
     ENGINE_KV_PROBE_METADATA_HANDOFF_JSON as ENGINE_KV_PROBE_METADATA_HANDOFF_JSON,

@@ -162,6 +162,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.dataset_prep",
         "restaurant_kv_serving.engine",
         "restaurant_kv_serving.engine_adapters",
+        "restaurant_kv_serving.engine_launch_config",
         "restaurant_kv_serving.engine_protocol",
         "restaurant_kv_serving.kvpack",
         "restaurant_kv_serving.live_server",
