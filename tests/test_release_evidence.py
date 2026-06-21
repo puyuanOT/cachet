@@ -255,6 +255,48 @@ def test_evaluate_release_evidence_rejects_inconsistent_measurement_expected_ans
     )
 
 
+def test_evaluate_release_evidence_rejects_inconsistent_measurement_logical_prompt_tokens():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "metadata": {
+            **v1_record["measurements"][1]["metadata"],
+            "logical_prompt_tokens": "512",
+        },
+    }
+    repeated_baseline = {
+        **v1_record["measurements"][0],
+        "metadata": {
+            **v1_record["measurements"][0]["metadata"],
+            "logical_prompt_tokens": "2048",
+            "runtime_prompt_tokens": "2048",
+        },
+        "prompt_tokens": 2048,
+    }
+    v1_record["measurements"].append(repeated_baseline)
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:biography-1 logical_prompt_tokens must match across baseline and cache arms"
+        in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:biography-1 baseline_prefill logical_prompt_tokens must be consistent"
+        in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_unknown_engine_version():
     probe_record = {**_probe_record(ServingBackend.VLLM), "engine_version": "unknown"}
 

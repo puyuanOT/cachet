@@ -598,6 +598,7 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if measurements is not None:
         _validate_v1_measurement_examples_have_required_arms(measurements, issues)
         _validate_v1_measurement_examples_have_consistent_expected_answers(measurements, issues)
+        _validate_v1_measurement_examples_have_consistent_logical_prompt_tokens(measurements, issues)
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if report_rows is not None and comparisons is not None:
@@ -741,6 +742,50 @@ def _validate_v1_measurement_examples_have_consistent_expected_answers(
             issues.append(
                 f"v1 benchmark measurement example {dataset}:{example_id} "
                 "expected_answer must be consistent across arms"
+            )
+
+
+def _validate_v1_measurement_examples_have_consistent_logical_prompt_tokens(
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> None:
+    tokens_by_example: dict[tuple[str, str], dict[str, set[int]]] = {}
+    for measurement in measurements:
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        arm_id = measurement.get("arm_id")
+        metadata = measurement.get("metadata")
+        if (
+            not isinstance(dataset, str)
+            or dataset not in SUPPORTED_V1_DATASETS
+            or not isinstance(example_id, str)
+            or not example_id
+            or not isinstance(arm_id, str)
+            or arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+            or not isinstance(metadata, Mapping)
+        ):
+            continue
+        logical_prompt_tokens = _positive_int_metadata(metadata.get("logical_prompt_tokens"))
+        if logical_prompt_tokens is None:
+            continue
+        tokens_by_example.setdefault((dataset, example_id), {}).setdefault(arm_id, set()).add(logical_prompt_tokens)
+
+    for dataset, example_id in sorted(tokens_by_example):
+        by_arm = tokens_by_example[(dataset, example_id)]
+        for arm_id, values in sorted(by_arm.items()):
+            if len(values) > 1:
+                issues.append(
+                    f"v1 benchmark measurement example {dataset}:{example_id} "
+                    f"{arm_id} logical_prompt_tokens must be consistent"
+                )
+        baseline_tokens = by_arm.get(BASELINE_PREFILL_ARM)
+        cache_tokens = by_arm.get(CACHE_REUSE_ARM)
+        if baseline_tokens and cache_tokens and baseline_tokens != cache_tokens:
+            issues.append(
+                f"v1 benchmark measurement example {dataset}:{example_id} "
+                "logical_prompt_tokens must match across baseline and cache arms"
             )
 
 
