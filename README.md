@@ -1273,7 +1273,7 @@ The command prints a JSON record with TTFT, time-to-completion, token counts, `p
 This package uses Poetry metadata with exact direct dependency pins: Python
 `>=3.11,<4.0`, `poetry-core==2.4.1`, optional Databricks extras
 `pyspark==4.1.2` and `databricks-sdk==0.118.0`, and test extra
-`pytest==9.1.0`. vLLM and SGLang are intentionally not Poetry extras because
+`pytest==9.1.1`. vLLM and SGLang are intentionally not Poetry extras because
 current engine releases pin incompatible Torch/Transformers stacks; install the
 target engine in its own serving environment. The Databricks vLLM smoke helper
 creates one such isolated local-NVMe environment and pins `vllm==0.23.0`.
