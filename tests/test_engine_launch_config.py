@@ -45,6 +45,12 @@ def _vllm_launch_config(**extra_overrides: object) -> dict[str, object]:
     }
 
 
+def _vllm_package_launch_config(**extra_overrides: object) -> dict[str, object]:
+    record = _vllm_launch_config(**extra_overrides)
+    record["kv_connector_module_path"] = "vllm_kv_injection.vllm_dynamic_connector"
+    return record
+
+
 def _sglang_launch_config(**extra_overrides: object) -> dict[str, object]:
     extra = {
         "backend_name": "document_kv",
@@ -60,9 +66,15 @@ def _sglang_launch_config(**extra_overrides: object) -> dict[str, object]:
     }
 
 
+def _sglang_package_launch_config(**extra_overrides: object) -> dict[str, object]:
+    return _sglang_launch_config(module_path="sglang_kv_injection.sglang_dynamic_backend", **extra_overrides)
+
+
 def test_validate_engine_launch_config_record_accepts_adapter_launch_shapes():
     validate_engine_launch_config_record(_vllm_launch_config(), expected_backend=ServingBackend.VLLM)
     validate_engine_launch_config_record(_sglang_launch_config(), expected_backend=" SGLANG ")
+    validate_engine_launch_config_record(_vllm_package_launch_config(), expected_backend=ServingBackend.VLLM)
+    validate_engine_launch_config_record(_sglang_package_launch_config(), expected_backend=" SGLANG ")
 
 
 def test_validate_engine_launch_config_record_rejects_wrong_backend():
@@ -78,7 +90,7 @@ def test_validate_engine_launch_config_record_rejects_wrong_backend():
         (
             "kv_connector_module_path",
             "other.module",
-            "vLLM launch config kv_connector_module_path must end with 'document_kv_connector'",
+            "vLLM launch config kv_connector_module_path must end with one of",
         ),
         ("kv_role", "other_role", "vLLM launch config kv_role must be one of"),
     ],
@@ -101,7 +113,7 @@ def test_validate_engine_launch_config_record_rejects_wrong_vllm_adapter_identit
         (
             "module_path",
             "other.module",
-            "SGLang HiCache extra config module_path must end with 'document_kv_backend'",
+            "SGLang HiCache extra config module_path must end with one of",
         ),
         ("class_name", "OtherClass", "SGLang HiCache extra config class_name must be 'DocumentKVHiCacheBackend'"),
     ],
@@ -144,7 +156,7 @@ def test_validate_engine_launch_config_record_rejects_invalid_sglang_extra_confi
 
 
 def test_evaluate_engine_launch_config_evidence_requires_vllm_and_sglang():
-    evidence = evaluate_engine_launch_config_evidence([_vllm_launch_config(), _sglang_launch_config()])
+    evidence = evaluate_engine_launch_config_evidence([_vllm_package_launch_config(), _sglang_package_launch_config()])
 
     assert evidence.ok
     assert evidence.backends == REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS

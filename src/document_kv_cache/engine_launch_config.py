@@ -38,11 +38,17 @@ _SGLANG_LAUNCH_CONFIG_KEYS = frozenset(
 )
 _SGLANG_DYNAMIC_HICACHE_BACKEND = "dynamic"
 _VLLM_DOCUMENT_KV_CONNECTOR = "DocumentKVConnector"
-_VLLM_DOCUMENT_KV_MODULE_LEAF = "document_kv_connector"
 _VLLM_ALLOWED_KV_ROLES = frozenset({"kv_both", "kv_producer", "kv_consumer"})
 _SGLANG_DOCUMENT_KV_BACKEND_NAME = "document_kv"
-_SGLANG_DOCUMENT_KV_MODULE_LEAF = "document_kv_backend"
 _SGLANG_DOCUMENT_KV_CLASS_NAME = "DocumentKVHiCacheBackend"
+_VLLM_DOCUMENT_KV_MODULE_LEAVES = (
+    "vllm_dynamic_connector",
+    "document_kv_connector",
+)
+_SGLANG_DOCUMENT_KV_MODULE_LEAVES = (
+    "sglang_dynamic_backend",
+    "document_kv_backend",
+)
 
 __all__ = [
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
@@ -223,7 +229,7 @@ def _validate_vllm_launch_config(record: Mapping[str, Any]) -> tuple[str, ...]:
         _module_path_issues(
             record.get("kv_connector_module_path"),
             field_name="vLLM launch config kv_connector_module_path",
-            expected_leaf=_VLLM_DOCUMENT_KV_MODULE_LEAF,
+            expected_leaves=_VLLM_DOCUMENT_KV_MODULE_LEAVES,
         )
     )
     if record.get("kv_role") not in _VLLM_ALLOWED_KV_ROLES:
@@ -261,7 +267,7 @@ def _validate_sglang_launch_config(record: Mapping[str, Any]) -> tuple[str, ...]
         _module_path_issues(
             extra_config.get("module_path"),
             field_name="SGLang HiCache extra config module_path",
-            expected_leaf=_SGLANG_DOCUMENT_KV_MODULE_LEAF,
+            expected_leaves=_SGLANG_DOCUMENT_KV_MODULE_LEAVES,
         )
     )
     if extra_config.get("class_name") != _SGLANG_DOCUMENT_KV_CLASS_NAME:
@@ -377,13 +383,14 @@ def _is_positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-def _module_path_issues(value: Any, *, field_name: str, expected_leaf: str) -> tuple[str, ...]:
+def _module_path_issues(value: Any, *, field_name: str, expected_leaves: Sequence[str]) -> tuple[str, ...]:
     if not _is_non_empty_string(value):
         return (f"{field_name} must be a non-empty string",)
     module_path = str(value).strip()
     segments = module_path.split(".")
     if any(not segment.isidentifier() for segment in segments):
         return (f"{field_name} must be a dotted Python module path",)
-    if segments[-1] != expected_leaf:
-        return (f"{field_name} must end with {expected_leaf!r}",)
+    if segments[-1] not in expected_leaves:
+        expected = ", ".join(repr(leaf) for leaf in expected_leaves)
+        return (f"{field_name} must end with one of {expected}",)
     return ()
