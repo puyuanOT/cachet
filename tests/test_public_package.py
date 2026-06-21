@@ -1073,6 +1073,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert benchmarks.BenchmarkExample.__module__ == "document_kv_cache.benchmarks"
     assert set(benchmarks.__all__) < set(legacy_benchmarks.__all__)
     assert set(legacy_benchmarks.__all__) - set(benchmarks.__all__) == {"SourceDocument"}
+    assert legacy_benchmarks.FINAL_ANSWER_CUE is benchmarks.FINAL_ANSWER_CUE
     assert "SourceDocument" not in benchmarks.__all__
     assert "_format_document" not in benchmarks.__all__
     assert legacy_benchmarks.BenchmarkExample is benchmarks.BenchmarkExample

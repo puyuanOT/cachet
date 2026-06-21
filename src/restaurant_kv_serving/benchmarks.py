@@ -13,6 +13,7 @@ __all__ = reexport_public(
         "DEFAULT_HARDWARE_TARGET",
         "BASELINE_PREFILL_ARM",
         "CACHE_REUSE_ARM",
+        "FINAL_ANSWER_CUE",
         "BenchmarkDatasetSpec",
         "BenchmarkPromptParts",
         "BenchmarkExample",

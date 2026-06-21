@@ -290,6 +290,7 @@ def test_prompt_parts_split_prefill_context_from_cache_suffix():
     assert parts.system_prompt.startswith("Benchmark: Biography")
     assert "Ada Lovelace biography" in parts.document_context
     assert "Question: Who wrote notes on the Analytical Engine?" in parts.user_prompt
+    assert parts.user_prompt.endswith("Answer:")
 
     assert build_prefill_prompt(example) == parts.prefill_prompt
     assert build_cache_prefix_text(example) == parts.cache_prefix_text
@@ -298,6 +299,8 @@ def test_prompt_parts_split_prefill_context_from_cache_suffix():
     assert "Ada Lovelace biography" in parts.prefill_prompt
     assert "Ada Lovelace biography" in parts.cache_prefix_text
     assert "Ada Lovelace biography" not in parts.cache_suffix_text
+    assert parts.prefill_prompt.endswith("Answer:")
+    assert parts.cache_suffix_text.endswith("Answer:")
 
 
 def test_format_document_context_preserves_order_and_quotes_body_lines():
