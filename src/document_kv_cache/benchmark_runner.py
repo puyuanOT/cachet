@@ -677,6 +677,21 @@ def _example_from_record(
     )
 
 
+def _validate_benchmark_jsonl_record(
+    record: Mapping[str, Any],
+    *,
+    dataset: str | None = None,
+    record_index: int = 1,
+    require_dataset: bool = False,
+) -> None:
+    _example_from_record(
+        record,
+        default_dataset=dataset,
+        record_index=record_index,
+        require_dataset=require_dataset,
+    )
+
+
 def _documents_from_record(record: Mapping[str, Any]) -> tuple[SourceDocument, ...]:
     raw_documents = record.get("documents")
     if raw_documents is None:

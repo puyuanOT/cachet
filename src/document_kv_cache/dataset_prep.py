@@ -70,17 +70,19 @@ def convert_v1_jsonl(
 def write_v1_jsonl(records: Iterable[Mapping[str, Any]], output_path: str | Path) -> int:
     """Write canonical V1 benchmark records as UTF-8 JSONL."""
 
-    count = 0
+    normalized_records = tuple(
+        _canonical_record_for_write(record, line_number=line_number)
+        for line_number, record in enumerate(records, start=1)
+    )
+    if not normalized_records:
+        raise ValueError("records must contain at least one item")
+
     path = local_path(str(output_path))
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            normalized = dict(record)
-            handle.write(json.dumps(normalized, sort_keys=True, ensure_ascii=False) + "\n")
-            count += 1
-    if count == 0:
-        raise ValueError("records must contain at least one item")
-    return count
+        for record in normalized_records:
+            handle.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
+    return len(normalized_records)
 
 
 def build_niah_record(
@@ -231,6 +233,41 @@ def _canonical_record(
     if metadata:
         record["metadata"] = dict(metadata)
     return record
+
+
+def _canonical_record_for_write(record: Mapping[str, Any], *, line_number: int) -> dict[str, Any]:
+    if not isinstance(record, Mapping):
+        raise ValueError(f"Record line {line_number} must be an object")
+    try:
+        dataset = _dataset_for_record(record, dataset=None, line_number=line_number)
+        normalized = _canonical_record(
+            dataset=dataset,
+            example_id=_required_text(record, "example_id"),
+            query=_required_text(record, "query"),
+            expected_answer=_optional_text(record, "expected_answer"),
+            documents=_documents_from_record(
+                record,
+                default_document_id=f"{dataset}-{line_number}",
+                text_fields=(),
+                preferred_fields=("documents",),
+            ),
+            metadata=_metadata_from_record(record),
+        )
+        _validate_written_record_for_runner(normalized, dataset=dataset, line_number=line_number)
+        return normalized
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Record line {line_number}: {exc}") from exc
+
+
+def _validate_written_record_for_runner(record: Mapping[str, Any], *, dataset: str, line_number: int) -> None:
+    from document_kv_cache.benchmark_runner import _validate_benchmark_jsonl_record
+
+    _validate_benchmark_jsonl_record(
+        record,
+        dataset=dataset,
+        record_index=line_number,
+        require_dataset=True,
+    )
 
 
 def _documents_from_record(
