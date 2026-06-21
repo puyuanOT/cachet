@@ -72,11 +72,11 @@ class StorageBenchmarkConfig:
             raise ValueError("align_bytes must be an integer")
         if self.align_bytes <= 0:
             raise ValueError("align_bytes must be positive")
-        if not self.readers:
-            raise ValueError("readers must be non-empty")
-        unsupported = sorted(set(self.readers).difference(SUPPORTED_STORAGE_BENCHMARK_READERS))
-        if unsupported:
-            raise ValueError(f"Unsupported storage benchmark readers: {unsupported}")
+        object.__setattr__(
+            self,
+            "readers",
+            _validate_storage_benchmark_reader_ids(self.readers, field_name="readers"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,14 +190,10 @@ def evaluate_storage_benchmark_evidence(
     required_readers: Sequence[str] | None = None,
     require_real_uc_volume: bool = False,
 ) -> StorageBenchmarkEvidence:
-    required = tuple(required_readers) if required_readers is not None else tuple(result.config.readers)
-    if not required:
-        raise ValueError("required_readers must be non-empty")
-    if any(not isinstance(reader, str) or not reader for reader in required):
-        raise ValueError("required_readers entries must be non-empty strings")
-    unsupported = sorted(set(required).difference(SUPPORTED_STORAGE_BENCHMARK_READERS))
-    if unsupported:
-        raise ValueError(f"Unsupported storage benchmark readers: {unsupported}")
+    required = _validate_storage_benchmark_reader_ids(
+        required_readers if required_readers is not None else result.config.readers,
+        field_name="required_readers",
+    )
     by_reader = {reader_result.reader_id: reader_result for reader_result in result.results}
     missing_readers = tuple(reader for reader in required if reader not in by_reader)
     readers_with_errors = tuple(
@@ -238,6 +234,40 @@ def evaluate_release_storage_benchmark_evidence(result: StorageBenchmarkResult) 
         required_readers=RELEASE_STORAGE_BENCHMARK_READERS,
         require_real_uc_volume=True,
     )
+
+
+def _validate_storage_benchmark_reader_ids(
+    readers: Sequence[str],
+    *,
+    field_name: str,
+) -> tuple[str, ...]:
+    if isinstance(readers, (str, bytes)) or not isinstance(readers, Sequence):
+        raise ValueError(f"{field_name} must be a sequence of storage reader ids")
+    if not readers:
+        raise ValueError(f"{field_name} must be non-empty")
+
+    normalized = []
+    seen = set()
+    duplicates = []
+    unsupported = []
+    for reader in readers:
+        if not isinstance(reader, str) or not reader:
+            raise ValueError(f"{field_name} entries must be non-empty strings")
+        if reader not in SUPPORTED_STORAGE_BENCHMARK_READERS:
+            unsupported.append(reader)
+            continue
+        if reader in seen:
+            if reader not in duplicates:
+                duplicates.append(reader)
+            continue
+        seen.add(reader)
+        normalized.append(reader)
+
+    if unsupported:
+        raise ValueError(f"Unsupported storage benchmark readers: {sorted(set(unsupported))}")
+    if duplicates:
+        raise ValueError(f"Duplicate storage benchmark readers in {field_name}: {duplicates}")
+    return tuple(normalized)
 
 
 def storage_benchmark_evidence_to_record(evidence: StorageBenchmarkEvidence) -> dict[str, Any]:

@@ -252,13 +252,37 @@ def test_evaluate_storage_benchmark_evidence_validates_required_readers(tmp_path
     with pytest.raises(ValueError, match="required_readers"):
         evaluate_storage_benchmark_evidence(result, required_readers=("",))
 
+    with pytest.raises(ValueError, match="sequence"):
+        evaluate_storage_benchmark_evidence(result, required_readers="memory")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="non-empty strings"):
+        evaluate_storage_benchmark_evidence(result, required_readers=(1,))  # type: ignore[arg-type]
+
     with pytest.raises(ValueError, match="Unsupported"):
         evaluate_storage_benchmark_evidence(result, required_readers=("object-store",))
 
+    with pytest.raises(ValueError, match="Duplicate"):
+        evaluate_storage_benchmark_evidence(result, required_readers=("memory", "memory"))
+
 
 def test_storage_benchmark_config_validates_inputs(tmp_path):
+    config = StorageBenchmarkConfig(workspace_dir=tmp_path, readers=["disk", "memory"])  # type: ignore[arg-type]
+    assert config.readers == ("disk", "memory")
+
     with pytest.raises(ValueError, match="Unsupported"):
         StorageBenchmarkConfig(workspace_dir=tmp_path, readers=("object-store",))
+
+    with pytest.raises(ValueError, match="Duplicate"):
+        StorageBenchmarkConfig(workspace_dir=tmp_path, readers=("memory", "memory"))
+
+    with pytest.raises(ValueError, match="sequence"):
+        StorageBenchmarkConfig(workspace_dir=tmp_path, readers="memory")  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="non-empty strings"):
+        StorageBenchmarkConfig(workspace_dir=tmp_path, readers=(1,))  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="non-empty strings"):
+        StorageBenchmarkConfig(workspace_dir=tmp_path, readers=("",))
 
     with pytest.raises(ValueError, match="chunk_count"):
         StorageBenchmarkConfig(workspace_dir=tmp_path, chunk_count=0)
