@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -25,12 +26,14 @@ __all__ = [
     "DEFAULT_DATABRICKS_HOST_ENV",
     "DEFAULT_DATABRICKS_TOKEN_ENV",
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+    "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
     "DatabricksWorkspaceConfig",
     "databricks_workspace_config_from_env",
     "submit_databricks_run",
     "get_databricks_run",
+    "put_databricks_dbfs_file",
     "summarize_databricks_run",
     "summarize_databricks_run_submit_payload",
     "databricks_run_status_record",
@@ -43,6 +46,7 @@ __all__ = [
 DEFAULT_DATABRICKS_HOST_ENV = "DATABRICKS_HOST"
 DEFAULT_DATABRICKS_TOKEN_ENV = "DATABRICKS_TOKEN"
 DEFAULT_DATABRICKS_TIMEOUT_SECONDS = 60.0
+DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 1_000_000
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
 DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = "document_kv.databricks_run_submit_payload.v1"
 _DATABRICKS_GPU_TYPE_FIELD = "aws_single_node_gpu_type"
@@ -197,6 +201,44 @@ def get_databricks_run(
         f"/api/2.1/jobs/runs/get?{urllib.parse.urlencode({'run_id': run_id_text})}",
         opener=opener,
     )
+
+
+def put_databricks_dbfs_file(
+    config: DatabricksWorkspaceConfig,
+    local_path: str | Path,
+    dbfs_path: str,
+    *,
+    overwrite: bool = False,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    response, _metadata = _put_databricks_dbfs_file_response_and_metadata(
+        config,
+        local_path,
+        dbfs_path,
+        overwrite=overwrite,
+        opener=opener,
+    )
+    return response
+
+
+def _put_databricks_dbfs_file_record(
+    config: DatabricksWorkspaceConfig,
+    local_path: str | Path,
+    dbfs_path: str,
+    *,
+    overwrite: bool = False,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    response, metadata = _put_databricks_dbfs_file_response_and_metadata(
+        config,
+        local_path,
+        dbfs_path,
+        overwrite=overwrite,
+        opener=opener,
+    )
+    result = _success_record("put-dbfs-file", response)
+    result["artifact"] = metadata
+    return result
 
 
 def write_databricks_run_response_json(response: dict[str, Any], path: str | Path) -> None:
@@ -831,6 +873,71 @@ def _dedupe_strings(values: Sequence[str]) -> tuple[str, ...]:
     return tuple(deduped)
 
 
+def _databricks_dbfs_put_payload(
+    local_path: str | Path,
+    dbfs_path: str,
+    *,
+    overwrite: bool,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    metadata = _databricks_dbfs_file_metadata(local_path, dbfs_path)
+    raw = Path(local_path).read_bytes()
+    contents = base64.b64encode(raw).decode("ascii")
+    if len(contents.encode("ascii")) > DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES:
+        raise ValueError(
+            "Databricks DBFS put contents must be at most "
+            f"{DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES} base64 bytes; "
+            "stage larger files with a streaming Databricks upload mechanism."
+        )
+    return {
+        "path": metadata["dbfs_api_path"],
+        "contents": contents,
+        "overwrite": bool(overwrite),
+    }, metadata
+
+
+def _put_databricks_dbfs_file_response_and_metadata(
+    config: DatabricksWorkspaceConfig,
+    local_path: str | Path,
+    dbfs_path: str,
+    *,
+    overwrite: bool,
+    opener: DatabricksURLOpener,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload, metadata = _databricks_dbfs_put_payload(local_path, dbfs_path, overwrite=overwrite)
+    response = _databricks_api_json(
+        config,
+        "POST",
+        "/api/2.0/dbfs/put",
+        payload=payload,
+        opener=opener,
+    )
+    return response, metadata
+
+
+def _databricks_dbfs_file_metadata(local_path: str | Path, dbfs_path: str) -> dict[str, Any]:
+    path = Path(local_path)
+    if not path.is_file():
+        raise ValueError(f"local_path must be an existing file: {path}")
+    dbfs_api_path = _databricks_dbfs_api_path(dbfs_path)
+    raw = path.read_bytes()
+    return {
+        "local_path": str(path),
+        "dbfs_path": f"dbfs:{dbfs_api_path}",
+        "dbfs_api_path": dbfs_api_path,
+        "bytes": len(raw),
+        "sha256": _sha256_hex(raw),
+    }
+
+
+def _databricks_dbfs_api_path(dbfs_path: str) -> str:
+    api_path = dbfs_path
+    if dbfs_path.startswith("dbfs:/"):
+        api_path = dbfs_path[len("dbfs:") :]
+    if not api_path.startswith("/") or api_path == "/" or api_path.startswith("//"):
+        raise ValueError("dbfs_path must be a non-empty absolute DBFS path or dbfs:/ URI")
+    return api_path
+
+
 def _databricks_request(
     config: DatabricksWorkspaceConfig,
     method: str,
@@ -892,7 +999,9 @@ def _write_error_record_or_stdout(result: dict[str, Any], output_json: str | Non
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Submit or inspect Databricks runs using env-provided credentials.")
+    parser = argparse.ArgumentParser(
+        description="Submit, inspect, or stage Databricks artifacts using env-provided credentials."
+    )
     parser.add_argument("--host-env", default=DEFAULT_DATABRICKS_HOST_ENV)
     parser.add_argument("--token-env", default=DEFAULT_DATABRICKS_TOKEN_ENV)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_DATABRICKS_TIMEOUT_SECONDS)
@@ -914,6 +1023,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also include the raw Jobs API response when using --summary.",
     )
+    put_parser = subparsers.add_parser("put-dbfs-file", help="Upload a small local artifact to DBFS.")
+    put_parser.add_argument("--local-path", required=True, help="Local file to upload.")
+    put_parser.add_argument("--dbfs-path", required=True, help="Destination path such as dbfs:/FileStore/cachet/file.whl.")
+    put_parser.add_argument("--overwrite", action="store_true", help="Overwrite an existing DBFS file.")
 
     args = parser.parse_args(argv)
     try:
@@ -926,6 +1039,14 @@ def main(argv: list[str] | None = None) -> int:
             response = submit_databricks_run(config, read_databricks_run_submit_payload(args.payload_json))
         elif args.command == "get":
             response = get_databricks_run(config, args.run_id)
+        elif args.command == "put-dbfs-file":
+            result = _put_databricks_dbfs_file_record(
+                config,
+                args.local_path,
+                args.dbfs_path,
+                overwrite=args.overwrite,
+            )
+            response = None
         else:  # pragma: no cover - argparse enforces this.
             raise ValueError(f"unknown command {args.command!r}")
         if args.command == "get" and args.summary:
@@ -940,6 +1061,8 @@ def main(argv: list[str] | None = None) -> int:
                 submit_payload=submit_payload,
                 submit_payload_path=args.submit_payload_json,
             )
+        elif args.command == "put-dbfs-file":
+            pass
         else:
             result = _success_record(args.command, response)
         if args.output_json:

@@ -168,6 +168,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
     ),
+    "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES": (
+        "document_kv_cache.databricks_runs",
+        "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
+    ),
     "DATABRICKS_RUN_STATUS_RECORD_TYPE": (
         "document_kv_cache.databricks_runs",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
@@ -183,6 +187,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     ),
     "submit_databricks_run": ("document_kv_cache.databricks_runs", "submit_databricks_run"),
     "get_databricks_run": ("document_kv_cache.databricks_runs", "get_databricks_run"),
+    "put_databricks_dbfs_file": ("document_kv_cache.databricks_runs", "put_databricks_dbfs_file"),
     "summarize_databricks_run": ("document_kv_cache.databricks_runs", "summarize_databricks_run"),
     "summarize_databricks_run_submit_payload": (
         "document_kv_cache.databricks_runs",

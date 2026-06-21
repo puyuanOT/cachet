@@ -187,16 +187,31 @@ through `native_probe_metadata`. Use the Python
 `document-kv-engine-probe-databricks-job` helper shown above for two-backend
 release-safe probe matrices.
 
+Small runner or wheel artifacts can be staged to DBFS with the same
+environment-provided Databricks credentials before submitting the generated
+payload. The helper writes an upload sidecar with the destination path, byte
+count, and SHA-256 digest; use a streaming upload tool or a UC Volume for larger
+artifacts.
+
+```bash
+cachet-databricks-runs \
+  --output-json run-engine-probe-dbfs-put.json \
+  put-dbfs-file \
+  --local-path run_engine_probe.py \
+  --dbfs-path dbfs:/benchmarks/run_engine_probe.py \
+  --overwrite
+```
+
 Then submit or inspect generated payloads from a shell with `DATABRICKS_HOST` and
 `DATABRICKS_TOKEN` set:
 
 ```bash
-document-kv-databricks-runs \
+cachet-databricks-runs \
   --output-json vllm-smoke-submit-response.json \
   submit \
   --payload-json vllm-smoke-runs-submit-reference.json
 
-document-kv-databricks-runs \
+cachet-databricks-runs \
   --output-json vllm-smoke-run-status.json \
   get \
   --run-id 123456789 \

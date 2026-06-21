@@ -1,0 +1,36 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5/high reviewer Arendt found that the upload sidecar could be recomputed from changed bytes and that the legacy DBFS size-limit constant missed import-order isolation; both were fixed with regression tests.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 306,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/306",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "databricks/README.md",
+    "src/cachet/__init__.pyi",
+    "src/document_kv_cache/databricks_runs.py",
+    "src/restaurant_kv_serving/databricks_runs.py",
+    "tests/test_databricks_runs.py",
+    "tests/test_public_package.py"
+  ],
+  "verification": [
+    "python -m pytest -q tests/test_databricks_runs.py -> 55 passed",
+    "python -m pytest -q tests/test_public_package.py -> 11 passed",
+    "python -m pytest -q tests/test_project_governance.py tests/test_repository_hygiene.py -> 51 passed",
+    "python -m pytest -q tests/test_databricks_runs.py tests/test_public_package.py tests/test_project_governance.py tests/test_repository_hygiene.py -> 117 passed",
+    "python -m pytest -q -> 1584 passed",
+    "poetry build -> passed",
+    "installed-wheel fake-opener smoke for put_databricks_dbfs_file and cachet-databricks-runs put-dbfs-file --help -> passed"
+  ],
+  "what_changed": [
+    "Added Cachet-owned Databricks DBFS small-file artifact staging via put_databricks_dbfs_file and cachet-databricks-runs put-dbfs-file.",
+    "Normalized dbfs:/ artifact URIs to Databricks REST API absolute DBFS paths while recording canonical URI, API path, bytes, and SHA-256 provenance.",
+    "Exposed the staging helper through cachet/document_kv_cache and legacy restaurant_kv_serving facades with compatibility and token-hygiene tests."
+  ],
+  "why": "The g6 provider-backed probe path needs a Cachet-owned way to stage the generated runner and small wheel artifacts before launching Databricks jobs, without putting credentials in command arguments or logs."
+}

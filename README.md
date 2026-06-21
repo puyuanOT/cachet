@@ -1318,12 +1318,19 @@ tokens out of command arguments and JSON artifacts:
 ```bash
 export DATABRICKS_HOST=https://dbc-...cloud.databricks.com
 export DATABRICKS_TOKEN=...
-python -m document_kv_cache.databricks_runs \
+cachet-databricks-runs \
+  --output-json run-plan-dbfs-put.json \
+  put-dbfs-file \
+  --local-path run_plan.py \
+  --dbfs-path dbfs:/benchmarks/run_plan.py \
+  --overwrite
+
+cachet-databricks-runs \
   --output-json databricks-submit-response.json \
   submit \
   --payload-json databricks-run-submit.json
 
-python -m document_kv_cache.databricks_runs \
+cachet-databricks-runs \
   --output-json databricks-run-status.json \
   get \
   --run-id 123456789 \
