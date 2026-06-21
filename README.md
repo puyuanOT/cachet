@@ -1322,6 +1322,7 @@ cachet-databricks-runs \
   --output-json databricks-stage-submit-response.json \
   stage-and-submit \
   --payload-json databricks-run-submit.json \
+  --artifact v1-plan.json=dbfs:/benchmarks/v1-plan.json \
   --artifact run_plan.py=dbfs:/benchmarks/run_plan.py \
   --overwrite \
   --require-payload-dbfs-artifacts

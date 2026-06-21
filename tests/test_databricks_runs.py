@@ -221,6 +221,28 @@ def test_stage_and_submit_databricks_run_rejects_unstaged_payload_dbfs_uri_befor
     assert opener.requests == []
 
 
+def test_stage_and_submit_databricks_run_validates_all_artifacts_before_upload(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    missing_wheel_path = tmp_path / "missing.whl"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    opener = _FakeOpener({})
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+
+    with pytest.raises(ValueError, match="local_path must be an existing file"):
+        stage_and_submit_databricks_run(
+            config,
+            _dbfs_artifact_submit_payload(),
+            (
+                (runner_path, "dbfs:/cachet/run_engine_probe.py"),
+                (missing_wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            ),
+            require_payload_dbfs_artifacts=True,
+            opener=opener,
+        )
+
+    assert opener.requests == []
+
+
 def test_summarize_databricks_run_extracts_run_and_task_state():
     summary = summarize_databricks_run(
         {

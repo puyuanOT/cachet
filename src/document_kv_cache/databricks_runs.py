@@ -256,15 +256,18 @@ def stage_and_submit_databricks_run(
         raise ValueError("stage-and-submit requires at least one artifact")
     if require_payload_dbfs_artifacts:
         _validate_payload_dbfs_artifacts_are_staged(payload, artifact_pairs)
+    prepared_artifacts = tuple(
+        _databricks_dbfs_put_payload(local_path, dbfs_path, overwrite=overwrite)
+        for local_path, dbfs_path in artifact_pairs
+    )
     artifact_uploads = [
-        _put_databricks_dbfs_file_record(
+        _put_prepared_databricks_dbfs_file_record(
             config,
-            local_path,
-            dbfs_path,
-            overwrite=overwrite,
+            upload_payload,
+            metadata,
             opener=opener,
         )
-        for local_path, dbfs_path in artifact_pairs
+        for upload_payload, metadata in prepared_artifacts
     ]
     response = submit_databricks_run(config, payload, opener=opener)
     result = _success_record("stage-and-submit", response)
@@ -938,14 +941,36 @@ def _put_databricks_dbfs_file_response_and_metadata(
     opener: DatabricksURLOpener,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     payload, metadata = _databricks_dbfs_put_payload(local_path, dbfs_path, overwrite=overwrite)
-    response = _databricks_api_json(
+    response = _put_prepared_databricks_dbfs_file(config, payload, opener=opener)
+    return response, metadata
+
+
+def _put_prepared_databricks_dbfs_file(
+    config: DatabricksWorkspaceConfig,
+    payload: dict[str, Any],
+    *,
+    opener: DatabricksURLOpener,
+) -> dict[str, Any]:
+    return _databricks_api_json(
         config,
         "POST",
         "/api/2.0/dbfs/put",
         payload=payload,
         opener=opener,
     )
-    return response, metadata
+
+
+def _put_prepared_databricks_dbfs_file_record(
+    config: DatabricksWorkspaceConfig,
+    payload: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    opener: DatabricksURLOpener,
+) -> dict[str, Any]:
+    response = _put_prepared_databricks_dbfs_file(config, payload, opener=opener)
+    result = _success_record("put-dbfs-file", response)
+    result["artifact"] = metadata
+    return result
 
 
 def _databricks_dbfs_file_metadata(local_path: str | Path, dbfs_path: str) -> dict[str, Any]:
