@@ -69,9 +69,9 @@ class InvalidGenerationEngine:
         return BenchmarkGeneration(**kwargs)
 
 
-def example(dataset: str = "biography") -> BenchmarkExample:
+def example(dataset: str = "biography", *, example_id: str | None = None) -> BenchmarkExample:
     return BenchmarkExample(
-        example_id=f"{dataset}-1",
+        example_id=example_id or f"{dataset}-1",
         dataset=dataset,
         documents=(
             SourceDocument.from_texts(
@@ -598,6 +598,35 @@ def test_run_benchmark_suite_supports_repeats_and_seeded_shuffle():
     assert len(result.measurements) == 6
     assert sum(1 for measurement in result.measurements if measurement.arm_id == BASELINE_PREFILL_ARM) == 3
     assert sum(1 for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM) == 3
+
+
+def test_seeded_shuffle_uses_dataset_and_example_identity():
+    suite = BenchmarkSuite(
+        suite_id="v1-shared-local-id",
+        examples=(
+            example("biography", example_id="shared-1"),
+            example("hotpotqa", example_id="shared-1"),
+        ),
+        datasets=("biography", "hotpotqa"),
+    )
+
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: RecordingEngine(),
+        },
+        repeats=4,
+        shuffle=True,
+        seed=1,
+    )
+
+    arm_order_by_dataset = {
+        dataset: [measurement.arm_id for measurement in result.measurements if measurement.dataset == dataset]
+        for dataset in ("biography", "hotpotqa")
+    }
+
+    assert arm_order_by_dataset["biography"] != arm_order_by_dataset["hotpotqa"]
 
 
 def test_run_benchmark_suite_rejects_non_positive_repeats():
