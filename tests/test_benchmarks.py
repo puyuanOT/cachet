@@ -171,9 +171,21 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         query="Who wrote notes on the Analytical Engine?",
     )
     suite = BenchmarkSuite(suite_id="v1", examples=[example], datasets=["biography"])
+    hotpotqa_example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="hotpotqa",
+        documents=(document(),),
+        query="Which dataset reuses this local id?",
+    )
+    cross_dataset_suite = BenchmarkSuite(
+        suite_id="v1-cross-dataset-ids",
+        examples=(example, hotpotqa_example),
+        datasets=("biography", "hotpotqa"),
+    )
 
     assert suite.examples == (example,)
     assert suite.datasets == ("biography",)
+    assert cross_dataset_suite.examples == (example, hotpotqa_example)
 
     with pytest.raises(ValueError, match="suite_id must be non-empty"):
         BenchmarkSuite(suite_id="", examples=(example,))
@@ -185,6 +197,18 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         BenchmarkSuite(suite_id="v1", examples=())
     with pytest.raises(TypeError, match=r"examples\[0\]"):
         BenchmarkSuite(suite_id="v1", examples=("not-an-example",))
+    duplicate_example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(document(),),
+        query="Duplicate?",
+    )
+    with pytest.raises(ValueError, match="duplicate dataset/example ids: biography:bio-1"):
+        BenchmarkSuite(
+            suite_id="v1",
+            examples=(example, duplicate_example),
+            datasets=("biography",),
+        )
     with pytest.raises(ValueError, match="datasets must include"):
         BenchmarkSuite(suite_id="v1", examples=(example,), datasets=())
     with pytest.raises(ValueError, match="duplicate V1 dataset ids: biography"):
