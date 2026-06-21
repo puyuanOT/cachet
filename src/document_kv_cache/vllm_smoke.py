@@ -15,7 +15,8 @@ import time
 import urllib.error
 import urllib.request
 
-from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET
+from document_kv_cache.benchmark_runner import load_v1_jsonl_suite
+from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, build_prompt_parts
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -54,6 +55,10 @@ __all__ = [
     "dependency_constraints",
     "build_vllm_server_args",
     "build_benchmark_runner_args",
+    "build_prompt_token_budget_rows",
+    "run_prompt_token_budget_probe",
+    "validate_prompt_token_budget",
+    "write_prompt_token_budget_jsonl",
     "benchmark_dataset_paths",
     "write_smoke_datasets",
     "smoke_dataset_records",
@@ -147,6 +152,14 @@ class VLLMSmokeBenchmarkConfig:
         return self.output_dir / "v1-benchmark.json"
 
     @property
+    def prompt_token_budget_path(self) -> Path:
+        return self.output_dir / "prompt-token-budget.json"
+
+    @property
+    def prompt_token_budget_input_path(self) -> Path:
+        return self.local_dir / "prompt-token-budget-input.jsonl"
+
+    @property
     def metadata_path(self) -> Path:
         return self.output_dir / "metadata.json"
 
@@ -178,15 +191,17 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     )
 
     dataset_paths = benchmark_dataset_paths(config)
+    validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
+    metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
     write_json(config.metadata_path, metadata)
 
     server = start_vllm_server(config, config.venv_python, config.server_log_path)
     try:
         wait_for_server(server, config.server_log_path, config, timeout_seconds=config.server_start_timeout_seconds)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
-        run(build_benchmark_runner_args(config, dataset_paths))
+        run_benchmark_runner(config, dataset_paths)
     finally:
         terminate_process(server)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
@@ -227,6 +242,191 @@ def installed_versions(python_executable: Path) -> dict[str, str]:
 def run(argv: list[str]) -> None:
     print("+", " ".join(argv), flush=True)
     subprocess.run(argv, check=True)
+
+
+def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+    rows = build_prompt_token_budget_rows(config, dataset_paths)
+    write_prompt_token_budget_jsonl(config.prompt_token_budget_input_path, rows)
+    record = run_prompt_token_budget_probe(
+        config.venv_python,
+        config.prompt_token_budget_input_path,
+        model_id=HF_MODEL_ID,
+        max_model_len=config.max_model_len,
+        max_tokens=config.max_tokens,
+        timeout_seconds=config.import_probe_timeout_seconds,
+        env=server_env(config),
+    )
+    write_json(config.prompt_token_budget_path, record)
+    if record.get("ok") is False:
+        raise RuntimeError(
+            f"Prompt token budget probe failed: {record.get('error') or record.get('error_type')}. "
+            f"See {config.prompt_token_budget_path}."
+        )
+    over_budget = record.get("over_budget")
+    if isinstance(over_budget, list) and over_budget:
+        first = over_budget[0]
+        raise ValueError(
+            "Prepared vLLM benchmark prompts exceed the configured context budget; "
+            f"{len(over_budget)} prompt(s) are over budget, first={first!r}. "
+            f"See {config.prompt_token_budget_path}."
+        )
+
+
+def build_prompt_token_budget_rows(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> tuple[dict[str, str], ...]:
+    suite = load_v1_jsonl_suite(
+        suite_id=config.benchmark_id,
+        paths=dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=DEFAULT_HARDWARE_TARGET,
+    )
+    rows = []
+    for example in suite.examples:
+        prompt = build_prompt_parts(example).prefill_prompt
+        rows.append({"dataset": example.dataset, "example_id": example.example_id, "prompt": prompt})
+    return tuple(rows)
+
+
+def write_prompt_token_budget_jsonl(path: Path, rows: tuple[dict[str, str], ...]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def run_prompt_token_budget_probe(
+    python_executable: Path,
+    input_path: Path,
+    *,
+    model_id: str,
+    max_model_len: int,
+    max_tokens: int,
+    timeout_seconds: float,
+    env: dict[str, str] | None = None,
+) -> dict[str, object]:
+    code = """
+import json
+import sys
+from pathlib import Path
+
+from transformers import AutoTokenizer
+
+model_id, input_path, max_model_len, max_tokens = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+rows = []
+over_budget = []
+with input_path.open("r", encoding="utf-8") as handle:
+    for raw_line in handle:
+        row = json.loads(raw_line)
+        prompt_tokens = len(tokenizer(row["prompt"])["input_ids"])
+        total_tokens = prompt_tokens + max_tokens
+        measured = {
+            "dataset": row["dataset"],
+            "example_id": row["example_id"],
+            "prompt_tokens": prompt_tokens,
+            "max_tokens": max_tokens,
+            "total_tokens": total_tokens,
+            "max_model_len": max_model_len,
+        }
+        rows.append(measured)
+        if total_tokens > max_model_len:
+            over_budget.append(measured)
+print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), flush=True)
+"""
+    argv = [
+        str(python_executable),
+        "-c",
+        code,
+        model_id,
+        str(input_path),
+        str(max_model_len),
+        str(max_tokens),
+    ]
+    print("+", " ".join([argv[0], "-c", "<prompt token budget probe>", *argv[3:]]), flush=True)
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+            env=env or os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "error_type": "TimeoutExpired",
+            "error": f"prompt token budget probe timed out after {timeout_seconds:.1f}s",
+            "stdout_tail": tail_text(exc.stdout),
+            "stderr_tail": tail_text(exc.stderr),
+            "rows": [],
+            "over_budget": [],
+        }
+    record = last_json_object(completed.stdout)
+    record.update(
+        {
+            "ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "stdout_tail": tail_text(completed.stdout),
+            "stderr_tail": tail_text(completed.stderr),
+        }
+    )
+    if completed.returncode != 0:
+        record.setdefault(
+            "error",
+            f"prompt token budget probe failed with return code {completed.returncode}",
+        )
+        record.setdefault("error_type", "CalledProcessError")
+        record.setdefault("rows", [])
+        record.setdefault("over_budget", [])
+    return record
+
+
+def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+    try:
+        run(build_benchmark_runner_args(config, dataset_paths))
+    except subprocess.CalledProcessError as exc:
+        summary = benchmark_failure_summary(config.benchmark_output_path)
+        raise RuntimeError(
+            f"vLLM benchmark runner failed with exit code {exc.returncode}; {summary}"
+        ) from exc
+
+
+def benchmark_failure_summary(output_path: Path, *, limit: int = 3) -> str:
+    if not output_path.exists():
+        return f"benchmark output {output_path} was not written"
+    try:
+        record = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"benchmark output {output_path} could not be read: {exc}"
+
+    measurements = record.get("measurements")
+    if not isinstance(measurements, list):
+        return f"benchmark output {output_path} did not include measurements"
+    errors = [
+        _benchmark_error_summary(measurement)
+        for measurement in measurements
+        if isinstance(measurement, dict) and measurement.get("error")
+    ]
+    if not errors:
+        return f"benchmark output {output_path} did not include row errors"
+
+    issue_count = len(errors)
+    shown = "; ".join(errors[:limit])
+    if issue_count > limit:
+        shown = f"{shown}; ... {issue_count - limit} more"
+    return f"benchmark output had {issue_count}/{len(measurements)} errored measurements: {shown}"
+
+
+def _benchmark_error_summary(measurement: dict[str, object], *, max_chars: int = 400) -> str:
+    dataset = measurement.get("dataset") or "unknown-dataset"
+    arm_id = measurement.get("arm_id") or "unknown-arm"
+    error = str(measurement.get("error") or "unknown error")
+    if len(error) > max_chars:
+        error = error[: max_chars - 3] + "..."
+    return f"{dataset}/{arm_id}: {error}"
 
 
 def create_venv(venv_dir: Path) -> None:

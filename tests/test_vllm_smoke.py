@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import subprocess
 import sys
@@ -22,13 +23,16 @@ from document_kv_cache.vllm_smoke import (
     VLLM_VERSION,
     VLLMSmokeBenchmarkConfig,
     benchmark_dataset_paths,
+    benchmark_failure_summary,
     build_benchmark_runner_args,
     build_metadata,
+    build_prompt_token_budget_rows,
     build_vllm_server_args,
     dataset_args,
     dependency_constraints,
     parse_args,
     parse_dataset_specs,
+    run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
     smoke_dataset_records,
 )
@@ -135,6 +139,200 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
         "--dataset",
         f"niah={tmp_path / 'niah.jsonl'}",
     ]
+
+
+def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
+    dataset_paths = {}
+    for dataset in SMOKE_DATASETS:
+        path = tmp_path / f"{dataset}.jsonl"
+        path.write_text(
+            (
+                f'{{"dataset": "{dataset}", "example_id": "{dataset}-1", '
+                '"query": "Who is described?", "expected_answer": "Ada Lovelace", '
+                '"documents": [{"document_id": "ada", "text": "Ada Lovelace biography"}]}\n'
+            ),
+            encoding="utf-8",
+        )
+        dataset_paths[dataset] = path
+    config = VLLMSmokeBenchmarkConfig(benchmark_id="smoke-1", output_dir=tmp_path / "out")
+
+    rows = build_prompt_token_budget_rows(config, dataset_paths)
+
+    assert {row["dataset"] for row in rows} == set(SMOKE_DATASETS)
+    assert all("Documents:" in row["prompt"] for row in rows)
+    assert all("Who is described?" in row["prompt"] for row in rows)
+
+
+def test_validate_prompt_token_budget_writes_artifact_and_rejects_over_budget(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        max_model_len=32,
+        max_tokens=4,
+    )
+    dataset_paths = {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS}
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "build_prompt_token_budget_rows",
+        lambda cfg, paths: ({"dataset": "biography", "example_id": "bio-1", "prompt": "long prompt"},),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run_prompt_token_budget_probe",
+        lambda *args, **kwargs: {
+            "rows": [
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-1",
+                    "prompt_tokens": 40,
+                    "max_tokens": 4,
+                    "total_tokens": 44,
+                    "max_model_len": 32,
+                }
+            ],
+            "over_budget": [
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-1",
+                    "prompt_tokens": 40,
+                    "max_tokens": 4,
+                    "total_tokens": 44,
+                    "max_model_len": 32,
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match="Prepared vLLM benchmark prompts exceed"):
+        public_vllm_smoke.validate_prompt_token_budget(config, dataset_paths)
+
+    record = json.loads(config.prompt_token_budget_path.read_text(encoding="utf-8"))
+    assert record["over_budget"][0]["total_tokens"] == 44
+
+
+def test_validate_prompt_token_budget_writes_failed_probe_artifact(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+    dataset_paths = {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS}
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "build_prompt_token_budget_rows",
+        lambda cfg, paths: ({"dataset": "biography", "example_id": "bio-1", "prompt": "prompt"},),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "run_prompt_token_budget_probe",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "error_type": "TimeoutExpired",
+            "error": "prompt token budget probe timed out after 180.0s",
+            "rows": [],
+            "over_budget": [],
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="Prompt token budget probe failed"):
+        public_vllm_smoke.validate_prompt_token_budget(config, dataset_paths)
+
+    record = json.loads(config.prompt_token_budget_path.read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["error_type"] == "TimeoutExpired"
+
+
+def test_run_prompt_token_budget_probe_returns_timeout_record(monkeypatch, tmp_path):
+    def timeout_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=["python"], timeout=3, output="partial out", stderr="partial err")
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", timeout_run)
+
+    record = run_prompt_token_budget_probe(
+        tmp_path / "python",
+        tmp_path / "input.jsonl",
+        model_id=HF_MODEL_ID,
+        max_model_len=32,
+        max_tokens=4,
+        timeout_seconds=3,
+    )
+
+    assert record["ok"] is False
+    assert record["error_type"] == "TimeoutExpired"
+    assert "partial out" in record["stdout_tail"]
+    assert "partial err" in record["stderr_tail"]
+
+
+def test_run_prompt_token_budget_probe_returns_nonzero_record(monkeypatch, tmp_path):
+    completed = subprocess.CompletedProcess(
+        args=["python"],
+        returncode=17,
+        stdout="not json",
+        stderr="tokenizer failed",
+    )
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", lambda *args, **kwargs: completed)
+
+    record = run_prompt_token_budget_probe(
+        tmp_path / "python",
+        tmp_path / "input.jsonl",
+        model_id=HF_MODEL_ID,
+        max_model_len=32,
+        max_tokens=4,
+        timeout_seconds=3,
+    )
+
+    assert record["ok"] is False
+    assert record["returncode"] == 17
+    assert record["error_type"] == "CalledProcessError"
+    assert "tokenizer failed" in record["stderr_tail"]
+
+
+def test_benchmark_failure_summary_reports_row_errors(tmp_path):
+    output_path = tmp_path / "v1-benchmark.json"
+    output_path.write_text(
+        (
+            '{"measurements": ['
+            '{"dataset": "biography", "arm_id": "full_prefill", "error": "context overflow"},'
+            '{"dataset": "hotpotqa", "arm_id": "full_prefill", "error": "server rejected request"},'
+            '{"dataset": "musique", "arm_id": "cache_reuse", "error": "another failure"},'
+            '{"dataset": "niah", "arm_id": "cache_reuse", "error": "last failure"}'
+            "]}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    summary = benchmark_failure_summary(output_path, limit=2)
+
+    assert "4/4 errored measurements" in summary
+    assert "biography/full_prefill: context overflow" in summary
+    assert "hotpotqa/full_prefill: server rejected request" in summary
+    assert "2 more" in summary
+
+
+def test_run_benchmark_runner_reraises_with_failure_summary(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+    config.output_dir.mkdir()
+    config.benchmark_output_path.write_text(
+        '{"measurements": [{"dataset": "biography", "arm_id": "full_prefill", "error": "too long"}]}\n',
+        encoding="utf-8",
+    )
+
+    def fail_run(argv):
+        raise subprocess.CalledProcessError(2, argv)
+
+    monkeypatch.setattr(public_vllm_smoke, "run", fail_run)
+
+    with pytest.raises(RuntimeError, match="biography/full_prefill: too long"):
+        public_vllm_smoke.run_benchmark_runner(
+            config,
+            {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS},
+        )
 
 
 def test_parse_dataset_specs_requires_complete_v1_dataset_set(tmp_path):
@@ -434,6 +632,11 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     )
     monkeypatch.setattr(
         public_vllm_smoke,
+        "validate_prompt_token_budget",
+        lambda cfg, paths: calls.append(("validate_prompt_token_budget", cfg.benchmark_id, paths)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
         "start_vllm_server",
         lambda cfg, python, log_path: calls.append(("start_vllm_server", cfg.server_base_url, python, log_path))
         or fake_server,
@@ -466,6 +669,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
             str(tmp_path / "local" / "hf-cache"),
         ),
         ("write_smoke_datasets", config.local_dir),
+        ("validate_prompt_token_budget", "smoke-1", dataset_paths),
         ("start_vllm_server", "http://127.0.0.1:8123", config.venv_python, config.server_log_path),
         ("wait_for_server", fake_server, config.server_log_path, "http://127.0.0.1:8123", 480.0),
         ("copy", config.server_log_path, config.server_log_copy_path),
@@ -524,6 +728,11 @@ def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursi
     )
     monkeypatch.setattr(
         legacy_vllm_smoke,
+        "validate_prompt_token_budget",
+        lambda cfg, paths: calls.append(("validate_prompt_token_budget", cfg.benchmark_id)),
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
         "start_vllm_server",
         lambda cfg, python, log_path: calls.append(("start_vllm_server", log_path)) or fake_server,
     )
@@ -543,6 +752,7 @@ def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursi
     legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
 
     assert ("write_smoke_datasets", config.local_dir) in calls
+    assert ("validate_prompt_token_budget", "smoke-1") in calls
     assert ("run", build_benchmark_runner_args(config, dataset_paths)) in calls
     assert calls[-2:] == [
         ("terminate", fake_server),

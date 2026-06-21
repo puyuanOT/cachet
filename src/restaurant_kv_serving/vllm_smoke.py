@@ -50,6 +50,10 @@ __all__ = reexport_public(
         "dependency_constraints",
         "build_vllm_server_args",
         "build_benchmark_runner_args",
+        "build_prompt_token_budget_rows",
+        "run_prompt_token_budget_probe",
+        "validate_prompt_token_budget",
+        "write_prompt_token_budget_jsonl",
         "benchmark_dataset_paths",
         "write_smoke_datasets",
         "smoke_dataset_records",
@@ -116,6 +120,40 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
 
 def build_benchmark_runner_args(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> list[str]:
     return _call_document_function("build_benchmark_runner_args", config, dataset_paths)
+
+
+def build_prompt_token_budget_rows(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]):
+    return _call_document_function("build_prompt_token_budget_rows", config, dataset_paths)
+
+
+def run_prompt_token_budget_probe(
+    python_executable: Path,
+    input_path: Path,
+    *,
+    model_id: str,
+    max_model_len: int,
+    max_tokens: int,
+    timeout_seconds: float,
+    env: dict[str, str] | None = None,
+):
+    return _call_document_function(
+        "run_prompt_token_budget_probe",
+        python_executable,
+        input_path,
+        model_id=model_id,
+        max_model_len=max_model_len,
+        max_tokens=max_tokens,
+        timeout_seconds=timeout_seconds,
+        env=env,
+    )
+
+
+def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+    return _call_document_function("validate_prompt_token_budget", config, dataset_paths)
+
+
+def write_prompt_token_budget_jsonl(path: Path, rows: tuple[dict[str, str], ...]) -> None:
+    return _call_document_function("write_prompt_token_budget_jsonl", path, rows)
 
 
 def benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]:
@@ -255,6 +293,10 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "dependency_constraints": dependency_constraints,
     "build_vllm_server_args": build_vllm_server_args,
     "build_benchmark_runner_args": build_benchmark_runner_args,
+    "build_prompt_token_budget_rows": build_prompt_token_budget_rows,
+    "run_prompt_token_budget_probe": run_prompt_token_budget_probe,
+    "validate_prompt_token_budget": validate_prompt_token_budget,
+    "write_prompt_token_budget_jsonl": write_prompt_token_budget_jsonl,
     "benchmark_dataset_paths": benchmark_dataset_paths,
     "write_smoke_datasets": write_smoke_datasets,
     "smoke_dataset_records": smoke_dataset_records,
