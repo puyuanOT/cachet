@@ -183,6 +183,23 @@ def test_evaluate_release_evidence_rejects_malformed_v1_suite_metadata():
     assert any("suite examples must be a positive integer" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_v1_suite_example_count_mismatch():
+    v1_record = _v1_record(ok=True)
+    v1_record["suite"] = {**v1_record["suite"], "examples": 3}
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("suite examples must match unique measurement examples" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_unknown_engine_version():
     probe_record = {**_probe_record(ServingBackend.VLLM), "engine_version": "unknown"}
 
@@ -772,7 +789,7 @@ def test_evaluate_release_evidence_rejects_malformed_report_quality_rates():
 
 def test_evaluate_release_evidence_allows_repeated_raw_measurements():
     v1_record = _v1_record(ok=True)
-    v1_record["measurements"].append({**v1_record["measurements"][0], "example_id": "biography-2"})
+    v1_record["measurements"].append({**v1_record["measurements"][0]})
 
     evidence = evaluate_release_evidence(
         v1_record,
