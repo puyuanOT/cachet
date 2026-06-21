@@ -84,32 +84,68 @@ NATIVE_PROBE_ADAPTER_CONTRACT: Mapping[str, str | int | bool] = MappingProxyType
     }
 )
 _NATIVE_PROBE_ADAPTER_CONTRACT_KEYS = frozenset(NATIVE_PROBE_ADAPTER_CONTRACT)
-_VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS = (
-    "get_num_new_matched_tokens",
-    "update_state_after_alloc",
-    "build_connector_meta",
-    "register_kv_caches",
-    "start_load_kv",
-    "wait_for_layer_load",
-    "save_kv_layer",
-    "wait_for_save",
-    "request_finished",
+
+
+@dataclass(frozen=True, slots=True)
+class _NativeProbeRuntimeContractSpec:
+    record_type: str
+    schema_version: int
+    runtime: str
+    doc_url: str
+    required_methods: tuple[str, ...]
+    optional_methods: tuple[str, ...] = ()
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "record_type": self.record_type,
+            "schema_version": self.schema_version,
+            "runtime": self.runtime,
+            "doc_url": self.doc_url,
+            "required_methods": list(self.required_methods),
+            "optional_methods": list(self.optional_methods),
+            "handoff_contract": native_probe_adapter_contract_to_record(),
+        }
+
+
+_NATIVE_PROBE_RUNTIME_CONTRACT_SPECS: Mapping[
+    ServingBackend, _NativeProbeRuntimeContractSpec
+] = MappingProxyType(
+    {
+        ServingBackend.VLLM: _NativeProbeRuntimeContractSpec(
+            record_type="vllm_kv_injection.kv_connector_v1_contract.v1",
+            schema_version=1,
+            runtime="vllm-kv-connector-v1",
+            doc_url="https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/",
+            required_methods=(
+                "get_num_new_matched_tokens",
+                "update_state_after_alloc",
+                "build_connector_meta",
+                "register_kv_caches",
+                "start_load_kv",
+                "wait_for_layer_load",
+                "save_kv_layer",
+                "wait_for_save",
+                "request_finished",
+            ),
+            optional_methods=(
+                "bind_connector_metadata",
+                "clear_connector_metadata",
+                "get_finished",
+                "get_kv_connector_kv_cache_events",
+                "get_kv_connector_stats",
+                "shutdown",
+                "take_events",
+            ),
+        ),
+        ServingBackend.SGLANG: _NativeProbeRuntimeContractSpec(
+            record_type="sglang_kv_injection.runtime_cache_contract.v1",
+            schema_version=1,
+            runtime="sglang-runtime-cache",
+            doc_url="https://docs.sglang.io/docs/advanced_features/hicache_design",
+            required_methods=("stage", "attach", "release"),
+        ),
+    }
 )
-_VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS = (
-    "bind_connector_metadata",
-    "clear_connector_metadata",
-    "get_finished",
-    "get_kv_connector_kv_cache_events",
-    "get_kv_connector_stats",
-    "shutdown",
-    "take_events",
-)
-_SGLANG_RUNTIME_CACHE_REQUIRED_METHODS = (
-    "stage",
-    "attach",
-    "release",
-)
-_SGLANG_RUNTIME_CACHE_OPTIONAL_METHODS: tuple[str, ...] = ()
 _BUILTIN_NATIVE_PROBE_FACTORY_PATHS = {
     "vllm": VLLM_NATIVE_PROBE_FACTORY,
     "sglang": SGLANG_NATIVE_PROBE_FACTORY,
@@ -340,27 +376,10 @@ def native_probe_runtime_contract_to_record(backend: ServingBackend | str) -> di
     """Return the backend runtime lifecycle contract required for native V1 evidence."""
 
     backend = _serving_backend(backend)
-    if backend == ServingBackend.VLLM:
-        return {
-            "record_type": "vllm_kv_injection.kv_connector_v1_contract.v1",
-            "schema_version": 1,
-            "runtime": "vllm-kv-connector-v1",
-            "doc_url": "https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/",
-            "required_methods": list(_VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS),
-            "optional_methods": list(_VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS),
-            "handoff_contract": native_probe_adapter_contract_to_record(),
-        }
-    if backend == ServingBackend.SGLANG:
-        return {
-            "record_type": "sglang_kv_injection.runtime_cache_contract.v1",
-            "schema_version": 1,
-            "runtime": "sglang-runtime-cache",
-            "doc_url": "https://docs.sglang.io/docs/advanced_features/hicache_design",
-            "required_methods": list(_SGLANG_RUNTIME_CACHE_REQUIRED_METHODS),
-            "optional_methods": list(_SGLANG_RUNTIME_CACHE_OPTIONAL_METHODS),
-            "handoff_contract": native_probe_adapter_contract_to_record(),
-        }
-    raise ValueError(f"Unsupported serving backend {backend!r}")
+    try:
+        return _NATIVE_PROBE_RUNTIME_CONTRACT_SPECS[backend].to_record()
+    except KeyError as exc:  # pragma: no cover - _serving_backend validates current enum values.
+        raise ValueError(f"Unsupported serving backend {backend!r}") from exc
 
 
 def inspect_builtin_native_probe_factories() -> tuple[NativeProbeFactoryInspection, ...]:
