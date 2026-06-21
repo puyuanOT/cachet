@@ -1279,20 +1279,31 @@ def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]
 def _plan_execution_command_issues(commands: Sequence[Any]) -> tuple[str, ...]:
     issues: list[str] = []
     for index, command in enumerate(commands):
+        label = f"benchmark plan execution sidecar commands[{index}]"
         if not isinstance(command, Mapping):
-            issues.append(f"benchmark plan execution sidecar commands[{index}] must be an object")
+            issues.append(f"{label} must be an object")
             continue
         issues.extend(
             _unexpected_keys(
                 command,
                 _BENCHMARK_PLAN_EXECUTION_COMMAND_KEYS,
-                f"benchmark plan execution sidecar commands[{index}]",
+                label,
             )
         )
+        issues.extend(_required_str_field(command, "name", label))
+        issues.extend(_list_of_strings_field(command, "argv", label))
+        if (
+            isinstance(command.get("argv"), Sequence)
+            and not isinstance(command["argv"], (str, bytes, bytearray))
+            and not command["argv"]
+        ):
+            issues.append(f"{label}.argv must be a non-empty array")
+        if command.get("skipped") is not False:
+            issues.append(f"{label}.skipped must be false")
         if type(command.get("returncode")) is not int or command["returncode"] != 0:
-            issues.append(f"benchmark plan execution sidecar commands[{index}].returncode must be 0")
+            issues.append(f"{label}.returncode must be 0")
         if command.get("error") is not None:
-            issues.append(f"benchmark plan execution sidecar commands[{index}].error must be null")
+            issues.append(f"{label}.error must be null")
     return tuple(issues)
 
 
