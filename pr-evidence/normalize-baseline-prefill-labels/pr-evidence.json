@@ -1,0 +1,25 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 sub-agent approved PR #247 with no findings; reviewer ran focused project-governance and release-bundle tests plus git diff --check.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "docs/v1-requirements-matrix.md",
+    "src/document_kv_cache/release_bundle.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "pytest -q tests/test_project_governance.py tests/test_release_bundle.py -> 99 passed",
+    "pytest -q -> 1265 passed",
+    "python -m build --wheel -> built document_kv_cache-0.2.0-py3-none-any.whl",
+    "GPT-5.5 review -> approved with no findings"
+  ],
+  "what_changed": [
+    "Normalized V1 release documentation and strict matrix guards to use the canonical baseline_prefill no-cache arm label."
+  ],
+  "why": "The benchmark runner and release evidence validators enforce baseline_prefill, and stale full_no_cache wording could make target evidence appear inconsistent."
+}
