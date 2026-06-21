@@ -632,6 +632,7 @@ def test_native_probe_runtime_contract_records_required_backend_lifecycles():
     assert vllm_contract["handoff_contract"] == native_probe_adapter_contract_to_record()
     assert "get_num_new_matched_tokens" in vllm_contract["required_methods"]
     assert "request_finished" in vllm_contract["required_methods"]
+    assert "request_finished_all_groups" in vllm_contract["required_methods"]
     assert len(vllm_contract["optional_methods"]) == len(set(vllm_contract["optional_methods"]))
     assert "build_connector_worker_meta" in vllm_contract["optional_methods"]
     assert "build_kv_connector_stats" in vllm_contract["optional_methods"]
