@@ -181,7 +181,7 @@ class CacheAdapterArtifact:
         object.__setattr__(self, "adapter_id", adapter_id)
         object.__setattr__(self, "artifact_uri", artifact_uri)
         object.__setattr__(self, "cache_method", cache_method)
-        object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "metadata", _metadata_dict("metadata", self.metadata))
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +202,7 @@ class TrainingArtifacts:
                 raise ValueError("adapter_ids must match adapter_artifacts adapter_id order")
             adapter_ids = artifact_ids
         object.__setattr__(self, "adapter_ids", adapter_ids)
-        object.__setattr__(self, "metadata", dict(self.metadata))
+        object.__setattr__(self, "metadata", _metadata_dict("metadata", self.metadata))
         object.__setattr__(self, "adapter_artifacts", adapter_artifacts)
 
 

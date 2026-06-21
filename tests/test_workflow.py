@@ -1118,6 +1118,36 @@ def test_training_artifacts_validate_adapter_artifact_identity():
         TrainingArtifacts(adapter_ids=("other-adapter",), adapter_artifacts=(adapter,))
 
 
+def test_training_artifact_metadata_uses_string_maps():
+    artifact = CacheAdapterArtifact(
+        adapter_id="packet-adapter",
+        artifact_uri="/Volumes/cache/packet.safetensors",
+        metadata={"rank": "8"},
+    )
+    training_artifacts = TrainingArtifacts(
+        adapter_artifacts=(artifact,),
+        metadata={"trained": "true"},
+    )
+
+    assert artifact.metadata == {"rank": "8"}
+    assert training_artifacts.metadata == {"trained": "true"}
+
+    with pytest.raises(TypeError, match="metadata must be a mapping"):
+        CacheAdapterArtifact(
+            adapter_id="packet-adapter",
+            artifact_uri="/Volumes/cache/packet.safetensors",
+            metadata=[],  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="metadata keys must be non-empty strings"):
+        TrainingArtifacts(adapter_ids=("packet-adapter",), metadata={"": "true"})
+    with pytest.raises(ValueError, match="metadata.rank must be a string"):
+        CacheAdapterArtifact(
+            adapter_id="packet-adapter",
+            artifact_uri="/Volumes/cache/packet.safetensors",
+            metadata={"rank": 8},  # type: ignore[dict-item]
+        )
+
+
 def test_training_artifacts_reject_bare_string_adapter_ids():
     with pytest.raises(ValueError, match="not a string"):
         TrainingArtifacts(adapter_ids="packet-adapter")  # type: ignore[arg-type]
