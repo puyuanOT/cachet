@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the scoped workflow/test diff and verified tests/test_workflow.py plus diff hygiene.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/workflow.py; tests/test_workflow.py; pr-evidence/validate-training-artifact-metadata"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_workflow.py::test_training_artifact_metadata_uses_string_maps tests/test_workflow.py::test_workflow_records_training_adapter_artifacts_and_derives_engine_adapters tests/test_workflow.py::test_workflow_invokes_optional_training_adapter -q; poetry run pytest tests/test_workflow.py tests/test_public_package.py::test_public_document_package_reexports_core_api tests/test_public_package.py::test_public_document_submodules_have_curated_star_import_surfaces -q; git diff --check; poetry run pytest -q; poetry check; poetry run python -m compileall -q src tests"
+  ],
+  "what_changed": [
+    "Reused the workflow string-map metadata validator for CacheAdapterArtifact and TrainingArtifacts, with focused regression tests for invalid metadata mappings and values."
+  ],
+  "why": "Optional training and KV Packet adapter metadata feeds engine handoff records; it should follow the same str-to-str metadata contract as source documents and chunks."
+}
