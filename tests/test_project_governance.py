@@ -812,6 +812,7 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "package name/version for wheel artifacts" in compact_text
     assert "records the normalized package name and package version" in compact_text
     assert "current project version from `pyproject.toml` or installed package metadata" in compact_text
+    assert "free of active task keys" in compact_text
     assert "task summaries carry non-empty `purpose` tags" in compact_text
     assert "summary arrays match the task summaries" in compact_text
 

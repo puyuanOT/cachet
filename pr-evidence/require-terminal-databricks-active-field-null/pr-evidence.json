@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Boole the 3rd approved the patch with no release-readiness blockers, regression risks, missing tests, or unclear docs.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/databricks_runs.py",
+    "tests/test_databricks_runs.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py",
+    "pr-evidence/require-terminal-databricks-active-field-null/README.md",
+    "pr-evidence/require-terminal-databricks-active-field-null/pr-evidence.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_runs.py::test_databricks_run_status_sidecar_validation_requires_null_active_task_key_for_success tests/test_release_bundle.py::test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_github_governance tests/test_project_governance.py::test_readme_release_bundle_documents_artifact_validation_contracts tests/test_project_governance.py::test_repository_text_files_do_not_contain_committed_credentials -q",
+    "poetry run pytest tests/test_databricks_runs.py tests/test_release_bundle.py tests/test_project_governance.py -q",
+    "poetry run pytest -q",
+    "poetry check",
+    "poetry run python -m compileall -q src tests",
+    "git diff --check",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence"
+  ],
+  "what_changed": [
+    "Rejected successful terminal Databricks run-status sidecars that still report active_task_key.",
+    "Documented the active task pointer invariant in the release-bundle README contract."
+  ],
+  "why": "Release bundles only accept successful terminal Databricks run-status sidecars, so compact status evidence should not preserve an active task pointer from a still-running run."
+}

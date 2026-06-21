@@ -309,6 +309,12 @@ def databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str
         issues.append("Databricks run status sidecar life_cycle_state must be 'TERMINATED'")
     if status_record.get("result_state") != "SUCCESS":
         issues.append("Databricks run status sidecar result_state must be 'SUCCESS'")
+    if (
+        status_record.get("terminal") is True
+        and status_record.get("succeeded") is True
+        and status_record.get("active_task_key") is not None
+    ):
+        issues.append("Databricks run status sidecar active_task_key must be null for successful terminal runs")
     run_id = status_record.get("run_id")
     if not ((type(run_id) is int and run_id >= 0) or (isinstance(run_id, str) and run_id)):
         issues.append("Databricks run status sidecar run_id must be a non-negative integer or non-empty string")
