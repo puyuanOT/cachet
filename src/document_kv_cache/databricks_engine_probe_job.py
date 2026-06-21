@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,11 +17,12 @@ from document_kv_cache.databricks_job import (
     DatabricksSingleNodeG5ClusterConfig,
     build_single_node_g5_cluster,
 )
-from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
 )
+from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
 
 
@@ -54,12 +56,14 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "native_probe_delegate_factory",
         "actions_output_json",
         "connector_actions_output_json",
+        "fixture_output_dir",
+        "fixture_payload_mode",
     }
 )
-ENGINE_PROBE_RUNNER_SCRIPT = """from document_kv_cache.engine_probe import main
+ENGINE_PROBE_RUNNER_SCRIPT = """from document_kv_cache.databricks_engine_probe_job import run_engine_probe_task
 
 if __name__ == "__main__":
-    exit_code = main()
+    exit_code = run_engine_probe_task()
     if exit_code:
         raise SystemExit(exit_code)
 """
@@ -78,6 +82,7 @@ __all__ = [
     "build_databricks_engine_probe_matrix_run_submit_payload",
     "read_databricks_engine_probe_targets_json",
     "read_databricks_engine_probe_targets_file_json",
+    "run_engine_probe_task",
     "write_databricks_engine_probe_run_submit_json",
     "write_databricks_engine_probe_matrix_run_submit_json",
     "write_databricks_engine_probe_runner_script",
@@ -115,9 +120,12 @@ class DatabricksEngineProbeTargetConfig:
     metadata: tuple[str, ...] = ()
     actions_output_json: str | None = None
     native_probe_delegate_factory: str | None = None
+    fixture_output_dir: str | None = None
+    fixture_payload_mode: PayloadMode | str = PayloadMode.SEGMENTED
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
+        object.__setattr__(self, "fixture_payload_mode", _DEFAULT_PAYLOAD_MODE(self.fixture_payload_mode))
         if not self.handoff_json:
             raise ValueError("handoff_json must be non-empty")
         if not self.probe_factory:
@@ -134,6 +142,18 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("actions_output_json must be non-empty when provided")
         if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
             raise ValueError("native_probe_delegate_factory must be non-empty when provided")
+        if self.fixture_output_dir is not None and not self.fixture_output_dir:
+            raise ValueError("fixture_output_dir must be non-empty when provided")
+        if self.fixture_output_dir is not None:
+            _DEFAULT_VALIDATE_FIXTURE_OUTPUT_DIR(self.fixture_output_dir)
+            _DEFAULT_VALIDATE_FIXTURE_HANDOFF_JSON(
+                handoff_json=self.handoff_json,
+                fixture_output_dir=self.fixture_output_dir,
+            )
+            _DEFAULT_VALIDATE_FIXTURE_PAYLOAD_URI(
+                payload_uri=self.payload_uri,
+                fixture_output_dir=self.fixture_output_dir,
+            )
         if type(self.allow_non_native_probe) is not bool:
             raise ValueError("allow_non_native_probe must be a boolean")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
@@ -200,8 +220,11 @@ class DatabricksEngineProbeJobConfig:
     custom_tags: Mapping[str, str] = field(default_factory=dict)
     actions_output_json: str | None = None
     native_probe_delegate_factory: str | None = None
+    fixture_output_dir: str | None = None
+    fixture_payload_mode: PayloadMode | str = PayloadMode.SEGMENTED
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "fixture_payload_mode", _DEFAULT_PAYLOAD_MODE(self.fixture_payload_mode))
         if not self.handoff_json:
             raise ValueError("handoff_json must be non-empty")
         if not self.probe_factory:
@@ -224,6 +247,18 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("actions_output_json must be non-empty when provided")
         if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
             raise ValueError("native_probe_delegate_factory must be non-empty when provided")
+        if self.fixture_output_dir is not None and not self.fixture_output_dir:
+            raise ValueError("fixture_output_dir must be non-empty when provided")
+        if self.fixture_output_dir is not None:
+            _DEFAULT_VALIDATE_FIXTURE_OUTPUT_DIR(self.fixture_output_dir)
+            _DEFAULT_VALIDATE_FIXTURE_HANDOFF_JSON(
+                handoff_json=self.handoff_json,
+                fixture_output_dir=self.fixture_output_dir,
+            )
+            _DEFAULT_VALIDATE_FIXTURE_PAYLOAD_URI(
+                payload_uri=self.payload_uri,
+                fixture_output_dir=self.fixture_output_dir,
+            )
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
         _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB(self)
@@ -284,6 +319,48 @@ def write_databricks_engine_probe_runner_script(path: str | Path) -> None:
     Path(path).write_text(ENGINE_PROBE_RUNNER_SCRIPT, encoding="utf-8")
 
 
+def run_engine_probe_task(argv: Sequence[str] | None = None) -> int:
+    """Run an optional generated fixture step, then the native engine probe."""
+
+    runner_argv = list(sys.argv[1:] if argv is None else argv)
+    fixture_args, engine_probe_argv = _split_fixture_runner_args(runner_argv)
+    if fixture_args.fixture_output_dir is not None:
+        from document_kv_cache import probe_fixtures
+
+        fixture_exit_code = probe_fixtures.main(
+            [
+                "--output-dir",
+                fixture_args.fixture_output_dir,
+                "--backend",
+                fixture_args.fixture_backend,
+                "--payload-mode",
+                fixture_args.fixture_payload_mode,
+            ]
+        )
+        if fixture_exit_code:
+            return fixture_exit_code
+    from document_kv_cache import engine_probe
+
+    return engine_probe.main(engine_probe_argv)
+
+
+def _split_fixture_runner_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--fixture-output-dir")
+    parser.add_argument("--fixture-backend", choices=[backend.value for backend in ServingBackend])
+    parser.add_argument(
+        "--fixture-payload-mode",
+        choices=[mode.value for mode in PayloadMode],
+        default=PayloadMode.SEGMENTED.value,
+    )
+    fixture_args, engine_probe_argv = parser.parse_known_args(argv)
+    if fixture_args.fixture_output_dir is not None and fixture_args.fixture_backend is None:
+        raise ValueError("--fixture-backend is required when --fixture-output-dir is provided")
+    if fixture_args.fixture_output_dir is None and fixture_args.fixture_backend is not None:
+        raise ValueError("--fixture-backend requires --fixture-output-dir")
+    return fixture_args, engine_probe_argv
+
+
 def _cluster_config_from_engine_probe_job(
     config: DatabricksEngineProbeJobConfig,
 ) -> DatabricksSingleNodeG5ClusterConfig:
@@ -341,6 +418,8 @@ def _engine_probe_task_from_target(
         custom_tags=config.custom_tags,
         actions_output_json=target.actions_output_json,
         native_probe_delegate_factory=target.native_probe_delegate_factory,
+        fixture_output_dir=target.fixture_output_dir,
+        fixture_payload_mode=target.fixture_payload_mode,
     )
     return build_databricks_engine_probe_run_submit_payload(single_config)["tasks"][0]
 
@@ -366,6 +445,16 @@ def _runner_parameters(config: DatabricksEngineProbeJobConfig) -> list[str]:
         "--expected-backend",
         config.expected_backend.value,
     ]
+    if config.fixture_output_dir is not None:
+        parameters = [
+            "--fixture-output-dir",
+            config.fixture_output_dir,
+            "--fixture-backend",
+            config.expected_backend.value,
+            "--fixture-payload-mode",
+            config.fixture_payload_mode.value,
+            *parameters,
+        ]
     if config.actions_output_json is not None:
         parameters.extend(["--actions-output-json", config.actions_output_json])
     if config.payload_uri is not None:
@@ -474,6 +563,61 @@ def _serving_backend(value: ServingBackend | str) -> ServingBackend:
         raise ValueError(f"expected_backend must be one of: {supported}") from exc
 
 
+def _payload_mode(value: PayloadMode | str) -> PayloadMode:
+    try:
+        return value if isinstance(value, PayloadMode) else PayloadMode(value)
+    except ValueError as exc:
+        supported = ", ".join(mode.value for mode in PayloadMode)
+        raise ValueError(f"fixture_payload_mode must be one of: {supported}") from exc
+
+
+def _engine_probe_fixture_handoff_json(fixture_output_dir: str) -> str:
+    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}"
+
+
+def _engine_probe_fixture_payload_uri(fixture_output_dir: str) -> str:
+    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['payload']}"
+
+
+def _validate_fixture_output_dir(fixture_output_dir: str) -> None:
+    scheme = _uri_scheme(fixture_output_dir)
+    if scheme is not None and scheme not in {"dbfs", "disk", "file", "uc-volume"}:
+        raise ValueError(
+            "fixture_output_dir URI scheme must be one of dbfs:, disk:, file:, uc-volume:, "
+            f"or an absolute/relative local path; got {fixture_output_dir!r}"
+        )
+
+
+def _validate_fixture_handoff_json(*, handoff_json: str, fixture_output_dir: str) -> None:
+    expected_handoff_json = _engine_probe_fixture_handoff_json(fixture_output_dir)
+    if handoff_json == expected_handoff_json:
+        return
+    raise ValueError(
+        "handoff_json must match the derived fixture handoff path when fixture_output_dir is set: "
+        f"expected {expected_handoff_json!r}, got {handoff_json!r}"
+    )
+
+
+def _validate_fixture_payload_uri(*, payload_uri: str | None, fixture_output_dir: str) -> None:
+    if payload_uri is None:
+        return
+    expected_payload_uri = _engine_probe_fixture_payload_uri(fixture_output_dir)
+    if payload_uri == expected_payload_uri:
+        return
+    raise ValueError(
+        "payload_uri must match the derived fixture payload path when fixture_output_dir is set: "
+        f"expected {expected_payload_uri!r}, got {payload_uri!r}"
+    )
+
+
+def _uri_scheme(uri: str) -> str | None:
+    head = uri.split("/", maxsplit=1)[0]
+    if ":" not in head:
+        return None
+    scheme, _separator, _rest = head.partition(":")
+    return scheme or None
+
+
 _DEFAULT_COERCE_PROBE_TARGET = _coerce_probe_target
 _DEFAULT_VALIDATE_PROBE_TARGET_BACKENDS = _validate_probe_target_backends
 _DEFAULT_VALIDATE_PROBE_TARGET_TASK_KEYS = _validate_probe_target_task_keys
@@ -483,6 +627,10 @@ _DEFAULT_VALIDATE_METADATA_ITEMS = _validate_metadata_items
 _DEFAULT_SERVING_BACKEND = _serving_backend
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_JOB = _cluster_config_from_engine_probe_job
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_MATRIX_JOB = _cluster_config_from_engine_probe_matrix_job
+_DEFAULT_PAYLOAD_MODE = _payload_mode
+_DEFAULT_VALIDATE_FIXTURE_OUTPUT_DIR = _validate_fixture_output_dir
+_DEFAULT_VALIDATE_FIXTURE_HANDOFF_JSON = _validate_fixture_handoff_json
+_DEFAULT_VALIDATE_FIXTURE_PAYLOAD_URI = _validate_fixture_payload_uri
 
 
 def read_databricks_engine_probe_targets_json(path: str | Path) -> tuple[DatabricksEngineProbeTargetConfig, ...]:
@@ -548,6 +696,8 @@ def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEnginePro
         metadata=tuple(metadata),
         actions_output_json=record.get("actions_output_json", record.get("connector_actions_output_json")),
         native_probe_delegate_factory=record.get("native_probe_delegate_factory"),
+        fixture_output_dir=record.get("fixture_output_dir"),
+        fixture_payload_mode=record.get("fixture_payload_mode", PayloadMode.SEGMENTED),
     )
 
 
@@ -565,6 +715,21 @@ def _required_single_arg(args: argparse.Namespace, name: str) -> str:
     return value
 
 
+def _single_target_handoff_json_from_cli(args: argparse.Namespace) -> str:
+    if args.fixture_output_dir is None:
+        if args.fixture_payload_mode is not None:
+            raise ValueError("--fixture-payload-mode requires --fixture-output-dir")
+        return _required_single_arg(args, "handoff_json")
+    derived_handoff_json = _engine_probe_fixture_handoff_json(args.fixture_output_dir)
+    if args.handoff_json:
+        _validate_fixture_handoff_json(
+            handoff_json=args.handoff_json,
+            fixture_output_dir=args.fixture_output_dir,
+        )
+        return args.handoff_json
+    return derived_handoff_json
+
+
 def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
     incompatible_values = {
         "handoff-json": args.handoff_json,
@@ -575,6 +740,8 @@ def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
         "payload-uri": args.payload_uri,
         "engine-version": args.engine_version,
         "native-probe-delegate-factory": args.native_probe_delegate_factory,
+        "fixture-output-dir": args.fixture_output_dir,
+        "fixture-payload-mode": args.fixture_payload_mode,
         "task-key": args.task_key,
     }
     provided = [f"--{name}" for name, value in incompatible_values.items() if value]
@@ -606,6 +773,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--payload-uri", help="Override payload_source.uri from the handoff record.")
+    parser.add_argument(
+        "--fixture-output-dir",
+        help=(
+            "Generate a deterministic Qwen3 V1 fixture in this cluster-visible directory before "
+            "running a single-target probe. If --handoff-json is omitted, the handoff path is derived from it."
+        ),
+    )
+    parser.add_argument(
+        "--fixture-payload-mode",
+        choices=[mode.value for mode in PayloadMode],
+        help="Fixture payload mode when --fixture-output-dir is provided.",
+    )
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME)
     parser.add_argument("--task-key")
     parser.add_argument("--node-type-id", default=DEFAULT_AWS_G5_NODE_TYPE)
@@ -659,7 +838,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
         else:
             config = DatabricksEngineProbeJobConfig(
-                handoff_json=_required_single_arg(args, "handoff_json"),
+                handoff_json=_single_target_handoff_json_from_cli(args),
                 probe_factory=_required_single_arg(args, "probe_factory"),
                 output_json=_required_single_arg(args, "probe_output_json"),
                 runner_python_file=args.runner_python_file,
@@ -678,6 +857,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 release_safe=args.release_safe,
                 actions_output_json=args.actions_output_json,
                 native_probe_delegate_factory=args.native_probe_delegate_factory,
+                fixture_output_dir=args.fixture_output_dir,
+                fixture_payload_mode=args.fixture_payload_mode or PayloadMode.SEGMENTED,
             )
             payload = build_databricks_engine_probe_run_submit_payload(config)
         if args.runner_script_output:

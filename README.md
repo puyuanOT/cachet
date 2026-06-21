@@ -832,6 +832,10 @@ accepted by `document_kv_cache.databricks_engine_probe_job --backend-config-json
 The Databricks engine-probe job treats this target file as a closed schema:
 unsupported top-level target keys or per-probe keys are rejected before a
 run-submit payload is produced.
+When a planned probe uses `--engine-probe-fixture-output-dir`, the target JSON
+also carries `fixture_output_dir` and `fixture_payload_mode`; the generated
+Databricks runner writes the deterministic Qwen3 fixture first, then runs the
+native engine probe against the derived handoff JSON.
 Use `--engine-probe-native-delegate-factory BACKEND=MODULE:CALLABLE` when the
 planned target should run a built-in reserved vLLM/SGLang probe factory through
 a backend-native delegate on Databricks. The target JSON carries the delegate

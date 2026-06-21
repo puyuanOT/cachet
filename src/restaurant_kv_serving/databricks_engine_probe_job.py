@@ -21,7 +21,7 @@ from document_kv_cache.databricks_job import (
     DatabricksSingleNodeG5ClusterConfig,
     build_single_node_g5_cluster,
 )
-from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
 
 import document_kv_cache.databricks_engine_probe_job as _document_module
@@ -49,6 +49,7 @@ __all__ += [
     "build_databricks_engine_probe_matrix_run_submit_payload",
     "read_databricks_engine_probe_targets_json",
     "read_databricks_engine_probe_targets_file_json",
+    "run_engine_probe_task",
     "write_databricks_engine_probe_run_submit_json",
     "write_databricks_engine_probe_matrix_run_submit_json",
     "write_databricks_engine_probe_runner_script",
@@ -67,6 +68,7 @@ __all__ += [
     "DatabricksSingleNodeG5ClusterConfig",
     "build_single_node_g5_cluster",
     "ServingBackend",
+    "PayloadMode",
     "REQUIRED_ENGINE_PROBE_BACKENDS",
 ]
 
@@ -192,6 +194,7 @@ class DatabricksEngineProbeTargetConfig(_public_class_base("DatabricksEngineProb
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _serving_backend(self.expected_backend))
+        object.__setattr__(self, "fixture_payload_mode", _payload_mode(self.fixture_payload_mode))
         if not self.handoff_json:
             raise ValueError("handoff_json must be non-empty")
         if not self.probe_factory:
@@ -208,6 +211,18 @@ class DatabricksEngineProbeTargetConfig(_public_class_base("DatabricksEngineProb
             raise ValueError("actions_output_json must be non-empty when provided")
         if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
             raise ValueError("native_probe_delegate_factory must be non-empty when provided")
+        if self.fixture_output_dir is not None and not self.fixture_output_dir:
+            raise ValueError("fixture_output_dir must be non-empty when provided")
+        if self.fixture_output_dir is not None:
+            _validate_fixture_output_dir(self.fixture_output_dir)
+            _validate_fixture_handoff_json(
+                handoff_json=self.handoff_json,
+                fixture_output_dir=self.fixture_output_dir,
+            )
+            _validate_fixture_payload_uri(
+                payload_uri=self.payload_uri,
+                fixture_output_dir=self.fixture_output_dir,
+            )
         if type(self.allow_non_native_probe) is not bool:
             raise ValueError("allow_non_native_probe must be a boolean")
         _validate_metadata_items(self.metadata)
@@ -243,6 +258,7 @@ class DatabricksEngineProbeJobConfig(_public_class_base("DatabricksEngineProbeJo
     __slots__ = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "fixture_payload_mode", _payload_mode(self.fixture_payload_mode))
         if not self.handoff_json:
             raise ValueError("handoff_json must be non-empty")
         if not self.probe_factory:
@@ -265,6 +281,18 @@ class DatabricksEngineProbeJobConfig(_public_class_base("DatabricksEngineProbeJo
             raise ValueError("actions_output_json must be non-empty when provided")
         if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
             raise ValueError("native_probe_delegate_factory must be non-empty when provided")
+        if self.fixture_output_dir is not None and not self.fixture_output_dir:
+            raise ValueError("fixture_output_dir must be non-empty when provided")
+        if self.fixture_output_dir is not None:
+            _validate_fixture_output_dir(self.fixture_output_dir)
+            _validate_fixture_handoff_json(
+                handoff_json=self.handoff_json,
+                fixture_output_dir=self.fixture_output_dir,
+            )
+            _validate_fixture_payload_uri(
+                payload_uri=self.payload_uri,
+                fixture_output_dir=self.fixture_output_dir,
+            )
         _validate_metadata_items(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
         _validate_release_safe_probe_job(self)
@@ -306,6 +334,10 @@ def read_databricks_engine_probe_targets_json(path: str | Path) -> tuple[Databri
 
 def read_databricks_engine_probe_targets_file_json(path: str | Path) -> DatabricksEngineProbeTargetsFile:
     return _call_document_function("read_databricks_engine_probe_targets_file_json", path)
+
+
+def run_engine_probe_task(argv: Sequence[str] | None = None) -> int:
+    return _call_document_function("run_engine_probe_task", argv)
 
 
 def _cluster_config_from_engine_probe_job(
@@ -380,6 +412,30 @@ def _serving_backend(value: ServingBackend | str) -> ServingBackend:
     return _call_document_function("_serving_backend", value)
 
 
+def _payload_mode(value: PayloadMode | str) -> PayloadMode:
+    return _call_document_function("_payload_mode", value)
+
+
+def _validate_fixture_output_dir(fixture_output_dir: str) -> None:
+    return _call_document_function("_validate_fixture_output_dir", fixture_output_dir)
+
+
+def _validate_fixture_handoff_json(*, handoff_json: str, fixture_output_dir: str) -> None:
+    return _call_document_function(
+        "_validate_fixture_handoff_json",
+        handoff_json=handoff_json,
+        fixture_output_dir=fixture_output_dir,
+    )
+
+
+def _validate_fixture_payload_uri(*, payload_uri: str | None, fixture_output_dir: str) -> None:
+    return _call_document_function(
+        "_validate_fixture_payload_uri",
+        payload_uri=payload_uri,
+        fixture_output_dir=fixture_output_dir,
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     return _call_document_function("main", argv)
 
@@ -392,12 +448,17 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "write_databricks_engine_probe_runner_script": write_databricks_engine_probe_runner_script,
     "read_databricks_engine_probe_targets_json": read_databricks_engine_probe_targets_json,
     "read_databricks_engine_probe_targets_file_json": read_databricks_engine_probe_targets_file_json,
+    "run_engine_probe_task": run_engine_probe_task,
     "_validate_probe_target_backends": _validate_probe_target_backends,
     "_validate_probe_target_task_keys": _validate_probe_target_task_keys,
     "_validate_release_safe_probe_targets": _validate_release_safe_probe_targets,
     "_validate_release_safe_probe_job": _validate_release_safe_probe_job,
     "_validate_metadata_items": _validate_metadata_items,
     "_serving_backend": _serving_backend,
+    "_payload_mode": _payload_mode,
+    "_validate_fixture_output_dir": _validate_fixture_output_dir,
+    "_validate_fixture_handoff_json": _validate_fixture_handoff_json,
+    "_validate_fixture_payload_uri": _validate_fixture_payload_uri,
     "main": main,
 }
 _PATCH_LOCK = RLock()

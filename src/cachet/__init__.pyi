@@ -106,6 +106,7 @@ from document_kv_cache.databricks_engine_probe_job import (
     build_databricks_engine_probe_run_submit_payload as build_databricks_engine_probe_run_submit_payload,
     read_databricks_engine_probe_targets_file_json as read_databricks_engine_probe_targets_file_json,
     read_databricks_engine_probe_targets_json as read_databricks_engine_probe_targets_json,
+    run_engine_probe_task as run_engine_probe_task,
     write_databricks_engine_probe_matrix_run_submit_json as write_databricks_engine_probe_matrix_run_submit_json,
     write_databricks_engine_probe_run_submit_json as write_databricks_engine_probe_run_submit_json,
     write_databricks_engine_probe_runner_script as write_databricks_engine_probe_runner_script,
