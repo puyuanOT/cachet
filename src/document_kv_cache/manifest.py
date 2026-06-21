@@ -43,6 +43,9 @@ class InMemoryManifestStore:
 
     def put_many(self, refs: Iterable[ChunkRef]) -> None:
         refs_tuple = _chunk_refs_tuple(refs)
+        duplicate_keys = _duplicate_manifest_keys(refs_tuple)
+        if duplicate_keys:
+            raise ValueError("manifest refs contain duplicate cache keys: " + ", ".join(duplicate_keys))
         for ref in refs_tuple:
             self._refs[ref.key] = ref
 
@@ -69,6 +72,22 @@ def _chunk_refs_tuple(refs: Iterable[ChunkRef]) -> tuple[ChunkRef, ...]:
         if not isinstance(ref, ChunkRef):
             raise TypeError("refs entries must be ChunkRef instances")
     return refs_tuple
+
+
+def _duplicate_manifest_keys(refs: tuple[ChunkRef, ...]) -> tuple[str, ...]:
+    seen: set[KVCacheKey] = set()
+    duplicates: list[str] = []
+    duplicate_storage_keys: set[str] = set()
+    for ref in refs:
+        key = ref.key
+        if key not in seen:
+            seen.add(key)
+            continue
+        storage_key = key.storage_key()
+        if storage_key not in duplicate_storage_keys:
+            duplicates.append(storage_key)
+            duplicate_storage_keys.add(storage_key)
+    return tuple(duplicates)
 
 
 def _validate_document_id(document_id: object) -> None:
