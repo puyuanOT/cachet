@@ -1,0 +1,22 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 high-reasoning review found a P1 double-writer bug in Databricks fixture target parameters, then a narrower P2 fixture-owned alias case. Fixed by suppressing fixture-owned actions in Databricks runner parameters and using canonical artifact-path equivalence; final delta review found no blocking issues.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 297,
+  "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/297",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_plan.py; src/document_kv_cache/databricks_engine_probe_job.py; tests/test_benchmark_plan.py; tests/test_databricks_engine_probe_job.py; README.md; pr-evidence/derive-fixture-actions-path"
+  ],
+  "verification": [
+    "PYTHONPATH=src pytest tests/test_benchmark_plan.py::test_build_v1_benchmark_plan_derives_fixture_actions_output_json tests/test_benchmark_plan.py::test_main_derives_fixture_actions_for_release_planned_engine_probes tests/test_benchmark_plan.py::test_main_can_derive_planned_engine_probe_handoff_from_fixture_output_dir tests/test_benchmark_plan.py::test_engine_probe_targets_record_can_feed_databricks_matrix_helper -q; PYTHONPATH=src pytest tests/test_databricks_engine_probe_job.py::test_databricks_engine_probe_matrix_payload_skips_fixture_owned_actions_output tests/test_databricks_engine_probe_job.py::test_databricks_engine_probe_matrix_payload_skips_fixture_owned_actions_alias -q; PYTHONPATH=src pytest tests/test_databricks_engine_probe_job.py tests/test_benchmark_plan.py -q (175 passed); PYTHONPATH=src pytest -q (1379 passed); python -m compileall -q src tests; git diff --check"
+  ],
+  "what_changed": [
+    "Fixture-backed planned engine probes now derive the connector-action sidecar path from qwen3-v1-fixture.actions.json when actions_output_json is omitted; direct benchmark-plan commands and Databricks matrix runner parameters avoid rewriting fixture-owned action sidecars while preserving explicit custom action outputs."
+  ],
+  "why": "Release-safe fixture probe plans should not require a redundant actions-output argument, and fixture-generated connector actions should have one writer across local and Databricks execution paths."
+}

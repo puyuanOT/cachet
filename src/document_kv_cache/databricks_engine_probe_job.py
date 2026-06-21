@@ -24,6 +24,7 @@ from document_kv_cache.native_probe_factories import (
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
+from document_kv_cache.storage import local_path
 
 
 DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME = "document-kv-engine-probe"
@@ -499,7 +500,7 @@ def _runner_parameters(config: DatabricksEngineProbeJobConfig) -> list[str]:
             config.fixture_payload_mode.value,
             *parameters,
         ]
-    if config.actions_output_json is not None:
+    if config.actions_output_json is not None and not _engine_probe_uses_fixture_actions_output(config):
         parameters.extend(["--actions-output-json", config.actions_output_json])
     if config.payload_uri is not None:
         parameters.extend(["--payload-uri", config.payload_uri])
@@ -648,6 +649,26 @@ def _engine_probe_fixture_handoff_json(fixture_output_dir: str) -> str:
 
 def _engine_probe_fixture_payload_uri(fixture_output_dir: str) -> str:
     return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['payload']}"
+
+
+def _engine_probe_fixture_actions_json(fixture_output_dir: str) -> str:
+    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}"
+
+
+def _engine_probe_uses_fixture_actions_output(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+) -> bool:
+    return (
+        config.fixture_output_dir is not None
+        and config.actions_output_json is not None
+        and _same_artifact_path(config.actions_output_json, _engine_probe_fixture_actions_json(config.fixture_output_dir))
+    )
+
+
+def _same_artifact_path(left: str, right: str) -> bool:
+    return str(local_path(left).expanduser().resolve(strict=False)) == str(
+        local_path(right).expanduser().resolve(strict=False)
+    )
 
 
 def _validate_fixture_output_dir(fixture_output_dir: str) -> None:

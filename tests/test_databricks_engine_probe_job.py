@@ -407,6 +407,56 @@ def test_databricks_engine_probe_matrix_payload_runs_fixture_before_probe():
     ]
 
 
+def test_databricks_engine_probe_matrix_payload_skips_fixture_owned_actions_output():
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+    actions_json = f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}"
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(
+            _target(
+                "vllm",
+                handoff_json=f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+                fixture_output_dir=fixture_dir,
+                actions_output_json=actions_json,
+                payload_uri=None,
+            ),
+        ),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert "--fixture-output-dir" in parameters
+    assert "--actions-output-json" not in parameters
+
+
+def test_databricks_engine_probe_matrix_payload_skips_fixture_owned_actions_alias(tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+    actions_json = f"disk:{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}"
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(
+            _target(
+                "vllm",
+                handoff_json=str(fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]),
+                fixture_output_dir=str(fixture_dir),
+                actions_output_json=actions_json,
+                payload_uri=None,
+            ),
+        ),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert "--fixture-output-dir" in parameters
+    assert "--actions-output-json" not in parameters
+
+
 def test_build_databricks_engine_probe_matrix_payload_sets_backend_delegate_env_vars():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
