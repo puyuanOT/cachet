@@ -722,6 +722,24 @@ def test_build_release_bundle_strict_v1_rejects_wrong_plan_source_target(tmp_pat
     assert "benchmark plan execution sidecar plan_source.command_count must be a positive integer" in error
 
 
+def test_build_release_bundle_strict_v1_requires_matching_plan_source_suite_id(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    wrong_suite_record = _plan_execution_record(ok=True)
+    wrong_suite_record["plan_source"]["suite_id"] = "other-suite"
+    wrong_suite_plan = _write_json(source_dir / "wrong-suite-plan-execution.json", wrong_suite_record)
+
+    with pytest.raises(ValueError, match=r"plan_source\.suite_id must match V1 benchmark suite_id 'v1-suite'"):
+        build_release_bundle(
+            **{**release_kwargs, "plan_execution_jsons": (wrong_suite_plan,)},
+            output_dir=tmp_path / "strict-wrong-plan-source-suite",
+            require_complete_v1=True,
+        )
+
+
 def test_build_release_bundle_rejects_malformed_requirements_matrix(tmp_path):
     source_dir = tmp_path / "sources"
     release_kwargs = _strict_v1_release_bundle_kwargs(
