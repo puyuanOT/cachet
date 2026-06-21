@@ -1038,31 +1038,42 @@ def _validate_storage_results(results: Sequence[Any], issues: list[str]) -> None
         issues.append("storage benchmark results must be non-empty")
         return
     by_reader = {}
+    duplicate_readers: list[str] = []
     for index, result in enumerate(results):
         if not isinstance(result, Mapping):
             issues.append(f"storage benchmark results[{index}] must be a mapping")
             continue
         reader_id = result.get("reader_id")
-        by_reader[reader_id] = result
+        reader_label = str(reader_id) if isinstance(reader_id, str) and reader_id else f"results[{index}]"
+        if not isinstance(reader_id, str) or not reader_id:
+            issues.append(f"storage benchmark results[{index}].reader_id must be a supported release reader")
+        elif reader_id not in RELEASE_STORAGE_BENCHMARK_READERS:
+            issues.append(f"storage benchmark reader {reader_id} is not a supported release reader")
+        elif reader_id in by_reader and reader_id not in duplicate_readers:
+            duplicate_readers.append(reader_id)
+        else:
+            by_reader[reader_id] = result
         if result.get("errors") != 0:
-            issues.append(f"storage benchmark reader {reader_id} errors must be zero")
+            issues.append(f"storage benchmark reader {reader_label} errors must be zero")
         for field_name in ("total_reads", "total_bytes", "parallelism"):
             if not _is_positive_int(result.get(field_name)):
-                issues.append(f"storage benchmark reader {reader_id} {field_name} must be a positive integer")
+                issues.append(f"storage benchmark reader {reader_label} {field_name} must be a positive integer")
         wall_seconds = result.get("wall_seconds")
         if not _is_positive_number(wall_seconds):
-            issues.append(f"storage benchmark reader {reader_id} wall_seconds must be a positive finite number")
+            issues.append(f"storage benchmark reader {reader_label} wall_seconds must be a positive finite number")
         if result.get("latency_p50_seconds") is None or result.get("latency_p95_seconds") is None:
-            issues.append(f"storage benchmark reader {reader_id} must include latency p50/p95")
+            issues.append(f"storage benchmark reader {reader_label} must include latency p50/p95")
         else:
             _validate_latency_summary(
                 {"p50": result.get("latency_p50_seconds"), "p95": result.get("latency_p95_seconds")},
-                f"storage benchmark reader {reader_id} latency",
+                f"storage benchmark reader {reader_label} latency",
                 issues,
             )
         throughput = result.get("throughput_bytes_per_second")
         if not _is_positive_number(throughput):
-            issues.append(f"storage benchmark reader {reader_id} throughput must be a positive finite number")
+            issues.append(f"storage benchmark reader {reader_label} throughput must be a positive finite number")
+    if duplicate_readers:
+        issues.append(f"storage benchmark results duplicate readers: {', '.join(duplicate_readers)}")
     missing = tuple(reader for reader in RELEASE_STORAGE_BENCHMARK_READERS if reader not in by_reader)
     if missing:
         issues.append(f"storage benchmark results missing required readers: {', '.join(missing)}")
