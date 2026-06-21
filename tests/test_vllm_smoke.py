@@ -81,7 +81,8 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert args[args.index("--max-num-seqs") + 1] == "2"
     assert args[args.index("--gpu-memory-utilization") + 1] == "0.85"
     assert "--trust-remote-code" in args
-    assert "--disable-log-requests" in args
+    assert "--no-enable-log-requests" in args
+    assert "--disable-log-requests" not in args
 
 
 def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
