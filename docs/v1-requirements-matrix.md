@@ -57,6 +57,28 @@ mean:
 
 ## Remaining V1 Release Gates
 
+- Candidate target g6/L4 prepared-context vLLM smoke evidence now exists for
+  `cachet_vllm_prepared_long_20260621_121543_vllm_prepared_long` on a
+  single-node `g6.8xlarge`: all four datasets completed with no errors,
+  prompt-token preflight stayed under `max_model_len=32768`, and the V1
+  benchmark evidence block was `ok=true`. This run proves the plain vLLM
+  OpenAI-compatible serving path, Qwen3 4B Instruct prompt budget, latency
+  accounting, and answer-found quality checks at roughly 19k-29k prompt tokens.
+  Artifact locations and SHA-256 fingerprints are recorded in
+  `pr-evidence/document-vllm-prepared-evidence/README.md`.
+  It is not yet publishable as strict cache-release evidence because the cache
+  arm still used `prompt_text_mode=logical`; strict release evidence requires a
+  KV-aware adapter path where the cache arm sends only the runtime suffix and
+  reports `runtime_prompt_tokens < logical_prompt_tokens`. It also does not
+  satisfy the strict benchmark Databricks run-status identity or the native
+  vLLM/SGLang connector probe, connector action, and launch-config gates.
+- Candidate target g6/L4 UC storage-reader evidence exists for
+  `cachet_readiness_20260621_095026`: Memory, Disk, and Unity Catalog readers
+  all completed with zero errors against a real UC Volume. Its artifact
+  locations and SHA-256 fingerprints are recorded in
+  `pr-evidence/document-vllm-prepared-evidence/README.md`; the remaining gate is
+  to bundle that storage benchmark JSON and Databricks status sidecar with the
+  full strict release artifact set.
 - Run and publish the complete strict release bundle from target AWS g6/L4/Unity
   Catalog runs with the full strict artifact set: release evidence sidecar,
   preflight sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang

@@ -1,0 +1,27 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 initially blocked because the matrix asserted benchmark/storage evidence without tracked artifact traceability and slightly overstated the storage gate. After adding pr-evidence/document-vllm-prepared-evidence/README.md with artifact paths/SHA-256s and candidate-scoped wording, re-review approved with no findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 293,
+  "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/293",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "docs/v1-requirements-matrix.md",
+    "pr-evidence/document-vllm-prepared-evidence/README.md",
+    "pr-evidence/document-vllm-prepared-evidence/pr-evidence.json"
+  ],
+  "verification": [
+    "pytest tests/test_project_governance.py tests/test_release_bundle.py::test_build_release_bundle_strict_v1_requires_requirements_matrix tests/test_release_bundle.py::test_build_release_bundle_rejects_malformed_requirements_matrix tests/test_release_bundle.py::test_build_release_bundle_rejects_requirements_matrix_missing_strict_artifact_label tests/test_release_bundle.py::test_release_bundle_cli_help_documents_strict_release_requirements -q -> 47 passed",
+    "PYTHONPATH=src python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/cachet-repository-hygiene-pr293.json -> ok=true",
+    "GPT-5.5 review initially blocked traceability/wording; re-review approved after adding artifact fingerprints and candidate-scoped release-gate language."
+  ],
+  "what_changed": [
+    "Recorded candidate target g6/L4 prepared vLLM smoke evidence and its strict cache-release gap in the V1 requirements matrix.",
+    "Added a tracked evidence README with run IDs, UC artifact roots, local artifact-copy paths, and SHA-256 fingerprints for the prepared vLLM smoke and UC storage benchmark artifacts."
+  ],
+  "why": "The latest Databricks run validates the plain vLLM OpenAI-compatible path and storage benchmark, but strict release evidence still requires runtime-suffix KV-aware cache measurements plus native vLLM/SGLang probe/action/launch artifacts."
+}
