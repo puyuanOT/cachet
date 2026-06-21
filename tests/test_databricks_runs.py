@@ -244,6 +244,14 @@ def test_databricks_run_status_sidecar_validation_rejects_expected_hardware_targ
     )
 
 
+def test_validate_databricks_run_status_sidecar_honors_expected_hardware_target():
+    status_record = _valid_databricks_run_status_record()
+
+    validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g5")
+    with pytest.raises(ValueError, match=r"hardware_target 'aws-g6-l4'"):
+        validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g6-l4")
+
+
 def test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records():
     status_record = _valid_databricks_run_status_record()
     wrapped_record = {"ok": True, "action": "get", "summary": status_record}
@@ -909,6 +917,11 @@ def test_legacy_databricks_runs_forwards_expected_hardware_target_keyword():
 
     assert legacy_issues == public_issues
     assert any("hardware_target 'aws-g6-l4'" in issue for issue in legacy_issues)
+    with pytest.raises(ValueError, match=r"hardware_target 'aws-g6-l4'"):
+        legacy_databricks_runs.validate_databricks_run_status_sidecar(
+            status_record,
+            expected_hardware_target="aws-g6-l4",
+        )
 
 
 def test_legacy_workspace_config_factory_returns_picklable_legacy_config():

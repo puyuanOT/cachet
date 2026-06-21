@@ -1205,7 +1205,9 @@ need to parse or persist the full Jobs API response. Add `--include-response`
 only when debugging requires the raw `runs/get` payload.
 Use `validate_databricks_run_status_sidecar` or
 `databricks_run_status_sidecar_issues` to preflight release-oriented run-status
-sidecars before assembling a release bundle.
+sidecars before assembling a release bundle. Pass
+`expected_hardware_target="aws-g6-l4"` for V1 release checks so stale g5/g6
+status sidecars cannot be reused across target profiles.
 
 Workspace-specific automation can still POST the payload itself after applying
 the organization’s auth, cluster policy, and asset-upload conventions. Teams
