@@ -9,6 +9,10 @@ import pytest
 
 import document_kv_cache.databricks_runs as public_databricks_runs
 import restaurant_kv_serving.databricks_runs as legacy_databricks_runs
+from document_kv_cache._hardware_targets import (
+    HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES,
+    SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
+)
 from document_kv_cache.databricks_runs import (
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
@@ -27,6 +31,17 @@ from document_kv_cache.databricks_runs import (
     validate_databricks_run_status_sidecar,
     write_databricks_run_response_json,
 )
+
+
+def test_databricks_run_status_uses_shared_hardware_target_prefixes():
+    assert (
+        public_databricks_runs._SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
+        == SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
+    )
+    assert (
+        public_databricks_runs._HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
+        == HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
+    )
 
 
 def test_workspace_config_from_env_normalizes_host_and_hides_token_in_repr():

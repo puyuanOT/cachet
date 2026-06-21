@@ -21,7 +21,7 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators require AWS g6/L4 node summaries. | Run and attach terminal successful Databricks status sidecars for benchmark, storage, and engine-probe jobs. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy. | Run and attach terminal successful Databricks status sidecars for benchmark, storage, and engine-probe jobs. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
 | Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. | Publish complete V1 benchmark reports from target AWS g6/L4 runs. |
 | Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. | Run the full dataset plan and bundle the resulting release evidence. |
