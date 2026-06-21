@@ -38,7 +38,7 @@ databricks = [
   "databricks-sdk==0.118.0",
 ]
 test = [
-  "pytest==9.1.0",
+  "pytest==9.1.1",
 ]
 
 [project.scripts]
