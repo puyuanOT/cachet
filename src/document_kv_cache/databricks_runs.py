@@ -40,6 +40,12 @@ DEFAULT_DATABRICKS_TOKEN_ENV = "DATABRICKS_TOKEN"
 DEFAULT_DATABRICKS_TIMEOUT_SECONDS = 60.0
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
 DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = "document_kv.databricks_run_submit_payload.v1"
+_DATABRICKS_GPU_TYPE_FIELD = "aws_single_node_gpu_type"
+_LEGACY_DATABRICKS_GPU_TYPE_FIELD = "aws_g5_node_type"
+_DATABRICKS_GPU_TYPE_FIELDS = (
+    _DATABRICKS_GPU_TYPE_FIELD,
+    _LEGACY_DATABRICKS_GPU_TYPE_FIELD,
+)
 DATABRICKS_TERMINAL_LIFE_CYCLE_STATES = frozenset({"TERMINATED", "SKIPPED", "INTERNAL_ERROR"})
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _DATABRICKS_RUN_STATUS_WRAPPER_KEYS = frozenset({"ok", "action", "summary"})
@@ -89,8 +95,7 @@ _DATABRICKS_SUBMIT_PAYLOAD_KEYS = frozenset(
         "spark_versions",
         "data_security_modes",
         "single_node",
-        "aws_single_node_gpu_type",
-        "aws_g5_node_type",
+        *_DATABRICKS_GPU_TYPE_FIELDS,
     }
 )
 _DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS = frozenset(
@@ -269,8 +274,8 @@ def summarize_databricks_run_submit_payload(
         "spark_versions": spark_versions,
         "data_security_modes": data_security_modes,
         "single_node": bool(task_summaries) and all(summary["single_node"] for summary in task_summaries),
-        "aws_single_node_gpu_type": aws_single_node_gpu_type,
-        "aws_g5_node_type": aws_single_node_gpu_type,
+        _DATABRICKS_GPU_TYPE_FIELD: aws_single_node_gpu_type,
+        _LEGACY_DATABRICKS_GPU_TYPE_FIELD: aws_single_node_gpu_type,
     }
 
 
@@ -476,11 +481,7 @@ def _submit_payload_gpu_type_supported(record: Mapping[str, Any]) -> bool:
 
 
 def _present_gpu_type_fields(record: Mapping[str, Any]) -> tuple[str, ...]:
-    return tuple(
-        field_name
-        for field_name in ("aws_single_node_gpu_type", "aws_g5_node_type")
-        if field_name in record
-    )
+    return tuple(field_name for field_name in _DATABRICKS_GPU_TYPE_FIELDS if field_name in record)
 
 
 def _sha256_hex(payload: bytes) -> str:
@@ -682,22 +683,26 @@ def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[
     for field_name in ("task_keys", "node_type_ids", "driver_node_type_ids", "spark_versions", "data_security_modes"):
         issues.extend(_list_of_strings_field(record, field_name, "Databricks run status sidecar submit_payload"))
     issues.extend(_bool_field(record, "single_node", "Databricks run status sidecar submit_payload"))
-    if "aws_single_node_gpu_type" not in record and "aws_g5_node_type" not in record:
+    if not _present_gpu_type_fields(record):
         issues.append(
             "Databricks run status sidecar submit_payload.aws_single_node_gpu_type or aws_g5_node_type must be present"
         )
-    for field_name in ("aws_single_node_gpu_type", "aws_g5_node_type"):
+    for field_name in _DATABRICKS_GPU_TYPE_FIELDS:
         if field_name in record:
             issues.extend(_bool_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    if (
-        type(record.get("aws_single_node_gpu_type")) is bool
-        and type(record.get("aws_g5_node_type")) is bool
-        and record["aws_single_node_gpu_type"] != record["aws_g5_node_type"]
-    ):
+    if _gpu_type_fields_contradict(record):
         issues.append(
             "Databricks run status sidecar submit_payload.aws_single_node_gpu_type and aws_g5_node_type must match"
         )
     return tuple(issues)
+
+
+def _gpu_type_fields_contradict(record: Mapping[str, Any]) -> bool:
+    return (
+        type(record.get(_DATABRICKS_GPU_TYPE_FIELD)) is bool
+        and type(record.get(_LEGACY_DATABRICKS_GPU_TYPE_FIELD)) is bool
+        and record[_DATABRICKS_GPU_TYPE_FIELD] != record[_LEGACY_DATABRICKS_GPU_TYPE_FIELD]
+    )
 
 
 def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
