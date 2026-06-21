@@ -1267,6 +1267,32 @@ def test_evaluate_release_evidence_rejects_latency_count_mismatch():
     )
 
 
+def test_evaluate_release_evidence_rejects_latency_summary_mismatch():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "ttft": {"count": 1, "mean": 1.5, "p50": 1.5, "p95": 1.5},
+        "time_to_completion": {"count": 1, "mean": 2.5, "p50": 2.5, "p95": 2.5},
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("ttft mean must match measurements" in issue for issue in evidence.issues)
+    assert any("ttft p50 must match measurements" in issue for issue in evidence.issues)
+    assert any(
+        "time_to_completion p95 must match measurements" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_impossible_latency_measurements_and_summaries():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
