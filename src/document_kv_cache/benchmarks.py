@@ -132,6 +132,10 @@ class BenchmarkSuite:
         for index, example in enumerate(examples):
             if not isinstance(example, BenchmarkExample):
                 raise TypeError(f"examples[{index}] must be a BenchmarkExample")
+        duplicate_examples = _duplicate_labels(_example_key(example) for example in examples)
+        if duplicate_examples:
+            duplicate_ids = ", ".join(duplicate_examples)
+            raise ValueError(f"examples contain duplicate dataset/example ids: {duplicate_ids}")
         datasets = _tuple_from_sequence(self.datasets, "datasets")
         if not datasets:
             raise ValueError("datasets must include at least one V1 dataset")
@@ -678,6 +682,10 @@ def _comparison_has_missing_metrics(comparison: BenchmarkComparison) -> bool:
 
 def _row_key(dataset: str, arm_id: str) -> str:
     return f"{dataset}:{arm_id}"
+
+
+def _example_key(example: BenchmarkExample) -> str:
+    return f"{example.dataset}:{example.example_id}"
 
 
 def _comparison_key(comparison: BenchmarkComparison) -> str:
