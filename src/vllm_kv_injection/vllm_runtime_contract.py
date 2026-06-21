@@ -2,56 +2,28 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.metadata as package_metadata
 from collections.abc import Mapping, Sequence
-from types import MappingProxyType
+from dataclasses import dataclass
 from typing import Any
 
-VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE = "vllm_kv_injection.kv_connector_v1_contract.v1"
-VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION = 1
-VLLM_KV_CONNECTOR_V1_RUNTIME = "vllm-kv-connector-v1"
-VLLM_KV_CONNECTOR_V1_DOC_URL = (
-    "https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/"
+from document_kv_cache.vllm_runtime_contract_data import (
+    VLLM_KV_CONNECTOR_V1_CONTRACT,
+    VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE,
+    VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION,
+    VLLM_KV_CONNECTOR_V1_DOC_URL,
+    VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+    VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+    VLLM_KV_CONNECTOR_V1_RUNTIME,
+    vllm_kv_connector_v1_contract_to_record,
 )
-VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS = (
-    "get_num_new_matched_tokens",
-    "update_state_after_alloc",
-    "build_connector_meta",
-    "register_kv_caches",
-    "start_load_kv",
-    "wait_for_layer_load",
-    "save_kv_layer",
-    "wait_for_save",
-    "request_finished",
-    "request_finished_all_groups",
+VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_RECORD_TYPE = (
+    "vllm_kv_injection.installed_kv_connector_v1_contract.v1"
 )
-VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS = (
-    "bind_connector_metadata",
-    "bind_gpu_block_pool",
-    "build_connector_worker_meta",
-    "build_kv_connector_stats",
-    "build_prom_metrics",
-    "clear_connector_metadata",
-    "get_block_ids_with_load_errors",
-    "get_finished",
-    "get_finished_count",
-    "get_handshake_metadata",
-    "get_kv_connector_kv_cache_events",
-    "get_kv_connector_stats",
-    "get_required_kvcache_layout",
-    "handle_preemptions",
-    "has_pending_push_work",
-    "has_connector_metadata",
-    "on_new_request",
-    "register_cross_layers_kv_cache",
-    "requires_piecewise_for_cudagraph",
-    "reset_cache",
-    "set_host_xfer_buffer_ops",
-    "set_xfer_handshake_metadata",
-    "set_xfer_handshake_metadata_pp_aware",
-    "shutdown",
-    "take_events",
-    "update_connector_output",
-)
+VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION = 1
+VLLM_KV_CONNECTOR_V1_BASE_MODULE = "vllm.distributed.kv_transfer.kv_connector.v1.base"
+_VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES = ("prefer_cross_layer_blocks", "role")
 _VLLM_KV_CONNECTOR_V1_CONTRACT_KEYS = frozenset(
     {
         "record_type",
@@ -63,25 +35,67 @@ _VLLM_KV_CONNECTOR_V1_CONTRACT_KEYS = frozenset(
         "handoff_contract",
     }
 )
-
-
-def vllm_kv_connector_v1_contract_to_record(
-    *,
-    handoff_contract: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return the vLLM V1 lifecycle that a native adapter must cover."""
-
-    record: dict[str, Any] = {
-        "record_type": VLLM_KV_CONNECTOR_V1_CONTRACT_RECORD_TYPE,
-        "schema_version": VLLM_KV_CONNECTOR_V1_CONTRACT_SCHEMA_VERSION,
-        "runtime": VLLM_KV_CONNECTOR_V1_RUNTIME,
-        "doc_url": VLLM_KV_CONNECTOR_V1_DOC_URL,
-        "required_methods": list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS),
-        "optional_methods": list(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS),
+_VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_KEYS = frozenset(
+    {
+        "record_type",
+        "schema_version",
+        "runtime",
+        "base_module",
+        "package_name",
+        "package_version",
+        "importable",
+        "import_error_type",
+        "import_error",
+        "required_methods",
+        "optional_methods",
+        "allowed_properties",
+        "installed_methods",
+        "installed_properties",
+        "missing_required_methods",
+        "missing_optional_methods",
+        "extra_installed_methods",
+        "extra_installed_properties",
+        "ok",
     }
-    if handoff_contract is not None:
-        record["handoff_contract"] = dict(handoff_contract)
-    return record
+)
+
+
+@dataclass(frozen=True, slots=True)
+class VLLMInstalledKVConnectorContract:
+    """Comparison between Cachet's vLLM V1 contract and an installed runtime."""
+
+    package_version: str | None
+    importable: bool
+    installed_methods: tuple[str, ...]
+    installed_properties: tuple[str, ...]
+    import_error_type: str | None = None
+    import_error: str | None = None
+
+    @property
+    def missing_required_methods(self) -> tuple[str, ...]:
+        return _missing(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS, self.installed_methods)
+
+    @property
+    def missing_optional_methods(self) -> tuple[str, ...]:
+        return _missing(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS, self.installed_methods)
+
+    @property
+    def extra_installed_methods(self) -> tuple[str, ...]:
+        allowed = (*VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS, *VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS)
+        return _extra(self.installed_methods, allowed)
+
+    @property
+    def extra_installed_properties(self) -> tuple[str, ...]:
+        return _extra(self.installed_properties, _VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES)
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.importable
+            and not self.missing_required_methods
+            and not self.extra_installed_methods
+            and not self.extra_installed_properties
+        )
 
 
 def vllm_kv_connector_v1_method_issues(connector: object) -> tuple[str, ...]:
@@ -111,6 +125,122 @@ def validate_vllm_kv_connector_v1_contract_record(record: Mapping[str, Any]) -> 
     issues = vllm_kv_connector_v1_contract_record_issues(record)
     if issues:
         raise ValueError("; ".join(issues))
+
+
+def inspect_installed_vllm_kv_connector_v1_contract() -> VLLMInstalledKVConnectorContract:
+    """Inspect the installed vLLM runtime's V1 KV connector public API."""
+
+    package_version = _package_version("vllm")
+    try:
+        base_module = importlib.import_module(VLLM_KV_CONNECTOR_V1_BASE_MODULE)
+        base_class = getattr(base_module, "KVConnectorBase_V1")
+        hma_class = getattr(base_module, "SupportsHMA")
+    except Exception as exc:  # pragma: no cover - exact dependency failures vary by runtime.
+        return VLLMInstalledKVConnectorContract(
+            package_version=package_version,
+            importable=False,
+            installed_methods=(),
+            installed_properties=(),
+            import_error_type=type(exc).__name__,
+            import_error=str(exc),
+        )
+    methods, properties = _vllm_kv_connector_public_surface(base_class, hma_class)
+    return VLLMInstalledKVConnectorContract(
+        package_version=package_version,
+        importable=True,
+        installed_methods=methods,
+        installed_properties=properties,
+    )
+
+
+def installed_vllm_kv_connector_v1_contract_to_record(
+    inspection: VLLMInstalledKVConnectorContract | None = None,
+) -> dict[str, Any]:
+    """Serialize installed vLLM KV connector contract drift diagnostics."""
+
+    observed = inspection or inspect_installed_vllm_kv_connector_v1_contract()
+    return {
+        "record_type": VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_RECORD_TYPE,
+        "schema_version": VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION,
+        "runtime": VLLM_KV_CONNECTOR_V1_RUNTIME,
+        "base_module": VLLM_KV_CONNECTOR_V1_BASE_MODULE,
+        "package_name": "vllm",
+        "package_version": observed.package_version,
+        "importable": observed.importable,
+        "import_error_type": observed.import_error_type,
+        "import_error": observed.import_error,
+        "required_methods": list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS),
+        "optional_methods": list(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS),
+        "allowed_properties": list(_VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES),
+        "installed_methods": list(observed.installed_methods),
+        "installed_properties": list(observed.installed_properties),
+        "missing_required_methods": list(observed.missing_required_methods),
+        "missing_optional_methods": list(observed.missing_optional_methods),
+        "extra_installed_methods": list(observed.extra_installed_methods),
+        "extra_installed_properties": list(observed.extra_installed_properties),
+        "ok": observed.ok,
+    }
+
+
+def validate_installed_vllm_kv_connector_v1_contract_record(record: Mapping[str, Any]) -> None:
+    """Validate an installed vLLM KV connector contract diagnostic record."""
+
+    issues = installed_vllm_kv_connector_v1_contract_record_issues(record)
+    if issues:
+        raise ValueError("; ".join(issues))
+
+
+def installed_vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return structural issues for an installed-runtime diagnostic record."""
+
+    issues: list[str] = []
+    unexpected = sorted(str(key) for key in record if key not in _VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_KEYS)
+    if unexpected:
+        issues.append(f"installed vLLM KV connector contract has unsupported keys: {unexpected}")
+    if record.get("record_type") != VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_RECORD_TYPE:
+        issues.append(
+            "installed vLLM KV connector contract record_type must be "
+            f"{VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_RECORD_TYPE!r}"
+        )
+    if record.get("schema_version") != VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION:
+        issues.append(
+            "installed vLLM KV connector contract schema_version must be "
+            f"{VLLM_KV_CONNECTOR_V1_INSTALLED_CONTRACT_SCHEMA_VERSION}"
+        )
+    if record.get("runtime") != VLLM_KV_CONNECTOR_V1_RUNTIME:
+        issues.append(f"installed vLLM KV connector contract runtime must be {VLLM_KV_CONNECTOR_V1_RUNTIME!r}")
+    if record.get("base_module") != VLLM_KV_CONNECTOR_V1_BASE_MODULE:
+        issues.append("installed vLLM KV connector contract base_module must point at KVConnectorBase_V1")
+    if record.get("package_name") != "vllm":
+        issues.append("installed vLLM KV connector contract package_name must be 'vllm'")
+    if type(record.get("importable")) is not bool:
+        issues.append("installed vLLM KV connector contract importable must be boolean")
+    if type(record.get("ok")) is not bool:
+        issues.append("installed vLLM KV connector contract ok must be boolean")
+    if record.get("import_error_type") is not None and not isinstance(record.get("import_error_type"), str):
+        issues.append("installed vLLM KV connector contract import_error_type must be string or null")
+    if record.get("import_error") is not None and not isinstance(record.get("import_error"), str):
+        issues.append("installed vLLM KV connector contract import_error must be string or null")
+    for field_name in (
+        "required_methods",
+        "optional_methods",
+        "allowed_properties",
+        "installed_methods",
+        "installed_properties",
+        "missing_required_methods",
+        "missing_optional_methods",
+        "extra_installed_methods",
+        "extra_installed_properties",
+    ):
+        if _string_list(record.get(field_name)) is None:
+            issues.append(f"installed vLLM KV connector contract {field_name} must be a string array")
+    if _string_list(record.get("required_methods")) != list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS):
+        issues.append("installed vLLM KV connector contract required_methods must match the package contract")
+    if _string_list(record.get("optional_methods")) != list(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS):
+        issues.append("installed vLLM KV connector contract optional_methods must match the package contract")
+    if _string_list(record.get("allowed_properties")) != list(_VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES):
+        issues.append("installed vLLM KV connector contract allowed_properties must match the package contract")
+    return tuple(issues)
 
 
 def vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
@@ -150,6 +280,41 @@ def _string_list(value: Any) -> list[str] | None:
     return None
 
 
-VLLM_KV_CONNECTOR_V1_CONTRACT: Mapping[str, Any] = MappingProxyType(
-    vllm_kv_connector_v1_contract_to_record()
-)
+def _vllm_kv_connector_public_surface(base_class: type, hma_class: type) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    methods: set[str] = set()
+    properties: set[str] = set()
+    for inspected_class in (base_class, hma_class):
+        class_methods, class_properties = _class_public_surface(inspected_class)
+        methods.update(class_methods)
+        properties.update(class_properties)
+    return tuple(sorted(methods)), tuple(sorted(properties))
+
+
+def _class_public_surface(value: type) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    methods: list[str] = []
+    properties: list[str] = []
+    for name, attribute in vars(value).items():
+        if name.startswith("_"):
+            continue
+        if isinstance(attribute, property):
+            properties.append(name)
+        elif isinstance(attribute, (classmethod, staticmethod)) or callable(attribute):
+            methods.append(name)
+    return tuple(sorted(methods)), tuple(sorted(properties))
+
+
+def _missing(expected: Sequence[str], observed: Sequence[str]) -> tuple[str, ...]:
+    observed_set = set(observed)
+    return tuple(item for item in expected if item not in observed_set)
+
+
+def _extra(observed: Sequence[str], expected: Sequence[str]) -> tuple[str, ...]:
+    expected_set = set(expected)
+    return tuple(item for item in observed if item not in expected_set)
+
+
+def _package_version(package_name: str) -> str | None:
+    try:
+        return package_metadata.version(package_name)
+    except package_metadata.PackageNotFoundError:
+        return None
