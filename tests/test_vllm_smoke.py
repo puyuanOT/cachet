@@ -40,7 +40,9 @@ def test_dependency_constraints_match_pinned_g5_vllm_stack():
     assert TRANSFORMERS_CONSTRAINT == "transformers==5.12.1"
     assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.20.1"
     assert TOKENIZERS_CONSTRAINT == "tokenizers==0.22.2"
-    assert NUMPY_CONSTRAINT == "numpy==2.4.6"
+    assert NUMPY_CONSTRAINT == "numpy==2.3.5"
+    numpy_version = tuple(int(part) for part in NUMPY_CONSTRAINT.split("==", maxsplit=1)[1].split("."))
+    assert (1, 25, 0) <= numpy_version < (2, 4, 0)
     assert FASTAPI_CONSTRAINT == "fastapi[standard]==0.136.0"
     fastapi_version = tuple(int(part) for part in FASTAPI_CONSTRAINT.split("==", maxsplit=1)[1].split("."))
     assert (0, 115, 0) <= fastapi_version < (0, 137, 0)
