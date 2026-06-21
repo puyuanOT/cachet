@@ -1,0 +1,22 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 high-reasoning review found one P2: strict benchmark plans accepted a single explicit launch-config sidecar and deferred backend completeness to release_bundle. Fixed by requiring the required number of distinct vLLM/SGLang sidecar paths in strict planning and adding a regression test; delta review found no blocking issues.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 296,
+  "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/296",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_plan.py; src/document_kv_cache/benchmark_plan_executor.py; tests/test_benchmark_plan.py; README.md; docs/v1-requirements-matrix.md; pr-evidence/benchmark-plan-launch-configs"
+  ],
+  "verification": [
+    "PYTHONPATH=src pytest tests/test_benchmark_plan_executor.py::test_execute_benchmark_job_plan_accepts_generated_benchmark_plan_record -q; PYTHONPATH=src pytest tests/test_benchmark_plan.py::test_benchmark_plan_rejects_incomplete_strict_release_bundle tests/test_benchmark_plan.py::test_main_can_include_release_bundle_command -q; PYTHONPATH=src pytest -q (1375 passed); python -m compileall -q src tests; git diff --check"
+  ],
+  "what_changed": [
+    "Benchmark plans can generate vLLM/SGLang engine launch-config sidecars through --engine-launch-config-output-dir, include generated paths in strict release bundle records/commands, and execute those generated-plan records through the benchmark-plan executor schema."
+  ],
+  "why": "Strict release bundle planning should not depend on hand-written vLLM/SGLang launch JSON now that the package owns validated launch-config builders; the planner should also reject incomplete launch-config sidecar sets before emitting strict plans."
+}

@@ -33,6 +33,10 @@ DEFAULT_STORAGE_BENCHMARK_REPEATS = 4
 DEFAULT_STORAGE_BENCHMARK_PARALLELISM = 4
 DEFAULT_STORAGE_BENCHMARK_ALIGN_BYTES = 4096
 DEFAULT_STORAGE_BENCHMARK_PLAN_READERS = ("memory", "disk")
+DEFAULT_ENGINE_LAUNCH_CONFIG_FILENAMES = {
+    ServingBackend.VLLM: "vllm-launch-config.json",
+    ServingBackend.SGLANG: "sglang-launch-config.json",
+}
 STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_COUNT = 3
 STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
     "exactly three distinct Databricks run-status sidecars "
@@ -302,6 +306,7 @@ class BenchmarkPlanConfig:
     repository_hygiene_output_json: str | None = None
     github_governance_output_json: str | None = None
     release_preflight_output_json: str | None = None
+    engine_launch_config_output_dir: str | None = None
 
     def __post_init__(self) -> None:
         if not self.suite_id:
@@ -345,6 +350,8 @@ class BenchmarkPlanConfig:
             raise ValueError("native_probe_factories_output_json must be non-empty when provided")
         if self.release_preflight_output_json is not None and not self.release_preflight_output_json:
             raise ValueError("release_preflight_output_json must be non-empty when provided")
+        if self.engine_launch_config_output_dir is not None and not self.engine_launch_config_output_dir:
+            raise ValueError("engine_launch_config_output_dir must be non-empty when provided")
         object.__setattr__(self, "engine_probes", tuple(self.engine_probes))
         if len({probe.backend for probe in self.engine_probes}) != len(self.engine_probes):
             raise ValueError("engine_probes must not contain duplicate backends")
@@ -354,6 +361,7 @@ class BenchmarkPlanConfig:
         _validate_release_bundle_github_governance_path(self)
         _validate_release_bundle_repository_hygiene_path(self)
         _validate_release_bundle_preflight_path(self)
+        _validate_release_bundle_engine_launch_config_paths(self)
         if self.release_preflight_output_json is not None and self.release_evidence is None:
             raise ValueError("release_preflight_output_json requires release_evidence")
         if (
@@ -471,6 +479,9 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
         post_benchmark_commands.append(_repository_hygiene_command(config))
     if config.native_probe_factories_output_json is not None:
         post_benchmark_commands.append(_native_probe_factories_command(config))
+    if config.engine_launch_config_output_dir is not None:
+        for backend in ServingBackend:
+            post_benchmark_commands.append(_engine_launch_config_command(config, backend))
     if config.release_preflight_output_json is not None:
         post_benchmark_commands.append(_release_preflight_command(config))
     if config.release_evidence is not None:
@@ -489,6 +500,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
             "When configured, GitHub governance inspection runs before release validation and can be bundled as release governance evidence.",
             "When configured, repository hygiene inspection runs before release validation and can be bundled as release hygiene evidence.",
             "When configured, native probe factory diagnostics run before release validation and can be bundled as release handoff evidence.",
+            "When configured, vLLM/SGLang launch-config sidecars are generated before release bundle assembly.",
             "When configured, deterministic Qwen3 engine-probe fixtures are generated immediately before native engine probes.",
             "When configured, release-evidence preflight runs before release validation and can be bundled as release input evidence.",
             "When configured, release evidence validation runs last and checks V1, storage, and native engine-probe artifacts together.",
@@ -558,6 +570,7 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         "repository_hygiene_output_json": plan.config.repository_hygiene_output_json,
         "native_probe_factories_output_json": plan.config.native_probe_factories_output_json,
         "release_preflight_output_json": plan.config.release_preflight_output_json,
+        "engine_launch_config_output_dir": plan.config.engine_launch_config_output_dir,
         "planned_engine_probes": [_planned_engine_probe_to_record(probe) for probe in plan.config.engine_probes],
         "notes": list(plan.notes),
     }
@@ -817,6 +830,22 @@ def _native_probe_factories_command(config: BenchmarkPlanConfig) -> BenchmarkCom
     )
 
 
+def _engine_launch_config_command(config: BenchmarkPlanConfig, backend: ServingBackend) -> BenchmarkCommand:
+    if config.engine_launch_config_output_dir is None:
+        raise ValueError("engine_launch_config_output_dir must be configured")
+    return BenchmarkCommand(
+        name=f"write-{backend.value}-engine-launch-config",
+        argv=(
+            config.python_executable,
+            "-m",
+            "document_kv_cache.engine_launch_config",
+            f"build-{backend.value}",
+            "--output-json",
+            _engine_launch_config_json(config.engine_launch_config_output_dir, backend),
+        ),
+    )
+
+
 def _release_evidence_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     release_config = config.release_evidence
     if release_config is None:
@@ -886,7 +915,7 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--engine-probe-json", engine_probe_json)
     for engine_action_json in _release_engine_action_jsons(config):
         argv = (*argv, "--engine-actions-json", engine_action_json)
-    for engine_launch_config_json in bundle_config.engine_launch_config_jsons:
+    for engine_launch_config_json in _release_bundle_engine_launch_config_jsons(config):
         argv = (*argv, "--engine-launch-config-json", engine_launch_config_json)
     preflight_json = _release_bundle_preflight_json(config)
     if preflight_json is not None:
@@ -930,7 +959,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "storage_benchmark_json": _release_storage_benchmark_json(config),
         "engine_probe_jsons": list(_release_engine_probe_jsons(config)),
         "engine_actions_jsons": list(_release_engine_action_jsons(config)),
-        "engine_launch_config_jsons": list(bundle_config.engine_launch_config_jsons),
+        "engine_launch_config_jsons": list(_release_bundle_engine_launch_config_jsons(config)),
         "release_evidence_json": release_config.output_json,
         "preflight_json": _release_bundle_preflight_json(config),
         "plan_execution_jsons": list(bundle_config.plan_execution_jsons),
@@ -974,6 +1003,29 @@ def _validate_release_bundle_preflight_path(config: BenchmarkPlanConfig) -> None
         generated_path=config.release_preflight_output_json,
         explicit_path=bundle_config.preflight_json,
     )
+
+
+def _validate_release_bundle_engine_launch_config_paths(config: BenchmarkPlanConfig) -> None:
+    bundle_config = config.release_bundle
+    if (
+        bundle_config is None
+        or config.engine_launch_config_output_dir is None
+        or not bundle_config.engine_launch_config_jsons
+    ):
+        return
+    generated_paths = {
+        _canonical_artifact_path(path)
+        for path in _generated_engine_launch_config_jsons(config)
+    }
+    explicit_paths = {
+        _canonical_artifact_path(path)
+        for path in bundle_config.engine_launch_config_jsons
+    }
+    if explicit_paths != generated_paths:
+        raise ValueError(
+            "release bundle engine_launch_config_jsons must match engine_launch_config_output_dir "
+            "when both are provided"
+        )
 
 
 def _validate_release_bundle_github_governance_path(config: BenchmarkPlanConfig) -> None:
@@ -1028,7 +1080,7 @@ def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None
         missing.append("tested package wheel")
     if not bundle_config.pr_evidence_jsons:
         missing.append("PR evidence sidecar")
-    if not bundle_config.engine_launch_config_jsons:
+    if not _has_strict_release_bundle_engine_launch_config_sidecars(config):
         missing.append("vLLM/SGLang engine launch config sidecars")
     if bundle_config.requirements_matrix_md is None:
         missing.append("V1 requirements matrix")
@@ -1065,6 +1117,32 @@ def _release_bundle_native_probe_factories_jsons(config: BenchmarkPlanConfig) ->
         paths.append(config.native_probe_factories_output_json)
     paths.extend(bundle_config.native_probe_factories_jsons)
     return _dedupe_artifact_paths(paths)
+
+
+def _release_bundle_engine_launch_config_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
+    bundle_config = config.release_bundle
+    if bundle_config is None:
+        return ()
+    paths = [*_generated_engine_launch_config_jsons(config)]
+    paths.extend(bundle_config.engine_launch_config_jsons)
+    return _dedupe_artifact_paths(paths)
+
+
+def _has_strict_release_bundle_engine_launch_config_sidecars(config: BenchmarkPlanConfig) -> bool:
+    return len(_release_bundle_engine_launch_config_jsons(config)) >= len(DEFAULT_ENGINE_LAUNCH_CONFIG_FILENAMES)
+
+
+def _generated_engine_launch_config_jsons(config: BenchmarkPlanConfig) -> tuple[str, ...]:
+    if config.engine_launch_config_output_dir is None:
+        return ()
+    return tuple(
+        _engine_launch_config_json(config.engine_launch_config_output_dir, backend)
+        for backend in ServingBackend
+    )
+
+
+def _engine_launch_config_json(output_dir: str, backend: ServingBackend) -> str:
+    return _uri_child(output_dir, DEFAULT_ENGINE_LAUNCH_CONFIG_FILENAMES[backend])
 
 
 def _dedupe_artifact_paths(paths: Sequence[str]) -> tuple[str, ...]:
@@ -1249,6 +1327,15 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
         output_paths.append(("native_probe_factories_output_json", config.native_probe_factories_output_json))
     if config.release_preflight_output_json is not None:
         output_paths.append(("release_preflight_output_json", config.release_preflight_output_json))
+    if config.engine_launch_config_output_dir is not None:
+        output_paths.append(("engine_launch_config_output_dir", config.engine_launch_config_output_dir))
+        output_paths.extend(
+            (
+                f"engine_launch_config_output_dir.{backend.value}",
+                _engine_launch_config_json(config.engine_launch_config_output_dir, backend),
+            )
+            for backend in ServingBackend
+        )
     return tuple(output_paths)
 
 
@@ -1551,6 +1638,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--native-probe-factories-output-json",
         help="Append native-probe factory diagnostics and write document_kv.native_probe_factories.v1 here.",
     )
+    parser.add_argument(
+        "--engine-launch-config-output-dir",
+        help=(
+            "Append generated vLLM/SGLang engine launch-config sidecars under this directory "
+            "and include them in release bundles."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -1587,6 +1681,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository_hygiene_output_json=args.repository_hygiene_output_json,
             native_probe_factories_output_json=args.native_probe_factories_output_json,
             release_preflight_output_json=args.release_preflight_output_json,
+            engine_launch_config_output_dir=args.engine_launch_config_output_dir,
         )
         _validate_plan_output_paths(
             config,

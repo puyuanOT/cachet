@@ -87,6 +87,10 @@ mean:
   sidecars for benchmark, storage, and engine-probe runs, tested package wheel,
   PR evidence sidecar, V1 requirements matrix, GitHub governance sidecar,
   repository hygiene sidecar, and native probe factory diagnostics sidecar.
+- `benchmark_plan.py` can now emit the vLLM/SGLang engine launch config sidecars
+  through `--engine-launch-config-output-dir`; those generated paths satisfy the
+  strict bundle launch-config gate when paired with the native probe/action
+  evidence.
 - Run connector action descriptor validation against real vLLM and SGLang native block managers.
 - Keep runtime serving inside established engines and outside Cachet's package
   boundary.

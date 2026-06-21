@@ -500,6 +500,11 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
         ({"repository_hygiene_json": None}, None, "repository hygiene sidecar"),
         ({"native_probe_factories_jsons": ()}, None, "native probe factory diagnostics sidecar"),
         ({"engine_launch_config_jsons": ()}, None, "vLLM/SGLang engine launch config sidecars"),
+        (
+            {"engine_launch_config_jsons": ("vllm-launch-config.json",)},
+            None,
+            "vLLM/SGLang engine launch config sidecars",
+        ),
     ],
 )
 def test_benchmark_plan_rejects_incomplete_strict_release_bundle(
@@ -2722,12 +2727,10 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "repository-hygiene.json"),
             "--release-bundle-native-probe-factories-json",
             str(tmp_path / "native-probe-factories.json"),
-            "--release-bundle-engine-launch-config-json",
-            str(tmp_path / "vllm-launch-config.json"),
-            "--release-bundle-engine-launch-config-json",
-            str(tmp_path / "sglang-launch-config.json"),
             "--native-probe-factories-output-json",
             str(tmp_path / "native-probe-factories.json"),
+            "--engine-launch-config-output-dir",
+            str(tmp_path / "engine-launch-configs"),
             "--release-bundle-require-complete-v1",
             "--release-bundle-overwrite",
             "--plan-output-json",
@@ -2739,11 +2742,12 @@ def test_main_can_include_release_bundle_command(tmp_path):
     bundle_argv = record["commands"][-1]["argv"]
 
     assert exit_code == 0
-    assert [command["name"] for command in record["commands"]][-7:] == [
-        "run-storage-benchmark",
+    assert [command["name"] for command in record["commands"]][-8:] == [
         "inspect-github-governance",
         "inspect-repository-hygiene",
         "inspect-native-probe-factories",
+        "write-vllm-engine-launch-config",
+        "write-sglang-engine-launch-config",
         "preflight-release-evidence",
         "validate-release-evidence",
         "build-release-bundle",
@@ -2757,6 +2761,12 @@ def test_main_can_include_release_bundle_command(tmp_path):
     native_argv = next(
         command["argv"] for command in record["commands"] if command["name"] == "inspect-native-probe-factories"
     )
+    vllm_launch_argv = next(
+        command["argv"] for command in record["commands"] if command["name"] == "write-vllm-engine-launch-config"
+    )
+    sglang_launch_argv = next(
+        command["argv"] for command in record["commands"] if command["name"] == "write-sglang-engine-launch-config"
+    )
     preflight_argv = next(
         command["argv"] for command in record["commands"] if command["name"] == "preflight-release-evidence"
     )
@@ -2765,6 +2775,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["repository_hygiene_output_json"] == str(tmp_path / "repository-hygiene.json")
     assert record["native_probe_factories_output_json"] == str(tmp_path / "native-probe-factories.json")
     assert record["release_preflight_output_json"] == str(tmp_path / "release-inputs.json")
+    assert record["engine_launch_config_output_dir"] == str(tmp_path / "engine-launch-configs")
     assert record["release_bundle"]["release_evidence_json"] == str(tmp_path / "release-evidence.json")
     assert record["release_bundle"]["preflight_json"] == str(tmp_path / "release-inputs.json")
     assert record["release_bundle"]["engine_actions_jsons"] == [
@@ -2772,8 +2783,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
         str(tmp_path / "sglang-actions.json"),
     ]
     assert record["release_bundle"]["engine_launch_config_jsons"] == [
-        str(tmp_path / "vllm-launch-config.json"),
-        str(tmp_path / "sglang-launch-config.json"),
+        str(tmp_path / "engine-launch-configs" / "vllm-launch-config.json"),
+        str(tmp_path / "engine-launch-configs" / "sglang-launch-config.json"),
     ]
     assert record["release_bundle"]["databricks_run_status_jsons"] == [
         str(tmp_path / "databricks-run-status-benchmark.json"),
@@ -2794,6 +2805,24 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert hygiene_argv[hygiene_argv.index("--output-json") + 1] == str(tmp_path / "repository-hygiene.json")
     assert native_argv[:3] == [sys.executable, "-m", "document_kv_cache.native_probe_factories"]
     assert native_argv[native_argv.index("--output-json") + 1] == str(tmp_path / "native-probe-factories.json")
+    assert vllm_launch_argv[:4] == [
+        sys.executable,
+        "-m",
+        "document_kv_cache.engine_launch_config",
+        "build-vllm",
+    ]
+    assert vllm_launch_argv[vllm_launch_argv.index("--output-json") + 1] == str(
+        tmp_path / "engine-launch-configs" / "vllm-launch-config.json"
+    )
+    assert sglang_launch_argv[:4] == [
+        sys.executable,
+        "-m",
+        "document_kv_cache.engine_launch_config",
+        "build-sglang",
+    ]
+    assert sglang_launch_argv[sglang_launch_argv.index("--output-json") + 1] == str(
+        tmp_path / "engine-launch-configs" / "sglang-launch-config.json"
+    )
     assert preflight_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_evidence"]
     assert "--preflight-only" in preflight_argv
     assert preflight_argv[preflight_argv.index("--preflight-output-json") + 1] == str(
@@ -2865,7 +2894,50 @@ def test_main_rejects_incomplete_strict_release_bundle_command(capsys, tmp_path)
     assert "preflight sidecar" in record["error"]
     assert "benchmark plan execution sidecar" in record["error"]
     assert "tested package wheel" in record["error"]
+    assert "vLLM/SGLang engine launch config sidecars" in record["error"]
     assert "V1 requirements matrix" in record["error"]
+
+
+def test_main_rejects_mismatched_generated_and_explicit_engine_launch_configs(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--storage-benchmark-workspace-dir",
+            "/local_disk0/document-kv-storage-benchmark",
+            "--storage-benchmark-output-json",
+            str(tmp_path / "storage.json"),
+            "--storage-benchmark-uc-volume-root",
+            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "--release-evidence-output-json",
+            str(tmp_path / "release-evidence.json"),
+            "--release-engine-probe-json",
+            str(tmp_path / "vllm-probe.json"),
+            "--release-engine-probe-json",
+            str(tmp_path / "sglang-probe.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "vllm-actions.json"),
+            "--release-engine-actions-json",
+            str(tmp_path / "sglang-actions.json"),
+            "--release-bundle-output-dir",
+            str(tmp_path / "release-bundle"),
+            "--engine-launch-config-output-dir",
+            str(tmp_path / "generated-launch-configs"),
+            "--release-bundle-engine-launch-config-json",
+            str(tmp_path / "other-vllm-launch-config.json"),
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "engine_launch_config_jsons must match engine_launch_config_output_dir" in record["error"]
 
 
 def test_main_rejects_plan_output_json_colliding_with_generated_artifact(capsys, tmp_path):
