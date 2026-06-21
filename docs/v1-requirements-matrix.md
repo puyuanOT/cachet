@@ -60,10 +60,11 @@ mean:
 - Run and publish the complete strict release bundle from target AWS g6/L4/Unity
   Catalog runs with the full strict artifact set: release evidence sidecar,
   preflight sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
-  connector action sidecars, benchmark plan execution sidecar, Databricks
-  run-status sidecar, tested package wheel, PR evidence sidecar, V1 requirements
-  matrix, GitHub governance sidecar, repository hygiene sidecar, and native
-  probe factory diagnostics sidecar.
+  connector action sidecars, vLLM/SGLang engine launch config sidecars,
+  benchmark plan execution sidecar, Databricks run-status sidecar, tested
+  package wheel, PR evidence sidecar, V1 requirements matrix, GitHub governance
+  sidecar, repository hygiene sidecar, and native probe factory diagnostics
+  sidecar.
 - Run connector action descriptor validation against real vLLM and SGLang native block managers.
 - Keep runtime serving inside established engines and outside Cachet's package
   boundary.

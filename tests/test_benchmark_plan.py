@@ -122,6 +122,10 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
         "github_governance_json": str(tmp_path / "github-governance.json"),
         "repository_hygiene_json": str(tmp_path / "repository-hygiene.json"),
         "native_probe_factories_jsons": (str(tmp_path / "native-probe-factories.json"),),
+        "engine_launch_config_jsons": (
+            str(tmp_path / "vllm-launch-config.json"),
+            str(tmp_path / "sglang-launch-config.json"),
+        ),
         "require_complete_v1": True,
     }
     if bundle_overrides is not None:
@@ -327,6 +331,10 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             github_governance_json=str(tmp_path / "github-governance.json"),
             repository_hygiene_json=str(tmp_path / "repository-hygiene.json"),
             native_probe_factories_jsons=(str(tmp_path / "native-probe-factories.json"),),
+            engine_launch_config_jsons=(
+                str(tmp_path / "vllm-launch-config.json"),
+                str(tmp_path / "sglang-launch-config.json"),
+            ),
             overwrite=True,
             require_complete_v1=True,
         ),
@@ -354,6 +362,10 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             str(tmp_path / "vllm-actions.json"),
             str(tmp_path / "sglang-actions.json"),
         ],
+        "engine_launch_config_jsons": [
+            str(tmp_path / "vllm-launch-config.json"),
+            str(tmp_path / "sglang-launch-config.json"),
+        ],
         "github_governance_json": str(tmp_path / "github-governance.json"),
         "native_probe_factories_jsons": [str(tmp_path / "native-probe-factories.json")],
         "output_dir": str(tmp_path / "release-bundle"),
@@ -380,6 +392,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     )
     assert bundle_command.argv.count("--engine-probe-json") == 2
     assert bundle_command.argv.count("--engine-actions-json") == 2
+    assert bundle_command.argv.count("--engine-launch-config-json") == 2
     assert bundle_command.argv[bundle_command.argv.index("--requirements-matrix-md") + 1] == str(
         tmp_path / "v1-requirements-matrix.md"
     )
@@ -442,6 +455,7 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
         ({"github_governance_json": None}, None, "GitHub governance sidecar"),
         ({"repository_hygiene_json": None}, None, "repository hygiene sidecar"),
         ({"native_probe_factories_jsons": ()}, None, "native probe factory diagnostics sidecar"),
+        ({"engine_launch_config_jsons": ()}, None, "vLLM/SGLang engine launch config sidecars"),
     ],
 )
 def test_benchmark_plan_rejects_incomplete_strict_release_bundle(
@@ -2660,6 +2674,10 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "repository-hygiene.json"),
             "--release-bundle-native-probe-factories-json",
             str(tmp_path / "native-probe-factories.json"),
+            "--release-bundle-engine-launch-config-json",
+            str(tmp_path / "vllm-launch-config.json"),
+            "--release-bundle-engine-launch-config-json",
+            str(tmp_path / "sglang-launch-config.json"),
             "--native-probe-factories-output-json",
             str(tmp_path / "native-probe-factories.json"),
             "--release-bundle-require-complete-v1",
@@ -2705,6 +2723,10 @@ def test_main_can_include_release_bundle_command(tmp_path):
         str(tmp_path / "vllm-actions.json"),
         str(tmp_path / "sglang-actions.json"),
     ]
+    assert record["release_bundle"]["engine_launch_config_jsons"] == [
+        str(tmp_path / "vllm-launch-config.json"),
+        str(tmp_path / "sglang-launch-config.json"),
+    ]
     assert record["release_bundle"]["databricks_run_status_jsons"] == [
         str(tmp_path / "databricks-run-status.json")
     ]
@@ -2730,6 +2752,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert bundle_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_bundle"]
     assert bundle_argv.count("--engine-probe-json") == 2
     assert bundle_argv.count("--engine-actions-json") == 2
+    assert bundle_argv.count("--engine-launch-config-json") == 2
     assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")
     assert bundle_argv[bundle_argv.index("--preflight-json") + 1] == str(tmp_path / "release-inputs.json")
     assert bundle_argv.count("--preflight-json") == 1
