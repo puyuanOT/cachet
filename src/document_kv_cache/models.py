@@ -565,8 +565,28 @@ def _normalize_chunk_map_items(
             raise TypeError(f"{name} values must be sequences of chunk ids")
         for chunk_id in chunk_ids:
             _validate_chunk_id(name, chunk_id)
+        duplicate_chunk_ids = _duplicate_chunk_ids(chunk_ids)
+        if duplicate_chunk_ids:
+            raise ValueError(
+                f"{name} chunk ids contain duplicates for {document_id}: " + ", ".join(duplicate_chunk_ids)
+            )
         normalized[document_id] = tuple(chunk_ids)
     return normalized
+
+
+def _duplicate_chunk_ids(chunk_ids: Sequence[ChunkId]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    duplicate_labels: set[str] = set()
+    for chunk_id in chunk_ids:
+        label = str(chunk_id)
+        if label not in seen:
+            seen.add(label)
+            continue
+        if label not in duplicate_labels:
+            duplicates.append(label)
+            duplicate_labels.add(label)
+    return tuple(duplicates)
 
 
 def _validate_chunk_id(name: str, value: object) -> None:

@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the shared request chunk-map duplicate guard with no actionable findings and verified focused plus workflow/planner tests.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/models.py",
+    "tests/test_planner_materializer.py",
+    "pr-evidence/reject-duplicate-request-chunk-ids/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_planner_materializer.py::test_document_kv_request_validates_metadata_and_chunk_map tests/test_planner_materializer.py::test_document_kv_request_for_document_chunks_reuses_request_validation tests/test_planner_materializer.py::test_frozen_document_chunk_map_normalizes_direct_construction tests/test_planner_materializer.py::test_restaurant_kv_request_validates_legacy_review_map -q -> 4 passed",
+    "poetry run pytest tests/test_planner_materializer.py tests/test_workflow.py -q -> 108 passed",
+    "git diff --check && poetry run pytest -q && poetry check && poetry run python -m compileall -q src tests -> 1215 passed; poetry check All set"
+  ],
+  "what_changed": [
+    "Rejected duplicate request chunk ids within one document or legacy restaurant chunk-map selection, comparing ids after the same string coercion used by planner cache keys."
+  ],
+  "why": "Serving requests should not ask the planner to materialize the same generated cache key twice in one document selection; rejecting this at request normalization keeps arbitrary document and legacy restaurant paths deterministic."
+}

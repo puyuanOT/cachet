@@ -225,6 +225,10 @@ def test_document_kv_request_validates_metadata_and_chunk_map():
         replace(request, document_chunks={"doc-a": [""]})
     with pytest.raises(TypeError, match="document_chunks chunk ids"):
         replace(request, document_chunks={"doc-a": [True]})  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="document_chunks chunk ids contain duplicates for doc-a: section-1"):
+        replace(request, document_chunks={"doc-a": ["section-1", "section-1"]})
+    with pytest.raises(ValueError, match="document_chunks chunk ids contain duplicates for doc-a: 2"):
+        replace(request, document_chunks={"doc-a": [2, "2"]})
 
 
 def test_document_kv_request_preserves_positional_task_prefix_compatibility():
@@ -387,6 +391,16 @@ def test_document_kv_request_for_document_chunks_reuses_request_validation():
             document_id="doc-a",
             chunk_ids=("",),
         )
+    with pytest.raises(ValueError, match="document_chunks chunk ids contain duplicates for doc-a: section-1"):
+        DocumentKVRequest.for_document_chunks(
+            request_id="req-1",
+            task_id="qa",
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            document_id="doc-a",
+            chunk_ids=("section-1", "section-1"),
+        )
 
 
 def test_frozen_document_chunk_map_normalizes_direct_construction():
@@ -403,6 +417,8 @@ def test_frozen_document_chunk_map_normalizes_direct_construction():
         FrozenDocumentChunkMap({"": ["section-1"]})
     with pytest.raises(TypeError, match="FrozenDocumentChunkMap values"):
         FrozenDocumentChunkMap({"doc-a": "section-1"})
+    with pytest.raises(ValueError, match="FrozenDocumentChunkMap chunk ids contain duplicates for doc-a: 2"):
+        FrozenDocumentChunkMap({"doc-a": [2, "2"]})
 
 
 def test_restaurant_kv_request_validates_legacy_review_map():
@@ -443,6 +459,8 @@ def test_restaurant_kv_request_validates_legacy_review_map():
         replace(request, restaurant_reviews={"r1": memoryview(b"rev1")})  # type: ignore[dict-item]
     with pytest.raises(ValueError, match="restaurant_reviews chunk ids"):
         replace(request, restaurant_reviews={"r1": [None]})  # type: ignore[list-item]
+    with pytest.raises(ValueError, match="restaurant_reviews chunk ids contain duplicates for r1: rev1"):
+        replace(request, restaurant_reviews={"r1": ["rev1", "rev1"]})
 
 
 def test_manifest_orders_mixed_legacy_and_document_aliases_deterministically(tmp_path):
