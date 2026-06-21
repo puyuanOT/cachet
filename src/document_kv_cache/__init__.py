@@ -47,6 +47,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "native_probe_factories",
         "openai_compatible",
         "planner",
+        "probe_fixtures",
         "pr_evidence",
         "release_bundle",
         "release_evidence",

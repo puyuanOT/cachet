@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 approved and raised one P2: relative --output-dir failed after partial write. Fixed by normalizing filesystem output dirs to absolute paths before writing and adding a regression test.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/probe_fixtures.py; src/restaurant_kv_serving/probe_fixtures.py; package CLI/public-submodule docs and tests."
+  ],
+  "verification": [
+    "pytest -q tests/test_probe_fixtures.py tests/test_project_governance.py tests/test_public_package.py; pytest -q; python -m build --wheel"
+  ],
+  "what_changed": [
+    "Added document_kv_cache.probe_fixtures to generate deterministic Qwen3 V1 engine adapter handoff/payload fixtures plus a legacy restaurant_kv_serving wrapper and CLI aliases."
+  ],
+  "why": "Native vLLM/SGLang connector developers need repeatable real-layout Qwen3 V1 bytes and handoff JSONs for reserve/copy/bind/release probes without hand-authoring payloads or implying native injection is implemented."
+}

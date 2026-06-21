@@ -14,6 +14,7 @@ module paths, root exports, and selected monkeypatch hooks.
 - `engine.py` defines engine-ready KV handles, tensor layouts, and the vLLM/SGLang connector protocol.
 - `engine_adapters.py` is a compatibility facade over `document_kv_cache.engine_adapters`, which owns the external vLLM and SGLang adapter contracts and validation probes without importing or replacing those serving engines.
 - `engine_probe.py` runs a serialized engine handoff through a backend-provided native probe factory and writes release-gate probe evidence JSON.
+- `probe_fixtures.py` is a compatibility wrapper over `document_kv_cache.probe_fixtures`, which writes deterministic Qwen3 V1 handoff fixtures for native vLLM/SGLang connector development.
 - `model_profiles.py` records model attention geometry and derives validated KV layouts for MHA, GQA, and MQA-style caches.
 - `storage.py` defines Memory, Disk, Unity Catalog Volume, and routed range readers.
 - `cache.py` implements CPU and local-disk byte cache tiers, including hit/miss stats, checksum-safe local paths, and optional local disk byte budgets.

@@ -167,6 +167,7 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.live_server",
         "restaurant_kv_serving.native_probe_factories",
         "restaurant_kv_serving.openai_compatible",
+        "restaurant_kv_serving.probe_fixtures",
         "restaurant_kv_serving.pr_evidence",
         "restaurant_kv_serving.release_bundle",
         "restaurant_kv_serving.release_evidence",
@@ -174,6 +175,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.storage_benchmark",
         "restaurant_kv_serving.vllm_smoke",
         "restaurant_kv_serving.workflow",
+    },
+    "tests/test_probe_fixtures.py": {
+        "restaurant_kv_serving.probe_fixtures",
     },
     "tests/test_storage.py": {
         "restaurant_kv_serving.storage",
