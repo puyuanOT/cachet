@@ -184,6 +184,10 @@ written.
 
 For Databricks-managed execution, first upload the package wheel, the generated benchmark plan JSON, and the tiny runner script. Then emit a single-node AWS g6/L4 `runs/submit` payload:
 
+When generating the referenced plan JSON for the provider-backed vLLM native
+probe path, include
+`--engine-probe-metadata vllm=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`.
+
 ```bash
 python -m document_kv_cache.databricks_job \
   --plan-json-uri dbfs:/benchmarks/v1-plan.json \
@@ -191,7 +195,7 @@ python -m document_kv_cache.databricks_job \
   --runner-script-output run_plan.py \
   --wheel-uri dbfs:/benchmarks/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
-  --vllm-native-probe-delegate-factory my_vllm_adapter.probes:build_probe \
+  --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
   --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json databricks-run-submit.json
 ```

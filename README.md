@@ -462,10 +462,14 @@ the same AWS g6/L4 policy:
     {
       "backend": "vllm",
       "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
-      "probe_factory": "my_vllm_adapter.probes:build_probe",
+      "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
       "output_json": "/Volumes/catalog/schema/volume/probes/vllm-engine-probe.json",
       "actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json",
       "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+      "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
+      "metadata": [
+        "vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector"
+      ],
       "pip_packages": ["vllm==0.23.0"]
     },
     {
@@ -545,8 +549,8 @@ When using the adapter-package delegates
 `vllm_kv_injection.probe:build_native_connector_probe` or
 `sglang_kv_injection.probe:build_native_connector_probe`, also add target
 metadata for the backend-native connector factory, for example
-`"metadata": ["vllm_kv_injection.connector_factory=company_vllm_patch.probe:build_connector"]`
-or
+`"metadata": ["vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector"]`
+for the built-in provider-backed vLLM path, or
 `"metadata": ["sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"]`.
 The Databricks target parser rejects those known delegates without the matching
 connector-factory metadata so release-safe jobs fail before requesting GPU
@@ -1269,6 +1273,11 @@ tracked or exposed as untracked, every non-generated tracked/untracked
 directory is documented, and no tracked files differ from `HEAD`.
 
 For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g6/L4 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers.
+When generating `v1-plan.json` for the provider-backed vLLM native probe path,
+include
+`--engine-probe-metadata vllm=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
+so the plan carries the strict connector-factory metadata before a Databricks
+GPU job is submitted.
 
 ```bash
 python -m document_kv_cache.databricks_job \
@@ -1277,7 +1286,7 @@ python -m document_kv_cache.databricks_job \
   --runner-script-output run_plan.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
-  --vllm-native-probe-delegate-factory my_vllm_adapter.probes:build_probe \
+  --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
   --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json databricks-run-submit.json
 ```

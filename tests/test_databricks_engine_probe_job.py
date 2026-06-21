@@ -14,6 +14,8 @@ from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
     DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+    VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+    VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     DatabricksEngineProbeJobConfig,
     DatabricksEngineProbeMatrixJobConfig,
     DatabricksEngineProbeTargetConfig,
@@ -1148,7 +1150,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_known_delegate_missin
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
                         "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
                         "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
-                        "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
+                        "native_probe_delegate_factory": VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
                     }
                 ],
             }
@@ -1156,7 +1158,7 @@ def test_read_databricks_engine_probe_targets_json_rejects_known_delegate_missin
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="vllm_kv_injection\\.connector_factory=module:factory"):
+    with pytest.raises(ValueError, match="build_document_kv_native_probe_connector"):
         read_databricks_engine_probe_targets_json(path)
 
 
@@ -1174,9 +1176,9 @@ def test_read_databricks_engine_probe_targets_json_accepts_known_delegate_connec
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
                         "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
                         "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
-                        "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
+                        "native_probe_delegate_factory": VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
                         "metadata": [
-                            "vllm_kv_injection.connector_factory=company_vllm_patch.probe:build_connector"
+                            VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA
                         ],
                     }
                 ],
@@ -1187,9 +1189,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_known_delegate_connec
 
     targets = read_databricks_engine_probe_targets_json(path)
 
-    assert targets[0].metadata == (
-        "vllm_kv_injection.connector_factory=company_vllm_patch.probe:build_connector",
-    )
+    assert targets[0].metadata == (VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,)
 
 
 def test_databricks_engine_probe_config_rejects_known_delegate_backend_mismatch():
@@ -2401,6 +2401,9 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "REQUIRED_ENGINE_PROBE_BACKENDS",
         "Sequence",
         "ServingBackend",
+        "VLLM_NATIVE_PROBE_DELEGATE_FACTORY",
+        "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY",
+        "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA",
         "argparse",
         "build_databricks_engine_probe_matrix_run_submit_payload",
         "build_databricks_engine_probe_run_submit_payload",

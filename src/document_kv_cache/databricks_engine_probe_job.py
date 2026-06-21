@@ -33,6 +33,13 @@ DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE = "document-kv-engine-probe"
 DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY = "probes"
 ENGINE_PROBE_TARGETS_RECORD_TYPE = "document_kv.engine_probe_targets.v1"
 ENGINE_PROBE_TARGETS_SCHEMA_VERSION = 1
+VLLM_NATIVE_PROBE_DELEGATE_FACTORY = "vllm_kv_injection.probe:build_native_connector_probe"
+VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY = (
+    "vllm_kv_injection.probe:build_document_kv_native_probe_connector"
+)
+VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA = (
+    f"vllm_kv_injection.connector_factory={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY}"
+)
 _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS = frozenset(
     {
         "record_type",
@@ -63,7 +70,7 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
     }
 )
 _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
-    "vllm_kv_injection.probe:build_native_connector_probe": (
+    VLLM_NATIVE_PROBE_DELEGATE_FACTORY: (
         ServingBackend.VLLM,
         "vllm_kv_injection.connector_factory",
     ),
@@ -71,6 +78,9 @@ _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
         ServingBackend.SGLANG,
         "sglang_kv_injection.connector_factory",
     ),
+}
+_KNOWN_NATIVE_DELEGATE_METADATA_EXAMPLES = {
+    VLLM_NATIVE_PROBE_DELEGATE_FACTORY: VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
 }
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
 
@@ -113,6 +123,9 @@ __all__ = [
     "DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE",
     "DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY",
     "ENGINE_PROBE_RUNNER_SCRIPT",
+    "VLLM_NATIVE_PROBE_DELEGATE_FACTORY",
+    "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY",
+    "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA",
     "DatabricksEngineProbeJobConfig",
     "DatabricksEngineProbeMatrixJobConfig",
     "DatabricksEngineProbeTargetConfig",
@@ -668,9 +681,13 @@ def _validate_known_native_delegate_metadata(
         )
     metadata_map = _metadata_item_map(metadata)
     if not metadata_map.get(required_key):
+        example = _KNOWN_NATIVE_DELEGATE_METADATA_EXAMPLES.get(
+            native_probe_delegate_factory,
+            f"{required_key}=module:factory",
+        )
         raise ValueError(
             f"{label} native_probe_delegate_factory {native_probe_delegate_factory!r} requires "
-            f"metadata entry {required_key}=module:factory"
+            f"metadata entry {example}"
         )
 
 

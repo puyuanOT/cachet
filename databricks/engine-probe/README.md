@@ -17,8 +17,8 @@ databricks bundle validate \
   --var actions_output_json=/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --var payload_uri=/Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --var expected_backend=vllm \
-  --var vllm_native_probe_delegate_factory=my_vllm_adapter.probes:build_probe \
-  --var native_probe_metadata=vllm_kv_injection.connector_factory=my_vllm_adapter.probes:build_connector \
+  --var vllm_native_probe_delegate_factory=vllm_kv_injection.probe:build_native_connector_probe \
+  --var native_probe_metadata=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
@@ -39,7 +39,8 @@ When the delegate is the adapter-package wrapper
 `vllm_kv_injection.probe:build_native_connector_probe` or
 `sglang_kv_injection.probe:build_native_connector_probe`, set
 `native_probe_metadata` to the matching connector factory metadata:
-`vllm_kv_injection.connector_factory=module:factory` for vLLM or
+`vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
+for the built-in provider-backed vLLM path, or
 `sglang_kv_injection.connector_factory=module:factory` for SGLang. The
 connector factory is the backend-native implementation that actually reserves,
 imports, binds, and releases engine KV blocks.

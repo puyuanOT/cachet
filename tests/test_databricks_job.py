@@ -27,6 +27,9 @@ from document_kv_cache.databricks_job import (
     write_databricks_runner_script,
     write_databricks_run_submit_json,
 )
+from document_kv_cache.databricks_engine_probe_job import (
+    VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+)
 from document_kv_cache._hardware_targets import V1_HARDWARE_TARGET_PROFILE
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
@@ -1185,6 +1188,8 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert "document-kv-vllm-smoke-databricks-job" in readme_text
     assert "--vllm-native-probe-delegate-factory" in readme_text
     assert "--sglang-native-probe-delegate-factory" in readme_text
+    assert f"--engine-probe-metadata vllm={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA}" in readme_text
+    assert f"--engine-probe-metadata vllm={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA}" in root_readme_text
     assert "--var vllm_native_probe_delegate_factory=" in readme_text
     assert "--var sglang_native_probe_delegate_factory=" in readme_text
     assert "single-node AWS `g6`/L4 GPU cluster" in readme_text
@@ -1294,7 +1299,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     }
     assert variables["vllm_native_probe_delegate_factory"]["default"] == '""'
     assert variables["sglang_native_probe_delegate_factory"]["default"] == '""'
-    assert "connector_factory=module:factory" in variables["native_probe_metadata"]["description"]
+    assert VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in variables["native_probe_metadata"]["description"]
     assert variables["node_type_id"]["default"] == "g6.8xlarge"
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
@@ -1347,6 +1352,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in readme_text
     assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in root_readme_text
     assert "--payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv" in module_readme_text
+    assert "--var probe_factory=document_kv_cache.native_probe_factories:vllm_native_probe_factory" in readme_text
     assert "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json" in readme_text
     assert "--actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json" in root_readme_text
     assert "--var payload_uri=" in readme_text
@@ -1356,7 +1362,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--var native_probe_metadata=" in readme_text
     assert "--var native_probe_metadata=" in probe_readme_text
     assert "--var vllm_native_probe_delegate_factory=" in probe_readme_text
-    assert "vllm_kv_injection.connector_factory=module:factory" in probe_readme_text
+    assert VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in probe_readme_text
     assert "sglang_kv_injection.connector_factory=module:factory" in packaged_probe_readme_text
     assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY" in probe_readme_text
