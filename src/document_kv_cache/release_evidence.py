@@ -593,6 +593,8 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         _validate_v1_suite_metadata(suite, issues)
     if suite is not None and measurements is not None:
         _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
+    if measurements is not None:
+        _validate_v1_measurement_examples_have_required_arms(measurements, issues)
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if report_rows is not None and comparisons is not None:
@@ -679,6 +681,36 @@ def _validate_v1_suite_examples_match_measurements(
             "v1 benchmark suite examples must match unique measurement examples "
             f"({suite_examples!r} != {len(measurement_examples)})"
         )
+
+
+def _validate_v1_measurement_examples_have_required_arms(
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> None:
+    arms_by_example: dict[tuple[str, str], set[str]] = {}
+    for measurement in measurements:
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        arm_id = measurement.get("arm_id")
+        if (
+            isinstance(dataset, str)
+            and dataset in SUPPORTED_V1_DATASETS
+            and isinstance(example_id, str)
+            and example_id
+            and isinstance(arm_id, str)
+            and arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+        ):
+            arms_by_example.setdefault((dataset, example_id), set()).add(arm_id)
+    required_arms = {BASELINE_PREFILL_ARM, CACHE_REUSE_ARM}
+    for dataset, example_id in sorted(arms_by_example):
+        missing = sorted(required_arms.difference(arms_by_example[(dataset, example_id)]))
+        if missing:
+            issues.append(
+                f"v1 benchmark measurement example {dataset}:{example_id} "
+                f"missing required arms: {', '.join(missing)}"
+            )
 
 
 @dataclass(slots=True)

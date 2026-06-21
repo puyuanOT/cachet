@@ -200,6 +200,38 @@ def test_evaluate_release_evidence_rejects_v1_suite_example_count_mismatch():
     assert any("suite examples must match unique measurement examples" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_unpaired_measurement_examples():
+    v1_record = _v1_record(ok=True)
+    v1_record["suite"] = {**v1_record["suite"], "examples": 5}
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "example_id": "biography-baseline-only",
+    }
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "example_id": "biography-cache-only",
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:biography-baseline-only missing required arms: document_kv_cache" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:biography-cache-only missing required arms: baseline_prefill" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_unknown_engine_version():
     probe_record = {**_probe_record(ServingBackend.VLLM), "engine_version": "unknown"}
 
