@@ -305,6 +305,13 @@ class _PreparedReleaseBundleArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class _DatabricksPurposeOccurrence:
+    source_path: str
+    purpose: str
+    label: str
+
+
+@dataclass(frozen=True, slots=True)
 class _WheelPackageIdentity:
     package_name: str
     package_version: str
@@ -654,8 +661,10 @@ def _validate_strict_v1_release_bundle_completeness(
 def _validate_strict_v1_databricks_purpose_coverage(
     artifacts: Sequence[_PreparedReleaseBundleArtifact],
 ) -> None:
-    purpose_occurrences = _strict_v1_databricks_purpose_occurrences(artifacts)
-    issues = _strict_v1_databricks_purpose_coverage_issues(purpose_occurrences)
+    status_artifacts = _strict_v1_databricks_status_artifacts(artifacts)
+    purpose_occurrences = _strict_v1_databricks_purpose_occurrences(status_artifacts)
+    issues = _strict_v1_databricks_status_artifact_issues(status_artifacts, purpose_occurrences)
+    issues.extend(_strict_v1_databricks_purpose_coverage_issues(purpose_occurrences))
     if issues:
         raise ValueError(
             "Strict V1 release bundle requires "
@@ -663,14 +672,22 @@ def _validate_strict_v1_databricks_purpose_coverage(
         )
 
 
+def _strict_v1_databricks_status_artifacts(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> tuple[_PreparedReleaseBundleArtifact, ...]:
+    return tuple(
+        artifact
+        for artifact in artifacts
+        if artifact.role == "databricks_run_status" and artifact.record is not None
+    )
+
+
 def _strict_v1_databricks_purpose_occurrences(
     artifacts: Sequence[_PreparedReleaseBundleArtifact],
-) -> dict[str, list[str]]:
+) -> tuple[_DatabricksPurposeOccurrence, ...]:
     required_purposes = {purpose for purpose, _ in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
-    occurrences: dict[str, list[str]] = {purpose: [] for purpose in required_purposes}
+    occurrences: list[_DatabricksPurposeOccurrence] = []
     for artifact in artifacts:
-        if artifact.role != "databricks_run_status" or artifact.record is None:
-            continue
         status_record = databricks_run_status_record(artifact.record)
         if status_record is None:
             continue
@@ -684,17 +701,47 @@ def _strict_v1_databricks_purpose_occurrences(
             if not isinstance(task, Mapping):
                 continue
             purpose = task.get("purpose")
-            if isinstance(purpose, str) and purpose in occurrences:
-                occurrences[purpose].append(_databricks_purpose_occurrence_label(artifact, task))
-    return occurrences
+            if isinstance(purpose, str) and purpose in required_purposes:
+                occurrences.append(
+                    _DatabricksPurposeOccurrence(
+                        source_path=artifact.source_path,
+                        purpose=purpose,
+                        label=_databricks_purpose_occurrence_label(artifact, task),
+                    )
+                )
+    return tuple(occurrences)
+
+
+def _strict_v1_databricks_status_artifact_issues(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+    purpose_occurrences: Sequence[_DatabricksPurposeOccurrence],
+) -> list[str]:
+    required_count = len(STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES)
+    issues: list[str] = []
+    if len(artifacts) != required_count:
+        issues.append(
+            "Databricks run-status sidecars must include exactly one artifact per required purpose "
+            f"(expected {required_count}, found {len(artifacts)})"
+        )
+    for artifact in artifacts:
+        artifact_occurrences = tuple(
+            occurrence for occurrence in purpose_occurrences if occurrence.source_path == artifact.source_path
+        )
+        if len(artifact_occurrences) != 1:
+            labels = ", ".join(occurrence.label for occurrence in artifact_occurrences) or "none"
+            issues.append(
+                f"Databricks run-status sidecar {artifact.source_path} must contain exactly one "
+                f"strict V1 purpose ({len(artifact_occurrences)} occurrences: {labels})"
+            )
+    return issues
 
 
 def _strict_v1_databricks_purpose_coverage_issues(
-    purpose_occurrences: Mapping[str, Sequence[str]],
+    purpose_occurrences: Sequence[_DatabricksPurposeOccurrence],
 ) -> list[str]:
     issues: list[str] = []
     for purpose, label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES:
-        occurrences = purpose_occurrences.get(purpose, ())
+        occurrences = tuple(occurrence.label for occurrence in purpose_occurrences if occurrence.purpose == purpose)
         if not occurrences:
             issues.append(label)
         elif len(occurrences) > 1:
