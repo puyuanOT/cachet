@@ -796,6 +796,7 @@ python -m document_kv_cache.benchmark_plan \
   --github-governance-output-json /data/github-governance.json \
   --repository-hygiene-output-json /data/repository-hygiene.json \
   --native-probe-factories-output-json /data/native-probe-factories.json \
+  --engine-launch-config-output-dir /data/engine-launch-configs \
   --engine-probe-targets-output-json /data/engine-probe-targets.json \
   --engine-probe-targets-release-safe \
   --plan-output-json /data/v1-plan.json \
@@ -903,10 +904,13 @@ Strict follow-up bundle plans are checked before commands are emitted: the
 planner requires the preflight, plan-execution, Databricks run-status, tested
 wheel, PR evidence, V1 requirements matrix, GitHub governance, repository
 hygiene, native probe factory diagnostics, and engine launch config sidecars to
-be present, using generated paths where the plan can produce them and supplied
-paths for externally generated artifacts such as engine launch configs.
-Generate those vLLM/SGLang launch-config sidecars with the package helper so
-the JSON shape matches the same validator used by strict release bundles:
+be present. Use `--engine-launch-config-output-dir` to make the plan generate
+the vLLM/SGLang launch-config sidecars before bundle assembly; explicit
+`--release-bundle-engine-launch-config-json` paths remain supported, but if
+both are provided they must point at the generated files to avoid duplicate
+backend evidence.
+For ad hoc standalone use, generate those sidecars with the same package helper
+so the JSON shape matches the validator used by strict release bundles:
 
 ```bash
 document-kv-engine-launch-config build-vllm \

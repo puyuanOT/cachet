@@ -41,6 +41,7 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
         "release_bundle_output_dir",
         "release_bundle_output_json",
         "release_bundle",
+        "engine_launch_config_output_dir",
         "github_governance_output_json",
         "repository_hygiene_output_json",
         "native_probe_factories_output_json",
