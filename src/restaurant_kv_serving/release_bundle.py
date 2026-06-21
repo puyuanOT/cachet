@@ -27,6 +27,7 @@ from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_PACKAGE_NAME,
     RELEASE_BUNDLE_RECORD_TYPE,
+    STRICT_V1_RELEASE_HELP,
     ReleaseBundle,
     ReleaseBundleArtifact,
     build_release_bundle,
@@ -65,13 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-complete-v1",
         action="store_true",
-        help=(
-            "Require the full V1 release artifact set: release/preflight sidecars, "
-            "vLLM/SGLang native engine probes and connector actions, plan execution, "
-            "Databricks status for benchmark/storage/engine-probe runs, tested wheel, "
-            "PR evidence, governance, repository hygiene, and supported native probe "
-            "factory diagnostics."
-        ),
+        help=STRICT_V1_RELEASE_HELP,
     )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
