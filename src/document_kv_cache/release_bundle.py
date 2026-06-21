@@ -32,10 +32,21 @@ from document_kv_cache.benchmark_plan_executor import (
     BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
     BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
 )
+from document_kv_cache.databricks_engine_probe_job import (
+    DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
+    DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
+    DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+)
+from document_kv_cache.databricks_job import DEFAULT_DATABRICKS_RUN_NAME, DEFAULT_DATABRICKS_TASK_KEY
 from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
+)
+from document_kv_cache.databricks_storage_benchmark_job import (
+    DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE,
+    DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
+    DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.native_probe_factories import (
@@ -111,10 +122,24 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("native_probe_factories", 1, "native probe factory diagnostics sidecar"),
 )
 STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES = (
-    ("document-kv-v1-benchmark", "V1 benchmark Databricks run-status evidence"),
-    ("document-kv-storage-benchmark", "storage-reader benchmark Databricks run-status evidence"),
-    ("document-kv-engine-probe", "native engine probe Databricks run-status evidence"),
+    (DEFAULT_DATABRICKS_RUN_NAME, "V1 benchmark Databricks run-status evidence"),
+    (DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE, "storage-reader benchmark Databricks run-status evidence"),
+    (DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE, "native engine probe Databricks run-status evidence"),
 )
+STRICT_V1_RELEASE_DATABRICKS_PURPOSE_IDENTITIES = {
+    DEFAULT_DATABRICKS_RUN_NAME: (DEFAULT_DATABRICKS_RUN_NAME, DEFAULT_DATABRICKS_TASK_KEY),
+    DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE: (
+        DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
+        DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,
+    ),
+    DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE: (
+        DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
+        DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+    ),
+}
+STRICT_V1_RELEASE_DATABRICKS_PURPOSE_LABELS = {
+    purpose: label for purpose, label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES
+}
 STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT = (
     ("vllm", "vLLM native probe factory support"),
     ("sglang", "SGLang native probe factory support"),
@@ -311,6 +336,8 @@ class _DatabricksPurposeOccurrence:
     source_path: str
     purpose: str
     label: str
+    run_name: str | None
+    task_key: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +702,7 @@ def _validate_strict_v1_databricks_purpose_coverage(
     status_artifacts = _strict_v1_databricks_status_artifacts(artifacts)
     purpose_occurrences = _strict_v1_databricks_purpose_occurrences(status_artifacts)
     issues = _strict_v1_databricks_status_artifact_issues(status_artifacts, purpose_occurrences)
+    issues.extend(_strict_v1_databricks_purpose_identity_issues(purpose_occurrences))
     issues.extend(_strict_v1_databricks_purpose_coverage_issues(purpose_occurrences))
     if issues:
         raise ValueError(
@@ -702,6 +730,7 @@ def _strict_v1_databricks_purpose_occurrences(
         status_record = databricks_run_status_record(artifact.record)
         if status_record is None:
             continue
+        run_name = status_record.get("run_name")
         submit_payload = status_record.get("submit_payload")
         if not isinstance(submit_payload, Mapping):
             continue
@@ -713,11 +742,14 @@ def _strict_v1_databricks_purpose_occurrences(
                 continue
             purpose = task.get("purpose")
             if isinstance(purpose, str) and purpose in required_purposes:
+                task_key = task.get("task_key")
                 occurrences.append(
                     _DatabricksPurposeOccurrence(
                         source_path=artifact.source_path,
                         purpose=purpose,
                         label=_databricks_purpose_occurrence_label(artifact, task),
+                        run_name=run_name if isinstance(run_name, str) and run_name else None,
+                        task_key=task_key if isinstance(task_key, str) and task_key else None,
                     )
                 )
     return tuple(occurrences)
@@ -744,6 +776,25 @@ def _strict_v1_databricks_status_artifact_issues(
                 f"Databricks run-status sidecar {artifact.source_path} must contain exactly one "
                 f"strict V1 purpose ({len(artifact_occurrences)} occurrences: {labels})"
             )
+    return issues
+
+
+def _strict_v1_databricks_purpose_identity_issues(
+    purpose_occurrences: Sequence[_DatabricksPurposeOccurrence],
+) -> list[str]:
+    issues: list[str] = []
+    for occurrence in purpose_occurrences:
+        expected_identity = STRICT_V1_RELEASE_DATABRICKS_PURPOSE_IDENTITIES.get(occurrence.purpose)
+        if expected_identity is None:
+            continue
+        expected_run_name, expected_task_key = expected_identity
+        if occurrence.run_name == expected_run_name and occurrence.task_key == expected_task_key:
+            continue
+        purpose_label = STRICT_V1_RELEASE_DATABRICKS_PURPOSE_LABELS[occurrence.purpose]
+        issues.append(
+            f"{purpose_label} must use run_name {expected_run_name!r} and task_key {expected_task_key!r} "
+            f"({occurrence.label} has run_name {occurrence.run_name!r}, task_key {occurrence.task_key!r})"
+        )
     return issues
 
 
