@@ -86,6 +86,13 @@ def test_summarize_github_repository_governance_reports_release_ready_repo():
             "allow_force_pushes": False,
             "allow_deletions": False,
         },
+        "merge_settings": {
+            "allow_squash_merge": True,
+            "allow_rebase_merge": True,
+            "allow_merge_commit": False,
+            "allow_auto_merge": True,
+            "delete_branch_on_merge": True,
+        },
         "open_pull_requests": {
             "checked": True,
             "total_count": 0,
@@ -200,6 +207,57 @@ def test_summarize_github_repository_governance_requires_admin_branch_protection
     assert summary["branch_protection"]["enforce_admins"] is False
     assert summary["issues"] == [
         "branch protection must apply to administrators",
+    ]
+
+
+def test_summarize_github_repository_governance_requires_pr_merge_hygiene():
+    repository = _repository(private=False)
+    repository["allow_squash_merge"] = False
+    repository["allow_rebase_merge"] = False
+    repository["delete_branch_on_merge"] = False
+    opener = _FakeGitHubOpener(
+        {
+            "/repos/owner/document-kv-cache": repository,
+            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+        }
+    )
+    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+
+    summary = summarize_github_repository_governance(config, opener=opener)
+
+    assert summary["ok"] is False
+    assert summary["merge_settings"] == {
+        "allow_squash_merge": False,
+        "allow_rebase_merge": False,
+        "allow_merge_commit": False,
+        "allow_auto_merge": True,
+        "delete_branch_on_merge": False,
+    }
+    assert summary["issues"] == [
+        "repository must allow squash or rebase merging",
+        "repository must delete head branches after merge",
+    ]
+
+
+def test_summarize_github_repository_governance_requires_auto_merge():
+    repository = _repository(private=False)
+    repository["allow_auto_merge"] = False
+    opener = _FakeGitHubOpener(
+        {
+            "/repos/owner/document-kv-cache": repository,
+            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
+            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+        }
+    )
+    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+
+    summary = summarize_github_repository_governance(config, opener=opener)
+
+    assert summary["ok"] is False
+    assert summary["merge_settings"]["allow_auto_merge"] is False
+    assert summary["issues"] == [
+        "repository must enable GitHub auto-merge",
     ]
 
 
@@ -454,6 +512,11 @@ def _repository(*, private: bool):
         "description": "Cachet: document KV-cache orchestration.",
         "homepage": "https://github.com/owner/document-kv-cache",
         "topics": ["kv-cache", "cachet"],
+        "allow_squash_merge": True,
+        "allow_rebase_merge": True,
+        "allow_merge_commit": False,
+        "allow_auto_merge": True,
+        "delete_branch_on_merge": True,
     }
 
 

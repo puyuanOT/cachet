@@ -1073,8 +1073,10 @@ repository visibility, branded repository metadata, `main` branch protection
 state, and open pull-request pressure. It returns non-zero until the repository
 is public, the description is non-empty and mentions Cachet, the repository
 topics include `cachet` and `kv-cache`, the required `Test and build`
-protection is active, branch protection applies to administrators, and no
-unexpected pull requests remain open:
+protection is active, branch protection applies to administrators, repository
+merge settings allow squash or rebase merges, GitHub auto-merge is enabled,
+merged PR branches are deleted automatically, and no unexpected pull requests
+remain open:
 
 ```bash
 export GITHUB_TOKEN=...
@@ -1087,6 +1089,9 @@ When producing a sidecar from inside the current release PR, pass
 `--allow-open-pull-request-number <PR_NUMBER>` so that one active pull request is
 recorded with its sanitized PR summary but not treated as stale release
 pressure.
+Regenerate GitHub governance sidecars before strict release assembly whenever
+the package version changes its governance schema; strict release bundles reject
+older sidecars that do not include the merge-settings block.
 
 If GitHub reports that private-repository branch protection is unavailable, the
 sidecar records `ok=false` and the release remains process-only rather than
