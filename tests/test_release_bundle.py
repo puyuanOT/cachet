@@ -216,6 +216,30 @@ def test_build_release_bundle_rejects_plan_execution_command_count_mismatch(tmp_
         )
 
 
+def test_build_release_bundle_rejects_non_executed_plan_execution_commands(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    skipped_record = _plan_execution_record(ok=True)
+    skipped_record["commands"][0]["name"] = ""
+    skipped_record["commands"][0]["argv"] = []
+    skipped_record["commands"][0]["skipped"] = True
+    skipped_path = _write_json(tmp_path / "skipped-plan-command.json", skipped_record)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            plan_execution_jsons=(skipped_path,),
+            output_dir=tmp_path / "skipped-plan-command-bundle",
+        )
+
+    error = str(exc_info.value)
+    assert "benchmark plan execution sidecar commands[0].name must be a non-empty string" in error
+    assert "benchmark plan execution sidecar commands[0].argv must be a non-empty array" in error
+    assert "benchmark plan execution sidecar commands[0].skipped must be false" in error
+
+
 def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_matching(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
