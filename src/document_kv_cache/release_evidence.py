@@ -590,10 +590,7 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     report_rows = _sequence_or_issue(record, "report_rows", issues)
     comparisons = _sequence_or_issue(record, "comparisons", issues)
     if suite is not None:
-        if suite.get("hardware_target") != DEFAULT_HARDWARE_TARGET:
-            issues.append(f"v1 benchmark hardware_target must be {DEFAULT_HARDWARE_TARGET!r}")
-        if suite.get("model_id") != DEFAULT_V1_MODEL_ID:
-            issues.append(f"v1 benchmark model_id must be {DEFAULT_V1_MODEL_ID!r}")
+        _validate_v1_suite_metadata(suite, issues)
     if evidence is not None and evidence.get("ok") is not True:
         evidence_issues = evidence.get("issues")
         if isinstance(evidence_issues, list) and evidence_issues:
@@ -629,6 +626,25 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if comparisons is not None:
         _validate_v1_comparisons(comparisons, issues)
     return tuple(issues)
+
+
+def _validate_v1_suite_metadata(suite: Mapping[str, Any], issues: list[str]) -> None:
+    suite_id = suite.get("suite_id")
+    if not isinstance(suite_id, str) or not suite_id:
+        issues.append("v1 benchmark suite_id must be non-empty")
+    datasets = suite.get("datasets")
+    if (
+        not isinstance(datasets, Sequence)
+        or isinstance(datasets, (str, bytes, bytearray))
+        or tuple(datasets) != SUPPORTED_V1_DATASETS
+    ):
+        issues.append("v1 benchmark suite datasets must match the V1 release datasets")
+    if not _is_positive_int(suite.get("examples")):
+        issues.append("v1 benchmark suite examples must be a positive integer")
+    if suite.get("hardware_target") != DEFAULT_HARDWARE_TARGET:
+        issues.append(f"v1 benchmark hardware_target must be {DEFAULT_HARDWARE_TARGET!r}")
+    if suite.get("model_id") != DEFAULT_V1_MODEL_ID:
+        issues.append(f"v1 benchmark model_id must be {DEFAULT_V1_MODEL_ID!r}")
 
 
 def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:

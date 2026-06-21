@@ -159,6 +159,30 @@ def test_evaluate_release_evidence_rejects_wrong_v1_record_type():
     assert any("v1 benchmark record_type" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_malformed_v1_suite_metadata():
+    v1_record = _v1_record(ok=True)
+    v1_record["suite"] = {
+        **v1_record["suite"],
+        "suite_id": "",
+        "datasets": ["biography", "hotpotqa"],
+        "examples": 0,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("suite_id must be non-empty" in issue for issue in evidence.issues)
+    assert any("suite datasets must match" in issue for issue in evidence.issues)
+    assert any("suite examples must be a positive integer" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_unknown_engine_version():
     probe_record = {**_probe_record(ServingBackend.VLLM), "engine_version": "unknown"}
 
@@ -1708,8 +1732,11 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g5", model_id: str = "qw
     return {
         "record_type": BENCHMARK_RUN_RECORD_TYPE,
         "suite": {
+            "suite_id": "v1-suite",
             "hardware_target": hardware_target,
             "model_id": model_id,
+            "datasets": list(datasets),
+            "examples": len(datasets),
         },
         "measurements": [_v1_measurement_record(dataset, arm) for dataset in datasets for arm in arms],
         "report_rows": [_v1_report_row_record(dataset, arm) for dataset in datasets for arm in arms],
