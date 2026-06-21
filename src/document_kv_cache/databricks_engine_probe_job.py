@@ -75,11 +75,11 @@ def _cluster_file_path(uri: str) -> str:
 
 def _install_package_wheel(argv: list[str]) -> list[str]:
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--package-wheel-uri")
+    parser.add_argument("--package-wheel-uri", action="append")
     args, remaining = parser.parse_known_args(argv)
-    if args.package_wheel_uri:
+    for package_wheel_uri in args.package_wheel_uri or ():
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", _cluster_file_path(args.package_wheel_uri)]
+            [sys.executable, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)]
         )
     return remaining
 
@@ -200,6 +200,7 @@ class DatabricksEngineProbeMatrixJobConfig:
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
+    extra_wheel_uris: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.probe_targets:
@@ -210,6 +211,8 @@ class DatabricksEngineProbeMatrixJobConfig:
             raise ValueError("run_name must be non-empty")
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
+        _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
+        object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
         if type(self.release_safe) is not bool:
             raise ValueError("release_safe must be a boolean")
         targets = tuple(_DEFAULT_COERCE_PROBE_TARGET(target) for target in self.probe_targets)
@@ -246,6 +249,7 @@ class DatabricksEngineProbeJobConfig:
     native_probe_delegate_factory: str | None = None
     fixture_output_dir: str | None = None
     fixture_payload_mode: PayloadMode | str = PayloadMode.SEGMENTED
+    extra_wheel_uris: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "fixture_payload_mode", _DEFAULT_PAYLOAD_MODE(self.fixture_payload_mode))
@@ -265,6 +269,8 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("task_key must be non-empty")
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
+        _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
+        object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
         if self.engine_version is not None and not self.engine_version:
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
@@ -299,8 +305,7 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
             "parameters": _runner_parameters(config),
         },
     }
-    if config.wheel_uri is not None:
-        task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
+    task["spark_python_task"]["parameters"].extend(_package_wheel_parameters(config))
     return {
         "run_name": config.run_name,
         "tasks": [task],
@@ -433,6 +438,7 @@ def _engine_probe_task_from_target(
         data_security_mode=config.data_security_mode,
         single_user_name=config.single_user_name,
         wheel_uri=config.wheel_uri,
+        extra_wheel_uris=config.extra_wheel_uris,
         engine_version=target.engine_version,
         allow_non_native_probe=target.allow_non_native_probe,
         metadata=target.metadata,
@@ -490,6 +496,25 @@ def _runner_parameters(config: DatabricksEngineProbeJobConfig) -> list[str]:
     for metadata in config.metadata:
         parameters.extend(["--metadata", metadata])
     return parameters
+
+
+def _package_wheel_parameters(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeMatrixJobConfig,
+) -> list[str]:
+    parameters: list[str] = []
+    for wheel_uri in _package_wheel_uris(config):
+        parameters.extend(["--package-wheel-uri", wheel_uri])
+    return parameters
+
+
+def _package_wheel_uris(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeMatrixJobConfig,
+) -> tuple[str, ...]:
+    wheel_uris = []
+    if config.wheel_uri is not None:
+        wheel_uris.append(config.wheel_uri)
+    wheel_uris.extend(config.extra_wheel_uris)
+    return tuple(wheel_uris)
 
 
 def _coerce_probe_target(target: DatabricksEngineProbeTargetConfig) -> DatabricksEngineProbeTargetConfig:
@@ -562,6 +587,14 @@ def _duplicates(values: Sequence[str]) -> tuple[str, ...]:
 def _validate_metadata_items(items: Sequence[str]) -> None:
     if any(not _is_metadata_item(item) for item in items):
         raise ValueError("metadata entries must be non-empty KEY=VALUE strings")
+
+
+def _validate_wheel_uris(items: Sequence[str], *, field_name: str) -> None:
+    if isinstance(items, (str, bytes, bytearray)):
+        raise TypeError(f"{field_name} must be a sequence of non-empty strings")
+    invalid_entries = [item for item in items if not isinstance(item, str) or not item]
+    if invalid_entries:
+        raise ValueError(f"{field_name} entries must be non-empty strings")
 
 
 def _is_metadata_item(item: str) -> bool:
@@ -648,6 +681,7 @@ _DEFAULT_VALIDATE_PROBE_TARGET_TASK_KEYS = _validate_probe_target_task_keys
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_TARGETS = _validate_release_safe_probe_targets
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB = _validate_release_safe_probe_job
 _DEFAULT_VALIDATE_METADATA_ITEMS = _validate_metadata_items
+_DEFAULT_VALIDATE_WHEEL_URIS = _validate_wheel_uris
 _DEFAULT_SERVING_BACKEND = _serving_backend
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_JOB = _cluster_config_from_engine_probe_job
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_MATRIX_JOB = _cluster_config_from_engine_probe_matrix_job
@@ -816,6 +850,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
+    parser.add_argument(
+        "--extra-wheel-uri",
+        action="append",
+        help=(
+            "Additional cluster-visible wheel URI to install before the task. "
+            "May be repeated; wheels install after --wheel-uri in argument order."
+        ),
+    )
     parser.add_argument("--engine-version", help="Fallback engine version for legacy or non-native debug probes.")
     parser.add_argument(
         "--native-probe-delegate-factory",
@@ -857,6 +899,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data_security_mode=args.data_security_mode,
                 single_user_name=args.single_user_name,
                 wheel_uri=args.wheel_uri,
+                extra_wheel_uris=tuple(args.extra_wheel_uri or ()),
                 release_safe=args.release_safe or targets_file.release_safe,
             )
             payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
@@ -875,6 +918,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data_security_mode=args.data_security_mode,
                 single_user_name=args.single_user_name,
                 wheel_uri=args.wheel_uri,
+                extra_wheel_uris=tuple(args.extra_wheel_uri or ()),
                 engine_version=args.engine_version,
                 allow_non_native_probe=args.allow_non_native_probe,
                 metadata=tuple(args.metadata or ()),

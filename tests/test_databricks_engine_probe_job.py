@@ -37,6 +37,8 @@ from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENA
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
+VLLM_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/vllm_kv_injection-0.2.0-py3-none-any.whl"
+SGLANG_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/sglang_kv_injection-0.2.0-py3-none-any.whl"
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -132,6 +134,70 @@ def test_build_databricks_engine_probe_release_safe_payload_omits_debug_flags():
     assert "--allow-non-native-probe" not in parameters
 
 
+def test_databricks_engine_probe_job_config_preserves_existing_positional_arguments():
+    config = DatabricksEngineProbeJobConfig(
+        "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+        "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        "dbfs:/benchmarks/run_engine_probe.py",
+        "vllm",
+        None,
+        DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
+        DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+        "g5.4xlarge",
+        "15.4.x-gpu-ml-scala2.12",
+        "SINGLE_USER",
+        SINGLE_USER_NAME,
+        WHEEL_URI,
+        "debug-vllm",
+        True,
+        ("probe.source=positional",),
+        False,
+        "ON_DEMAND",
+        "auto",
+        {"team": "document-kv"},
+        "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+        "document_kv_vllm_native_adapter:build_probe",
+        None,
+        "segmented",
+    )
+
+    assert config.engine_version == "debug-vllm"
+    assert config.allow_non_native_probe is True
+    assert config.metadata == ("probe.source=positional",)
+    assert config.release_safe is False
+    assert config.actions_output_json == "/Volumes/catalog/schema/volume/probes/vllm-actions.json"
+    assert config.native_probe_delegate_factory == "document_kv_vllm_native_adapter:build_probe"
+    assert config.fixture_payload_mode.value == "segmented"
+    assert config.extra_wheel_uris == ()
+
+
+def test_build_databricks_engine_probe_payload_installs_extra_wheels_in_order():
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        wheel_uri=WHEEL_URI,
+        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI, SGLANG_ADAPTER_WHEEL_URI),
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+    )
+
+    payload = build_databricks_engine_probe_run_submit_payload(config)
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert parameters[-6:] == [
+        "--package-wheel-uri",
+        WHEEL_URI,
+        "--package-wheel-uri",
+        VLLM_ADAPTER_WHEEL_URI,
+        "--package-wheel-uri",
+        SGLANG_ADAPTER_WHEEL_URI,
+    ]
+
+
 def test_build_databricks_engine_probe_payload_sets_native_delegate_env_var():
     config = DatabricksEngineProbeJobConfig(
         handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
@@ -214,6 +280,52 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
         assert parameters == expected_parameters
         assert "--engine-version" not in parameters
         assert "--allow-non-native-probe" not in parameters
+
+
+def test_databricks_engine_probe_matrix_config_preserves_existing_positional_arguments():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        (_target("vllm"), _target("sglang")),
+        "dbfs:/benchmarks/run_engine_probe.py",
+        DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
+        "g5.4xlarge",
+        "15.4.x-gpu-ml-scala2.12",
+        "SINGLE_USER",
+        SINGLE_USER_NAME,
+        WHEEL_URI,
+        True,
+        "ON_DEMAND",
+        "auto",
+        {"team": "document-kv"},
+    )
+
+    assert config.release_safe is True
+    assert config.availability == "ON_DEMAND"
+    assert config.zone_id == "auto"
+    assert config.custom_tags == {"team": "document-kv"}
+    assert config.extra_wheel_uris == ()
+
+
+def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_each_task():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(_target("vllm"), _target("sglang")),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI, SGLANG_ADAPTER_WHEEL_URI),
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+
+    for task in payload["tasks"]:
+        assert task["spark_python_task"]["parameters"][-6:] == [
+            "--package-wheel-uri",
+            WHEEL_URI,
+            "--package-wheel-uri",
+            VLLM_ADAPTER_WHEEL_URI,
+            "--package-wheel-uri",
+            SGLANG_ADAPTER_WHEEL_URI,
+        ]
 
 
 def test_databricks_engine_probe_matrix_payload_runs_fixture_before_probe():
@@ -911,7 +1023,7 @@ def test_write_databricks_engine_probe_runner_script_imports_task_runner(tmp_pat
 
 def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    pip_call_path = tmp_path / "pip-call.json"
+    pip_calls_path = tmp_path / "pip-calls.jsonl"
     task_args_path = tmp_path / "task-args.json"
     events_path = tmp_path / "events.jsonl"
     package_dir = tmp_path / "document_kv_cache"
@@ -947,8 +1059,8 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
                 "def _capture_check_call(argv):",
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
                 "        handle.write(json.dumps({'event': 'pip_install'}) + '\\n')",
-                "    with open(os.environ['PIP_CALL_JSON'], 'w', encoding='utf-8') as handle:",
-                "        json.dump(argv, handle)",
+                "    with open(os.environ['PIP_CALLS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "        handle.write(json.dumps(argv) + '\\n')",
                 "    return 0",
                 "",
                 "subprocess.check_call = _capture_check_call",
@@ -962,7 +1074,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
     env = {
         **os.environ,
         "PYTHONPATH": str(tmp_path),
-        "PIP_CALL_JSON": str(pip_call_path),
+        "PIP_CALLS_JSONL": str(pip_calls_path),
         "TASK_ARGS_JSON": str(task_args_path),
         "RUNNER_EVENTS_JSONL": str(events_path),
     }
@@ -973,6 +1085,8 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
             str(runner_path),
             "--package-wheel-uri",
             "dbfs:/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--package-wheel-uri",
+            "dbfs:/tmp/cachet/vllm_kv_injection-0.2.0-py3-none-any.whl",
             "--handoff-json",
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
             "--expected-backend",
@@ -984,13 +1098,11 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
         text=True,
     )
 
-    pip_call = json.loads(pip_call_path.read_text(encoding="utf-8"))
-    assert Path(pip_call[0]).resolve() == Path(sys.executable).resolve()
-    assert pip_call[1:] == [
-        "-m",
-        "pip",
-        "install",
-        "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    pip_calls = [json.loads(line) for line in pip_calls_path.read_text(encoding="utf-8").splitlines()]
+    assert [Path(call[0]).resolve() for call in pip_calls] == [Path(sys.executable).resolve()] * 2
+    assert [call[1:] for call in pip_calls] == [
+        ["-m", "pip", "install", "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl"],
+        ["-m", "pip", "install", "/dbfs/tmp/cachet/vllm_kv_injection-0.2.0-py3-none-any.whl"],
     ]
     assert json.loads(task_args_path.read_text(encoding="utf-8")) == [
         "--handoff-json",
@@ -999,7 +1111,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
         "vllm",
     ]
     events = [json.loads(line)["event"] for line in events_path.read_text(encoding="utf-8").splitlines()]
-    assert events == ["pip_install", "engine_probe_job_import", "run_engine_probe_task"]
+    assert events == ["pip_install", "pip_install", "engine_probe_job_import", "run_engine_probe_task"]
 
 
 def test_write_databricks_engine_probe_run_submit_json_writes_payload(tmp_path):
@@ -1043,6 +1155,8 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
             SINGLE_USER_NAME,
             "--wheel-uri",
             WHEEL_URI,
+            "--extra-wheel-uri",
+            VLLM_ADAPTER_WHEEL_URI,
             "--output-json",
             str(payload_path),
             "--runner-script-output",
@@ -1055,7 +1169,12 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
     task = payload["tasks"][0]
     assert "libraries" not in task
     assert "--actions-output-json" in task["spark_python_task"]["parameters"]
-    assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
+    assert task["spark_python_task"]["parameters"][-4:] == [
+        "--package-wheel-uri",
+        WHEEL_URI,
+        "--package-wheel-uri",
+        VLLM_ADAPTER_WHEEL_URI,
+    ]
     assert "engine_probe" in runner_path.read_text(encoding="utf-8")
 
 

@@ -244,6 +244,8 @@ class DatabricksEngineProbeMatrixJobConfig(_public_class_base("DatabricksEngineP
             raise ValueError("run_name must be non-empty")
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
+        _validate_wheel_uris(self.extra_wheel_uris, field_name="extra_wheel_uris")
+        object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
         if type(self.release_safe) is not bool:
             raise ValueError("release_safe must be a boolean")
         targets = tuple(_coerce_probe_target(target) for target in self.probe_targets)
@@ -275,6 +277,8 @@ class DatabricksEngineProbeJobConfig(_public_class_base("DatabricksEngineProbeJo
             raise ValueError("task_key must be non-empty")
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
+        _validate_wheel_uris(self.extra_wheel_uris, field_name="extra_wheel_uris")
+        object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
         if self.engine_version is not None and not self.engine_version:
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
@@ -408,6 +412,10 @@ def _validate_metadata_items(items: Sequence[str]) -> None:
     return _call_document_function("_validate_metadata_items", items)
 
 
+def _validate_wheel_uris(items: Sequence[str], *, field_name: str) -> None:
+    return _call_document_function("_validate_wheel_uris", items, field_name=field_name)
+
+
 def _serving_backend(value: ServingBackend | str) -> ServingBackend:
     return _call_document_function("_serving_backend", value)
 
@@ -454,6 +462,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "_validate_release_safe_probe_targets": _validate_release_safe_probe_targets,
     "_validate_release_safe_probe_job": _validate_release_safe_probe_job,
     "_validate_metadata_items": _validate_metadata_items,
+    "_validate_wheel_uris": _validate_wheel_uris,
     "_serving_backend": _serving_backend,
     "_payload_mode": _payload_mode,
     "_validate_fixture_output_dir": _validate_fixture_output_dir,
