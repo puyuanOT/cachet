@@ -593,6 +593,25 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
 
 
+@pytest.mark.parametrize("engine_probe_jsons", ((), ("vllm",)))
+def test_build_release_bundle_strict_v1_requires_native_engine_probe_sidecars(tmp_path, engine_probe_jsons):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    selected_probes = tuple(
+        path for path in release_kwargs["engine_probe_jsons"] if path.stem.startswith(engine_probe_jsons)
+    )
+
+    with pytest.raises(ValueError, match=r"vLLM/SGLang native engine probe sidecars"):
+        build_release_bundle(
+            **{**release_kwargs, "engine_probe_jsons": selected_probes},
+            output_dir=tmp_path / f"strict-missing-probes-{len(selected_probes)}",
+            require_complete_v1=True,
+        )
+
+
 @pytest.mark.parametrize("engine_actions_jsons", ((), ("vllm_actions",)))
 def test_build_release_bundle_strict_v1_requires_connector_action_sidecars(tmp_path, engine_actions_jsons):
     source_dir = tmp_path / "sources"
@@ -2284,7 +2303,7 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
 
     assert "--require-complete-v1" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
-    assert "vLLM/SGLang connector actions" in help_text
+    assert "vLLM/SGLang native engine probes and connector actions" in help_text
     assert "supported native probe factory diagnostics" in help_text
 
 

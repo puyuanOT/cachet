@@ -96,6 +96,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
 STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("release_evidence", 1, "release evidence sidecar"),
     ("preflight", 1, "preflight sidecar"),
+    ("engine_probe", 2, "vLLM/SGLang native engine probe sidecars"),
     ("engine_connector_actions", 2, "vLLM/SGLang connector action sidecars"),
     ("plan_execution", 1, "benchmark plan execution sidecar"),
     ("databricks_run_status", 1, "Databricks run-status sidecar"),
@@ -1834,9 +1835,10 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Require the full V1 release artifact set: release/preflight sidecars, "
-            "vLLM/SGLang connector actions, plan execution, Databricks status for "
-            "benchmark/storage/engine-probe runs, tested wheel, PR evidence, governance, "
-            "repository hygiene, and supported native probe factory diagnostics."
+            "vLLM/SGLang native engine probes and connector actions, plan execution, "
+            "Databricks status for benchmark/storage/engine-probe runs, tested wheel, "
+            "PR evidence, governance, repository hygiene, and supported native probe "
+            "factory diagnostics."
         ),
     )
     parser.add_argument("--output-dir", required=True)
