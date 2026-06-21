@@ -21,9 +21,11 @@ from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
+    VLLM_NATIVE_PROBE_FACTORY,
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
+from document_kv_cache.serving_env import VLLM_VERSION
 from document_kv_cache.storage import local_path
 
 
@@ -40,6 +42,7 @@ VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY = (
 VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA = (
     f"vllm_kv_injection.connector_factory={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY}"
 )
+DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE = f"vllm=={VLLM_VERSION}"
 _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS = frozenset(
     {
         "record_type",
@@ -126,6 +129,7 @@ __all__ = [
     "VLLM_NATIVE_PROBE_DELEGATE_FACTORY",
     "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY",
     "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA",
+    "DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE",
     "DatabricksEngineProbeJobConfig",
     "DatabricksEngineProbeMatrixJobConfig",
     "DatabricksEngineProbeTargetConfig",
@@ -921,6 +925,115 @@ def _required_single_arg(args: argparse.Namespace, name: str) -> str:
     return value
 
 
+def _single_target_arg_with_builtin_vllm_default(
+    args: argparse.Namespace,
+    name: str,
+    default: str,
+) -> str:
+    value = getattr(args, name)
+    if not args.provider_backed_vllm_native_probe:
+        return _required_single_arg(args, name)
+    if value is not None and value != default:
+        cli_name = name.replace("_", "-")
+        raise ValueError(
+            f"--provider-backed-vllm-native-probe sets --{cli_name} to {default!r}; "
+            f"got conflicting value {value!r}"
+        )
+    return default
+
+
+def _optional_single_target_arg_with_builtin_vllm_default(
+    args: argparse.Namespace,
+    name: str,
+    default: str,
+) -> str | None:
+    value = getattr(args, name)
+    if not args.provider_backed_vllm_native_probe:
+        return value
+    if value is not None and value != default:
+        cli_name = name.replace("_", "-")
+        raise ValueError(
+            f"--provider-backed-vllm-native-probe sets --{cli_name} to {default!r}; "
+            f"got conflicting value {value!r}"
+        )
+    return default
+
+
+def _single_target_metadata_from_cli(args: argparse.Namespace) -> tuple[str, ...]:
+    metadata = list(args.metadata or ())
+    if args.provider_backed_vllm_native_probe:
+        _append_required_metadata(
+            metadata,
+            required_item=VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+            option_name="--provider-backed-vllm-native-probe",
+        )
+    return tuple(metadata)
+
+
+def _append_required_metadata(metadata: list[str], *, required_item: str, option_name: str) -> None:
+    required_key, _separator, required_value = required_item.partition("=")
+    for item in metadata:
+        key, separator, value = item.partition("=")
+        if separator and key == required_key:
+            if value != required_value:
+                raise ValueError(f"{option_name} requires metadata entry {required_item}")
+            return
+    metadata.append(required_item)
+
+
+def _single_target_extra_pip_packages_from_cli(args: argparse.Namespace) -> tuple[str, ...]:
+    packages = list(args.extra_pip_package or ())
+    if args.provider_backed_vllm_native_probe:
+        _append_required_pip_package(
+            packages,
+            required_package=DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
+            option_name="--provider-backed-vllm-native-probe",
+        )
+    return tuple(packages)
+
+
+def _single_target_extra_wheel_uris_from_cli(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.provider_backed_vllm_native_probe and args.extra_wheel_uri:
+        raise ValueError(
+            "--provider-backed-vllm-native-probe cannot be combined with --extra-wheel-uri; "
+            "the provider-backed vLLM adapter modules must come from the Cachet wheel"
+        )
+    return tuple(args.extra_wheel_uri or ())
+
+
+def _single_target_engine_version_from_cli(args: argparse.Namespace) -> str | None:
+    if args.provider_backed_vllm_native_probe and args.engine_version is not None:
+        raise ValueError("--provider-backed-vllm-native-probe cannot be combined with --engine-version")
+    return args.engine_version
+
+
+def _single_target_allow_non_native_probe_from_cli(args: argparse.Namespace) -> bool:
+    if args.provider_backed_vllm_native_probe and args.allow_non_native_probe:
+        raise ValueError("--provider-backed-vllm-native-probe cannot be combined with --allow-non-native-probe")
+    return args.allow_non_native_probe
+
+
+def _append_required_pip_package(packages: list[str], *, required_package: str, option_name: str) -> None:
+    required_name = _pip_package_name(required_package)
+    for package in packages:
+        if _pip_package_name(package) == required_name:
+            if package != required_package:
+                raise ValueError(f"{option_name} requires pip package {required_package}")
+            return
+    packages.append(required_package)
+
+
+def _pip_package_name(package: str) -> str:
+    normalized = package.strip()
+    name_chars = []
+    for char in normalized:
+        if char.isalnum() or char in {"-", "_", "."}:
+            name_chars.append(char)
+            continue
+        break
+    return "".join(name_chars).replace("_", "-").lower()
+
+
 def _single_target_handoff_json_from_cli(args: argparse.Namespace) -> str:
     if args.fixture_output_dir is None:
         if args.fixture_payload_mode is not None:
@@ -957,6 +1070,8 @@ def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
         provided.append("--metadata")
     if args.extra_pip_package:
         provided.append("--extra-pip-package")
+    if args.provider_backed_vllm_native_probe:
+        provided.append("--provider-backed-vllm-native-probe")
     if provided:
         raise ValueError(
             "--backend-config-json cannot be combined with single-target probe options; "
@@ -972,6 +1087,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--actions-output-json", help="Optional cluster-visible connector actions descriptor output path.")
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--expected-backend", choices=[backend.value for backend in ServingBackend])
+    parser.add_argument(
+        "--provider-backed-vllm-native-probe",
+        action="store_true",
+        help=(
+            "Single-target shortcut for Cachet's built-in provider-backed vLLM native probe. "
+            "Sets the Cachet vLLM probe factory, vLLM delegate factory, required connector "
+            f"metadata, expected backend vllm, and {DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE}."
+        ),
+    )
     parser.add_argument(
         "--backend-config-json",
         help=(
@@ -1077,10 +1201,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError("--serial-tasks requires --backend-config-json")
             config = DatabricksEngineProbeJobConfig(
                 handoff_json=_single_target_handoff_json_from_cli(args),
-                probe_factory=_required_single_arg(args, "probe_factory"),
+                probe_factory=_single_target_arg_with_builtin_vllm_default(
+                    args,
+                    "probe_factory",
+                    VLLM_NATIVE_PROBE_FACTORY,
+                ),
                 output_json=_required_single_arg(args, "probe_output_json"),
                 runner_python_file=args.runner_python_file,
-                expected_backend=_required_single_arg(args, "expected_backend"),
+                expected_backend=_single_target_arg_with_builtin_vllm_default(
+                    args,
+                    "expected_backend",
+                    ServingBackend.VLLM.value,
+                ),
                 payload_uri=args.payload_uri,
                 run_name=args.run_name,
                 task_key=args.task_key or DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
@@ -1089,14 +1221,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data_security_mode=args.data_security_mode,
                 single_user_name=args.single_user_name,
                 wheel_uri=args.wheel_uri,
-                extra_wheel_uris=tuple(args.extra_wheel_uri or ()),
-                extra_pip_packages=tuple(args.extra_pip_package or ()),
-                engine_version=args.engine_version,
-                allow_non_native_probe=args.allow_non_native_probe,
-                metadata=tuple(args.metadata or ()),
+                extra_wheel_uris=_single_target_extra_wheel_uris_from_cli(args),
+                extra_pip_packages=_single_target_extra_pip_packages_from_cli(args),
+                engine_version=_single_target_engine_version_from_cli(args),
+                allow_non_native_probe=_single_target_allow_non_native_probe_from_cli(args),
+                metadata=_single_target_metadata_from_cli(args),
                 release_safe=args.release_safe,
                 actions_output_json=args.actions_output_json,
-                native_probe_delegate_factory=args.native_probe_delegate_factory,
+                native_probe_delegate_factory=_optional_single_target_arg_with_builtin_vllm_default(
+                    args,
+                    "native_probe_delegate_factory",
+                    VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+                ),
                 fixture_output_dir=args.fixture_output_dir,
                 fixture_payload_mode=args.fixture_payload_mode or PayloadMode.SEGMENTED,
             )

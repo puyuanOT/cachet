@@ -164,19 +164,24 @@ the small runner script and `runs/submit` payload:
 
 ```bash
 python -m document_kv_cache.databricks_engine_probe_job \
-  --handoff-json /Volumes/catalog/schema/volume/probes/vllm-handoff.json \
-  --probe-factory my_engine_adapter.probes:build_probe \
+  --provider-backed-vllm-native-probe \
+  --fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
-  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
-  --payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv \
+  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
-  --expected-backend vllm \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json databricks-engine-probe-submit.json
 ```
+
+For Cachet's built-in provider-backed vLLM path,
+`--provider-backed-vllm-native-probe` fills in the Cachet probe factory, vLLM
+delegate factory, strict connector metadata, expected backend, and pinned
+`vllm==0.23.0` runtime package.
+It rejects debug fallback flags and extra wheels so the provider-backed adapter
+modules come only from the Cachet wheel.
 
 Use `--release-safe` for release-evidence jobs so debug-only non-native probes
 and caller-supplied engine versions are rejected before the Databricks payload is

@@ -138,14 +138,12 @@ workspace-specific probe factory module:
 
 ```bash
 document-kv-engine-probe-databricks-job \
-  --handoff-json /Volumes/catalog/schema/volume/probes/vllm-handoff.json \
-  --probe-factory my_engine_adapter.probes:build_probe \
+  --provider-backed-vllm-native-probe \
+  --fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
-  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
-  --payload-uri /Volumes/catalog/schema/volume/probes/vllm-payload.kv \
+  --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
-  --expected-backend vllm \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
@@ -155,6 +153,11 @@ document-kv-engine-probe-databricks-job \
 `--release-safe` rejects debug-only engine-probe options such as
 `--allow-non-native-probe` and caller-supplied `--engine-version`; native probe
 factories should report the real engine version in their result.
+For the built-in vLLM provider-backed path, `--provider-backed-vllm-native-probe`
+also sets the Cachet probe factory, vLLM delegate factory, required connector
+metadata, expected backend, and pinned `vllm==0.23.0` runtime package.
+It rejects debug fallback flags and extra wheels so the provider-backed adapter
+modules come only from the Cachet wheel.
 `--actions-output-json` writes the validated reserve/copy/bind/release
 descriptor that the native block-manager probe consumed.
 
