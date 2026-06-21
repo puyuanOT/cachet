@@ -55,6 +55,7 @@ from document_kv_cache.databricks_storage_benchmark_job import (
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
+    native_probe_adapter_contract_to_record,
     native_probe_factories_record_issues,
 )
 from document_kv_cache.pr_evidence import _PR_EVIDENCE_RECORD_KEYS, PR_EVIDENCE_RECORD_TYPE, evaluate_pr_evidence_record
@@ -864,9 +865,21 @@ def _supported_native_probe_factory_backends(record: Mapping[str, Any]) -> set[s
         if not isinstance(factory, Mapping):
             continue
         backend = factory.get("backend")
-        if isinstance(backend, str) and factory.get("supported") is True:
+        if (
+            isinstance(backend, str)
+            and factory.get("supported") is True
+            and _strict_native_probe_factory_has_delegate_contract(factory)
+        ):
             supported_backends.add(backend)
     return supported_backends
+
+
+def _strict_native_probe_factory_has_delegate_contract(factory: Mapping[str, Any]) -> bool:
+    return (
+        factory.get("delegate_adapter_contract_valid") is True
+        and isinstance(factory.get("delegate_adapter_contract"), Mapping)
+        and dict(factory["delegate_adapter_contract"]) == native_probe_adapter_contract_to_record()
+    )
 
 
 def _single_record_for_role(

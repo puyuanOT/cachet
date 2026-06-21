@@ -326,6 +326,14 @@ _EXPORTS = {
         "restaurant_kv_serving.native_probe_factories",
         "NATIVE_PROBE_ADAPTER_CONTRACT",
     ),
+    "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR": (
+        "restaurant_kv_serving.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR",
+    ),
+    "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR": (
+        "restaurant_kv_serving.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
+    ),
     "NATIVE_PROBE_FACTORIES_RECORD_TYPE": (
         "restaurant_kv_serving.native_probe_factories",
         "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
@@ -968,6 +976,8 @@ __all__ = [
     "ModelProfileDefinition",
     "ModelProfileRegistry",
     "NATIVE_PROBE_ADAPTER_CONTRACT",
+    "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR",
+    "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
     "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",

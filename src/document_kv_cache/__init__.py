@@ -471,6 +471,14 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.native_probe_factories",
         "SGLANG_NATIVE_PROBE_DELEGATE_ENV",
     ),
+    "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR": (
+        "document_kv_cache.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR",
+    ),
+    "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR": (
+        "document_kv_cache.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
+    ),
     "VLLM_NATIVE_PROBE_FACTORY": (
         "document_kv_cache.native_probe_factories",
         "VLLM_NATIVE_PROBE_FACTORY",

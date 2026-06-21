@@ -314,6 +314,8 @@ from document_kv_cache.models import (
 
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT,
+    NATIVE_PROBE_DELEGATE_CONTRACT_ATTR as NATIVE_PROBE_DELEGATE_CONTRACT_ATTR,
+    NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR as NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR,
     NATIVE_PROBE_FACTORIES_RECORD_TYPE as NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     NativeProbeFactoryInspection as NativeProbeFactoryInspection,
     NativeProbeFactoryUnavailable as NativeProbeFactoryUnavailable,

@@ -17,6 +17,8 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
+    NATIVE_PROBE_DELEGATE_CONTRACT_ATTR,
+    NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR,
     NativeProbeFactoryInspection,
     NativeProbeFactoryUnavailable,
     SGLANG_NATIVE_PROBE_FACTORY,
@@ -69,10 +71,20 @@ def mark_backend_packages_installed(monkeypatch, *, version: str = "0.23.0") -> 
     monkeypatch.setattr(native_probe_factories.util, "find_spec", fake_find_spec)
 
 
-def write_delegate_factory_module(tmp_path, monkeypatch, *, module_name: str) -> str:
+def write_delegate_factory_module(
+    tmp_path,
+    monkeypatch,
+    *,
+    module_name: str,
+    contract: dict | None = None,
+) -> str:
+    contract_literal = repr(native_probe_adapter_contract_to_record() if contract is None else contract)
     module_path = tmp_path / f"{module_name}.py"
     module_path.write_text(
-        """
+        f"""
+{NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR} = {contract_literal}
+
+
 class Probe:
     def __init__(self, backend):
         self.backend = backend
@@ -88,9 +100,13 @@ def build_probe(context):
 
 
 def write_unhashable_delegate_factory_module(tmp_path, monkeypatch, *, module_name: str) -> str:
+    contract_literal = repr(native_probe_adapter_contract_to_record())
     module_path = tmp_path / f"{module_name}.py"
     module_path.write_text(
-        """
+        f"""
+{NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR} = {contract_literal}
+
+
 class Probe:
     def __init__(self, backend):
         self.backend = backend
@@ -105,6 +121,45 @@ class ProbeFactory:
 
 
 build_probe = ProbeFactory()
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return f"{module_name}:build_probe"
+
+
+def write_callable_contract_delegate_factory_module(tmp_path, monkeypatch, *, module_name: str) -> str:
+    contract_literal = repr(native_probe_adapter_contract_to_record())
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        f"""
+class Probe:
+    def __init__(self, backend):
+        self.backend = backend
+
+
+def build_probe(context):
+    return Probe(context.backend.value)
+
+
+build_probe.{NATIVE_PROBE_DELEGATE_CONTRACT_ATTR} = {contract_literal}
+""".lstrip(),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return f"{module_name}:build_probe"
+
+
+def write_contractless_delegate_factory_module(tmp_path, monkeypatch, *, module_name: str) -> str:
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        """
+class Probe:
+    pass
+
+
+def build_probe(context):
+    return Probe()
 """.lstrip(),
         encoding="utf-8",
     )
@@ -134,6 +189,8 @@ def test_inspect_builtin_native_probe_factory_reports_fail_closed_status():
     assert inspection.factory_path == VLLM_NATIVE_PROBE_FACTORY
     assert inspection.package_name == "vllm"
     assert inspection.delegate_factory_path is None
+    assert inspection.delegate_adapter_contract is None
+    assert inspection.delegate_adapter_contract_valid is False
     assert inspection.supported is False
     assert inspection.reason
 
@@ -141,6 +198,8 @@ def test_inspect_builtin_native_probe_factory_reports_fail_closed_status():
     assert record["backend"] == "vllm"
     assert record["factory_path"] == VLLM_NATIVE_PROBE_FACTORY
     assert record["delegate_factory_path"] is None
+    assert record["delegate_adapter_contract"] is None
+    assert record["delegate_adapter_contract_valid"] is False
     assert record["supported"] is False
     assert "reason" in record
     assert record["adapter_contract"] == native_probe_adapter_contract_to_record()
@@ -163,6 +222,8 @@ def test_native_probe_factory_inspection_preserves_previous_positional_signature
     assert inspection.supported is False
     assert inspection.reason == "vllm is not installed"
     assert inspection.delegate_factory_path is None
+    assert inspection.delegate_adapter_contract is None
+    assert inspection.delegate_adapter_contract_valid is False
 
 
 def test_inspect_builtin_native_probe_factory_delegates_when_backend_and_adapter_are_available(
@@ -186,7 +247,9 @@ def test_inspect_builtin_native_probe_factory_delegates_when_backend_and_adapter
     inspection = inspect_builtin_native_probe_factory("vllm")
     assert inspection.supported is True
     assert inspection.delegate_factory_path == vllm_delegate_path
-    assert "delegate native probe factory is loadable" in inspection.reason
+    assert inspection.delegate_adapter_contract == native_probe_adapter_contract_to_record()
+    assert inspection.delegate_adapter_contract_valid is True
+    assert "declares the Document KV adapter contract" in inspection.reason
 
     probe = vllm_native_probe_factory(context(ServingBackend.VLLM))
     assert probe.backend == "vllm"
@@ -197,7 +260,82 @@ def test_inspect_builtin_native_probe_factory_delegates_when_backend_and_adapter
         sglang_delegate_path,
     }
     assert all(factory["supported"] is True for factory in record["factories"])
+    assert all(
+        factory["delegate_adapter_contract"] == native_probe_adapter_contract_to_record()
+        for factory in record["factories"]
+    )
+    assert all(factory["delegate_adapter_contract_valid"] is True for factory in record["factories"])
     validate_native_probe_factories_record(record)
+
+
+def test_inspect_builtin_native_probe_factory_accepts_callable_declared_delegate_contract(
+    tmp_path,
+    monkeypatch,
+):
+    mark_backend_packages_installed(monkeypatch)
+    delegate_path = write_callable_contract_delegate_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="vllm_callable_contract_delegate_probe",
+    )
+    monkeypatch.setenv(VLLM_NATIVE_PROBE_DELEGATE_ENV, delegate_path)
+
+    inspection = inspect_builtin_native_probe_factory("vllm")
+
+    assert inspection.supported is True
+    assert inspection.delegate_adapter_contract_valid is True
+    assert inspection.delegate_adapter_contract == native_probe_adapter_contract_to_record()
+
+
+def test_inspect_builtin_native_probe_factory_requires_declared_delegate_contract(
+    tmp_path,
+    monkeypatch,
+):
+    mark_backend_packages_installed(monkeypatch)
+    delegate_path = write_contractless_delegate_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="vllm_contractless_delegate_probe",
+    )
+    monkeypatch.setenv(VLLM_NATIVE_PROBE_DELEGATE_ENV, delegate_path)
+
+    inspection = inspect_builtin_native_probe_factory("vllm")
+
+    assert inspection.supported is False
+    assert inspection.delegate_factory_path == delegate_path
+    assert inspection.delegate_adapter_contract is None
+    assert inspection.delegate_adapter_contract_valid is False
+    assert "must declare" in inspection.reason
+    with pytest.raises(NativeProbeFactoryUnavailable, match="must declare"):
+        vllm_native_probe_factory(context(ServingBackend.VLLM))
+
+
+def test_inspect_builtin_native_probe_factory_rejects_mismatched_delegate_contract(
+    tmp_path,
+    monkeypatch,
+):
+    mark_backend_packages_installed(monkeypatch)
+    wrong_contract = {
+        **native_probe_adapter_contract_to_record(),
+        "payload_mode": PayloadMode.SEGMENTED.value,
+    }
+    delegate_path = write_delegate_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="vllm_wrong_contract_delegate_probe",
+        contract=wrong_contract,
+    )
+    monkeypatch.setenv(VLLM_NATIVE_PROBE_DELEGATE_ENV, delegate_path)
+
+    inspection = inspect_builtin_native_probe_factory("vllm")
+
+    assert inspection.supported is False
+    assert inspection.delegate_adapter_contract == wrong_contract
+    assert inspection.delegate_adapter_contract_valid is False
+    assert "incompatible Document KV adapter contract" in inspection.reason
+    assert "payload_mode must match" in inspection.reason
+    with pytest.raises(NativeProbeFactoryUnavailable, match="payload_mode must match"):
+        vllm_native_probe_factory(context(ServingBackend.VLLM))
 
 
 def test_inspect_builtin_native_probe_factory_accepts_unhashable_callable_delegate(
@@ -216,6 +354,7 @@ def test_inspect_builtin_native_probe_factory_accepts_unhashable_callable_delega
 
     assert inspection.supported is True
     assert inspection.delegate_factory_path == delegate_path
+    assert inspection.delegate_adapter_contract_valid is True
     probe = vllm_native_probe_factory(context(ServingBackend.VLLM))
     assert probe.backend == "vllm"
 
@@ -402,6 +541,8 @@ def test_builtin_native_probe_factories_record_includes_required_backends():
     assert {factory["backend"] for factory in record["factories"]} == {"vllm", "sglang"}
     assert all(factory["supported"] is False for factory in record["factories"])
     assert all(factory["delegate_factory_path"] is None for factory in record["factories"])
+    assert all(factory["delegate_adapter_contract"] is None for factory in record["factories"])
+    assert all(factory["delegate_adapter_contract_valid"] is False for factory in record["factories"])
     profile_by_backend = {
         factory["backend"]: factory["serving_environment_profile"]
         for factory in record["factories"]
@@ -414,6 +555,16 @@ def test_builtin_native_probe_factories_record_includes_required_backends():
 
 def test_validate_native_probe_factories_record_accepts_builtin_record():
     record = builtin_native_probe_factories_to_record()
+
+    assert native_probe_factories_record_issues(record) == ()
+    validate_native_probe_factories_record(record)
+
+
+def test_validate_native_probe_factories_record_accepts_legacy_v1_without_delegate_contract_fields():
+    record = builtin_native_probe_factories_to_record()
+    for factory in record["factories"]:
+        del factory["delegate_adapter_contract"]
+        del factory["delegate_adapter_contract_valid"]
 
     assert native_probe_factories_record_issues(record) == ()
     validate_native_probe_factories_record(record)
@@ -472,6 +623,8 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         **inconsistent_supported_record["factories"][0],
         "package_importable": True,
         "package_version": "0.23.0",
+        "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
+        "delegate_adapter_contract_valid": True,
         "supported": True,
     }
     inconsistent_supported_issues = native_probe_factories_record_issues(inconsistent_supported_record)
@@ -489,6 +642,8 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         "delegate_factory_path": VLLM_NATIVE_PROBE_FACTORY,
         "package_importable": True,
         "package_version": "0.23.0",
+        "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
+        "delegate_adapter_contract_valid": True,
         "supported": True,
     }
     reserved_delegate_issues = native_probe_factories_record_issues(reserved_delegate_record)
@@ -506,6 +661,8 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         "delegate_factory_path": "document_kv_cache.native_probe_factories.vllm_native_probe_factory",
         "package_importable": True,
         "package_version": "0.23.0",
+        "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
+        "delegate_adapter_contract_valid": True,
         "supported": True,
     }
     dotted_reserved_delegate_issues = native_probe_factories_record_issues(
@@ -525,6 +682,8 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
         "delegate_factory_path": "cachet:vllm_native_probe_factory",
         "package_importable": True,
         "package_version": "0.23.0",
+        "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
+        "delegate_adapter_contract_valid": True,
         "supported": True,
     }
     alias_reserved_delegate_issues = native_probe_factories_record_issues(alias_reserved_delegate_record)
@@ -535,6 +694,47 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
     )
     with pytest.raises(ValueError, match="must not point at a built-in native probe factory"):
         validate_native_probe_factories_record(alias_reserved_delegate_record)
+
+    invalid_supported_contract_record = builtin_native_probe_factories_to_record()
+    invalid_supported_contract_record["factories"][0] = {
+        **invalid_supported_contract_record["factories"][0],
+        "delegate_factory_path": "downstream:factory",
+        "package_importable": True,
+        "package_version": "0.23.0",
+        "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
+        "delegate_adapter_contract_valid": False,
+        "supported": True,
+    }
+    invalid_supported_contract_issues = native_probe_factories_record_issues(
+        invalid_supported_contract_record
+    )
+
+    assert any(
+        "delegate_adapter_contract_valid must be true when supported is true" in issue
+        for issue in invalid_supported_contract_issues
+    )
+    with pytest.raises(ValueError, match="delegate_adapter_contract_valid must be true"):
+        validate_native_probe_factories_record(invalid_supported_contract_record)
+
+    missing_supported_contract_record = builtin_native_probe_factories_to_record()
+    missing_supported_contract_record["factories"][0] = {
+        **missing_supported_contract_record["factories"][0],
+        "delegate_factory_path": "downstream:factory",
+        "package_importable": True,
+        "package_version": "0.23.0",
+        "delegate_adapter_contract_valid": True,
+        "supported": True,
+    }
+    missing_supported_contract_issues = native_probe_factories_record_issues(
+        missing_supported_contract_record
+    )
+
+    assert any(
+        "delegate_adapter_contract must be an object when supported is true" in issue
+        for issue in missing_supported_contract_issues
+    )
+    with pytest.raises(ValueError, match="delegate_adapter_contract must be an object"):
+        validate_native_probe_factories_record(missing_supported_contract_record)
 
 
 def test_builtin_native_probe_factories_record_writer_and_cli(tmp_path, capsys):
