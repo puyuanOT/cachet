@@ -264,6 +264,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     )
     github_governance = _write_json(source_dir / "github-governance.json", github_governance_record)
     repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
+    requirements_matrix = _write_requirements_matrix(source_dir / "v1-requirements-matrix.md")
 
     bundle = build_release_bundle(
         v1_benchmark_json=artifacts["v1"],
@@ -273,6 +274,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
         plan_execution_jsons=(plan_execution,),
         package_wheel=package_wheel,
         pr_evidence_jsons=(pr_evidence,),
+        requirements_matrix_md=requirements_matrix,
         github_governance_json=github_governance,
         repository_hygiene_json=repository_hygiene,
         output_dir=bundle_dir,
@@ -289,14 +291,16 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
         "plan_execution",
         "package_wheel",
         "pr_evidence",
+        "requirements_matrix",
         "github_governance",
         "repository_hygiene",
     ]
     execution_artifact = record["artifacts"][6]
     wheel_artifact = record["artifacts"][7]
     pr_artifact = record["artifacts"][8]
-    github_artifact = record["artifacts"][9]
-    hygiene_artifact = record["artifacts"][10]
+    matrix_artifact = record["artifacts"][9]
+    github_artifact = record["artifacts"][10]
+    hygiene_artifact = record["artifacts"][11]
     assert execution_artifact["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
     assert json.loads((bundle_dir / execution_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert wheel_artifact["bundled_path"] == package_wheel.name
@@ -306,6 +310,11 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert (bundle_dir / wheel_artifact["bundled_path"]).read_bytes() == package_wheel.read_bytes()
     assert pr_artifact["record_type"] == "document_kv.pr_evidence.v1"
     assert json.loads((bundle_dir / pr_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
+    assert matrix_artifact["bundled_path"] == "v1_requirements_matrix.md"
+    assert "record_type" not in matrix_artifact
+    assert (bundle_dir / matrix_artifact["bundled_path"]).read_text(encoding="utf-8") == requirements_matrix.read_text(
+        encoding="utf-8"
+    )
     assert github_artifact["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
     assert github_artifact["bundled_path"] == "github_governance.json"
     bundled_governance = json.loads((bundle_dir / github_artifact["bundled_path"]).read_text(encoding="utf-8"))
@@ -583,10 +592,15 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "databricks_run_status",
         "package_wheel",
         "pr_evidence",
+        "requirements_matrix",
         "github_governance",
         "repository_hygiene",
         "native_probe_factories",
     ]
+    matrix_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "requirements_matrix")
+    assert matrix_artifact["bundled_path"] == "v1_requirements_matrix.md"
+    assert "record_type" not in matrix_artifact
+    assert "# V1 Requirements Matrix" in (bundle_dir / matrix_artifact["bundled_path"]).read_text(encoding="utf-8")
     status_records = [
         json.loads((bundle_dir / artifact["bundled_path"]).read_text(encoding="utf-8"))["summary"]
         for artifact in record["artifacts"]
@@ -598,6 +612,40 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         for task in status["submit_payload"]["tasks"]
     }
     assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
+
+
+def test_build_release_bundle_strict_v1_requires_requirements_matrix(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+
+    with pytest.raises(ValueError, match="V1 requirements matrix"):
+        build_release_bundle(
+            **{**release_kwargs, "requirements_matrix_md": None},
+            output_dir=tmp_path / "strict-missing-requirements-matrix",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_rejects_malformed_requirements_matrix(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    bad_matrix = _write_text(
+        source_dir / "bad-requirements-matrix.md",
+        "# V1 Requirements Matrix\n\nOnly a title is not enough.\n",
+    )
+
+    with pytest.raises(ValueError, match="requirements matrix artifact must include"):
+        build_release_bundle(
+            **{**release_kwargs, "requirements_matrix_md": bad_matrix},
+            output_dir=tmp_path / "strict-bad-requirements-matrix",
+            require_complete_v1=True,
+        )
 
 
 @pytest.mark.parametrize("engine_probe_jsons", ((), ("vllm",)))
@@ -2418,6 +2466,7 @@ def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsy
     def fake_builder(**kwargs):
         assert kwargs["output_dir"] == str(tmp_path / "bundle")
         assert kwargs["require_complete_v1"] is True
+        assert kwargs["requirements_matrix_md"] == "docs/v1-requirements-matrix.md"
         return fake_bundle
 
     def fake_serializer(bundle):
@@ -2433,6 +2482,8 @@ def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsy
             "v1.json",
             "--storage-benchmark-json",
             "storage.json",
+            "--requirements-matrix-md",
+            "docs/v1-requirements-matrix.md",
             "--require-complete-v1",
             "--output-dir",
             str(tmp_path / "bundle"),
@@ -2461,9 +2512,11 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
     help_text = " ".join(completed.stdout.split())
 
     assert "--require-complete-v1" in completed.stdout
+    assert "--requirements-matrix-md" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
     assert "vLLM/SGLang native engine probes and connector actions" in help_text
     assert "supported native probe factory diagnostics" in help_text
+    assert "V1 requirements matrix" in help_text
 
 
 def test_release_bundle_strict_release_help_stays_shared_between_public_and_legacy_clis():
@@ -2488,6 +2541,7 @@ def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsy
 
     def fake_builder(**kwargs):
         assert kwargs["output_dir"] == str(tmp_path / "bundle")
+        assert kwargs["requirements_matrix_md"] == "docs/v1-requirements-matrix.md"
         return fake_bundle
 
     def fake_serializer(bundle):
@@ -2503,6 +2557,8 @@ def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsy
             "v1.json",
             "--storage-benchmark-json",
             "storage.json",
+            "--requirements-matrix-md",
+            "docs/v1-requirements-matrix.md",
             "--output-dir",
             str(tmp_path / "bundle"),
         ]
@@ -2514,6 +2570,8 @@ def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsy
             "v1.json",
             "--storage-benchmark-json",
             "storage.json",
+            "--requirements-matrix-md",
+            "docs/v1-requirements-matrix.md",
             "--output-dir",
             str(tmp_path / "bundle"),
             "--output-json",
@@ -2780,6 +2838,7 @@ def _strict_v1_release_bundle_kwargs(source_dir: Path, *, databricks_run_status_
     package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
     plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
+    requirements_matrix = _write_requirements_matrix(source_dir / "v1-requirements-matrix.md")
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
     repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
     native_probe_factories = _write_json(
@@ -2797,6 +2856,7 @@ def _strict_v1_release_bundle_kwargs(source_dir: Path, *, databricks_run_status_
         "databricks_run_status_jsons": databricks_run_status_jsons,
         "package_wheel": package_wheel,
         "pr_evidence_jsons": (pr_evidence,),
+        "requirements_matrix_md": requirements_matrix,
         "github_governance_json": github_governance,
         "repository_hygiene_json": repository_hygiene,
         "native_probe_factories_jsons": (native_probe_factories,),
@@ -2846,6 +2906,19 @@ def _write_json(path: Path, record) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def _write_text(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _write_requirements_matrix(path: Path) -> Path:
+    return _write_text(
+        path,
+        (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8"),
+    )
 
 
 def _write_wheel(

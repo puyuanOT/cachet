@@ -1,0 +1,37 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 approved after benchmark-plan/legacy CLI threading gaps, ReleaseBundlePlanConfig positional compatibility, and README strict follow-up guidance findings were fixed with regression coverage.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/benchmark_plan.py",
+    "src/document_kv_cache/release_bundle.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_benchmark_plan.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py",
+    "pr-evidence/requirements-matrix-release-artifact/README.md",
+    "pr-evidence/requirements-matrix-release-artifact/pr-evidence.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_benchmark_plan.py::test_release_bundle_plan_config_keeps_existing_optional_field_positional_compatibility tests/test_benchmark_plan.py::test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidence tests/test_benchmark_plan.py::test_main_can_include_release_bundle_command tests/test_benchmark_plan.py::test_main_rejects_incomplete_strict_release_bundle_command tests/test_release_bundle.py::test_release_bundle_cli_help_documents_strict_release_requirements tests/test_release_bundle.py::test_legacy_release_bundle_cli_main_respects_legacy_hooks tests/test_project_governance.py::test_readme_release_bundle_documents_artifact_validation_contracts -q -> 8 passed",
+    "poetry run pytest tests/test_benchmark_plan.py tests/test_release_bundle.py tests/test_project_governance.py -q -> 184 passed",
+    "poetry run pytest -q -> 1208 passed",
+    "poetry check -> All set",
+    "poetry run python -m compileall -q src tests -> passed",
+    "git diff --check -> passed",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence -> ok=true",
+    "poetry run pytest tests/test_pr_evidence.py::test_repository_pr_evidence_sidecars_are_valid tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring tests/test_project_governance.py::test_repository_text_files_do_not_contain_committed_credentials -q -> 3 passed"
+  ],
+  "what_changed": [
+    "Added requirements_matrix as an optional release-bundle artifact and a required strict V1 artifact.",
+    "Threaded the V1 requirements matrix through release-bundle CLI, legacy compatibility CLI, and benchmark-plan strict release commands.",
+    "Validated the V1 requirements matrix Markdown and documented both direct release-bundle and benchmark-plan follow-up flags."
+  ],
+  "why": "Strict V1 bundles should carry the same auditable requirements map that tracks implemented package evidence and remaining target g5/Unity Catalog release gates."
+}

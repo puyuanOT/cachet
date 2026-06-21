@@ -856,6 +856,7 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "free of active task keys" in compact_text
     assert "task summaries carry non-empty `purpose` tags" in compact_text
     assert "summary arrays match the task summaries" in compact_text
+    assert "V1 requirements matrix" in compact_text
 
 
 def test_readme_native_probe_diagnostics_include_serving_environment_profile():

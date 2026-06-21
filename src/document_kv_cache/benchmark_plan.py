@@ -169,6 +169,7 @@ class ReleaseBundlePlanConfig:
     native_probe_factories_jsons: tuple[str, ...] = ()
     overwrite: bool = False
     require_complete_v1: bool = False
+    requirements_matrix_md: str | None = None
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -185,6 +186,8 @@ class ReleaseBundlePlanConfig:
             raise ValueError("release bundle package_wheel must be non-empty when provided")
         if any(not path for path in self.pr_evidence_jsons):
             raise ValueError("release bundle pr_evidence_jsons entries must be non-empty")
+        if self.requirements_matrix_md is not None and not self.requirements_matrix_md:
+            raise ValueError("release bundle requirements_matrix_md must be non-empty when provided")
         if self.github_governance_json is not None and not self.github_governance_json:
             raise ValueError("release bundle github_governance_json must be non-empty when provided")
         if self.repository_hygiene_json is not None and not self.repository_hygiene_json:
@@ -833,6 +836,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--package-wheel", bundle_config.package_wheel)
     for pr_evidence_json in bundle_config.pr_evidence_jsons:
         argv = (*argv, "--pr-evidence-json", pr_evidence_json)
+    if bundle_config.requirements_matrix_md is not None:
+        argv = (*argv, "--requirements-matrix-md", bundle_config.requirements_matrix_md)
     github_governance_json = _release_bundle_github_governance_json(config)
     if github_governance_json is not None:
         argv = (*argv, "--github-governance-json", github_governance_json)
@@ -868,6 +873,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "databricks_run_status_jsons": list(bundle_config.databricks_run_status_jsons),
         "package_wheel": bundle_config.package_wheel,
         "pr_evidence_jsons": list(bundle_config.pr_evidence_jsons),
+        "requirements_matrix_md": bundle_config.requirements_matrix_md,
         "github_governance_json": _release_bundle_github_governance_json(config),
         "repository_hygiene_json": _release_bundle_repository_hygiene_json(config),
         "native_probe_factories_jsons": list(_release_bundle_native_probe_factories_jsons(config)),
@@ -955,6 +961,8 @@ def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None
         missing.append("tested package wheel")
     if not bundle_config.pr_evidence_jsons:
         missing.append("PR evidence sidecar")
+    if bundle_config.requirements_matrix_md is None:
+        missing.append("V1 requirements matrix")
     if _release_bundle_github_governance_json(config) is None:
         missing.append("GitHub governance sidecar")
     if _release_bundle_repository_hygiene_json(config) is None:
@@ -1396,6 +1404,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="PR evidence sidecar to include in the release bundle. Repeat as needed.",
     )
+    parser.add_argument("--release-bundle-requirements-matrix-md", help="V1 requirements matrix Markdown to include.")
     parser.add_argument("--release-bundle-github-governance-json", help="GitHub governance sidecar to include.")
     parser.add_argument("--release-bundle-repository-hygiene-json", help="Repository hygiene sidecar to include.")
     parser.add_argument(
@@ -1687,6 +1696,7 @@ def _release_bundle_config_from_cli(
         databricks_run_status_jsons=tuple(args.release_bundle_databricks_run_status_json or ()),
         package_wheel=args.release_bundle_package_wheel,
         pr_evidence_jsons=tuple(args.release_bundle_pr_evidence_json or ()),
+        requirements_matrix_md=args.release_bundle_requirements_matrix_md,
         github_governance_json=args.release_bundle_github_governance_json,
         repository_hygiene_json=args.release_bundle_repository_hygiene_json,
         native_probe_factories_jsons=tuple(args.release_bundle_native_probe_factories_json or ()),
@@ -1703,6 +1713,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_databricks_run_status_json is not None
         or args.release_bundle_package_wheel is not None
         or args.release_bundle_pr_evidence_json is not None
+        or args.release_bundle_requirements_matrix_md is not None
         or args.release_bundle_github_governance_json is not None
         or args.release_bundle_repository_hygiene_json is not None
         or args.release_bundle_native_probe_factories_json is not None

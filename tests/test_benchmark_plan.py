@@ -95,6 +95,12 @@ def test_benchmark_plan_config_keeps_native_probe_field_positional_compatibility
     )
 
 
+def test_release_bundle_plan_config_keeps_existing_optional_field_positional_compatibility():
+    field_names = [field.name for field in fields(ReleaseBundlePlanConfig)]
+
+    assert field_names.index("requirements_matrix_md") > field_names.index("require_complete_v1")
+
+
 def release_action_jsons(tmp_path):
     return (
         str(tmp_path / "vllm-actions.json"),
@@ -111,6 +117,7 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
         "databricks_run_status_jsons": (str(tmp_path / "databricks-run-status.json"),),
         "package_wheel": str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
         "pr_evidence_jsons": (str(tmp_path / "pr-evidence.json"),),
+        "requirements_matrix_md": str(tmp_path / "v1-requirements-matrix.md"),
         "github_governance_json": str(tmp_path / "github-governance.json"),
         "repository_hygiene_json": str(tmp_path / "repository-hygiene.json"),
         "native_probe_factories_jsons": (str(tmp_path / "native-probe-factories.json"),),
@@ -304,6 +311,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             databricks_run_status_jsons=(str(tmp_path / "databricks-run-status.json"),),
             package_wheel=str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
             pr_evidence_jsons=(str(tmp_path / "pr-evidence.json"),),
+            requirements_matrix_md=str(tmp_path / "v1-requirements-matrix.md"),
             github_governance_json=str(tmp_path / "github-governance.json"),
             repository_hygiene_json=str(tmp_path / "repository-hygiene.json"),
             native_probe_factories_jsons=(str(tmp_path / "native-probe-factories.json"),),
@@ -343,6 +351,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
         "plan_execution_jsons": [str(tmp_path / "plan-execution.json")],
         "preflight_json": str(tmp_path / "release-inputs.json"),
         "pr_evidence_jsons": [str(tmp_path / "pr-evidence.json")],
+        "requirements_matrix_md": str(tmp_path / "v1-requirements-matrix.md"),
         "release_evidence_json": str(tmp_path / "release-evidence.json"),
         "repository_hygiene_json": str(tmp_path / "repository-hygiene.json"),
         "require_complete_v1": True,
@@ -359,11 +368,15 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     )
     assert bundle_command.argv.count("--engine-probe-json") == 2
     assert bundle_command.argv.count("--engine-actions-json") == 2
+    assert bundle_command.argv[bundle_command.argv.index("--requirements-matrix-md") + 1] == str(
+        tmp_path / "v1-requirements-matrix.md"
+    )
     assert "--preflight-json" in bundle_command.argv
     assert "--plan-execution-json" in bundle_command.argv
     assert "--databricks-run-status-json" in bundle_command.argv
     assert "--package-wheel" in bundle_command.argv
     assert "--pr-evidence-json" in bundle_command.argv
+    assert "--requirements-matrix-md" in bundle_command.argv
     assert "--github-governance-json" in bundle_command.argv
     assert "--repository-hygiene-json" in bundle_command.argv
     assert "--native-probe-factories-json" in bundle_command.argv
@@ -413,6 +426,7 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
         ({"databricks_run_status_jsons": ()}, None, "Databricks run-status sidecar"),
         ({"package_wheel": None}, None, "tested package wheel"),
         ({"pr_evidence_jsons": ()}, None, "PR evidence sidecar"),
+        ({"requirements_matrix_md": None}, None, "V1 requirements matrix"),
         ({"github_governance_json": None}, None, "GitHub governance sidecar"),
         ({"repository_hygiene_json": None}, None, "repository hygiene sidecar"),
         ({"native_probe_factories_jsons": ()}, None, "native probe factory diagnostics sidecar"),
@@ -2492,6 +2506,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
             "--release-bundle-pr-evidence-json",
             str(tmp_path / "pr-evidence.json"),
+            "--release-bundle-requirements-matrix-md",
+            str(tmp_path / "v1-requirements-matrix.md"),
             "--release-bundle-github-governance-json",
             str(tmp_path / "github-governance.json"),
             "--github-governance-output-json",
@@ -2550,6 +2566,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["release_bundle"]["databricks_run_status_jsons"] == [
         str(tmp_path / "databricks-run-status.json")
     ]
+    assert record["release_bundle"]["requirements_matrix_md"] == str(tmp_path / "v1-requirements-matrix.md")
     assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
     assert record["release_bundle"]["repository_hygiene_json"] == str(tmp_path / "repository-hygiene.json")
     assert record["release_bundle"]["native_probe_factories_jsons"] == [
@@ -2574,6 +2591,10 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")
     assert bundle_argv[bundle_argv.index("--preflight-json") + 1] == str(tmp_path / "release-inputs.json")
     assert bundle_argv.count("--preflight-json") == 1
+    assert bundle_argv[bundle_argv.index("--requirements-matrix-md") + 1] == str(
+        tmp_path / "v1-requirements-matrix.md"
+    )
+    assert bundle_argv.count("--requirements-matrix-md") == 1
     assert bundle_argv[bundle_argv.index("--github-governance-json") + 1] == str(
         tmp_path / "github-governance.json"
     )
@@ -2629,6 +2650,7 @@ def test_main_rejects_incomplete_strict_release_bundle_command(capsys, tmp_path)
     assert "preflight sidecar" in record["error"]
     assert "benchmark plan execution sidecar" in record["error"]
     assert "tested package wheel" in record["error"]
+    assert "V1 requirements matrix" in record["error"]
 
 
 def test_main_rejects_plan_output_json_colliding_with_generated_artifact(capsys, tmp_path):
