@@ -1900,6 +1900,18 @@ def test_legacy_engine_probe_job_reexports_document_owned_types():
         legacy_engine_probe_job.DatabricksEngineProbeJobConfig.__module__
         == "restaurant_kv_serving.databricks_engine_probe_job"
     )
+    assert (
+        legacy_engine_probe_job.DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
+        == legacy_engine_probe_job.DEFAULT_AWS_G5_NODE_TYPE
+    )
+    assert (
+        legacy_engine_probe_job.DatabricksSingleNodeGPUClusterConfig
+        is legacy_engine_probe_job.DatabricksSingleNodeG5ClusterConfig
+    )
+    assert (
+        legacy_engine_probe_job.build_single_node_gpu_cluster
+        is legacy_engine_probe_job.build_single_node_g5_cluster
+    )
     assert set(public_engine_probe_job.__all__) < set(legacy_engine_probe_job.__all__)
 
 
@@ -1935,6 +1947,7 @@ def test_legacy_engine_probe_job_config_keeps_slotted_layout():
 def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
     assert set(legacy_engine_probe_job.__all__) == {
         "Any",
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
         "DEFAULT_AWS_G5_NODE_TYPE",
         "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
         "DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY",
@@ -1946,6 +1959,7 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "DatabricksEngineProbeMatrixJobConfig",
         "DatabricksEngineProbeTargetConfig",
         "DatabricksEngineProbeTargetsFile",
+        "DatabricksSingleNodeGPUClusterConfig",
         "DatabricksSingleNodeG5ClusterConfig",
         "ENGINE_PROBE_RUNNER_SCRIPT",
         "ENGINE_PROBE_TARGETS_RECORD_TYPE",
@@ -1959,6 +1973,7 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "argparse",
         "build_databricks_engine_probe_matrix_run_submit_payload",
         "build_databricks_engine_probe_run_submit_payload",
+        "build_single_node_gpu_cluster",
         "build_single_node_g5_cluster",
         "dataclass",
         "field",
@@ -1980,3 +1995,8 @@ def test_legacy_engine_probe_job_star_import_uses_previous_surface():
 
     assert {key for key in namespace if key != "__builtins__"} == set(legacy_engine_probe_job.__all__)
     assert namespace["DatabricksEngineProbeJobConfig"] is legacy_engine_probe_job.DatabricksEngineProbeJobConfig
+    assert (
+        namespace["DatabricksSingleNodeGPUClusterConfig"]
+        is legacy_engine_probe_job.DatabricksSingleNodeGPUClusterConfig
+    )
+    assert namespace["build_single_node_gpu_cluster"] is legacy_engine_probe_job.build_single_node_gpu_cluster

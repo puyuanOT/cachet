@@ -489,12 +489,25 @@ def test_legacy_vllm_smoke_job_reexports_document_owned_types():
         legacy_vllm_smoke_job.DatabricksVLLMSmokeJobConfig.__module__
         == "document_kv_cache.databricks_vllm_smoke_job"
     )
+    assert (
+        legacy_vllm_smoke_job.DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
+        == legacy_vllm_smoke_job.DEFAULT_AWS_G5_NODE_TYPE
+    )
+    assert (
+        legacy_vllm_smoke_job.DatabricksSingleNodeGPUClusterConfig
+        is legacy_vllm_smoke_job.DatabricksSingleNodeG5ClusterConfig
+    )
+    assert (
+        legacy_vllm_smoke_job.build_single_node_gpu_cluster
+        is legacy_vllm_smoke_job.build_single_node_g5_cluster
+    )
     assert set(public_vllm_smoke_job.__all__) < set(legacy_vllm_smoke_job.__all__)
 
 
 def test_legacy_vllm_smoke_job_keeps_previous_star_import_surface():
     assert set(legacy_vllm_smoke_job.__all__) == {
         "Any",
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
         "DEFAULT_AWS_G5_NODE_TYPE",
         "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
         "DEFAULT_DATABRICKS_SPARK_VERSION",
@@ -502,6 +515,7 @@ def test_legacy_vllm_smoke_job_keeps_previous_star_import_surface():
         "DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME",
         "DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY",
         "DEFAULT_LOCAL_ROOT",
+        "DatabricksSingleNodeGPUClusterConfig",
         "DatabricksSingleNodeG5ClusterConfig",
         "DatabricksVLLMSmokeJobConfig",
         "Mapping",
@@ -512,6 +526,7 @@ def test_legacy_vllm_smoke_job_keeps_previous_star_import_surface():
         "VLLM_SMOKE_RUNNER_SCRIPT",
         "argparse",
         "build_databricks_vllm_smoke_run_submit_payload",
+        "build_single_node_gpu_cluster",
         "build_single_node_g5_cluster",
         "dataclass",
         "field",
@@ -529,6 +544,11 @@ def test_legacy_vllm_smoke_job_star_import_uses_previous_surface():
 
     assert {key for key in namespace if key != "__builtins__"} == set(legacy_vllm_smoke_job.__all__)
     assert namespace["DatabricksVLLMSmokeJobConfig"] is legacy_vllm_smoke_job.DatabricksVLLMSmokeJobConfig
+    assert (
+        namespace["DatabricksSingleNodeGPUClusterConfig"]
+        is legacy_vllm_smoke_job.DatabricksSingleNodeGPUClusterConfig
+    )
+    assert namespace["build_single_node_gpu_cluster"] is legacy_vllm_smoke_job.build_single_node_gpu_cluster
 
 
 def test_legacy_vllm_smoke_job_import_order_does_not_capture_public_monkeypatch(tmp_path):

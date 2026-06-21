@@ -582,6 +582,18 @@ def test_legacy_storage_benchmark_job_reexports_document_owned_types():
         legacy_storage_benchmark_job.DatabricksStorageBenchmarkJobConfig.__module__
         == "restaurant_kv_serving.databricks_storage_benchmark_job"
     )
+    assert (
+        legacy_storage_benchmark_job.DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
+        == legacy_storage_benchmark_job.DEFAULT_AWS_G5_NODE_TYPE
+    )
+    assert (
+        legacy_storage_benchmark_job.DatabricksSingleNodeGPUClusterConfig
+        is legacy_storage_benchmark_job.DatabricksSingleNodeG5ClusterConfig
+    )
+    assert (
+        legacy_storage_benchmark_job.build_single_node_gpu_cluster
+        is legacy_storage_benchmark_job.build_single_node_g5_cluster
+    )
     assert set(public_storage_benchmark_job.__all__) < set(legacy_storage_benchmark_job.__all__)
 
 
@@ -617,12 +629,14 @@ def test_legacy_storage_benchmark_job_config_keeps_slotted_layout():
 def test_legacy_storage_benchmark_job_keeps_previous_star_import_surface():
     assert set(legacy_storage_benchmark_job.__all__) == {
         "Any",
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
         "DEFAULT_AWS_G5_NODE_TYPE",
         "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
         "DEFAULT_DATABRICKS_SPARK_VERSION",
         "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE",
         "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME",
         "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY",
+        "DatabricksSingleNodeGPUClusterConfig",
         "DatabricksSingleNodeG5ClusterConfig",
         "DatabricksStorageBenchmarkJobConfig",
         "Mapping",
@@ -633,6 +647,7 @@ def test_legacy_storage_benchmark_job_keeps_previous_star_import_surface():
         "StorageBenchmarkConfig",
         "argparse",
         "build_databricks_storage_benchmark_run_submit_payload",
+        "build_single_node_gpu_cluster",
         "build_single_node_g5_cluster",
         "dataclass",
         "field",
@@ -651,6 +666,11 @@ def test_legacy_storage_benchmark_job_star_import_uses_previous_surface():
 
     assert {key for key in namespace if key != "__builtins__"} == set(legacy_storage_benchmark_job.__all__)
     assert namespace["DatabricksStorageBenchmarkJobConfig"] is legacy_storage_benchmark_job.DatabricksStorageBenchmarkJobConfig
+    assert (
+        namespace["DatabricksSingleNodeGPUClusterConfig"]
+        is legacy_storage_benchmark_job.DatabricksSingleNodeGPUClusterConfig
+    )
+    assert namespace["build_single_node_gpu_cluster"] is legacy_storage_benchmark_job.build_single_node_gpu_cluster
 
 
 def test_legacy_storage_benchmark_job_config_respects_legacy_uc_root_monkeypatch(monkeypatch):
