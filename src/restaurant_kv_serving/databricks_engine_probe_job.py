@@ -233,6 +233,12 @@ class DatabricksEngineProbeTargetConfig(_public_class_base("DatabricksEngineProb
             raise ValueError("allow_non_native_probe must be a boolean")
         _validate_metadata_items(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
+        _validate_known_native_delegate_metadata(
+            expected_backend=self.expected_backend,
+            native_probe_delegate_factory=self.native_probe_delegate_factory,
+            metadata=self.metadata,
+            label="engine probe target",
+        )
         _validate_pip_packages(self.pip_packages, field_name="pip_packages")
         object.__setattr__(self, "pip_packages", tuple(self.pip_packages))
 
@@ -313,8 +319,14 @@ class DatabricksEngineProbeJobConfig(_public_class_base("DatabricksEngineProbeJo
             )
         _validate_metadata_items(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
-        _validate_release_safe_probe_job(self)
         object.__setattr__(self, "expected_backend", _serving_backend(self.expected_backend))
+        _validate_known_native_delegate_metadata(
+            expected_backend=self.expected_backend,
+            native_probe_delegate_factory=self.native_probe_delegate_factory,
+            metadata=self.metadata,
+            label="engine probe job",
+        )
+        _validate_release_safe_probe_job(self)
         _cluster_config_from_engine_probe_job(self)
 
 
@@ -426,6 +438,22 @@ def _validate_metadata_items(items: Sequence[str]) -> None:
     return _call_document_function("_validate_metadata_items", items)
 
 
+def _validate_known_native_delegate_metadata(
+    *,
+    expected_backend: ServingBackend,
+    native_probe_delegate_factory: str | None,
+    metadata: Sequence[str],
+    label: str,
+) -> None:
+    return _call_document_function(
+        "_validate_known_native_delegate_metadata",
+        expected_backend=expected_backend,
+        native_probe_delegate_factory=native_probe_delegate_factory,
+        metadata=metadata,
+        label=label,
+    )
+
+
 def _validate_wheel_uris(items: Sequence[str], *, field_name: str) -> None:
     return _call_document_function("_validate_wheel_uris", items, field_name=field_name)
 
@@ -480,6 +508,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "_validate_release_safe_probe_targets": _validate_release_safe_probe_targets,
     "_validate_release_safe_probe_job": _validate_release_safe_probe_job,
     "_validate_metadata_items": _validate_metadata_items,
+    "_validate_known_native_delegate_metadata": _validate_known_native_delegate_metadata,
     "_validate_wheel_uris": _validate_wheel_uris,
     "_validate_pip_packages": _validate_pip_packages,
     "_serving_backend": _serving_backend,

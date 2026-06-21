@@ -168,12 +168,15 @@ databricks bundle validate \
   --var actions_output_json=/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json \
   --var payload_uri=/Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --var expected_backend=vllm \
+  --var native_probe_metadata=vllm_kv_injection.connector_factory=my_engine_adapter.probes:build_connector \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
 
 The standalone bundle writes the same required connector actions sidecar as the
-Python helper through `actions_output_json`. Use the Python
+Python helper through `actions_output_json`. When the probe uses an
+adapter-package native wrapper delegate, pass the matching connector factory
+through `native_probe_metadata`. Use the Python
 `document-kv-engine-probe-databricks-job` helper shown above for two-backend
 release-safe probe matrices.
 

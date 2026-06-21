@@ -1134,6 +1134,118 @@ def test_read_databricks_engine_probe_targets_json_honors_release_safe_envelope(
     ]
 
 
+def test_read_databricks_engine_probe_targets_json_rejects_known_delegate_missing_connector_factory(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "document_kv.engine_probe_targets.v1",
+                "schema_version": 1,
+                "release_safe": True,
+                "probes": [
+                    {
+                        "backend": "vllm",
+                        "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                        "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                        "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                        "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="vllm_kv_injection\\.connector_factory=module:factory"):
+        read_databricks_engine_probe_targets_json(path)
+
+
+def test_read_databricks_engine_probe_targets_json_accepts_known_delegate_connector_factory_metadata(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "document_kv.engine_probe_targets.v1",
+                "schema_version": 1,
+                "release_safe": True,
+                "probes": [
+                    {
+                        "backend": "vllm",
+                        "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                        "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                        "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                        "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
+                        "metadata": [
+                            "vllm_kv_injection.connector_factory=company_vllm_patch.probe:build_connector"
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    targets = read_databricks_engine_probe_targets_json(path)
+
+    assert targets[0].metadata == (
+        "vllm_kv_injection.connector_factory=company_vllm_patch.probe:build_connector",
+    )
+
+
+def test_databricks_engine_probe_config_rejects_known_delegate_backend_mismatch():
+    with pytest.raises(ValueError, match="is for sglang, but expected_backend is vllm"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            single_user_name=SINGLE_USER_NAME,
+            native_probe_delegate_factory="sglang_kv_injection.probe:build_native_connector_probe",
+            metadata=("sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector",),
+        )
+
+
+def test_legacy_databricks_engine_probe_targets_reject_known_delegate_missing_connector_factory(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "document_kv.engine_probe_targets.v1",
+                "schema_version": 1,
+                "release_safe": True,
+                "probes": [
+                    {
+                        "backend": "sglang",
+                        "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+                        "probe_factory": "document_kv_cache.native_probe_factories:sglang_native_probe_factory",
+                        "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "native_probe_delegate_factory": "sglang_kv_injection.probe:build_native_connector_probe",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="sglang_kv_injection\\.connector_factory=module:factory"):
+        legacy_engine_probe_job.read_databricks_engine_probe_targets_json(path)
+
+
+def test_legacy_databricks_engine_probe_config_rejects_known_delegate_backend_mismatch():
+    with pytest.raises(ValueError, match="is for vllm, but expected_backend is sglang"):
+        legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:sglang_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.SGLANG,
+            single_user_name=SINGLE_USER_NAME,
+            native_probe_delegate_factory="vllm_kv_injection.probe:build_native_connector_probe",
+            metadata=("vllm_kv_injection.connector_factory=company_vllm_patch.probe:build_connector",),
+        )
+
+
 def test_main_honors_release_safe_engine_probe_targets_envelope_without_cli_flag(tmp_path):
     backend_config_path = tmp_path / "probe-targets.json"
     payload_path = tmp_path / "payload.json"

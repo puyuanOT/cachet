@@ -12,8 +12,13 @@ the runner contract and release-evidence schema. The bundle writes the
 SGLang factory path, set the matching delegate variable so the cluster exports
 `DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY` or
 `DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY`; the empty defaults are treated as
-unset by the built-in factories. The Python Databricks helper remains the path
-for two-backend release-safe probe matrices.
+unset by the built-in factories. When the delegate is the adapter-package
+wrapper `vllm_kv_injection.probe:build_native_connector_probe` or
+`sglang_kv_injection.probe:build_native_connector_probe`, set
+`native_probe_metadata` to the matching connector factory metadata:
+`vllm_kv_injection.connector_factory=module:factory` for vLLM or
+`sglang_kv_injection.connector_factory=module:factory` for SGLang. The Python
+Databricks helper remains the path for two-backend release-safe probe matrices.
 
 For fixture-based probes, `document_kv_cache.probe_fixtures` writes the
 deterministic payload, handoff JSON, manifest, and

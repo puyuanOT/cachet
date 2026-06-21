@@ -62,6 +62,16 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "pip_packages",
     }
 )
+_KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
+    "vllm_kv_injection.probe:build_native_connector_probe": (
+        ServingBackend.VLLM,
+        "vllm_kv_injection.connector_factory",
+    ),
+    "sglang_kv_injection.probe:build_native_connector_probe": (
+        ServingBackend.SGLANG,
+        "sglang_kv_injection.connector_factory",
+    ),
+}
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
@@ -188,6 +198,12 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("allow_non_native_probe must be a boolean")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
+        _DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA(
+            expected_backend=self.expected_backend,
+            native_probe_delegate_factory=self.native_probe_delegate_factory,
+            metadata=self.metadata,
+            label="engine probe target",
+        )
         _DEFAULT_VALIDATE_PIP_PACKAGES(self.pip_packages, field_name="pip_packages")
         object.__setattr__(self, "pip_packages", tuple(self.pip_packages))
 
@@ -308,8 +324,14 @@ class DatabricksEngineProbeJobConfig:
             )
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
-        _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB(self)
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
+        _DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA(
+            expected_backend=self.expected_backend,
+            native_probe_delegate_factory=self.native_probe_delegate_factory,
+            metadata=self.metadata,
+            label="engine probe job",
+        )
+        _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB(self)
         _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_JOB(self)
 
 
@@ -626,6 +648,40 @@ def _validate_metadata_items(items: Sequence[str]) -> None:
         raise ValueError("metadata entries must be non-empty KEY=VALUE strings")
 
 
+def _validate_known_native_delegate_metadata(
+    *,
+    expected_backend: ServingBackend,
+    native_probe_delegate_factory: str | None,
+    metadata: Sequence[str],
+    label: str,
+) -> None:
+    if native_probe_delegate_factory is None:
+        return
+    requirement = _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA.get(native_probe_delegate_factory)
+    if requirement is None:
+        return
+    delegate_backend, required_key = requirement
+    if expected_backend != delegate_backend:
+        raise ValueError(
+            f"{label} native_probe_delegate_factory {native_probe_delegate_factory!r} is for "
+            f"{delegate_backend.value}, but expected_backend is {expected_backend.value}"
+        )
+    metadata_map = _metadata_item_map(metadata)
+    if not metadata_map.get(required_key):
+        raise ValueError(
+            f"{label} native_probe_delegate_factory {native_probe_delegate_factory!r} requires "
+            f"metadata entry {required_key}=module:factory"
+        )
+
+
+def _metadata_item_map(items: Sequence[str]) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for item in items:
+        key, _separator, value = item.partition("=")
+        metadata[key] = value
+    return metadata
+
+
 def _validate_wheel_uris(items: Sequence[str], *, field_name: str) -> None:
     if isinstance(items, (str, bytes, bytearray)):
         raise TypeError(f"{field_name} must be a sequence of non-empty strings")
@@ -750,6 +806,7 @@ _DEFAULT_VALIDATE_PROBE_TARGET_TASK_KEYS = _validate_probe_target_task_keys
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_TARGETS = _validate_release_safe_probe_targets
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB = _validate_release_safe_probe_job
 _DEFAULT_VALIDATE_METADATA_ITEMS = _validate_metadata_items
+_DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA = _validate_known_native_delegate_metadata
 _DEFAULT_VALIDATE_WHEEL_URIS = _validate_wheel_uris
 _DEFAULT_VALIDATE_PIP_PACKAGES = _validate_pip_packages
 _DEFAULT_SERVING_BACKEND = _serving_backend
