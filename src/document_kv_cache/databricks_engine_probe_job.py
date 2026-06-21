@@ -11,11 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from document_kv_cache.databricks_job import (
-    DEFAULT_AWS_G5_NODE_TYPE,
+    DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_SPARK_VERSION,
-    DatabricksSingleNodeG5ClusterConfig,
-    build_single_node_g5_cluster,
+    DatabricksSingleNodeGPUClusterConfig,
+    build_single_node_gpu_cluster,
 )
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.native_probe_factories import (
@@ -191,7 +191,7 @@ class DatabricksEngineProbeMatrixJobConfig:
     probe_targets: Sequence[DatabricksEngineProbeTargetConfig]
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
-    node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
+    node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
@@ -233,7 +233,7 @@ class DatabricksEngineProbeJobConfig:
     payload_uri: str | None = None
     run_name: str = DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY
-    node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
+    node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
@@ -392,8 +392,8 @@ def _split_fixture_runner_args(argv: Sequence[str]) -> tuple[argparse.Namespace,
 
 def _cluster_config_from_engine_probe_job(
     config: DatabricksEngineProbeJobConfig,
-) -> DatabricksSingleNodeG5ClusterConfig:
-    return DatabricksSingleNodeG5ClusterConfig(
+) -> DatabricksSingleNodeGPUClusterConfig:
+    return DatabricksSingleNodeGPUClusterConfig(
         purpose=DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
         node_type_id=config.node_type_id,
         spark_version=config.spark_version,
@@ -407,8 +407,8 @@ def _cluster_config_from_engine_probe_job(
 
 def _cluster_config_from_engine_probe_matrix_job(
     config: DatabricksEngineProbeMatrixJobConfig,
-) -> DatabricksSingleNodeG5ClusterConfig:
-    return DatabricksSingleNodeG5ClusterConfig(
+) -> DatabricksSingleNodeGPUClusterConfig:
+    return DatabricksSingleNodeGPUClusterConfig(
         purpose=DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
         node_type_id=config.node_type_id,
         spark_version=config.spark_version,
@@ -455,7 +455,7 @@ def _engine_probe_task_from_target(
 
 
 def _engine_probe_cluster(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
-    cluster = build_single_node_g5_cluster(_cluster_config_from_engine_probe_job(config))
+    cluster = build_single_node_gpu_cluster(_cluster_config_from_engine_probe_job(config))
     if config.native_probe_delegate_factory is None:
         return cluster
     spark_env_vars = dict(cluster.get("spark_env_vars", {}))
@@ -845,7 +845,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME)
     parser.add_argument("--task-key")
-    parser.add_argument("--node-type-id", default=DEFAULT_AWS_G5_NODE_TYPE)
+    parser.add_argument("--node-type-id", default=DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE)
     parser.add_argument("--spark-version", default=DEFAULT_DATABRICKS_SPARK_VERSION)
     parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
