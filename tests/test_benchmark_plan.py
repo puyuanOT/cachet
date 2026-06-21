@@ -1042,6 +1042,34 @@ def test_build_v1_benchmark_plan_can_generate_fixture_before_planned_engine_prob
     assert record["release_engine_actions_jsons"] == []
 
 
+def test_build_v1_benchmark_plan_derives_fixture_actions_output_json(tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+    handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+    actions_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["actions"]
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        engine_probes=(
+            EngineProbePlanConfig(
+                backend="vllm",
+                handoff_json=str(handoff_json),
+                probe_factory="vllm_probe:factory",
+                output_json=str(tmp_path / "vllm-probe.json"),
+                fixture_output_dir=str(fixture_dir),
+            ),
+        ),
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    probe_command = next(command for command in plan.commands if command.name == "run-vllm-engine-probe")
+
+    assert record["planned_engine_probes"][0]["actions_output_json"] == str(actions_json)
+    assert "--actions-output-json" not in probe_command.argv
+
+
 def test_engine_probe_plan_rejects_fixture_handoff_mismatch_for_programmatic_config(tmp_path):
     with pytest.raises(ValueError, match="derived fixture handoff path"):
         EngineProbePlanConfig(
@@ -2426,6 +2454,59 @@ def test_main_can_derive_planned_engine_probe_handoff_from_fixture_output_dir(tm
     assert record["planned_engine_probes"][0]["fixture_payload_mode"] == "merged"
     assert record["release_engine_probe_jsons"] == []
     assert record["release_engine_actions_jsons"] == []
+
+
+def test_main_derives_fixture_actions_for_release_planned_engine_probes(tmp_path):
+    plan_json = tmp_path / "plan.json"
+    vllm_fixture_dir = tmp_path / "vllm-fixture"
+    sglang_fixture_dir = tmp_path / "sglang-fixture"
+    vllm_actions_json = vllm_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["actions"]
+    sglang_actions_json = sglang_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["actions"]
+
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--storage-benchmark-workspace-dir",
+            "/local_disk0/document-kv-storage-benchmark",
+            "--storage-benchmark-output-json",
+            str(tmp_path / "storage.json"),
+            "--storage-benchmark-uc-volume-root",
+            "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+            "--engine-probe-fixture-output-dir",
+            f"vllm={vllm_fixture_dir}",
+            "--engine-probe-fixture-output-dir",
+            f"sglang={sglang_fixture_dir}",
+            "--engine-probe-output-json",
+            f"vllm={tmp_path / 'vllm-probe.json'}",
+            "--engine-probe-output-json",
+            f"sglang={tmp_path / 'sglang-probe.json'}",
+            "--engine-probe-use-builtin-factories",
+            "--release-evidence-output-json",
+            str(tmp_path / "release-evidence.json"),
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    command_names = [command["name"] for command in record["commands"]]
+    sglang_probe_argv = record["commands"][command_names.index("run-sglang-engine-probe")]["argv"]
+    vllm_probe_argv = record["commands"][command_names.index("run-vllm-engine-probe")]["argv"]
+    release_argv = record["commands"][-1]["argv"]
+
+    assert exit_code == 0
+    assert record["release_engine_actions_jsons"] == [str(sglang_actions_json), str(vllm_actions_json)]
+    assert "--actions-output-json" not in sglang_probe_argv
+    assert "--actions-output-json" not in vllm_probe_argv
+    assert release_argv.count("--engine-actions-json") == 2
+    assert str(sglang_actions_json) in release_argv
+    assert str(vllm_actions_json) in release_argv
 
 
 def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_path):

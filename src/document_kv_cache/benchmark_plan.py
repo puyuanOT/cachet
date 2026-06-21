@@ -254,6 +254,12 @@ class EngineProbePlanConfig:
         if self.fixture_output_dir is not None and not self.fixture_output_dir:
             raise ValueError("engine probe fixture_output_dir must be non-empty when provided")
         if self.fixture_output_dir is not None:
+            if self.actions_output_json is None:
+                object.__setattr__(
+                    self,
+                    "actions_output_json",
+                    _engine_probe_fixture_actions_json(self.fixture_output_dir),
+                )
             expected_handoff_json = _engine_probe_fixture_handoff_json(self.fixture_output_dir)
             if not _same_artifact_path(self.handoff_json, expected_handoff_json):
                 raise ValueError(
@@ -753,7 +759,7 @@ def _engine_probe_command(config: BenchmarkPlanConfig, probe_config: EngineProbe
     )
     if probe_config.payload_uri is not None:
         argv = (*argv, "--payload-uri", probe_config.payload_uri)
-    if probe_config.actions_output_json is not None:
+    if probe_config.actions_output_json is not None and not _engine_probe_uses_fixture_actions_output(probe_config):
         argv = (*argv, "--actions-output-json", probe_config.actions_output_json)
     if probe_config.engine_version is not None:
         argv = (*argv, "--engine-version", probe_config.engine_version)
@@ -1297,7 +1303,7 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
     output_paths.extend(
         (f"engine_probes[{probe.backend.value}].actions_output_json", probe.actions_output_json)
         for probe in config.engine_probes
-        if probe.actions_output_json is not None
+        if probe.actions_output_json is not None and not _engine_probe_uses_fixture_actions_output(probe)
     )
     output_paths.extend(
         (f"engine_probes[{probe.backend.value}].fixture_output_dir", probe.fixture_output_dir)
@@ -1881,6 +1887,18 @@ def _engine_probe_fixture_handoff_json(fixture_output_dir: str) -> str:
 
 def _engine_probe_fixture_payload_uri(fixture_output_dir: str) -> str:
     return _uri_child(fixture_output_dir, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["payload"])
+
+
+def _engine_probe_fixture_actions_json(fixture_output_dir: str) -> str:
+    return _uri_child(fixture_output_dir, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["actions"])
+
+
+def _engine_probe_uses_fixture_actions_output(probe: EngineProbePlanConfig) -> bool:
+    return (
+        probe.fixture_output_dir is not None
+        and probe.actions_output_json is not None
+        and _same_artifact_path(probe.actions_output_json, _engine_probe_fixture_actions_json(probe.fixture_output_dir))
+    )
 
 
 def _uri_child(base_uri: str, filename: str) -> str:

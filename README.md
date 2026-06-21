@@ -828,6 +828,9 @@ fixture payload format. The fixture directory includes the `.kvpack`, payload,
 handoff JSON, and `qwen3-v1-fixture.actions.json` connector-action sidecar so
 native adapter work can inspect the exact reserve/copy/bind/release descriptors
 before running a backend block-manager probe.
+When `--engine-probe-actions-output-json` is omitted for a fixture-backed probe,
+the plan uses that derived `qwen3-v1-fixture.actions.json` path as the release
+connector-action sidecar and avoids rewriting it from the probe command.
 The benchmark plan executor treats generated plan JSON as a closed execution
 schema: unsupported top-level plan keys or per-command keys are rejected before
 any command is run.
