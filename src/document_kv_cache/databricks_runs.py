@@ -580,9 +580,15 @@ def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[
 def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, index: int) -> tuple[str, ...]:
     label = f"Databricks run status sidecar submit_payload.tasks[{index}]"
     issues: list[str] = []
-    for field_name in ("task_key", "node_type_id", "driver_node_type_id", "spark_version", "data_security_mode"):
+    for field_name in (
+        "task_key",
+        "node_type_id",
+        "driver_node_type_id",
+        "spark_version",
+        "data_security_mode",
+        "purpose",
+    ):
         issues.extend(_required_str_field(task, field_name, label))
-    issues.extend(_optional_str_field(task, "purpose", label))
     if type(task.get("num_workers")) is not int:
         issues.append(f"{label}.num_workers must be an integer")
     issues.extend(_bool_field(task, "single_node", label))
