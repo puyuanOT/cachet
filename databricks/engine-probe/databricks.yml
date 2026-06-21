@@ -16,6 +16,12 @@ variables:
     description: Cluster-visible materialized KV payload URI referenced by this handoff.
   expected_backend:
     description: Serving backend expected by the probe, either vllm or sglang.
+  vllm_native_probe_delegate_factory:
+    default: ""
+    description: Optional backend-native delegate factory for Cachet's built-in vLLM probe factory.
+  sglang_native_probe_delegate_factory:
+    default: ""
+    description: Optional backend-native delegate factory for Cachet's built-in SGLang probe factory.
   wheel_uri:
     description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
   node_type_id:
@@ -47,6 +53,9 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
               purpose: document-kv-engine-probe
+            spark_env_vars:
+              DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY: ${var.vllm_native_probe_delegate_factory}
+              DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY: ${var.sglang_native_probe_delegate_factory}
             aws_attributes:
               availability: ON_DEMAND
               zone_id: auto

@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer Chandrasekhar the 3rd approved the bundle env-var change, flagged a non-blocking docs mismatch where the example combined a custom factory with a delegate var, then confirmed the built-in-factory example fix resolved the finding.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "databricks/engine-probe/databricks.yml; databricks/engine-probe/README.md; src/document_kv_cache/templates/databricks/engine-probe/databricks.yml; src/document_kv_cache/templates/databricks/engine-probe/README.md; tests/test_databricks_job.py; pr-evidence/engine-probe-bundle-delegate-env"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_databricks_job.py tests/test_template_resources.py -q -> 47 passed",
+    "poetry run pytest tests/test_databricks_job.py tests/test_template_resources.py tests/test_project_governance.py tests/test_public_package.py -q -> 94 passed",
+    "poetry run pytest -q -> 1189 passed",
+    "poetry check -> All set",
+    "git diff --check -> clean",
+    "poetry run python -m compileall -q src tests -> clean",
+    "GPT-5.5 reviewer Chandrasekhar the 3rd approved, reported one P3 docs clarity finding, and re-review confirmed it was resolved"
+  ],
+  "what_changed": [
+    "Added optional vLLM/SGLang native probe delegate variables to the standalone Databricks engine-probe Asset Bundle template and mirrored packaged template.",
+    "Mapped those variables to DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY and DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY in cluster spark_env_vars with empty defaults treated as unset by built-in factories.",
+    "Updated bundle documentation and tests to cover repo/package parity, delegate defaults, env var mappings, and copy-pasteable built-in-factory usage."
+  ],
+  "why": "Release operators need the Asset Bundle path, not only the Python run-submit helper, to run Cachet built-in native probe factory paths with downstream vLLM/SGLang block-manager delegates on AWS g5 Databricks jobs."
+}
