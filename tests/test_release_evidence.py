@@ -1458,6 +1458,40 @@ def test_evaluate_release_evidence_rejects_missing_storage_trace_fields():
     assert any("storage benchmark align_bytes must be a positive integer" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_storage_result_volume_mismatch():
+    storage_record = _storage_record(ok=True)
+    storage_record["results"][0] = {**storage_record["results"][0], "total_reads": 999}
+    storage_record["results"][1] = {**storage_record["results"][1], "total_bytes": 999}
+    storage_record["results"][2] = {**storage_record["results"][2], "parallelism": 999}
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        storage_record,
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "storage benchmark reader memory total_reads must match chunk_count * repeats" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "storage benchmark reader disk total_bytes must match chunk_count * chunk_bytes * repeats" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "storage benchmark reader unity_catalog parallelism must match storage benchmark parallelism" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_inconsistent_storage_uc_volume_metadata():
     storage_record = _storage_record(ok=True)
     storage_record["uc_volume_root"] = "/Volumes/catalog/schema/other-document-kv-storage-benchmark"
