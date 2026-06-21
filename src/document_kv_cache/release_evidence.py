@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -755,6 +755,8 @@ class _V1MeasurementAggregate:
     output_tokens_sum: int = 0
     time_to_completion_sum: float = 0.0
     throughput_count: int = 0
+    ttft_values: list[float] = field(default_factory=list)
+    time_to_completion_values: list[float] = field(default_factory=list)
     exact_match_true_count: int = 0
     exact_match_count: int = 0
     answer_found_true_count: int = 0
@@ -786,6 +788,7 @@ def _validate_v1_report_aggregates_match_measurements(
             continue
         prompt_tokens = measurement.get("prompt_tokens")
         completion_tokens = measurement.get("completion_tokens")
+        ttft = measurement.get("ttft_seconds")
         time_to_completion = measurement.get("time_to_completion_seconds")
         exact_match = measurement.get("exact_match")
         answer_found = measurement.get("answer_found")
@@ -795,6 +798,10 @@ def _validate_v1_report_aggregates_match_measurements(
         if _is_positive_int(completion_tokens):
             aggregate.completion_tokens_sum += completion_tokens
             aggregate.completion_tokens_count += 1
+        if _is_non_negative_number(ttft):
+            aggregate.ttft_values.append(float(ttft))
+        if _is_non_negative_number(time_to_completion):
+            aggregate.time_to_completion_values.append(float(time_to_completion))
         if _is_positive_int(completion_tokens) and _is_non_negative_number(time_to_completion):
             aggregate.output_tokens_sum += completion_tokens
             aggregate.time_to_completion_sum += float(time_to_completion)
@@ -893,6 +900,23 @@ def _validate_v1_report_aggregates_match_measurements(
                     f"v1 benchmark report row {dataset}:{arm_id} {metric_name} count must match "
                     f"successful measurements ({metric_count!r} != {measurement_successes})"
                 )
+        if len(aggregate.ttft_values) == measurement_successes and measurement_successes > 0:
+            _validate_v1_report_latency_aggregate(
+                row.get("ttft"),
+                aggregate.ttft_values,
+                f"v1 benchmark report row {dataset}:{arm_id} ttft",
+                issues,
+            )
+        if (
+            len(aggregate.time_to_completion_values) == measurement_successes
+            and measurement_successes > 0
+        ):
+            _validate_v1_report_latency_aggregate(
+                row.get("time_to_completion"),
+                aggregate.time_to_completion_values,
+                f"v1 benchmark report row {dataset}:{arm_id} time_to_completion",
+                issues,
+            )
 
 
 def _validate_v1_report_aggregate_number(
@@ -903,6 +927,41 @@ def _validate_v1_report_aggregate_number(
 ) -> None:
     if _is_finite_number(value) and not math.isclose(float(value), expected, rel_tol=1e-9, abs_tol=1e-9):
         issues.append(f"{label} must match measurements ({value!r} != {expected})")
+
+
+def _validate_v1_report_latency_aggregate(
+    metric: Any,
+    values: Sequence[float],
+    label: str,
+    issues: list[str],
+) -> None:
+    if not isinstance(metric, Mapping):
+        return
+    sorted_values = sorted(values)
+    expected = {
+        "mean": sum(sorted_values) / len(sorted_values),
+        "p50": _percentile(sorted_values, 0.50),
+        "p95": _percentile(sorted_values, 0.95),
+    }
+    for field_name, expected_value in expected.items():
+        _validate_v1_report_aggregate_number(
+            metric.get(field_name),
+            expected_value,
+            f"{label} {field_name}",
+            issues,
+        )
+
+
+def _percentile(sorted_values: Sequence[float], percentile: float) -> float:
+    if not sorted_values:
+        return 0.0
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    index = percentile * (len(sorted_values) - 1)
+    lower = int(index)
+    upper = min(lower + 1, len(sorted_values) - 1)
+    weight = index - lower
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
 
 
 def _validate_v1_comparisons_match_report_rows(
