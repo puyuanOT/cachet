@@ -794,6 +794,34 @@ def test_build_release_bundle_strict_v1_reports_each_missing_databricks_purpose(
         )
 
 
+def test_build_release_bundle_strict_v1_rejects_duplicate_databricks_purpose_evidence(tmp_path):
+    source_dir = tmp_path / "sources"
+    purpose, run_name, task_key, _ = STRICT_V1_DATABRICKS_RUN_STATUS_CASES[0]
+    duplicate_status = _write_json(
+        source_dir / "databricks-run-status-v1-stale.json",
+        _strict_v1_databricks_run_status_record(
+            purpose=purpose,
+            run_name=f"{run_name}-stale",
+            task_key=task_key,
+            wrapped=True,
+        ),
+    )
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir) + (duplicate_status,)
+    release_kwargs = _strict_v1_release_bundle_kwargs(source_dir, databricks_run_status_jsons=run_statuses)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **release_kwargs,
+            output_dir=tmp_path / "strict-duplicate-databricks-purpose",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "V1 benchmark Databricks run-status evidence must appear exactly once" in error
+    assert "databricks-run-status-v1.json#document_kv_v1_benchmark" in error
+    assert "databricks-run-status-v1-stale.json#document_kv_v1_benchmark" in error
+
+
 def test_build_release_bundle_strict_v1_accepts_direct_databricks_status_records(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"

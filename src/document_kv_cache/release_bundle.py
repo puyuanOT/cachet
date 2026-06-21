@@ -654,18 +654,20 @@ def _validate_strict_v1_release_bundle_completeness(
 def _validate_strict_v1_databricks_purpose_coverage(
     artifacts: Sequence[_PreparedReleaseBundleArtifact],
 ) -> None:
-    missing = _missing_strict_v1_databricks_purpose_labels(artifacts)
-    if missing:
+    purpose_occurrences = _strict_v1_databricks_purpose_occurrences(artifacts)
+    issues = _strict_v1_databricks_purpose_coverage_issues(purpose_occurrences)
+    if issues:
         raise ValueError(
             "Strict V1 release bundle requires "
-            f"{', '.join(missing)}"
+            f"{'; '.join(issues)}"
         )
 
 
-def _missing_strict_v1_databricks_purpose_labels(
+def _strict_v1_databricks_purpose_occurrences(
     artifacts: Sequence[_PreparedReleaseBundleArtifact],
-) -> list[str]:
-    observed_purposes: set[str] = set()
+) -> dict[str, list[str]]:
+    required_purposes = {purpose for purpose, _ in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
+    occurrences: dict[str, list[str]] = {purpose: [] for purpose in required_purposes}
     for artifact in artifacts:
         if artifact.role != "databricks_run_status" or artifact.record is None:
             continue
@@ -682,13 +684,35 @@ def _missing_strict_v1_databricks_purpose_labels(
             if not isinstance(task, Mapping):
                 continue
             purpose = task.get("purpose")
-            if isinstance(purpose, str) and purpose:
-                observed_purposes.add(purpose)
-    return [
-        label
-        for purpose, label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES
-        if purpose not in observed_purposes
-    ]
+            if isinstance(purpose, str) and purpose in occurrences:
+                occurrences[purpose].append(_databricks_purpose_occurrence_label(artifact, task))
+    return occurrences
+
+
+def _strict_v1_databricks_purpose_coverage_issues(
+    purpose_occurrences: Mapping[str, Sequence[str]],
+) -> list[str]:
+    issues: list[str] = []
+    for purpose, label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES:
+        occurrences = purpose_occurrences.get(purpose, ())
+        if not occurrences:
+            issues.append(label)
+        elif len(occurrences) > 1:
+            issues.append(
+                f"{label} must appear exactly once "
+                f"({len(occurrences)} occurrences: {', '.join(occurrences)})"
+            )
+    return issues
+
+
+def _databricks_purpose_occurrence_label(
+    artifact: _PreparedReleaseBundleArtifact,
+    task: Mapping[str, Any],
+) -> str:
+    task_key = task.get("task_key")
+    if isinstance(task_key, str) and task_key:
+        return f"{artifact.source_path}#{task_key}"
+    return artifact.source_path
 
 
 def _validate_strict_v1_native_probe_factory_support(
