@@ -1090,7 +1090,7 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
     assert cluster["custom_tags"]["ResourceClass"] == "SingleNode"
     assert cluster["custom_tags"]["purpose"] == "document-kv-vllm-smoke"
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
-    assert task["libraries"] == [{"whl": "${var.wheel_uri}"}]
+    assert "libraries" not in task
     assert task["spark_python_task"] == {
         "python_file": "${var.runner_python_file}",
         "parameters": [
@@ -1098,6 +1098,8 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
             "${var.benchmark_id}",
             "--output-dir",
             "${var.output_dir}",
+            "--package-wheel-uri",
+            "${var.wheel_uri}",
         ],
     }
 
