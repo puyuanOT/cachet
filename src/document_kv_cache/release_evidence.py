@@ -911,6 +911,7 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         dataset_value = measurement.get("dataset")
         arm_id_value = measurement.get("arm_id")
         example_id = measurement.get("example_id")
+        expected_answer = measurement.get("expected_answer")
         dataset = _validate_v1_dataset(
             dataset_value,
             label=f"v1 benchmark measurement {index}",
@@ -927,6 +928,8 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
             issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} example_id must be non-empty")
         if not isinstance(measurement.get("output_text"), str):
             issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} output_text must be a string")
+        if not isinstance(expected_answer, str) or not expected_answer:
+            issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} expected_answer must be non-empty")
         for field_name in ("prompt_tokens", "completion_tokens"):
             if not _is_positive_int(measurement.get(field_name)):
                 issues.append(
@@ -951,11 +954,10 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         if measurement.get("error") not in (None, ""):
             issues.append(f"v1 benchmark measurement {dataset_value}:{arm_id_value} must not have an error")
         for field_name in ("exact_match", "answer_found"):
-            _validate_optional_bool(
-                measurement.get(field_name),
-                f"v1 benchmark measurement {dataset_value}:{arm_id_value} {field_name}",
-                issues,
-            )
+            if type(measurement.get(field_name)) is not bool:
+                issues.append(
+                    f"v1 benchmark measurement {dataset_value}:{arm_id_value} {field_name} must be boolean"
+                )
         _validate_v1_measurement_token_context(
             measurement,
             dataset=dataset_value,

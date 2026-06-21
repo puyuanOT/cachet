@@ -673,8 +673,8 @@ def test_evaluate_release_evidence_rejects_malformed_measurement_quality_flags()
     )
 
     assert not evidence.ok
-    assert any("exact_match must be boolean when present" in issue for issue in evidence.issues)
-    assert any("answer_found must be boolean when present" in issue for issue in evidence.issues)
+    assert any("exact_match must be boolean" in issue for issue in evidence.issues)
+    assert any("answer_found must be boolean" in issue for issue in evidence.issues)
 
 
 def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
@@ -686,6 +686,10 @@ def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
     v1_record["measurements"][1] = {
         **v1_record["measurements"][1],
         "output_text": {"answer": "Ada Lovelace"},
+    }
+    v1_record["measurements"][2] = {
+        **v1_record["measurements"][2],
+        "expected_answer": "",
     }
 
     evidence = evaluate_release_evidence(
@@ -700,6 +704,7 @@ def test_evaluate_release_evidence_rejects_malformed_measurement_trace_fields():
     assert not evidence.ok
     assert any("biography:baseline_prefill example_id must be non-empty" in issue for issue in evidence.issues)
     assert any("biography:document_kv_cache output_text must be a string" in issue for issue in evidence.issues)
+    assert any("hotpotqa:baseline_prefill expected_answer must be non-empty" in issue for issue in evidence.issues)
 
 
 def test_evaluate_release_evidence_rejects_malformed_report_quality_rates():
@@ -778,6 +783,9 @@ def test_evaluate_release_evidence_rejects_stub_measurement_rows():
     assert any("unsupported dataset" in issue for issue in evidence.issues)
     assert any("example_id" in issue for issue in evidence.issues)
     assert any("output_text" in issue for issue in evidence.issues)
+    assert any("expected_answer" in issue for issue in evidence.issues)
+    assert any("exact_match" in issue for issue in evidence.issues)
+    assert any("answer_found" in issue for issue in evidence.issues)
     assert any("prompt_tokens" in issue for issue in evidence.issues)
     assert any("missing required dataset/arm pairs" in issue for issue in evidence.issues)
 
@@ -1747,6 +1755,8 @@ def _v1_measurement_record(dataset: str, arm: str):
         "ttft_seconds": 1.0,
         "time_to_completion_seconds": 2.0,
         "output_text": "Ada Lovelace",
+        "expected_answer": "Ada Lovelace",
+        "exact_match": True,
         "answer_found": True,
         "error": None,
         "metadata": _v1_measurement_metadata(arm),

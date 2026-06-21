@@ -2700,6 +2700,8 @@ def _v1_measurement_record(dataset: str, arm: str):
         "ttft_seconds": 1.0,
         "time_to_completion_seconds": 2.0,
         "output_text": "Ada Lovelace",
+        "expected_answer": "Ada Lovelace",
+        "exact_match": True,
         "answer_found": True,
         "error": None,
         "metadata": _v1_measurement_metadata(arm),
