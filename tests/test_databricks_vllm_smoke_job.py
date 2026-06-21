@@ -112,6 +112,99 @@ def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
     assert "if exit_code:" in runner_text
 
 
+def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_path):
+    runner_path = tmp_path / "run_vllm_smoke.py"
+    pip_call_path = tmp_path / "pip-call.json"
+    main_args_path = tmp_path / "main-args.json"
+    events_path = tmp_path / "events.jsonl"
+    package_dir = tmp_path / "document_kv_cache"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "vllm_smoke.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "",
+                "with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "    handle.write(json.dumps({'event': 'vllm_smoke_import'}) + '\\n')",
+                "",
+                "def main(argv=None):",
+                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "        handle.write(json.dumps({'event': 'main'}) + '\\n')",
+                "    with open(os.environ['MAIN_ARGS_JSON'], 'w', encoding='utf-8') as handle:",
+                "        json.dump(argv, handle)",
+                "    return 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "sitecustomize.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "import subprocess",
+                "",
+                "def _capture_check_call(argv):",
+                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "        handle.write(json.dumps({'event': 'pip_install'}) + '\\n')",
+                "    with open(os.environ['PIP_CALL_JSON'], 'w', encoding='utf-8') as handle:",
+                "        json.dump(argv, handle)",
+                "    return 0",
+                "",
+                "subprocess.check_call = _capture_check_call",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    write_databricks_vllm_smoke_runner_script(runner_path)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(tmp_path),
+        "PIP_CALL_JSON": str(pip_call_path),
+        "MAIN_ARGS_JSON": str(main_args_path),
+        "RUNNER_EVENTS_JSONL": str(events_path),
+    }
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--package-wheel-uri",
+            "dbfs:/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--benchmark-id",
+            "v1-vllm-smoke-001",
+            "--output-dir",
+            "/dbfs/tmp/cachet/output",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    pip_call = json.loads(pip_call_path.read_text(encoding="utf-8"))
+    assert Path(pip_call[0]).resolve() == Path(sys.executable).resolve()
+    assert pip_call[1:] == [
+        "-m",
+        "pip",
+        "install",
+        "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    ]
+    assert json.loads(main_args_path.read_text(encoding="utf-8")) == [
+        "--benchmark-id",
+        "v1-vllm-smoke-001",
+        "--output-dir",
+        "/dbfs/tmp/cachet/output",
+    ]
+    events = [json.loads(line)["event"] for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events == ["pip_install", "vllm_smoke_import", "main"]
+
+
 def test_write_databricks_vllm_smoke_run_submit_json_writes_payload(tmp_path):
     path = tmp_path / "payload.json"
 
