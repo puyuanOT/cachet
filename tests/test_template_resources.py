@@ -55,6 +55,19 @@ def test_template_resources_can_be_filtered_read_and_serialized():
     assert record["record_type"] == TEMPLATE_RESOURCE_RECORD_TYPE
     assert record["resources"][0]["name"] == "databricks/storage-benchmark/README.md"
     assert "document-kv-storage-benchmark" in bundle_text
+    assert "libraries:" not in bundle_text
+    assert "--package-wheel-uri" in bundle_text
+
+
+def test_packaged_storage_template_matches_checked_in_bundle_install_path():
+    packaged_text = read_template_resource("databricks/storage-benchmark/databricks.yml")
+    checked_in_text = (REPO_ROOT / "databricks" / "storage-benchmark" / "databricks.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert packaged_text == checked_in_text
+    assert "libraries:" not in packaged_text
+    assert "--package-wheel-uri" in packaged_text
 
 
 def test_packaged_databricks_readme_explains_installed_wheel_extraction():

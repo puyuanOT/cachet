@@ -63,8 +63,6 @@ resources:
             aws_attributes:
               availability: ON_DEMAND
               zone_id: auto
-          libraries:
-            - whl: ${var.wheel_uri}
           spark_python_task:
             python_file: ${var.runner_python_file}
             parameters:
@@ -92,3 +90,5 @@ resources:
               - unity_catalog
               - --uc-volume-root
               - ${var.uc_volume_root}
+              - --package-wheel-uri
+              - ${var.wheel_uri}
