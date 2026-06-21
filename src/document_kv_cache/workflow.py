@@ -67,6 +67,9 @@ class SourceDocument:
         for chunk in chunks:
             if not isinstance(chunk, SourceChunk):
                 raise TypeError("chunks entries must be SourceChunk instances")
+        duplicate_chunk_ids = _duplicate_source_chunk_ids(chunks)
+        if duplicate_chunk_ids:
+            raise ValueError("chunks contain duplicate chunk identities: " + ", ".join(duplicate_chunk_ids))
         object.__setattr__(self, "chunks", chunks)
         object.__setattr__(self, "metadata", _metadata_dict("metadata", self.metadata))
 
@@ -572,6 +575,22 @@ def _document_chunk_type(chunk_type: DocumentChunkType | str) -> DocumentChunkTy
         return DocumentChunkType(str(chunk_type))
     except ValueError as exc:
         raise ValueError(f"chunk_type must be one of {[chunk_type.value for chunk_type in DocumentChunkType]}") from exc
+
+
+def _duplicate_source_chunk_ids(chunks: Sequence[SourceChunk]) -> tuple[str, ...]:
+    seen: set[tuple[DocumentChunkType, str]] = set()
+    duplicates: list[str] = []
+    duplicate_labels: set[str] = set()
+    for chunk in chunks:
+        identity = (chunk.chunk_type, chunk.chunk_id)
+        if identity not in seen:
+            seen.add(identity)
+            continue
+        label = f"{chunk.chunk_type.value}:{chunk.chunk_id}"
+        if label not in duplicate_labels:
+            duplicates.append(label)
+            duplicate_labels.add(label)
+    return tuple(duplicates)
 
 
 def _metadata_dict(name: str, metadata: Mapping[str, str]) -> dict[str, str]:

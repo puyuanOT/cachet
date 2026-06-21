@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the SourceDocument duplicate chunk identity guard with no actionable findings and verified focused plus workflow/planner tests.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/workflow.py",
+    "tests/test_workflow.py",
+    "pr-evidence/reject-duplicate-source-document-chunks/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_workflow.py::test_source_document_validates_and_normalizes_public_inputs tests/test_workflow.py::test_source_document_rejects_duplicate_chunk_identities tests/test_workflow.py::test_source_document_allows_same_chunk_id_for_different_chunk_types tests/test_workflow.py::test_source_document_from_texts_validates_helper_inputs -q -> 4 passed",
+    "poetry run pytest tests/test_workflow.py tests/test_planner_materializer.py -q -> 108 passed",
+    "git diff --check && poetry run pytest -q && poetry check && poetry run python -m compileall -q src tests -> 1215 passed; poetry check All set"
+  ],
+  "what_changed": [
+    "Rejected duplicate SourceDocument source chunk identities, using the same chunk_type and chunk_id identity that later becomes part of generated cache keys."
+  ],
+  "why": "Document cache generation should fail at the source-document boundary when one document would produce ambiguous duplicate cache chunks, rather than letting the ambiguity reach pack or manifest writes."
+}
