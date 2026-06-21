@@ -483,6 +483,7 @@ def _databricks_submit_payload_sidecar_issues(
         if type(task_count) is int and task_count > 0 and len(payload_tasks) != task_count:
             issues.append("Databricks run status sidecar submit_payload.task_count must match tasks length")
         issues.extend(_databricks_submit_payload_task_issues(payload_tasks))
+        issues.extend(_databricks_submit_payload_summary_field_issues(record, payload_tasks))
     data_security_modes = record.get("data_security_modes")
     if not isinstance(data_security_modes, Sequence) or isinstance(data_security_modes, (str, bytes, bytearray)):
         issues.append("Databricks run status sidecar submit_payload.data_security_modes must be an array")
@@ -502,6 +503,28 @@ def _databricks_submit_payload_sidecar_issues(
         payload_task_keys = _task_key_list(record.get("tasks"))
         if declared_task_keys != payload_task_keys:
             issues.append("Databricks run status sidecar submit_payload.task_keys must match submit_payload.tasks")
+    return tuple(issues)
+
+
+def _databricks_submit_payload_summary_field_issues(
+    record: Mapping[str, Any],
+    tasks: Sequence[Any],
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    for summary_field, task_field in (
+        ("node_type_ids", "node_type_id"),
+        ("driver_node_type_ids", "driver_node_type_id"),
+        ("spark_versions", "spark_version"),
+        ("data_security_modes", "data_security_mode"),
+    ):
+        actual_values = _valid_string_list(record.get(summary_field))
+        if actual_values is None:
+            continue
+        expected_values = _sorted_task_field_values(tasks, task_field)
+        if actual_values != expected_values:
+            issues.append(
+                f"Databricks run status sidecar submit_payload.{summary_field} must match submit_payload.tasks"
+            )
     return tuple(issues)
 
 
@@ -657,11 +680,29 @@ def _run_id_field_issues(record: Mapping[str, Any], field_name: str, label: str)
 
 def _list_of_strings_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
     value = record.get(field_name)
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and all(
-        isinstance(item, str) and item for item in value
-    ):
+    if _valid_string_list(value) is not None:
         return ()
     return (f"{label}.{field_name} must be an array of non-empty strings",)
+
+
+def _valid_string_list(value: Any) -> list[str] | None:
+    if (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray))
+        and all(isinstance(item, str) and item for item in value)
+    ):
+        return list(value)
+    return None
+
+
+def _sorted_task_field_values(tasks: Sequence[Any], field_name: str) -> list[str]:
+    return sorted(
+        {
+            task[field_name]
+            for task in tasks
+            if isinstance(task, Mapping) and isinstance(task.get(field_name), str) and task[field_name]
+        }
+    )
 
 
 def _task_key_list(tasks: Any) -> list[str]:
