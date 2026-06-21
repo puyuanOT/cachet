@@ -1,0 +1,43 @@
+{
+  "files": {
+    "pr-evidence/databricks-vllm-provider-preset/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5/high reviewer Hegel initially found that the preset allowed debug fallback flags and post-Cachet extra wheels; both were patched with regression tests, and the delta review approved with no findings.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 305,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/305",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "databricks/README.md",
+        "src/document_kv_cache/databricks_engine_probe_job.py",
+        "src/restaurant_kv_serving/README.md",
+        "src/restaurant_kv_serving/databricks_engine_probe_job.py",
+        "tests/test_databricks_engine_probe_job.py",
+        "tests/test_databricks_job.py"
+      ],
+      "verification": [
+        "python -m pytest -q tests/test_databricks_engine_probe_job.py -> 87 passed",
+        "python -m pytest -q tests/test_databricks_engine_probe_job.py tests/test_databricks_job.py -> 134 passed after reviewer fixes",
+        "python -m pytest -q tests/test_public_package.py tests/test_project_governance.py tests/test_repository_hygiene.py -> 62 passed",
+        "python -m pytest -q tests/test_benchmark_plan.py tests/test_databricks_job.py tests/test_template_resources.py -> 163 passed",
+        "python -m pytest -q -> 1577 passed",
+        "poetry build -> passed",
+        "installed-wheel preset smoke generated a g6.8xlarge provider-backed vLLM payload and rejected --extra-wheel-uri -> passed",
+        "GitHub CI Test and build for PR #305 -> success"
+      ],
+      "what_changed": [
+        "Added --provider-backed-vllm-native-probe as a single-target Databricks engine-probe preset for Cachet's built-in provider-backed vLLM path.",
+        "The preset fills the Cachet vLLM probe factory, vLLM native delegate, provider-backed connector metadata, expected backend, and the centralized vllm==0.23.0 runtime package.",
+        "The preset rejects conflicting factory/backend/metadata/runtime values plus debug fallback flags and extra wheels so adapter modules come from the Cachet wheel."
+      ],
+      "why": "The next g6.8xlarge probe should be launched from a fail-closed, copy-paste-safe command instead of hand-assembling many native connector flags."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
