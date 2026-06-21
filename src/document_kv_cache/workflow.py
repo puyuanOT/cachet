@@ -194,13 +194,16 @@ class TrainingArtifacts:
     adapter_artifacts: tuple[CacheAdapterArtifact, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
-        adapter_ids = _non_empty_string_tuple("adapter_ids", self.adapter_ids)
+        adapter_ids = _non_empty_unique_string_tuple("adapter_ids", self.adapter_ids)
         adapter_artifacts = tuple(self.adapter_artifacts)
         for artifact in adapter_artifacts:
             if not isinstance(artifact, CacheAdapterArtifact):
                 raise TypeError("adapter_artifacts entries must be CacheAdapterArtifact instances")
         if adapter_artifacts:
-            artifact_ids = tuple(artifact.adapter_id for artifact in adapter_artifacts)
+            artifact_ids = _non_empty_unique_string_tuple(
+                "adapter_artifacts adapter_id",
+                (artifact.adapter_id for artifact in adapter_artifacts),
+            )
             if adapter_ids and adapter_ids != artifact_ids:
                 raise ValueError("adapter_ids must match adapter_artifacts adapter_id order")
             adapter_ids = artifact_ids
@@ -537,7 +540,7 @@ def _engine_adapter_ids(
     adapter_ids: tuple[str, ...],
     training_artifacts: TrainingArtifacts | None,
 ) -> tuple[str, ...]:
-    explicit_adapter_ids = _non_empty_string_tuple("adapter_ids", adapter_ids)
+    explicit_adapter_ids = _non_empty_unique_string_tuple("adapter_ids", adapter_ids)
     if training_artifacts is None:
         return explicit_adapter_ids
     artifact_adapter_ids = training_artifacts.adapter_ids
@@ -744,6 +747,13 @@ def _non_empty_string_tuple(name: str, values: Iterable[str]) -> tuple[str, ...]
     tuple_values = tuple(values)
     if any(not isinstance(value, str) or not value for value in tuple_values):
         raise ValueError(f"{name} entries must be non-empty strings")
+    return tuple_values
+
+
+def _non_empty_unique_string_tuple(name: str, values: Iterable[str]) -> tuple[str, ...]:
+    tuple_values = _non_empty_string_tuple(name, values)
+    if len(set(tuple_values)) != len(tuple_values):
+        raise ValueError(f"{name} entries must be unique")
     return tuple_values
 
 

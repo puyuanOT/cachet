@@ -1195,6 +1195,20 @@ def test_training_artifacts_validate_adapter_artifact_identity():
     with pytest.raises(ValueError, match="adapter_ids must match"):
         TrainingArtifacts(adapter_ids=("other-adapter",), adapter_artifacts=(adapter,))
 
+    with pytest.raises(ValueError, match="adapter_ids entries must be unique"):
+        TrainingArtifacts(adapter_ids=("packet-adapter", "packet-adapter"))
+
+    with pytest.raises(ValueError, match="adapter_artifacts adapter_id entries must be unique"):
+        TrainingArtifacts(
+            adapter_artifacts=(
+                adapter,
+                CacheAdapterArtifact(
+                    adapter_id="packet-adapter",
+                    artifact_uri="/Volumes/cache/packet-rerun.safetensors",
+                ),
+            )
+        )
+
 
 def test_training_artifact_metadata_uses_string_maps():
     artifact = CacheAdapterArtifact(
@@ -1504,4 +1518,11 @@ def test_workflow_engine_handoff_rejects_bare_string_adapter_ids():
             request_for("doc-a"),
             layout=one_byte_layout(),
             adapter_ids="packet-adapter",  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="adapter_ids entries must be unique"):
+        workflow.prepare_for_engine(
+            request_for("doc-a"),
+            layout=one_byte_layout(),
+            adapter_ids=("packet-adapter", "packet-adapter"),
         )
