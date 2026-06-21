@@ -20,6 +20,10 @@ from document_kv_cache.databricks_job import (
     write_databricks_runner_script,
     write_databricks_run_submit_json,
 )
+from document_kv_cache.native_probe_factories import (
+    SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+    VLLM_NATIVE_PROBE_DELEGATE_ENV,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -91,6 +95,26 @@ def test_build_single_node_g5_cluster_is_reusable_with_custom_purpose():
         "team": "document-kv",
     }
     assert cluster["single_user_name"] == SINGLE_USER_NAME
+
+
+def test_build_databricks_run_submit_payload_sets_native_probe_delegate_env_vars():
+    config = DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        single_user_name=SINGLE_USER_NAME,
+        vllm_native_probe_delegate_factory="document_kv_vllm_native_adapter:build_probe",
+        sglang_native_probe_delegate_factory="document_kv_sglang_native_adapter:build_probe",
+    )
+
+    payload = build_databricks_run_submit_payload(config)
+    task = payload["tasks"][0]
+
+    assert task["new_cluster"]["spark_env_vars"] == {
+        VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe",
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV: "document_kv_sglang_native_adapter:build_probe",
+    }
+    assert "--vllm-native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
+    assert "--sglang-native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
 
 
 def test_single_node_g5_cluster_rejects_reserved_custom_tags():
@@ -195,6 +219,10 @@ def test_main_writes_payload_and_runner_script(tmp_path):
             SINGLE_USER_NAME,
             "--wheel-uri",
             WHEEL_URI,
+            "--vllm-native-probe-delegate-factory",
+            "document_kv_vllm_native_adapter:build_probe",
+            "--sglang-native-probe-delegate-factory",
+            "document_kv_sglang_native_adapter:build_probe",
             "--output-json",
             str(payload_path),
             "--runner-script-output",
@@ -203,7 +231,14 @@ def test_main_writes_payload_and_runner_script(tmp_path):
     )
 
     assert exit_code == 0
-    assert json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["libraries"]
+    task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
+    assert task["libraries"]
+    assert task["new_cluster"]["spark_env_vars"] == {
+        VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe",
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV: "document_kv_sglang_native_adapter:build_probe",
+    }
+    assert "--vllm-native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
+    assert "--sglang-native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
     assert "benchmark_plan_executor" in runner_path.read_text(encoding="utf-8")
 
 
@@ -942,7 +977,20 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     cluster = task["new_cluster"]
 
     assert bundle["bundle"]["name"] == "document-kv-cache-v1"
+    assert set(variables) == {
+        "plan_json_uri",
+        "runner_python_file",
+        "wheel_uri",
+        "execution_result_json_uri",
+        "vllm_native_probe_delegate_factory",
+        "sglang_native_probe_delegate_factory",
+        "node_type_id",
+        "spark_version",
+        "single_user_name",
+    }
     assert variables["node_type_id"]["default"] == "g5.4xlarge"
+    assert variables["vllm_native_probe_delegate_factory"]["default"] == '""'
+    assert variables["sglang_native_probe_delegate_factory"]["default"] == '""'
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert "data_security_mode" not in variables
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
@@ -962,6 +1010,10 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     }
     assert cluster["custom_tags"]["ResourceClass"] == "SingleNode"
     assert cluster["custom_tags"]["purpose"] == "document-kv-v1-benchmark"
+    assert cluster["spark_env_vars"] == {
+        "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY": "${var.vllm_native_probe_delegate_factory}",
+        "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY": "${var.sglang_native_probe_delegate_factory}",
+    }
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
     assert task["libraries"] == [{"whl": "${var.wheel_uri}"}]
     assert task["spark_python_task"] == {
@@ -982,6 +1034,10 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert WHEEL_URI in root_readme_text
     assert "document-kv-databricks-job" in readme_text
     assert "document-kv-vllm-smoke-databricks-job" in readme_text
+    assert "--vllm-native-probe-delegate-factory" in readme_text
+    assert "--sglang-native-probe-delegate-factory" in readme_text
+    assert "--var vllm_native_probe_delegate_factory=" in readme_text
+    assert "--var sglang_native_probe_delegate_factory=" in readme_text
     assert "single-node AWS `g5` GPU cluster" in readme_text
     assert "document_kv_cache/templates/databricks/" in readme_text
 

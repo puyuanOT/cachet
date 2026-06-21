@@ -39,7 +39,9 @@ new document modules depend on restaurant-owned implementations.
   vLLM/SGLang engine-probe evidence, including backend-specific delegate
   factory environment variables when generated target JSON asks built-in
   reserved probe factories to call downstream native adapters.
-- `databricks_job.py` emits the full V1 benchmark Databricks run payload.
+- `databricks_job.py` emits the full V1 benchmark Databricks run payload,
+  including optional native-probe delegate environment variables for benchmark
+  plans that use Cachet's built-in vLLM/SGLang probe factories.
 - `databricks_runs.py` submits, checks, and summarizes generated Databricks run
   payloads using environment-provided credentials.
 - `databricks_storage_benchmark_job.py` owns standalone storage-reader

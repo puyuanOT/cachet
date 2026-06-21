@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache.native_probe_factories import (
+    SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+    VLLM_NATIVE_PROBE_DELEGATE_ENV,
+)
+
 
 DEFAULT_AWS_G5_NODE_TYPE = "g5.4xlarge"
 DEFAULT_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
@@ -94,6 +99,8 @@ class DatabricksBenchmarkJobConfig:
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
+    vllm_native_probe_delegate_factory: str | None = None
+    sglang_native_probe_delegate_factory: str | None = None
 
     def __post_init__(self) -> None:
         if not self.plan_json_uri:
@@ -109,6 +116,10 @@ class DatabricksBenchmarkJobConfig:
             raise ValueError("wheel_uri must be non-empty when provided")
         if self.execution_result_json_uri is not None and not self.execution_result_json_uri:
             raise ValueError("execution_result_json_uri must be non-empty when provided")
+        if self.vllm_native_probe_delegate_factory is not None and not self.vllm_native_probe_delegate_factory:
+            raise ValueError("vllm_native_probe_delegate_factory must be non-empty when provided")
+        if self.sglang_native_probe_delegate_factory is not None and not self.sglang_native_probe_delegate_factory:
+            raise ValueError("sglang_native_probe_delegate_factory must be non-empty when provided")
 
 
 def validate_aws_g5_node_type(node_type_id: str) -> None:
@@ -171,7 +182,11 @@ def build_single_node_g5_cluster(config: DatabricksSingleNodeG5ClusterConfig) ->
 
 
 def _single_node_g5_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
-    return build_single_node_g5_cluster(_cluster_config_from_benchmark_job(config))
+    cluster = build_single_node_g5_cluster(_cluster_config_from_benchmark_job(config))
+    spark_env_vars = _native_probe_delegate_env_vars(config)
+    if spark_env_vars:
+        cluster["spark_env_vars"] = spark_env_vars
+    return cluster
 
 
 def _cluster_config_from_benchmark_job(config: DatabricksBenchmarkJobConfig) -> DatabricksSingleNodeG5ClusterConfig:
@@ -189,6 +204,15 @@ def _cluster_config_from_benchmark_job(config: DatabricksBenchmarkJobConfig) -> 
 
 def _is_single_user_mode(data_security_mode: str) -> bool:
     return data_security_mode.upper() in SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES
+
+
+def _native_probe_delegate_env_vars(config: DatabricksBenchmarkJobConfig) -> dict[str, str]:
+    spark_env_vars: dict[str, str] = {}
+    if config.vllm_native_probe_delegate_factory is not None:
+        spark_env_vars[VLLM_NATIVE_PROBE_DELEGATE_ENV] = config.vllm_native_probe_delegate_factory
+    if config.sglang_native_probe_delegate_factory is not None:
+        spark_env_vars[SGLANG_NATIVE_PROBE_DELEGATE_ENV] = config.sglang_native_probe_delegate_factory
+    return spark_env_vars
 
 
 _DEFAULT_VALIDATE_AWS_G5_NODE_TYPE = validate_aws_g5_node_type
@@ -215,6 +239,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
     parser.add_argument("--execution-result-json-uri", help="Optional cluster-visible execution summary output path.")
+    parser.add_argument(
+        "--vllm-native-probe-delegate-factory",
+        help="Optional backend-native delegate factory for benchmark plans that run Cachet's built-in vLLM probe.",
+    )
+    parser.add_argument(
+        "--sglang-native-probe-delegate-factory",
+        help="Optional backend-native delegate factory for benchmark plans that run Cachet's built-in SGLang probe.",
+    )
     parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
     parser.add_argument("--runner-script-output", help="Write the tiny benchmark plan runner script to this path.")
     args = parser.parse_args(argv)
@@ -231,6 +263,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             single_user_name=args.single_user_name,
             wheel_uri=args.wheel_uri,
             execution_result_json_uri=args.execution_result_json_uri,
+            vllm_native_probe_delegate_factory=args.vllm_native_probe_delegate_factory,
+            sglang_native_probe_delegate_factory=args.sglang_native_probe_delegate_factory,
         )
         if args.runner_script_output:
             write_databricks_runner_script(args.runner_script_output)

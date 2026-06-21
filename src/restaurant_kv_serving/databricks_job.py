@@ -298,6 +298,10 @@ class DatabricksBenchmarkJobConfig(_public_class_base("DatabricksBenchmarkJobCon
             raise ValueError("wheel_uri must be non-empty when provided")
         if self.execution_result_json_uri is not None and not self.execution_result_json_uri:
             raise ValueError("execution_result_json_uri must be non-empty when provided")
+        if self.vllm_native_probe_delegate_factory is not None and not self.vllm_native_probe_delegate_factory:
+            raise ValueError("vllm_native_probe_delegate_factory must be non-empty when provided")
+        if self.sglang_native_probe_delegate_factory is not None and not self.sglang_native_probe_delegate_factory:
+            raise ValueError("sglang_native_probe_delegate_factory must be non-empty when provided")
 
 
 def validate_aws_g5_node_type(node_type_id: str) -> None:

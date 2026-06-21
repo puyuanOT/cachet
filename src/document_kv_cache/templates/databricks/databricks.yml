@@ -10,6 +10,12 @@ variables:
     description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
   execution_result_json_uri:
     description: Cluster-visible path for the benchmark execution result JSON.
+  vllm_native_probe_delegate_factory:
+    default: ""
+    description: Optional backend-native delegate factory for benchmark plans that run Cachet's built-in vLLM probe.
+  sglang_native_probe_delegate_factory:
+    default: ""
+    description: Optional backend-native delegate factory for benchmark plans that run Cachet's built-in SGLang probe.
   node_type_id:
     default: g5.4xlarge
     description: AWS g5 node type for the single-node GPU benchmark.
@@ -39,6 +45,9 @@ resources:
             custom_tags:
               ResourceClass: SingleNode
               purpose: document-kv-v1-benchmark
+            spark_env_vars:
+              DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY: ${var.vllm_native_probe_delegate_factory}
+              DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY: ${var.sglang_native_probe_delegate_factory}
             aws_attributes:
               availability: ON_DEMAND
               zone_id: auto

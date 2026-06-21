@@ -1119,8 +1119,17 @@ python -m document_kv_cache.databricks_job \
   --runner-script-output run_plan.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
+  --vllm-native-probe-delegate-factory my_vllm_adapter.probes:build_probe \
+  --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json databricks-run-submit.json
 ```
+
+Set the native-probe delegate factory flags only when the benchmark plan uses
+Cachet's built-in reserved vLLM or SGLang native probe factories. The Databricks
+job helper writes those paths as cluster `spark_env_vars`
+(`DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY` and
+`DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY`) instead of passing them to the
+benchmark runner, so plan execution arguments remain stable.
 
 Submit or inspect a generated payload with env-provided credentials, keeping
 tokens out of command arguments and JSON artifacts:

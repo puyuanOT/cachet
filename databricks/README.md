@@ -37,6 +37,8 @@ document-kv-databricks-job \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --execution-result-json-uri dbfs:/benchmarks/result.json \
+  --vllm-native-probe-delegate-factory my_vllm_adapter.probes:build_probe \
+  --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json runs-submit-reference.json
 
 cd databricks
@@ -45,7 +47,9 @@ databricks bundle validate \
   --var runner_python_file=dbfs:/benchmarks/run_plan.py \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com \
-  --var execution_result_json_uri=dbfs:/benchmarks/result.json
+  --var execution_result_json_uri=dbfs:/benchmarks/result.json \
+  --var vllm_native_probe_delegate_factory=my_vllm_adapter.probes:build_probe \
+  --var sglang_native_probe_delegate_factory=my_sglang_adapter.probes:build_probe
 ```
 
 The Python helper remains useful for producing a one-off `runs/submit` payload;
@@ -55,6 +59,11 @@ mode and sets `single_user_name` from `${workspace.current_user.userName}` so
 `/Volumes/...` storage-reader evidence uses real Unity Catalog Volume paths. Run
 bundle commands from this `databricks/` folder because `databricks.yml` is the
 bundle root.
+Set the native-probe delegate factory arguments only when the benchmark plan
+uses Cachet's built-in reserved vLLM or SGLang probe factories. The helper and
+bundle map those values to cluster `spark_env_vars`, leaving the benchmark
+runner arguments stable. Empty bundle defaults are treated as unset by the
+built-in factories.
 
 For the smallest managed runtime check, use the standalone smoke bundle or
 generate the equivalent one-off `runs/submit` payload. The smoke bundle only
