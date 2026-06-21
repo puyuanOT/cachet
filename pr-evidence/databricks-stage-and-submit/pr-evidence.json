@@ -1,0 +1,36 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5/high reviewer Copernicus found that staged submit could partially upload before later artifact validation failed and that the README strict example omitted the DBFS plan artifact; both were fixed with regression coverage and doc updates.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 307,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/307",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "databricks/README.md",
+    "src/cachet/__init__.pyi",
+    "src/document_kv_cache/databricks_runs.py",
+    "src/restaurant_kv_serving/databricks_runs.py",
+    "tests/test_databricks_runs.py",
+    "tests/test_public_package.py"
+  ],
+  "verification": [
+    "python -m pytest -q tests/test_databricks_runs.py -> 59 passed",
+    "python -m pytest -q tests/test_public_package.py -> 11 passed",
+    "python -m pytest -q tests/test_project_governance.py tests/test_repository_hygiene.py -> 51 passed",
+    "python -m pytest -q tests/test_databricks_runs.py tests/test_public_package.py tests/test_project_governance.py tests/test_repository_hygiene.py -> 120 passed before reviewer fixes",
+    "python -m pytest -q -> 1588 passed",
+    "poetry build -> passed",
+    "installed-wheel fake-opener smoke for stage_and_submit_databricks_run and cachet-databricks-runs stage-and-submit --help -> passed"
+  ],
+  "what_changed": [
+    "Added stage_and_submit_databricks_run and cachet-databricks-runs stage-and-submit for staging small DBFS artifacts before Databricks runs/submit.",
+    "Added an optional guard that fails before upload unless every dbfs:/ URI in the submit payload has a matching staged artifact destination.",
+    "Prevalidates all declared artifact files, DBFS destinations, and DBFS put payload sizes before the first upload request, then emits one artifact/upload plus submit provenance sidecar."
+  ],
+  "why": "The provider-backed g6 probe needs a lower-risk env-auth launch command that stages runner/wheel artifacts and submits the payload without splitting provenance across manual steps."
+}
