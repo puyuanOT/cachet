@@ -240,6 +240,28 @@ def test_build_release_bundle_rejects_non_executed_plan_execution_commands(tmp_p
     assert "benchmark plan execution sidecar commands[0].skipped must be false" in error
 
 
+def test_build_release_bundle_non_strict_allows_legacy_plan_source_target(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    legacy_record = _plan_execution_record(ok=True)
+    for field_name in ("plan_version", "suite_id", "model_id", "hardware_target", "command_count"):
+        legacy_record["plan_source"].pop(field_name)
+    legacy_plan = _write_json(source_dir / "legacy-plan-execution.json", legacy_record)
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        plan_execution_jsons=(legacy_plan,),
+        output_dir=tmp_path / "non-strict-legacy-plan-source-bundle",
+    )
+    record = release_bundle_to_record(bundle)
+
+    plan_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "plan_execution")
+    assert plan_artifact["record_type"] == BENCHMARK_PLAN_EXECUTION_RECORD_TYPE
+
+
 def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_matching(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
