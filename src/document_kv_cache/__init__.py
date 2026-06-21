@@ -131,13 +131,26 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_job",
         "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
     ),
+    "RESERVED_SINGLE_NODE_GPU_TAG_KEYS": (
+        "document_kv_cache.databricks_job",
+        "RESERVED_SINGLE_NODE_GPU_TAG_KEYS",
+    ),
     "DatabricksSingleNodeG5ClusterConfig": (
         "document_kv_cache.databricks_job",
         "DatabricksSingleNodeG5ClusterConfig",
     ),
+    "DatabricksSingleNodeGPUClusterConfig": (
+        "document_kv_cache.databricks_job",
+        "DatabricksSingleNodeGPUClusterConfig",
+    ),
     "DatabricksBenchmarkJobConfig": ("document_kv_cache.databricks_job", "DatabricksBenchmarkJobConfig"),
     "validate_aws_g5_node_type": ("document_kv_cache.databricks_job", "validate_aws_g5_node_type"),
+    "validate_aws_single_node_gpu_type": (
+        "document_kv_cache.databricks_job",
+        "validate_aws_single_node_gpu_type",
+    ),
     "build_single_node_g5_cluster": ("document_kv_cache.databricks_job", "build_single_node_g5_cluster"),
+    "build_single_node_gpu_cluster": ("document_kv_cache.databricks_job", "build_single_node_gpu_cluster"),
     "build_databricks_run_submit_payload": (
         "document_kv_cache.databricks_job",
         "build_databricks_run_submit_payload",

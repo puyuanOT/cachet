@@ -1153,7 +1153,7 @@ until all required ignore patterns are present, no forbidden artifact paths are
 tracked or exposed as untracked, every non-generated tracked/untracked
 directory is documented, and no tracked files differ from `HEAD`.
 
-For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g5/g6 `runs/submit` payload:
+For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g5/g6 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers.
 
 ```bash
 python -m document_kv_cache.databricks_job \
