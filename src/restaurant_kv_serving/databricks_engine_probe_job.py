@@ -254,6 +254,8 @@ class DatabricksEngineProbeMatrixJobConfig(_public_class_base("DatabricksEngineP
         object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
         if type(self.release_safe) is not bool:
             raise ValueError("release_safe must be a boolean")
+        if type(self.serial_tasks) is not bool:
+            raise ValueError("serial_tasks must be a boolean")
         targets = tuple(_coerce_probe_target(target) for target in self.probe_targets)
         _validate_probe_target_backends(targets, release_safe=self.release_safe)
         _validate_probe_target_task_keys(targets)
