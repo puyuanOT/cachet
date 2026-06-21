@@ -126,6 +126,7 @@ _NATIVE_PROBE_RUNTIME_CONTRACT_SPECS: Mapping[
                 "save_kv_layer",
                 "wait_for_save",
                 "request_finished",
+                "request_finished_all_groups",
             ),
             optional_methods=(
                 "bind_connector_metadata",
