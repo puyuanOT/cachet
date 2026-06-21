@@ -594,7 +594,7 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if suite is not None and measurements is not None:
         _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
     if measurements is not None and report_rows is not None:
-        _validate_v1_report_counts_match_measurements(report_rows, measurements, issues)
+        _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if evidence is not None and evidence.get("ok") is not True:
         evidence_issues = evidence.get("issues")
         if isinstance(evidence_issues, list) and evidence_issues:
@@ -679,12 +679,29 @@ def _validate_v1_suite_examples_match_measurements(
         )
 
 
-def _validate_v1_report_counts_match_measurements(
+@dataclass(slots=True)
+class _V1MeasurementAggregate:
+    requests: int = 0
+    errors: int = 0
+    prompt_tokens_sum: int = 0
+    prompt_tokens_count: int = 0
+    completion_tokens_sum: int = 0
+    completion_tokens_count: int = 0
+    output_tokens_sum: int = 0
+    time_to_completion_sum: float = 0.0
+    throughput_count: int = 0
+
+    @property
+    def successes(self) -> int:
+        return self.requests - self.errors
+
+
+def _validate_v1_report_aggregates_match_measurements(
     report_rows: Sequence[Any],
     measurements: Sequence[Any],
     issues: list[str],
 ) -> None:
-    measurement_counts: dict[tuple[str, str], tuple[int, int]] = {}
+    measurement_aggregates: dict[tuple[str, str], _V1MeasurementAggregate] = {}
     for measurement in measurements:
         if not isinstance(measurement, Mapping):
             continue
@@ -693,8 +710,24 @@ def _validate_v1_report_counts_match_measurements(
         if not _is_supported_v1_dataset_arm(dataset, arm_id):
             continue
         key = (dataset, arm_id)
-        requests, errors = measurement_counts.get(key, (0, 0))
-        measurement_counts[key] = (requests + 1, errors + int(measurement.get("error") not in (None, "")))
+        aggregate = measurement_aggregates.setdefault(key, _V1MeasurementAggregate())
+        aggregate.requests += 1
+        if measurement.get("error") not in (None, ""):
+            aggregate.errors += 1
+            continue
+        prompt_tokens = measurement.get("prompt_tokens")
+        completion_tokens = measurement.get("completion_tokens")
+        time_to_completion = measurement.get("time_to_completion_seconds")
+        if _is_positive_int(prompt_tokens):
+            aggregate.prompt_tokens_sum += prompt_tokens
+            aggregate.prompt_tokens_count += 1
+        if _is_positive_int(completion_tokens):
+            aggregate.completion_tokens_sum += completion_tokens
+            aggregate.completion_tokens_count += 1
+        if _is_positive_int(completion_tokens) and _is_non_negative_number(time_to_completion):
+            aggregate.output_tokens_sum += completion_tokens
+            aggregate.time_to_completion_sum += float(time_to_completion)
+            aggregate.throughput_count += 1
 
     for row in report_rows:
         if not isinstance(row, Mapping):
@@ -704,22 +737,53 @@ def _validate_v1_report_counts_match_measurements(
         if not _is_supported_v1_dataset_arm(dataset, arm_id):
             continue
         key = (dataset, arm_id)
-        if key not in measurement_counts:
+        if key not in measurement_aggregates:
             continue
-        measurement_requests, measurement_errors = measurement_counts[key]
-        measurement_successes = measurement_requests - measurement_errors
+        aggregate = measurement_aggregates[key]
+        measurement_successes = aggregate.successes
         row_requests = row.get("requests")
         row_errors = row.get("errors")
-        if type(row_requests) is int and row_requests != measurement_requests:
+        if type(row_requests) is int and row_requests != aggregate.requests:
             issues.append(
                 f"v1 benchmark report row {dataset}:{arm_id} requests must match measurements "
-                f"({row_requests!r} != {measurement_requests})"
+                f"({row_requests!r} != {aggregate.requests})"
             )
-        if type(row_errors) is int and row_errors != measurement_errors:
+        if type(row_errors) is int and row_errors != aggregate.errors:
             issues.append(
                 f"v1 benchmark report row {dataset}:{arm_id} errors must match measurements "
-                f"({row_errors!r} != {measurement_errors})"
+                f"({row_errors!r} != {aggregate.errors})"
             )
+        if aggregate.prompt_tokens_count == measurement_successes and measurement_successes > 0:
+            _validate_v1_report_aggregate_number(
+                row.get("prompt_tokens_mean"),
+                aggregate.prompt_tokens_sum / measurement_successes,
+                f"v1 benchmark report row {dataset}:{arm_id} prompt_tokens_mean",
+                issues,
+            )
+        if aggregate.completion_tokens_count == measurement_successes and measurement_successes > 0:
+            _validate_v1_report_aggregate_number(
+                row.get("completion_tokens_mean"),
+                aggregate.completion_tokens_sum / measurement_successes,
+                f"v1 benchmark report row {dataset}:{arm_id} completion_tokens_mean",
+                issues,
+            )
+        if (
+            aggregate.throughput_count == measurement_successes
+            and measurement_successes > 0
+        ):
+            throughput_label = f"v1 benchmark report row {dataset}:{arm_id} output_tokens_per_second"
+            if aggregate.time_to_completion_sum > 0:
+                _validate_v1_report_aggregate_number(
+                    row.get("output_tokens_per_second"),
+                    aggregate.output_tokens_sum / aggregate.time_to_completion_sum,
+                    throughput_label,
+                    issues,
+                )
+            elif row.get("output_tokens_per_second") is not None:
+                issues.append(
+                    f"{throughput_label} must be absent when measurements have zero total "
+                    "time_to_completion_seconds"
+                )
         for metric_name in ("ttft", "time_to_completion"):
             metric = row.get(metric_name)
             if not isinstance(metric, Mapping):
@@ -730,6 +794,16 @@ def _validate_v1_report_counts_match_measurements(
                     f"v1 benchmark report row {dataset}:{arm_id} {metric_name} count must match "
                     f"successful measurements ({metric_count!r} != {measurement_successes})"
                 )
+
+
+def _validate_v1_report_aggregate_number(
+    value: Any,
+    expected: float,
+    label: str,
+    issues: list[str],
+) -> None:
+    if _is_finite_number(value) and not math.isclose(float(value), expected, rel_tol=1e-9, abs_tol=1e-9):
+        issues.append(f"{label} must match measurements ({value!r} != {expected})")
 
 
 def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:

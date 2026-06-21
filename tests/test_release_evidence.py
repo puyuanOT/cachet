@@ -925,6 +925,59 @@ def test_evaluate_release_evidence_rejects_report_row_count_mismatch():
     assert any("errors must match measurements" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_report_row_aggregate_mismatch():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "prompt_tokens_mean": 1.0,
+        "completion_tokens_mean": 1.0,
+        "output_tokens_per_second": 99.0,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("prompt_tokens_mean must match measurements" in issue for issue in evidence.issues)
+    assert any("completion_tokens_mean must match measurements" in issue for issue in evidence.issues)
+    assert any("output_tokens_per_second must match measurements" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_rejects_throughput_when_measurements_have_zero_total_time():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "ttft_seconds": 0.0,
+        "time_to_completion_seconds": 0.0,
+    }
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "ttft": {"count": 1, "mean": 0.0, "p50": 0.0, "p95": 0.0},
+        "time_to_completion": {"count": 1, "mean": 0.0, "p50": 0.0, "p95": 0.0},
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "output_tokens_per_second must be absent when measurements have zero total" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_latency_count_mismatch():
     v1_record = _v1_record(ok=True)
     v1_record["report_rows"][0] = {
