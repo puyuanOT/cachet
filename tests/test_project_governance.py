@@ -1290,6 +1290,11 @@ def test_runtime_packaging_pin_stays_databricks_ml_compatible():
 
 
 def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver():
+    from document_kv_cache.serving_env import (
+        SGLANG_DEPENDENCY_CONSTRAINTS,
+        VLLM_DEPENDENCY_CONSTRAINTS,
+    )
+
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependencies = pyproject["project"].get("dependencies", ())
     optional_dependencies = pyproject["project"].get("optional-dependencies", {})
@@ -1309,6 +1314,8 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
     assert "vllm" not in optional_dependency_names_by_extra["sglang"]
     assert "vllm-kv-injection" not in optional_dependency_names
     assert "sglang-kv-injection" not in optional_dependency_names
+    assert optional_dependencies["vllm"][0] == VLLM_DEPENDENCY_CONSTRAINTS[0] + "; python_version < '3.15'"
+    assert optional_dependencies["sglang"][0] == SGLANG_DEPENDENCY_CONSTRAINTS[0]
 
 
 def test_public_and_legacy_packages_publish_pep561_markers():

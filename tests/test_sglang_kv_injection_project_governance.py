@@ -14,7 +14,7 @@ def test_cachet_pyproject_packages_sglang_adapter_with_exact_optional_engine_pin
         for package in pyproject["tool"]["poetry"]["packages"]
     }
     assert pyproject["project"]["optional-dependencies"]["sglang"] == [
-        "sglang==0.5.13.post1"
+        "sglang==0.5.10.post1"
     ]
     assert {
         "path": "src/sglang_kv_injection/py.typed",
