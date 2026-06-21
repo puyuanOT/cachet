@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 found programmatic fixture/handoff mismatch and fixture child artifact collision gaps; both were fixed with config validation, concrete child-path collision checks, and regression tests.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_plan.py",
+    "tests/test_benchmark_plan.py",
+    "README.md"
+  ],
+  "verification": [
+    "pytest -q tests/test_benchmark_plan.py tests/test_probe_fixtures.py tests/test_public_package.py",
+    "pytest -q",
+    "python -m build --wheel"
+  ],
+  "what_changed": [
+    "benchmark_plan can generate deterministic Qwen3 engine-probe fixtures before planned native probes and derive fixture-backed handoff JSON paths from BACKEND=DIR CLI flags."
+  ],
+  "why": "Native vLLM/SGLang adapter work needs reproducible handoff/payload fixtures in the same command plan that runs engine probes, without manually creating handoff files first."
+}

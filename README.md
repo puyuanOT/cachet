@@ -787,6 +787,13 @@ backend and cannot use debug-only `--engine-probe-engine-version` or
 `--allow-non-native-engine-probe`; if debug probe commands are also needed, pass
 separate native records directly with repeatable `--release-engine-probe-json`
 and `--release-engine-actions-json`.
+Use `--engine-probe-fixture-output-dir BACKEND=DIR` when the plan should first
+write a deterministic Qwen3 V1 probe fixture with
+`document_kv_cache.probe_fixtures`; if `--engine-probe-handoff-json` is omitted
+for that backend, the plan derives it as
+`DIR/qwen3-v1-fixture.handoff.json`. Add
+`--engine-probe-fixture-payload-mode BACKEND=merged|segmented` to select the
+fixture payload format.
 The benchmark plan executor treats generated plan JSON as a closed execution
 schema: unsupported top-level plan keys or per-command keys are rejected before
 any command is run.

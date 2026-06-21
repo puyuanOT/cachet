@@ -29,6 +29,7 @@ from document_kv_cache.benchmark_plan import (
 from document_kv_cache.databricks_engine_probe_job import read_databricks_engine_probe_targets_json
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import SGLANG_NATIVE_PROBE_FACTORY, VLLM_NATIVE_PROBE_FACTORY
+from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -923,6 +924,81 @@ def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_va
     assert str(tmp_path / "vllm-probe.json") in release_command.argv
     assert str(tmp_path / "sglang-actions.json") in release_command.argv
     assert str(tmp_path / "vllm-actions.json") in release_command.argv
+
+
+def test_build_v1_benchmark_plan_can_generate_fixture_before_planned_engine_probe(tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+    handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g5",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        engine_probes=(
+            EngineProbePlanConfig(
+                backend="vllm",
+                handoff_json=str(handoff_json),
+                probe_factory="vllm_probe:factory",
+                output_json=str(tmp_path / "vllm-probe.json"),
+                actions_output_json=str(tmp_path / "vllm-actions.json"),
+                fixture_output_dir=str(fixture_dir),
+                fixture_payload_mode="merged",
+            ),
+        ),
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    command_names = [command.name for command in plan.commands]
+    fixture_command = plan.post_benchmark_commands[0]
+    probe_command = plan.post_benchmark_commands[1]
+
+    assert command_names[-2:] == [
+        "write-vllm-engine-probe-fixture",
+        "run-vllm-engine-probe",
+    ]
+    assert fixture_command.argv[:3] == ("python", "-m", "document_kv_cache.probe_fixtures")
+    assert fixture_command.argv[fixture_command.argv.index("--output-dir") + 1] == str(fixture_dir)
+    assert fixture_command.argv[fixture_command.argv.index("--backend") + 1] == "vllm"
+    assert fixture_command.argv[fixture_command.argv.index("--payload-mode") + 1] == "merged"
+    assert probe_command.argv[probe_command.argv.index("--handoff-json") + 1] == str(handoff_json)
+    assert record["planned_engine_probes"][0]["fixture_output_dir"] == str(fixture_dir)
+    assert record["planned_engine_probes"][0]["fixture_payload_mode"] == "merged"
+    assert record["release_engine_probe_jsons"] == []
+    assert record["release_engine_actions_jsons"] == []
+
+
+def test_engine_probe_plan_rejects_fixture_handoff_mismatch_for_programmatic_config(tmp_path):
+    with pytest.raises(ValueError, match="derived fixture handoff path"):
+        EngineProbePlanConfig(
+            backend="vllm",
+            handoff_json=str(tmp_path / "custom-handoff.json"),
+            probe_factory="vllm_probe:factory",
+            output_json=str(tmp_path / "vllm-probe.json"),
+            fixture_output_dir=str(tmp_path / "vllm-fixture"),
+        )
+
+
+def test_benchmark_plan_rejects_fixture_child_output_path_collisions(tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+    handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+
+    with pytest.raises(ValueError, match="fixture_handoff"):
+        BenchmarkPlanConfig(
+            suite_id="v1-g5",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            engine_probes=(
+                EngineProbePlanConfig(
+                    backend="vllm",
+                    handoff_json=str(handoff_json),
+                    probe_factory="vllm_probe:factory",
+                    output_json=str(handoff_json),
+                    fixture_output_dir=str(fixture_dir),
+                ),
+            ),
+        )
 
 
 def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path):
@@ -2223,6 +2299,55 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     )
 
 
+def test_main_can_derive_planned_engine_probe_handoff_from_fixture_output_dir(tmp_path):
+    plan_json = tmp_path / "plan.json"
+    fixture_dir = tmp_path / "vllm-fixture"
+    expected_handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--engine-probe-fixture-output-dir",
+            f"vllm={fixture_dir}",
+            "--engine-probe-fixture-payload-mode",
+            "vllm=merged",
+            "--engine-probe-factory",
+            "vllm=vllm_probe:factory",
+            "--engine-probe-output-json",
+            f"vllm={tmp_path / 'vllm-probe.json'}",
+            "--engine-probe-actions-output-json",
+            f"vllm={tmp_path / 'vllm-actions.json'}",
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    command_names = [command["name"] for command in record["commands"]]
+    fixture_argv = record["commands"][command_names.index("write-vllm-engine-probe-fixture")]["argv"]
+    probe_argv = record["commands"][command_names.index("run-vllm-engine-probe")]["argv"]
+
+    assert exit_code == 0
+    assert command_names[-2:] == [
+        "write-vllm-engine-probe-fixture",
+        "run-vllm-engine-probe",
+    ]
+    assert fixture_argv[fixture_argv.index("--output-dir") + 1] == str(fixture_dir)
+    assert fixture_argv[fixture_argv.index("--payload-mode") + 1] == "merged"
+    assert probe_argv[probe_argv.index("--handoff-json") + 1] == str(expected_handoff_json)
+    assert record["planned_engine_probes"][0]["handoff_json"] == str(expected_handoff_json)
+    assert record["planned_engine_probes"][0]["fixture_output_dir"] == str(fixture_dir)
+    assert record["planned_engine_probes"][0]["fixture_payload_mode"] == "merged"
+    assert record["release_engine_probe_jsons"] == []
+    assert record["release_engine_actions_jsons"] == []
+
+
 def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_path):
     plan_json = tmp_path / "plan.json"
     targets_json = tmp_path / "engine-probe-targets.json"
@@ -2905,6 +3030,63 @@ def test_main_rejects_builtin_engine_probe_factories_without_handoff(capsys, tmp
     assert exit_code == 1
     assert record["ok"] is False
     assert "--engine-probe-handoff-json" in record["error"]
+
+
+def test_main_rejects_engine_probe_fixture_payload_mode_without_fixture_dir(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--engine-probe-handoff-json",
+            f"vllm={tmp_path / 'handoff.json'}",
+            "--engine-probe-factory",
+            "vllm=vllm_probe:factory",
+            "--engine-probe-output-json",
+            f"vllm={tmp_path / 'probe.json'}",
+            "--engine-probe-fixture-payload-mode",
+            "vllm=merged",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "--engine-probe-fixture-payload-mode" in record["error"]
+
+
+def test_main_rejects_engine_probe_fixture_with_conflicting_handoff_json(capsys, tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--engine-probe-handoff-json",
+            f"vllm={tmp_path / 'custom-handoff.json'}",
+            "--engine-probe-fixture-output-dir",
+            f"vllm={fixture_dir}",
+            "--engine-probe-factory",
+            "vllm=vllm_probe:factory",
+            "--engine-probe-output-json",
+            f"vllm={tmp_path / 'probe.json'}",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "must match the derived fixture handoff path" in record["error"]
 
 
 def test_main_rejects_unplanned_explicit_factory_with_builtin_engine_probe_factories(capsys, tmp_path):

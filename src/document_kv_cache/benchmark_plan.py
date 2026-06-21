@@ -13,8 +13,9 @@ from typing import Any
 
 from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_DATASETS
 from document_kv_cache.benchmarks import validate_v1_dataset
-from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.native_probe_factories import builtin_native_probe_factory_path
+from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.storage import local_path
 from document_kv_cache.storage_benchmark import (
     RELEASE_STORAGE_BENCHMARK_READERS,
@@ -216,9 +217,12 @@ class EngineProbePlanConfig:
     allow_non_native_probe: bool = False
     metadata: tuple[str, ...] = ()
     native_probe_delegate_factory: str | None = None
+    fixture_output_dir: str | None = None
+    fixture_payload_mode: PayloadMode | str = PayloadMode.SEGMENTED
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", ServingBackend(self.backend))
+        object.__setattr__(self, "fixture_payload_mode", PayloadMode(self.fixture_payload_mode))
         if not self.handoff_json:
             raise ValueError("engine probe handoff_json must be non-empty")
         if not self.probe_factory:
@@ -229,6 +233,15 @@ class EngineProbePlanConfig:
             raise ValueError("engine probe actions_output_json must be non-empty when provided")
         if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
             raise ValueError("engine probe native_probe_delegate_factory must be non-empty when provided")
+        if self.fixture_output_dir is not None and not self.fixture_output_dir:
+            raise ValueError("engine probe fixture_output_dir must be non-empty when provided")
+        if self.fixture_output_dir is not None:
+            expected_handoff_json = _engine_probe_fixture_handoff_json(self.fixture_output_dir)
+            if not _same_artifact_path(self.handoff_json, expected_handoff_json):
+                raise ValueError(
+                    "engine probe handoff_json must match the derived fixture handoff path when "
+                    f"fixture_output_dir is set: expected {expected_handoff_json!r}, got {self.handoff_json!r}"
+                )
         if self.payload_uri is not None and not self.payload_uri:
             raise ValueError("engine probe payload_uri must be non-empty when provided")
         if self.engine_version is not None and not self.engine_version:
@@ -426,7 +439,10 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
     post_benchmark_commands = []
     if config.storage_benchmark is not None:
         post_benchmark_commands.append(_storage_benchmark_command(config))
-    post_benchmark_commands.extend(_engine_probe_command(config, probe_config) for probe_config in config.engine_probes)
+    for probe_config in config.engine_probes:
+        if probe_config.fixture_output_dir is not None:
+            post_benchmark_commands.append(_engine_probe_fixture_command(config, probe_config))
+        post_benchmark_commands.append(_engine_probe_command(config, probe_config))
     if config.github_governance_output_json is not None:
         post_benchmark_commands.append(_github_governance_command(config))
     if config.repository_hygiene_output_json is not None:
@@ -451,6 +467,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
             "When configured, GitHub governance inspection runs before release validation and can be bundled as release governance evidence.",
             "When configured, repository hygiene inspection runs before release validation and can be bundled as release hygiene evidence.",
             "When configured, native probe factory diagnostics run before release validation and can be bundled as release handoff evidence.",
+            "When configured, deterministic Qwen3 engine-probe fixtures are generated immediately before native engine probes.",
             "When configured, release-evidence preflight runs before release validation and can be bundled as release input evidence.",
             "When configured, release evidence validation runs last and checks V1, storage, and native engine-probe artifacts together.",
             "When configured, release bundle assembly follows release evidence and copies the validated artifacts plus optional sidecars into a checksummed handoff directory.",
@@ -538,6 +555,9 @@ def _planned_engine_probe_to_record(probe: EngineProbePlanConfig) -> dict[str, A
     }
     if probe.native_probe_delegate_factory is not None:
         record["native_probe_delegate_factory"] = probe.native_probe_delegate_factory
+    if probe.fixture_output_dir is not None:
+        record["fixture_output_dir"] = probe.fixture_output_dir
+        record["fixture_payload_mode"] = probe.fixture_payload_mode.value
     return record
 
 
@@ -707,6 +727,25 @@ def _engine_probe_command(config: BenchmarkPlanConfig, probe_config: EngineProbe
     for metadata in probe_config.metadata:
         argv = (*argv, "--metadata", metadata)
     return BenchmarkCommand(name=f"run-{probe_config.backend.value}-engine-probe", argv=argv)
+
+
+def _engine_probe_fixture_command(config: BenchmarkPlanConfig, probe_config: EngineProbePlanConfig) -> BenchmarkCommand:
+    if probe_config.fixture_output_dir is None:
+        raise ValueError("engine probe fixture_output_dir must be configured")
+    return BenchmarkCommand(
+        name=f"write-{probe_config.backend.value}-engine-probe-fixture",
+        argv=(
+            config.python_executable,
+            "-m",
+            "document_kv_cache.probe_fixtures",
+            "--output-dir",
+            probe_config.fixture_output_dir,
+            "--backend",
+            probe_config.backend.value,
+            "--payload-mode",
+            probe_config.fixture_payload_mode.value,
+        ),
+    )
 
 
 def _github_governance_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
@@ -1152,6 +1191,21 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
         for probe in config.engine_probes
         if probe.actions_output_json is not None
     )
+    output_paths.extend(
+        (f"engine_probes[{probe.backend.value}].fixture_output_dir", probe.fixture_output_dir)
+        for probe in config.engine_probes
+        if probe.fixture_output_dir is not None
+    )
+    for probe in config.engine_probes:
+        if probe.fixture_output_dir is None:
+            continue
+        output_paths.extend(
+            (
+                f"engine_probes[{probe.backend.value}].fixture_{artifact_name}",
+                _uri_child(probe.fixture_output_dir, filename),
+            )
+            for artifact_name, filename in DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES.items()
+        )
     if config.release_evidence is not None:
         output_paths.append(("release_evidence.output_json", config.release_evidence.output_json))
     if config.release_bundle is not None:
@@ -1293,6 +1347,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         metavar="BACKEND=PATH",
         help="Plan a native engine probe for backend vllm or sglang using this handoff JSON.",
+    )
+    parser.add_argument(
+        "--engine-probe-fixture-output-dir",
+        action="append",
+        metavar="BACKEND=DIR",
+        help=(
+            "Generate a deterministic Qwen3 V1 engine-probe fixture in DIR before probing BACKEND. "
+            "When --engine-probe-handoff-json is omitted for that backend, the handoff path is derived from DIR."
+        ),
+    )
+    parser.add_argument(
+        "--engine-probe-fixture-payload-mode",
+        action="append",
+        metavar="BACKEND=MODE",
+        help="Fixture payload mode for a backend configured with --engine-probe-fixture-output-dir.",
     )
     parser.add_argument(
         "--engine-probe-factory",
@@ -1577,6 +1646,14 @@ def _has_storage_benchmark_options(args: argparse.Namespace) -> bool:
 
 def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProbePlanConfig, ...]:
     handoff_jsons = _named_value_map(args.engine_probe_handoff_json or (), "--engine-probe-handoff-json")
+    fixture_output_dirs = _named_value_map(
+        args.engine_probe_fixture_output_dir or (),
+        "--engine-probe-fixture-output-dir",
+    )
+    fixture_payload_modes = _named_value_map(
+        args.engine_probe_fixture_payload_mode or (),
+        "--engine-probe-fixture-payload-mode",
+    )
     factories = _named_value_map(args.engine_probe_factory or (), "--engine-probe-factory")
     output_jsons = _named_value_map(args.engine_probe_output_json or (), "--engine-probe-output-json")
     actions_output_jsons = _named_value_map(
@@ -1591,6 +1668,12 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
     engine_versions = _named_value_map(args.engine_probe_engine_version or (), "--engine-probe-engine-version")
     metadata = _named_value_lists(args.engine_probe_metadata or (), "--engine-probe-metadata")
     non_native_backends = set(args.allow_non_native_engine_probe or ())
+    _require_subset_backend_keys(
+        set(fixture_output_dirs),
+        fixture_payload_modes,
+        "--engine-probe-fixture-payload-mode",
+    )
+    handoff_jsons = _engine_probe_handoff_jsons_with_fixtures(handoff_jsons, fixture_output_dirs)
 
     if not handoff_jsons:
         if (
@@ -1604,7 +1687,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             or non_native_backends
             or args.engine_probe_use_builtin_factories
         ):
-            raise ValueError("engine probe options require --engine-probe-handoff-json")
+            raise ValueError("engine probe options require --engine-probe-handoff-json or --engine-probe-fixture-output-dir")
         return ()
 
     backends = set(handoff_jsons)
@@ -1617,6 +1700,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
     _require_subset_backend_keys(backends, payload_uris, "--engine-probe-payload-uri")
     _require_subset_backend_keys(backends, engine_versions, "--engine-probe-engine-version")
     _require_subset_backend_keys(backends, metadata, "--engine-probe-metadata")
+    _require_subset_backend_keys(backends, fixture_output_dirs, "--engine-probe-fixture-output-dir")
     unsupported_non_native = sorted(non_native_backends.difference(backends))
     if unsupported_non_native:
         raise ValueError(f"--allow-non-native-engine-probe has no planned backend: {unsupported_non_native}")
@@ -1633,9 +1717,41 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             engine_version=engine_versions.get(backend),
             allow_non_native_probe=backend in non_native_backends,
             metadata=tuple(metadata.get(backend, ())),
+            fixture_output_dir=fixture_output_dirs.get(backend),
+            fixture_payload_mode=fixture_payload_modes.get(backend, PayloadMode.SEGMENTED),
         )
         for backend in sorted(backends)
     )
+
+
+def _engine_probe_handoff_jsons_with_fixtures(
+    handoff_jsons: Mapping[str, str],
+    fixture_output_dirs: Mapping[str, str],
+) -> dict[str, str]:
+    merged = dict(handoff_jsons)
+    for backend, output_dir in fixture_output_dirs.items():
+        fixture_handoff_json = _engine_probe_fixture_handoff_json(output_dir)
+        explicit_handoff_json = merged.get(backend)
+        if explicit_handoff_json is not None and not _same_artifact_path(explicit_handoff_json, fixture_handoff_json):
+            raise ValueError(
+                "--engine-probe-handoff-json must match the derived fixture handoff path when "
+                f"--engine-probe-fixture-output-dir is set for {backend!r}: "
+                f"expected {fixture_handoff_json!r}, got {explicit_handoff_json!r}"
+            )
+        merged[backend] = fixture_handoff_json
+    return merged
+
+
+def _engine_probe_fixture_handoff_json(fixture_output_dir: str) -> str:
+    return _uri_child(fixture_output_dir, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"])
+
+
+def _uri_child(base_uri: str, filename: str) -> str:
+    return f"{base_uri.rstrip('/')}/{filename}"
+
+
+def _same_artifact_path(left: str, right: str) -> bool:
+    return _canonical_artifact_path(left) == _canonical_artifact_path(right)
 
 
 def _fill_missing_builtin_engine_probe_factories(
