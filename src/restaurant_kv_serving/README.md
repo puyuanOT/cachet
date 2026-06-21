@@ -190,8 +190,15 @@ python -m document_kv_cache.databricks_job \
   --runner-script-output run_plan.py \
   --wheel-uri dbfs:/benchmarks/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
+  --vllm-native-probe-delegate-factory my_vllm_adapter.probes:build_probe \
+  --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json databricks-run-submit.json
 ```
+
+Set the native-probe delegate factory flags only when the benchmark plan uses
+Cachet's built-in reserved vLLM or SGLang native probe factories. The helper
+maps those paths to cluster environment variables, so benchmark runner
+parameters stay stable across serving environments.
 
 The payload helper intentionally keeps authentication separate. To submit or
 inspect a run from a machine with env-provided Databricks credentials, use:

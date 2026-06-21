@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/benchmark-job-native-delegate-env/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "Pasteur the 3rd approved/clean with no merge-blocking findings; reviewed payload env-var mapping, runner parameter stability, templates, docs, and tests.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "document_kv_cache.databricks_job, legacy compatibility wrapper validation, V1 Databricks bundle templates, docs, and Databricks job tests."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_databricks_job.py tests/test_project_governance.py tests/test_public_package.py -q; poetry run pytest -q; poetry check; git diff --check; poetry run python -m compileall -q src tests"
+      ],
+      "what_changed": [
+        "Added optional native vLLM/SGLang probe delegate factory support to full V1 Databricks benchmark job payloads and bundle templates."
+      ],
+      "why": "Benchmark plans that use Cachet built-in reserved native probe factories need backend-owned adapter factory paths available on Databricks clusters without changing runner arguments."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
