@@ -27,7 +27,7 @@ module paths, root exports, and selected monkeypatch hooks.
 - `serving_env.py` records pinned one-engine-per-environment install profiles for vLLM and SGLang helpers.
 - `benchmarks.py` is a compatibility wrapper over `document_kv_cache.benchmarks`, which owns the V1 dataset specs, deterministic prompt/context builders, and quality/latency schema for comparing baseline prefill against document KV-cache reuse.
 - `dataset_prep.py` is a compatibility wrapper over `document_kv_cache.dataset_prep`, which owns Biography, HotpotQA, MusiQue, and NIAH normalization into the JSONL schema consumed by `benchmark_runner.py`, including synthetic NIAH generation.
-- `benchmark_plan.py` emits reproducible dataset-preparation and benchmark-runner command plans for AWS g5/Qwen3 V1 jobs.
+- `benchmark_plan.py` emits reproducible dataset-preparation and benchmark-runner command plans for target AWS g6/L4/Qwen3 V1 jobs, while the Databricks helpers continue to accept AWS g5/g6 node families.
 - `benchmark_plan_executor.py` executes a benchmark plan JSON command sequence, primarily for managed job runners.
 - `databricks_job.py` is a compatibility wrapper for the document-owned AWS g5/g6 Databricks V1 benchmark job payload helper.
 - `databricks_storage_benchmark_job.py` is a compatibility wrapper for the document-owned AWS g5/g6 Databricks storage-reader job payload helper.
@@ -112,7 +112,7 @@ python -m document_kv_cache.benchmark_runner \
   --output-json v1-results.json
 ```
 
-The CLI preserves the same baseline-vs-cache prompt split as the programmatic API and is intended for AWS g5/Qwen3 4B Instruct V1 runs.
+The CLI preserves the same baseline-vs-cache prompt split as the programmatic API and is intended for target AWS g6/L4/Qwen3 4B Instruct V1 runs.
 OpenAI-style bases ending in `/v1` are normalized before appending the default `/v1/completions` endpoint. Custom `--endpoint` or `--cache-endpoint` values are appended to the exact base URL for servers that expose a different completions route. Use `--cache-runtime-prompt` only together with an explicit `--cache-base-url`.
 
 To smoke-test the real vLLM server path inside a Databricks GPU task, use:
