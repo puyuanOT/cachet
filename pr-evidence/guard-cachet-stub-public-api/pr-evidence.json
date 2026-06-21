@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer found two false-negative paths in the initial guard: non-self aliases and invalid source symbols. Both were fixed, re-verified locally, and the reviewer returned APPROVED.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "tests/test_public_package.py; pr-evidence/guard-cachet-stub-public-api"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_public_package.py::test_cachet_brand_facade_delegates_to_document_package tests/test_public_package.py::test_cachet_typing_stub_tracks_document_public_api -q; git diff --check; poetry run pytest -q; poetry check; poetry run python -m compileall -q src tests"
+  ],
+  "what_changed": [
+    "Added a public-package test guard that parses src/cachet/__init__.pyi and verifies the Cachet typing facade mirrors document_kv_cache.__all__."
+  ],
+  "why": "The branded Cachet root import is manually typed through a stub; this prevents future public API drift between runtime exports and published typing metadata."
+}

@@ -1,3 +1,4 @@
+import ast
 import importlib
 import json
 import os
@@ -12,6 +13,30 @@ import restaurant_kv_serving
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _cachet_stub_document_exports() -> tuple[set[str], list[str], list[str]]:
+    stub_path = REPO_ROOT / "src" / "cachet" / "__init__.pyi"
+    stub_tree = ast.parse(stub_path.read_text(encoding="utf-8"))
+
+    exports: set[str] = set()
+    non_reexport_aliases: list[str] = []
+    missing_source_symbols: list[str] = []
+    for node in stub_tree.body:
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.module is None or not node.module.startswith("document_kv_cache"):
+            continue
+        source_module = importlib.import_module(node.module)
+        for alias in node.names:
+            if alias.asname != alias.name:
+                non_reexport_aliases.append(f"{node.module}.{alias.name} as {alias.asname}")
+                continue
+            if not hasattr(source_module, alias.name):
+                missing_source_symbols.append(f"{node.module}.{alias.name}")
+                continue
+            exports.add(alias.asname)
+    return exports, non_reexport_aliases, missing_source_symbols
 
 
 def test_public_document_package_reexports_core_api():
@@ -835,6 +860,18 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "from document_kv_cache.models import" in stub_text
     assert "DocumentKVRequest as DocumentKVRequest" in stub_text
     assert "RestaurantKVRequest" not in stub_text
+
+
+def test_cachet_typing_stub_tracks_document_public_api():
+    document_exports = set(document_kv_cache.__all__)
+    stub_exports, non_reexport_aliases, missing_source_symbols = _cachet_stub_document_exports()
+    missing_stub_exports = sorted(document_exports - stub_exports)
+    unexpected_stub_exports = sorted(stub_exports - document_exports)
+
+    assert non_reexport_aliases == []
+    assert missing_source_symbols == []
+    assert missing_stub_exports == []
+    assert unexpected_stub_exports == []
 
 
 def test_public_cli_submodules_are_importable_under_document_namespace():
