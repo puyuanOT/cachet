@@ -356,6 +356,7 @@ def test_openai_compatible_benchmark_config_rejects_empty_limit_and_unsafe_runti
         ("cache_endpoint", "", "cache_endpoint must be non-empty"),
         ("model_id", "", "model_id must be non-empty"),
         ("hardware_target", "", "hardware_target must be non-empty"),
+        ("hardware_target", "aws-g6e", "Unsupported V1 hardware target"),
         ("limit_per_dataset", True, "limit_per_dataset must be positive"),
         ("repeats", True, "repeats must be positive"),
         ("seed", True, "seed must be an integer"),

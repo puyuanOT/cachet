@@ -290,7 +290,11 @@ def databricks_run_status_record(record: Mapping[str, Any]) -> Mapping[str, Any]
     return None
 
 
-def databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def databricks_run_status_sidecar_issues(
+    record: Mapping[str, Any],
+    *,
+    expected_hardware_target: str | None = None,
+) -> tuple[str, ...]:
     """Return release-oriented issues for a Databricks run-status sidecar."""
 
     status_record = databricks_run_status_record(record)
@@ -337,7 +341,13 @@ def databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str
     if not isinstance(submit_payload, Mapping):
         issues.append("Databricks run status sidecar submit_payload must be an object")
     else:
-        issues.extend(_databricks_submit_payload_sidecar_issues(submit_payload, tasks=tasks))
+        issues.extend(
+            _databricks_submit_payload_sidecar_issues(
+                submit_payload,
+                tasks=tasks,
+                expected_hardware_target=expected_hardware_target,
+            )
+        )
         issues.extend(_databricks_run_submit_payload_identity_issues(status_record, submit_payload))
     return _dedupe_strings(issues)
 
@@ -438,17 +448,33 @@ def _sorted_unique_texts(values: Sequence[Any]) -> list[str]:
 
 
 _SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g5.", "g6.")
+_HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = {
+    "aws-g5": ("g5.",),
+    "aws-g6-l4": ("g6.",),
+}
 
 
 def _is_supported_aws_single_node_gpu_type(value: Any) -> bool:
     return isinstance(value, str) and value.startswith(_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES)
 
 
+def _is_expected_aws_single_node_gpu_type(value: Any, expected_hardware_target: str | None) -> bool:
+    if expected_hardware_target is None:
+        return _is_supported_aws_single_node_gpu_type(value)
+    prefixes = _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.get(expected_hardware_target)
+    return isinstance(value, str) and prefixes is not None and value.startswith(prefixes)
+
+
 def _submit_payload_gpu_type_supported(record: Mapping[str, Any]) -> bool:
-    aws_single_node_gpu_type = record.get("aws_single_node_gpu_type")
-    if aws_single_node_gpu_type is not None:
-        return aws_single_node_gpu_type is True
-    return record.get("aws_g5_node_type") is True
+    return all(record[field_name] is True for field_name in _present_gpu_type_fields(record))
+
+
+def _present_gpu_type_fields(record: Mapping[str, Any]) -> tuple[str, ...]:
+    return tuple(
+        field_name
+        for field_name in ("aws_single_node_gpu_type", "aws_g5_node_type")
+        if field_name in record
+    )
 
 
 def _sha256_hex(payload: bytes) -> str:
@@ -478,6 +504,7 @@ def _databricks_submit_payload_sidecar_issues(
     record: Mapping[str, Any],
     *,
     tasks: Any,
+    expected_hardware_target: str | None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     issues.extend(_unexpected_keys(record, _DATABRICKS_SUBMIT_PAYLOAD_KEYS, "Databricks run status sidecar submit_payload"))
@@ -504,7 +531,12 @@ def _databricks_submit_payload_sidecar_issues(
     else:
         if type(task_count) is int and task_count > 0 and len(payload_tasks) != task_count:
             issues.append("Databricks run status sidecar submit_payload.task_count must match tasks length")
-        issues.extend(_databricks_submit_payload_task_issues(payload_tasks))
+        issues.extend(
+            _databricks_submit_payload_task_issues(
+                payload_tasks,
+                expected_hardware_target=expected_hardware_target,
+            )
+        )
         issues.extend(_databricks_submit_payload_summary_field_issues(record, payload_tasks))
     data_security_modes = record.get("data_security_modes")
     if not isinstance(data_security_modes, Sequence) or isinstance(data_security_modes, (str, bytes, bytearray)):
@@ -567,7 +599,11 @@ def _databricks_submit_payload_summary_field_issues(
     return tuple(issues)
 
 
-def _databricks_submit_payload_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
+def _databricks_submit_payload_task_issues(
+    tasks: Sequence[Any],
+    *,
+    expected_hardware_target: str | None,
+) -> tuple[str, ...]:
     issues: list[str] = []
     for index, task in enumerate(tasks):
         if not isinstance(task, Mapping):
@@ -588,6 +624,11 @@ def _databricks_submit_payload_task_issues(tasks: Sequence[Any]) -> tuple[str, .
             if not _is_supported_aws_single_node_gpu_type(value):
                 issues.append(
                     f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g5/g6 node type"
+                )
+            elif not _is_expected_aws_single_node_gpu_type(value, expected_hardware_target):
+                issues.append(
+                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must match "
+                    f"hardware_target {expected_hardware_target!r}"
                 )
         if task.get("single_node") is not True:
             issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].single_node must be true")
@@ -642,6 +683,14 @@ def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[
     for field_name in ("aws_single_node_gpu_type", "aws_g5_node_type"):
         if field_name in record:
             issues.extend(_bool_field(record, field_name, "Databricks run status sidecar submit_payload"))
+    if (
+        type(record.get("aws_single_node_gpu_type")) is bool
+        and type(record.get("aws_g5_node_type")) is bool
+        and record["aws_single_node_gpu_type"] != record["aws_g5_node_type"]
+    ):
+        issues.append(
+            "Databricks run status sidecar submit_payload.aws_single_node_gpu_type and aws_g5_node_type must match"
+        )
     return tuple(issues)
 
 

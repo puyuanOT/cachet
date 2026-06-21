@@ -679,6 +679,23 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
 
 
+def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_mismatch(tmp_path):
+    source_dir = tmp_path / "sources"
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir, node_type_id="g5.4xlarge")
+    release_kwargs = _strict_v1_release_bundle_kwargs(source_dir, databricks_run_status_jsons=run_statuses)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **release_kwargs,
+            output_dir=tmp_path / "strict-wrong-databricks-target",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "hardware_target 'aws-g6-l4'" in error
+    assert "g5.4xlarge" not in error
+
+
 def test_build_release_bundle_strict_v1_accepts_matching_non_default_plan_source_suite_id(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
@@ -3188,6 +3205,7 @@ def _strict_v1_databricks_run_status_paths(
     *,
     omit_purpose: str | None = None,
     wrapped: bool = True,
+    node_type_id: str = "g6.8xlarge",
 ) -> tuple[Path, ...]:
     return tuple(
         _write_json(
@@ -3197,6 +3215,7 @@ def _strict_v1_databricks_run_status_paths(
                 run_name=run_name,
                 task_key=task_key,
                 wrapped=wrapped,
+                node_type_id=node_type_id,
             ),
         )
         for purpose, run_name, task_key, suffix in STRICT_V1_DATABRICKS_RUN_STATUS_CASES
@@ -3210,12 +3229,14 @@ def _strict_v1_databricks_run_status_record(
     run_name: str,
     task_key: str,
     wrapped: bool,
+    node_type_id: str = "g6.8xlarge",
 ):
     record = _databricks_run_status_record(
         succeeded=True,
         purpose=purpose,
         run_name=run_name,
         task_key=task_key,
+        node_type_id=node_type_id,
     )
     if not wrapped:
         return record
@@ -3473,6 +3494,7 @@ def _databricks_run_status_cli_record(
     purpose: str = "document-kv-v1-benchmark",
     run_name: str = "document-kv-v1",
     task_key: str = "run-benchmark",
+    node_type_id: str = "g6.8xlarge",
 ):
     return {
         "ok": True,
@@ -3482,6 +3504,7 @@ def _databricks_run_status_cli_record(
             purpose=purpose,
             run_name=run_name,
             task_key=task_key,
+            node_type_id=node_type_id,
         ),
     }
 
@@ -3492,6 +3515,7 @@ def _databricks_run_status_record(
     purpose: str = "document-kv-v1-benchmark",
     run_name: str = "document-kv-v1",
     task_key: str = "run-benchmark",
+    node_type_id: str = "g6.8xlarge",
 ):
     life_cycle_state = "TERMINATED" if succeeded else "RUNNING"
     result_state = "SUCCESS" if succeeded else None
@@ -3526,6 +3550,7 @@ def _databricks_run_status_record(
             purpose=purpose,
             run_name=run_name,
             task_key=task_key,
+            node_type_id=node_type_id,
         ),
     }
 
@@ -3535,6 +3560,7 @@ def _databricks_run_submit_payload_record(
     purpose: str = "document-kv-v1-benchmark",
     run_name: str = "document-kv-v1",
     task_key: str = "run-benchmark",
+    node_type_id: str = "g6.8xlarge",
 ):
     return {
         "record_type": DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
@@ -3546,8 +3572,8 @@ def _databricks_run_submit_payload_record(
         "tasks": [
             {
                 "task_key": task_key,
-                "node_type_id": "g6.8xlarge",
-                "driver_node_type_id": "g6.8xlarge",
+                "node_type_id": node_type_id,
+                "driver_node_type_id": node_type_id,
                 "spark_version": "15.4.x-gpu-ml-scala2.12",
                 "data_security_mode": "SINGLE_USER",
                 "num_workers": 0,
@@ -3555,8 +3581,8 @@ def _databricks_run_submit_payload_record(
                 "purpose": purpose,
             }
         ],
-        "node_type_ids": ["g6.8xlarge"],
-        "driver_node_type_ids": ["g6.8xlarge"],
+        "node_type_ids": [node_type_id],
+        "driver_node_type_ids": [node_type_id],
         "spark_versions": ["15.4.x-gpu-ml-scala2.12"],
         "data_security_modes": ["SINGLE_USER"],
         "single_node": True,

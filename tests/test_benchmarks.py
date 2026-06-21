@@ -201,6 +201,8 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         BenchmarkSuite(suite_id="v1", examples=(example,), model_id="")
     with pytest.raises(ValueError, match="hardware_target must be non-empty"):
         BenchmarkSuite(suite_id="v1", examples=(example,), hardware_target="")
+    with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
+        BenchmarkSuite(suite_id="v1", examples=(example,), hardware_target="aws-g6e")
     with pytest.raises(ValueError, match="examples must include"):
         BenchmarkSuite(suite_id="v1", examples=())
     with pytest.raises(TypeError, match=r"examples\[0\]"):

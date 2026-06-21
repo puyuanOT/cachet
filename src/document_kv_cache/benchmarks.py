@@ -129,6 +129,7 @@ class BenchmarkSuite:
         _validate_non_empty_str(self.suite_id, "suite_id")
         _validate_non_empty_str(self.model_id, "model_id")
         _validate_non_empty_str(self.hardware_target, "hardware_target")
+        validate_v1_hardware_target(self.hardware_target)
         examples = _tuple_from_sequence(self.examples, "examples")
         if not examples:
             raise ValueError("examples must include at least one BenchmarkExample")

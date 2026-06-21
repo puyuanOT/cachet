@@ -667,7 +667,12 @@ def _validate_release_bundle_inputs(
             if artifact.record is None:
                 issues.append("Databricks run status sidecar must be JSON")
                 continue
-            issues.extend(databricks_run_status_sidecar_issues(artifact.record))
+            issues.extend(
+                databricks_run_status_sidecar_issues(
+                    artifact.record,
+                    expected_hardware_target=strict_v1_hardware_target,
+                )
+            )
         elif artifact.role == "package_wheel":
             issues.extend(
                 _package_wheel_issues(

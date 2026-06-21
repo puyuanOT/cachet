@@ -221,6 +221,27 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
     assert summary["submit_payload"]["aws_g5_node_type"] is True
     assert summary["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
     assert databricks_run_status_sidecar_issues(summary) == ()
+    assert databricks_run_status_sidecar_issues(summary, expected_hardware_target="aws-g6-l4") == ()
+
+
+def test_databricks_run_status_sidecar_validation_rejects_expected_hardware_target_mismatch():
+    status_record = _valid_databricks_run_status_record()
+
+    issues = databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+    )
+
+    assert (
+        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must match "
+        "hardware_target 'aws-g6-l4'"
+        in issues
+    )
+    assert (
+        "Databricks run status sidecar submit_payload.tasks[0].driver_node_type_id must match "
+        "hardware_target 'aws-g6-l4'"
+        in issues
+    )
 
 
 def test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records():
@@ -294,6 +315,22 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
         in issues
     )
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
+
+
+def test_databricks_run_status_sidecar_validation_rejects_contradictory_gpu_flags():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["aws_single_node_gpu_type"] = True
+    submit_payload["aws_g5_node_type"] = False
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert "Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true" in issues
+    assert (
+        "Databricks run status sidecar submit_payload.aws_single_node_gpu_type and aws_g5_node_type must match"
+        in issues
+    )
 
 
 def test_databricks_run_status_sidecar_validation_matches_submit_payload_run_name():
