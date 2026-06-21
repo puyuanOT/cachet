@@ -812,6 +812,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
     compact_matrix = " ".join(matrix_text.split())
+    remaining_release_gates = _markdown_section(matrix_text, "Remaining V1 Release Gates")
+    compact_remaining_release_gates = " ".join(remaining_release_gates.split())
 
     assert "docs/v1-requirements-matrix.md" in readme_text
     assert "`v1-requirements-matrix.md`" in docs_readme
@@ -846,6 +848,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 
     assert "Release-gated | `databricks_job.py`" in compact_matrix
     assert "Run connector action descriptor validation" in matrix_text
+    for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
+        assert label in compact_remaining_release_gates
 
 
 def test_readme_release_bundle_documents_artifact_validation_contracts():
