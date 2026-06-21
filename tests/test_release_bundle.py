@@ -822,6 +822,52 @@ def test_build_release_bundle_strict_v1_rejects_duplicate_databricks_purpose_evi
     assert "databricks-run-status-v1-stale.json#document_kv_v1_benchmark" in error
 
 
+def test_build_release_bundle_strict_v1_rejects_combined_databricks_purpose_sidecar(tmp_path):
+    source_dir = tmp_path / "sources"
+    source_records = [
+        _strict_v1_databricks_run_status_record(
+            purpose=purpose,
+            run_name=run_name,
+            task_key=task_key,
+            wrapped=False,
+        )
+        for purpose, run_name, task_key, _ in STRICT_V1_DATABRICKS_RUN_STATUS_CASES
+    ]
+    combined_record = json.loads(json.dumps(source_records[0]))
+    combined_record["run_name"] = "cachet-combined-target-run"
+    combined_record["tasks"] = [task for record in source_records for task in record["tasks"]]
+    combined_record["task_count"] = len(combined_record["tasks"])
+    combined_record["submit_payload"]["run_name"] = "cachet-combined-target-run"
+    combined_record["submit_payload"]["tasks"] = [
+        task for record in source_records for task in record["submit_payload"]["tasks"]
+    ]
+    combined_record["submit_payload"]["task_count"] = len(combined_record["submit_payload"]["tasks"])
+    combined_record["submit_payload"]["task_keys"] = [
+        task["task_key"] for task in combined_record["submit_payload"]["tasks"]
+    ]
+    combined_status = _write_json(
+        source_dir / "databricks-run-status-combined.json",
+        {"ok": True, "action": "get", "summary": combined_record},
+    )
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=(combined_status,),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **release_kwargs,
+            output_dir=tmp_path / "strict-combined-databricks-purpose",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "Databricks run-status sidecars must include exactly one artifact per required purpose" in error
+    assert "expected 3, found 1" in error
+    assert "databricks-run-status-combined.json must contain exactly one strict V1 purpose" in error
+    assert "3 occurrences" in error
+
+
 def test_build_release_bundle_strict_v1_accepts_direct_databricks_status_records(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
