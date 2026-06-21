@@ -27,7 +27,7 @@ from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_PACKAGE_NAME,
     RELEASE_BUNDLE_RECORD_TYPE,
-    STRICT_V1_RELEASE_HELP,
+    STRICT_V1_RELEASE_HELP as _STRICT_V1_RELEASE_HELP,
     ReleaseBundle,
     ReleaseBundleArtifact,
     build_release_bundle,
@@ -66,7 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-complete-v1",
         action="store_true",
-        help=STRICT_V1_RELEASE_HELP,
+        help=_STRICT_V1_RELEASE_HELP,
     )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")

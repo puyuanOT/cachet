@@ -2320,7 +2320,7 @@ def test_release_bundle_strict_release_help_stays_shared_between_public_and_lega
 
     assert public_action.help == public_release_bundle.STRICT_V1_RELEASE_HELP
     assert legacy_action.help == public_release_bundle.STRICT_V1_RELEASE_HELP
-    assert legacy_release_bundle.STRICT_V1_RELEASE_HELP == public_release_bundle.STRICT_V1_RELEASE_HELP
+    assert not hasattr(legacy_release_bundle, "STRICT_V1_RELEASE_HELP")
 
 
 def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsys, tmp_path):
