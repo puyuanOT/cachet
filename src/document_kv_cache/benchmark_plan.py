@@ -212,6 +212,7 @@ class EngineProbePlanConfig:
     engine_version: str | None = None
     allow_non_native_probe: bool = False
     metadata: tuple[str, ...] = ()
+    native_probe_delegate_factory: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", ServingBackend(self.backend))
@@ -223,6 +224,8 @@ class EngineProbePlanConfig:
             raise ValueError("engine probe output_json must be non-empty")
         if self.actions_output_json is not None and not self.actions_output_json:
             raise ValueError("engine probe actions_output_json must be non-empty when provided")
+        if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
+            raise ValueError("engine probe native_probe_delegate_factory must be non-empty when provided")
         if self.payload_uri is not None and not self.payload_uri:
             raise ValueError("engine probe payload_uri must be non-empty when provided")
         if self.engine_version is not None and not self.engine_version:
@@ -513,22 +516,26 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         "repository_hygiene_output_json": plan.config.repository_hygiene_output_json,
         "native_probe_factories_output_json": plan.config.native_probe_factories_output_json,
         "release_preflight_output_json": plan.config.release_preflight_output_json,
-        "planned_engine_probes": [
-            {
-                "backend": probe.backend.value,
-                "handoff_json": probe.handoff_json,
-                "probe_factory": probe.probe_factory,
-                "output_json": probe.output_json,
-                "actions_output_json": probe.actions_output_json,
-                "payload_uri": probe.payload_uri,
-                "engine_version": probe.engine_version,
-                "allow_non_native_probe": probe.allow_non_native_probe,
-                "metadata": list(probe.metadata),
-            }
-            for probe in plan.config.engine_probes
-        ],
+        "planned_engine_probes": [_planned_engine_probe_to_record(probe) for probe in plan.config.engine_probes],
         "notes": list(plan.notes),
     }
+
+
+def _planned_engine_probe_to_record(probe: EngineProbePlanConfig) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "backend": probe.backend.value,
+        "handoff_json": probe.handoff_json,
+        "probe_factory": probe.probe_factory,
+        "output_json": probe.output_json,
+        "actions_output_json": probe.actions_output_json,
+        "payload_uri": probe.payload_uri,
+        "engine_version": probe.engine_version,
+        "allow_non_native_probe": probe.allow_non_native_probe,
+        "metadata": list(probe.metadata),
+    }
+    if probe.native_probe_delegate_factory is not None:
+        record["native_probe_delegate_factory"] = probe.native_probe_delegate_factory
+    return record
 
 
 def engine_probe_targets_to_record(
@@ -1214,6 +1221,8 @@ def _engine_probe_target_to_record(probe: EngineProbePlanConfig) -> dict[str, An
         record["payload_uri"] = probe.payload_uri
     if probe.actions_output_json is not None:
         record["actions_output_json"] = probe.actions_output_json
+    if probe.native_probe_delegate_factory is not None:
+        record["native_probe_delegate_factory"] = probe.native_probe_delegate_factory
     if probe.engine_version is not None:
         record["engine_version"] = probe.engine_version
     return record
@@ -1303,6 +1312,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         metavar="BACKEND=PATH",
         help="Connector actions JSON sidecar path for a planned engine probe backend.",
+    )
+    parser.add_argument(
+        "--engine-probe-native-delegate-factory",
+        action="append",
+        metavar="BACKEND=MODULE:CALLABLE",
+        help=(
+            "Backend-native delegate factory for a planned built-in native probe. "
+            "This is emitted into Databricks engine-probe target JSON."
+        ),
     )
     parser.add_argument(
         "--engine-probe-payload-uri",
@@ -1556,6 +1574,10 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
         args.engine_probe_actions_output_json or (),
         "--engine-probe-actions-output-json",
     )
+    native_probe_delegate_factories = _named_value_map(
+        args.engine_probe_native_delegate_factory or (),
+        "--engine-probe-native-delegate-factory",
+    )
     payload_uris = _named_value_map(args.engine_probe_payload_uri or (), "--engine-probe-payload-uri")
     engine_versions = _named_value_map(args.engine_probe_engine_version or (), "--engine-probe-engine-version")
     metadata = _named_value_lists(args.engine_probe_metadata or (), "--engine-probe-metadata")
@@ -1566,6 +1588,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             factories
             or output_jsons
             or actions_output_jsons
+            or native_probe_delegate_factories
             or payload_uris
             or engine_versions
             or metadata
@@ -1581,6 +1604,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
     _require_matching_backend_keys(backends, factories, "--engine-probe-factory")
     _require_matching_backend_keys(backends, output_jsons, "--engine-probe-output-json")
     _require_subset_backend_keys(backends, actions_output_jsons, "--engine-probe-actions-output-json")
+    _require_subset_backend_keys(backends, native_probe_delegate_factories, "--engine-probe-native-delegate-factory")
     _require_subset_backend_keys(backends, payload_uris, "--engine-probe-payload-uri")
     _require_subset_backend_keys(backends, engine_versions, "--engine-probe-engine-version")
     _require_subset_backend_keys(backends, metadata, "--engine-probe-metadata")
@@ -1595,6 +1619,7 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             probe_factory=factories[backend],
             output_json=output_jsons[backend],
             actions_output_json=actions_output_jsons.get(backend),
+            native_probe_delegate_factory=native_probe_delegate_factories.get(backend),
             payload_uri=payload_uris.get(backend),
             engine_version=engine_versions.get(backend),
             allow_non_native_probe=backend in non_native_backends,

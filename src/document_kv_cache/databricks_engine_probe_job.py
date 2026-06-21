@@ -17,6 +17,10 @@ from document_kv_cache.databricks_job import (
     build_single_node_g5_cluster,
 )
 from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.native_probe_factories import (
+    SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+    VLLM_NATIVE_PROBE_DELEGATE_ENV,
+)
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
 
 
@@ -47,6 +51,7 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "engine_version",
         "allow_non_native_probe",
         "metadata",
+        "native_probe_delegate_factory",
         "actions_output_json",
         "connector_actions_output_json",
     }
@@ -109,6 +114,7 @@ class DatabricksEngineProbeTargetConfig:
     allow_non_native_probe: bool = False
     metadata: tuple[str, ...] = ()
     actions_output_json: str | None = None
+    native_probe_delegate_factory: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
@@ -126,6 +132,8 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
             raise ValueError("actions_output_json must be non-empty when provided")
+        if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
+            raise ValueError("native_probe_delegate_factory must be non-empty when provided")
         if type(self.allow_non_native_probe) is not bool:
             raise ValueError("allow_non_native_probe must be a boolean")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
@@ -191,6 +199,7 @@ class DatabricksEngineProbeJobConfig:
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
     actions_output_json: str | None = None
+    native_probe_delegate_factory: str | None = None
 
     def __post_init__(self) -> None:
         if not self.handoff_json:
@@ -213,6 +222,8 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
             raise ValueError("actions_output_json must be non-empty when provided")
+        if self.native_probe_delegate_factory is not None and not self.native_probe_delegate_factory:
+            raise ValueError("native_probe_delegate_factory must be non-empty when provided")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
         _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB(self)
@@ -223,7 +234,7 @@ class DatabricksEngineProbeJobConfig:
 def build_databricks_engine_probe_run_submit_payload(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": config.task_key,
-        "new_cluster": build_single_node_g5_cluster(_cluster_config_from_engine_probe_job(config)),
+        "new_cluster": _engine_probe_cluster(config),
         "spark_python_task": {
             "python_file": config.runner_python_file,
             "parameters": _runner_parameters(config),
@@ -329,8 +340,19 @@ def _engine_probe_task_from_target(
         zone_id=config.zone_id,
         custom_tags=config.custom_tags,
         actions_output_json=target.actions_output_json,
+        native_probe_delegate_factory=target.native_probe_delegate_factory,
     )
     return build_databricks_engine_probe_run_submit_payload(single_config)["tasks"][0]
+
+
+def _engine_probe_cluster(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
+    cluster = build_single_node_g5_cluster(_cluster_config_from_engine_probe_job(config))
+    if config.native_probe_delegate_factory is None:
+        return cluster
+    spark_env_vars = dict(cluster.get("spark_env_vars", {}))
+    spark_env_vars[_native_probe_delegate_env_name(config.expected_backend)] = config.native_probe_delegate_factory
+    cluster["spark_env_vars"] = spark_env_vars
+    return cluster
 
 
 def _runner_parameters(config: DatabricksEngineProbeJobConfig) -> list[str]:
@@ -436,6 +458,14 @@ def _is_metadata_item(item: str) -> bool:
     return bool(separator and key)
 
 
+def _native_probe_delegate_env_name(backend: ServingBackend) -> str:
+    if backend == ServingBackend.VLLM:
+        return VLLM_NATIVE_PROBE_DELEGATE_ENV
+    if backend == ServingBackend.SGLANG:
+        return SGLANG_NATIVE_PROBE_DELEGATE_ENV
+    raise ValueError(f"Unsupported serving backend {backend!r}")
+
+
 def _serving_backend(value: ServingBackend | str) -> ServingBackend:
     try:
         return value if isinstance(value, ServingBackend) else ServingBackend(value)
@@ -517,6 +547,7 @@ def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEnginePro
         allow_non_native_probe=allow_non_native_probe,
         metadata=tuple(metadata),
         actions_output_json=record.get("actions_output_json", record.get("connector_actions_output_json")),
+        native_probe_delegate_factory=record.get("native_probe_delegate_factory"),
     )
 
 
@@ -543,6 +574,7 @@ def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
         "expected-backend": args.expected_backend,
         "payload-uri": args.payload_uri,
         "engine-version": args.engine_version,
+        "native-probe-delegate-factory": args.native_probe_delegate_factory,
         "task-key": args.task_key,
     }
     provided = [f"--{name}" for name, value in incompatible_values.items() if value]
@@ -582,6 +614,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
     parser.add_argument("--engine-version", help="Fallback engine version for legacy or non-native debug probes.")
+    parser.add_argument(
+        "--native-probe-delegate-factory",
+        help=(
+            "Backend-native delegate factory to expose through the built-in native probe "
+            "factory environment variable on the Databricks cluster."
+        ),
+    )
     parser.add_argument(
         "--metadata",
         action="append",
@@ -638,6 +677,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 metadata=tuple(args.metadata or ()),
                 release_safe=args.release_safe,
                 actions_output_json=args.actions_output_json,
+                native_probe_delegate_factory=args.native_probe_delegate_factory,
             )
             payload = build_databricks_engine_probe_run_submit_payload(config)
         if args.runner_script_output:

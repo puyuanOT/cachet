@@ -36,7 +36,9 @@ new document modules depend on restaurant-owned implementations.
   summaries, and baseline comparisons.
 - `cache.py` exposes CPU and local-disk cache tiers.
 - `databricks_engine_probe_job.py` emits a Databricks run payload for native
-  vLLM/SGLang engine-probe evidence.
+  vLLM/SGLang engine-probe evidence, including backend-specific delegate
+  factory environment variables when generated target JSON asks built-in
+  reserved probe factories to call downstream native adapters.
 - `databricks_job.py` emits the full V1 benchmark Databricks run payload.
 - `databricks_runs.py` submits, checks, and summarizes generated Databricks run
   payloads using environment-provided credentials.
