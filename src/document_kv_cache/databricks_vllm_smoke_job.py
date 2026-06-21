@@ -10,11 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from document_kv_cache.databricks_job import (
-    DEFAULT_AWS_G5_NODE_TYPE,
+    DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_SPARK_VERSION,
-    DatabricksSingleNodeG5ClusterConfig,
-    build_single_node_g5_cluster,
+    DatabricksSingleNodeGPUClusterConfig,
+    build_single_node_gpu_cluster,
 )
 from document_kv_cache.vllm_smoke import (
     DEFAULT_LOCAL_ROOT,
@@ -79,7 +79,7 @@ class DatabricksVLLMSmokeJobConfig:
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
-    node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
+    node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
@@ -131,7 +131,7 @@ class DatabricksVLLMSmokeJobConfig:
 def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJobConfig) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": config.task_key,
-        "new_cluster": build_single_node_g5_cluster(_cluster_config_from_vllm_smoke_job(config)),
+        "new_cluster": build_single_node_gpu_cluster(_cluster_config_from_vllm_smoke_job(config)),
         "spark_python_task": {
             "python_file": config.runner_python_file,
             "parameters": _runner_parameters(config),
@@ -159,8 +159,8 @@ def write_databricks_vllm_smoke_runner_script(path: str | Path) -> None:
     Path(path).write_text(VLLM_SMOKE_RUNNER_SCRIPT, encoding="utf-8")
 
 
-def _cluster_config_from_vllm_smoke_job(config: DatabricksVLLMSmokeJobConfig) -> DatabricksSingleNodeG5ClusterConfig:
-    return DatabricksSingleNodeG5ClusterConfig(
+def _cluster_config_from_vllm_smoke_job(config: DatabricksVLLMSmokeJobConfig) -> DatabricksSingleNodeGPUClusterConfig:
+    return DatabricksSingleNodeGPUClusterConfig(
         purpose=DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
         node_type_id=config.node_type_id,
         spark_version=config.spark_version,
@@ -207,7 +207,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY)
-    parser.add_argument("--node-type-id", default=DEFAULT_AWS_G5_NODE_TYPE)
+    parser.add_argument("--node-type-id", default=DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE)
     parser.add_argument("--spark-version", default=DEFAULT_DATABRICKS_SPARK_VERSION)
     parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
