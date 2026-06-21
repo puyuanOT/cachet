@@ -54,6 +54,7 @@ def test_public_document_package_reexports_core_api():
         DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
         DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
         DEFAULT_DATABRICKS_HOST_ENV,
+        DEFAULT_DATABRICKS_PURPOSE,
         DEFAULT_STATIC_CHUNK_ID,
         DEFAULT_DATABRICKS_TOKEN_ENV,
         DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
@@ -270,6 +271,7 @@ def test_public_document_package_reexports_core_api():
     assert DEDICATED_DATABRICKS_DATA_SECURITY_MODE is restaurant_kv_serving.DEDICATED_DATABRICKS_DATA_SECURITY_MODE
     assert DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME is restaurant_kv_serving.DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
     assert DEFAULT_DATABRICKS_HOST_ENV is restaurant_kv_serving.DEFAULT_DATABRICKS_HOST_ENV
+    assert DEFAULT_DATABRICKS_PURPOSE is restaurant_kv_serving.DEFAULT_DATABRICKS_PURPOSE
     assert DEFAULT_DATABRICKS_TOKEN_ENV is restaurant_kv_serving.DEFAULT_DATABRICKS_TOKEN_ENV
     assert (
         DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME
@@ -660,6 +662,7 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "RELEASE_STORAGE_BENCHMARK_READERS" in document_kv_cache.__all__
     assert "REQUIRED_ENGINE_PROBE_BACKENDS" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME" in document_kv_cache.__all__
+    assert "DEFAULT_DATABRICKS_PURPOSE" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME" in document_kv_cache.__all__
     assert "ENGINE_PROBE_TARGETS_RECORD_TYPE" in document_kv_cache.__all__

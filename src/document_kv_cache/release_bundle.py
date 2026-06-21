@@ -37,7 +37,11 @@ from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
 )
-from document_kv_cache.databricks_job import DEFAULT_DATABRICKS_RUN_NAME, DEFAULT_DATABRICKS_TASK_KEY
+from document_kv_cache.databricks_job import (
+    DEFAULT_DATABRICKS_PURPOSE,
+    DEFAULT_DATABRICKS_RUN_NAME,
+    DEFAULT_DATABRICKS_TASK_KEY,
+)
 from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     databricks_run_status_record,
@@ -122,12 +126,12 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("native_probe_factories", 1, "native probe factory diagnostics sidecar"),
 )
 STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES = (
-    (DEFAULT_DATABRICKS_RUN_NAME, "V1 benchmark Databricks run-status evidence"),
+    (DEFAULT_DATABRICKS_PURPOSE, "V1 benchmark Databricks run-status evidence"),
     (DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE, "storage-reader benchmark Databricks run-status evidence"),
     (DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE, "native engine probe Databricks run-status evidence"),
 )
 STRICT_V1_RELEASE_DATABRICKS_PURPOSE_IDENTITIES = {
-    DEFAULT_DATABRICKS_RUN_NAME: (DEFAULT_DATABRICKS_RUN_NAME, DEFAULT_DATABRICKS_TASK_KEY),
+    DEFAULT_DATABRICKS_PURPOSE: (DEFAULT_DATABRICKS_RUN_NAME, DEFAULT_DATABRICKS_TASK_KEY),
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE: (
         DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
         DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,

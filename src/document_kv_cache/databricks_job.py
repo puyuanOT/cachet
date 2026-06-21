@@ -19,6 +19,7 @@ DEFAULT_AWS_G5_NODE_TYPE = "g5.4xlarge"
 DEFAULT_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
 DEFAULT_DATABRICKS_RUN_NAME = "document-kv-v1-benchmark"
 DEFAULT_DATABRICKS_TASK_KEY = "document_kv_v1_benchmark"
+DEFAULT_DATABRICKS_PURPOSE = "document-kv-v1-benchmark"
 DEFAULT_DATABRICKS_DATA_SECURITY_MODE = "SINGLE_USER"
 DEDICATED_DATABRICKS_DATA_SECURITY_MODE = "DATA_SECURITY_MODE_DEDICATED"
 SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
@@ -38,6 +39,7 @@ __all__ = [
     "DEFAULT_DATABRICKS_SPARK_VERSION",
     "DEFAULT_DATABRICKS_RUN_NAME",
     "DEFAULT_DATABRICKS_TASK_KEY",
+    "DEFAULT_DATABRICKS_PURPOSE",
     "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
     "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
     "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES",
@@ -191,7 +193,7 @@ def _single_node_g5_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, A
 
 def _cluster_config_from_benchmark_job(config: DatabricksBenchmarkJobConfig) -> DatabricksSingleNodeG5ClusterConfig:
     return DatabricksSingleNodeG5ClusterConfig(
-        purpose="document-kv-v1-benchmark",
+        purpose=DEFAULT_DATABRICKS_PURPOSE,
         node_type_id=config.node_type_id,
         spark_version=config.spark_version,
         data_security_mode=config.data_security_mode,
