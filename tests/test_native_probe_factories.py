@@ -632,7 +632,15 @@ def test_native_probe_runtime_contract_records_required_backend_lifecycles():
     assert vllm_contract["handoff_contract"] == native_probe_adapter_contract_to_record()
     assert "get_num_new_matched_tokens" in vllm_contract["required_methods"]
     assert "request_finished" in vllm_contract["required_methods"]
+    assert len(vllm_contract["optional_methods"]) == len(set(vllm_contract["optional_methods"]))
+    assert "build_connector_worker_meta" in vllm_contract["optional_methods"]
+    assert "build_kv_connector_stats" in vllm_contract["optional_methods"]
+    assert "build_prom_metrics" in vllm_contract["optional_methods"]
+    assert "get_required_kvcache_layout" in vllm_contract["optional_methods"]
+    assert "handle_preemptions" in vllm_contract["optional_methods"]
+    assert "register_cross_layers_kv_cache" in vllm_contract["optional_methods"]
     assert "shutdown" in vllm_contract["optional_methods"]
+    assert "update_connector_output" in vllm_contract["optional_methods"]
 
     sglang_contract = native_probe_runtime_contract_to_record(ServingBackend.SGLANG)
     assert sglang_contract == {

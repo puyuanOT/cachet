@@ -549,7 +549,10 @@ the expected `adapter_contract` block and the delegate's declared
 `delegate_adapter_contract`/`delegate_adapter_contract_valid` status. The
 contract names the required engine handoff record,
 connector-action record, probe record, `qwen3-v1` layout, merged payload mode,
-and `native_probe=true` release requirement. Use that diagnostic record when
+and `native_probe=true` release requirement. Its vLLM runtime contract keeps
+required hooks narrow while listing the wider current V1 base connector surface
+as optional diagnostics, so backend forks can detect lifecycle drift without
+turning optional hooks into hard release blockers. Use that diagnostic record when
 preparing native adapter work so the target engine versions and dependency
 constraints stay tied to the probe entry points, the native delegate entry
 points stay visible, and the descriptor contract remains explicit:
