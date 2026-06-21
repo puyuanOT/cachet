@@ -639,6 +639,7 @@ def test_native_probe_runtime_contract_records_required_backend_lifecycles():
     assert "build_prom_metrics" in vllm_contract["optional_methods"]
     assert "get_required_kvcache_layout" in vllm_contract["optional_methods"]
     assert "handle_preemptions" in vllm_contract["optional_methods"]
+    assert "has_pending_push_work" in vllm_contract["optional_methods"]
     assert "register_cross_layers_kv_cache" in vllm_contract["optional_methods"]
     assert "shutdown" in vllm_contract["optional_methods"]
     assert "update_connector_output" in vllm_contract["optional_methods"]

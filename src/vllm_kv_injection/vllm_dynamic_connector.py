@@ -176,6 +176,10 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
         self.kv_cache_config = kv_cache_config
         self.provider = provider or _provider_from_vllm_config(vllm_config)
 
+    @property
+    def prefer_cross_layer_blocks(self) -> bool:
+        return bool(getattr(self.provider, "prefer_cross_layer_blocks", False))
+
     def get_num_new_matched_tokens(
         self,
         request: object,
@@ -191,6 +195,21 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
 
     def register_kv_caches(self, kv_caches: Mapping[str, object]) -> None:
         self.provider.register_kv_caches(kv_caches)
+
+    def register_cross_layers_kv_cache(self, kv_cache: object, attn_backend: object) -> None:
+        registrar = getattr(self.provider, "register_cross_layers_kv_cache", None)
+        if callable(registrar):
+            registrar(kv_cache, attn_backend)
+
+    def set_host_xfer_buffer_ops(self, copy_operation: object) -> None:
+        setter = getattr(self.provider, "set_host_xfer_buffer_ops", None)
+        if callable(setter):
+            setter(copy_operation)
+
+    def handle_preemptions(self, kv_connector_metadata: object) -> None:
+        handler = getattr(self.provider, "handle_preemptions", None)
+        if callable(handler):
+            handler(kv_connector_metadata)
 
     def bind_connector_metadata(self, connector_metadata: object) -> None:
         super().bind_connector_metadata(connector_metadata)
@@ -216,6 +235,12 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
     def wait_for_save(self) -> None:
         self.provider.wait_for_save()
 
+    def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str] | None, set[str] | None]:
+        getter = getattr(self.provider, "get_finished", None)
+        if callable(getter):
+            return getter(finished_req_ids)
+        return None, None
+
     def request_finished(self, request: object, block_ids: list[int]) -> tuple[bool, Mapping[str, Any] | None]:
         return self.provider.request_finished(request, block_ids)
 
@@ -238,11 +263,112 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
             return getter()
         return None
 
+    def get_kv_connector_kv_cache_events(self) -> object | None:
+        getter = getattr(self.provider, "get_kv_connector_kv_cache_events", None)
+        if callable(getter):
+            return getter()
+        return None
+
+    def get_handshake_metadata(self) -> object | None:
+        getter = getattr(self.provider, "get_handshake_metadata", None)
+        if callable(getter):
+            return getter()
+        return None
+
+    def build_connector_worker_meta(self) -> object | None:
+        builder = getattr(self.provider, "build_connector_worker_meta", None)
+        if callable(builder):
+            return builder()
+        return None
+
+    def bind_gpu_block_pool(self, gpu_block_pool: object) -> None:
+        binder = getattr(self.provider, "bind_gpu_block_pool", None)
+        if callable(binder):
+            binder(gpu_block_pool)
+
+    def on_new_request(self, request: object) -> None:
+        handler = getattr(self.provider, "on_new_request", None)
+        if callable(handler):
+            handler(request)
+
+    def update_connector_output(self, connector_output: object) -> None:
+        updater = getattr(self.provider, "update_connector_output", None)
+        if callable(updater):
+            updater(connector_output)
+
+    def has_pending_push_work(self) -> bool:
+        getter = getattr(self.provider, "has_pending_push_work", None)
+        if callable(getter):
+            return bool(getter())
+        return False
+
     def take_events(self) -> list[object]:
         getter = getattr(self.provider, "take_events", None)
         if callable(getter):
             return list(getter())
         return []
+
+    @classmethod
+    def get_required_kvcache_layout(cls, vllm_config: object) -> str | None:
+        del vllm_config
+        return None
+
+    @classmethod
+    def requires_piecewise_for_cudagraph(cls, extra_config: Mapping[str, Any]) -> bool:
+        del extra_config
+        return False
+
+    def get_finished_count(self) -> int | None:
+        getter = getattr(self.provider, "get_finished_count", None)
+        if callable(getter):
+            return getter()
+        return None
+
+    @classmethod
+    def build_kv_connector_stats(cls, data: dict[str, Any] | None = None) -> object | None:
+        del data
+        return None
+
+    def set_xfer_handshake_metadata(self, metadata: Mapping[int, object]) -> None:
+        setter = getattr(self.provider, "set_xfer_handshake_metadata", None)
+        if callable(setter):
+            setter(metadata)
+
+    def set_xfer_handshake_metadata_pp_aware(self, metadata: Mapping[tuple[int, int], object]) -> None:
+        setter = getattr(self.provider, "set_xfer_handshake_metadata_pp_aware", None)
+        if callable(setter):
+            setter(metadata)
+            return
+        if any(pp_rank != 0 for pp_rank, _tp_rank in metadata):
+            raise ValueError(
+                f"{type(self).__name__} received pp_rank > 0 handshake metadata "
+                "but does not support PP-disaggregated KV transfer."
+            )
+        self.set_xfer_handshake_metadata(
+            {tp_rank: meta for (_pp_rank, tp_rank), meta in metadata.items()}
+        )
+
+    @classmethod
+    def build_prom_metrics(
+        cls,
+        vllm_config: object,
+        metric_types: Mapping[type[object], type[object]],
+        labelnames: list[str],
+        per_engine_labelvalues: Mapping[int, list[object]],
+    ) -> object | None:
+        del vllm_config, metric_types, labelnames, per_engine_labelvalues
+        return None
+
+    def reset_cache(self) -> bool | None:
+        resetter = getattr(self.provider, "reset_cache", None)
+        if callable(resetter):
+            return resetter()
+        return None
+
+    def shutdown(self) -> None:
+        shutdown = getattr(self.provider, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
 
 
 def load_document_kv_provider_factory(factory_path: str) -> object:
