@@ -591,6 +591,8 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     comparisons = _sequence_or_issue(record, "comparisons", issues)
     if suite is not None:
         _validate_v1_suite_metadata(suite, issues)
+    if suite is not None and measurements is not None:
+        _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
     if evidence is not None and evidence.get("ok") is not True:
         evidence_issues = evidence.get("issues")
         if isinstance(evidence_issues, list) and evidence_issues:
@@ -645,6 +647,34 @@ def _validate_v1_suite_metadata(suite: Mapping[str, Any], issues: list[str]) -> 
         issues.append(f"v1 benchmark hardware_target must be {DEFAULT_HARDWARE_TARGET!r}")
     if suite.get("model_id") != DEFAULT_V1_MODEL_ID:
         issues.append(f"v1 benchmark model_id must be {DEFAULT_V1_MODEL_ID!r}")
+
+
+def _validate_v1_suite_examples_match_measurements(
+    suite: Mapping[str, Any],
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> None:
+    suite_examples = suite.get("examples")
+    if not _is_positive_int(suite_examples):
+        return
+    measurement_examples: set[tuple[str, str]] = set()
+    for measurement in measurements:
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        if (
+            isinstance(dataset, str)
+            and dataset in SUPPORTED_V1_DATASETS
+            and isinstance(example_id, str)
+            and example_id
+        ):
+            measurement_examples.add((dataset, example_id))
+    if measurement_examples and len(measurement_examples) != suite_examples:
+        issues.append(
+            "v1 benchmark suite examples must match unique measurement examples "
+            f"({suite_examples!r} != {len(measurement_examples)})"
+        )
 
 
 def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
