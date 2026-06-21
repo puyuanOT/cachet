@@ -707,6 +707,7 @@ def _validate_v1_report_counts_match_measurements(
         if key not in measurement_counts:
             continue
         measurement_requests, measurement_errors = measurement_counts[key]
+        measurement_successes = measurement_requests - measurement_errors
         row_requests = row.get("requests")
         row_errors = row.get("errors")
         if type(row_requests) is int and row_requests != measurement_requests:
@@ -719,6 +720,16 @@ def _validate_v1_report_counts_match_measurements(
                 f"v1 benchmark report row {dataset}:{arm_id} errors must match measurements "
                 f"({row_errors!r} != {measurement_errors})"
             )
+        for metric_name in ("ttft", "time_to_completion"):
+            metric = row.get(metric_name)
+            if not isinstance(metric, Mapping):
+                continue
+            metric_count = metric.get("count")
+            if type(metric_count) is int and metric_count != measurement_successes:
+                issues.append(
+                    f"v1 benchmark report row {dataset}:{arm_id} {metric_name} count must match "
+                    f"successful measurements ({metric_count!r} != {measurement_successes})"
+                )
 
 
 def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
@@ -970,6 +981,7 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
                     metric,
                     f"v1 benchmark report row {dataset_value}:{arm_id_value} {metric_name}",
                     issues,
+                    require_count_and_mean=True,
                 )
         for metric_name in ("answer_found_rate", "exact_match_rate"):
             _validate_optional_rate(
@@ -1402,9 +1414,22 @@ def _is_finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
-def _validate_latency_summary(metric: Mapping[str, Any], label: str, issues: list[str]) -> None:
+def _validate_latency_summary(
+    metric: Mapping[str, Any],
+    label: str,
+    issues: list[str],
+    *,
+    require_count_and_mean: bool = False,
+) -> None:
+    count = metric.get("count")
+    mean = metric.get("mean")
     p50 = metric.get("p50")
     p95 = metric.get("p95")
+    if require_count_and_mean:
+        if not _is_positive_int(count):
+            issues.append(f"{label} count must be positive")
+        if not _is_non_negative_number(mean):
+            issues.append(f"{label} mean must be a non-negative finite number")
     if not _is_non_negative_number(p50):
         issues.append(f"{label} p50 must be a non-negative finite number")
     if not _is_non_negative_number(p95):
