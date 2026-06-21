@@ -1,0 +1,30 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 approved the requirements-matrix strict-artifact validation diff with no findings; reviewer verified tests/test_release_bundle.py passed.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/release_bundle.py",
+    "tests/test_release_bundle.py",
+    "pr-evidence/validate-matrix-strict-artifact-labels/README.md",
+    "pr-evidence/validate-matrix-strict-artifact-labels/pr-evidence.json"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_release_bundle.py::test_build_release_bundle_rejects_malformed_requirements_matrix tests/test_release_bundle.py::test_build_release_bundle_rejects_requirements_matrix_missing_strict_artifact_label tests/test_release_bundle.py::test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set -q -> 3 passed",
+    "poetry run pytest tests/test_release_bundle.py tests/test_project_governance.py -q -> 90 passed",
+    "poetry run pytest -q -> 1209 passed",
+    "poetry check -> All set",
+    "poetry run python -m compileall -q src tests -> passed",
+    "git diff --check -> passed"
+  ],
+  "what_changed": [
+    "Made requirements-matrix validation require every strict release-bundle artifact label from STRICT_V1_RELEASE_REQUIRED_ARTIFACTS.",
+    "Normalized whitespace while checking required matrix snippets so Markdown wrapping remains valid.",
+    "Added a regression that removes a strict artifact label from an otherwise valid V1 requirements matrix and expects release-bundle validation to reject it."
+  ],
+  "why": "The V1 requirements matrix is now included in strict release bundles, so stale matrices must fail release-bundle validation when they stop documenting the enforced artifact set."
+}

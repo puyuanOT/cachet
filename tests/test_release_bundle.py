@@ -49,6 +49,7 @@ from document_kv_cache.native_probe_factories import (
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
     RELEASE_BUNDLE_RECORD_TYPE,
+    STRICT_V1_RELEASE_REQUIRED_ARTIFACTS,
     STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES,
     STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT,
     ReleaseBundle,
@@ -644,6 +645,28 @@ def test_build_release_bundle_rejects_malformed_requirements_matrix(tmp_path):
         build_release_bundle(
             **{**release_kwargs, "requirements_matrix_md": bad_matrix},
             output_dir=tmp_path / "strict-bad-requirements-matrix",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_rejects_requirements_matrix_missing_strict_artifact_label(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    missing_label = "tested package wheel"
+    assert any(label == missing_label for _role, _count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS)
+    bad_matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8").replace(
+        missing_label,
+        "tested package artifact",
+    )
+    bad_matrix = _write_text(source_dir / "stale-requirements-matrix.md", bad_matrix_text)
+
+    with pytest.raises(ValueError, match=missing_label):
+        build_release_bundle(
+            **{**release_kwargs, "requirements_matrix_md": bad_matrix},
+            output_dir=tmp_path / "strict-stale-requirements-matrix",
             require_complete_v1=True,
         )
 

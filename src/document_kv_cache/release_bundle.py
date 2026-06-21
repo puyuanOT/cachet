@@ -143,6 +143,7 @@ _REQUIRED_REQUIREMENTS_MATRIX_SNIPPETS = (
     "MiniMax",
     "complete strict release bundle",
     "real vLLM and SGLang native block managers",
+    *(label for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS),
 )
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
@@ -830,8 +831,9 @@ def _requirements_matrix_issues(source_path: str, payload: bytes) -> tuple[str, 
     if not text.strip():
         issues.append("requirements matrix artifact must be non-empty")
         return tuple(issues)
+    compact_text = " ".join(text.split())
     for snippet in _REQUIRED_REQUIREMENTS_MATRIX_SNIPPETS:
-        if snippet not in text:
+        if " ".join(snippet.split()) not in compact_text:
             issues.append(f"requirements matrix artifact must include {snippet!r}")
     return tuple(issues)
 
