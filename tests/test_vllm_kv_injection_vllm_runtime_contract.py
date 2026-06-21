@@ -222,6 +222,35 @@ def test_installed_vllm_kv_connector_v1_contract_record_rejects_shape_drift():
         validate_installed_vllm_kv_connector_v1_contract_record(record)
 
 
+def test_installed_vllm_kv_connector_v1_contract_record_rejects_inconsistent_derived_fields():
+    record = installed_vllm_kv_connector_v1_contract_to_record(
+        VLLMInstalledKVConnectorContract(
+            package_version="0.24.0",
+            importable=True,
+            installed_methods=tuple(
+                method_name
+                for method_name in (
+                    *VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+                    *VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+                )
+                if method_name != "start_load_kv"
+            ),
+            installed_properties=("prefer_cross_layer_blocks", "role"),
+        )
+    )
+    record["package_version"] = 24
+    record["missing_required_methods"] = []
+    record["ok"] = True
+
+    issues = installed_vllm_kv_connector_v1_contract_record_issues(record)
+
+    assert "installed vLLM KV connector contract package_version must be a non-empty string or null" in issues
+    assert "installed vLLM KV connector contract missing_required_methods must match installed_methods" in issues
+    assert "installed vLLM KV connector contract ok must match importable and detected drift" in issues
+    with pytest.raises(ValueError, match="package_version"):
+        validate_installed_vllm_kv_connector_v1_contract_record(record)
+
+
 def test_vllm_kv_connector_v1_contract_record_rejects_shape_drift():
     record = vllm_kv_connector_v1_contract_to_record()
     record["required_methods"] = ["reserve", "inject", "release"]

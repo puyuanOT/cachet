@@ -213,14 +213,20 @@ def installed_vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, A
         issues.append("installed vLLM KV connector contract base_module must point at KVConnectorBase_V1")
     if record.get("package_name") != "vllm":
         issues.append("installed vLLM KV connector contract package_name must be 'vllm'")
-    if type(record.get("importable")) is not bool:
+    package_version = record.get("package_version")
+    if package_version is not None and (not isinstance(package_version, str) or not package_version):
+        issues.append("installed vLLM KV connector contract package_version must be a non-empty string or null")
+    importable = record.get("importable")
+    if type(importable) is not bool:
         issues.append("installed vLLM KV connector contract importable must be boolean")
-    if type(record.get("ok")) is not bool:
+    ok = record.get("ok")
+    if type(ok) is not bool:
         issues.append("installed vLLM KV connector contract ok must be boolean")
     if record.get("import_error_type") is not None and not isinstance(record.get("import_error_type"), str):
         issues.append("installed vLLM KV connector contract import_error_type must be string or null")
     if record.get("import_error") is not None and not isinstance(record.get("import_error"), str):
         issues.append("installed vLLM KV connector contract import_error must be string or null")
+    string_lists: dict[str, list[str] | None] = {}
     for field_name in (
         "required_methods",
         "optional_methods",
@@ -232,14 +238,69 @@ def installed_vllm_kv_connector_v1_contract_record_issues(record: Mapping[str, A
         "extra_installed_methods",
         "extra_installed_properties",
     ):
-        if _string_list(record.get(field_name)) is None:
+        string_lists[field_name] = _string_list(record.get(field_name))
+        if string_lists[field_name] is None:
             issues.append(f"installed vLLM KV connector contract {field_name} must be a string array")
-    if _string_list(record.get("required_methods")) != list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS):
+    if string_lists["required_methods"] != list(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS):
         issues.append("installed vLLM KV connector contract required_methods must match the package contract")
-    if _string_list(record.get("optional_methods")) != list(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS):
+    if string_lists["optional_methods"] != list(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS):
         issues.append("installed vLLM KV connector contract optional_methods must match the package contract")
-    if _string_list(record.get("allowed_properties")) != list(_VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES):
+    if string_lists["allowed_properties"] != list(_VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES):
         issues.append("installed vLLM KV connector contract allowed_properties must match the package contract")
+    installed_methods = string_lists["installed_methods"]
+    installed_properties = string_lists["installed_properties"]
+    missing_required_methods = string_lists["missing_required_methods"]
+    missing_optional_methods = string_lists["missing_optional_methods"]
+    extra_installed_methods = string_lists["extra_installed_methods"]
+    extra_installed_properties = string_lists["extra_installed_properties"]
+    if installed_methods is not None:
+        expected_missing_required = list(_missing(VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS, installed_methods))
+        expected_missing_optional = list(_missing(VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS, installed_methods))
+        expected_method_names = (
+            *VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+            *VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+        )
+        expected_extra_methods = list(
+            _extra(installed_methods, expected_method_names)
+        )
+        if missing_required_methods is not None and missing_required_methods != expected_missing_required:
+            issues.append(
+                "installed vLLM KV connector contract missing_required_methods must match installed_methods"
+            )
+        if missing_optional_methods is not None and missing_optional_methods != expected_missing_optional:
+            issues.append(
+                "installed vLLM KV connector contract missing_optional_methods must match installed_methods"
+            )
+        if extra_installed_methods is not None and extra_installed_methods != expected_extra_methods:
+            issues.append("installed vLLM KV connector contract extra_installed_methods must match installed_methods")
+    else:
+        expected_missing_required = None
+        expected_extra_methods = None
+    if installed_properties is not None:
+        expected_extra_properties = list(
+            _extra(installed_properties, _VLLM_KV_CONNECTOR_V1_ALLOWED_PROPERTIES)
+        )
+        if extra_installed_properties is not None and extra_installed_properties != expected_extra_properties:
+            issues.append(
+                "installed vLLM KV connector contract extra_installed_properties must match installed_properties"
+            )
+    else:
+        expected_extra_properties = None
+    if (
+        type(importable) is bool
+        and type(ok) is bool
+        and expected_missing_required is not None
+        and expected_extra_methods is not None
+        and expected_extra_properties is not None
+    ):
+        expected_ok = (
+            importable
+            and not expected_missing_required
+            and not expected_extra_methods
+            and not expected_extra_properties
+        )
+        if ok != expected_ok:
+            issues.append("installed vLLM KV connector contract ok must match importable and detected drift")
     return tuple(issues)
 
 

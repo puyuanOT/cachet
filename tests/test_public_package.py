@@ -1047,47 +1047,7 @@ def test_cachet_typing_stub_tracks_document_public_api():
 
 
 def test_public_cli_submodules_are_importable_under_document_namespace():
-    public_submodules = (
-        "admission",
-        "adapter_scaffold",
-        "benchmark_plan",
-        "benchmark_plan_executor",
-        "benchmark_runner",
-        "benchmarks",
-        "cache",
-        "databricks_engine_probe_job",
-        "databricks_job",
-        "databricks_runs",
-        "databricks_storage_benchmark_job",
-        "databricks_vllm_smoke_job",
-        "dataset_prep",
-        "engine",
-        "engine_adapters",
-        "engine_probe",
-        "engine_protocol",
-        "github_governance",
-        "kvpack",
-        "live_server",
-        "manifest",
-        "materializer",
-        "model_profiles",
-        "models",
-        "native_probe_factories",
-        "openai_compatible",
-        "planner",
-        "probe_fixtures",
-        "pr_evidence",
-        "release_bundle",
-        "release_evidence",
-        "repository_hygiene",
-        "service",
-        "serving_env",
-        "storage",
-        "storage_benchmark",
-        "template_resources",
-        "vllm_smoke",
-        "workflow",
-    )
+    public_submodules = tuple(sorted(document_kv_cache._PUBLIC_SUBMODULES))
 
     modules = {
         name: importlib.import_module(f"document_kv_cache.{name}")
@@ -1120,6 +1080,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     storage_benchmark = modules["storage_benchmark"]
     template_resources = modules["template_resources"]
     vllm_smoke = modules["vllm_smoke"]
+    vllm_runtime_contract_data = modules["vllm_runtime_contract_data"]
     databricks_runs = modules["databricks_runs"]
     databricks_job = modules["databricks_job"]
     databricks_engine_probe_job = modules["databricks_engine_probe_job"]
@@ -1308,6 +1269,10 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert (
         native_probe_factories.NativeProbeFactoryInspection.__module__
         == "document_kv_cache.native_probe_factories"
+    )
+    assert (
+        vllm_runtime_contract_data.VLLM_KV_CONNECTOR_V1_RUNTIME
+        == native_probe_factories.native_probe_runtime_contract_to_record("vllm")["runtime"]
     )
     assert native_probe_factories.builtin_native_probe_factory_path is restaurant_kv_serving.builtin_native_probe_factory_path
     assert native_probe_factories.vllm_native_probe_factory is restaurant_kv_serving.vllm_native_probe_factory
