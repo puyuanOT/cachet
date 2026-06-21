@@ -1271,6 +1271,8 @@ def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]
         issues.append("benchmark plan execution sidecar plan_source must be an object")
     else:
         issues.extend(_plan_source_issues(plan_source))
+        if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes, bytearray)):
+            issues.extend(_plan_execution_command_count_issues(commands, plan_source))
     return _dedupe_strings(issues)
 
 
@@ -1292,6 +1294,16 @@ def _plan_execution_command_issues(commands: Sequence[Any]) -> tuple[str, ...]:
         if command.get("error") is not None:
             issues.append(f"benchmark plan execution sidecar commands[{index}].error must be null")
     return tuple(issues)
+
+
+def _plan_execution_command_count_issues(
+    commands: Sequence[Any],
+    plan_source: Mapping[str, Any],
+) -> tuple[str, ...]:
+    command_count = plan_source.get("command_count")
+    if type(command_count) is int and command_count > 0 and command_count != len(commands):
+        return ("benchmark plan execution sidecar plan_source.command_count must match commands length",)
+    return ()
 
 
 def _native_probe_factories_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
