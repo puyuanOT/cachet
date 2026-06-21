@@ -54,8 +54,9 @@ new document modules depend on restaurant-owned implementations.
 - `engine.py` builds engine-ready payload handles from materialized KV.
 - `engine_adapters.py` defines the external vLLM/SGLang adapter handoff and
   native-probe descriptor contracts.
-- `engine_launch_config.py` validates vLLM transfer-config and SGLang HiCache
-  launch sidecars against the shared document-KV engine handoff contract.
+- `engine_launch_config.py` builds and validates vLLM transfer-config and
+  SGLang HiCache launch sidecars against the shared document-KV engine handoff
+  contract.
 - `engine_probe.py` executes a serialized handoff through a backend-owned native
   probe factory.
 - `engine_protocol.py` defines validated KV layout, segment, and handle data
@@ -135,6 +136,7 @@ The public package owns these document-branded CLI entry points:
 - `document-kv-serving-env`
 - `document-kv-native-probe-factories`
 - `document-kv-engine-probe`
+- `document-kv-engine-launch-config`
 - `document-kv-engine-probe-fixture`
 - `document-kv-engine-probe-databricks-job`
 - `document-kv-vllm-smoke`
@@ -158,6 +160,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-serving-env`
 - `cachet-native-probe-factories`
 - `cachet-engine-probe`
+- `cachet-engine-launch-config`
 - `cachet-engine-probe-fixture`
 - `cachet-engine-probe-databricks-job`
 - `cachet-vllm-smoke`

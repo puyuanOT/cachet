@@ -1,0 +1,22 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 high-reasoning review found one P3 CLI behavior issue: invalid builder inputs raised raw tracebacks. The PR was patched so main() routes TypeError/ValueError through argparse parser.error(), with a regression test confirming exit code 2 and no traceback. Delta review reported no new findings and confirmed the issue resolved.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 295,
+  "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/295",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/engine_launch_config.py; package facades and cachet typing stub; pyproject scripts; README docs; launch-config and public-package tests."
+  ],
+  "verification": [
+    "PYTHONPATH=src pytest tests/test_engine_launch_config.py tests/test_public_package.py -q; PYTHONPATH=src pytest tests/test_project_governance.py tests/test_pr_evidence.py::test_repository_pr_evidence_sidecars_are_valid -q; PYTHONPATH=src pytest tests/test_release_bundle.py -q -k engine_launch_config; PYTHONPATH=src pytest -q; python -m compileall -q src tests; git diff --check; PYTHONPATH=src python -m document_kv_cache.engine_launch_config build-vllm --extra-config max_model_len=32768; PYTHONPATH=src python -m document_kv_cache.engine_launch_config build-sglang --extra-config deployment='\"qa\"'."
+  ],
+  "what_changed": [
+    "Added validated vLLM/SGLang engine launch-config builders, JSON writer, and document/cachet console script aliases; exposed the helpers through document_kv_cache, cachet, and legacy compatibility facades; documented strict-release sidecar generation."
+  ],
+  "why": "Strict V1 release bundles already require vLLM/SGLang launch-config sidecars, but users previously had to hand-write JSON that matched the validator. The package can now generate release-shaped sidecars from the same contract it validates."
+}

@@ -1,7 +1,8 @@
-"""Validation helpers for document KV serving-engine launch configs."""
+"""Build and validate document KV serving-engine launch configs."""
 
 from __future__ import annotations
 
+import argparse
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -49,17 +50,33 @@ _SGLANG_DOCUMENT_KV_MODULE_LEAVES = (
     "sglang_dynamic_backend",
     "document_kv_backend",
 )
+DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH = "vllm_kv_injection.vllm_dynamic_connector"
+DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH = "sglang_kv_injection.sglang_dynamic_backend"
+DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION = 1
+DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD = "native-kv-import"
+DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_VLLM_RECORD_TYPE_PREFIX}launch_config.v1"
+DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_SGLANG_RECORD_TYPE_PREFIX}launch_config.v1"
 
 __all__ = [
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
+    "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
+    "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+    "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",
+    "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
     "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
     "EngineLaunchConfigEvidence",
+    "build_sglang_launch_config",
+    "build_vllm_launch_config",
     "engine_launch_config_evidence_to_record",
     "engine_launch_config_record_issues",
     "evaluate_engine_launch_config_evidence",
+    "main",
     "read_engine_launch_config_json",
     "validate_engine_launch_config_record",
+    "write_engine_launch_config_json",
     "write_engine_launch_config_evidence_json",
 ]
 
@@ -102,6 +119,70 @@ class EngineLaunchConfigEvidence:
             issues.append(f"duplicate engine launch config backends: {', '.join(self.duplicate_backends)}")
         issues.extend(self.invalid_records)
         return tuple(issues)
+
+
+def build_vllm_launch_config(
+    *,
+    module_path: str = DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH,
+    kv_role: str = "kv_both",
+    record_type: str = DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+    schema_version: int = DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
+    kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
+    extra_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a validated vLLM transfer config for the document KV connector."""
+
+    record = {
+        "kv_connector": _VLLM_DOCUMENT_KV_CONNECTOR,
+        "kv_connector_module_path": module_path,
+        "kv_role": kv_role,
+        "kv_connector_extra_config": _build_document_kv_extra_config(
+            ServingBackend.VLLM,
+            record_type=record_type,
+            schema_version=schema_version,
+            kv_injection_method=kv_injection_method,
+            extra_config=extra_config,
+        ),
+    }
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
+    return record
+
+
+def build_sglang_launch_config(
+    *,
+    module_path: str = DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH,
+    record_type: str = DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+    schema_version: int = DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
+    kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
+    extra_config: Mapping[str, Any] | None = None,
+    encode_extra_config_as_json: bool = True,
+) -> dict[str, Any]:
+    """Build a validated SGLang HiCache config for the document KV backend."""
+
+    hicache_extra_config = {
+        "backend_name": _SGLANG_DOCUMENT_KV_BACKEND_NAME,
+        "module_path": module_path,
+        "class_name": _SGLANG_DOCUMENT_KV_CLASS_NAME,
+        **_build_document_kv_extra_config(
+            ServingBackend.SGLANG,
+            record_type=record_type,
+            schema_version=schema_version,
+            kv_injection_method=kv_injection_method,
+            extra_config=extra_config,
+            reserved_keys={"backend_name", "module_path", "class_name"},
+        ),
+    }
+    record = {
+        "enable_hierarchical_cache": True,
+        "hicache_storage_backend": _SGLANG_DYNAMIC_HICACHE_BACKEND,
+        "hicache_storage_backend_extra_config": (
+            json.dumps(hicache_extra_config, sort_keys=True)
+            if encode_extra_config_as_json
+            else hicache_extra_config
+        ),
+    }
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
+    return record
 
 
 def validate_engine_launch_config_record(
@@ -197,6 +278,21 @@ def read_engine_launch_config_json(
     return record
 
 
+def write_engine_launch_config_json(
+    record: Mapping[str, Any],
+    path: str | Path,
+    *,
+    expected_backend: str | ServingBackend | None = None,
+) -> Path:
+    """Validate and write one engine launch-config sidecar to JSON."""
+
+    validate_engine_launch_config_record(record, expected_backend=expected_backend)
+    target_path = local_path(str(path))
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return target_path
+
+
 def write_engine_launch_config_evidence_json(
     evidence: EngineLaunchConfigEvidence,
     path: str | Path,
@@ -208,6 +304,44 @@ def write_engine_launch_config_evidence_json(
         encoding="utf-8",
     )
     return target_path
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Build a validated vLLM or SGLang document KV launch-config sidecar."""
+
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    try:
+        extra_config = _extra_config_from_items(args.extra_config)
+        if args.command == "build-vllm":
+            record = build_vllm_launch_config(
+                module_path=args.module_path,
+                kv_role=args.kv_role,
+                record_type=args.record_type,
+                schema_version=args.schema_version,
+                kv_injection_method=args.kv_injection_method,
+                extra_config=extra_config,
+            )
+            expected_backend = ServingBackend.VLLM
+        elif args.command == "build-sglang":
+            record = build_sglang_launch_config(
+                module_path=args.module_path,
+                record_type=args.record_type,
+                schema_version=args.schema_version,
+                kv_injection_method=args.kv_injection_method,
+                extra_config=extra_config,
+            )
+            expected_backend = ServingBackend.SGLANG
+        else:  # pragma: no cover - argparse restricts this.
+            raise ValueError(f"unsupported command {args.command!r}")
+
+        if args.output_json:
+            write_engine_launch_config_json(record, args.output_json, expected_backend=expected_backend)
+        else:
+            print(json.dumps(record, indent=2, sort_keys=True))
+    except (TypeError, ValueError) as exc:
+        parser.error(str(exc))
+    return 0
 
 
 def _infer_launch_config_backend(record: Mapping[str, Any]) -> tuple[ServingBackend | None, tuple[str, ...]]:
@@ -335,6 +469,61 @@ def _validate_document_kv_extra_config(
     return tuple(issues)
 
 
+def _build_document_kv_extra_config(
+    backend: ServingBackend,
+    *,
+    record_type: str,
+    schema_version: int,
+    kv_injection_method: str,
+    extra_config: Mapping[str, Any] | None,
+    reserved_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    record = {
+        "document_kv.record_type": record_type,
+        "document_kv.schema_version": schema_version,
+        "document_kv.backend": backend.value,
+        "document_kv.connector_package": backend.value,
+        "document_kv.kv_injection_method": kv_injection_method,
+        "document_kv.engine_handoff_record_type": ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
+        "document_kv.engine_handoff_schema_version": ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
+        "document_kv.requires_native_runtime": True,
+    }
+    record.update(_validated_extra_config(extra_config, reserved_keys=reserved_keys))
+    record_type_prefix = (
+        _VLLM_RECORD_TYPE_PREFIX if backend == ServingBackend.VLLM else _SGLANG_RECORD_TYPE_PREFIX
+    )
+    issues = _validate_document_kv_extra_config(
+        record,
+        expected_backend=backend,
+        expected_record_type_prefix=record_type_prefix,
+    )
+    if issues:
+        raise ValueError("; ".join(issues))
+    return record
+
+
+def _validated_extra_config(
+    extra_config: Mapping[str, Any] | None,
+    *,
+    reserved_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    if extra_config is None:
+        return {}
+    if not isinstance(extra_config, Mapping):
+        raise TypeError("extra_config must be a mapping")
+    reserved = reserved_keys or set()
+    validated: dict[str, Any] = {}
+    for key, value in extra_config.items():
+        if not _is_non_empty_string(key):
+            raise ValueError("extra_config keys must be non-empty strings")
+        if key.startswith("document_kv."):
+            raise ValueError("extra_config must not override reserved document_kv.* keys")
+        if key in reserved:
+            raise ValueError(f"extra_config must not override reserved key {key!r}")
+        validated[str(key)] = value
+    return validated
+
+
 def _backend_from_optional_value(
     value: str | ServingBackend | None,
     *,
@@ -394,3 +583,58 @@ def _module_path_issues(value: Any, *, field_name: str, expected_leaves: Sequenc
         expected = ", ".join(repr(leaf) for leaf in expected_leaves)
         return (f"{field_name} must end with one of {expected}",)
     return ()
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Build validated document KV engine launch configs.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_vllm_parser(subparsers)
+    _add_sglang_parser(subparsers)
+    return parser
+
+
+def _add_vllm_parser(subparsers: Any) -> None:
+    parser = subparsers.add_parser("build-vllm", help="Build a vLLM transfer config sidecar.")
+    parser.add_argument("--module-path", default=DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH)
+    parser.add_argument("--kv-role", default="kv_both", choices=sorted(_VLLM_ALLOWED_KV_ROLES))
+    _add_common_build_args(parser, default_record_type=DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
+
+
+def _add_sglang_parser(subparsers: Any) -> None:
+    parser = subparsers.add_parser("build-sglang", help="Build an SGLang HiCache config sidecar.")
+    parser.add_argument("--module-path", default=DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH)
+    _add_common_build_args(parser, default_record_type=DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
+
+
+def _add_common_build_args(parser: argparse.ArgumentParser, *, default_record_type: str) -> None:
+    parser.add_argument("--output-json", help="Optional output JSON path. Defaults to stdout.")
+    parser.add_argument("--record-type", default=default_record_type)
+    parser.add_argument("--schema-version", type=int, default=DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION)
+    parser.add_argument("--kv-injection-method", default=DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD)
+    parser.add_argument(
+        "--extra-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Optional adapter extra config entry. Values are parsed as JSON when possible.",
+    )
+
+
+def _extra_config_from_items(items: Sequence[str]) -> dict[str, Any]:
+    extra_config: dict[str, Any] = {}
+    for item in items:
+        if "=" not in item:
+            raise ValueError("extra-config entries must use KEY=VALUE syntax")
+        key, raw_value = item.split("=", 1)
+        if not key:
+            raise ValueError("extra-config keys must be non-empty")
+        try:
+            value: Any = json.loads(raw_value)
+        except json.JSONDecodeError:
+            value = raw_value
+        extra_config[key] = value
+    return extra_config
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

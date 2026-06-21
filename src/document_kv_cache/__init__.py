@@ -322,6 +322,30 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.engine_adapters",
         "write_engine_adapter_request_json",
     ),
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD": (
+        "document_kv_cache.engine_launch_config",
+        "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
+    ),
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION": (
+        "document_kv_cache.engine_launch_config",
+        "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
+    ),
+    "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH": (
+        "document_kv_cache.engine_launch_config",
+        "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
+    ),
+    "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE": (
+        "document_kv_cache.engine_launch_config",
+        "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+    ),
+    "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH": (
+        "document_kv_cache.engine_launch_config",
+        "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",
+    ),
+    "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE": (
+        "document_kv_cache.engine_launch_config",
+        "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+    ),
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE": (
         "document_kv_cache.engine_launch_config",
         "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
@@ -337,6 +361,14 @@ _DOCUMENT_ROOT_EXPORTS = {
     "EngineLaunchConfigEvidence": (
         "document_kv_cache.engine_launch_config",
         "EngineLaunchConfigEvidence",
+    ),
+    "build_sglang_launch_config": (
+        "document_kv_cache.engine_launch_config",
+        "build_sglang_launch_config",
+    ),
+    "build_vllm_launch_config": (
+        "document_kv_cache.engine_launch_config",
+        "build_vllm_launch_config",
     ),
     "engine_launch_config_evidence_to_record": (
         "document_kv_cache.engine_launch_config",
@@ -357,6 +389,10 @@ _DOCUMENT_ROOT_EXPORTS = {
     "validate_engine_launch_config_record": (
         "document_kv_cache.engine_launch_config",
         "validate_engine_launch_config_record",
+    ),
+    "write_engine_launch_config_json": (
+        "document_kv_cache.engine_launch_config",
+        "write_engine_launch_config_json",
     ),
     "write_engine_launch_config_evidence_json": (
         "document_kv_cache.engine_launch_config",

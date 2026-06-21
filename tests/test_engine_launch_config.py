@@ -8,15 +8,21 @@ from document_kv_cache.engine_adapters import (
     ServingBackend,
 )
 from document_kv_cache.engine_launch_config import (
+    DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+    DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
     ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE,
     ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION,
     REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
     EngineLaunchConfigEvidence,
+    build_sglang_launch_config,
+    build_vllm_launch_config,
     engine_launch_config_evidence_to_record,
     engine_launch_config_record_issues,
     evaluate_engine_launch_config_evidence,
+    main,
     read_engine_launch_config_json,
     validate_engine_launch_config_record,
+    write_engine_launch_config_json,
     write_engine_launch_config_evidence_json,
 )
 
@@ -75,6 +81,48 @@ def test_validate_engine_launch_config_record_accepts_adapter_launch_shapes():
     validate_engine_launch_config_record(_sglang_launch_config(), expected_backend=" SGLANG ")
     validate_engine_launch_config_record(_vllm_package_launch_config(), expected_backend=ServingBackend.VLLM)
     validate_engine_launch_config_record(_sglang_package_launch_config(), expected_backend=" SGLANG ")
+
+
+def test_build_vllm_launch_config_emits_valid_release_shape():
+    record = build_vllm_launch_config(extra_config={"deployment": "qa", "max_model_len": 32768})
+
+    assert record == {
+        "kv_connector": "DocumentKVConnector",
+        "kv_connector_module_path": "vllm_kv_injection.vllm_dynamic_connector",
+        "kv_role": "kv_both",
+        "kv_connector_extra_config": {
+            "deployment": "qa",
+            "max_model_len": 32768,
+            **_document_kv_extra("vllm"),
+            "document_kv.record_type": DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+        },
+    }
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
+
+
+def test_build_sglang_launch_config_emits_valid_release_shape():
+    record = build_sglang_launch_config(extra_config={"deployment": "qa"})
+    extra = json.loads(record["hicache_storage_backend_extra_config"])
+
+    assert record["enable_hierarchical_cache"] is True
+    assert record["hicache_storage_backend"] == "dynamic"
+    assert extra == {
+        "backend_name": "document_kv",
+        "module_path": "sglang_kv_injection.sglang_dynamic_backend",
+        "class_name": "DocumentKVHiCacheBackend",
+        "deployment": "qa",
+        **_document_kv_extra("sglang"),
+        "document_kv.record_type": DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+    }
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
+
+
+def test_build_launch_config_rejects_reserved_extra_config_keys():
+    with pytest.raises(ValueError, match=r"reserved document_kv\.\*"):
+        build_vllm_launch_config(extra_config={"document_kv.backend": "sglang"})
+
+    with pytest.raises(ValueError, match="reserved key 'module_path'"):
+        build_sglang_launch_config(extra_config={"module_path": "other.module"})
 
 
 def test_validate_engine_launch_config_record_rejects_wrong_backend():
@@ -200,6 +248,15 @@ def test_read_and_write_engine_launch_config_json(tmp_path):
         "DocumentKVConnector"
     )
 
+    generated_path = write_engine_launch_config_json(
+        build_sglang_launch_config(encode_extra_config_as_json=False),
+        tmp_path / "sglang-launch.json",
+        expected_backend="sglang",
+    )
+    assert read_engine_launch_config_json(generated_path, expected_backend="sglang")[
+        "hicache_storage_backend"
+    ] == "dynamic"
+
     evidence = EngineLaunchConfigEvidence(
         backends=("vllm", "sglang"),
         missing_backends=(),
@@ -208,3 +265,31 @@ def test_read_and_write_engine_launch_config_json(tmp_path):
     evidence_path = write_engine_launch_config_evidence_json(evidence, tmp_path / "evidence.json")
 
     assert json.loads(evidence_path.read_text(encoding="utf-8"))["ok"] is True
+
+
+def test_main_builds_launch_config_sidecars(tmp_path):
+    vllm_path = tmp_path / "vllm.json"
+    sglang_path = tmp_path / "sglang.json"
+
+    assert main(["build-vllm", "--output-json", str(vllm_path), "--extra-config", "max_model_len=32768"]) == 0
+    assert main(["build-sglang", "--output-json", str(sglang_path), "--extra-config", "deployment=\"qa\""]) == 0
+
+    assert read_engine_launch_config_json(vllm_path, expected_backend="vllm")[
+        "kv_connector_extra_config"
+    ]["max_model_len"] == 32768
+    sglang_extra = json.loads(
+        read_engine_launch_config_json(sglang_path, expected_backend="sglang")[
+            "hicache_storage_backend_extra_config"
+        ]
+    )
+    assert sglang_extra["deployment"] == "qa"
+
+
+def test_main_reports_invalid_cli_input_without_traceback(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["build-vllm", "--extra-config", "document_kv.backend=sglang"])
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "extra_config must not override reserved document_kv.* keys" in captured.err
+    assert "Traceback" not in captured.err

@@ -148,6 +148,30 @@ _EXPORTS = {
         "restaurant_kv_serving.release_evidence",
         "REQUIRED_ENGINE_PROBE_BACKENDS",
     ),
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD": (
+        "restaurant_kv_serving.engine_launch_config",
+        "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
+    ),
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION": (
+        "restaurant_kv_serving.engine_launch_config",
+        "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
+    ),
+    "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH": (
+        "restaurant_kv_serving.engine_launch_config",
+        "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
+    ),
+    "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE": (
+        "restaurant_kv_serving.engine_launch_config",
+        "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+    ),
+    "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH": (
+        "restaurant_kv_serving.engine_launch_config",
+        "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",
+    ),
+    "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE": (
+        "restaurant_kv_serving.engine_launch_config",
+        "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+    ),
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE": (
         "restaurant_kv_serving.engine_launch_config",
         "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
@@ -489,6 +513,14 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_adapters",
         "build_engine_kv_injection_plan",
     ),
+    "build_sglang_launch_config": (
+        "restaurant_kv_serving.engine_launch_config",
+        "build_sglang_launch_config",
+    ),
+    "build_vllm_launch_config": (
+        "restaurant_kv_serving.engine_launch_config",
+        "build_vllm_launch_config",
+    ),
     "engine_adapter_request_to_record": (
         "restaurant_kv_serving.engine_adapters",
         "engine_adapter_request_to_record",
@@ -807,6 +839,10 @@ _EXPORTS = {
         "restaurant_kv_serving.engine_adapters",
         "write_engine_adapter_request_json",
     ),
+    "write_engine_launch_config_json": (
+        "restaurant_kv_serving.engine_launch_config",
+        "write_engine_launch_config_json",
+    ),
     "write_engine_launch_config_evidence_json": (
         "restaurant_kv_serving.engine_launch_config",
         "write_engine_launch_config_evidence_json",
@@ -945,6 +981,12 @@ __all__ = [
     "RELEASE_BUNDLE_MANIFEST_FILENAME",
     "RELEASE_BUNDLE_ARTIFACT_ROLES",
     "REQUIRED_ENGINE_PROBE_BACKENDS",
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
+    "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
+    "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
+    "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+    "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",
+    "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
     "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
@@ -1125,6 +1167,8 @@ __all__ = [
     "build_engine_adapter_request",
     "build_engine_kv_connector_actions",
     "build_engine_kv_injection_plan",
+    "build_sglang_launch_config",
+    "build_vllm_launch_config",
     "engine_adapter_request_to_record",
     "engine_kv_connector_actions_from_record",
     "engine_kv_connector_actions_to_record",
@@ -1238,6 +1282,7 @@ __all__ = [
     "write_engine_adapter_handoff_bundle",
     "write_engine_adapter_payload",
     "write_engine_adapter_request_json",
+    "write_engine_launch_config_json",
     "write_engine_launch_config_evidence_json",
     "write_engine_kv_connector_probe_result_json",
     "write_engine_kv_connector_actions_record_json",
