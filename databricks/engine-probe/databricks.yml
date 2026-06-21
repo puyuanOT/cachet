@@ -22,6 +22,8 @@ variables:
   sglang_native_probe_delegate_factory:
     default: ""
     description: Optional backend-native delegate factory for Cachet's built-in SGLang probe factory.
+  native_probe_metadata:
+    description: KEY=VALUE metadata for the native probe, such as vllm_kv_injection.connector_factory=module:factory.
   wheel_uri:
     description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
   node_type_id:
@@ -74,5 +76,7 @@ resources:
               - ${var.payload_uri}
               - --expected-backend
               - ${var.expected_backend}
+              - --metadata
+              - ${var.native_probe_metadata}
               - --package-wheel-uri
               - ${var.wheel_uri}

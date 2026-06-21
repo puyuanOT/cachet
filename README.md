@@ -541,6 +541,16 @@ delegate environment variable at a backend-native factory:
 `DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. The public built-in
 factory paths stay stable for release bundles, while the delegate callable owns
 the actual vLLM/SGLang block-manager integration.
+When using the adapter-package delegates
+`vllm_kv_injection.probe:build_native_connector_probe` or
+`sglang_kv_injection.probe:build_native_connector_probe`, also add target
+metadata for the backend-native connector factory, for example
+`"metadata": ["vllm_kv_injection.connector_factory=company_vllm_patch.probe:build_connector"]`
+or
+`"metadata": ["sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"]`.
+The Databricks target parser rejects those known delegates without the matching
+connector-factory metadata so release-safe jobs fail before requesting GPU
+capacity.
 Use `document-kv-native-probe-scaffold` to generate a fail-closed delegate
 module that declares the required Cachet contracts and backend guard checks:
 

@@ -18,6 +18,7 @@ databricks bundle validate \
   --var payload_uri=/Volumes/catalog/schema/volume/probes/vllm-payload.kv \
   --var expected_backend=vllm \
   --var vllm_native_probe_delegate_factory=my_vllm_adapter.probes:build_probe \
+  --var native_probe_metadata=vllm_kv_injection.connector_factory=my_vllm_adapter.probes:build_connector \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
@@ -34,6 +35,14 @@ path, set the matching `vllm_native_probe_delegate_factory` or
 as `DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY` and
 `DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY`; empty defaults are treated as unset
 by the built-in factories.
+When the delegate is the adapter-package wrapper
+`vllm_kv_injection.probe:build_native_connector_probe` or
+`sglang_kv_injection.probe:build_native_connector_probe`, set
+`native_probe_metadata` to the matching connector factory metadata:
+`vllm_kv_injection.connector_factory=module:factory` for vLLM or
+`sglang_kv_injection.connector_factory=module:factory` for SGLang. The
+connector factory is the backend-native implementation that actually reserves,
+imports, binds, and releases engine KV blocks.
 
 For non-bundle release operations, the package CLI can emit one `runs/submit`
 payload with both required native backend probes:

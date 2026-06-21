@@ -1286,6 +1286,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
         "expected_backend",
         "vllm_native_probe_delegate_factory",
         "sglang_native_probe_delegate_factory",
+        "native_probe_metadata",
         "wheel_uri",
         "node_type_id",
         "spark_version",
@@ -1293,6 +1294,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     }
     assert variables["vllm_native_probe_delegate_factory"]["default"] == '""'
     assert variables["sglang_native_probe_delegate_factory"]["default"] == '""'
+    assert "connector_factory=module:factory" in variables["native_probe_metadata"]["description"]
     assert variables["node_type_id"]["default"] == "g6.8xlarge"
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
@@ -1331,6 +1333,8 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
             "${var.payload_uri}",
             "--expected-backend",
             "${var.expected_backend}",
+            "--metadata",
+            "${var.native_probe_metadata}",
             "--package-wheel-uri",
             "${var.wheel_uri}",
         ],
@@ -1349,7 +1353,11 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--var payload_uri=" in probe_readme_text
     assert "--var actions_output_json=" in readme_text
     assert "--var actions_output_json=" in probe_readme_text
+    assert "--var native_probe_metadata=" in readme_text
+    assert "--var native_probe_metadata=" in probe_readme_text
     assert "--var vllm_native_probe_delegate_factory=" in probe_readme_text
+    assert "vllm_kv_injection.connector_factory=module:factory" in probe_readme_text
+    assert "sglang_kv_injection.connector_factory=module:factory" in packaged_probe_readme_text
     assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "native vLLM or SGLang" in probe_readme_text
