@@ -367,6 +367,28 @@ def test_evaluate_release_evidence_rejects_wrong_serving_profile_metadata():
     assert any("serving_engine_version" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_missing_or_wrong_runtime_contract_metadata():
+    vllm_record = _probe_record(ServingBackend.VLLM)
+    del vllm_record["metadata"]["vllm_kv_injection.runtime_contract"]
+    sglang_record = _probe_record(ServingBackend.SGLANG)
+    sglang_record["metadata"] = {
+        **sglang_record["metadata"],
+        "sglang_kv_injection.runtime_contract": "document-kv-debug-connector",
+    }
+
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True),
+        _storage_record(ok=True),
+        engine_probe_records=(vllm_record, sglang_record),
+    )
+
+    assert not evidence.ok
+    assert evidence.engine_probe_backends == ()
+    assert evidence.missing_engine_probe_backends == ("vllm", "sglang")
+    assert any("vllm_kv_injection.runtime_contract" in issue for issue in evidence.issues)
+    assert any("sglang_kv_injection.runtime_contract" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_duplicate_valid_engine_probe_backend():
     evidence = evaluate_release_evidence(
         _v1_record(ok=True),
@@ -2462,6 +2484,7 @@ def _probe_record(backend: ServingBackend, *, layout=None):
             metadata={
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE: profile.engine_package,
                 ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION: profile.engine_version,
+                **_runtime_contract_metadata(backend),
             },
         )
     )
@@ -2518,6 +2541,14 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
 
 def _write_json(path: Path, record) -> None:
     path.write_text(json.dumps(record), encoding="utf-8")
+
+
+def _runtime_contract_metadata(backend: ServingBackend) -> dict[str, str]:
+    if backend is ServingBackend.VLLM:
+        return {"vllm_kv_injection.runtime_contract": "vllm-kv-connector-v1"}
+    if backend is ServingBackend.SGLANG:
+        return {"sglang_kv_injection.runtime_contract": "sglang-runtime-cache"}
+    raise AssertionError(f"unsupported backend {backend}")
 
 
 def _artifact_source_record(path: Path, *, role: str, record_type: str, backend: str | None = None) -> dict[str, object]:

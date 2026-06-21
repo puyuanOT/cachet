@@ -76,6 +76,10 @@ RELEASE_EVIDENCE_ARTIFACT_ROLES = (
     "engine_connector_actions",
 )
 _ENGINE_BACKEND_ARTIFACT_ROLES = frozenset({"engine_probe", "engine_connector_actions"})
+_ENGINE_PROBE_RUNTIME_CONTRACT_METADATA = {
+    ServingBackend.VLLM.value: ("vllm_kv_injection.runtime_contract", "vllm-kv-connector-v1"),
+    ServingBackend.SGLANG.value: ("sglang_kv_injection.runtime_contract", "sglang-runtime-cache"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -1707,6 +1711,7 @@ def _validate_release_engine_probe_record(record: Mapping[str, Any]) -> None:
     if record.get("engine_version") == "unknown":
         raise ValueError("Engine KV probe engine_version must be a real native engine version")
     _validate_probe_serving_profile_metadata(record, backend)
+    _validate_probe_runtime_contract_metadata(record, backend)
 
 
 def _validate_release_engine_action_record(record: Mapping[str, Any]) -> None:
@@ -1738,6 +1743,18 @@ def _validate_probe_serving_profile_metadata(record: Mapping[str, Any], backend:
         raise ValueError(
             "Engine KV probe serving_engine_version metadata must match the backend serving profile"
         )
+
+
+def _validate_probe_runtime_contract_metadata(record: Mapping[str, Any], backend: str) -> None:
+    metadata = record.get("metadata")
+    if not isinstance(metadata, Mapping):
+        raise ValueError("Engine KV probe metadata must be a mapping")
+    expected = _ENGINE_PROBE_RUNTIME_CONTRACT_METADATA.get(backend)
+    if expected is None:
+        raise ValueError("Engine KV probe runtime contract metadata has unsupported backend")
+    key, value = expected
+    if metadata.get(key) != value:
+        raise ValueError(f"Engine KV probe {key} metadata must be {value!r}")
 
 
 def _release_probe_layout(record: Mapping[str, Any]) -> KVLayout:
