@@ -14,6 +14,7 @@ from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_PROBE_SCHEMA_VERSION,
     EngineAdapterRequest,
     EngineAdapterSpec,
+    EngineKVBindAction,
     EngineKVConnectorActions,
     EngineKVConnectorProbeResult,
     EngineKVInjectionPlan,
@@ -596,6 +597,14 @@ def test_validate_engine_adapter_request_record_rejects_schema_and_segment_misma
     }
     with pytest.raises(ValueError, match="segment.cache_tier"):
         validate_engine_adapter_request_record(wrong_cache_tier)
+
+    duplicate_adapter_ids = dict(record)
+    duplicate_adapter_ids["handle"] = {
+        **record["handle"],
+        "adapter_ids": ["selection-lora", "selection-lora"],
+    }
+    with pytest.raises(ValueError, match="handle.adapter_ids entries must be unique"):
+        validate_engine_adapter_request_record(duplicate_adapter_ids)
 
 
 def test_validate_engine_adapter_request_record_rejects_layout_byte_mismatch(tmp_path):
@@ -1265,6 +1274,20 @@ def test_engine_kv_connector_actions_record_validation_rejects_stale_fields(tmp_
     with pytest.raises(ValueError, match="reservation.backend"):
         engine_kv_connector_actions_from_record(wrong_reservation_backend)
 
+    duplicate_reservation_adapter_ids = {
+        **actions_record,
+        "reservation": {
+            **actions_record["reservation"],
+            "adapter_ids": ["selection-lora", "selection-lora"],
+        },
+        "bind": {
+            **actions_record["bind"],
+            "adapter_ids": ["selection-lora", "selection-lora"],
+        },
+    }
+    with pytest.raises(ValueError, match="adapter_ids entries must be unique"):
+        engine_kv_connector_actions_from_record(duplicate_reservation_adapter_ids)
+
     wrong_schema = {**actions_record, "schema_version": 0}
     with pytest.raises(ValueError, match="schema_version"):
         engine_kv_connector_actions_from_record(wrong_schema)
@@ -1651,6 +1674,7 @@ def test_engine_kv_injection_plan_rejects_invalid_estimated_gpu_bytes(estimated_
         ("adapter_ids", "lora", "adapter_ids must be a sequence"),
         ("adapter_ids", {"lora": "ignored"}, "adapter_ids must be a sequence"),
         ("adapter_ids", ("",), "adapter_ids"),
+        ("adapter_ids", ("lora", "lora"), "adapter_ids entries must be unique"),
         ("segments", ("not-a-segment",), "segments entries"),
     ],
 )
@@ -1661,6 +1685,28 @@ def test_engine_kv_injection_plan_rejects_invalid_identity_and_sequence_fields(
 ):
     with pytest.raises((TypeError, ValueError), match=error_match):
         EngineKVInjectionPlan(**injection_plan_kwargs(**{field_name: value}))
+
+
+def test_engine_kv_connector_actions_reject_duplicate_adapter_ids():
+    with pytest.raises(ValueError, match="adapter_ids entries must be unique"):
+        EngineKVReservationAction(
+            backend=ServingBackend.VLLM,
+            request_id="req-1",
+            total_blocks=1,
+            total_tokens=1,
+            estimated_gpu_bytes=TEST_BYTES_PER_TOKEN,
+            layout=layout(),
+            adapter_ids=("selection-lora", "selection-lora"),
+        )
+
+    with pytest.raises(ValueError, match="adapter_ids entries must be unique"):
+        EngineKVBindAction(
+            request_id="req-1",
+            handle_uri="document-kv://req-1",
+            cache_method="vanilla_prefill",
+            adapter_ids=("selection-lora", "selection-lora"),
+            metadata={},
+        )
 
 
 @pytest.mark.parametrize(
