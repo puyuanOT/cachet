@@ -48,6 +48,7 @@ __all__ = reexport_public(
         "DEFAULT_DATABRICKS_HOST_ENV",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+        "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
         "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
     ),
@@ -62,6 +63,7 @@ __all__ += [
     "databricks_workspace_config_from_env",
     "submit_databricks_run",
     "get_databricks_run",
+    "put_databricks_dbfs_file",
     "summarize_databricks_run",
     "summarize_databricks_run_submit_payload",
     "databricks_run_status_record",
@@ -228,6 +230,24 @@ def get_databricks_run(
     return _call_document_function("get_databricks_run", config, run_id, opener=opener)
 
 
+def put_databricks_dbfs_file(
+    config: DatabricksWorkspaceConfig,
+    local_path: str | Path,
+    dbfs_path: str,
+    *,
+    overwrite: bool = False,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    return _call_document_function(
+        "put_databricks_dbfs_file",
+        config,
+        local_path,
+        dbfs_path,
+        overwrite=overwrite,
+        opener=opener,
+    )
+
+
 def write_databricks_run_response_json(response: dict[str, Any], path: str | Path) -> None:
     return _call_document_function("write_databricks_run_response_json", response, path)
 
@@ -386,6 +406,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "databricks_workspace_config_from_env": databricks_workspace_config_from_env,
     "submit_databricks_run": submit_databricks_run,
     "get_databricks_run": get_databricks_run,
+    "put_databricks_dbfs_file": put_databricks_dbfs_file,
     "write_databricks_run_response_json": write_databricks_run_response_json,
     "read_databricks_run_submit_payload": read_databricks_run_submit_payload,
     "summarize_databricks_run": summarize_databricks_run,

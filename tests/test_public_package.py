@@ -51,6 +51,7 @@ def test_public_document_package_reexports_core_api():
         ChunkCacheStats,
         DATABRICKS_RUN_STATUS_RECORD_TYPE,
         DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
+        DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
         DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
         DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
         DEFAULT_DATABRICKS_HOST_ENV,
@@ -223,6 +224,7 @@ def test_public_document_package_reexports_core_api():
         release_bundle_to_record,
         pr_evidence_validation_to_record,
         pr_evidence_to_record,
+        put_databricks_dbfs_file,
         read_model_profile_definition_json,
         read_engine_launch_config_json,
         read_databricks_engine_probe_targets_json,
@@ -351,6 +353,7 @@ def test_public_document_package_reexports_core_api():
     assert DatabricksVLLMSmokeJobConfig is restaurant_kv_serving.DatabricksVLLMSmokeJobConfig
     assert DatabricksWorkspaceConfig is databricks_runs.DatabricksWorkspaceConfig
     assert issubclass(restaurant_kv_serving.DatabricksWorkspaceConfig, databricks_runs.DatabricksWorkspaceConfig)
+    assert DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES == databricks_runs.DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES
     assert DEFAULT_STATIC_CHUNK_ID == "static"
     assert DEFAULT_STATIC_CHUNK_ID is restaurant_kv_serving.DEFAULT_STATIC_CHUNK_ID
     assert DocumentChunkRole is restaurant_kv_serving.DocumentChunkRole
@@ -593,6 +596,8 @@ def test_public_document_package_reexports_core_api():
     assert build_handle_from_materialized is restaurant_kv_serving.build_handle_from_materialized
     assert build_handle_from_materialized.__module__ == "document_kv_cache.engine"
     assert databricks_workspace_config_from_env is databricks_runs.databricks_workspace_config_from_env
+    assert put_databricks_dbfs_file is databricks_runs.put_databricks_dbfs_file
+    assert restaurant_kv_serving.put_databricks_dbfs_file.__module__ == "restaurant_kv_serving.databricks_runs"
     assert build_release_bundle is restaurant_kv_serving.build_release_bundle
     assert build_v1_benchmark_plan is benchmark_plan.build_v1_benchmark_plan
     assert build_v1_benchmark_plan.__module__ == "document_kv_cache.benchmark_plan"
@@ -819,12 +824,14 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "evaluate_pr_evidence_file" in document_kv_cache.__all__
     assert "pr_evidence_validation_to_record" in document_kv_cache.__all__
     assert "SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES" in document_kv_cache.__all__
+    assert "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES" in document_kv_cache.__all__
     assert "DATABRICKS_RUN_STATUS_RECORD_TYPE" in document_kv_cache.__all__
     assert "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE" in document_kv_cache.__all__
     assert "summarize_databricks_run" in document_kv_cache.__all__
     assert "databricks_run_status_record" in document_kv_cache.__all__
     assert "databricks_run_status_sidecar_issues" in document_kv_cache.__all__
     assert "validate_databricks_run_status_sidecar" in document_kv_cache.__all__
+    assert "put_databricks_dbfs_file" in document_kv_cache.__all__
     assert "build_v1_benchmark_plan" in document_kv_cache.__all__
     assert "benchmark_job_plan_to_record" in document_kv_cache.__all__
     assert "engine_probe_targets_to_record" in document_kv_cache.__all__
@@ -1323,7 +1330,9 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert databricks_runs.databricks_run_status_record.__module__ == "document_kv_cache.databricks_runs"
     assert databricks_runs.databricks_run_status_sidecar_issues.__module__ == "document_kv_cache.databricks_runs"
     assert databricks_runs.validate_databricks_run_status_sidecar.__module__ == "document_kv_cache.databricks_runs"
+    assert databricks_runs.put_databricks_dbfs_file.__module__ == "document_kv_cache.databricks_runs"
     assert restaurant_kv_serving.databricks_run_status_record.__module__ == "restaurant_kv_serving.databricks_runs"
+    assert restaurant_kv_serving.put_databricks_dbfs_file.__module__ == "restaurant_kv_serving.databricks_runs"
     assert (
         restaurant_kv_serving.databricks_run_status_sidecar_issues.__module__
         == "restaurant_kv_serving.databricks_runs"
