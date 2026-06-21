@@ -46,6 +46,7 @@ from document_kv_cache.native_probe_factories import (
     VLLM_NATIVE_PROBE_FACTORY,
     native_probe_adapter_contract_to_record,
     native_probe_factories_record_issues,
+    native_probe_runtime_contract_to_record,
 )
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
@@ -926,6 +927,37 @@ def test_build_release_bundle_strict_v1_requires_delegate_contract_proof_for_nat
     error = str(exc_info.value)
     assert "legacy-supported-native-probe-factories.json: vLLM native probe factory support" in error
     assert "legacy-supported-native-probe-factories.json: SGLang native probe factory support" in error
+
+
+def test_build_release_bundle_strict_v1_requires_runtime_contract_proof_for_native_probe_support(tmp_path):
+    source_dir = tmp_path / "runtime-contractless-native-factories"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    runtime_contractless_record = _native_probe_factories_record(supported=True)
+    for factory in runtime_contractless_record["factories"]:
+        del factory["delegate_runtime_contract"]
+        del factory["delegate_runtime_contract_valid"]
+    assert native_probe_factories_record_issues(runtime_contractless_record) == ()
+    runtime_contractless_native_probe_factories = _write_json(
+        source_dir / "runtime-contractless-native-probe-factories.json",
+        runtime_contractless_record,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **{
+                **release_kwargs,
+                "native_probe_factories_jsons": (runtime_contractless_native_probe_factories,),
+            },
+            output_dir=tmp_path / "strict-runtime-contractless-native-factories",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "runtime-contractless-native-probe-factories.json: vLLM native probe factory support" in error
+    assert "runtime-contractless-native-probe-factories.json: SGLang native probe factory support" in error
 
 
 def test_build_release_bundle_strict_v1_rejects_split_native_probe_factory_support(tmp_path):
@@ -3457,6 +3489,8 @@ def _native_probe_factory_record(backend: str, factory_path: str, *, supported: 
         "delegate_factory_path": f"tests.native_probe_factories:{backend}_probe_factory" if supported else None,
         "delegate_adapter_contract": native_probe_adapter_contract_to_record() if supported else None,
         "delegate_adapter_contract_valid": supported,
+        "delegate_runtime_contract": native_probe_runtime_contract_to_record(backend) if supported else None,
+        "delegate_runtime_contract_valid": supported,
         "serving_environment_profile": serving_environment_profile_to_record(
             serving_environment_profile(backend)
         ),

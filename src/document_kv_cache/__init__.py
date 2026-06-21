@@ -483,6 +483,14 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.native_probe_factories",
         "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
     ),
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR": (
+        "document_kv_cache.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR",
+    ),
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR": (
+        "document_kv_cache.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR",
+    ),
     "VLLM_NATIVE_PROBE_FACTORY": (
         "document_kv_cache.native_probe_factories",
         "VLLM_NATIVE_PROBE_FACTORY",
@@ -510,6 +518,10 @@ _DOCUMENT_ROOT_EXPORTS = {
     "native_probe_adapter_contract_to_record": (
         "document_kv_cache.native_probe_factories",
         "native_probe_adapter_contract_to_record",
+    ),
+    "native_probe_runtime_contract_to_record": (
+        "document_kv_cache.native_probe_factories",
+        "native_probe_runtime_contract_to_record",
     ),
     "native_probe_factory_inspection_to_record": (
         "document_kv_cache.native_probe_factories",

@@ -342,6 +342,14 @@ _EXPORTS = {
         "restaurant_kv_serving.native_probe_factories",
         "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
     ),
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR": (
+        "restaurant_kv_serving.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR",
+    ),
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR": (
+        "restaurant_kv_serving.native_probe_factories",
+        "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR",
+    ),
     "NATIVE_PROBE_FACTORIES_RECORD_TYPE": (
         "restaurant_kv_serving.native_probe_factories",
         "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
@@ -576,6 +584,10 @@ _EXPORTS = {
     "native_probe_adapter_contract_to_record": (
         "restaurant_kv_serving.native_probe_factories",
         "native_probe_adapter_contract_to_record",
+    ),
+    "native_probe_runtime_contract_to_record": (
+        "restaurant_kv_serving.native_probe_factories",
+        "native_probe_runtime_contract_to_record",
     ),
     "layout_for_model": ("restaurant_kv_serving.model_profiles", "layout_for_model"),
     "load_benchmark_jsonl": ("restaurant_kv_serving.benchmark_runner", "load_benchmark_jsonl"),
@@ -989,6 +1001,8 @@ __all__ = [
     "NATIVE_PROBE_ADAPTER_CONTRACT",
     "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR",
     "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR",
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR",
     "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
@@ -1116,6 +1130,7 @@ __all__ = [
     "native_probe_adapter_contract_to_record",
     "native_probe_factory_inspection_to_record",
     "native_probe_factories_record_issues",
+    "native_probe_runtime_contract_to_record",
     "read_databricks_run_submit_payload",
     "read_model_profile_definition_json",
     "read_engine_adapter_request_json",
