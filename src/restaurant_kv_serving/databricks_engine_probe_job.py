@@ -233,6 +233,8 @@ class DatabricksEngineProbeTargetConfig(_public_class_base("DatabricksEngineProb
             raise ValueError("allow_non_native_probe must be a boolean")
         _validate_metadata_items(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
+        _validate_pip_packages(self.pip_packages, field_name="pip_packages")
+        object.__setattr__(self, "pip_packages", tuple(self.pip_packages))
 
 
 _PROBE_TARGET_BASES = tuple(dict.fromkeys(DatabricksEngineProbeTargetConfig.__mro__[:2]))
@@ -252,6 +254,8 @@ class DatabricksEngineProbeMatrixJobConfig(_public_class_base("DatabricksEngineP
             raise ValueError("wheel_uri must be non-empty when provided")
         _validate_wheel_uris(self.extra_wheel_uris, field_name="extra_wheel_uris")
         object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
+        _validate_pip_packages(self.extra_pip_packages, field_name="extra_pip_packages")
+        object.__setattr__(self, "extra_pip_packages", tuple(self.extra_pip_packages))
         if type(self.release_safe) is not bool:
             raise ValueError("release_safe must be a boolean")
         if type(self.serial_tasks) is not bool:
@@ -287,6 +291,8 @@ class DatabricksEngineProbeJobConfig(_public_class_base("DatabricksEngineProbeJo
             raise ValueError("wheel_uri must be non-empty when provided")
         _validate_wheel_uris(self.extra_wheel_uris, field_name="extra_wheel_uris")
         object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
+        _validate_pip_packages(self.extra_pip_packages, field_name="extra_pip_packages")
+        object.__setattr__(self, "extra_pip_packages", tuple(self.extra_pip_packages))
         if self.engine_version is not None and not self.engine_version:
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
@@ -424,6 +430,10 @@ def _validate_wheel_uris(items: Sequence[str], *, field_name: str) -> None:
     return _call_document_function("_validate_wheel_uris", items, field_name=field_name)
 
 
+def _validate_pip_packages(items: Sequence[str], *, field_name: str) -> None:
+    return _call_document_function("_validate_pip_packages", items, field_name=field_name)
+
+
 def _serving_backend(value: ServingBackend | str) -> ServingBackend:
     return _call_document_function("_serving_backend", value)
 
@@ -471,6 +481,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "_validate_release_safe_probe_job": _validate_release_safe_probe_job,
     "_validate_metadata_items": _validate_metadata_items,
     "_validate_wheel_uris": _validate_wheel_uris,
+    "_validate_pip_packages": _validate_pip_packages,
     "_serving_backend": _serving_backend,
     "_payload_mode": _payload_mode,
     "_validate_fixture_output_dir": _validate_fixture_output_dir,

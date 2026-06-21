@@ -59,6 +59,7 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "connector_actions_output_json",
         "fixture_output_dir",
         "fixture_payload_mode",
+        "pip_packages",
     }
 )
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
@@ -74,10 +75,13 @@ def _cluster_file_path(uri: str) -> str:
     return uri
 
 
-def _install_package_wheel(argv: list[str]) -> list[str]:
+def _install_runtime_packages(argv: list[str]) -> list[str]:
     parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--pip-package", action="append")
     parser.add_argument("--package-wheel-uri", action="append")
     args, remaining = parser.parse_known_args(argv)
+    for pip_package in args.pip_package or ():
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_package])
     for package_wheel_uri in args.package_wheel_uri or ():
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)]
@@ -85,7 +89,7 @@ def _install_package_wheel(argv: list[str]) -> list[str]:
     return remaining
 
 if __name__ == "__main__":
-    remaining_args = _install_package_wheel(sys.argv[1:])
+    remaining_args = _install_runtime_packages(sys.argv[1:])
     from document_kv_cache.databricks_engine_probe_job import run_engine_probe_task
 
     exit_code = run_engine_probe_task(remaining_args)
@@ -147,6 +151,7 @@ class DatabricksEngineProbeTargetConfig:
     native_probe_delegate_factory: str | None = None
     fixture_output_dir: str | None = None
     fixture_payload_mode: PayloadMode | str = PayloadMode.SEGMENTED
+    pip_packages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
@@ -183,6 +188,8 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("allow_non_native_probe must be a boolean")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
+        _DEFAULT_VALIDATE_PIP_PACKAGES(self.pip_packages, field_name="pip_packages")
+        object.__setattr__(self, "pip_packages", tuple(self.pip_packages))
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +210,7 @@ class DatabricksEngineProbeMatrixJobConfig:
     custom_tags: Mapping[str, str] = field(default_factory=dict)
     extra_wheel_uris: tuple[str, ...] = ()
     serial_tasks: bool = False
+    extra_pip_packages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.probe_targets:
@@ -215,6 +223,8 @@ class DatabricksEngineProbeMatrixJobConfig:
             raise ValueError("wheel_uri must be non-empty when provided")
         _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
         object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
+        _DEFAULT_VALIDATE_PIP_PACKAGES(self.extra_pip_packages, field_name="extra_pip_packages")
+        object.__setattr__(self, "extra_pip_packages", tuple(self.extra_pip_packages))
         if type(self.release_safe) is not bool:
             raise ValueError("release_safe must be a boolean")
         if type(self.serial_tasks) is not bool:
@@ -254,6 +264,7 @@ class DatabricksEngineProbeJobConfig:
     fixture_output_dir: str | None = None
     fixture_payload_mode: PayloadMode | str = PayloadMode.SEGMENTED
     extra_wheel_uris: tuple[str, ...] = ()
+    extra_pip_packages: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "fixture_payload_mode", _DEFAULT_PAYLOAD_MODE(self.fixture_payload_mode))
@@ -275,6 +286,8 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("wheel_uri must be non-empty when provided")
         _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
         object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
+        _DEFAULT_VALIDATE_PIP_PACKAGES(self.extra_pip_packages, field_name="extra_pip_packages")
+        object.__setattr__(self, "extra_pip_packages", tuple(self.extra_pip_packages))
         if self.engine_version is not None and not self.engine_version:
             raise ValueError("engine_version must be non-empty when provided")
         if self.actions_output_json is not None and not self.actions_output_json:
@@ -309,6 +322,7 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
             "parameters": _runner_parameters(config),
         },
     }
+    task["spark_python_task"]["parameters"].extend(_pip_package_parameters(config.extra_pip_packages))
     task["spark_python_task"]["parameters"].extend(_package_wheel_parameters(config))
     return {
         "run_name": config.run_name,
@@ -454,6 +468,7 @@ def _engine_probe_task_from_target(
         single_user_name=config.single_user_name,
         wheel_uri=config.wheel_uri,
         extra_wheel_uris=config.extra_wheel_uris,
+        extra_pip_packages=(*config.extra_pip_packages, *target.pip_packages),
         engine_version=target.engine_version,
         allow_non_native_probe=target.allow_non_native_probe,
         metadata=target.metadata,
@@ -519,6 +534,13 @@ def _package_wheel_parameters(
     parameters: list[str] = []
     for wheel_uri in _package_wheel_uris(config):
         parameters.extend(["--package-wheel-uri", wheel_uri])
+    return parameters
+
+
+def _pip_package_parameters(pip_packages: Sequence[str]) -> list[str]:
+    parameters: list[str] = []
+    for pip_package in pip_packages:
+        parameters.extend(["--pip-package", pip_package])
     return parameters
 
 
@@ -610,6 +632,18 @@ def _validate_wheel_uris(items: Sequence[str], *, field_name: str) -> None:
     invalid_entries = [item for item in items if not isinstance(item, str) or not item]
     if invalid_entries:
         raise ValueError(f"{field_name} entries must be non-empty strings")
+
+
+def _validate_pip_packages(items: Sequence[str], *, field_name: str) -> None:
+    if isinstance(items, (str, bytes, bytearray)):
+        raise TypeError(f"{field_name} must be a sequence of non-empty package specs")
+    invalid_entries = [
+        item
+        for item in items
+        if not isinstance(item, str) or not item or item.startswith("-")
+    ]
+    if invalid_entries:
+        raise ValueError(f"{field_name} entries must be non-empty package specs and not pip options")
 
 
 def _is_metadata_item(item: str) -> bool:
@@ -717,6 +751,7 @@ _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_TARGETS = _validate_release_safe_probe_targ
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB = _validate_release_safe_probe_job
 _DEFAULT_VALIDATE_METADATA_ITEMS = _validate_metadata_items
 _DEFAULT_VALIDATE_WHEEL_URIS = _validate_wheel_uris
+_DEFAULT_VALIDATE_PIP_PACKAGES = _validate_pip_packages
 _DEFAULT_SERVING_BACKEND = _serving_backend
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_JOB = _cluster_config_from_engine_probe_job
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_MATRIX_JOB = _cluster_config_from_engine_probe_matrix_job
@@ -777,6 +812,9 @@ def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEnginePro
     metadata = record.get("metadata", ())
     if not isinstance(metadata, Sequence) or isinstance(metadata, (str, bytes, bytearray)):
         raise ValueError(f"backend config probe {index}.metadata must be an array of KEY=VALUE strings")
+    pip_packages = record.get("pip_packages", ())
+    if not isinstance(pip_packages, Sequence) or isinstance(pip_packages, (str, bytes, bytearray)):
+        raise ValueError(f"backend config probe {index}.pip_packages must be an array of package specs")
     return DatabricksEngineProbeTargetConfig(
         expected_backend=record.get("expected_backend", record.get("backend")),
         handoff_json=record.get("handoff_json"),
@@ -791,6 +829,7 @@ def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEnginePro
         native_probe_delegate_factory=record.get("native_probe_delegate_factory"),
         fixture_output_dir=record.get("fixture_output_dir"),
         fixture_payload_mode=record.get("fixture_payload_mode", PayloadMode.SEGMENTED),
+        pip_packages=tuple(pip_packages),
     )
 
 
@@ -842,6 +881,8 @@ def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
         provided.append("--allow-non-native-probe")
     if args.metadata:
         provided.append("--metadata")
+    if args.extra_pip_package:
+        provided.append("--extra-pip-package")
     if provided:
         raise ValueError(
             "--backend-config-json cannot be combined with single-target probe options; "
@@ -891,6 +932,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Additional cluster-visible wheel URI to install before the task. "
             "May be repeated; wheels install after --wheel-uri in argument order."
+        ),
+    )
+    parser.add_argument(
+        "--extra-pip-package",
+        action="append",
+        help=(
+            "Additional PyPI package spec to install before local wheels. "
+            "In matrix mode, use per-target pip_packages for backend-specific engine stacks."
         ),
     )
     parser.add_argument("--engine-version", help="Fallback engine version for legacy or non-native debug probes.")
@@ -943,6 +992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 single_user_name=args.single_user_name,
                 wheel_uri=args.wheel_uri,
                 extra_wheel_uris=tuple(args.extra_wheel_uri or ()),
+                extra_pip_packages=tuple(args.extra_pip_package or ()),
                 release_safe=args.release_safe or targets_file.release_safe,
                 serial_tasks=args.serial_tasks,
             )
@@ -965,6 +1015,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 single_user_name=args.single_user_name,
                 wheel_uri=args.wheel_uri,
                 extra_wheel_uris=tuple(args.extra_wheel_uri or ()),
+                extra_pip_packages=tuple(args.extra_pip_package or ()),
                 engine_version=args.engine_version,
                 allow_non_native_probe=args.allow_non_native_probe,
                 metadata=tuple(args.metadata or ()),
