@@ -310,6 +310,9 @@ _GITHUB_PULL_REQUEST_SUMMARY_KEYS = frozenset(
         "base_ref",
     }
 )
+_GITHUB_PULL_REQUEST_URL_RE = re.compile(
+    r"^https://github\.com/([^/\s]+)/([^/\s]+)/pull/([1-9][0-9]*)/?$"
+)
 _REPOSITORY_HYGIENE_KEYS = frozenset(
     {
         "record_type",
@@ -687,6 +690,7 @@ def _validate_release_bundle_inputs(
                 issues.append("native probe factories sidecar must be JSON")
                 continue
             issues.extend(_native_probe_factories_sidecar_issues(artifact.record))
+    issues.extend(_pr_evidence_repository_alignment_issues(artifacts))
     if issues:
         raise ValueError(f"Release bundle inputs are not release-ready: {'; '.join(issues)}")
 
@@ -986,6 +990,59 @@ def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if evidence.refactor_skill_applied is not True:
         issues.append("PR evidence sidecar Refactor skill must be applied")
     return _dedupe_strings(issues)
+
+
+def _pr_evidence_repository_alignment_issues(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> tuple[str, ...]:
+    governance_repositories = _github_governance_repositories(artifacts)
+    if not governance_repositories:
+        return ()
+    expected_repository = governance_repositories[0]
+    issues: list[str] = []
+    for artifact in artifacts:
+        if artifact.role != "pr_evidence" or artifact.record is None:
+            continue
+        pull_request_url = evaluate_pr_evidence_record(artifact.record).pull_request_url
+        if not pull_request_url:
+            continue
+        pull_request_repository = _pull_request_url_repository(pull_request_url)
+        if pull_request_repository is None:
+            issues.append(
+                "PR evidence sidecar pull_request_url must be a GitHub pull request URL "
+                "with owner/repo path"
+            )
+        elif pull_request_repository.casefold() != expected_repository.casefold():
+            issues.append(
+                "PR evidence sidecar pull_request_url repository "
+                f"{pull_request_repository!r} must match GitHub governance repository "
+                f"{expected_repository!r}"
+            )
+    return _dedupe_strings(issues)
+
+
+def _github_governance_repositories(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> tuple[str, ...]:
+    repositories: list[str] = []
+    for artifact in artifacts:
+        if artifact.role != "github_governance" or artifact.record is None:
+            continue
+        governance_record = _github_governance_record(artifact.record)
+        if governance_record is None:
+            continue
+        repository = governance_record.get("repository")
+        if isinstance(repository, str) and repository:
+            repositories.append(repository)
+    return _dedupe_strings(repositories)
+
+
+def _pull_request_url_repository(url: str) -> str | None:
+    match = _GITHUB_PULL_REQUEST_URL_RE.fullmatch(url)
+    if match is None:
+        return None
+    owner, repository, _number = match.groups()
+    return f"{owner}/{repository}"
 
 
 def _requirements_matrix_issues(source_path: str, payload: bytes) -> tuple[str, ...]:

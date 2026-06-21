@@ -391,6 +391,26 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert json.loads((bundle_dir / hygiene_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
 
 
+def test_build_release_bundle_rejects_pr_evidence_for_different_github_repository(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    foreign_pr_evidence_record = _pr_evidence_record(ok=True)
+    foreign_pr_evidence_record["pull_request_url"] = "https://github.com/other/document-kv-cache/pull/123"
+    foreign_pr_evidence = _write_json(source_dir / "foreign-pr-evidence.json", foreign_pr_evidence_record)
+    github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
+
+    with pytest.raises(ValueError, match="pull_request_url repository"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            pr_evidence_jsons=(foreign_pr_evidence,),
+            github_governance_json=github_governance,
+            output_dir=tmp_path / "foreign-pr-evidence-bundle",
+        )
+
+
 def test_build_release_bundle_rejects_inconsistent_allowed_open_pull_request_summary(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
     github_governance_record = _github_governance_cli_record(ok=True)
@@ -3427,7 +3447,7 @@ def _pr_evidence_record(*, ok: bool):
         "record_type": "document_kv.pr_evidence.v1",
         "ok": ok,
         "pull_request_number": 123,
-        "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/123",
+        "pull_request_url": "https://github.com/owner/document-kv-cache/pull/123",
         "what_changed": ["release provenance"],
         "why": "release bundles should be auditable",
         "scope": ["release_bundle.py"],
