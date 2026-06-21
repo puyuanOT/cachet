@@ -1,4 +1,8 @@
 import importlib
+import json
+import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -1770,6 +1774,58 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         assert "reexport_public" not in dir(module)
         assert "Path" not in module.__all__
         assert "dataclass" not in module.__all__
+
+
+def test_scheduler_compatibility_module_stays_out_of_root_facades():
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "\n".join(
+                [
+                    "import json",
+                    "import cachet, document_kv_cache",
+                    "summary = {}",
+                    "for root_module in (document_kv_cache, cachet):",
+                    "    root_star_namespace = {}",
+                    "    exec(f'from {root_module.__name__} import *', root_star_namespace)",
+                    "    summary[root_module.__name__] = {",
+                    "        'in_all': 'scheduler' in root_module.__all__,",
+                    "        'in_dir': 'scheduler' in dir(root_module),",
+                    "        'hasattr': hasattr(root_module, 'scheduler'),",
+                    "        'in_star': 'scheduler' in root_star_namespace,",
+                    "    }",
+                    "print(json.dumps(summary, sort_keys=True))",
+                ]
+            ),
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    fresh_root_surfaces = json.loads(probe.stdout)
+
+    assert fresh_root_surfaces == {
+        "cachet": {"hasattr": False, "in_all": False, "in_dir": False, "in_star": False},
+        "document_kv_cache": {"hasattr": False, "in_all": False, "in_dir": False, "in_star": False},
+    }
+
+    admission = importlib.import_module("document_kv_cache.admission")
+    document_scheduler = importlib.import_module("document_kv_cache.scheduler")
+    document_star_namespace_after_import: dict[str, object] = {}
+    cachet_star_namespace_after_import: dict[str, object] = {}
+    exec("from document_kv_cache import *", document_star_namespace_after_import)
+    exec("from cachet import *", cachet_star_namespace_after_import)
+
+    assert document_scheduler.AdmissionQueue is admission.AdmissionQueue
+    assert document_scheduler.PreparedRequest is admission.PreparedRequest
+    assert "scheduler" not in document_kv_cache._PUBLIC_SUBMODULES
+    assert "scheduler" not in document_kv_cache.__all__
+    assert "scheduler" not in cachet.__all__
+    assert "scheduler" not in document_star_namespace_after_import
+    assert "scheduler" not in cachet_star_namespace_after_import
 
 
 def test_package_level_submodule_imports_use_document_namespace_after_symbol_lookup():

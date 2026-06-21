@@ -1,0 +1,20 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Bernoulli the 3rd found an order-sensitive first version. The test was refactored to isolate fresh facade assertions in a subprocess and keep post-import checks to __all__/star-import behavior. Bernoulli re-reviewed and approved.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "Test-only public facade guardrail; no runtime behavior, package exports, or compatibility shim behavior changed."
+  ],
+  "verification": [
+    "poetry run pytest tests/test_public_package.py::test_scheduler_compatibility_module_stays_out_of_root_facades tests/test_scheduler.py tests/test_project_governance.py::test_document_package_readme_lists_public_modules_and_console_scripts tests/test_project_governance.py::test_readme_remaining_work_keeps_serving_boundary_explicit -q; PYTHONPATH=src poetry run pytest -q tests/test_scheduler.py::test_scheduler_namespace_remains_compatible tests/test_public_package.py::test_scheduler_compatibility_module_stays_out_of_root_facades; poetry run pytest tests/test_public_package.py tests/test_project_governance.py tests/test_scheduler.py -q; poetry run pytest -q; poetry check; git diff --check; poetry run python -m compileall -q src tests"
+  ],
+  "what_changed": [
+    "Added a public-surface guardrail proving the scheduler compatibility module remains importable by module path but is not advertised by the document_kv_cache or cachet root facades."
+  ],
+  "why": "The V1 serving boundary requires integration with vLLM/SGLang rather than a proprietary scheduler; the legacy scheduler shim should remain compatibility-only and stay out of the public root API."
+}
