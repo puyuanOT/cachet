@@ -494,6 +494,62 @@ def test_legacy_vllm_smoke_run_respects_legacy_helper_monkeypatch(monkeypatch, t
         legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
 
 
+def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursion(monkeypatch, tmp_path):
+    calls = []
+    fake_server = object()
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+    )
+    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+
+    monkeypatch.setattr(legacy_vllm_smoke, "create_venv", lambda path: calls.append(("create_venv", path)))
+    monkeypatch.setattr(legacy_vllm_smoke, "install_vllm", lambda python: calls.append(("install_vllm", python)))
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "installed_versions",
+        lambda python: {"vllm_version_installed": "0.23.0"},
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "probe_vllm_import",
+        lambda python, output, *, timeout_seconds, env: calls.append(("probe_vllm_import", output)),
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "write_smoke_datasets",
+        lambda local_dir: calls.append(("write_smoke_datasets", local_dir)) or dataset_paths,
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "start_vllm_server",
+        lambda cfg, python, log_path: calls.append(("start_vllm_server", log_path)) or fake_server,
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "wait_for_server",
+        lambda server, log_path, cfg, *, timeout_seconds: calls.append(("wait_for_server", timeout_seconds)),
+    )
+    monkeypatch.setattr(legacy_vllm_smoke, "run", lambda argv: calls.append(("run", argv)))
+    monkeypatch.setattr(legacy_vllm_smoke, "terminate_process", lambda server: calls.append(("terminate", server)))
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "copy_file_if_exists",
+        lambda source, target: calls.append(("copy", source, target)),
+    )
+
+    legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
+
+    assert ("write_smoke_datasets", config.local_dir) in calls
+    assert ("run", build_benchmark_runner_args(config, dataset_paths)) in calls
+    assert calls[-2:] == [
+        ("terminate", fake_server),
+        ("copy", config.server_log_path, config.server_log_copy_path),
+    ]
+
+
 def test_legacy_vllm_smoke_direct_helper_respects_legacy_run_monkeypatch(monkeypatch, tmp_path):
     calls = []
 
