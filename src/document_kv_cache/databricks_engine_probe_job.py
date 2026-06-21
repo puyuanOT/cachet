@@ -60,10 +60,34 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "fixture_payload_mode",
     }
 )
-ENGINE_PROBE_RUNNER_SCRIPT = """from document_kv_cache.databricks_engine_probe_job import run_engine_probe_task
+ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+
+
+def _cluster_file_path(uri: str) -> str:
+    if uri.startswith("dbfs:/"):
+        return "/dbfs/" + uri.removeprefix("dbfs:/").lstrip("/")
+    return uri
+
+
+def _install_package_wheel(argv: list[str]) -> list[str]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--package-wheel-uri")
+    args, remaining = parser.parse_known_args(argv)
+    if args.package_wheel_uri:
+        subprocess.check_call(
+            [sys.executable, "-m", "pip", "install", _cluster_file_path(args.package_wheel_uri)]
+        )
+    return remaining
 
 if __name__ == "__main__":
-    exit_code = run_engine_probe_task()
+    remaining_args = _install_package_wheel(sys.argv[1:])
+    from document_kv_cache.databricks_engine_probe_job import run_engine_probe_task
+
+    exit_code = run_engine_probe_task(remaining_args)
     if exit_code:
         raise SystemExit(exit_code)
 """
@@ -276,7 +300,7 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
         },
     }
     if config.wheel_uri is not None:
-        task["libraries"] = [{"whl": config.wheel_uri}]
+        task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
     return {
         "run_name": config.run_name,
         "tasks": [task],
