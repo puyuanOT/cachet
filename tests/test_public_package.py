@@ -1706,6 +1706,8 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert "ServingBackend" not in legacy_serving_env.__all__
     assert native_probe_factories.__all__ == [
         "NATIVE_PROBE_ADAPTER_CONTRACT",
+        "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR",
+        "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
         "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
         "NativeProbeFactoryInspection",
         "NativeProbeFactoryUnavailable",

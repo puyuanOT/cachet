@@ -9,6 +9,8 @@ from typing import Any
 
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_ADAPTER_CONTRACT,
+    NATIVE_PROBE_DELEGATE_CONTRACT_ATTR,
+    NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR,
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     SGLANG_NATIVE_PROBE_FACTORY,
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
@@ -34,6 +36,8 @@ from restaurant_kv_serving.engine_probe import EngineKVProbeFactoryContext
 
 __all__ = [
     "NATIVE_PROBE_ADAPTER_CONTRACT",
+    "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR",
+    "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
     "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",

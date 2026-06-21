@@ -45,6 +45,7 @@ from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_FACTORY,
     VLLM_NATIVE_PROBE_FACTORY,
     native_probe_adapter_contract_to_record,
+    native_probe_factories_record_issues,
 )
 from document_kv_cache.release_bundle import (
     RELEASE_BUNDLE_MANIFEST_FILENAME,
@@ -879,6 +880,34 @@ def test_build_release_bundle_strict_v1_requires_supported_native_probe_factorie
             output_dir=tmp_path / f"strict-unsupported-{unsupported_backend}",
             require_complete_v1=True,
         )
+
+
+def test_build_release_bundle_strict_v1_requires_delegate_contract_proof_for_native_probe_support(tmp_path):
+    source_dir = tmp_path / "legacy-supported-native-factories"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    legacy_supported_record = _native_probe_factories_record(supported=True)
+    for factory in legacy_supported_record["factories"]:
+        del factory["delegate_adapter_contract"]
+        del factory["delegate_adapter_contract_valid"]
+    assert native_probe_factories_record_issues(legacy_supported_record) == ()
+    legacy_supported_native_probe_factories = _write_json(
+        source_dir / "legacy-supported-native-probe-factories.json",
+        legacy_supported_record,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **{**release_kwargs, "native_probe_factories_jsons": (legacy_supported_native_probe_factories,)},
+            output_dir=tmp_path / "strict-legacy-supported-native-factories",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "legacy-supported-native-probe-factories.json: vLLM native probe factory support" in error
+    assert "legacy-supported-native-probe-factories.json: SGLang native probe factory support" in error
 
 
 def test_build_release_bundle_strict_v1_rejects_split_native_probe_factory_support(tmp_path):
@@ -3395,6 +3424,8 @@ def _native_probe_factory_record(backend: str, factory_path: str, *, supported: 
         "package_importable": supported,
         "package_version": f"{backend}-test-version" if supported else None,
         "delegate_factory_path": f"tests.native_probe_factories:{backend}_probe_factory" if supported else None,
+        "delegate_adapter_contract": native_probe_adapter_contract_to_record() if supported else None,
+        "delegate_adapter_contract_valid": supported,
         "serving_environment_profile": serving_environment_profile_to_record(
             serving_environment_profile(backend)
         ),

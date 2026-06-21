@@ -532,10 +532,19 @@ delegate environment variable at a backend-native factory:
 `DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. The public built-in
 factory paths stay stable for release bundles, while the delegate callable owns
 the actual vLLM/SGLang block-manager integration.
+Delegate factories must also declare the exact Document KV adapter contract
+they implement. Set either a module-level
+`DOCUMENT_KV_NATIVE_PROBE_CONTRACT = native_probe_adapter_contract_to_record()`
+constant or a callable-level `document_kv_native_probe_contract` attribute.
+Inspection reports the delegate as unsupported when the declaration is missing
+or does not match the built-in handoff/probe/action contract, so backend forks
+fail fast before a Databricks GPU probe starts.
 `builtin_native_probe_factories_to_record()` reports that status together with
 the pinned isolated serving-environment profile for each backend and the
 configured delegate path, if present. The same diagnostic record also includes
-an `adapter_contract` block naming the required engine handoff record,
+the expected `adapter_contract` block and the delegate's declared
+`delegate_adapter_contract`/`delegate_adapter_contract_valid` status. The
+contract names the required engine handoff record,
 connector-action record, probe record, `qwen3-v1` layout, merged payload mode,
 and `native_probe=true` release requirement. Use that diagnostic record when
 preparing native adapter work so the target engine versions and dependency
