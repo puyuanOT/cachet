@@ -167,7 +167,7 @@ _REQUIRED_REQUIREMENTS_MATRIX_SNIPPETS = (
     "HotpotQA",
     "MusiQue",
     "NIAH",
-    "`full_no_cache` baseline",
+    "`baseline_prefill` arm",
     "MQA/GQA",
     "KV Packet",
     "Qwen3.5",
