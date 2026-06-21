@@ -20,12 +20,14 @@ from typing import Any
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from document_kv_cache.benchmark_plan import PLAN_VERSION
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
     RELEASE_EVIDENCE_RECORD_TYPE,
     REQUIRED_ENGINE_PROBE_BACKENDS,
     evaluate_release_evidence,
 )
+from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID
 from document_kv_cache.benchmark_plan_executor import (
     BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
     BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
@@ -430,6 +432,7 @@ def build_release_bundle(
     _validate_release_bundle_inputs(
         prepared_artifacts,
         expected_package_version=expected_package_version,
+        require_complete_v1=require_complete_v1,
     )
     if require_complete_v1:
         _validate_strict_v1_databricks_purpose_coverage(prepared_artifacts)
@@ -566,6 +569,7 @@ def _validate_release_bundle_inputs(
     artifacts: Sequence[_PreparedReleaseBundleArtifact],
     *,
     expected_package_version: str | None = None,
+    require_complete_v1: bool = False,
 ) -> None:
     v1_record = _single_record_for_role(artifacts, "v1_benchmark")
     storage_record = _single_record_for_role(artifacts, "storage_benchmark")
@@ -617,7 +621,7 @@ def _validate_release_bundle_inputs(
             if artifact.record is None:
                 issues.append("benchmark plan execution sidecar must be JSON")
                 continue
-            issues.extend(_plan_execution_sidecar_issues(artifact.record))
+            issues.extend(_plan_execution_sidecar_issues(artifact.record, strict_v1_target=require_complete_v1))
         elif artifact.role == "databricks_run_status":
             if artifact.record is None:
                 issues.append("Databricks run status sidecar must be JSON")
@@ -1254,7 +1258,11 @@ def _repository_hygiene_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, 
     return _dedupe_strings(issues)
 
 
-def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def _plan_execution_sidecar_issues(
+    record: Mapping[str, Any],
+    *,
+    strict_v1_target: bool = False,
+) -> tuple[str, ...]:
     issues: list[str] = []
     issues.extend(_unexpected_keys(record, _BENCHMARK_PLAN_EXECUTION_KEYS, "benchmark plan execution sidecar"))
     if record.get("record_type") != BENCHMARK_PLAN_EXECUTION_RECORD_TYPE:
@@ -1270,7 +1278,7 @@ def _plan_execution_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]
     if not isinstance(plan_source, Mapping):
         issues.append("benchmark plan execution sidecar plan_source must be an object")
     else:
-        issues.extend(_plan_source_issues(plan_source))
+        issues.extend(_plan_source_issues(plan_source, strict_v1_target=strict_v1_target))
         if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes, bytearray)):
             issues.extend(_plan_execution_command_count_issues(commands, plan_source))
     return _dedupe_strings(issues)
@@ -1321,8 +1329,13 @@ def _native_probe_factories_sidecar_issues(record: Mapping[str, Any]) -> tuple[s
     return native_probe_factories_record_issues(record)
 
 
-def _plan_source_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def _plan_source_issues(
+    record: Mapping[str, Any],
+    *,
+    strict_v1_target: bool = False,
+) -> tuple[str, ...]:
     issues: list[str] = []
+    label = "benchmark plan execution sidecar plan_source"
     issues.extend(_unexpected_keys(record, _BENCHMARK_PLAN_SOURCE_KEYS, "benchmark plan execution sidecar plan_source"))
     if record.get("record_type") != BENCHMARK_PLAN_SOURCE_RECORD_TYPE:
         issues.append(f"benchmark plan execution sidecar plan_source.record_type must be {BENCHMARK_PLAN_SOURCE_RECORD_TYPE!r}")
@@ -1335,6 +1348,23 @@ def _plan_source_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         issues.append("benchmark plan execution sidecar plan_source.sha256 must be a 64-character lowercase hex digest")
     if "command_count" in record and (type(record["command_count"]) is not int or record["command_count"] <= 0):
         issues.append("benchmark plan execution sidecar plan_source.command_count must be a positive integer when present")
+    if strict_v1_target:
+        issues.extend(_strict_v1_plan_source_issues(record, label=label))
+    return tuple(issues)
+
+
+def _strict_v1_plan_source_issues(record: Mapping[str, Any], *, label: str) -> tuple[str, ...]:
+    issues: list[str] = []
+    for field_name, expected_value in (
+        ("plan_version", PLAN_VERSION),
+        ("model_id", DEFAULT_V1_MODEL_ID),
+        ("hardware_target", DEFAULT_HARDWARE_TARGET),
+    ):
+        if record.get(field_name) != expected_value:
+            issues.append(f"{label}.{field_name} must be {expected_value!r}")
+    issues.extend(_required_str_field(record, "suite_id", label))
+    if type(record.get("command_count")) is not int or record["command_count"] <= 0:
+        issues.append(f"{label}.command_count must be a positive integer")
     return tuple(issues)
 
 

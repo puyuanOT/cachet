@@ -671,6 +671,35 @@ def test_build_release_bundle_strict_v1_requires_requirements_matrix(tmp_path):
         )
 
 
+def test_build_release_bundle_strict_v1_rejects_wrong_plan_source_target(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    wrong_target_record = _plan_execution_record(ok=True)
+    wrong_target_record["plan_source"]["plan_version"] = "legacy"
+    wrong_target_record["plan_source"]["model_id"] = "qwen2:7b"
+    wrong_target_record["plan_source"]["hardware_target"] = "aws-g6"
+    wrong_target_record["plan_source"]["suite_id"] = ""
+    wrong_target_record["plan_source"].pop("command_count")
+    wrong_target_plan = _write_json(source_dir / "wrong-target-plan-execution.json", wrong_target_record)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **{**release_kwargs, "plan_execution_jsons": (wrong_target_plan,)},
+            output_dir=tmp_path / "strict-wrong-plan-source-target",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "benchmark plan execution sidecar plan_source.plan_version must be 'v1'" in error
+    assert "benchmark plan execution sidecar plan_source.model_id must be 'qwen3:4b-instruct'" in error
+    assert "benchmark plan execution sidecar plan_source.hardware_target must be 'aws-g5'" in error
+    assert "benchmark plan execution sidecar plan_source.suite_id must be a non-empty string" in error
+    assert "benchmark plan execution sidecar plan_source.command_count must be a positive integer" in error
+
+
 def test_build_release_bundle_rejects_malformed_requirements_matrix(tmp_path):
     source_dir = tmp_path / "sources"
     release_kwargs = _strict_v1_release_bundle_kwargs(
@@ -3284,6 +3313,7 @@ def _plan_execution_record(*, ok: bool):
             "driver_path": "/dbfs/benchmarks/v1-plan.json",
             "size_bytes": 512,
             "sha256": "a" * 64,
+            "plan_version": "v1",
             "suite_id": "v1-suite",
             "model_id": "qwen3:4b-instruct",
             "hardware_target": "aws-g5",
