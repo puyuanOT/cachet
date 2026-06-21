@@ -352,10 +352,17 @@ def databricks_run_status_sidecar_issues(
     return _dedupe_strings(issues)
 
 
-def validate_databricks_run_status_sidecar(record: Mapping[str, Any]) -> None:
+def validate_databricks_run_status_sidecar(
+    record: Mapping[str, Any],
+    *,
+    expected_hardware_target: str | None = None,
+) -> None:
     """Validate a release-oriented Databricks run-status sidecar."""
 
-    issues = databricks_run_status_sidecar_issues(record)
+    issues = databricks_run_status_sidecar_issues(
+        record,
+        expected_hardware_target=expected_hardware_target,
+    )
     if issues:
         raise ValueError("; ".join(issues))
 

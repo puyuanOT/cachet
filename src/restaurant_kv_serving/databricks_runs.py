@@ -278,8 +278,16 @@ def databricks_run_status_sidecar_issues(
     )
 
 
-def validate_databricks_run_status_sidecar(record: Mapping[str, Any]) -> None:
-    return _call_document_function("validate_databricks_run_status_sidecar", record)
+def validate_databricks_run_status_sidecar(
+    record: Mapping[str, Any],
+    *,
+    expected_hardware_target: str | None = None,
+) -> None:
+    return _call_document_function(
+        "validate_databricks_run_status_sidecar",
+        record,
+        expected_hardware_target=expected_hardware_target,
+    )
 
 
 def _databricks_api_json(
