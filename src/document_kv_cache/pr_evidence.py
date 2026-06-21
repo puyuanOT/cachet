@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,6 +16,9 @@ from document_kv_cache.storage import local_path
 PR_EVIDENCE_RECORD_TYPE = "document_kv.pr_evidence.v1"
 PR_EVIDENCE_VALIDATION_RECORD_TYPE = "document_kv.pr_evidence_validation.v1"
 GPT55_REVIEW_OUTCOMES = ("clean", "findings_resolved")
+_GITHUB_PULL_REQUEST_URL_RE = re.compile(
+    r"^https://github\.com/([^/\s]+)/([^/\s]+)/pull/([1-9][0-9]*)/?$"
+)
 _PR_EVIDENCE_RECORD_KEYS = frozenset(
     {
         "record_type",
@@ -173,6 +177,14 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
         pull_request_url=pull_request_url,
         issues=tuple(parsing_issues),
     )
+
+
+def _github_pull_request_url_identity(url: str) -> tuple[str, int] | None:
+    match = _GITHUB_PULL_REQUEST_URL_RE.fullmatch(url)
+    if match is None:
+        return None
+    owner, repository, number = match.groups()
+    return f"{owner}/{repository}", int(number)
 
 
 def evaluate_pr_evidence_file(path: str | Path) -> PullRequestEvidence:
@@ -396,12 +408,13 @@ def _semantic_issues(
         issues.append("GPT-5.5 findings must be resolved when gpt55_review_outcome is 'findings_resolved'")
     if not gpt55_review_summary:
         issues.append("gpt55_review_summary must describe findings and fixes, or state that the review was clean")
-    if pull_request_url and not pull_request_url.startswith("https://github.com/"):
+    pull_request_identity = _github_pull_request_url_identity(pull_request_url) if pull_request_url else None
+    if pull_request_url and pull_request_identity is None:
         issues.append("pull_request_url must be a GitHub pull request URL when provided")
     if (
         pull_request_number is not None
-        and pull_request_url
-        and not pull_request_url.rstrip("/").endswith(f"/pull/{pull_request_number}")
+        and pull_request_identity is not None
+        and pull_request_identity[1] != pull_request_number
     ):
         issues.append("pull_request_url must end with pull_request_number when both are provided")
     return tuple(issues)
