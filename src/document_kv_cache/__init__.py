@@ -35,6 +35,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "dataset_prep",
         "engine",
         "engine_adapters",
+        "engine_launch_config",
         "engine_probe",
         "engine_protocol",
         "github_governance",
@@ -319,6 +320,46 @@ _DOCUMENT_ROOT_EXPORTS = {
     "write_engine_adapter_request_json": (
         "document_kv_cache.engine_adapters",
         "write_engine_adapter_request_json",
+    ),
+    "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE": (
+        "document_kv_cache.engine_launch_config",
+        "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
+    ),
+    "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION": (
+        "document_kv_cache.engine_launch_config",
+        "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
+    ),
+    "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS": (
+        "document_kv_cache.engine_launch_config",
+        "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
+    ),
+    "EngineLaunchConfigEvidence": (
+        "document_kv_cache.engine_launch_config",
+        "EngineLaunchConfigEvidence",
+    ),
+    "engine_launch_config_evidence_to_record": (
+        "document_kv_cache.engine_launch_config",
+        "engine_launch_config_evidence_to_record",
+    ),
+    "engine_launch_config_record_issues": (
+        "document_kv_cache.engine_launch_config",
+        "engine_launch_config_record_issues",
+    ),
+    "evaluate_engine_launch_config_evidence": (
+        "document_kv_cache.engine_launch_config",
+        "evaluate_engine_launch_config_evidence",
+    ),
+    "read_engine_launch_config_json": (
+        "document_kv_cache.engine_launch_config",
+        "read_engine_launch_config_json",
+    ),
+    "validate_engine_launch_config_record": (
+        "document_kv_cache.engine_launch_config",
+        "validate_engine_launch_config_record",
+    ),
+    "write_engine_launch_config_evidence_json": (
+        "document_kv_cache.engine_launch_config",
+        "write_engine_launch_config_evidence_json",
     ),
     "ENGINE_KV_PROBE_METADATA_EXPECTED_BACKEND": (
         "document_kv_cache.engine_probe",

@@ -71,6 +71,9 @@ def test_public_document_package_reexports_core_api():
         RELEASE_BUNDLE_MANIFEST_FILENAME,
         RELEASE_BUNDLE_RECORD_TYPE,
         RELEASE_EVIDENCE_ARTIFACT_ROLES,
+        ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE,
+        ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION,
+        REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
         SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE,
         DatabricksSingleNodeGPUClusterConfig,
         DatabricksSingleNodeG5ClusterConfig,
@@ -86,6 +89,7 @@ def test_public_document_package_reexports_core_api():
         RangeBatchReader,
         EngineAdapterRequest,
         EngineAdapterSpec,
+        EngineLaunchConfigEvidence,
         ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
         ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION,
         EngineReadyRequest,
@@ -181,9 +185,12 @@ def test_public_document_package_reexports_core_api():
         databricks_workspace_config_from_env,
         evaluate_release_storage_benchmark_evidence,
         evaluate_storage_benchmark_evidence,
+        evaluate_engine_launch_config_evidence,
         engine_probe_targets_to_record,
         engine_kv_connector_actions_from_record,
         engine_kv_connector_actions_to_record,
+        engine_launch_config_evidence_to_record,
+        engine_launch_config_record_issues,
         default_model_profile_registry,
         evaluate_pr_evidence,
         evaluate_pr_evidence_directory,
@@ -209,6 +216,7 @@ def test_public_document_package_reexports_core_api():
         pr_evidence_validation_to_record,
         pr_evidence_to_record,
         read_model_profile_definition_json,
+        read_engine_launch_config_json,
         read_databricks_engine_probe_targets_json,
         read_databricks_engine_probe_targets_file_json,
         release_evidence_input_status_to_record,
@@ -232,11 +240,13 @@ def test_public_document_package_reexports_core_api():
         validate_aws_single_node_gpu_type,
         validate_aws_g5_node_type,
         validate_databricks_run_status_sidecar,
+        validate_engine_launch_config_record,
         validate_engine_kv_connector_actions_record,
         write_benchmark_job_plan_json,
         write_benchmark_job_plan_shell,
         write_engine_adapter_handoff_bundle,
         write_engine_adapter_payload,
+        write_engine_launch_config_evidence_json,
         write_engine_kv_connector_actions_record_json,
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
@@ -249,6 +259,7 @@ def test_public_document_package_reexports_core_api():
         databricks_runs,
         engine,
         engine_adapters,
+        engine_launch_config,
         engine_protocol,
         engine_probe,
         materializer,
@@ -303,6 +314,15 @@ def test_public_document_package_reexports_core_api():
     assert RELEASE_BUNDLE_MANIFEST_FILENAME is restaurant_kv_serving.RELEASE_BUNDLE_MANIFEST_FILENAME
     assert RELEASE_BUNDLE_RECORD_TYPE is restaurant_kv_serving.RELEASE_BUNDLE_RECORD_TYPE
     assert RELEASE_EVIDENCE_ARTIFACT_ROLES is restaurant_kv_serving.RELEASE_EVIDENCE_ARTIFACT_ROLES
+    assert (
+        ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE
+        is restaurant_kv_serving.ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE
+    )
+    assert (
+        ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION
+        is restaurant_kv_serving.ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION
+    )
+    assert REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS is restaurant_kv_serving.REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS
     assert (
         SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE
         is restaurant_kv_serving.SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE
@@ -382,6 +402,9 @@ def test_public_document_package_reexports_core_api():
     assert EngineAdapterSpec is engine_adapters.EngineAdapterSpec
     assert EngineAdapterSpec is restaurant_kv_serving.EngineAdapterSpec
     assert EngineAdapterSpec.__module__ == "document_kv_cache.engine_adapters"
+    assert EngineLaunchConfigEvidence is engine_launch_config.EngineLaunchConfigEvidence
+    assert EngineLaunchConfigEvidence is restaurant_kv_serving.EngineLaunchConfigEvidence
+    assert EngineLaunchConfigEvidence.__module__ == "document_kv_cache.engine_launch_config"
     assert ServingBackend is engine_adapters.ServingBackend
     assert ServingBackend is restaurant_kv_serving.ServingBackend
     assert ServingBackend.__module__ == "document_kv_cache.engine_adapters"
@@ -560,6 +583,8 @@ def test_public_document_package_reexports_core_api():
     assert chunk_type_sort_order is restaurant_kv_serving.chunk_type_sort_order
     assert release_bundle_to_record is restaurant_kv_serving.release_bundle_to_record
     assert evaluate_release_storage_benchmark_evidence is restaurant_kv_serving.evaluate_release_storage_benchmark_evidence
+    assert evaluate_engine_launch_config_evidence is engine_launch_config.evaluate_engine_launch_config_evidence
+    assert evaluate_engine_launch_config_evidence is restaurant_kv_serving.evaluate_engine_launch_config_evidence
     assert evaluate_release_evidence is restaurant_kv_serving.evaluate_release_evidence
     assert inspect_release_evidence_input_files is restaurant_kv_serving.inspect_release_evidence_input_files
     assert release_evidence_input_status_to_record is restaurant_kv_serving.release_evidence_input_status_to_record
@@ -584,6 +609,12 @@ def test_public_document_package_reexports_core_api():
     assert model_profile_definition_to_record is model_profiles.model_profile_definition_to_record
     assert model_profile_definition_to_record is restaurant_kv_serving.model_profile_definition_to_record
     assert model_profile_definition_to_record.__module__ == "document_kv_cache.model_profiles"
+    assert engine_launch_config_evidence_to_record is engine_launch_config.engine_launch_config_evidence_to_record
+    assert engine_launch_config_evidence_to_record is restaurant_kv_serving.engine_launch_config_evidence_to_record
+    assert engine_launch_config_record_issues is engine_launch_config.engine_launch_config_record_issues
+    assert engine_launch_config_record_issues is restaurant_kv_serving.engine_launch_config_record_issues
+    assert read_engine_launch_config_json is engine_launch_config.read_engine_launch_config_json
+    assert read_engine_launch_config_json is restaurant_kv_serving.read_engine_launch_config_json
     assert read_model_profile_definition_json is model_profiles.read_model_profile_definition_json
     assert read_model_profile_definition_json is restaurant_kv_serving.read_model_profile_definition_json
     assert read_databricks_engine_probe_targets_json is restaurant_kv_serving.read_databricks_engine_probe_targets_json
@@ -614,6 +645,8 @@ def test_public_document_package_reexports_core_api():
     assert native_probe_factories_record_issues is restaurant_kv_serving.native_probe_factories_record_issues
     assert validate_native_probe_factories_record is native_probe_factories.validate_native_probe_factories_record
     assert validate_native_probe_factories_record is restaurant_kv_serving.validate_native_probe_factories_record
+    assert validate_engine_launch_config_record is engine_launch_config.validate_engine_launch_config_record
+    assert validate_engine_launch_config_record is restaurant_kv_serving.validate_engine_launch_config_record
     assert run_engine_kv_connector_probe is engine_probe.run_engine_kv_connector_probe
     assert write_engine_adapter_handoff_bundle is engine_probe.write_engine_adapter_handoff_bundle
     assert write_engine_adapter_handoff_bundle.__module__ == "document_kv_cache.engine_probe"
@@ -624,6 +657,11 @@ def test_public_document_package_reexports_core_api():
     assert write_engine_adapter_payload is engine_probe.write_engine_adapter_payload
     assert write_engine_adapter_payload.__module__ == "document_kv_cache.engine_probe"
     assert restaurant_kv_serving.write_engine_adapter_payload.__module__ == "restaurant_kv_serving.engine_probe"
+    assert write_engine_launch_config_evidence_json is engine_launch_config.write_engine_launch_config_evidence_json
+    assert (
+        write_engine_launch_config_evidence_json
+        is restaurant_kv_serving.write_engine_launch_config_evidence_json
+    )
     assert (
         write_engine_kv_connector_actions_record_json
         is engine_probe.write_engine_kv_connector_actions_record_json
@@ -693,6 +731,12 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "RELEASE_BUNDLE_ARTIFACT_ROLES" in document_kv_cache.__all__
     assert "RELEASE_STORAGE_BENCHMARK_READERS" in document_kv_cache.__all__
     assert "REQUIRED_ENGINE_PROBE_BACKENDS" in document_kv_cache.__all__
+    assert "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE" in document_kv_cache.__all__
+    assert "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION" in document_kv_cache.__all__
+    assert "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS" in document_kv_cache.__all__
+    assert "EngineLaunchConfigEvidence" in document_kv_cache.__all__
+    assert "evaluate_engine_launch_config_evidence" in document_kv_cache.__all__
+    assert "validate_engine_launch_config_record" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_PURPOSE" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME" in document_kv_cache.__all__
@@ -1327,6 +1371,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     engine = importlib.import_module("document_kv_cache.engine")
     engine_protocol = importlib.import_module("document_kv_cache.engine_protocol")
     engine_adapters = importlib.import_module("document_kv_cache.engine_adapters")
+    engine_launch_config = importlib.import_module("document_kv_cache.engine_launch_config")
     github_governance = importlib.import_module("document_kv_cache.github_governance")
     kvpack = importlib.import_module("document_kv_cache.kvpack")
     manifest = importlib.import_module("document_kv_cache.manifest")
@@ -1442,6 +1487,20 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "vllm_adapter_spec",
         "write_engine_adapter_request_json",
     ]
+    assert engine_launch_config.__all__ == [
+        "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
+        "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
+        "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
+        "EngineLaunchConfigEvidence",
+        "engine_launch_config_evidence_to_record",
+        "engine_launch_config_record_issues",
+        "evaluate_engine_launch_config_evidence",
+        "read_engine_launch_config_json",
+        "validate_engine_launch_config_record",
+        "write_engine_launch_config_evidence_json",
+    ]
+    legacy_engine_launch_config = importlib.import_module("restaurant_kv_serving.engine_launch_config")
+    assert legacy_engine_launch_config.__all__ == engine_launch_config.__all__
     assert github_governance.__all__ == [
         "DEFAULT_GITHUB_API_BASE_URL",
         "DEFAULT_GITHUB_BRANCH",

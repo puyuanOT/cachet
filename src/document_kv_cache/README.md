@@ -52,6 +52,8 @@ new document modules depend on restaurant-owned implementations.
 - `engine.py` builds engine-ready payload handles from materialized KV.
 - `engine_adapters.py` defines the external vLLM/SGLang adapter handoff and
   native-probe descriptor contracts.
+- `engine_launch_config.py` validates vLLM transfer-config and SGLang HiCache
+  launch sidecars against the shared document-KV engine handoff contract.
 - `engine_probe.py` executes a serialized handoff through a backend-owned native
   probe factory.
 - `engine_protocol.py` defines validated KV layout, segment, and handle data
