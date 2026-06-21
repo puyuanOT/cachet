@@ -340,8 +340,12 @@ def _sorted_unique_texts(values: Sequence[Any]) -> list[str]:
     return _call_document_function("_sorted_unique_texts", values)
 
 
+def _is_supported_aws_single_node_gpu_type(value: Any) -> bool:
+    return _call_document_function("_is_supported_aws_single_node_gpu_type", value)
+
+
 def _is_aws_g5_node_type(value: Any) -> bool:
-    return _call_document_function("_is_aws_g5_node_type", value)
+    return _is_supported_aws_single_node_gpu_type(value)
 
 
 def _sha256_hex(payload: bytes) -> str:
@@ -398,6 +402,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "_sequence_of_mappings": _sequence_of_mappings,
     "_optional_str": _optional_str,
     "_sorted_unique_texts": _sorted_unique_texts,
+    "_is_supported_aws_single_node_gpu_type": _is_supported_aws_single_node_gpu_type,
     "_is_aws_g5_node_type": _is_aws_g5_node_type,
     "_sha256_hex": _sha256_hex,
     "_databricks_request": _databricks_request,

@@ -924,6 +924,15 @@ def test_legacy_databricks_runs_forwards_expected_hardware_target_keyword():
         )
 
 
+def test_legacy_databricks_runs_private_g5_gpu_shim_uses_generic_g6_l4_check():
+    assert legacy_databricks_runs._is_aws_g5_node_type("g6.8xlarge") is True
+    assert legacy_databricks_runs._is_aws_g5_node_type("g6e.8xlarge") is False
+    assert (
+        legacy_databricks_runs._is_aws_g5_node_type("g6.8xlarge")
+        is public_databricks_runs._is_supported_aws_single_node_gpu_type("g6.8xlarge")
+    )
+
+
 def test_legacy_workspace_config_factory_returns_picklable_legacy_config():
     config = legacy_databricks_runs.databricks_workspace_config_from_env(
         environ={
