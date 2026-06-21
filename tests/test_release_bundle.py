@@ -2699,6 +2699,7 @@ def _v1_measurement_record(dataset: str, arm: str):
         "completion_tokens": 16,
         "ttft_seconds": 1.0,
         "time_to_completion_seconds": 2.0,
+        "output_text": "Ada Lovelace",
         "answer_found": True,
         "error": None,
         "metadata": _v1_measurement_metadata(arm),
