@@ -16,16 +16,19 @@ from document_kv_cache.vllm_smoke import (
     NUMPY_CONSTRAINT,
     PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT,
     SERVED_MODEL_NAME,
+    SMOKE_DATASETS,
     TOKENIZERS_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
     VLLM_VERSION,
     VLLMSmokeBenchmarkConfig,
+    benchmark_dataset_paths,
     build_benchmark_runner_args,
     build_metadata,
     build_vllm_server_args,
     dataset_args,
     dependency_constraints,
     parse_args,
+    parse_dataset_specs,
     run_vllm_smoke_benchmark,
     smoke_dataset_records,
 )
@@ -85,6 +88,23 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert "--disable-log-requests" not in args
 
 
+def test_vllm_server_args_accept_full_benchmark_sizing_overrides(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="full-v1-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        max_model_len=32768,
+        max_num_seqs=8,
+        gpu_memory_utilization=0.72,
+    )
+
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+
+    assert args[args.index("--max-model-len") + 1] == "32768"
+    assert args[args.index("--max-num-seqs") + 1] == "8"
+    assert args[args.index("--gpu-memory-utilization") + 1] == "0.72"
+
+
 def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -117,6 +137,41 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     ]
 
 
+def test_parse_dataset_specs_requires_complete_v1_dataset_set(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+
+    paths = parse_dataset_specs(specs)
+
+    assert list(paths) == list(SMOKE_DATASETS)
+    assert paths["biography"] == tmp_path / "biography.jsonl"
+
+    with pytest.raises(ValueError, match="missing required V1 datasets"):
+        parse_dataset_specs((f"biography={tmp_path / 'biography.jsonl'}",))
+    with pytest.raises(ValueError, match="Unsupported V1 smoke dataset"):
+        parse_dataset_specs(specs + (f"unknown={tmp_path / 'unknown.jsonl'}",))
+    with pytest.raises(ValueError, match="duplicate dataset spec"):
+        parse_dataset_specs(specs + (f"biography={tmp_path / 'other.jsonl'}",))
+    with pytest.raises(ValueError, match="DATASET=JSONL_PATH"):
+        parse_dataset_specs(("biography",))
+
+
+def test_benchmark_dataset_paths_uses_prepared_specs_without_writing_smoke(monkeypatch, tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="full-v1-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+    )
+
+    def fail_if_smoke_is_written(local_dir):
+        raise AssertionError(f"unexpected smoke dataset write to {local_dir}")
+
+    monkeypatch.setattr(public_vllm_smoke, "write_smoke_datasets", fail_if_smoke_is_written)
+
+    assert benchmark_dataset_paths(config) == parse_dataset_specs(specs)
+
+
 def test_metadata_records_reproducible_smoke_context(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -135,9 +190,36 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["hf_home"] == str(tmp_path / "local" / "hf-cache")
     assert metadata["vllm_python"] == str(tmp_path / "local" / "document-kv-vllm-smoke-smoke-1" / "vllm-venv" / "bin" / "python")
     assert metadata["dependency_constraints"] == dependency_constraints()
+    assert metadata["dataset_source"] == "smoke"
+    assert metadata["dataset_specs"] == []
+    assert metadata["max_model_len"] == 4096
+    assert metadata["max_num_seqs"] == 2
+    assert metadata["gpu_memory_utilization"] == 0.85
+
+
+def test_metadata_records_prepared_dataset_context(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="full-v1-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        max_model_len=32768,
+        max_num_seqs=8,
+        gpu_memory_utilization=0.72,
+        dataset_specs=specs,
+    )
+
+    metadata = build_metadata(config)
+
+    assert metadata["dataset_source"] == "prepared"
+    assert metadata["dataset_specs"] == list(specs)
+    assert metadata["max_model_len"] == 32768
+    assert metadata["max_num_seqs"] == 8
+    assert metadata["gpu_memory_utilization"] == 0.72
 
 
 def test_parse_args_builds_config_with_overrides(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
     config = parse_args(
         [
             "--benchmark-id",
@@ -160,6 +242,13 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "8123",
             "--client-host",
             "127.0.0.1",
+            "--max-model-len",
+            "32768",
+            "--max-num-seqs",
+            "8",
+            "--gpu-memory-utilization",
+            "0.72",
+            *sum((["--dataset", spec] for spec in specs), []),
         ]
     )
 
@@ -174,6 +263,10 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         server_host="0.0.0.0",
         server_port=8123,
         client_host="127.0.0.1",
+        max_model_len=32768,
+        max_num_seqs=8,
+        gpu_memory_utilization=0.72,
+        dataset_specs=specs,
     )
 
 
@@ -188,6 +281,11 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"server_port": 0}, "server_port must be between 1 and 65535"),
         ({"server_port": 65536}, "server_port must be between 1 and 65535"),
         ({"client_host": ""}, "client_host must be non-empty"),
+        ({"max_model_len": 0}, "max_model_len must be positive"),
+        ({"max_num_seqs": 0}, "max_num_seqs must be positive"),
+        ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
+        ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
+        ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
     ]
 
     for overrides, message in invalid_cases:
@@ -394,6 +492,62 @@ def test_legacy_vllm_smoke_run_respects_legacy_helper_monkeypatch(monkeypatch, t
 
     with pytest.raises(RuntimeError, match="legacy hook used"):
         legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
+
+
+def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursion(monkeypatch, tmp_path):
+    calls = []
+    fake_server = object()
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+    )
+    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+
+    monkeypatch.setattr(legacy_vllm_smoke, "create_venv", lambda path: calls.append(("create_venv", path)))
+    monkeypatch.setattr(legacy_vllm_smoke, "install_vllm", lambda python: calls.append(("install_vllm", python)))
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "installed_versions",
+        lambda python: {"vllm_version_installed": "0.23.0"},
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "probe_vllm_import",
+        lambda python, output, *, timeout_seconds, env: calls.append(("probe_vllm_import", output)),
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "write_smoke_datasets",
+        lambda local_dir: calls.append(("write_smoke_datasets", local_dir)) or dataset_paths,
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "start_vllm_server",
+        lambda cfg, python, log_path: calls.append(("start_vllm_server", log_path)) or fake_server,
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "wait_for_server",
+        lambda server, log_path, cfg, *, timeout_seconds: calls.append(("wait_for_server", timeout_seconds)),
+    )
+    monkeypatch.setattr(legacy_vllm_smoke, "run", lambda argv: calls.append(("run", argv)))
+    monkeypatch.setattr(legacy_vllm_smoke, "terminate_process", lambda server: calls.append(("terminate", server)))
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
+        "copy_file_if_exists",
+        lambda source, target: calls.append(("copy", source, target)),
+    )
+
+    legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
+
+    assert ("write_smoke_datasets", config.local_dir) in calls
+    assert ("run", build_benchmark_runner_args(config, dataset_paths)) in calls
+    assert calls[-2:] == [
+        ("terminate", fake_server),
+        ("copy", config.server_log_path, config.server_log_copy_path),
+    ]
 
 
 def test_legacy_vllm_smoke_direct_helper_respects_legacy_run_monkeypatch(monkeypatch, tmp_path):

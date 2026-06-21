@@ -21,6 +21,10 @@ from document_kv_cache.databricks_vllm_smoke_job import (
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DATASET_SPECS = tuple(
+    f"{dataset}=/Volumes/catalog/schema/volume/v1/{dataset}.jsonl"
+    for dataset in ("biography", "hotpotqa", "musique", "niah")
+)
 
 
 def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
@@ -39,6 +43,10 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
         server_host="0.0.0.0",
         server_port=8123,
         client_host="127.0.0.1",
+        max_model_len=32768,
+        max_num_seqs=8,
+        gpu_memory_utilization=0.72,
+        dataset_specs=DATASET_SPECS,
         custom_tags={"team": "document-kv"},
     )
 
@@ -80,6 +88,20 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
             "8123",
             "--client-host",
             "127.0.0.1",
+            "--max-model-len",
+            "32768",
+            "--max-num-seqs",
+            "8",
+            "--gpu-memory-utilization",
+            "0.72",
+            "--dataset",
+            DATASET_SPECS[0],
+            "--dataset",
+            DATASET_SPECS[1],
+            "--dataset",
+            DATASET_SPECS[2],
+            "--dataset",
+            DATASET_SPECS[3],
             "--package-wheel-uri",
             WHEEL_URI,
         ],
@@ -97,6 +119,31 @@ def test_databricks_vllm_smoke_config_requires_single_user_name():
         assert "single_user_name is required" in str(exc)
     else:
         raise AssertionError("expected SINGLE_USER validation to fail")
+
+
+def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
+    invalid_cases = [
+        ({"max_model_len": 0}, "max_model_len must be positive"),
+        ({"max_num_seqs": 0}, "max_num_seqs must be positive"),
+        ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
+        ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
+        ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
+    ]
+
+    for overrides, message in invalid_cases:
+        kwargs = {
+            "benchmark_id": "v1-vllm-smoke-001",
+            "output_dir": "/Volumes/catalog/schema/volume/v1-vllm-smoke",
+            "runner_python_file": "dbfs:/benchmarks/run_vllm_smoke.py",
+            "single_user_name": SINGLE_USER_NAME,
+        }
+        kwargs.update(overrides)
+        try:
+            DatabricksVLLMSmokeJobConfig(**kwargs)
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError(f"expected validation to fail for {overrides!r}")
 
 
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):

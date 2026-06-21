@@ -50,8 +50,10 @@ __all__ = reexport_public(
         "dependency_constraints",
         "build_vllm_server_args",
         "build_benchmark_runner_args",
+        "benchmark_dataset_paths",
         "write_smoke_datasets",
         "smoke_dataset_records",
+        "parse_dataset_specs",
         "dataset_args",
         "parse_args",
     ),
@@ -116,12 +118,20 @@ def build_benchmark_runner_args(config: VLLMSmokeBenchmarkConfig, dataset_paths:
     return _call_document_function("build_benchmark_runner_args", config, dataset_paths)
 
 
+def benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]:
+    return _call_document_function("benchmark_dataset_paths", config)
+
+
 def write_smoke_datasets(local_dir: Path) -> dict[str, Path]:
     return _call_document_function("write_smoke_datasets", local_dir)
 
 
 def smoke_dataset_records() -> dict[str, dict[str, object]]:
     return _call_document_function("smoke_dataset_records")
+
+
+def parse_dataset_specs(dataset_specs: tuple[str, ...]) -> dict[str, Path]:
+    return _call_document_function("parse_dataset_specs", dataset_specs)
 
 
 def dataset_args(dataset_paths: dict[str, Path]) -> list[str]:
@@ -245,8 +255,10 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "dependency_constraints": dependency_constraints,
     "build_vllm_server_args": build_vllm_server_args,
     "build_benchmark_runner_args": build_benchmark_runner_args,
+    "benchmark_dataset_paths": benchmark_dataset_paths,
     "write_smoke_datasets": write_smoke_datasets,
     "smoke_dataset_records": smoke_dataset_records,
+    "parse_dataset_specs": parse_dataset_specs,
     "dataset_args": dataset_args,
     "parse_args": parse_args,
     "create_venv": create_venv,

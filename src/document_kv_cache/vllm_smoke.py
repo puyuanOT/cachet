@@ -54,8 +54,10 @@ __all__ = [
     "dependency_constraints",
     "build_vllm_server_args",
     "build_benchmark_runner_args",
+    "benchmark_dataset_paths",
     "write_smoke_datasets",
     "smoke_dataset_records",
+    "parse_dataset_specs",
     "dataset_args",
     "parse_args",
     "main",
@@ -76,6 +78,10 @@ class VLLMSmokeBenchmarkConfig:
     server_host: str = SERVER_HOST
     server_port: int = SERVER_PORT
     client_host: str = SERVER_HOST
+    max_model_len: int = 4096
+    max_num_seqs: int = 2
+    gpu_memory_utilization: float = 0.85
+    dataset_specs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -98,6 +104,15 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("server_port must be between 1 and 65535")
         if not self.client_host:
             raise ValueError("client_host must be non-empty")
+        if self.max_model_len <= 0:
+            raise ValueError("max_model_len must be positive")
+        if self.max_num_seqs <= 0:
+            raise ValueError("max_num_seqs must be positive")
+        if not 0 < self.gpu_memory_utilization <= 1:
+            raise ValueError("gpu_memory_utilization must be in (0, 1]")
+        object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
+        if self.dataset_specs:
+            parse_dataset_specs(self.dataset_specs)
 
     @property
     def local_dir(self) -> Path:
@@ -162,7 +177,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         env=server_env(config),
     )
 
-    dataset_paths = write_smoke_datasets(config.local_dir)
+    dataset_paths = benchmark_dataset_paths(config)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
     write_json(config.metadata_path, metadata)
@@ -189,6 +204,11 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "hf_home": str(config.hf_cache_dir),
         "vllm_python": str(config.venv_python),
         "dependency_constraints": dependency_constraints(),
+        "dataset_source": "prepared" if config.dataset_specs else "smoke",
+        "dataset_specs": list(config.dataset_specs),
+        "max_model_len": config.max_model_len,
+        "max_num_seqs": config.max_num_seqs,
+        "gpu_memory_utilization": config.gpu_memory_utilization,
     }
 
 
@@ -329,6 +349,29 @@ def write_smoke_datasets(local_dir: Path) -> dict[str, Path]:
     return paths
 
 
+def benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]:
+    if config.dataset_specs:
+        return parse_dataset_specs(config.dataset_specs)
+    return write_smoke_datasets(config.local_dir)
+
+
+def parse_dataset_specs(dataset_specs: tuple[str, ...]) -> dict[str, Path]:
+    paths: dict[str, Path] = {}
+    for spec in dataset_specs:
+        dataset, separator, raw_path = spec.partition("=")
+        if not separator or not dataset or not raw_path:
+            raise ValueError("dataset specs must use DATASET=JSONL_PATH syntax")
+        if dataset not in SMOKE_DATASETS:
+            raise ValueError(f"Unsupported V1 smoke dataset {dataset!r}")
+        if dataset in paths:
+            raise ValueError(f"duplicate dataset spec for {dataset!r}")
+        paths[dataset] = Path(raw_path)
+    missing = set(SMOKE_DATASETS).difference(paths)
+    if missing:
+        raise ValueError(f"dataset specs missing required V1 datasets: {sorted(missing)}")
+    return {dataset: paths[dataset] for dataset in SMOKE_DATASETS}
+
+
 def smoke_dataset_records() -> dict[str, dict[str, object]]:
     return {
         "biography": {
@@ -427,11 +470,11 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         "--dtype",
         "bfloat16",
         "--max-model-len",
-        "4096",
+        str(config.max_model_len),
         "--max-num-seqs",
-        "2",
+        str(config.max_num_seqs),
         "--gpu-memory-utilization",
-        "0.85",
+        str(config.gpu_memory_utilization),
         "--trust-remote-code",
         "--no-enable-log-requests",
     ]
@@ -570,6 +613,15 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--server-host", default=SERVER_HOST)
     parser.add_argument("--server-port", type=int, default=SERVER_PORT)
     parser.add_argument("--client-host", default=SERVER_HOST)
+    parser.add_argument("--max-model-len", type=int, default=4096)
+    parser.add_argument("--max-num-seqs", type=int, default=2)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        default=None,
+        help="Prepared V1 benchmark dataset in DATASET=JSONL_PATH form. Repeat for all four V1 datasets.",
+    )
     args = parser.parse_args(argv)
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
@@ -582,6 +634,10 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         server_host=args.server_host,
         server_port=args.server_port,
         client_host=args.client_host,
+        max_model_len=args.max_model_len,
+        max_num_seqs=args.max_num_seqs,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        dataset_specs=tuple(args.dataset or ()),
     )
 
 
