@@ -171,13 +171,13 @@ Legacy `restaurant-kv-*` aliases remain packaged only for downstream migration.
 
 ## Optional Extras
 
-The package keeps Databricks, adapter, and test dependencies optional but
-exactly pinned. Use `databricks` for managed Databricks helpers and `test` for
-local verification. Use `vllm` or `sglang` to install the thin Cachet adapter
-wheel for one serving engine plus that adapter's own engine extra. Do not
-install both engine extras into the same serving environment unless their
-upstream Torch/Transformers constraints have been reconciled. `serving_env.py`
-exposes the pinned helper profiles used by smoke/probe jobs.
+The package keeps Databricks and test dependencies optional but exactly pinned.
+Use `databricks` for managed Databricks helpers and `test` for local
+verification. vLLM and SGLang are intentionally not advertised as package extras
+until the thin adapter wheels are published or vendored under the Cachet
+repository; install the target engine and adapter in a separate serving
+environment. `serving_env.py` exposes the pinned helper profiles used by
+smoke/probe jobs.
 
 The branded `cachet` facade, canonical `document_kv_cache` implementation, and
 migration-only `restaurant_kv_serving` package all ship `py.typed` markers so

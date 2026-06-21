@@ -9,7 +9,6 @@ protocols, and implementations.
 from __future__ import annotations
 
 from importlib import import_module
-import sys
 from typing import Any
 
 import document_kv_cache as _document_package
@@ -20,14 +19,9 @@ _PUBLIC_SUBMODULES = frozenset(getattr(_document_package, "_PUBLIC_SUBMODULES", 
 
 
 def _document_submodule(name: str) -> Any:
-    module = import_module(f"document_kv_cache.{name}")
-    sys.modules[f"{__name__}.{name}"] = module
+    module = import_module(f"{__name__}.{name}")
     globals()[name] = module
     return module
-
-
-for _submodule_name in sorted(_PUBLIC_SUBMODULES):
-    _document_submodule(_submodule_name)
 
 
 def __getattr__(name: str) -> Any:

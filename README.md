@@ -44,10 +44,10 @@ The package deliberately stops at the engine handoff boundary. vLLM, SGLang, or
 another established serving engine owns scheduling, decode, LoRA execution, and
 native KV block management. Cachet provides the manifest, storage, materialized
 payload, admission metadata, benchmark evidence, and adapter contracts that let
-those engines reuse precomputed document context safely. The thin vLLM and
-SGLang adapter wheels are exposed as Cachet optional extras so users can start
-from one Cachet project surface while keeping each heavy serving runtime in its
-own environment.
+those engines reuse precomputed document context safely. Cachet keeps the
+vLLM/SGLang adapter contracts and launch metadata in this package while the
+thin adapter wheels remain separately installable until they are published or
+vendored under the Cachet repository with release-safe extras.
 
 The current implementation and release gaps are tracked in
 `docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1

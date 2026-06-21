@@ -1406,6 +1406,25 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     assert github_governance.GitHubRepositoryConfig.__module__ == "document_kv_cache.github_governance"
 
 
+def test_cachet_cli_module_facades_execute_with_python_m():
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "cachet.benchmark_plan",
+            "--help",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert "usage:" in result.stdout
+    assert "benchmark_plan" in result.stdout
+
+
 def test_public_document_submodules_have_curated_star_import_surfaces():
     admission = importlib.import_module("document_kv_cache.admission")
     cache = importlib.import_module("document_kv_cache.cache")

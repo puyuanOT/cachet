@@ -10,8 +10,10 @@ The underlying implementation namespace remains importable as
 `document_kv_cache` during the migration so existing benchmark evidence,
 Databricks runners, and downstream jobs keep working.
 
-- `__init__.py` implements the lightweight runtime facade and registers public
-  `cachet.<module>` aliases for the document-owned modules.
+- `__init__.py` implements the lightweight root facade.
+- `*.py` module facades re-export typed APIs from the document-owned modules,
+  return the underlying `document_kv_cache.*` modules for normal imports, and
+  forward `python -m cachet.<module>` for CLI-capable modules.
 - `__init__.pyi` maps Cachet root exports to concrete `document_kv_cache.*`
   modules for static type checkers.
 - `py.typed` marks the facade as a typed PEP 561 package.

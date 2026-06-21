@@ -1304,8 +1304,10 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
     assert "vllm" not in optional_dependency_names
     assert "sglang" not in optional_dependency_names
     assert "serving" not in optional_dependencies
-    assert optional_dependencies["vllm"] == ["vllm-kv-injection[vllm]==0.2.0"]
-    assert optional_dependencies["sglang"] == ["sglang-kv-injection[sglang]==0.2.0"]
+    assert "vllm" not in optional_dependencies
+    assert "sglang" not in optional_dependencies
+    assert "vllm-kv-injection" not in optional_dependency_names
+    assert "sglang-kv-injection" not in optional_dependency_names
 
 
 def test_public_and_legacy_packages_publish_pep561_markers():

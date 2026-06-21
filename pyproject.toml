@@ -37,12 +37,6 @@ databricks = [
   "pyspark==4.1.2",
   "databricks-sdk==0.118.0",
 ]
-vllm = [
-  "vllm-kv-injection[vllm]==0.2.0",
-]
-sglang = [
-  "sglang-kv-injection[sglang]==0.2.0",
-]
 test = [
   "pytest==9.1.1",
 ]
