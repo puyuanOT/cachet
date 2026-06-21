@@ -1087,8 +1087,10 @@ status sidecars; bundles reject raw Jobs API responses.
 PR evidence sidecars must be valid `document_kv.pr_evidence.v1` records with
 the GitHub pull-request number and URL, Refactor-skill evidence, completed
 GPT-5.5 review, and any GPT-5.5 findings marked resolved before they can enter
-the release bundle. They are also validated as closed schemas so ad hoc review
-notes or debug payloads stay out of the release handoff.
+the release bundle. When a GitHub governance sidecar is bundled, each PR URL
+must also point at the governed repository. They are also validated as closed
+schemas so ad hoc review notes or debug payloads stay out of the release
+handoff.
 Wheel artifacts must be valid wheels for `document-kv-cache` with non-empty
 package metadata, and the wheel filename, root `.dist-info` directory, and
 `METADATA` name/version must describe the same normalized package identity. The
