@@ -201,6 +201,7 @@ class DatabricksEngineProbeMatrixJobConfig:
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
     extra_wheel_uris: tuple[str, ...] = ()
+    serial_tasks: bool = False
 
     def __post_init__(self) -> None:
         if not self.probe_targets:
@@ -215,6 +216,8 @@ class DatabricksEngineProbeMatrixJobConfig:
         object.__setattr__(self, "extra_wheel_uris", tuple(self.extra_wheel_uris))
         if type(self.release_safe) is not bool:
             raise ValueError("release_safe must be a boolean")
+        if type(self.serial_tasks) is not bool:
+            raise ValueError("serial_tasks must be a boolean")
         targets = tuple(_DEFAULT_COERCE_PROBE_TARGET(target) for target in self.probe_targets)
         _DEFAULT_VALIDATE_PROBE_TARGET_BACKENDS(targets, release_safe=self.release_safe)
         _DEFAULT_VALIDATE_PROBE_TARGET_TASK_KEYS(targets)
@@ -315,13 +318,24 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
 def build_databricks_engine_probe_matrix_run_submit_payload(
     config: DatabricksEngineProbeMatrixJobConfig,
 ) -> dict[str, Any]:
+    tasks = [
+        _engine_probe_task_from_target(config, target)
+        for target in config.probe_targets
+    ]
+    if config.serial_tasks:
+        _add_serial_task_dependencies(tasks)
     return {
         "run_name": config.run_name,
-        "tasks": [
-            _engine_probe_task_from_target(config, target)
-            for target in config.probe_targets
-        ],
+        "tasks": tasks,
     }
+
+
+def _add_serial_task_dependencies(tasks: list[dict[str, Any]]) -> None:
+    for previous, current in zip(tasks, tasks[1:], strict=False):
+        previous_task_key = previous.get("task_key")
+        if not isinstance(previous_task_key, str) or not previous_task_key:
+            raise ValueError("serial engine-probe tasks require non-empty task_key values")
+        current["depends_on"] = [{"task_key": previous_task_key}]
 
 
 def write_databricks_engine_probe_run_submit_json(
@@ -882,6 +896,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help="Reject debug-only probe options so the generated job stays eligible for release evidence.",
     )
+    parser.add_argument(
+        "--serial-tasks",
+        action="store_true",
+        help=(
+            "In matrix mode, add task dependencies so backend probes run one after another "
+            "instead of requesting multiple GPU clusters at once."
+        ),
+    )
     parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
     parser.add_argument("--runner-script-output", help="Write the tiny engine-probe runner script to this path.")
     args = parser.parse_args(argv)
@@ -901,9 +923,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 wheel_uri=args.wheel_uri,
                 extra_wheel_uris=tuple(args.extra_wheel_uri or ()),
                 release_safe=args.release_safe or targets_file.release_safe,
+                serial_tasks=args.serial_tasks,
             )
             payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
         else:
+            if args.serial_tasks:
+                raise ValueError("--serial-tasks requires --backend-config-json")
             config = DatabricksEngineProbeJobConfig(
                 handoff_json=_single_target_handoff_json_from_cli(args),
                 probe_factory=_required_single_arg(args, "probe_factory"),

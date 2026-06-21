@@ -323,6 +323,7 @@ def test_databricks_engine_probe_matrix_config_preserves_existing_positional_arg
     assert config.zone_id == "auto"
     assert config.custom_tags == {"team": "document-kv"}
     assert config.extra_wheel_uris == ()
+    assert config.serial_tasks is False
 
 
 def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_each_task():
@@ -346,6 +347,23 @@ def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_
             "--package-wheel-uri",
             SGLANG_ADAPTER_WHEEL_URI,
         ]
+
+
+def test_build_databricks_engine_probe_matrix_payload_can_run_tasks_serially():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(_target("vllm"), _target("sglang")),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+        serial_tasks=True,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+
+    first_task, second_task = payload["tasks"]
+    assert "depends_on" not in first_task
+    assert second_task["depends_on"] == [{"task_key": first_task["task_key"]}]
 
 
 def test_databricks_engine_probe_matrix_payload_runs_fixture_before_probe():
@@ -1307,6 +1325,7 @@ def test_main_writes_engine_probe_matrix_payload_from_backend_config_json(tmp_pa
             "--wheel-uri",
             WHEEL_URI,
             "--release-safe",
+            "--serial-tasks",
             "--output-json",
             str(payload_path),
             "--runner-script-output",
@@ -1319,6 +1338,10 @@ def test_main_writes_engine_probe_matrix_payload_from_backend_config_json(tmp_pa
     assert [task["task_key"] for task in payload["tasks"]] == [
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm",
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang",
+    ]
+    assert "depends_on" not in payload["tasks"][0]
+    assert payload["tasks"][1]["depends_on"] == [
+        {"task_key": f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm"}
     ]
     assert all("libraries" not in task for task in payload["tasks"])
     assert all(
@@ -1376,6 +1399,31 @@ def test_main_rejects_single_target_debug_flags_in_matrix_mode(tmp_path, capsys)
     assert "--engine-version" in output["error"]
     assert "--native-probe-delegate-factory" in output["error"]
     assert "--allow-non-native-probe" in output["error"]
+
+
+def test_main_rejects_serial_tasks_without_backend_config_json(capsys):
+    exit_code = main(
+        [
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "--probe-factory",
+            "document_kv_cache_vllm_probe:build_probe",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--expected-backend",
+            "vllm",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--serial-tasks",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["error_type"] == "ValueError"
+    assert "--serial-tasks requires --backend-config-json" in output["error"]
 
 
 def test_main_rejects_single_target_task_key_in_matrix_mode(tmp_path, capsys):

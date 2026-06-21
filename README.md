@@ -503,6 +503,9 @@ In `--release-safe` matrix mode, the submit payload must contain exactly one
 native vLLM task and one native SGLang task. Debug fallbacks such as
 `engine_version` overrides or `allow_non_native_probe` are rejected before the
 Databricks job is written.
+Add `--serial-tasks` when GPU capacity or cost constraints favor requesting
+only one backend probe cluster at a time; the generated matrix payload adds
+Databricks task dependencies so each backend runs after the previous task.
 When `--actions-output-json` or a target `actions_output_json` is present, the
 runner also writes the validated `document_kv.engine_kv_connector_actions.v1`
 reserve/copy/bind/release descriptor next to the probe evidence. This sidecar is
