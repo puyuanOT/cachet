@@ -18,7 +18,7 @@ TRANSFORMERS_CONSTRAINT = "transformers==5.12.1"
 HUGGINGFACE_HUB_CONSTRAINT = "huggingface-hub==1.20.1"
 TOKENIZERS_CONSTRAINT = "tokenizers==0.22.2"
 NUMPY_CONSTRAINT = "numpy==2.4.6"
-FASTAPI_CONSTRAINT = "fastapi[standard]==0.137.2"
+FASTAPI_CONSTRAINT = "fastapi[standard]==0.136.0"
 PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT = "prometheus-fastapi-instrumentator==8.0.0"
 VLLM_DEPENDENCY_CONSTRAINTS = (
     f"vllm=={VLLM_VERSION}",
