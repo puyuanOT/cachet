@@ -114,6 +114,26 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
     }
 
 
+def test_build_databricks_engine_probe_payload_accepts_g6_l4_cluster():
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="document_kv_cache_vllm_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        payload_uri="/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        allow_non_native_probe=True,
+    )
+
+    payload = build_databricks_engine_probe_run_submit_payload(config)
+    cluster = payload["tasks"][0]["new_cluster"]
+
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["driver_node_type_id"] == "g6.8xlarge"
+
+
 def test_build_databricks_engine_probe_release_safe_payload_omits_debug_flags():
     config = DatabricksEngineProbeJobConfig(
         handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",

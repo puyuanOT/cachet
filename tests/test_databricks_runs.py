@@ -172,6 +172,7 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
             "tasks": [
                 {
                     "task_key": "run-benchmark",
+                    "run_id": 124,
                     "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
                 }
             ],
@@ -189,6 +190,35 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert submit_payload["node_type_ids"] == ["g5.4xlarge"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
     assert submit_payload["task_keys"] == ["run-benchmark"]
+
+
+def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
+    payload = _single_node_g5_submit_payload()
+    cluster = payload["tasks"][0]["new_cluster"]
+    cluster["node_type_id"] = "g6.8xlarge"
+    cluster["driver_node_type_id"] = "g6.8xlarge"
+
+    summary = summarize_databricks_run(
+        {
+            "run_id": 123,
+            "run_name": "document-kv-v1",
+            "run_page_url": "https://dbc.example/#job/123/run/123",
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                }
+            ],
+        },
+        submit_payload=payload,
+        submit_payload_path="/Volumes/catalog/schema/volume/payload.json",
+    )
+
+    assert summary["submit_payload"]["aws_g5_node_type"] is True
+    assert summary["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
+    assert databricks_run_status_sidecar_issues(summary) == ()
 
 
 def test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records():
@@ -244,12 +274,12 @@ def test_databricks_run_status_sidecar_validation_requires_null_active_task_key_
     )
 
 
-def test_databricks_run_status_sidecar_validation_rejects_non_g5_or_mismatched_payload():
+def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mismatched_payload():
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
     submit_payload["aws_g5_node_type"] = False
     submit_payload["tasks"][0]["task_key"] = "different-task"
-    submit_payload["tasks"][0]["node_type_id"] = "g6.8xlarge"
+    submit_payload["tasks"][0]["node_type_id"] = "g6e.8xlarge"
     submit_payload["task_keys"] = ["different-task"]
     bad_record = {**status_record, "submit_payload": submit_payload}
 
@@ -257,7 +287,7 @@ def test_databricks_run_status_sidecar_validation_rejects_non_g5_or_mismatched_p
 
     assert "Databricks run status sidecar submit_payload.aws_g5_node_type must be true" in issues
     assert (
-        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be an AWS g5 node type"
+        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be an AWS g5/g6 node type"
         in issues
     )
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
@@ -315,9 +345,9 @@ def test_databricks_run_status_sidecar_validation_matches_submit_payload_summary
     )
 
 
-def test_summarize_databricks_run_submit_payload_reports_non_g5_multi_node_payload():
+def test_summarize_databricks_run_submit_payload_reports_unsupported_gpu_multi_node_payload():
     payload = _single_node_g5_submit_payload()
-    payload["tasks"][0]["new_cluster"]["node_type_id"] = "g6.4xlarge"
+    payload["tasks"][0]["new_cluster"]["node_type_id"] = "g6e.4xlarge"
     payload["tasks"][0]["new_cluster"]["num_workers"] = 1
 
     summary = summarize_databricks_run_submit_payload(payload)

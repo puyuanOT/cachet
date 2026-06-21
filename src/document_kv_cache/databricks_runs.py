@@ -264,8 +264,8 @@ def summarize_databricks_run_submit_payload(
         "data_security_modes": data_security_modes,
         "single_node": bool(task_summaries) and all(summary["single_node"] for summary in task_summaries),
         "aws_g5_node_type": bool(task_summaries)
-        and all(_is_aws_g5_node_type(summary.get("node_type_id")) for summary in task_summaries)
-        and all(_is_aws_g5_node_type(summary.get("driver_node_type_id")) for summary in task_summaries),
+        and all(_is_supported_aws_single_node_gpu_type(summary.get("node_type_id")) for summary in task_summaries)
+        and all(_is_supported_aws_single_node_gpu_type(summary.get("driver_node_type_id")) for summary in task_summaries),
     }
 
 
@@ -432,8 +432,11 @@ def _sorted_unique_texts(values: Sequence[Any]) -> list[str]:
     return sorted({value for value in values if isinstance(value, str) and value})
 
 
-def _is_aws_g5_node_type(value: Any) -> bool:
-    return isinstance(value, str) and value.startswith("g5.")
+_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g5.", "g6.")
+
+
+def _is_supported_aws_single_node_gpu_type(value: Any) -> bool:
+    return isinstance(value, str) and value.startswith(_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES)
 
 
 def _sha256_hex(payload: bytes) -> str:
@@ -570,9 +573,9 @@ def _databricks_submit_payload_task_issues(tasks: Sequence[Any]) -> tuple[str, .
             issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].task_key must be non-empty")
         for field_name in ("node_type_id", "driver_node_type_id"):
             value = task.get(field_name)
-            if not isinstance(value, str) or not value.startswith("g5."):
+            if not _is_supported_aws_single_node_gpu_type(value):
                 issues.append(
-                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g5 node type"
+                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g5/g6 node type"
                 )
         if task.get("single_node") is not True:
             issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].single_node must be true")
