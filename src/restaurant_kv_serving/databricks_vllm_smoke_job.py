@@ -15,10 +15,13 @@ from typing import Any
 
 from document_kv_cache._reexport import reexport_public
 from document_kv_cache.databricks_job import (
+    DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_AWS_G5_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DatabricksSingleNodeGPUClusterConfig,
     DatabricksSingleNodeG5ClusterConfig,
+    build_single_node_gpu_cluster,
     build_single_node_g5_cluster,
 )
 from document_kv_cache.vllm_smoke import (
@@ -54,10 +57,13 @@ __all__ += [
     "field",
     "Path",
     "Any",
+    "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
     "DEFAULT_AWS_G5_NODE_TYPE",
     "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
     "DEFAULT_DATABRICKS_SPARK_VERSION",
+    "DatabricksSingleNodeGPUClusterConfig",
     "DatabricksSingleNodeG5ClusterConfig",
+    "build_single_node_gpu_cluster",
     "build_single_node_g5_cluster",
     "DEFAULT_LOCAL_ROOT",
     "SERVER_HOST",
