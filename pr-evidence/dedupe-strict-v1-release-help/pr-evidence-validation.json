@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/dedupe-strict-v1-release-help/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "Beauvoir the 3rd reviewed the branch with GPT-5.5, found no issues, and approved. Focused reviewer checks passed: strict release help test plus CLI help test, and the public star-import surface test.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "release-bundle CLI refactor only; no release artifact validation behavior, parser flags, or output schemas changed."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_release_bundle.py -q; poetry run pytest tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py -q; poetry run pytest -q; poetry check; git diff --check; poetry run python -m compileall -q src tests"
+      ],
+      "what_changed": [
+        "Centralized the strict V1 release-bundle CLI help text in document_kv_cache.release_bundle and reused it from the legacy restaurant_kv_serving release-bundle facade."
+      ],
+      "why": "Avoids drift between the public and legacy release-bundle CLIs as V1 strict release requirements evolve."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

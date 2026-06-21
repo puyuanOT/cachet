@@ -74,6 +74,13 @@ from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _parser_action(parser, option):
+    for action in parser._actions:
+        if option in action.option_strings:
+            return action
+    raise AssertionError(f"missing parser option {option}")
+
+
 def test_build_release_bundle_copies_artifacts_and_writes_checksummed_manifest(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
@@ -2305,6 +2312,15 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
     assert "vLLM/SGLang native engine probes and connector actions" in help_text
     assert "supported native probe factory diagnostics" in help_text
+
+
+def test_release_bundle_strict_release_help_stays_shared_between_public_and_legacy_clis():
+    public_action = _parser_action(public_release_bundle._build_parser(), "--require-complete-v1")
+    legacy_action = _parser_action(legacy_release_bundle._build_parser(), "--require-complete-v1")
+
+    assert public_action.help == public_release_bundle.STRICT_V1_RELEASE_HELP
+    assert legacy_action.help == public_release_bundle.STRICT_V1_RELEASE_HELP
+    assert legacy_release_bundle.STRICT_V1_RELEASE_HELP == public_release_bundle.STRICT_V1_RELEASE_HELP
 
 
 def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsys, tmp_path):

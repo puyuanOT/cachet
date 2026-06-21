@@ -115,6 +115,13 @@ STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT = (
     ("vllm", "vLLM native probe factory support"),
     ("sglang", "SGLang native probe factory support"),
 )
+STRICT_V1_RELEASE_HELP = (
+    "Require the full V1 release artifact set: release/preflight sidecars, "
+    "vLLM/SGLang native engine probes and connector actions, plan execution, "
+    "Databricks status for benchmark/storage/engine-probe runs, tested wheel, "
+    "PR evidence, governance, repository hygiene, and supported native probe "
+    "factory diagnostics."
+)
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _WHEEL_FILENAME_RE = re.compile(
     r"^(?P<distribution>[A-Za-z0-9_.]+)-"
@@ -1833,13 +1840,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--require-complete-v1",
         action="store_true",
-        help=(
-            "Require the full V1 release artifact set: release/preflight sidecars, "
-            "vLLM/SGLang native engine probes and connector actions, plan execution, "
-            "Databricks status for benchmark/storage/engine-probe runs, tested wheel, "
-            "PR evidence, governance, repository hygiene, and supported native probe "
-            "factory diagnostics."
-        ),
+        help=STRICT_V1_RELEASE_HELP,
     )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--output-json")
