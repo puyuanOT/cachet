@@ -802,7 +802,10 @@ write a deterministic Qwen3 V1 probe fixture with
 for that backend, the plan derives it as
 `DIR/qwen3-v1-fixture.handoff.json`. Add
 `--engine-probe-fixture-payload-mode BACKEND=merged|segmented` to select the
-fixture payload format.
+fixture payload format. The fixture directory includes the `.kvpack`, payload,
+handoff JSON, and `qwen3-v1-fixture.actions.json` connector-action sidecar so
+native adapter work can inspect the exact reserve/copy/bind/release descriptors
+before running a backend block-manager probe.
 The benchmark plan executor treats generated plan JSON as a closed execution
 schema: unsupported top-level plan keys or per-command keys are rejected before
 any command is run.
@@ -843,8 +846,9 @@ unsupported top-level target keys or per-probe keys are rejected before a
 run-submit payload is produced.
 When a planned probe uses `--engine-probe-fixture-output-dir`, the target JSON
 also carries `fixture_output_dir` and `fixture_payload_mode`; the generated
-Databricks runner writes the deterministic Qwen3 fixture first, then runs the
-native engine probe against the derived handoff JSON.
+Databricks runner writes the deterministic Qwen3 fixture first, including the
+validated connector-action sidecar, then runs the native engine probe against
+the derived handoff JSON.
 Use `--engine-probe-native-delegate-factory BACKEND=MODULE:CALLABLE` when the
 planned target should run a built-in reserved vLLM/SGLang probe factory through
 a backend-native delegate on Databricks. The target JSON carries the delegate

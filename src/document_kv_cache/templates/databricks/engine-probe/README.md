@@ -14,3 +14,9 @@ SGLang factory path, set the matching delegate variable so the cluster exports
 `DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY`; the empty defaults are treated as
 unset by the built-in factories. The Python Databricks helper remains the path
 for two-backend release-safe probe matrices.
+
+For fixture-based probes, `document_kv_cache.probe_fixtures` writes the
+deterministic payload, handoff JSON, manifest, and
+`qwen3-v1-fixture.actions.json` connector-action descriptor before the native
+probe runs. Use that actions sidecar to debug reserve/copy/bind/release
+translation inside a backend adapter without relying on generated runner state.

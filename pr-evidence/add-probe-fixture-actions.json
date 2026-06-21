@@ -1,0 +1,28 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 high-reasoning review approved with no findings; residual risk is additive fixture manifest actions_json fields under schema v1 for external exact-key consumers.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/probe_fixtures.py",
+    "tests/test_probe_fixtures.py",
+    "README.md",
+    "src/document_kv_cache/templates/databricks/engine-probe/README.md"
+  ],
+  "verification": [
+    "pytest tests/test_probe_fixtures.py tests/test_databricks_engine_probe_job.py tests/test_benchmark_plan.py -q -> 163 passed",
+    "pytest tests/test_project_governance.py tests/test_public_package.py -q -> 50 passed",
+    "pytest -q -> 1292 passed",
+    "python -m build --wheel -> document_kv_cache-0.2.0-py3-none-any.whl"
+  ],
+  "what_changed": [
+    "Engine-probe fixtures now write a validated connector-actions JSON sidecar next to the handoff and payload.",
+    "Fixture manifests include actions JSON URI/path/checksum metadata for downstream adapter debugging.",
+    "README and Databricks engine-probe template docs describe the complete fixture bundle."
+  ],
+  "why": "Give vLLM/SGLang native adapter implementers a static reserve/copy/bind/release descriptor before running real block-manager probes."
+}

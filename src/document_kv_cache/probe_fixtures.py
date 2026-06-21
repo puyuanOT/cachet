@@ -24,6 +24,7 @@ from document_kv_cache.engine_adapters import (
     read_engine_adapter_request_json,
     sglang_adapter_spec,
     validate_engine_kv_connector_actions_record,
+    view_engine_adapter_payload,
     vllm_adapter_spec,
 )
 from document_kv_cache.engine_protocol import KVLayout
@@ -56,6 +57,7 @@ DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES = MappingProxyType(
         "pack": "qwen3-v1-fixture.kvpack",
         "payload": "qwen3-v1-fixture.payload.kv",
         "handoff": "qwen3-v1-fixture.handoff.json",
+        "actions": "qwen3-v1-fixture.actions.json",
         "manifest": "qwen3-v1-fixture.manifest.json",
     }
 )
@@ -129,14 +131,17 @@ class EngineProbeFixtureResult:
     pack_uri: str
     payload_uri: str
     handoff_uri: str
+    actions_uri: str
     manifest_uri: str
     pack_path: Path
     payload_path: Path
     handoff_json: Path
+    actions_json: Path
     manifest_json: Path
     pack_sha256: str
     payload_sha256: str
     handoff_sha256: str
+    actions_sha256: str
 
     @property
     def total_tokens(self) -> int:
@@ -169,6 +174,7 @@ def write_qwen3_v1_engine_probe_fixture(config: EngineProbeFixtureConfig) -> Eng
     pack_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["pack"])
     payload_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["payload"])
     handoff_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"])
+    actions_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["actions"])
     manifest_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["manifest"])
 
     chunks = _fixture_pack_chunks(config, layout=layout)
@@ -195,6 +201,13 @@ def write_qwen3_v1_engine_probe_fixture(config: EngineProbeFixtureConfig) -> Eng
         require_external_payload_uri=True,
     )
     pack_path = local_path(pack_uri)
+    actions_path = local_path(actions_uri)
+    _write_fixture_actions_record(
+        handoff_path,
+        payload_path,
+        actions_path,
+        expected_backend=config.backend,
+    )
     manifest_path = local_path(manifest_uri)
     result = EngineProbeFixtureResult(
         config=config,
@@ -203,14 +216,17 @@ def write_qwen3_v1_engine_probe_fixture(config: EngineProbeFixtureConfig) -> Eng
         pack_uri=pack_uri,
         payload_uri=payload_uri,
         handoff_uri=handoff_uri,
+        actions_uri=actions_uri,
         manifest_uri=manifest_uri,
         pack_path=pack_path,
         payload_path=payload_path,
         handoff_json=handoff_path,
+        actions_json=actions_path,
         manifest_json=manifest_path,
         pack_sha256=_file_sha256(pack_path),
         payload_sha256=_file_sha256(payload_path),
         handoff_sha256=_file_sha256(handoff_path),
+        actions_sha256=_file_sha256(actions_path),
     )
     _write_fixture_manifest(result)
     _validate_written_fixture(result)
@@ -267,18 +283,21 @@ def engine_probe_fixture_result_to_record(result: EngineProbeFixtureResult) -> d
             "pack": result.pack_uri,
             "payload": result.payload_uri,
             "handoff_json": result.handoff_uri,
+            "actions_json": result.actions_uri,
             "manifest_json": result.manifest_uri,
         },
         "paths": {
             "pack": str(result.pack_path),
             "payload": str(result.payload_path),
             "handoff_json": str(result.handoff_json),
+            "actions_json": str(result.actions_json),
             "manifest_json": str(result.manifest_json),
         },
         "sha256": {
             "pack": result.pack_sha256,
             "payload": result.payload_sha256,
             "handoff_json": result.handoff_sha256,
+            "actions_json": result.actions_sha256,
         },
     }
 
@@ -424,6 +443,28 @@ def _write_fixture_manifest(result: EngineProbeFixtureResult) -> None:
     )
 
 
+def _write_fixture_actions_record(
+    handoff_json: Path,
+    payload_path: Path,
+    actions_json: Path,
+    *,
+    expected_backend: ServingBackend,
+) -> None:
+    record = read_engine_adapter_request_json(
+        handoff_json,
+        expected_backend=expected_backend,
+        require_external_payload_uri=True,
+    )
+    plan = build_engine_kv_injection_plan(record, expected_backend=expected_backend)
+    payload = payload_path.read_bytes()
+    payload_or_segments = view_engine_adapter_payload(record, payload)
+    actions_record = engine_kv_connector_actions_to_record(
+        build_engine_kv_connector_actions(plan, payload_or_segments)
+    )
+    actions_json.parent.mkdir(parents=True, exist_ok=True)
+    actions_json.write_text(json.dumps(actions_record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _validate_written_fixture(result: EngineProbeFixtureResult) -> None:
     record = read_engine_adapter_request_json(
         result.handoff_json,
@@ -437,7 +478,11 @@ def _validate_written_fixture(result: EngineProbeFixtureResult) -> None:
         raise ValueError("generated fixture plan total_bytes mismatch")
     payload = result.payload_path.read_bytes()
     actions = build_engine_kv_connector_actions(plan, _payload_for_connector_actions(result, payload))
-    validate_engine_kv_connector_actions_record(engine_kv_connector_actions_to_record(actions))
+    expected_actions_record = engine_kv_connector_actions_to_record(actions)
+    actions_record = json.loads(result.actions_json.read_text(encoding="utf-8"))
+    if actions_record != expected_actions_record:
+        raise ValueError("generated fixture connector actions mismatch")
+    validate_engine_kv_connector_actions_record(actions_record, expected_backend=result.adapter_request.backend)
 
 
 def _payload_for_connector_actions(result: EngineProbeFixtureResult, payload: bytes) -> bytes | tuple[bytes, ...]:

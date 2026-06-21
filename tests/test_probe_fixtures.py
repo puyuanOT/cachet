@@ -46,6 +46,7 @@ def test_write_qwen3_v1_engine_probe_fixture_generates_valid_vllm_merged_bundle(
     payload = read_engine_adapter_payload(result.payload_uri, expected_bytes=plan.total_bytes)
     actions = build_engine_kv_connector_actions(plan, payload)
     actions_record = engine_kv_connector_actions_to_record(actions)
+    written_actions_record = json.loads(result.actions_json.read_text(encoding="utf-8"))
 
     assert record == engine_probe_fixture_result_to_record(result)
     assert record["record_type"] == ENGINE_PROBE_FIXTURE_RECORD_TYPE
@@ -69,7 +70,13 @@ def test_write_qwen3_v1_engine_probe_fixture_generates_valid_vllm_merged_bundle(
         "document_chunk",
         "document_chunk",
     ]
+    assert result.actions_json.name == "qwen3-v1-fixture.actions.json"
+    assert record["uris"]["actions_json"] == result.actions_uri
+    assert record["paths"]["actions_json"] == str(result.actions_json)
+    assert record["sha256"]["actions_json"] == result.actions_sha256
+    assert hashlib.sha256(result.actions_json.read_bytes()).hexdigest() == result.actions_sha256
     assert hashlib.sha256(payload).hexdigest() == result.payload_sha256
+    assert written_actions_record == actions_record
     validate_engine_kv_connector_actions_record(actions_record)
     assert actions_record["reservation"]["total_tokens"] == 6
     assert [copy["payload_index"] for copy in actions_record["copies"]] == [None, None, None]
@@ -93,6 +100,7 @@ def test_write_qwen3_v1_engine_probe_fixture_generates_segmented_sglang_bundle(t
     payload_segments = view_engine_adapter_payload(handoff, payload)
     actions = build_engine_kv_connector_actions(plan, payload_segments)
     actions_record = engine_kv_connector_actions_to_record(actions)
+    written_actions_record = json.loads(result.actions_json.read_text(encoding="utf-8"))
 
     assert result.adapter_request.backend == ServingBackend.SGLANG
     assert result.adapter_request.payload_mode == PayloadMode.SEGMENTED
@@ -102,6 +110,7 @@ def test_write_qwen3_v1_engine_probe_fixture_generates_segmented_sglang_bundle(t
     assert [len(segment) for segment in payload_segments] == [plan.layout.bytes_per_token] * 2
     assert [copy["payload_index"] for copy in actions_record["copies"]] == [0, 1]
     assert actions_record["bind"]["metadata"]["engine.connector_package"] == "sglang"
+    assert written_actions_record == actions_record
     validate_engine_kv_connector_actions_record(actions_record, expected_backend=ServingBackend.SGLANG)
 
 
@@ -115,6 +124,7 @@ def test_qwen3_v1_engine_probe_fixture_payload_is_deterministic(tmp_path):
 
     assert first.payload_sha256 == second.payload_sha256
     assert first.pack_sha256 == second.pack_sha256
+    assert first.actions_sha256 == second.actions_sha256
 
 
 def test_qwen3_v1_engine_probe_fixture_cli_writes_manifest(tmp_path):
@@ -147,6 +157,8 @@ def test_qwen3_v1_engine_probe_fixture_cli_writes_manifest(tmp_path):
     assert stdout_record == manifest_record
     assert stdout_record["total_tokens"] == 2
     assert stdout_record["payload_mode"] == "merged"
+    assert (output_dir / "qwen3-v1-fixture.actions.json").exists()
+    assert stdout_record["uris"]["actions_json"].endswith("/qwen3-v1-fixture.actions.json")
 
 
 def test_qwen3_v1_engine_probe_fixture_accepts_relative_output_dir(tmp_path, monkeypatch):
@@ -160,9 +172,11 @@ def test_qwen3_v1_engine_probe_fixture_accepts_relative_output_dir(tmp_path, mon
 
     assert result.pack_path.is_absolute()
     assert result.payload_path.is_absolute()
+    assert result.actions_json.is_absolute()
     assert payload_uri == result.payload_uri
     assert payload_uri.startswith(str(tmp_path))
     assert (tmp_path / "relative-fixture" / "qwen3-v1-fixture.kvpack").exists()
+    assert (tmp_path / "relative-fixture" / "qwen3-v1-fixture.actions.json").exists()
 
 
 def test_qwen3_v1_engine_probe_fixture_rejects_reserved_metadata(tmp_path):
