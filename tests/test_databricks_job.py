@@ -1168,7 +1168,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert "--sglang-native-probe-delegate-factory" in readme_text
     assert "--var vllm_native_probe_delegate_factory=" in readme_text
     assert "--var sglang_native_probe_delegate_factory=" in readme_text
-    assert "single-node AWS `g5` or `g6` GPU cluster" in readme_text
+    assert "single-node AWS `g6`/L4 GPU cluster" in readme_text
     assert "document_kv_cache/templates/databricks/" in readme_text
 
 
