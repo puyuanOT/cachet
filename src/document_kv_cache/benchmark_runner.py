@@ -294,7 +294,7 @@ def run_benchmark_suite(
         prompt_parts = build_prompt_parts(example)
         arm_sequence = list(arms) * repeats
         if shuffle:
-            random.Random(_example_seed(seed, example.example_id)).shuffle(arm_sequence)
+            random.Random(_example_seed(seed, example.dataset, example.example_id)).shuffle(arm_sequence)
         for arm in arm_sequence:
             request = BenchmarkEngineRequest(
                 suite_id=suite.suite_id,
@@ -635,10 +635,11 @@ def _arm_id_for_cache(arms: Sequence[BenchmarkArm]) -> str:
     return CACHE_REUSE_ARM
 
 
-def _example_seed(seed: int | None, example_id: str) -> int:
+def _example_seed(seed: int | None, dataset: str, example_id: str) -> int:
     value = 0 if seed is None else seed
-    for character in example_id:
-        value = (value * 33 + ord(character)) & 0xFFFFFFFF
+    for value_part in (dataset, "\0", example_id):
+        for character in value_part:
+            value = (value * 33 + ord(character)) & 0xFFFFFFFF
     return value
 
 
