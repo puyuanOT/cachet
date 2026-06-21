@@ -17,6 +17,7 @@ from document_kv_cache.pr_evidence import (
     evaluate_pr_evidence_directory,
     evaluate_pr_evidence_file,
     evaluate_pr_evidence_record,
+    _github_pull_request_url_identity,
     pr_evidence_validation_to_record,
     pr_evidence_to_record,
     write_pr_evidence_json,
@@ -114,6 +115,47 @@ def test_pr_evidence_tracks_optional_pull_request_identity():
 
     assert not mismatched.ok
     assert "pull_request_url must end with pull_request_number when both are provided" in mismatched.issues
+
+
+def test_pr_evidence_rejects_malformed_github_pull_request_urls():
+    evidence = evaluate_pr_evidence(
+        pull_request_number=123,
+        pull_request_url="https://github.com/owner/document-kv-cache/pull/123",
+        what_changed=("Hardened PR URL validation",),
+        why="Release traceability must identify the exact GitHub pull request.",
+        scope=("pr_evidence.py",),
+        verification=("pytest -q tests/test_pr_evidence.py",),
+        refactor_skill_applied=True,
+        gpt55_review_completed=True,
+        gpt55_review_findings_resolved=False,
+        gpt55_review_outcome="clean",
+        gpt55_review_summary="Review was clean.",
+    )
+    assert _github_pull_request_url_identity(evidence.pull_request_url) == ("owner/document-kv-cache", 123)
+
+    for malformed_url in (
+        "https://github.com/pull/123",
+        "https://github.com/owner/document-kv-cache/issues/123",
+        "https://github.com/owner/document-kv-cache/pull/0",
+        "https://github.com/owner/document-kv-cache/pull/123?debug=true",
+        "https://github.com/owner/document-kv-cache?debug=true/pull/123",
+        "https://github.com/owner/document-kv-cache#fragment/pull/123",
+        "https://github.com/owner/document%20kv-cache/pull/123",
+        "https://github.com/owner/document-kv-cache/pull/１２３",
+        "https://github.com/owner/document-kv-cache/pull/١٢٣",
+        "https://github.com/owner/document-kv-cache/pull/0123",
+        "https://github.com//owner/document-kv-cache/pull/123",
+        "https://github.com/owner/document-kv-cache/pull/123/",
+    ):
+        parsed = evaluate_pr_evidence_record(
+            {
+                **pr_evidence_to_record(evidence),
+                "pull_request_url": malformed_url,
+            }
+        )
+
+        assert not parsed.ok
+        assert "pull_request_url must be a GitHub pull request URL when provided" in parsed.issues
 
 
 def test_pr_evidence_dataclass_validates_json_safe_schema_and_semantics():

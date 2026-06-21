@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from document_kv_cache.storage import local_path
 
@@ -15,6 +17,8 @@ from document_kv_cache.storage import local_path
 PR_EVIDENCE_RECORD_TYPE = "document_kv.pr_evidence.v1"
 PR_EVIDENCE_VALIDATION_RECORD_TYPE = "document_kv.pr_evidence_validation.v1"
 GPT55_REVIEW_OUTCOMES = ("clean", "findings_resolved")
+_GITHUB_REPOSITORY_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_GITHUB_PULL_REQUEST_NUMBER_RE = re.compile(r"^[1-9][0-9]*$")
 _PR_EVIDENCE_RECORD_KEYS = frozenset(
     {
         "record_type",
@@ -173,6 +177,29 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
         pull_request_url=pull_request_url,
         issues=tuple(parsing_issues),
     )
+
+
+def _github_pull_request_url_identity(url: str) -> tuple[str, int] | None:
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    path_parts = parsed.path.split("/")
+    if len(path_parts) != 5 or path_parts[0] != "" or path_parts[3] != "pull":
+        return None
+    _root, owner, repository, _pull, number = path_parts
+    if (
+        not _GITHUB_REPOSITORY_PATH_SEGMENT_RE.fullmatch(owner)
+        or not _GITHUB_REPOSITORY_PATH_SEGMENT_RE.fullmatch(repository)
+        or not _GITHUB_PULL_REQUEST_NUMBER_RE.fullmatch(number)
+    ):
+        return None
+    return f"{owner}/{repository}", int(number)
 
 
 def evaluate_pr_evidence_file(path: str | Path) -> PullRequestEvidence:
@@ -396,12 +423,13 @@ def _semantic_issues(
         issues.append("GPT-5.5 findings must be resolved when gpt55_review_outcome is 'findings_resolved'")
     if not gpt55_review_summary:
         issues.append("gpt55_review_summary must describe findings and fixes, or state that the review was clean")
-    if pull_request_url and not pull_request_url.startswith("https://github.com/"):
+    pull_request_identity = _github_pull_request_url_identity(pull_request_url) if pull_request_url else None
+    if pull_request_url and pull_request_identity is None:
         issues.append("pull_request_url must be a GitHub pull request URL when provided")
     if (
         pull_request_number is not None
-        and pull_request_url
-        and not pull_request_url.rstrip("/").endswith(f"/pull/{pull_request_number}")
+        and pull_request_identity is not None
+        and pull_request_identity[1] != pull_request_number
     ):
         issues.append("pull_request_url must end with pull_request_number when both are provided")
     return tuple(issues)
