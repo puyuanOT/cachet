@@ -140,7 +140,7 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
         bundle_values.update(bundle_overrides)
 
     config_values = {
-        "suite_id": "v1-g5",
+        "suite_id": "v1-g6-l4",
         "dataset_paths": dataset_paths(tmp_path),
         "base_url": "http://localhost:8000",
         "benchmark_output_json": str(tmp_path / "results.json"),
@@ -167,7 +167,7 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
 
 def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         cache_base_url="http://cache:8000",
@@ -215,14 +215,14 @@ def test_benchmark_plan_config_rejects_unsupported_v1_hardware_target(tmp_path):
 
 def test_build_v1_benchmark_plan_can_append_storage_reader_benchmark(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
         storage_benchmark=StorageBenchmarkPlanConfig(
             workspace_dir="/local_disk0/document-kv-storage-benchmark",
             output_json="/Volumes/catalog/schema/volume/storage-result.json",
-            benchmark_id="storage-g5",
+            benchmark_id="storage-g6-l4",
             chunk_count=8,
             chunk_bytes=1024,
             repeats=3,
@@ -250,7 +250,7 @@ def test_build_v1_benchmark_plan_can_append_storage_reader_benchmark(tmp_path):
 
 def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -309,7 +309,7 @@ def test_build_v1_benchmark_plan_can_append_release_evidence_validation(tmp_path
 
 def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidence(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -423,7 +423,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
 
 def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -548,7 +548,7 @@ def test_benchmark_plan_accepts_generated_strict_release_bundle_sidecars(tmp_pat
 def test_build_v1_benchmark_plan_can_generate_and_bundle_github_governance(tmp_path):
     github_governance_json = str(tmp_path / "github-governance.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -604,7 +604,7 @@ def test_build_v1_benchmark_plan_allows_equivalent_generated_github_governance_b
     github_governance_json = str(tmp_path / "github-governance.json")
     equivalent_github_governance_json = str(tmp_path / "subdir" / ".." / "github-governance.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -647,7 +647,7 @@ def test_benchmark_plan_rejects_conflicting_generated_github_governance_bundle_p
         match="release bundle github_governance_json must match github_governance_output_json",
     ):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -677,7 +677,7 @@ def test_benchmark_plan_rejects_conflicting_generated_github_governance_bundle_p
 def test_build_v1_benchmark_plan_can_generate_and_bundle_repository_hygiene(tmp_path):
     repository_hygiene_json = str(tmp_path / "repository-hygiene.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -735,7 +735,7 @@ def test_build_v1_benchmark_plan_allows_equivalent_generated_repository_hygiene_
     repository_hygiene_json = str(tmp_path / "repository-hygiene.json")
     equivalent_repository_hygiene_json = str(tmp_path / "subdir" / ".." / "repository-hygiene.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -778,7 +778,7 @@ def test_benchmark_plan_rejects_conflicting_generated_repository_hygiene_bundle_
         match="release bundle repository_hygiene_json must match repository_hygiene_output_json",
     ):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -808,7 +808,7 @@ def test_benchmark_plan_rejects_conflicting_generated_repository_hygiene_bundle_
 def test_build_v1_benchmark_plan_can_generate_and_bundle_native_probe_factories(tmp_path):
     native_probe_factories_json = str(tmp_path / "native-probe-factories.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -863,7 +863,7 @@ def test_build_v1_benchmark_plan_dedupes_equivalent_native_probe_factories_paths
     native_probe_factories_json = str(tmp_path / "native-probe-factories.json")
     equivalent_native_probe_factories_json = str(tmp_path / "subdir" / ".." / "native-probe-factories.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -902,7 +902,7 @@ def test_build_v1_benchmark_plan_dedupes_equivalent_native_probe_factories_paths
 
 def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_validation(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -999,7 +999,7 @@ def test_build_v1_benchmark_plan_can_generate_fixture_before_planned_engine_prob
     fixture_dir = tmp_path / "vllm-fixture"
     handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -1054,7 +1054,7 @@ def test_benchmark_plan_rejects_fixture_child_output_path_collisions(tmp_path):
 
     with pytest.raises(ValueError, match="fixture_handoff"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1125,7 +1125,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
     target_path = tmp_path / "engine-probe-targets.json"
     plan = build_v1_benchmark_plan(
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1182,7 +1182,7 @@ def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_p
 
 def test_release_evidence_plan_can_use_existing_storage_benchmark_json(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -1215,7 +1215,7 @@ def test_release_evidence_plan_can_use_existing_storage_benchmark_json(tmp_path)
 def test_benchmark_plan_requires_storage_artifact_for_release_evidence(tmp_path):
     with pytest.raises(ValueError, match="release_evidence requires"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1229,7 +1229,7 @@ def test_benchmark_plan_requires_storage_artifact_for_release_evidence(tmp_path)
 def test_benchmark_plan_requires_explicit_release_probe_jsons_for_all_backends(tmp_path):
     with pytest.raises(ValueError, match="all release backends"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1281,7 +1281,7 @@ def test_release_evidence_plan_rejects_local_uri_alias_probe_json_paths(tmp_path
 def test_benchmark_plan_requires_release_evidence_before_release_bundle(tmp_path):
     with pytest.raises(ValueError, match="release_bundle requires release_evidence"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1303,7 +1303,7 @@ def test_release_bundle_plan_rejects_non_boolean_strict_v1_flag(tmp_path):
 
 def test_benchmark_plan_release_evidence_can_use_planned_engine_probe_outputs(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -1340,7 +1340,7 @@ def test_benchmark_plan_release_evidence_can_use_planned_engine_probe_outputs(tm
 def test_benchmark_plan_requires_all_release_backends_when_using_planned_probe_outputs(tmp_path):
     with pytest.raises(ValueError, match="all release backends"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1363,7 +1363,7 @@ def test_benchmark_plan_requires_all_release_backends_when_using_planned_probe_o
 def test_benchmark_plan_rejects_generated_artifact_output_path_collisions(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1396,7 +1396,7 @@ def test_benchmark_plan_rejects_generated_artifact_output_path_collisions(tmp_pa
 def test_benchmark_plan_rejects_release_bundle_output_path_collisions(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1424,7 +1424,7 @@ def test_benchmark_plan_rejects_release_bundle_output_path_collisions(tmp_path):
 def test_benchmark_plan_rejects_release_bundle_output_dir_colliding_with_generated_file(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1452,7 +1452,7 @@ def test_benchmark_plan_rejects_release_bundle_output_dir_colliding_with_generat
 def test_benchmark_plan_rejects_native_probe_factories_output_path_collisions(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1467,7 +1467,7 @@ def test_benchmark_plan_rejects_native_probe_factories_output_path_collisions(tm
 def test_build_v1_benchmark_plan_can_generate_and_bundle_release_preflight(tmp_path):
     release_preflight_json = str(tmp_path / "release-inputs.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -1522,7 +1522,7 @@ def test_build_v1_benchmark_plan_allows_equivalent_generated_release_preflight_b
     release_preflight_json = str(tmp_path / "release-inputs.json")
     equivalent_release_preflight_json = str(tmp_path / "subdir" / ".." / "release-inputs.json")
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -1563,7 +1563,7 @@ def test_benchmark_plan_rejects_conflicting_generated_release_preflight_bundle_p
         match="release bundle preflight_json must match release_preflight_output_json",
     ):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1593,7 +1593,7 @@ def test_benchmark_plan_rejects_conflicting_generated_release_preflight_bundle_p
 def test_benchmark_plan_release_preflight_requires_release_evidence(tmp_path):
     with pytest.raises(ValueError, match="release_preflight_output_json requires release_evidence"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1604,7 +1604,7 @@ def test_benchmark_plan_release_preflight_requires_release_evidence(tmp_path):
 def test_benchmark_plan_rejects_release_preflight_output_path_collisions(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1627,7 +1627,7 @@ def test_benchmark_plan_rejects_release_preflight_output_path_collisions(tmp_pat
 def test_benchmark_plan_rejects_repository_hygiene_output_path_collisions(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1642,7 +1642,7 @@ def test_benchmark_plan_rejects_repository_hygiene_output_path_collisions(tmp_pa
 def test_benchmark_plan_rejects_github_governance_output_path_collisions(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1657,7 +1657,7 @@ def test_benchmark_plan_rejects_github_governance_output_path_collisions(tmp_pat
 def test_benchmark_plan_rejects_equivalent_generated_artifact_output_paths(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1671,7 +1671,7 @@ def test_benchmark_plan_rejects_equivalent_generated_artifact_output_paths(tmp_p
 def test_benchmark_plan_rejects_local_uri_alias_generated_artifact_output_paths(tmp_path):
     with pytest.raises(ValueError, match="output paths must be distinct"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1696,7 +1696,7 @@ def test_engine_probe_plan_rejects_empty_metadata_keys(tmp_path):
 def test_benchmark_plan_requires_release_storage_readers_for_planned_release_evidence(tmp_path):
     with pytest.raises(ValueError, match="release readers"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -1718,7 +1718,7 @@ def test_benchmark_plan_requires_release_storage_readers_for_planned_release_evi
 
 def test_benchmark_plan_accepts_release_storage_readers_in_any_order(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -1769,7 +1769,7 @@ def test_storage_benchmark_plan_config_validates_reader_selection(tmp_path):
 
 def test_storage_benchmark_plan_defaults_to_memory_and_disk_without_uc_root(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -1790,7 +1790,7 @@ def test_storage_benchmark_plan_defaults_to_memory_and_disk_without_uc_root(tmp_
 def test_benchmark_plan_requires_all_v1_datasets_by_default(tmp_path):
     with pytest.raises(ValueError, match="missing required V1 datasets"):
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=(
                 BenchmarkDatasetPath(
                     dataset="biography",
@@ -1827,7 +1827,7 @@ def test_benchmark_plan_allows_partial_smoke_when_requested(tmp_path):
 def test_write_benchmark_job_plan_shell_emits_executable_script(tmp_path):
     plan = build_v1_benchmark_plan(
         BenchmarkPlanConfig(
-            suite_id="v1-g5",
+            suite_id="v1-g6-l4",
             dataset_paths=dataset_paths(tmp_path),
             base_url="http://localhost:8000",
             benchmark_output_json=str(tmp_path / "results.json"),
@@ -2005,7 +2005,7 @@ def test_legacy_benchmark_plan_main_isolates_dataclass_method_globals(monkeypatc
 
 def test_legacy_benchmark_plan_without_patches_returns_public_dataclass_instances(tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
@@ -2022,7 +2022,7 @@ def test_legacy_benchmark_plan_without_patches_returns_public_dataclass_instance
 
 def test_legacy_benchmark_plan_saved_original_wrapper_does_not_recurse(monkeypatch, tmp_path):
     config = BenchmarkPlanConfig(
-        suite_id="v1-g5",
+        suite_id="v1-g6-l4",
         dataset_paths=dataset_paths(tmp_path),
         base_url="http://localhost:8000",
         benchmark_output_json=str(tmp_path / "results.json"),
