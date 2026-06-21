@@ -1403,14 +1403,14 @@ The command prints a JSON record with TTFT, time-to-completion, token counts, `p
 
 This package uses Poetry metadata with exact direct dependency pins: Python
 `>=3.11,<4.0`, `poetry-core==2.4.1`, optional Databricks extras
-`pyspark==4.1.2` and `databricks-sdk==0.118.0`, one-engine serving extras
-`vllm==0.23.0` and `sglang==0.5.10.post1`, and test extra `pytest==9.1.1`.
-Do not install both serving-engine extras into one environment unless their
-upstream Torch/Transformers constraints have been reconciled. The Databricks
-vLLM smoke helper creates one such isolated local-NVMe environment and pins
-`vllm==0.23.0`. `document_kv_cache.serving_env` records the exact helper
-profiles for vLLM and SGLang so future smoke/probe jobs share the same install
-boundary.
+`pyspark==4.1.2` and `databricks-sdk==0.118.0`, and test extra
+`pytest==9.1.1`. Raw vLLM and SGLang runtimes are intentionally not Poetry
+extras because their current dependency graphs conflict in one resolver; use
+the vendored adapter code from the Cachet wheel and install exactly one serving
+runtime in an isolated environment. The Databricks vLLM smoke helper creates
+one such isolated local-NVMe environment and pins `vllm==0.23.0`.
+`document_kv_cache.serving_env` records the exact helper profiles for vLLM and
+SGLang so future smoke/probe jobs share the same install boundary.
 
 ```bash
 poetry install -E test

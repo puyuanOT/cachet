@@ -5,7 +5,7 @@ import tomllib
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_cachet_pyproject_packages_vllm_adapter_with_exact_optional_engine_pin():
+def test_cachet_pyproject_packages_vllm_adapter_without_raw_engine_extra():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["name"] == "document-kv-cache"
@@ -13,9 +13,7 @@ def test_cachet_pyproject_packages_vllm_adapter_with_exact_optional_engine_pin()
         package["include"]
         for package in pyproject["tool"]["poetry"]["packages"]
     }
-    assert pyproject["project"]["optional-dependencies"]["vllm"] == [
-        "vllm==0.23.0; python_version < '3.15'"
-    ]
+    assert "vllm" not in pyproject["project"]["optional-dependencies"]
     assert {
         "path": "src/vllm_kv_injection/py.typed",
         "format": ["sdist", "wheel"],

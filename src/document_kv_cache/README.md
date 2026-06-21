@@ -171,12 +171,13 @@ Legacy `restaurant-kv-*` aliases remain packaged only for downstream migration.
 
 ## Optional Extras
 
-The package keeps Databricks, serving-engine, and test dependencies optional
-but exactly pinned. Use `databricks` for managed Databricks helpers and `test`
-for local verification. Use exactly one of `vllm` or `sglang` for a serving
-environment; the vendored adapter packages are included in the Cachet wheel,
-while those extras install the matching upstream runtime. `serving_env.py`
-exposes the pinned helper profiles used by smoke/probe jobs.
+The package keeps Databricks and test dependencies optional but exactly pinned.
+Use `databricks` for managed Databricks helpers and `test` for local
+verification. The vendored adapter packages are included in the Cachet wheel,
+but raw vLLM and SGLang runtimes are intentionally not Poetry extras because
+their current dependency graphs conflict in one resolver. Install exactly one
+serving runtime in an isolated environment. `serving_env.py` exposes the pinned
+helper profiles used by smoke/probe jobs.
 
 The branded `cachet` facade, canonical `document_kv_cache` implementation,
 vendored `vllm_kv_injection`/`sglang_kv_injection` adapters, and
