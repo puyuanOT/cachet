@@ -73,6 +73,12 @@ def test_public_document_package_reexports_core_api():
         RELEASE_EVIDENCE_ARTIFACT_ROLES,
         ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE,
         ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION,
+        DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
+        DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
+        DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH,
+        DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+        DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH,
+        DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
         REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
         SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE,
         DatabricksSingleNodeGPUClusterConfig,
@@ -172,8 +178,10 @@ def test_public_document_package_reexports_core_api():
         build_databricks_storage_benchmark_run_submit_payload,
         build_databricks_vllm_smoke_run_submit_payload,
         build_engine_adapter_request,
+        build_sglang_launch_config,
         build_engine_kv_connector_actions,
         build_engine_ready_request,
+        build_vllm_launch_config,
         build_handle_from_materialized,
         build_single_node_gpu_cluster,
         build_single_node_g5_cluster,
@@ -247,6 +255,7 @@ def test_public_document_package_reexports_core_api():
         write_engine_adapter_handoff_bundle,
         write_engine_adapter_payload,
         write_engine_launch_config_evidence_json,
+        write_engine_launch_config_json,
         write_engine_kv_connector_actions_record_json,
         write_model_profile_definition_json,
         write_engine_probe_targets_json,
@@ -405,6 +414,16 @@ def test_public_document_package_reexports_core_api():
     assert EngineLaunchConfigEvidence is engine_launch_config.EngineLaunchConfigEvidence
     assert EngineLaunchConfigEvidence is restaurant_kv_serving.EngineLaunchConfigEvidence
     assert EngineLaunchConfigEvidence.__module__ == "document_kv_cache.engine_launch_config"
+    assert DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD == "native-kv-import"
+    assert DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION == 1
+    assert DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH == "sglang_kv_injection.sglang_dynamic_backend"
+    assert DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE == "sglang_kv_injection.launch_config.v1"
+    assert DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH == "vllm_kv_injection.vllm_dynamic_connector"
+    assert DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE == "vllm_kv_injection.launch_config.v1"
+    assert build_sglang_launch_config is engine_launch_config.build_sglang_launch_config
+    assert build_sglang_launch_config is restaurant_kv_serving.build_sglang_launch_config
+    assert build_vllm_launch_config is engine_launch_config.build_vllm_launch_config
+    assert build_vllm_launch_config is restaurant_kv_serving.build_vllm_launch_config
     assert ServingBackend is engine_adapters.ServingBackend
     assert ServingBackend is restaurant_kv_serving.ServingBackend
     assert ServingBackend.__module__ == "document_kv_cache.engine_adapters"
@@ -662,6 +681,8 @@ def test_public_document_package_reexports_core_api():
         write_engine_launch_config_evidence_json
         is restaurant_kv_serving.write_engine_launch_config_evidence_json
     )
+    assert write_engine_launch_config_json is engine_launch_config.write_engine_launch_config_json
+    assert write_engine_launch_config_json is restaurant_kv_serving.write_engine_launch_config_json
     assert (
         write_engine_kv_connector_actions_record_json
         is engine_probe.write_engine_kv_connector_actions_record_json
@@ -731,12 +752,21 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "RELEASE_BUNDLE_ARTIFACT_ROLES" in document_kv_cache.__all__
     assert "RELEASE_STORAGE_BENCHMARK_READERS" in document_kv_cache.__all__
     assert "REQUIRED_ENGINE_PROBE_BACKENDS" in document_kv_cache.__all__
+    assert "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD" in document_kv_cache.__all__
+    assert "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION" in document_kv_cache.__all__
+    assert "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH" in document_kv_cache.__all__
+    assert "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE" in document_kv_cache.__all__
+    assert "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH" in document_kv_cache.__all__
+    assert "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE" in document_kv_cache.__all__
     assert "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE" in document_kv_cache.__all__
     assert "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION" in document_kv_cache.__all__
     assert "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS" in document_kv_cache.__all__
     assert "EngineLaunchConfigEvidence" in document_kv_cache.__all__
+    assert "build_sglang_launch_config" in document_kv_cache.__all__
+    assert "build_vllm_launch_config" in document_kv_cache.__all__
     assert "evaluate_engine_launch_config_evidence" in document_kv_cache.__all__
     assert "validate_engine_launch_config_record" in document_kv_cache.__all__
+    assert "write_engine_launch_config_json" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_PURPOSE" in document_kv_cache.__all__
     assert "DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME" in document_kv_cache.__all__
@@ -1500,15 +1530,25 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "write_engine_adapter_request_json",
     ]
     assert engine_launch_config.__all__ == [
+        "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
+        "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
+        "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
+        "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+        "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",
+        "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
         "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
         "ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION",
         "REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS",
         "EngineLaunchConfigEvidence",
+        "build_sglang_launch_config",
+        "build_vllm_launch_config",
         "engine_launch_config_evidence_to_record",
         "engine_launch_config_record_issues",
         "evaluate_engine_launch_config_evidence",
+        "main",
         "read_engine_launch_config_json",
         "validate_engine_launch_config_record",
+        "write_engine_launch_config_json",
         "write_engine_launch_config_evidence_json",
     ]
     legacy_engine_launch_config = importlib.import_module("restaurant_kv_serving.engine_launch_config")
@@ -2066,6 +2106,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-serving-env": "document_kv_cache.serving_env:main",
         "document-kv-native-probe-factories": "document_kv_cache.native_probe_factories:main",
         "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
+        "document-kv-engine-launch-config": "document_kv_cache.engine_launch_config:main",
         "document-kv-engine-probe-fixture": "document_kv_cache.probe_fixtures:main",
         "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
         "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
