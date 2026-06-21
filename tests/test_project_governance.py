@@ -992,7 +992,7 @@ def test_github_ci_workflow_runs_pr_quality_gate():
         if line.lstrip().startswith("run: ") and line.split("run:", maxsplit=1)[1].strip() != "|"
     ]
     assert run_commands == [
-        "python -m pip install poetry==2.2.1",
+        "python -m pip install poetry==2.4.1",
         "poetry check",
         "poetry install --dry-run",
         "poetry install --dry-run --extras databricks --extras test",
