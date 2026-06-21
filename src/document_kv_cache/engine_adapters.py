@@ -319,11 +319,7 @@ class EngineKVInjectionPlan:
             total_blocks=self.total_blocks,
             layout=self.layout,
         )
-        if isinstance(self.adapter_ids, str) or not isinstance(self.adapter_ids, list | tuple):
-            raise TypeError("adapter_ids must be a sequence of non-empty strings")
-        adapter_ids = tuple(self.adapter_ids)
-        if any(not isinstance(adapter_id, str) or not adapter_id for adapter_id in adapter_ids):
-            raise ValueError("adapter_ids entries must be non-empty strings")
+        adapter_ids = _normalize_connector_adapter_ids(self.adapter_ids)
         segments = tuple(self.segments)
         if any(not isinstance(segment, EngineKVSegmentBinding) for segment in segments):
             raise TypeError("segments entries must be EngineKVSegmentBinding instances")
@@ -359,9 +355,7 @@ class EngineKVReservationAction:
         if self.total_blocks != _block_count(self.total_tokens, self.layout.block_size):
             raise ValueError("total_blocks does not match total_tokens and layout.block_size")
         _validate_nonnegative_int_value(self.estimated_gpu_bytes, field_name="estimated_gpu_bytes")
-        if any(not isinstance(adapter_id, str) or not adapter_id for adapter_id in self.adapter_ids):
-            raise ValueError("adapter_ids entries must be non-empty strings")
-        object.__setattr__(self, "adapter_ids", tuple(self.adapter_ids))
+        object.__setattr__(self, "adapter_ids", _normalize_connector_adapter_ids(self.adapter_ids))
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,9 +438,7 @@ class EngineKVBindAction:
             raise ValueError("handle_uri must be non-empty")
         if not self.cache_method:
             raise ValueError("cache_method must be non-empty")
-        if any(not isinstance(adapter_id, str) or not adapter_id for adapter_id in self.adapter_ids):
-            raise ValueError("adapter_ids entries must be non-empty strings")
-        object.__setattr__(self, "adapter_ids", tuple(self.adapter_ids))
+        object.__setattr__(self, "adapter_ids", _normalize_connector_adapter_ids(self.adapter_ids))
         _validate_metadata_strings(self.metadata)
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
 
@@ -858,7 +850,7 @@ def build_engine_kv_injection_plan(
         payload_source_uri=_optional_str(payload_source, "uri"),
         layout=layout,
         cache_method=_required_str(handle, "cache_method"),
-        adapter_ids=tuple(_required_str_sequence(handle, "adapter_ids")),
+        adapter_ids=_required_adapter_ids(handle, "adapter_ids"),
         total_tokens=total_tokens,
         total_bytes=total_bytes,
         total_blocks=_block_count(total_tokens, layout.block_size),
@@ -1398,11 +1390,7 @@ def _validate_handle_record(handle: Mapping[str, Any]) -> None:
         raise ValueError("handle.handle_uri must be non-empty")
     if not _required_str(handle, "cache_method"):
         raise ValueError("handle.cache_method must be non-empty")
-    if any(
-        not isinstance(adapter_id, str) or not adapter_id
-        for adapter_id in _required_sequence(handle, "adapter_ids")
-    ):
-        raise ValueError("handle.adapter_ids entries must be non-empty strings")
+    _required_adapter_ids(handle, "adapter_ids", field_name="handle.adapter_ids")
     _reject_reserved_metadata(_required_mapping(handle, "metadata"))
 
     token_cursor = 0
@@ -1585,6 +1573,21 @@ def _validate_connector_package_matches_backend(backend: ServingBackend, connect
         raise ValueError("connector_package must match backend")
 
 
+def _normalize_connector_adapter_ids(
+    adapter_ids: list[str] | tuple[str, ...],
+    *,
+    field_name: str = "adapter_ids",
+) -> tuple[str, ...]:
+    if isinstance(adapter_ids, str) or not isinstance(adapter_ids, list | tuple):
+        raise TypeError(f"{field_name} must be a sequence of non-empty strings")
+    normalized = tuple(adapter_ids)
+    if any(not isinstance(adapter_id, str) or not adapter_id for adapter_id in normalized):
+        raise ValueError(f"{field_name} entries must be non-empty strings")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(f"{field_name} entries must be unique")
+    return normalized
+
+
 def _required_mapping(record: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     value = record.get(key)
     if not isinstance(value, Mapping):
@@ -1617,6 +1620,15 @@ def _required_str_sequence(record: Mapping[str, Any], key: str) -> tuple[str, ..
     if any(not isinstance(value, str) or not value for value in values):
         raise ValueError(f"{key} entries must be non-empty strings")
     return values
+
+
+def _required_adapter_ids(
+    record: Mapping[str, Any],
+    key: str,
+    *,
+    field_name: str = "adapter_ids",
+) -> tuple[str, ...]:
+    return _normalize_connector_adapter_ids(_required_str_sequence(record, key), field_name=field_name)
 
 
 def _required_str(record: Mapping[str, Any], key: str) -> str:
