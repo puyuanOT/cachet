@@ -2722,6 +2722,7 @@ def _v1_report_row_record(dataset: str, arm: str):
         "completion_tokens_mean": 16.0,
         "ttft": {"count": 1, "mean": 1.0, "p50": 1.0, "p95": 1.0},
         "time_to_completion": {"count": 1, "mean": 2.0, "p50": 2.0, "p95": 2.0},
+        "exact_match_rate": 1.0,
         "answer_found_rate": 1.0,
         "output_tokens_per_second": 8.0,
     }

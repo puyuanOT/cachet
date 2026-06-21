@@ -1250,8 +1250,10 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
                 f"v1 benchmark report row {dataset_value}:{arm_id_value} {metric_name}",
                 issues,
             )
-        if row.get("answer_found_rate") is None and row.get("exact_match_rate") is None:
-            issues.append(f"v1 benchmark report row {dataset_value}:{arm_id_value} must include quality metrics")
+            if row.get(metric_name) is None:
+                issues.append(
+                    f"v1 benchmark report row {dataset_value}:{arm_id_value} must include {metric_name}"
+                )
     expected = {
         (dataset, arm_id)
         for dataset in SUPPORTED_V1_DATASETS
