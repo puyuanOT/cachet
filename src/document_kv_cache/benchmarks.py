@@ -16,6 +16,7 @@ SUPPORTED_V1_HARDWARE_TARGETS = ("aws-g6-l4", "aws-g5")
 DEFAULT_HARDWARE_TARGET = "aws-g6-l4"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"
+FINAL_ANSWER_CUE = "Answer:"
 
 __all__ = [
     "SUPPORTED_V1_DATASETS",
@@ -26,6 +27,7 @@ __all__ = [
     "CACHE_REUSE_ARM",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
+    "FINAL_ANSWER_CUE",
     "BenchmarkExample",
     "BenchmarkSuite",
     "BenchmarkArm",
@@ -586,6 +588,7 @@ def _user_prompt(example: BenchmarkExample, spec: BenchmarkDatasetSpec) -> str:
     return _join_sections(
         f"Question: {example.query}",
         spec.answer_instruction,
+        FINAL_ANSWER_CUE,
     )
 
 
