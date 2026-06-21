@@ -171,6 +171,7 @@ class ReleaseBundlePlanConfig:
     overwrite: bool = False
     require_complete_v1: bool = False
     requirements_matrix_md: str | None = None
+    engine_launch_config_jsons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -195,6 +196,13 @@ class ReleaseBundlePlanConfig:
             raise ValueError("release bundle repository_hygiene_json must be non-empty when provided")
         if any(not path for path in self.native_probe_factories_jsons):
             raise ValueError("release bundle native_probe_factories_jsons entries must be non-empty")
+        if any(not path for path in self.engine_launch_config_jsons):
+            raise ValueError("release bundle engine_launch_config_jsons entries must be non-empty")
+        canonical_launch_config_paths = tuple(
+            _canonical_artifact_path(path) for path in self.engine_launch_config_jsons
+        )
+        if len(set(canonical_launch_config_paths)) != len(canonical_launch_config_paths):
+            raise ValueError("release bundle engine_launch_config_jsons entries must be distinct")
         if type(self.overwrite) is not bool:
             raise ValueError("release bundle overwrite must be boolean")
         if type(self.require_complete_v1) is not bool:
@@ -203,6 +211,7 @@ class ReleaseBundlePlanConfig:
         object.__setattr__(self, "databricks_run_status_jsons", tuple(self.databricks_run_status_jsons))
         object.__setattr__(self, "pr_evidence_jsons", tuple(self.pr_evidence_jsons))
         object.__setattr__(self, "native_probe_factories_jsons", tuple(self.native_probe_factories_jsons))
+        object.__setattr__(self, "engine_launch_config_jsons", tuple(self.engine_launch_config_jsons))
 
 
 @dataclass(frozen=True, slots=True)
@@ -872,6 +881,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--engine-probe-json", engine_probe_json)
     for engine_action_json in _release_engine_action_jsons(config):
         argv = (*argv, "--engine-actions-json", engine_action_json)
+    for engine_launch_config_json in bundle_config.engine_launch_config_jsons:
+        argv = (*argv, "--engine-launch-config-json", engine_launch_config_json)
     preflight_json = _release_bundle_preflight_json(config)
     if preflight_json is not None:
         argv = (*argv, "--preflight-json", preflight_json)
@@ -914,6 +925,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "storage_benchmark_json": _release_storage_benchmark_json(config),
         "engine_probe_jsons": list(_release_engine_probe_jsons(config)),
         "engine_actions_jsons": list(_release_engine_action_jsons(config)),
+        "engine_launch_config_jsons": list(bundle_config.engine_launch_config_jsons),
         "release_evidence_json": release_config.output_json,
         "preflight_json": _release_bundle_preflight_json(config),
         "plan_execution_jsons": list(bundle_config.plan_execution_jsons),
@@ -1008,6 +1020,8 @@ def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None
         missing.append("tested package wheel")
     if not bundle_config.pr_evidence_jsons:
         missing.append("PR evidence sidecar")
+    if not bundle_config.engine_launch_config_jsons:
+        missing.append("vLLM/SGLang engine launch config sidecars")
     if bundle_config.requirements_matrix_md is None:
         missing.append("V1 requirements matrix")
     if _release_bundle_github_governance_json(config) is None:
@@ -1493,6 +1507,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Native probe factory diagnostics sidecar to include in the release bundle. Repeat as needed.",
     )
     parser.add_argument(
+        "--release-bundle-engine-launch-config-json",
+        action="append",
+        help="vLLM/SGLang engine launch config sidecar to include in the release bundle. Repeat as needed.",
+    )
+    parser.add_argument(
         "--release-bundle-require-complete-v1",
         action="store_true",
         help="Emit --require-complete-v1 on the release bundle command for strict V1 publishing.",
@@ -1831,6 +1850,7 @@ def _release_bundle_config_from_cli(
         github_governance_json=args.release_bundle_github_governance_json,
         repository_hygiene_json=args.release_bundle_repository_hygiene_json,
         native_probe_factories_jsons=tuple(args.release_bundle_native_probe_factories_json or ()),
+        engine_launch_config_jsons=tuple(args.release_bundle_engine_launch_config_json or ()),
         overwrite=args.release_bundle_overwrite,
         require_complete_v1=args.release_bundle_require_complete_v1,
     )
@@ -1848,6 +1868,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_github_governance_json is not None
         or args.release_bundle_repository_hygiene_json is not None
         or args.release_bundle_native_probe_factories_json is not None
+        or args.release_bundle_engine_launch_config_json is not None
         or args.release_bundle_require_complete_v1
         or args.release_bundle_overwrite
     )

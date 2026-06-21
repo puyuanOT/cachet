@@ -21,6 +21,8 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
 )
 from document_kv_cache.engine_adapters import (
+    ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
+    ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
     EngineKVBindAction,
     EngineKVConnectorActions,
     EngineKVConnectorProbeResult,
@@ -670,6 +672,8 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "engine_probe",
         "engine_connector_actions",
         "engine_connector_actions",
+        "engine_launch_config",
+        "engine_launch_config",
         "release_evidence",
         "preflight",
         "plan_execution",
@@ -698,6 +702,14 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         for task in status["submit_payload"]["tasks"]
     }
     assert purposes == {purpose for purpose, _label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES}
+    launch_config_artifacts = [
+        artifact for artifact in record["artifacts"] if artifact["role"] == "engine_launch_config"
+    ]
+    assert [artifact["backend"] for artifact in launch_config_artifacts] == ["vllm", "sglang"]
+    assert [artifact["bundled_path"] for artifact in launch_config_artifacts] == [
+        "engine_launch_config_07_vllm.json",
+        "engine_launch_config_08_sglang.json",
+    ]
 
 
 def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_mismatch(tmp_path):
@@ -831,7 +843,7 @@ def test_build_release_bundle_rejects_requirements_matrix_missing_strict_artifac
         source_dir,
         databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
     )
-    missing_label = "tested package wheel"
+    missing_label = "vLLM/SGLang engine launch config sidecars"
     assert any(label == missing_label for _role, _count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS)
     bad_matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8").replace(
         missing_label,
@@ -886,6 +898,51 @@ def test_build_release_bundle_strict_v1_requires_connector_action_sidecars(tmp_p
             **{**release_kwargs, "engine_actions_jsons": selected_actions},
             output_dir=tmp_path / f"strict-missing-actions-{len(selected_actions)}",
             require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_strict_v1_requires_engine_launch_config_sidecars(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+
+    with pytest.raises(ValueError, match="vLLM/SGLang engine launch config sidecars"):
+        build_release_bundle(
+            **{**release_kwargs, "engine_launch_config_jsons": ()},
+            output_dir=tmp_path / "strict-missing-launch-configs",
+            require_complete_v1=True,
+        )
+
+    with pytest.raises(ValueError, match="missing engine launch config backends: sglang"):
+        build_release_bundle(
+            **{
+                **release_kwargs,
+                "engine_launch_config_jsons": (
+                    release_kwargs["engine_launch_config_jsons"][0],
+                    release_kwargs["engine_launch_config_jsons"][0],
+                ),
+            },
+            output_dir=tmp_path / "strict-duplicate-launch-config-backend",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_rejects_invalid_engine_launch_config(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    invalid_launch_config = _write_json(
+        source_dir / "invalid-launch-config.json",
+        {"kv_connector": "MissingDocumentKVExtraConfig"},
+    )
+
+    with pytest.raises(ValueError, match="engine launch config must match either"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_launch_config_jsons=(invalid_launch_config,),
+            output_dir=tmp_path / "invalid-launch-config-bundle",
         )
 
 
@@ -2669,13 +2726,21 @@ def test_release_bundle_dataclasses_validate_json_safe_schema():
         sha256="a" * 64,
         backend="vllm",
     )
+    launch_config_artifact = ReleaseBundleArtifact(
+        role="engine_launch_config",
+        source_path="vllm-launch.json",
+        bundled_path="engine_launch_config_01_vllm.json",
+        size_bytes=128,
+        sha256="b" * 64,
+        backend="vllm",
+    )
     bundle = ReleaseBundle(
         output_dir="/tmp/bundle",
         manifest_path="/tmp/bundle/manifest.json",
-        artifacts=[artifact],
+        artifacts=[artifact, launch_config_artifact],
     )
 
-    assert bundle.artifacts == (artifact,)
+    assert bundle.artifacts == (artifact, launch_config_artifact)
 
     with pytest.raises(ValueError, match="Unsupported release bundle artifact role"):
         ReleaseBundleArtifact(role="dataset", source_path="x", bundled_path="x", size_bytes=1, sha256="a")
@@ -2922,7 +2987,7 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
     assert "--require-complete-v1" in completed.stdout
     assert "--requirements-matrix-md" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
-    assert "vLLM/SGLang native engine probes and connector actions" in help_text
+    assert "vLLM/SGLang native engine probes, connector actions, and launch configs" in help_text
     assert "supported native probe factory diagnostics" in help_text
     assert "V1 requirements matrix" in help_text
 
@@ -3012,6 +3077,11 @@ def _write_release_ready_artifacts(source_dir: Path, *, suite_id: str = "v1-suit
         "sglang": _write_json(source_dir / "sglang-probe.json", _probe_record(ServingBackend.SGLANG)),
         "vllm_actions": _write_json(source_dir / "vllm-actions.json", _actions_record(ServingBackend.VLLM)),
         "sglang_actions": _write_json(source_dir / "sglang-actions.json", _actions_record(ServingBackend.SGLANG)),
+        "vllm_launch": _write_json(source_dir / "vllm-launch-config.json", _launch_config_record(ServingBackend.VLLM)),
+        "sglang_launch": _write_json(
+            source_dir / "sglang-launch-config.json",
+            _launch_config_record(ServingBackend.SGLANG),
+        ),
     }
     evidence = evaluate_release_evidence_files(
         v1_benchmark_json=paths["v1"],
@@ -3249,6 +3319,41 @@ def _actions_record(backend: ServingBackend, *, layout=None):
     )
 
 
+def _launch_config_record(backend: ServingBackend):
+    extra = {
+        "document_kv.record_type": f"{backend.value}_kv_injection.test_config.v1",
+        "document_kv.schema_version": 1,
+        "document_kv.backend": backend.value,
+        "document_kv.connector_package": backend.value,
+        "document_kv.kv_injection_method": "native-kv-import",
+        "document_kv.engine_handoff_record_type": ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
+        "document_kv.engine_handoff_schema_version": ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
+        "document_kv.requires_native_runtime": True,
+    }
+    if backend is ServingBackend.VLLM:
+        return {
+            "kv_connector": "DocumentKVConnector",
+            "kv_connector_module_path": "document_kv_vllm.document_kv_connector",
+            "kv_role": "kv_both",
+            "kv_connector_extra_config": extra,
+        }
+    if backend is ServingBackend.SGLANG:
+        return {
+            "enable_hierarchical_cache": True,
+            "hicache_storage_backend": "dynamic",
+            "hicache_storage_backend_extra_config": json.dumps(
+                {
+                    "backend_name": "document_kv",
+                    "module_path": "document_kv_sglang.document_kv_backend",
+                    "class_name": "DocumentKVHiCacheBackend",
+                    **extra,
+                },
+                sort_keys=True,
+            ),
+        }
+    raise AssertionError(f"unsupported backend {backend}")
+
+
 def _runtime_contract_metadata(backend: ServingBackend) -> dict[str, str]:
     if backend is ServingBackend.VLLM:
         return {"vllm_kv_injection.runtime_contract": "vllm-kv-connector-v1"}
@@ -3291,6 +3396,7 @@ def _strict_v1_release_bundle_kwargs(
         "storage_benchmark_json": artifacts["storage"],
         "engine_probe_jsons": (artifacts["vllm"], artifacts["sglang"]),
         "engine_actions_jsons": (artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        "engine_launch_config_jsons": (artifacts["vllm_launch"], artifacts["sglang_launch"]),
         "release_evidence_json": artifacts["evidence"],
         "preflight_json": artifacts["preflight"],
         "plan_execution_jsons": (plan_execution,),

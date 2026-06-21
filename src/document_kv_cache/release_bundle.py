@@ -52,6 +52,11 @@ from document_kv_cache.databricks_storage_benchmark_job import (
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,
 )
+from document_kv_cache.engine_launch_config import (
+    REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
+    engine_launch_config_record_issues,
+    evaluate_engine_launch_config_evidence,
+)
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
@@ -107,6 +112,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "storage_benchmark",
     "engine_probe",
     "engine_connector_actions",
+    "engine_launch_config",
     "release_evidence",
     "preflight",
     "plan_execution",
@@ -123,6 +129,7 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("preflight", 1, "preflight sidecar"),
     ("engine_probe", 2, "vLLM/SGLang native engine probe sidecars"),
     ("engine_connector_actions", 2, "vLLM/SGLang connector action sidecars"),
+    ("engine_launch_config", 2, "vLLM/SGLang engine launch config sidecars"),
     ("plan_execution", 1, "benchmark plan execution sidecar"),
     ("databricks_run_status", 1, "Databricks run-status sidecar"),
     ("package_wheel", 1, "tested package wheel"),
@@ -157,10 +164,17 @@ STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT = (
 )
 STRICT_V1_RELEASE_HELP = (
     "Require the full V1 release artifact set: release/preflight sidecars, "
-    "vLLM/SGLang native engine probes and connector actions, plan execution, "
-    "Databricks status for benchmark/storage/engine-probe runs, tested wheel, "
-    "PR evidence, governance, repository hygiene, and supported native probe "
-    "factory diagnostics, plus the V1 requirements matrix."
+    "vLLM/SGLang native engine probes, connector actions, and launch configs, "
+    "plan execution, Databricks status for benchmark/storage/engine-probe runs, "
+    "tested wheel, PR evidence, governance, repository hygiene, and supported "
+    "native probe factory diagnostics, plus the V1 requirements matrix."
+)
+_ENGINE_BACKEND_ARTIFACT_ROLES = frozenset(
+    {
+        "engine_probe",
+        "engine_connector_actions",
+        "engine_launch_config",
+    }
 )
 _REQUIRED_REQUIREMENTS_MATRIX_SNIPPETS = (
     "# V1 Requirements Matrix",
@@ -382,7 +396,7 @@ class ReleaseBundleArtifact:
             raise ValueError("size_bytes must be a non-negative integer")
         if self.record_type is not None and (not isinstance(self.record_type, str) or not self.record_type):
             raise ValueError("record_type must be non-empty when provided")
-        if self.backend is not None and self.role not in ("engine_probe", "engine_connector_actions"):
+        if self.backend is not None and self.role not in _ENGINE_BACKEND_ARTIFACT_ROLES:
             raise ValueError("backend can only be set for engine backend artifacts")
         if self.backend is not None and self.backend not in REQUIRED_ENGINE_PROBE_BACKENDS:
             raise ValueError(f"Unsupported artifact backend {self.backend!r}")
@@ -419,6 +433,7 @@ def build_release_bundle(
     output_dir: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
     engine_actions_jsons: Sequence[str | Path] = (),
+    engine_launch_config_jsons: Sequence[str | Path] = (),
     release_evidence_json: str | Path | None = None,
     preflight_json: str | Path | None = None,
     plan_execution_jsons: Sequence[str | Path] = (),
@@ -444,6 +459,7 @@ def build_release_bundle(
         storage_benchmark_json=storage_benchmark_json,
         engine_probe_jsons=engine_probe_jsons,
         engine_actions_jsons=engine_actions_jsons,
+        engine_launch_config_jsons=engine_launch_config_jsons,
         release_evidence_json=release_evidence_json,
         preflight_json=preflight_json,
         plan_execution_jsons=plan_execution_jsons,
@@ -475,6 +491,7 @@ def build_release_bundle(
     if require_complete_v1:
         _validate_strict_v1_databricks_purpose_coverage(prepared_artifacts)
         _validate_strict_v1_native_probe_factory_support(prepared_artifacts)
+        _validate_strict_v1_engine_launch_config_coverage(prepared_artifacts)
     _preflight_release_bundle_destinations(
         prepared_artifacts=prepared_artifacts,
         bundle_dir=bundle_dir,
@@ -520,6 +537,7 @@ def _release_bundle_sources(
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path],
     engine_actions_jsons: Sequence[str | Path],
+    engine_launch_config_jsons: Sequence[str | Path],
     release_evidence_json: str | Path | None,
     preflight_json: str | Path | None,
     plan_execution_jsons: Sequence[str | Path],
@@ -537,6 +555,7 @@ def _release_bundle_sources(
     ]
     sources.extend(("engine_probe", path) for path in engine_probe_jsons)
     sources.extend(("engine_connector_actions", path) for path in engine_actions_jsons)
+    sources.extend(("engine_launch_config", path) for path in engine_launch_config_jsons)
     if release_evidence_json is not None:
         sources.append(("release_evidence", release_evidence_json))
     if preflight_json is not None:
@@ -576,11 +595,7 @@ def _copy_release_bundle_artifact(
         size_bytes=len(prepared.payload),
         sha256=hashlib.sha256(prepared.payload).hexdigest(),
         record_type=_artifact_record_type(prepared),
-        backend=(
-            _optional_backend(prepared.record.get("backend"))
-            if prepared.role in ("engine_probe", "engine_connector_actions") and prepared.record is not None
-            else None
-        ),
+        backend=_release_bundle_artifact_backend(prepared),
         package_name=wheel_identity.package_name if wheel_identity is not None else None,
         package_version=wheel_identity.package_version if wheel_identity is not None else None,
     )
@@ -692,6 +707,11 @@ def _validate_release_bundle_inputs(
                 issues.append("native probe factories sidecar must be JSON")
                 continue
             issues.extend(_native_probe_factories_sidecar_issues(artifact.record))
+        elif artifact.role == "engine_launch_config":
+            if artifact.record is None:
+                issues.append("engine launch config sidecar must be JSON")
+                continue
+            issues.extend(_engine_launch_config_sidecar_issues(artifact.record))
     issues.extend(_pr_evidence_repository_alignment_issues(artifacts))
     if issues:
         raise ValueError(f"Release bundle inputs are not release-ready: {'; '.join(issues)}")
@@ -851,6 +871,22 @@ def _validate_strict_v1_native_probe_factory_support(
         raise ValueError(
             "Strict V1 release bundle requires "
             f"{', '.join(missing)}"
+        )
+
+
+def _validate_strict_v1_engine_launch_config_coverage(
+    artifacts: Sequence[_PreparedReleaseBundleArtifact],
+) -> None:
+    records = tuple(
+        artifact.record
+        for artifact in artifacts
+        if artifact.role == "engine_launch_config" and artifact.record is not None
+    )
+    evidence = evaluate_engine_launch_config_evidence(records)
+    if not evidence.ok:
+        raise ValueError(
+            "Strict V1 release bundle requires "
+            f"{'; '.join(evidence.issues)}"
         )
 
 
@@ -1478,6 +1514,10 @@ def _plan_execution_command_count_issues(
 
 def _native_probe_factories_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     return native_probe_factories_record_issues(record)
+
+
+def _engine_launch_config_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    return engine_launch_config_record_issues(record)
 
 
 def _plan_source_issues(
@@ -2155,6 +2195,10 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         backend = _optional_backend(record.get("backend")) if record is not None else None
         backend = backend or f"record_{index + 1:02d}"
         return f"engine_connector_actions_{index + 1:02d}_{backend}.json"
+    if role == "engine_launch_config":
+        backend = _engine_launch_config_backend(record) if record is not None else None
+        backend = backend or f"record_{index + 1:02d}"
+        return f"engine_launch_config_{index + 1:02d}_{backend}.json"
     if role == "v1_benchmark":
         return "v1_benchmark.json"
     if role == "storage_benchmark":
@@ -2210,6 +2254,23 @@ def _optional_backend(value: Any) -> str | None:
     return backend if backend in REQUIRED_ENGINE_PROBE_BACKENDS else None
 
 
+def _release_bundle_artifact_backend(prepared: _PreparedReleaseBundleArtifact) -> str | None:
+    if prepared.record is None or prepared.role not in _ENGINE_BACKEND_ARTIFACT_ROLES:
+        return None
+    if prepared.role in ("engine_probe", "engine_connector_actions"):
+        return _optional_backend(prepared.record.get("backend"))
+    if prepared.role == "engine_launch_config":
+        return _engine_launch_config_backend(prepared.record)
+    return None
+
+
+def _engine_launch_config_backend(record: Mapping[str, Any]) -> str | None:
+    for backend in REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS:
+        if not engine_launch_config_record_issues(record, expected_backend=backend):
+            return backend
+    return None
+
+
 def _matches_required_backend_set(value: Any) -> bool:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
         return False
@@ -2237,6 +2298,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--storage-benchmark-json", required=True)
     parser.add_argument("--engine-probe-json", action="append", default=[])
     parser.add_argument("--engine-actions-json", action="append", default=[])
+    parser.add_argument("--engine-launch-config-json", action="append", default=[])
     parser.add_argument("--release-evidence-json")
     parser.add_argument("--preflight-json")
     parser.add_argument("--plan-execution-json", action="append", default=[])
@@ -2265,6 +2327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         storage_benchmark_json=args.storage_benchmark_json,
         engine_probe_jsons=args.engine_probe_json,
         engine_actions_jsons=args.engine_actions_json,
+        engine_launch_config_jsons=args.engine_launch_config_json,
         release_evidence_json=args.release_evidence_json,
         preflight_json=args.preflight_json,
         plan_execution_jsons=args.plan_execution_json,
