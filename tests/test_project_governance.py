@@ -421,6 +421,7 @@ def test_source_layout_readme_reflects_document_owned_implementation():
     assert "`cachet/` is the branded import facade" in text
     assert "`document_kv_cache/` is the canonical implementation and compatibility" in text
     assert "`restaurant_kv_serving/` remains packaged as a migration-only compatibility" in compact_text
+    assert "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter" in compact_text
     assert "contains the current implementation" not in text
 
 
@@ -1293,19 +1294,19 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
     dependencies = pyproject["project"].get("dependencies", ())
     optional_dependencies = pyproject["project"].get("optional-dependencies", {})
     dependency_names = {_requirement_name(requirement) for requirement in dependencies}
-    optional_dependency_names = {
-        _requirement_name(requirement)
-        for requirements in optional_dependencies.values()
-        for requirement in requirements
+    optional_dependency_names_by_extra = {
+        extra_name: {_requirement_name(requirement) for requirement in requirements}
+        for extra_name, requirements in optional_dependencies.items()
     }
+    optional_dependency_names = set().union(*optional_dependency_names_by_extra.values())
 
     assert "vllm" not in dependency_names
     assert "sglang" not in dependency_names
-    assert "vllm" not in optional_dependency_names
-    assert "sglang" not in optional_dependency_names
     assert "serving" not in optional_dependencies
-    assert "vllm" not in optional_dependencies
-    assert "sglang" not in optional_dependencies
+    assert optional_dependency_names_by_extra["vllm"] == {"vllm"}
+    assert optional_dependency_names_by_extra["sglang"] == {"sglang"}
+    assert "sglang" not in optional_dependency_names_by_extra["vllm"]
+    assert "vllm" not in optional_dependency_names_by_extra["sglang"]
     assert "vllm-kv-injection" not in optional_dependency_names
     assert "sglang-kv-injection" not in optional_dependency_names
 
@@ -1321,6 +1322,8 @@ def test_public_and_legacy_packages_publish_pep561_markers():
         "src/cachet/py.typed",
         "src/document_kv_cache/py.typed",
         "src/restaurant_kv_serving/py.typed",
+        "src/vllm_kv_injection/py.typed",
+        "src/sglang_kv_injection/py.typed",
     )
 
     for marker_path in marker_paths:

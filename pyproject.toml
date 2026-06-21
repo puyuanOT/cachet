@@ -37,6 +37,12 @@ databricks = [
   "pyspark==4.1.2",
   "databricks-sdk==0.118.0",
 ]
+vllm = [
+  "vllm==0.23.0; python_version < '3.15'",
+]
+sglang = [
+  "sglang==0.5.13.post1",
+]
 test = [
   "pytest==9.1.1",
 ]
@@ -105,12 +111,16 @@ packages = [
   { include = "cachet", from = "src" },
   { include = "document_kv_cache", from = "src" },
   { include = "restaurant_kv_serving", from = "src" },
+  { include = "vllm_kv_injection", from = "src" },
+  { include = "sglang_kv_injection", from = "src" },
 ]
 include = [
   { path = "src/cachet/__init__.pyi", format = ["sdist", "wheel"] },
   { path = "src/cachet/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/py.typed", format = ["sdist", "wheel"] },
   { path = "src/restaurant_kv_serving/py.typed", format = ["sdist", "wheel"] },
+  { path = "src/vllm_kv_injection/py.typed", format = ["sdist", "wheel"] },
+  { path = "src/sglang_kv_injection/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.yml", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.md", format = ["sdist", "wheel"] },
 ]

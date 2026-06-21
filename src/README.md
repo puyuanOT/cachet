@@ -11,3 +11,6 @@ branded `cachet` facade.
   namespace used by existing runners, evidence files, and CLI entry points.
 - `restaurant_kv_serving/` remains packaged as a migration-only compatibility
   layer for existing Databricks benchmark jobs and older imports.
+- `vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter
+  compatibility packages. They stay importable under their existing names
+  because native probe metadata references those dotted paths.
