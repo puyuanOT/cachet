@@ -24,7 +24,7 @@
 
 <!-- Paste the GPT-5.5 findings and the fixes made, or state that the review returned no findings. -->
 
-<!-- Attach the JSON sidecar emitted by document-kv-pr-evidence. -->
+<!-- Attach the JSON sidecar emitted by document-kv-pr-evidence, including pull_request_number and pull_request_url. -->
 
 - [ ] Refactor skill applied during this PR slice.
 - [ ] GPT-5.5 review completed.
