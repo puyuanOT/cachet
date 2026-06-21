@@ -992,6 +992,27 @@ def _single_target_extra_pip_packages_from_cli(args: argparse.Namespace) -> tupl
     return tuple(packages)
 
 
+def _single_target_extra_wheel_uris_from_cli(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.provider_backed_vllm_native_probe and args.extra_wheel_uri:
+        raise ValueError(
+            "--provider-backed-vllm-native-probe cannot be combined with --extra-wheel-uri; "
+            "the provider-backed vLLM adapter modules must come from the Cachet wheel"
+        )
+    return tuple(args.extra_wheel_uri or ())
+
+
+def _single_target_engine_version_from_cli(args: argparse.Namespace) -> str | None:
+    if args.provider_backed_vllm_native_probe and args.engine_version is not None:
+        raise ValueError("--provider-backed-vllm-native-probe cannot be combined with --engine-version")
+    return args.engine_version
+
+
+def _single_target_allow_non_native_probe_from_cli(args: argparse.Namespace) -> bool:
+    if args.provider_backed_vllm_native_probe and args.allow_non_native_probe:
+        raise ValueError("--provider-backed-vllm-native-probe cannot be combined with --allow-non-native-probe")
+    return args.allow_non_native_probe
+
+
 def _append_required_pip_package(packages: list[str], *, required_package: str, option_name: str) -> None:
     required_name = _pip_package_name(required_package)
     for package in packages:
@@ -1200,10 +1221,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data_security_mode=args.data_security_mode,
                 single_user_name=args.single_user_name,
                 wheel_uri=args.wheel_uri,
-                extra_wheel_uris=tuple(args.extra_wheel_uri or ()),
+                extra_wheel_uris=_single_target_extra_wheel_uris_from_cli(args),
                 extra_pip_packages=_single_target_extra_pip_packages_from_cli(args),
-                engine_version=args.engine_version,
-                allow_non_native_probe=args.allow_non_native_probe,
+                engine_version=_single_target_engine_version_from_cli(args),
+                allow_non_native_probe=_single_target_allow_non_native_probe_from_cli(args),
                 metadata=_single_target_metadata_from_cli(args),
                 release_safe=args.release_safe,
                 actions_output_json=args.actions_output_json,

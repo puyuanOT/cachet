@@ -461,6 +461,8 @@ provider-backed connector metadata, `--expected-backend vllm`, and the pinned
 `vllm==0.23.0` runtime package. The fixture option writes deterministic Qwen3
 handoff/payload/action artifacts on the target node before the native probe
 runs.
+The preset rejects debug fallback flags and extra wheels so the provider-backed
+adapter modules come only from the Cachet wheel.
 
 For release runs, prefer a two-backend probe target file and one release-safe
 Databricks payload so vLLM and SGLang exercise the same descriptor contract on

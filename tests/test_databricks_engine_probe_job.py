@@ -1736,6 +1736,9 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
             VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
         ),
         (("--extra-pip-package", "vllm==0.22.0"), VLLM_RUNTIME_PACKAGE),
+        (("--extra-wheel-uri", CUSTOM_VLLM_EXTENSION_WHEEL_URI), "--extra-wheel-uri"),
+        (("--engine-version", "debug-vllm"), "--engine-version"),
+        (("--allow-non-native-probe",), "--allow-non-native-probe"),
     ],
 )
 def test_main_provider_backed_vllm_preset_rejects_conflicting_values(

@@ -156,6 +156,8 @@ factories should report the real engine version in their result.
 For the built-in vLLM provider-backed path, `--provider-backed-vllm-native-probe`
 also sets the Cachet probe factory, vLLM delegate factory, required connector
 metadata, expected backend, and pinned `vllm==0.23.0` runtime package.
+It rejects debug fallback flags and extra wheels so the provider-backed adapter
+modules come only from the Cachet wheel.
 `--actions-output-json` writes the validated reserve/copy/bind/release
 descriptor that the native block-manager probe consumed.
 

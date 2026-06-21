@@ -180,6 +180,8 @@ For Cachet's built-in provider-backed vLLM path,
 `--provider-backed-vllm-native-probe` fills in the Cachet probe factory, vLLM
 delegate factory, strict connector metadata, expected backend, and pinned
 `vllm==0.23.0` runtime package.
+It rejects debug fallback flags and extra wheels so the provider-backed adapter
+modules come only from the Cachet wheel.
 
 Use `--release-safe` for release-evidence jobs so debug-only non-native probes
 and caller-supplied engine versions are rejected before the Databricks payload is
