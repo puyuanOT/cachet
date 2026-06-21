@@ -483,7 +483,7 @@ the same AWS g6/L4 policy:
       "output_json": "/Volumes/catalog/schema/volume/probes/sglang-engine-probe.json",
       "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-connector-actions.json",
       "payload_uri": "/Volumes/catalog/schema/volume/probes/sglang-payload.kv",
-      "pip_packages": ["sglang==0.5.13.post1"]
+      "pip_packages": ["sglang==0.5.10.post1"]
     }
   ]
 }
