@@ -2761,6 +2761,7 @@ def _storage_record(*, ok: bool):
                 "latency_p50_seconds": 0.001,
                 "latency_p95_seconds": 0.002,
                 "throughput_bytes_per_second": 1024.0,
+                "throughput_mib_per_second": 1024.0 / (1024 * 1024),
             }
             for reader in readers
         ],

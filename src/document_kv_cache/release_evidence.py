@@ -1550,6 +1550,19 @@ def _validate_storage_results(results: Sequence[Any], issues: list[str]) -> None
         throughput = result.get("throughput_bytes_per_second")
         if not _is_positive_number(throughput):
             issues.append(f"storage benchmark reader {reader_label} throughput must be a positive finite number")
+        throughput_mib = result.get("throughput_mib_per_second")
+        if not _is_positive_number(throughput_mib):
+            issues.append(
+                f"storage benchmark reader {reader_label} throughput_mib_per_second "
+                "must be a positive finite number"
+            )
+        elif _is_positive_number(throughput):
+            expected_mib = throughput / (1024 * 1024)
+            if not math.isclose(float(throughput_mib), expected_mib, rel_tol=1e-9, abs_tol=1e-9):
+                issues.append(
+                    f"storage benchmark reader {reader_label} throughput_mib_per_second "
+                    "must match throughput_bytes_per_second"
+                )
     if duplicate_readers:
         issues.append(f"storage benchmark results duplicate readers: {', '.join(duplicate_readers)}")
     missing = tuple(reader for reader in RELEASE_STORAGE_BENCHMARK_READERS if reader not in by_reader)

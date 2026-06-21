@@ -1389,16 +1389,19 @@ def test_evaluate_release_evidence_rejects_impossible_storage_latency_rows():
         "latency_p50_seconds": float("inf"),
         "latency_p95_seconds": float("inf"),
         "throughput_bytes_per_second": float("inf"),
+        "throughput_mib_per_second": float("inf"),
     }
     storage_record["results"][1] = {
         **storage_record["results"][1],
         "latency_p50_seconds": 0.02,
         "latency_p95_seconds": 0.01,
+        "throughput_mib_per_second": 99.0,
     }
     storage_record["results"][2] = {
         **storage_record["results"][2],
         "latency_p50_seconds": -0.01,
         "latency_p95_seconds": "slow",
+        "throughput_mib_per_second": None,
     }
 
     evidence = evaluate_release_evidence(
@@ -1416,6 +1419,8 @@ def test_evaluate_release_evidence_rejects_impossible_storage_latency_rows():
     assert any("latency p95 must be a non-negative finite number" in issue for issue in evidence.issues)
     assert any("latency p95 must be greater than or equal to p50" in issue for issue in evidence.issues)
     assert any("throughput must be a positive finite number" in issue for issue in evidence.issues)
+    assert any("throughput_mib_per_second must be a positive finite number" in issue for issue in evidence.issues)
+    assert any("throughput_mib_per_second must match throughput_bytes_per_second" in issue for issue in evidence.issues)
 
 
 def test_evaluate_release_evidence_accepts_storage_readers_in_any_order():
@@ -2253,6 +2258,7 @@ def _storage_record(*, ok: bool, uc_volume_is_real: bool = True):
                 "latency_p50_seconds": 0.001,
                 "latency_p95_seconds": 0.002,
                 "throughput_bytes_per_second": 1024.0,
+                "throughput_mib_per_second": 1024.0 / (1024 * 1024),
             }
             for reader in readers
         ],
