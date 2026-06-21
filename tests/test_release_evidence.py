@@ -971,6 +971,64 @@ def test_evaluate_release_evidence_rejects_report_row_quality_rate_mismatch():
     assert any("answer_found_rate must match measurements" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_comparison_report_row_mismatch():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "exact_match_rate": 1.0,
+    }
+    v1_record["report_rows"][1] = {
+        **v1_record["report_rows"][1],
+        "exact_match_rate": 1.0,
+    }
+    v1_record["comparisons"][0] = {
+        **v1_record["comparisons"][0],
+        "ttft_speedup": 2.0,
+        "time_to_completion_speedup": 2.0,
+        "exact_match_delta": 1.0,
+        "answer_found_delta": 1.0,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("ttft_speedup must match report rows" in issue for issue in evidence.issues)
+    assert any("time_to_completion_speedup must match report rows" in issue for issue in evidence.issues)
+    assert any("exact_match_delta must match report rows" in issue for issue in evidence.issues)
+    assert any("answer_found_delta must match report rows" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_rejects_comparison_speedup_for_zero_report_p50():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "ttft": {"count": 1, "mean": 0.0, "p50": 0.0, "p95": 0.0},
+    }
+    v1_record["report_rows"][1] = {
+        **v1_record["report_rows"][1],
+        "ttft": {"count": 1, "mean": 0.0, "p50": 0.0, "p95": 0.0},
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("ttft_speedup cannot be computed from non-positive report row p50" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_throughput_when_measurements_have_zero_total_time():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
@@ -1891,8 +1949,8 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g5", model_id: str = "qw
                 "dataset": dataset,
                 "baseline_arm_id": "baseline_prefill",
                 "cache_arm_id": "document_kv_cache",
-                "ttft_speedup": 2.0,
-                "time_to_completion_speedup": 2.0,
+                "ttft_speedup": 1.0,
+                "time_to_completion_speedup": 1.0,
                 "exact_match_delta": 0.0,
                 "answer_found_delta": 0.0,
             }

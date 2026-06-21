@@ -2666,8 +2666,8 @@ def _v1_record(*, ok: bool):
                 "dataset": dataset,
                 "baseline_arm_id": "baseline_prefill",
                 "cache_arm_id": "document_kv_cache",
-                "ttft_speedup": 2.0,
-                "time_to_completion_speedup": 2.0,
+                "ttft_speedup": 1.0,
+                "time_to_completion_speedup": 1.0,
                 "exact_match_delta": 0.0,
                 "answer_found_delta": 0.0,
             }
