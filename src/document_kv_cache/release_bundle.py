@@ -577,6 +577,7 @@ def _validate_release_bundle_inputs(
     engine_action_records = tuple(
         artifact.record for artifact in artifacts if artifact.role == "engine_connector_actions"
     )
+    strict_v1_suite_id = _strict_v1_benchmark_suite_id(v1_record) if require_complete_v1 else None
     evidence = evaluate_release_evidence(
         v1_record,
         storage_record,
@@ -621,7 +622,13 @@ def _validate_release_bundle_inputs(
             if artifact.record is None:
                 issues.append("benchmark plan execution sidecar must be JSON")
                 continue
-            issues.extend(_plan_execution_sidecar_issues(artifact.record, strict_v1_target=require_complete_v1))
+            issues.extend(
+                _plan_execution_sidecar_issues(
+                    artifact.record,
+                    strict_v1_target=require_complete_v1,
+                    expected_suite_id=strict_v1_suite_id,
+                )
+            )
         elif artifact.role == "databricks_run_status":
             if artifact.record is None:
                 issues.append("Databricks run status sidecar must be JSON")
@@ -1262,6 +1269,7 @@ def _plan_execution_sidecar_issues(
     record: Mapping[str, Any],
     *,
     strict_v1_target: bool = False,
+    expected_suite_id: str | None = None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     issues.extend(_unexpected_keys(record, _BENCHMARK_PLAN_EXECUTION_KEYS, "benchmark plan execution sidecar"))
@@ -1278,7 +1286,13 @@ def _plan_execution_sidecar_issues(
     if not isinstance(plan_source, Mapping):
         issues.append("benchmark plan execution sidecar plan_source must be an object")
     else:
-        issues.extend(_plan_source_issues(plan_source, strict_v1_target=strict_v1_target))
+        issues.extend(
+            _plan_source_issues(
+                plan_source,
+                strict_v1_target=strict_v1_target,
+                expected_suite_id=expected_suite_id,
+            )
+        )
         if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes, bytearray)):
             issues.extend(_plan_execution_command_count_issues(commands, plan_source))
     return _dedupe_strings(issues)
@@ -1333,6 +1347,7 @@ def _plan_source_issues(
     record: Mapping[str, Any],
     *,
     strict_v1_target: bool = False,
+    expected_suite_id: str | None = None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     label = "benchmark plan execution sidecar plan_source"
@@ -1349,11 +1364,16 @@ def _plan_source_issues(
     if "command_count" in record and (type(record["command_count"]) is not int or record["command_count"] <= 0):
         issues.append("benchmark plan execution sidecar plan_source.command_count must be a positive integer when present")
     if strict_v1_target:
-        issues.extend(_strict_v1_plan_source_issues(record, label=label))
+        issues.extend(_strict_v1_plan_source_issues(record, label=label, expected_suite_id=expected_suite_id))
     return tuple(issues)
 
 
-def _strict_v1_plan_source_issues(record: Mapping[str, Any], *, label: str) -> tuple[str, ...]:
+def _strict_v1_plan_source_issues(
+    record: Mapping[str, Any],
+    *,
+    label: str,
+    expected_suite_id: str | None,
+) -> tuple[str, ...]:
     issues: list[str] = []
     for field_name, expected_value in (
         ("plan_version", PLAN_VERSION),
@@ -1363,9 +1383,23 @@ def _strict_v1_plan_source_issues(record: Mapping[str, Any], *, label: str) -> t
         if record.get(field_name) != expected_value:
             issues.append(f"{label}.{field_name} must be {expected_value!r}")
     issues.extend(_required_str_field(record, "suite_id", label))
+    if expected_suite_id is not None and record.get("suite_id") != expected_suite_id:
+        issues.append(f"{label}.suite_id must match V1 benchmark suite_id {expected_suite_id!r}")
     if type(record.get("command_count")) is not int or record["command_count"] <= 0:
         issues.append(f"{label}.command_count must be a positive integer")
     return tuple(issues)
+
+
+def _strict_v1_benchmark_suite_id(record: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(record, Mapping):
+        return None
+    suite = record.get("suite")
+    if not isinstance(suite, Mapping):
+        return None
+    suite_id = suite.get("suite_id")
+    if isinstance(suite_id, str) and suite_id:
+        return suite_id
+    return None
 
 
 def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
