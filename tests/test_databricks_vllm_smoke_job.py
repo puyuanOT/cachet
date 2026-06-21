@@ -48,7 +48,7 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
 
     assert payload["run_name"] == DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     assert task["task_key"] == DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
-    assert task["libraries"] == [{"whl": WHEEL_URI}]
+    assert "libraries" not in task
     assert cluster["node_type_id"] == "g5.8xlarge"
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
     assert cluster["data_security_mode"] == "SINGLE_USER"
@@ -80,6 +80,8 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
             "8123",
             "--client-host",
             "127.0.0.1",
+            "--package-wheel-uri",
+            WHEEL_URI,
         ],
     }
 
@@ -103,6 +105,9 @@ def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
     write_databricks_vllm_smoke_runner_script(path)
 
     runner_text = path.read_text(encoding="utf-8")
+    assert "--package-wheel-uri" in runner_text
+    assert "pip\", \"install\"" in runner_text
+    assert "dbfs:/" in runner_text
     assert "document_kv_cache.vllm_smoke" in runner_text
     assert "if exit_code:" in runner_text
 
@@ -148,7 +153,9 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
     )
 
     assert exit_code == 0
-    assert json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["libraries"] == [{"whl": WHEEL_URI}]
+    task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
+    assert "libraries" not in task
+    assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
     assert "vllm_smoke" in runner_path.read_text(encoding="utf-8")
 
 
