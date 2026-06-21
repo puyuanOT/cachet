@@ -465,7 +465,8 @@ the same AWS g6/L4 policy:
       "probe_factory": "my_vllm_adapter.probes:build_probe",
       "output_json": "/Volumes/catalog/schema/volume/probes/vllm-engine-probe.json",
       "actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json",
-      "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv"
+      "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+      "pip_packages": ["vllm==0.23.0"]
     },
     {
       "backend": "sglang",
@@ -473,7 +474,8 @@ the same AWS g6/L4 policy:
       "probe_factory": "my_sglang_adapter.probes:build_probe",
       "output_json": "/Volumes/catalog/schema/volume/probes/sglang-engine-probe.json",
       "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-connector-actions.json",
-      "payload_uri": "/Volumes/catalog/schema/volume/probes/sglang-payload.kv"
+      "payload_uri": "/Volumes/catalog/schema/volume/probes/sglang-payload.kv",
+      "pip_packages": ["sglang==0.5.13.post1"]
     }
   ]
 }
@@ -506,6 +508,10 @@ Databricks job is written.
 Add `--serial-tasks` when GPU capacity or cost constraints favor requesting
 only one backend probe cluster at a time; the generated matrix payload adds
 Databricks task dependencies so each backend runs after the previous task.
+Use per-target `pip_packages` in the backend target file for engine runtime
+packages such as vLLM and SGLang, because current releases pin incompatible
+runtime stacks. The runner installs those PyPI package specs before the Cachet
+and adapter wheels.
 When `--actions-output-json` or a target `actions_output_json` is present, the
 runner also writes the validated `document_kv.engine_kv_connector_actions.v1`
 reserve/copy/bind/release descriptor next to the probe evidence. This sidecar is
@@ -1356,6 +1362,9 @@ benchmark datasets should already be visible to the cluster as `disk:...`,
 `file:...`, `dbfs:/...`, `/dbfs/...`, `/Volumes/...`, `uc-volume:/...`, or `uc-volume://...` paths; the
 command plan normalizes those storage URIs on the Databricks driver before
 reading or writing JSONL artifacts.
+Backend target JSON may include per-target `pip_packages`; use that for
+backend-specific runtime packages instead of installing every engine into every
+task.
 
 To verify a live endpoint without adding custom serving code, run the OpenAI-compatible smoke check against a vLLM or SGLang server:
 

@@ -1,0 +1,22 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 high-reasoning review found one P2: restaurant_kv_serving compatibility configs inherited the new pip package fields but bypassed their validation in overridden __post_init__ methods. Fixed by mirroring pip package validation and tuple coercion for legacy target, matrix, and single-job configs, routing the helper through the isolated document namespace, and adding legacy regression tests. Delta review approved with no findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 299,
+  "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/299",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/databricks_engine_probe_job.py; src/restaurant_kv_serving/databricks_engine_probe_job.py; tests/test_databricks_engine_probe_job.py; README.md; pr-evidence/engine-probe-runtime-packages"
+  ],
+  "verification": [
+    "PYTHONPATH=src pytest tests/test_databricks_engine_probe_job.py -q (75 passed); PYTHONPATH=src pytest tests/test_databricks_engine_probe_job.py tests/test_benchmark_plan.py tests/test_benchmark_plan_executor.py tests/test_public_package.py tests/test_project_governance.py -q (264 passed); python -m compileall -q src tests; git diff --check; PYTHONPATH=src pytest -q (1391 passed)"
+  ],
+  "what_changed": [
+    "Databricks engine-probe jobs can now install PyPI runtime package specs before local wheel artifacts, and backend target JSON can carry per-backend pip_packages for incompatible vLLM/SGLang runtime stacks."
+  ],
+  "why": "Strict native engine-probe evidence on target g6/L4 Databricks tasks needs real vLLM and SGLang runtimes installed before Cachet and adapter wheels load. The previous runner could install wheels only, which blocked release-safe native probe runs from a self-contained target file."
+}

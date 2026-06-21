@@ -39,6 +39,8 @@ from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENA
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
 VLLM_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/vllm_kv_injection-0.2.0-py3-none-any.whl"
 SGLANG_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/sglang_kv_injection-0.2.0-py3-none-any.whl"
+VLLM_RUNTIME_PACKAGE = "vllm==0.23.0"
+SGLANG_RUNTIME_PACKAGE = "sglang==0.5.13.post1"
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -218,6 +220,33 @@ def test_build_databricks_engine_probe_payload_installs_extra_wheels_in_order():
     ]
 
 
+def test_build_databricks_engine_probe_payload_installs_pip_packages_before_wheels():
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        wheel_uri=WHEEL_URI,
+        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI,),
+        extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+    )
+
+    payload = build_databricks_engine_probe_run_submit_payload(config)
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert parameters[-6:] == [
+        "--pip-package",
+        VLLM_RUNTIME_PACKAGE,
+        "--package-wheel-uri",
+        WHEEL_URI,
+        "--package-wheel-uri",
+        VLLM_ADAPTER_WHEEL_URI,
+    ]
+
+
 def test_build_databricks_engine_probe_payload_sets_native_delegate_env_var():
     config = DatabricksEngineProbeJobConfig(
         handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
@@ -347,6 +376,54 @@ def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_
             "--package-wheel-uri",
             SGLANG_ADAPTER_WHEEL_URI,
         ]
+
+
+def test_build_databricks_engine_probe_matrix_payload_installs_backend_pip_packages_per_task():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(
+            _target("vllm", pip_packages=(VLLM_RUNTIME_PACKAGE,)),
+            _target("sglang", pip_packages=(SGLANG_RUNTIME_PACKAGE,)),
+        ),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        extra_wheel_uris=(VLLM_ADAPTER_WHEEL_URI, SGLANG_ADAPTER_WHEEL_URI),
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+        extra_pip_packages=("typing-extensions==4.15.0",),
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+
+    parameters_by_backend = {
+        task["spark_python_task"]["parameters"][
+            task["spark_python_task"]["parameters"].index("--expected-backend") + 1
+        ]: task["spark_python_task"]["parameters"]
+        for task in payload["tasks"]
+    }
+    assert parameters_by_backend["vllm"][-10:] == [
+        "--pip-package",
+        "typing-extensions==4.15.0",
+        "--pip-package",
+        VLLM_RUNTIME_PACKAGE,
+        "--package-wheel-uri",
+        WHEEL_URI,
+        "--package-wheel-uri",
+        VLLM_ADAPTER_WHEEL_URI,
+        "--package-wheel-uri",
+        SGLANG_ADAPTER_WHEEL_URI,
+    ]
+    assert parameters_by_backend["sglang"][-10:] == [
+        "--pip-package",
+        "typing-extensions==4.15.0",
+        "--pip-package",
+        SGLANG_RUNTIME_PACKAGE,
+        "--package-wheel-uri",
+        WHEEL_URI,
+        "--package-wheel-uri",
+        VLLM_ADAPTER_WHEEL_URI,
+        "--package-wheel-uri",
+        SGLANG_ADAPTER_WHEEL_URI,
+    ]
 
 
 def test_build_databricks_engine_probe_matrix_payload_can_run_tasks_serially():
@@ -597,6 +674,49 @@ def test_read_databricks_engine_probe_targets_json_accepts_native_delegate_facto
     assert target.native_probe_delegate_factory == "document_kv_vllm_native_adapter:build_probe"
 
 
+def test_read_databricks_engine_probe_targets_json_accepts_pip_packages(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                    "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    "pip_packages": [VLLM_RUNTIME_PACKAGE],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (target,) = read_databricks_engine_probe_targets_json(path)
+
+    assert target.pip_packages == (VLLM_RUNTIME_PACKAGE,)
+
+
+def test_read_databricks_engine_probe_targets_json_rejects_string_pip_packages(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                    "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    "pip_packages": VLLM_RUNTIME_PACKAGE,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="pip_packages"):
+        read_databricks_engine_probe_targets_json(path)
+
+
 def test_read_databricks_engine_probe_targets_json_accepts_fixture_fields(tmp_path):
     path = tmp_path / "probe-targets.json"
     fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
@@ -731,6 +851,53 @@ def test_read_databricks_engine_probe_targets_json_rejects_non_boolean_debug_fla
 
     with pytest.raises(ValueError, match="allow_non_native_probe"):
         read_databricks_engine_probe_targets_json(path)
+
+
+def test_databricks_engine_probe_config_rejects_pip_options():
+    with pytest.raises(ValueError, match="package specs"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            extra_pip_packages=("--no-index",),
+            single_user_name=SINGLE_USER_NAME,
+        )
+
+
+def test_legacy_databricks_engine_probe_config_rejects_pip_options():
+    with pytest.raises(ValueError, match="package specs"):
+        legacy_engine_probe_job.DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            extra_pip_packages=("--no-index",),
+            single_user_name=SINGLE_USER_NAME,
+        )
+
+
+def test_legacy_databricks_engine_probe_matrix_config_rejects_pip_options():
+    with pytest.raises(ValueError, match="package specs"):
+        legacy_engine_probe_job.DatabricksEngineProbeMatrixJobConfig(
+            probe_targets=(_target("vllm"), _target("sglang")),
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            extra_pip_packages=("--no-index",),
+            single_user_name=SINGLE_USER_NAME,
+        )
+
+
+def test_legacy_databricks_engine_probe_target_config_rejects_pip_options():
+    with pytest.raises(ValueError, match="package specs"):
+        legacy_engine_probe_job.DatabricksEngineProbeTargetConfig(
+            expected_backend="vllm",
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            pip_packages=("--no-index",),
+        )
 
 
 def test_read_databricks_engine_probe_targets_json_rejects_unsupported_envelope_keys(tmp_path):
@@ -875,6 +1042,60 @@ def test_run_engine_probe_task_stops_when_fixture_generation_fails(monkeypatch):
 
     assert exit_code == 7
     assert [name for name, _argv in calls] == ["fixture"]
+
+
+def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_path):
+    path = tmp_path / "run_engine_probe.py"
+
+    write_databricks_engine_probe_runner_script(path)
+
+    script = path.read_text(encoding="utf-8")
+    assert "--pip-package" in script
+    assert "_install_runtime_packages" in script
+    assert "pip\", \"install\", pip_package" in script
+
+
+def test_generated_runner_installs_pip_packages_and_wheels_before_probe(tmp_path, monkeypatch):
+    path = tmp_path / "run_engine_probe.py"
+    write_databricks_engine_probe_runner_script(path)
+    install_calls = []
+    probe_calls = []
+
+    def fake_check_call(argv):
+        install_calls.append(tuple(argv))
+
+    def fake_run_engine_probe_task(argv):
+        probe_calls.append(tuple(argv))
+        return 0
+
+    monkeypatch.setattr(subprocess, "check_call", fake_check_call)
+    monkeypatch.setattr(public_engine_probe_job, "run_engine_probe_task", fake_run_engine_probe_task)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(path),
+            "--pip-package",
+            VLLM_RUNTIME_PACKAGE,
+            "--package-wheel-uri",
+            "dbfs:/wheels/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        ],
+    )
+
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), {"__name__": "__main__", "__file__": str(path)})
+
+    assert install_calls == [
+        (sys.executable, "-m", "pip", "install", VLLM_RUNTIME_PACKAGE),
+        (sys.executable, "-m", "pip", "install", "/dbfs/wheels/document_kv_cache-0.2.0-py3-none-any.whl"),
+    ]
+    assert probe_calls == [
+        (
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        )
+    ]
 
 
 def test_read_databricks_engine_probe_targets_json_honors_release_safe_envelope(tmp_path):
