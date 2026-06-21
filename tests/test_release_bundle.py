@@ -199,6 +199,23 @@ def test_build_release_bundle_rejects_plan_execution_sidecars_with_extra_keys(tm
             )
 
 
+def test_build_release_bundle_rejects_plan_execution_command_count_mismatch(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    mismatched_record = _plan_execution_record(ok=True)
+    mismatched_record["plan_source"]["command_count"] = len(mismatched_record["commands"]) + 1
+    mismatched_path = _write_json(tmp_path / "mismatched-plan-command-count.json", mismatched_record)
+
+    with pytest.raises(ValueError, match=r"plan_source\.command_count must match commands length"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            plan_execution_jsons=(mismatched_path,),
+            output_dir=tmp_path / "mismatched-plan-command-count-bundle",
+        )
+
+
 def test_build_release_bundle_databricks_status_stays_out_of_release_sidecar_matching(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
