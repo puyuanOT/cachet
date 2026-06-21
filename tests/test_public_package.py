@@ -998,6 +998,7 @@ def test_cachet_typing_stub_tracks_document_public_api():
 def test_public_cli_submodules_are_importable_under_document_namespace():
     public_submodules = (
         "admission",
+        "adapter_scaffold",
         "benchmark_plan",
         "benchmark_plan_executor",
         "benchmark_runner",
@@ -1051,6 +1052,7 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
     benchmark_runner = modules["benchmark_runner"]
     benchmarks = modules["benchmarks"]
     admission = modules["admission"]
+    adapter_scaffold = modules["adapter_scaffold"]
     dataset_prep = modules["dataset_prep"]
     engine_adapters = modules["engine_adapters"]
     engine_probe = modules["engine_probe"]
@@ -1085,6 +1087,9 @@ def test_public_cli_submodules_are_importable_under_document_namespace():
 
     assert admission.AdmissionQueue is restaurant_kv_serving.AdmissionQueue
     assert admission.AdmissionQueue.__module__ == "document_kv_cache.admission"
+    assert adapter_scaffold.NativeProbeDelegateScaffoldConfig.__module__ == (
+        "document_kv_cache.adapter_scaffold"
+    )
     assert benchmark_plan.BenchmarkPlanConfig is restaurant_kv_serving.BenchmarkPlanConfig
     assert benchmark_plan.BenchmarkPlanConfig.__module__ == "document_kv_cache.benchmark_plan"
     assert benchmark_plan.ENGINE_PROBE_TARGETS_RECORD_TYPE is restaurant_kv_serving.ENGINE_PROBE_TARGETS_RECORD_TYPE
@@ -1374,6 +1379,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     engine_launch_config = importlib.import_module("document_kv_cache.engine_launch_config")
     github_governance = importlib.import_module("document_kv_cache.github_governance")
     kvpack = importlib.import_module("document_kv_cache.kvpack")
+    adapter_scaffold = importlib.import_module("document_kv_cache.adapter_scaffold")
     manifest = importlib.import_module("document_kv_cache.manifest")
     models = importlib.import_module("document_kv_cache.models")
     planner = importlib.import_module("document_kv_cache.planner")
@@ -1397,6 +1403,12 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     assert admission.PreparedRequest.__module__ == "document_kv_cache.admission"
     assert restaurant_kv_serving.AdmissionQueue is admission.AdmissionQueue
     assert restaurant_kv_serving.PreparedRequest is admission.PreparedRequest
+    assert adapter_scaffold.__all__ == [
+        "NativeProbeDelegateScaffoldConfig",
+        "render_native_probe_delegate_module",
+        "write_native_probe_delegate_module",
+        "main",
+    ]
     assert engine_protocol.__all__ == [
         "DTYPE_BYTE_WIDTHS",
         "AttentionMechanism",
@@ -2038,6 +2050,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     scripts = project["scripts"]
     artifact_includes = poetry["include"]
     expected_document_scripts = {
+        "document-kv-native-probe-scaffold": "document_kv_cache.adapter_scaffold:main",
         "document-kv-benchmark-plan": "document_kv_cache.benchmark_plan:main",
         "document-kv-run-benchmark-plan": "document_kv_cache.benchmark_plan_executor:main",
         "document-kv-databricks-job": "document_kv_cache.databricks_job:main",

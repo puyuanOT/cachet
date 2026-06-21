@@ -535,6 +535,19 @@ delegate environment variable at a backend-native factory:
 `DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. The public built-in
 factory paths stay stable for release bundles, while the delegate callable owns
 the actual vLLM/SGLang block-manager integration.
+Use `document-kv-native-probe-scaffold` to generate a fail-closed delegate
+module that declares the required Cachet contracts and backend guard checks:
+
+```bash
+document-kv-native-probe-scaffold \
+  --backend vllm \
+  --output-file cachet_vllm_native_probe.py
+```
+
+The generated methods raise `NotImplementedError` until a backend-native adapter
+replaces them with real block reservation, payload import, request binding, and
+release calls; scaffold output is therefore a starting point for a vLLM/SGLang
+adapter package rather than release evidence.
 Delegate factories must also declare the exact Document KV adapter contract
 they implement. Set either a module-level
 `DOCUMENT_KV_NATIVE_PROBE_CONTRACT = native_probe_adapter_contract_to_record()`

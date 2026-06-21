@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/native-adapter-scaffold/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "Dirac the 4th reviewed latest HEAD and approved. Initial P3 noted generated identifiers accepted Python keywords or explicit empty strings; fixed by rejecting keywords and explicit empty module/class names, added tests, and delta re-review approved with no blocking findings.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 294,
+      "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/294",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/adapter_scaffold.py",
+        "tests/test_adapter_scaffold.py",
+        "pyproject.toml",
+        "README.md",
+        "src/document_kv_cache/README.md",
+        "src/document_kv_cache/__init__.py",
+        "tests/test_public_package.py"
+      ],
+      "verification": [
+        "pytest tests/test_adapter_scaffold.py tests/test_public_package.py::test_cachet_typing_stub_tracks_document_public_api tests/test_public_package.py::test_public_cli_submodules_are_importable_under_document_namespace tests/test_public_package.py::test_public_document_submodules_have_curated_star_import_surfaces tests/test_public_package.py::test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases -q -> 11 passed",
+        "pytest tests/test_adapter_scaffold.py tests/test_public_package.py tests/test_project_governance.py -q -> 57 passed",
+        "pytest -q -> 1368 passed",
+        "python -m compileall -q src tests && git diff --check -> passed"
+      ],
+      "what_changed": [
+        "Added a fail-closed native probe delegate scaffold generator and CLI for backend-specific vLLM/SGLang adapter packages.",
+        "Documented the scaffold as adapter-package starter code, not release evidence.",
+        "Added tests for generated contract declarations, backend guards, overwrite behavior, identifier validation, CLI execution, public module discovery, and script metadata."
+      ],
+      "why": "The package already exposes a fail-closed native probe boundary; adapter authors need a reproducible starting module that declares the exact Cachet contracts without pretending to provide a real native block-manager implementation."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
