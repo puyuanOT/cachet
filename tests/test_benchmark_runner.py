@@ -240,6 +240,9 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
     assert record["comparisons"][0]["ttft_speedup"] == pytest.approx(4.0)
     assert record["v1_evidence"]["ok"] is False
     assert record["v1_evidence"]["required_datasets"] == ["biography", "hotpotqa", "musique", "niah"]
+    assert record["v1_evidence"]["duplicate_required_datasets"] == []
+    assert record["v1_evidence"]["duplicate_report_rows"] == []
+    assert record["v1_evidence"]["duplicate_comparisons"] == []
     assert "hotpotqa:baseline_prefill" in record["v1_evidence"]["missing_report_rows"]
     assert "hotpotqa" in record["v1_evidence"]["missing_comparisons"]
     assert record["v1_evidence"]["comparisons_without_metrics"] == []
