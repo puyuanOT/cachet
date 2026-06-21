@@ -263,6 +263,17 @@ def test_databricks_run_status_sidecar_validation_rejects_non_g5_or_mismatched_p
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
 
 
+def test_databricks_run_status_sidecar_validation_matches_submit_payload_run_name():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["run_name"] = "document-kv-stale-run"
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert "Databricks run status sidecar submit_payload.run_name must match run_name" in issues
+
+
 @pytest.mark.parametrize("purpose", [None, ""])
 def test_databricks_run_status_sidecar_validation_requires_submit_payload_task_purpose(purpose):
     status_record = _valid_databricks_run_status_record()
