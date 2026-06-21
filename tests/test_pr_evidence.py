@@ -141,6 +141,11 @@ def test_pr_evidence_rejects_malformed_github_pull_request_urls():
         "https://github.com/owner/document-kv-cache?debug=true/pull/123",
         "https://github.com/owner/document-kv-cache#fragment/pull/123",
         "https://github.com/owner/document%20kv-cache/pull/123",
+        "https://github.com/owner/document-kv-cache/pull/１２３",
+        "https://github.com/owner/document-kv-cache/pull/١٢٣",
+        "https://github.com/owner/document-kv-cache/pull/0123",
+        "https://github.com//owner/document-kv-cache/pull/123",
+        "https://github.com/owner/document-kv-cache/pull/123/",
     ):
         parsed = evaluate_pr_evidence_record(
             {

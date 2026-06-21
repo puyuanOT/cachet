@@ -18,6 +18,7 @@ PR_EVIDENCE_RECORD_TYPE = "document_kv.pr_evidence.v1"
 PR_EVIDENCE_VALIDATION_RECORD_TYPE = "document_kv.pr_evidence_validation.v1"
 GPT55_REVIEW_OUTCOMES = ("clean", "findings_resolved")
 _GITHUB_REPOSITORY_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+_GITHUB_PULL_REQUEST_NUMBER_RE = re.compile(r"^[1-9][0-9]*$")
 _PR_EVIDENCE_RECORD_KEYS = frozenset(
     {
         "record_type",
@@ -188,20 +189,17 @@ def _github_pull_request_url_identity(url: str) -> tuple[str, int] | None:
         or parsed.fragment
     ):
         return None
-    path_parts = parsed.path.strip("/").split("/")
-    if len(path_parts) != 4 or path_parts[2] != "pull":
+    path_parts = parsed.path.split("/")
+    if len(path_parts) != 5 or path_parts[0] != "" or path_parts[3] != "pull":
         return None
-    owner, repository, _pull, number = path_parts
+    _root, owner, repository, _pull, number = path_parts
     if (
         not _GITHUB_REPOSITORY_PATH_SEGMENT_RE.fullmatch(owner)
         or not _GITHUB_REPOSITORY_PATH_SEGMENT_RE.fullmatch(repository)
-        or not number.isdecimal()
+        or not _GITHUB_PULL_REQUEST_NUMBER_RE.fullmatch(number)
     ):
         return None
-    pull_request_number = int(number)
-    if pull_request_number <= 0:
-        return None
-    return f"{owner}/{repository}", pull_request_number
+    return f"{owner}/{repository}", int(number)
 
 
 def evaluate_pr_evidence_file(path: str | Path) -> PullRequestEvidence:
