@@ -34,6 +34,7 @@ __all__ = [
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
+    "stage_and_submit_databricks_run",
     "summarize_databricks_run",
     "summarize_databricks_run_submit_payload",
     "databricks_run_status_record",
@@ -238,6 +239,39 @@ def _put_databricks_dbfs_file_record(
     )
     result = _success_record("put-dbfs-file", response)
     result["artifact"] = metadata
+    return result
+
+
+def stage_and_submit_databricks_run(
+    config: DatabricksWorkspaceConfig,
+    payload: dict[str, Any],
+    artifacts: Sequence[tuple[str | Path, str]],
+    *,
+    overwrite: bool = False,
+    require_payload_dbfs_artifacts: bool = False,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    artifact_pairs = tuple(artifacts)
+    if not artifact_pairs:
+        raise ValueError("stage-and-submit requires at least one artifact")
+    if require_payload_dbfs_artifacts:
+        _validate_payload_dbfs_artifacts_are_staged(payload, artifact_pairs)
+    artifact_uploads = [
+        _put_databricks_dbfs_file_record(
+            config,
+            local_path,
+            dbfs_path,
+            overwrite=overwrite,
+            opener=opener,
+        )
+        for local_path, dbfs_path in artifact_pairs
+    ]
+    response = submit_databricks_run(config, payload, opener=opener)
+    result = _success_record("stage-and-submit", response)
+    result["artifact_uploads"] = [
+        _stage_and_submit_artifact_upload_record(record)
+        for record in artifact_uploads
+    ]
     return result
 
 
@@ -922,7 +956,7 @@ def _databricks_dbfs_file_metadata(local_path: str | Path, dbfs_path: str) -> di
     raw = path.read_bytes()
     return {
         "local_path": str(path),
-        "dbfs_path": f"dbfs:{dbfs_api_path}",
+        "dbfs_path": _canonical_dbfs_uri(dbfs_path),
         "dbfs_api_path": dbfs_api_path,
         "bytes": len(raw),
         "sha256": _sha256_hex(raw),
@@ -936,6 +970,64 @@ def _databricks_dbfs_api_path(dbfs_path: str) -> str:
     if not api_path.startswith("/") or api_path == "/" or api_path.startswith("//"):
         raise ValueError("dbfs_path must be a non-empty absolute DBFS path or dbfs:/ URI")
     return api_path
+
+
+def _canonical_dbfs_uri(dbfs_path: str) -> str:
+    return f"dbfs:{_databricks_dbfs_api_path(dbfs_path)}"
+
+
+def _parse_dbfs_artifact_mapping(value: str) -> tuple[str, str]:
+    local_path, separator, dbfs_path = value.partition("=")
+    if not separator or not local_path or not dbfs_path:
+        raise ValueError("--artifact must use LOCAL_PATH=DBFS_PATH")
+    return local_path, dbfs_path
+
+
+def _submit_payload_dbfs_uris(value: Any) -> tuple[str, ...]:
+    found: list[str] = []
+    _collect_submit_payload_dbfs_uris(value, found)
+    return _dedupe_strings(found)
+
+
+def _collect_submit_payload_dbfs_uris(value: Any, found: list[str]) -> None:
+    if isinstance(value, str):
+        if value.startswith("dbfs:/"):
+            found.append(_canonical_dbfs_uri(value))
+        return
+    if isinstance(value, Mapping):
+        for nested in value.values():
+            _collect_submit_payload_dbfs_uris(nested, found)
+        return
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for nested in value:
+            _collect_submit_payload_dbfs_uris(nested, found)
+
+
+def _validate_payload_dbfs_artifacts_are_staged(
+    payload: Mapping[str, Any],
+    artifacts: Sequence[tuple[str | Path, str]],
+) -> None:
+    staged_uris = {
+        _canonical_dbfs_uri(dbfs_path)
+        for _local_path, dbfs_path in artifacts
+    }
+    missing = tuple(
+        uri
+        for uri in _submit_payload_dbfs_uris(payload)
+        if uri not in staged_uris
+    )
+    if missing:
+        raise ValueError(
+            "Databricks submit payload references DBFS URIs without staged artifacts: "
+            + ", ".join(missing)
+        )
+
+
+def _stage_and_submit_artifact_upload_record(upload_record: Mapping[str, Any]) -> dict[str, Any]:
+    record = {"artifact": upload_record.get("artifact")}
+    if "response" in upload_record:
+        record["response"] = upload_record["response"]
+    return record
 
 
 def _databricks_request(
@@ -1027,6 +1119,24 @@ def main(argv: list[str] | None = None) -> int:
     put_parser.add_argument("--local-path", required=True, help="Local file to upload.")
     put_parser.add_argument("--dbfs-path", required=True, help="Destination path such as dbfs:/FileStore/cachet/file.whl.")
     put_parser.add_argument("--overwrite", action="store_true", help="Overwrite an existing DBFS file.")
+    stage_submit_parser = subparsers.add_parser(
+        "stage-and-submit",
+        help="Upload small DBFS artifacts, then submit a Databricks runs/submit payload.",
+    )
+    stage_submit_parser.add_argument("--payload-json", required=True)
+    stage_submit_parser.add_argument(
+        "--artifact",
+        action="append",
+        default=[],
+        metavar="LOCAL_PATH=DBFS_PATH",
+        help="Artifact to stage before submit. Repeat for each runner or wheel required by the payload.",
+    )
+    stage_submit_parser.add_argument("--overwrite", action="store_true", help="Overwrite existing DBFS artifacts.")
+    stage_submit_parser.add_argument(
+        "--require-payload-dbfs-artifacts",
+        action="store_true",
+        help="Fail before uploading unless every dbfs:/ URI in the payload has a matching --artifact destination.",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -1047,6 +1157,15 @@ def main(argv: list[str] | None = None) -> int:
                 overwrite=args.overwrite,
             )
             response = None
+        elif args.command == "stage-and-submit":
+            result = stage_and_submit_databricks_run(
+                config,
+                read_databricks_run_submit_payload(args.payload_json),
+                tuple(_parse_dbfs_artifact_mapping(artifact) for artifact in args.artifact),
+                overwrite=args.overwrite,
+                require_payload_dbfs_artifacts=args.require_payload_dbfs_artifacts,
+            )
+            response = None
         else:  # pragma: no cover - argparse enforces this.
             raise ValueError(f"unknown command {args.command!r}")
         if args.command == "get" and args.summary:
@@ -1062,6 +1181,8 @@ def main(argv: list[str] | None = None) -> int:
                 submit_payload_path=args.submit_payload_json,
             )
         elif args.command == "put-dbfs-file":
+            pass
+        elif args.command == "stage-and-submit":
             pass
         else:
             result = _success_record(args.command, response)

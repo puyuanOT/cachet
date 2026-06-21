@@ -28,6 +28,7 @@ from document_kv_cache.databricks_runs import (
     main,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
+    stage_and_submit_databricks_run,
     submit_databricks_run,
     summarize_databricks_run,
     summarize_databricks_run_submit_payload,
@@ -156,6 +157,66 @@ def test_put_databricks_dbfs_file_rejects_large_base64_put_payload(tmp_path):
 
     with pytest.raises(ValueError, match="base64 bytes"):
         put_databricks_dbfs_file(config, local_path, "dbfs:/FileStore/cachet/large.whl", opener=opener)
+
+    assert opener.requests == []
+
+
+def test_stage_and_submit_databricks_run_uploads_artifacts_then_submits_payload(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    payload = _dbfs_artifact_submit_payload()
+    opener = _SequentialOpener(({}, {}, {"run_id": 123}))
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token", timeout_seconds=9)
+
+    record = stage_and_submit_databricks_run(
+        config,
+        payload,
+        (
+            (runner_path, "dbfs:/cachet/run_engine_probe.py"),
+            (wheel_path, "/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+        ),
+        overwrite=True,
+        require_payload_dbfs_artifacts=True,
+        opener=opener,
+    )
+
+    assert record["ok"] is True
+    assert record["action"] == "stage-and-submit"
+    assert record["response"] == {"run_id": 123}
+    assert [request.full_url for request in opener.requests] == [
+        "https://dbc.example/api/2.0/dbfs/put",
+        "https://dbc.example/api/2.0/dbfs/put",
+        "https://dbc.example/api/2.1/jobs/runs/submit",
+    ]
+    assert [request.get_method() for request in opener.requests] == ["POST", "POST", "POST"]
+    assert json.loads(opener.requests[0].data.decode("utf-8"))["path"] == "/cachet/run_engine_probe.py"
+    assert json.loads(opener.requests[1].data.decode("utf-8"))["path"] == (
+        "/cachet/document_kv_cache-0.2.0-py3-none-any.whl"
+    )
+    assert json.loads(opener.requests[2].data.decode("utf-8")) == payload
+    assert opener.timeouts == [9, 9, 9]
+    assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
+        "dbfs:/cachet/run_engine_probe.py",
+        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    ]
+
+
+def test_stage_and_submit_databricks_run_rejects_unstaged_payload_dbfs_uri_before_network(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    opener = _FakeOpener({})
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+
+    with pytest.raises(ValueError, match="without staged artifacts"):
+        stage_and_submit_databricks_run(
+            config,
+            _dbfs_artifact_submit_payload(),
+            ((runner_path, "dbfs:/cachet/run_engine_probe.py"),),
+            require_payload_dbfs_artifacts=True,
+            opener=opener,
+        )
 
     assert opener.requests == []
 
@@ -676,6 +737,59 @@ def test_main_put_dbfs_file_artifact_record_uses_uploaded_bytes(monkeypatch, tmp
     assert record["artifact"]["sha256"] != hashlib.sha256(changed_bytes).hexdigest()
 
 
+def test_main_stage_and_submit_writes_sanitized_artifact_and_submit_record(monkeypatch, tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    payload_path = tmp_path / "payload.json"
+    output_path = tmp_path / "stage-submit.json"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    payload_path.write_text(json.dumps(_dbfs_artifact_submit_payload()), encoding="utf-8")
+    raw_secret = "secret-token"
+
+    responses = {
+        "/api/2.0/dbfs/put": [{}, {}],
+        "/api/2.1/jobs/runs/submit": [{"run_id": 123}],
+    }
+
+    def fake_api_json(config, method, path_and_query, *, opener, payload=None):
+        assert config.normalized_host == "https://dbc.example"
+        assert method == "POST"
+        return responses[path_and_query].pop(0)
+
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, raw_secret)
+    monkeypatch.setattr(legacy_databricks_runs, "_databricks_api_json", fake_api_json)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "stage-and-submit",
+            "--payload-json",
+            str(payload_path),
+            "--artifact",
+            f"{runner_path}=dbfs:/cachet/run_engine_probe.py",
+            "--artifact",
+            f"{wheel_path}=dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--overwrite",
+            "--require-payload-dbfs-artifacts",
+        ]
+    )
+
+    output = output_path.read_text(encoding="utf-8")
+    record = json.loads(output)
+    assert exit_code == 0
+    assert raw_secret not in output
+    assert record["action"] == "stage-and-submit"
+    assert record["response"] == {"run_id": 123}
+    assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
+        "dbfs:/cachet/run_engine_probe.py",
+        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    ]
+    assert responses == {"/api/2.0/dbfs/put": [], "/api/2.1/jobs/runs/submit": []}
+
+
 def test_main_get_can_write_summary(monkeypatch, tmp_path):
     output_path = tmp_path / "response.json"
     raw_secret = "do-not-write-me"
@@ -1175,6 +1289,7 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "submit_databricks_run",
         "get_databricks_run",
         "put_databricks_dbfs_file",
+        "stage_and_submit_databricks_run",
         "summarize_databricks_run",
         "summarize_databricks_run_submit_payload",
         "databricks_run_status_record",
@@ -1250,6 +1365,18 @@ class _FakeOpener:
         return _FakeResponse(self._payload)
 
 
+class _SequentialOpener:
+    def __init__(self, payloads):
+        self._payloads = list(payloads)
+        self.requests = []
+        self.timeouts = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        self.timeouts.append(timeout)
+        return _FakeResponse(self._payloads.pop(0))
+
+
 class _HTTPErrorOpener:
     def __init__(self, error):
         self._error = error
@@ -1311,6 +1438,24 @@ def _single_node_g5_submit_payload():
                         "ResourceClass": "SingleNode",
                         "purpose": "document-kv-benchmark",
                     },
+                },
+            }
+        ],
+    }
+
+
+def _dbfs_artifact_submit_payload():
+    return {
+        "run_name": "document-kv-engine-probe",
+        "tasks": [
+            {
+                "task_key": "document_kv_engine_probe",
+                "spark_python_task": {
+                    "python_file": "dbfs:/cachet/run_engine_probe.py",
+                    "parameters": [
+                        "--package-wheel-uri",
+                        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+                    ],
                 },
             }
         ],
