@@ -26,8 +26,8 @@ DEDICATED_DATABRICKS_DATA_SECURITY_MODE = "DATA_SECURITY_MODE_DEDICATED"
 SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
     {DEFAULT_DATABRICKS_DATA_SECURITY_MODE, DEDICATED_DATABRICKS_DATA_SECURITY_MODE}
 )
-RESERVED_SINGLE_NODE_G5_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
-RESERVED_SINGLE_NODE_GPU_TAG_KEYS = RESERVED_SINGLE_NODE_G5_TAG_KEYS
+RESERVED_SINGLE_NODE_GPU_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
+RESERVED_SINGLE_NODE_G5_TAG_KEYS = RESERVED_SINGLE_NODE_GPU_TAG_KEYS
 SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g6.",)
 RUNNER_SCRIPT = """from __future__ import annotations
 
@@ -87,9 +87,9 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
-class DatabricksSingleNodeG5ClusterConfig:
+class DatabricksSingleNodeGPUClusterConfig:
     purpose: str
-    node_type_id: str = DEFAULT_AWS_G5_NODE_TYPE
+    node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
@@ -100,7 +100,7 @@ class DatabricksSingleNodeG5ClusterConfig:
     def __post_init__(self) -> None:
         if not self.purpose:
             raise ValueError("purpose must be non-empty")
-        _DEFAULT_VALIDATE_AWS_G5_NODE_TYPE(self.node_type_id)
+        _DEFAULT_VALIDATE_AWS_SINGLE_NODE_GPU_TYPE(self.node_type_id)
         if not self.spark_version:
             raise ValueError("spark_version must be non-empty")
         if not self.data_security_mode:
@@ -113,12 +113,12 @@ class DatabricksSingleNodeG5ClusterConfig:
             raise ValueError("availability must be non-empty")
         if not self.zone_id:
             raise ValueError("zone_id must be non-empty")
-        reserved_tags = RESERVED_SINGLE_NODE_G5_TAG_KEYS.intersection(self.custom_tags)
+        reserved_tags = RESERVED_SINGLE_NODE_GPU_TAG_KEYS.intersection(self.custom_tags)
         if reserved_tags:
             raise ValueError(f"custom_tags cannot override reserved tags: {sorted(reserved_tags)!r}")
 
 
-DatabricksSingleNodeGPUClusterConfig = DatabricksSingleNodeG5ClusterConfig
+DatabricksSingleNodeG5ClusterConfig = DatabricksSingleNodeGPUClusterConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,14 +159,14 @@ class DatabricksBenchmarkJobConfig:
             raise ValueError("sglang_native_probe_delegate_factory must be non-empty when provided")
 
 
-def validate_aws_g5_node_type(node_type_id: str) -> None:
+def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
     if not node_type_id:
         raise ValueError("node_type_id must be non-empty")
     if not node_type_id.lower().startswith(SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES):
         raise ValueError(f"node_type_id must be an AWS g6/L4 Databricks node type, got {node_type_id!r}")
 
 
-validate_aws_single_node_gpu_type = validate_aws_g5_node_type
+validate_aws_g5_node_type = validate_aws_single_node_gpu_type
 
 
 def build_databricks_run_submit_payload(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
@@ -194,7 +194,7 @@ def write_databricks_runner_script(path: str | Path) -> None:
     Path(path).write_text(RUNNER_SCRIPT, encoding="utf-8")
 
 
-def build_single_node_g5_cluster(config: DatabricksSingleNodeG5ClusterConfig) -> dict[str, Any]:
+def build_single_node_gpu_cluster(config: DatabricksSingleNodeGPUClusterConfig) -> dict[str, Any]:
     tags = {
         "ResourceClass": "SingleNode",
         "purpose": config.purpose,
@@ -221,19 +221,22 @@ def build_single_node_g5_cluster(config: DatabricksSingleNodeG5ClusterConfig) ->
     return cluster
 
 
-build_single_node_gpu_cluster = build_single_node_g5_cluster
+build_single_node_g5_cluster = build_single_node_gpu_cluster
 
 
-def _single_node_g5_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
-    cluster = build_single_node_g5_cluster(_cluster_config_from_benchmark_job(config))
+def _single_node_gpu_cluster(config: DatabricksBenchmarkJobConfig) -> dict[str, Any]:
+    cluster = build_single_node_gpu_cluster(_cluster_config_from_benchmark_job(config))
     spark_env_vars = _native_probe_delegate_env_vars(config)
     if spark_env_vars:
         cluster["spark_env_vars"] = spark_env_vars
     return cluster
 
 
-def _cluster_config_from_benchmark_job(config: DatabricksBenchmarkJobConfig) -> DatabricksSingleNodeG5ClusterConfig:
-    return DatabricksSingleNodeG5ClusterConfig(
+_single_node_g5_cluster = _single_node_gpu_cluster
+
+
+def _cluster_config_from_benchmark_job(config: DatabricksBenchmarkJobConfig) -> DatabricksSingleNodeGPUClusterConfig:
+    return DatabricksSingleNodeGPUClusterConfig(
         purpose=DEFAULT_DATABRICKS_PURPOSE,
         node_type_id=config.node_type_id,
         spark_version=config.spark_version,
@@ -258,6 +261,7 @@ def _native_probe_delegate_env_vars(config: DatabricksBenchmarkJobConfig) -> dic
     return spark_env_vars
 
 
+_DEFAULT_VALIDATE_AWS_SINGLE_NODE_GPU_TYPE = validate_aws_single_node_gpu_type
 _DEFAULT_VALIDATE_AWS_G5_NODE_TYPE = validate_aws_g5_node_type
 _DEFAULT_IS_SINGLE_USER_MODE = _is_single_user_mode
 _DEFAULT_CLUSTER_CONFIG_FROM_BENCHMARK_JOB = _cluster_config_from_benchmark_job
