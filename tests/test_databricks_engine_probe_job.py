@@ -23,6 +23,7 @@ from document_kv_cache.databricks_engine_probe_job import (
     main,
     read_databricks_engine_probe_targets_file_json,
     read_databricks_engine_probe_targets_json,
+    run_engine_probe_task,
     write_databricks_engine_probe_matrix_run_submit_json,
     write_databricks_engine_probe_run_submit_json,
     write_databricks_engine_probe_runner_script,
@@ -32,6 +33,7 @@ from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
 )
+from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
@@ -211,6 +213,47 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
         assert "--allow-non-native-probe" not in parameters
 
 
+def test_databricks_engine_probe_matrix_payload_runs_fixture_before_probe():
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(
+            _target(
+                "vllm",
+                handoff_json=f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+                fixture_output_dir=fixture_dir,
+                fixture_payload_mode="merged",
+                payload_uri=None,
+            ),
+            _target("sglang"),
+        ),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert parameters[:6] == [
+        "--fixture-output-dir",
+        fixture_dir,
+        "--fixture-backend",
+        "vllm",
+        "--fixture-payload-mode",
+        "merged",
+    ]
+    assert parameters[6:14] == [
+        "--handoff-json",
+        f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+        "--probe-factory",
+        "document_kv_cache_vllm_probe:build_probe",
+        "--output-json",
+        "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        "--expected-backend",
+        "vllm",
+    ]
+
+
 def test_build_databricks_engine_probe_matrix_payload_sets_backend_delegate_env_vars():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
@@ -351,6 +394,121 @@ def test_read_databricks_engine_probe_targets_json_accepts_native_delegate_facto
     assert target.native_probe_delegate_factory == "document_kv_vllm_native_adapter:build_probe"
 
 
+def test_read_databricks_engine_probe_targets_json_accepts_fixture_fields(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "fixture_output_dir": fixture_dir,
+                    "fixture_payload_mode": "merged",
+                    "handoff_json": f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (target,) = read_databricks_engine_probe_targets_json(path)
+
+    assert target.fixture_output_dir == fixture_dir
+    assert target.fixture_payload_mode == "merged"
+
+
+def test_read_databricks_engine_probe_targets_json_rejects_fixture_handoff_mismatch(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "fixture_output_dir": "/Volumes/catalog/schema/volume/probes/vllm-fixture",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/custom-handoff.json",
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="derived fixture handoff path"):
+        read_databricks_engine_probe_targets_json(path)
+
+
+def test_read_databricks_engine_probe_targets_json_rejects_absolute_alias_for_relative_fixture_dir(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    fixture_dir = "vllm-fixture"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "fixture_output_dir": fixture_dir,
+                    "handoff_json": str(
+                        (tmp_path / fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]).resolve()
+                    ),
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="derived fixture handoff path"):
+        read_databricks_engine_probe_targets_json(path)
+
+
+def test_read_databricks_engine_probe_targets_json_rejects_unsupported_fixture_output_uri_scheme(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    fixture_dir = "s3://bucket/probes/vllm-fixture"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "fixture_output_dir": fixture_dir,
+                    "handoff_json": f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="fixture_output_dir URI scheme"):
+        read_databricks_engine_probe_targets_json(path)
+
+
+def test_read_databricks_engine_probe_targets_json_rejects_fixture_payload_mismatch(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "fixture_output_dir": fixture_dir,
+                    "handoff_json": f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+                    "payload_uri": "/Volumes/catalog/schema/volume/probes/custom-payload.kv",
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="derived fixture payload path"):
+        read_databricks_engine_probe_targets_json(path)
+
+
 def test_read_databricks_engine_probe_targets_json_rejects_non_boolean_debug_flag(tmp_path):
     path = tmp_path / "probe-targets.json"
     path.write_text(
@@ -417,6 +575,103 @@ def test_read_databricks_engine_probe_targets_json_rejects_unsupported_probe_key
 
     with pytest.raises(ValueError, match=r"backend config probe 0 has unsupported keys: \['debug'\]"):
         read_databricks_engine_probe_targets_json(path)
+
+
+def test_run_engine_probe_task_generates_fixture_then_runs_probe(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import document_kv_cache.probe_fixtures as probe_fixtures
+
+    calls = []
+
+    def fake_fixture_main(argv):
+        calls.append(("fixture", tuple(argv)))
+        return 0
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(probe_fixtures, "main", fake_fixture_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--fixture-output-dir",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture",
+            "--fixture-backend",
+            "vllm",
+            "--fixture-payload-mode",
+            "merged",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.handoff.json",
+            "--probe-factory",
+            "document_kv_cache_vllm_probe:build_probe",
+            "--output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--expected-backend",
+            "vllm",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            "fixture",
+            (
+                "--output-dir",
+                "/Volumes/catalog/schema/volume/probes/vllm-fixture",
+                "--backend",
+                "vllm",
+                "--payload-mode",
+                "merged",
+            ),
+        ),
+        (
+            "probe",
+            (
+                "--handoff-json",
+                "/Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.handoff.json",
+                "--probe-factory",
+                "document_kv_cache_vllm_probe:build_probe",
+                "--output-json",
+                "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                "--expected-backend",
+                "vllm",
+            ),
+        ),
+    ]
+
+
+def test_run_engine_probe_task_stops_when_fixture_generation_fails(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import document_kv_cache.probe_fixtures as probe_fixtures
+
+    calls = []
+
+    def fake_fixture_main(argv):
+        calls.append(("fixture", tuple(argv)))
+        return 7
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(probe_fixtures, "main", fake_fixture_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--fixture-output-dir",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture",
+            "--fixture-backend",
+            "vllm",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.handoff.json",
+        ]
+    )
+
+    assert exit_code == 7
+    assert [name for name, _argv in calls] == ["fixture"]
 
 
 def test_read_databricks_engine_probe_targets_json_honors_release_safe_envelope(tmp_path):
@@ -637,13 +892,14 @@ def test_databricks_engine_probe_config_rejects_unknown_backend():
         raise AssertionError("expected unknown backend validation to fail")
 
 
-def test_write_databricks_engine_probe_runner_script_imports_probe_main(tmp_path):
+def test_write_databricks_engine_probe_runner_script_imports_task_runner(tmp_path):
     path = tmp_path / "run_engine_probe.py"
 
     write_databricks_engine_probe_runner_script(path)
 
     runner_text = path.read_text(encoding="utf-8")
-    assert "document_kv_cache.engine_probe" in runner_text
+    assert "document_kv_cache.databricks_engine_probe_job" in runner_text
+    assert "run_engine_probe_task" in runner_text
     assert "if exit_code:" in runner_text
 
 
@@ -700,6 +956,47 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
     assert payload["tasks"][0]["libraries"] == [{"whl": WHEEL_URI}]
     assert "--actions-output-json" in payload["tasks"][0]["spark_python_task"]["parameters"]
     assert "engine_probe" in runner_path.read_text(encoding="utf-8")
+
+
+def test_main_derives_single_engine_probe_handoff_from_fixture_output_dir(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+
+    exit_code = main(
+        [
+            "--fixture-output-dir",
+            fixture_dir,
+            "--fixture-payload-mode",
+            "merged",
+            "--probe-factory",
+            "vllm_probe:build_probe",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--expected-backend",
+            "vllm",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert exit_code == 0
+    assert parameters[:8] == [
+        "--fixture-output-dir",
+        fixture_dir,
+        "--fixture-backend",
+        "vllm",
+        "--fixture-payload-mode",
+        "merged",
+        "--handoff-json",
+        f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+    ]
 
 
 def test_main_writes_single_engine_probe_payload_with_native_delegate_env(tmp_path):
@@ -1031,7 +1328,7 @@ def test_legacy_engine_probe_job_ignores_document_namespace_writer_monkeypatch(m
 
     assert exit_code == 0
     assert "# unexpected public hook" not in runner_path.read_text(encoding="utf-8")
-    assert "document_kv_cache.engine_probe" in runner_path.read_text(encoding="utf-8")
+    assert "run_engine_probe_task" in runner_path.read_text(encoding="utf-8")
 
 
 def test_legacy_engine_probe_job_ignores_document_private_helper_monkeypatch(monkeypatch):
@@ -1410,6 +1707,7 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "ENGINE_PROBE_TARGETS_RECORD_TYPE",
         "ENGINE_PROBE_TARGETS_SCHEMA_VERSION",
         "Mapping",
+        "PayloadMode",
         "Path",
         "REQUIRED_ENGINE_PROBE_BACKENDS",
         "Sequence",
@@ -1424,6 +1722,7 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "main",
         "read_databricks_engine_probe_targets_file_json",
         "read_databricks_engine_probe_targets_json",
+        "run_engine_probe_task",
         "write_databricks_engine_probe_matrix_run_submit_json",
         "write_databricks_engine_probe_run_submit_json",
         "write_databricks_engine_probe_runner_script",

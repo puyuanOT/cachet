@@ -1002,15 +1002,18 @@ def test_benchmark_plan_rejects_fixture_child_output_path_collisions(tmp_path):
 
 
 def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path):
+    vllm_fixture_dir = tmp_path / "vllm-fixture"
+    vllm_fixture_handoff_json = vllm_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
     probes = (
         EngineProbePlanConfig(
             backend="vllm",
-            handoff_json=str(tmp_path / "vllm-handoff.json"),
+            handoff_json=str(vllm_fixture_handoff_json),
             probe_factory="vllm_probe:factory",
             output_json=str(tmp_path / "vllm-probe.json"),
             actions_output_json=str(tmp_path / "vllm-actions.json"),
-            payload_uri=f"disk:{tmp_path / 'vllm.kv'}",
             metadata=("probe.source=plan",),
+            fixture_output_dir=str(vllm_fixture_dir),
+            fixture_payload_mode="merged",
         ),
         EngineProbePlanConfig(
             backend="sglang",
@@ -1030,12 +1033,13 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
             {
                 "allow_non_native_probe": False,
                 "backend": "vllm",
-                "handoff_json": str(tmp_path / "vllm-handoff.json"),
+                "handoff_json": str(vllm_fixture_handoff_json),
                 "metadata": ["probe.source=plan"],
                 "output_json": str(tmp_path / "vllm-probe.json"),
                 "actions_output_json": str(tmp_path / "vllm-actions.json"),
-                "payload_uri": f"disk:{tmp_path / 'vllm.kv'}",
                 "probe_factory": "vllm_probe:factory",
+                "fixture_output_dir": str(vllm_fixture_dir),
+                "fixture_payload_mode": "merged",
             },
             {
                 "allow_non_native_probe": False,
@@ -1068,6 +1072,8 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
         str(tmp_path / "sglang-actions.json"),
     ]
     assert targets[0].metadata == ("probe.source=plan",)
+    assert targets[0].fixture_output_dir == str(vllm_fixture_dir)
+    assert targets[0].fixture_payload_mode == "merged"
 
 
 def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_probes(tmp_path):

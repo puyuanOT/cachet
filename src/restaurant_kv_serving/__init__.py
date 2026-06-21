@@ -794,6 +794,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_engine_probe_job",
         "read_databricks_engine_probe_targets_file_json",
     ),
+    "run_engine_probe_task": (
+        "restaurant_kv_serving.databricks_engine_probe_job",
+        "run_engine_probe_task",
+    ),
     "write_databricks_vllm_smoke_run_submit_json": (
         "restaurant_kv_serving.databricks_vllm_smoke_job",
         "write_databricks_vllm_smoke_run_submit_json",
@@ -1157,6 +1161,7 @@ __all__ = [
     "write_v1_jsonl",
     "read_databricks_engine_probe_targets_json",
     "read_databricks_engine_probe_targets_file_json",
+    "run_engine_probe_task",
     "write_engine_probe_targets_json",
 ]
 

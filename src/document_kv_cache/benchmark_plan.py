@@ -244,6 +244,13 @@ class EngineProbePlanConfig:
                 )
         if self.payload_uri is not None and not self.payload_uri:
             raise ValueError("engine probe payload_uri must be non-empty when provided")
+        if self.fixture_output_dir is not None and self.payload_uri is not None:
+            expected_payload_uri = _engine_probe_fixture_payload_uri(self.fixture_output_dir)
+            if not _same_artifact_path(self.payload_uri, expected_payload_uri):
+                raise ValueError(
+                    "engine probe payload_uri must match the derived fixture payload path when "
+                    f"fixture_output_dir is set: expected {expected_payload_uri!r}, got {self.payload_uri!r}"
+                )
         if self.engine_version is not None and not self.engine_version:
             raise ValueError("engine probe engine_version must be non-empty when provided")
         if type(self.allow_non_native_probe) is not bool:
@@ -1287,6 +1294,9 @@ def _engine_probe_target_to_record(probe: EngineProbePlanConfig) -> dict[str, An
         record["native_probe_delegate_factory"] = probe.native_probe_delegate_factory
     if probe.engine_version is not None:
         record["engine_version"] = probe.engine_version
+    if probe.fixture_output_dir is not None:
+        record["fixture_output_dir"] = probe.fixture_output_dir
+        record["fixture_payload_mode"] = probe.fixture_payload_mode.value
     return record
 
 
@@ -1744,6 +1754,10 @@ def _engine_probe_handoff_jsons_with_fixtures(
 
 def _engine_probe_fixture_handoff_json(fixture_output_dir: str) -> str:
     return _uri_child(fixture_output_dir, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"])
+
+
+def _engine_probe_fixture_payload_uri(fixture_output_dir: str) -> str:
+    return _uri_child(fixture_output_dir, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["payload"])
 
 
 def _uri_child(base_uri: str, filename: str) -> str:
