@@ -595,6 +595,7 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
     if measurements is not None:
         _validate_v1_measurement_examples_have_required_arms(measurements, issues)
+        _validate_v1_measurement_examples_have_consistent_expected_answers(measurements, issues)
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if report_rows is not None and comparisons is not None:
@@ -710,6 +711,34 @@ def _validate_v1_measurement_examples_have_required_arms(
             issues.append(
                 f"v1 benchmark measurement example {dataset}:{example_id} "
                 f"missing required arms: {', '.join(missing)}"
+            )
+
+
+def _validate_v1_measurement_examples_have_consistent_expected_answers(
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> None:
+    expected_answers_by_example: dict[tuple[str, str], set[str]] = {}
+    for measurement in measurements:
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        expected_answer = measurement.get("expected_answer")
+        if (
+            isinstance(dataset, str)
+            and dataset in SUPPORTED_V1_DATASETS
+            and isinstance(example_id, str)
+            and example_id
+            and isinstance(expected_answer, str)
+            and expected_answer
+        ):
+            expected_answers_by_example.setdefault((dataset, example_id), set()).add(expected_answer)
+    for dataset, example_id in sorted(expected_answers_by_example):
+        if len(expected_answers_by_example[(dataset, example_id)]) > 1:
+            issues.append(
+                f"v1 benchmark measurement example {dataset}:{example_id} "
+                "expected_answer must be consistent across arms"
             )
 
 

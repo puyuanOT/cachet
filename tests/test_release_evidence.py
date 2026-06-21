@@ -232,6 +232,29 @@ def test_evaluate_release_evidence_rejects_unpaired_measurement_examples():
     )
 
 
+def test_evaluate_release_evidence_rejects_inconsistent_measurement_expected_answers():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "expected_answer": "Grace Hopper",
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:biography-1 expected_answer must be consistent across arms" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_rejects_unknown_engine_version():
     probe_record = {**_probe_record(ServingBackend.VLLM), "engine_version": "unknown"}
 
