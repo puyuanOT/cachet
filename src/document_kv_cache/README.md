@@ -25,6 +25,8 @@ separate `restaurant_kv_serving` compatibility package rather than by making
 new document modules depend on restaurant-owned implementations.
 
 - `admission.py` exposes pending GPU-memory admission controls.
+- `adapter_scaffold.py` generates fail-closed native-probe delegate modules for
+  backend-specific vLLM/SGLang adapter packages.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
   native engine-probe, release-readiness sidecar, and release-evidence command
   plans.
@@ -118,6 +120,7 @@ part of the public API.
 The public package owns these document-branded CLI entry points:
 
 - `document-kv-benchmark-plan`
+- `document-kv-native-probe-scaffold`
 - `document-kv-run-benchmark-plan`
 - `document-kv-databricks-job`
 - `document-kv-databricks-runs`
@@ -140,6 +143,7 @@ The public package owns these document-branded CLI entry points:
 Cachet-branded aliases point to the same document-owned entry points:
 
 - `cachet-benchmark-plan`
+- `cachet-native-probe-scaffold`
 - `cachet-run-benchmark-plan`
 - `cachet-databricks-job`
 - `cachet-databricks-runs`

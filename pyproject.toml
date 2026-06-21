@@ -43,6 +43,7 @@ test = [
 
 [project.scripts]
 cachet-benchmark-plan = "document_kv_cache.benchmark_plan:main"
+cachet-native-probe-scaffold = "document_kv_cache.adapter_scaffold:main"
 cachet-run-benchmark-plan = "document_kv_cache.benchmark_plan_executor:main"
 cachet-databricks-job = "document_kv_cache.databricks_job:main"
 cachet-databricks-runs = "document_kv_cache.databricks_runs:main"
@@ -62,6 +63,7 @@ cachet-engine-probe-databricks-job = "document_kv_cache.databricks_engine_probe_
 cachet-vllm-smoke = "document_kv_cache.vllm_smoke:main"
 cachet-vllm-smoke-databricks-job = "document_kv_cache.databricks_vllm_smoke_job:main"
 document-kv-benchmark-plan = "document_kv_cache.benchmark_plan:main"
+document-kv-native-probe-scaffold = "document_kv_cache.adapter_scaffold:main"
 document-kv-run-benchmark-plan = "document_kv_cache.benchmark_plan_executor:main"
 document-kv-databricks-job = "document_kv_cache.databricks_job:main"
 document-kv-databricks-runs = "document_kv_cache.databricks_runs:main"

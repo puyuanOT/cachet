@@ -23,6 +23,7 @@ _LEGACY_ROOT_EXPORTS = frozenset(
 _PUBLIC_SUBMODULES = frozenset(
     {
         "admission",
+        "adapter_scaffold",
         "benchmark_plan",
         "benchmark_plan_executor",
         "benchmark_runner",
