@@ -333,6 +333,7 @@ def databricks_run_status_sidecar_issues(record: Mapping[str, Any]) -> tuple[str
         issues.append("Databricks run status sidecar submit_payload must be an object")
     else:
         issues.extend(_databricks_submit_payload_sidecar_issues(submit_payload, tasks=tasks))
+        issues.extend(_databricks_run_submit_payload_identity_issues(status_record, submit_payload))
     return _dedupe_strings(issues)
 
 
@@ -510,6 +511,23 @@ def _databricks_submit_payload_sidecar_issues(
         if declared_task_keys != payload_task_keys:
             issues.append("Databricks run status sidecar submit_payload.task_keys must match submit_payload.tasks")
     return tuple(issues)
+
+
+def _databricks_run_submit_payload_identity_issues(
+    status_record: Mapping[str, Any],
+    submit_payload: Mapping[str, Any],
+) -> tuple[str, ...]:
+    run_name = status_record.get("run_name")
+    submit_run_name = submit_payload.get("run_name")
+    if (
+        isinstance(run_name, str)
+        and run_name
+        and isinstance(submit_run_name, str)
+        and submit_run_name
+        and submit_run_name != run_name
+    ):
+        return ("Databricks run status sidecar submit_payload.run_name must match run_name",)
+    return ()
 
 
 def _databricks_submit_payload_summary_field_issues(
