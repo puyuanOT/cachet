@@ -867,6 +867,31 @@ def test_evaluate_release_evidence_rejects_malformed_report_quality_rates():
     )
 
 
+def test_evaluate_release_evidence_requires_both_report_quality_rates():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0].pop("exact_match_rate")
+    v1_record["report_rows"][1].pop("answer_found_rate")
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:baseline_prefill must include exact_match_rate" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:document_kv_cache must include answer_found_rate" in issue
+        for issue in evidence.issues
+    )
+
+
 def test_evaluate_release_evidence_allows_repeated_raw_measurements():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"].append({**v1_record["measurements"][0]})
@@ -2163,6 +2188,7 @@ def _v1_report_row_record(dataset: str, arm: str):
         "completion_tokens_mean": 16.0,
         "ttft": {"count": 1, "mean": 1.0, "p50": 1.0, "p95": 1.0},
         "time_to_completion": {"count": 1, "mean": 2.0, "p50": 2.0, "p95": 2.0},
+        "exact_match_rate": 1.0,
         "answer_found_rate": 1.0,
         "output_tokens_per_second": 8.0,
     }
