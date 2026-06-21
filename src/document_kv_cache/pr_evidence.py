@@ -19,6 +19,8 @@ _PR_EVIDENCE_RECORD_KEYS = frozenset(
     {
         "record_type",
         "ok",
+        "pull_request_number",
+        "pull_request_url",
         "what_changed",
         "why",
         "scope",
@@ -61,6 +63,8 @@ class PullRequestEvidence:
     gpt55_review_outcome: str
     gpt55_review_summary: str
     issues: tuple[str, ...] = field(default_factory=tuple)
+    pull_request_number: int | None = None
+    pull_request_url: str = ""
 
     @property
     def ok(self) -> bool:
@@ -73,6 +77,12 @@ class PullRequestEvidence:
         object.__setattr__(self, "verification", _string_tuple(self.verification, "verification"))
         object.__setattr__(self, "gpt55_review_outcome", _string_or_empty(self.gpt55_review_outcome, "gpt55_review_outcome"))
         object.__setattr__(self, "gpt55_review_summary", _string_or_empty(self.gpt55_review_summary, "gpt55_review_summary"))
+        object.__setattr__(
+            self,
+            "pull_request_number",
+            _optional_positive_int(self.pull_request_number, "pull_request_number"),
+        )
+        object.__setattr__(self, "pull_request_url", _string_or_empty(self.pull_request_url, "pull_request_url"))
         for field_name in ("refactor_skill_applied", "gpt55_review_completed", "gpt55_review_findings_resolved"):
             if type(getattr(self, field_name)) is not bool:
                 raise ValueError(f"{field_name} must be boolean")
@@ -87,6 +97,8 @@ class PullRequestEvidence:
             gpt55_review_findings_resolved=self.gpt55_review_findings_resolved,
             gpt55_review_outcome=self.gpt55_review_outcome,
             gpt55_review_summary=self.gpt55_review_summary,
+            pull_request_number=self.pull_request_number,
+            pull_request_url=self.pull_request_url,
         )
         object.__setattr__(self, "issues", _dedupe_strings((*explicit_issues, *semantic_issues)))
 
@@ -102,6 +114,8 @@ def evaluate_pr_evidence(
     gpt55_review_findings_resolved: bool,
     gpt55_review_outcome: str,
     gpt55_review_summary: str,
+    pull_request_number: int | None = None,
+    pull_request_url: str = "",
 ) -> PullRequestEvidence:
     return PullRequestEvidence(
         what_changed=tuple(what_changed),
@@ -113,6 +127,8 @@ def evaluate_pr_evidence(
         gpt55_review_findings_resolved=gpt55_review_findings_resolved,
         gpt55_review_outcome=gpt55_review_outcome,
         gpt55_review_summary=gpt55_review_summary,
+        pull_request_number=pull_request_number,
+        pull_request_url=pull_request_url,
     )
 
 
@@ -141,6 +157,8 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
     gpt55_review_findings_resolved = _record_bool(record, "gpt55_review_findings_resolved", parsing_issues)
     gpt55_review_outcome = _record_string(record, "gpt55_review_outcome", parsing_issues)
     gpt55_review_summary = _record_string(record, "gpt55_review_summary", parsing_issues)
+    pull_request_number = _record_optional_positive_int(record, "pull_request_number", parsing_issues)
+    pull_request_url = _record_string(record, "pull_request_url", parsing_issues)
     return PullRequestEvidence(
         what_changed=what_changed,
         why=why,
@@ -151,6 +169,8 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
         gpt55_review_findings_resolved=gpt55_review_findings_resolved,
         gpt55_review_outcome=gpt55_review_outcome,
         gpt55_review_summary=gpt55_review_summary,
+        pull_request_number=pull_request_number,
+        pull_request_url=pull_request_url,
         issues=tuple(parsing_issues),
     )
 
@@ -209,6 +229,8 @@ def pr_evidence_to_record(evidence: PullRequestEvidence) -> dict[str, Any]:
     return {
         "record_type": PR_EVIDENCE_RECORD_TYPE,
         "ok": evidence.ok,
+        "pull_request_number": evidence.pull_request_number,
+        "pull_request_url": evidence.pull_request_url,
         "what_changed": list(evidence.what_changed),
         "why": evidence.why,
         "scope": list(evidence.scope),
@@ -299,6 +321,16 @@ def _record_bool(record: Mapping[str, Any], field_name: str, issues: list[str]) 
     return False
 
 
+def _record_optional_positive_int(record: Mapping[str, Any], field_name: str, issues: list[str]) -> int | None:
+    value = record.get(field_name)
+    if value is None:
+        return None
+    if type(value) is int and value > 0:
+        return value
+    issues.append(f"{field_name} must be a positive integer or null")
+    return None
+
+
 def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
     unexpected = sorted(str(key) for key in record if key not in allowed_keys)
     if not unexpected:
@@ -323,6 +355,14 @@ def _string_or_empty(value: Any, field_name: str) -> str:
     return value.strip()
 
 
+def _optional_positive_int(value: Any, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if type(value) is int and value > 0:
+        return value
+    raise ValueError(f"{field_name} must be a positive integer or null")
+
+
 def _semantic_issues(
     *,
     what_changed: tuple[str, ...],
@@ -334,6 +374,8 @@ def _semantic_issues(
     gpt55_review_findings_resolved: bool,
     gpt55_review_outcome: str,
     gpt55_review_summary: str,
+    pull_request_number: int | None,
+    pull_request_url: str,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     if not what_changed:
@@ -354,6 +396,14 @@ def _semantic_issues(
         issues.append("GPT-5.5 findings must be resolved when gpt55_review_outcome is 'findings_resolved'")
     if not gpt55_review_summary:
         issues.append("gpt55_review_summary must describe findings and fixes, or state that the review was clean")
+    if pull_request_url and not pull_request_url.startswith("https://github.com/"):
+        issues.append("pull_request_url must be a GitHub pull request URL when provided")
+    if (
+        pull_request_number is not None
+        and pull_request_url
+        and not pull_request_url.rstrip("/").endswith(f"/pull/{pull_request_number}")
+    ):
+        issues.append("pull_request_url must end with pull_request_number when both are provided")
     return tuple(issues)
 
 
@@ -390,6 +440,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--why", default="")
     parser.add_argument("--scope", action="append", default=[])
     parser.add_argument("--verification", action="append", default=[])
+    parser.add_argument("--pull-request-number", type=int)
+    parser.add_argument("--pull-request-url", default="")
     parser.add_argument("--refactor-skill-applied", action="store_true")
     parser.add_argument("--gpt55-review-completed", action="store_true")
     parser.add_argument("--gpt55-review-findings-resolved", action="store_true")
@@ -429,6 +481,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             gpt55_review_findings_resolved=args.gpt55_review_findings_resolved,
             gpt55_review_outcome=args.gpt55_review_outcome,
             gpt55_review_summary=args.gpt55_review_summary,
+            pull_request_number=args.pull_request_number,
+            pull_request_url=args.pull_request_url,
         )
         if args.output_json:
             write_pr_evidence_json(evidence, args.output_json)

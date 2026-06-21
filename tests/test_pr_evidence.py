@@ -28,6 +28,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def test_evaluate_pr_evidence_accepts_complete_traceability_record():
     evidence = evaluate_pr_evidence(
+        pull_request_number=123,
+        pull_request_url="https://github.com/puyuanOT/document-kv-cache/pull/123",
         what_changed=("Added release evidence latency guards",),
         why="Make the release gate reject impossible latency artifacts.",
         scope=("release-evidence", "tests"),
@@ -44,6 +46,8 @@ def test_evaluate_pr_evidence_accepts_complete_traceability_record():
     assert record == {
         "record_type": PR_EVIDENCE_RECORD_TYPE,
         "ok": True,
+        "pull_request_number": 123,
+        "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/123",
         "what_changed": ["Added release evidence latency guards"],
         "why": "Make the release gate reject impossible latency artifacts.",
         "scope": ["release-evidence", "tests"],
@@ -81,6 +85,35 @@ def test_evaluate_pr_evidence_reports_missing_traceability_and_review_gates():
         "gpt55_review_outcome must be 'clean' or 'findings_resolved'",
         "gpt55_review_summary must describe findings and fixes, or state that the review was clean",
     )
+
+
+def test_pr_evidence_tracks_optional_pull_request_identity():
+    evidence = evaluate_pr_evidence(
+        pull_request_number=264,
+        pull_request_url="https://github.com/puyuanOT/document-kv-cache/pull/264",
+        what_changed=("Added Databricks status target validation",),
+        why="Tie release evidence to the PR that changed the validator.",
+        scope=("databricks_runs.py",),
+        verification=("pytest -q tests/test_databricks_runs.py",),
+        refactor_skill_applied=True,
+        gpt55_review_completed=True,
+        gpt55_review_findings_resolved=False,
+        gpt55_review_outcome="clean",
+        gpt55_review_summary="Review was clean.",
+    )
+
+    assert evidence.ok
+    assert pr_evidence_to_record(evidence)["pull_request_number"] == 264
+
+    mismatched = evaluate_pr_evidence_record(
+        {
+            **pr_evidence_to_record(evidence),
+            "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/999",
+        }
+    )
+
+    assert not mismatched.ok
+    assert "pull_request_url must end with pull_request_number when both are provided" in mismatched.issues
 
 
 def test_pr_evidence_dataclass_validates_json_safe_schema_and_semantics():
@@ -144,6 +177,25 @@ def test_pr_evidence_dataclass_derives_issues_for_invalid_direct_objects():
     assert "GPT-5.5 findings must be resolved when gpt55_review_outcome is 'findings_resolved'" in evidence.issues
 
 
+def test_pr_evidence_dataclass_preserves_positional_issues_argument():
+    evidence = PullRequestEvidence(
+        ("changed",),
+        "why",
+        ("scope",),
+        ("pytest",),
+        True,
+        True,
+        False,
+        "clean",
+        "review was clean",
+        ("caller supplied issue",),
+    )
+
+    assert "caller supplied issue" in evidence.issues
+    assert evidence.pull_request_number is None
+    assert evidence.pull_request_url == ""
+
+
 def test_evaluate_pr_evidence_record_rejects_wrong_record_type():
     evidence = evaluate_pr_evidence_record({"record_type": "document_kv.release_evidence.v1"})
 
@@ -176,6 +228,8 @@ def test_evaluate_pr_evidence_record_returns_failed_evidence_for_malformed_curre
     evidence = evaluate_pr_evidence_record(
         {
             "record_type": PR_EVIDENCE_RECORD_TYPE,
+            "pull_request_number": 0,
+            "pull_request_url": "https://example.com/pull/1",
             "what_changed": ["ok", 3],
             "why": None,
             "scope": "governance",
@@ -190,6 +244,8 @@ def test_evaluate_pr_evidence_record_returns_failed_evidence_for_malformed_curre
 
     assert not evidence.ok
     assert "what_changed[1] must be a non-empty string" in evidence.issues
+    assert "pull_request_number must be a positive integer or null" in evidence.issues
+    assert "pull_request_url must be a GitHub pull request URL when provided" in evidence.issues
     assert "why must be a string" in evidence.issues
     assert "scope must be a sequence" in evidence.issues
     assert "refactor_skill_applied must be boolean" in evidence.issues
@@ -370,6 +426,10 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
             "ignored",
             "--verification",
             "ignored",
+            "--pull-request-number",
+            "321",
+            "--pull-request-url",
+            "https://github.com/puyuanOT/document-kv-cache/pull/321",
             "--refactor-skill-applied",
             "--gpt55-review-completed",
             "--gpt55-review-findings-resolved",
@@ -384,6 +444,8 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
 
     assert exit_code == 0
     assert called["kwargs"]["what_changed"] == ("ignored",)
+    assert called["kwargs"]["pull_request_number"] == 321
+    assert called["kwargs"]["pull_request_url"] == "https://github.com/puyuanOT/document-kv-cache/pull/321"
     assert called["kwargs"]["gpt55_review_outcome"] == "findings_resolved"
     record = json.loads(output_path.read_text(encoding="utf-8"))
     assert record["what_changed"] == ["public wrapper hook"]

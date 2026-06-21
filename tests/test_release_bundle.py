@@ -2798,6 +2798,49 @@ def test_public_release_bundle_cli_rejects_unresolved_pr_evidence(tmp_path):
     assert not (tmp_path / "bundle" / RELEASE_BUNDLE_MANIFEST_FILENAME).exists()
 
 
+def test_public_release_bundle_cli_rejects_pr_evidence_without_pull_request_identity(tmp_path):
+    artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    anonymous_pr_evidence_record = _pr_evidence_record(ok=True)
+    del anonymous_pr_evidence_record["pull_request_number"]
+    del anonymous_pr_evidence_record["pull_request_url"]
+    anonymous_pr_evidence = _write_json(
+        tmp_path / "anonymous-pr-evidence.json",
+        anonymous_pr_evidence_record,
+    )
+
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(REPO_ROOT / "src"),
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "document_kv_cache.release_bundle",
+            "--v1-benchmark-json",
+            str(artifacts["v1"]),
+            "--storage-benchmark-json",
+            str(artifacts["storage"]),
+            "--engine-probe-json",
+            str(artifacts["vllm"]),
+            "--engine-probe-json",
+            str(artifacts["sglang"]),
+            "--pr-evidence-json",
+            str(anonymous_pr_evidence),
+            "--output-dir",
+            str(tmp_path / "bundle"),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "PR evidence sidecar pull_request_number must be a positive integer" in completed.stderr
+    assert "PR evidence sidecar pull_request_url must be non-empty" in completed.stderr
+
+
 def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsys, tmp_path):
     original_builder = legacy_release_bundle.build_release_bundle
     original_serializer = legacy_release_bundle.release_bundle_to_record
@@ -3383,6 +3426,8 @@ def _pr_evidence_record(*, ok: bool):
     return {
         "record_type": "document_kv.pr_evidence.v1",
         "ok": ok,
+        "pull_request_number": 123,
+        "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/123",
         "what_changed": ["release provenance"],
         "why": "release bundles should be auditable",
         "scope": ["release_bundle.py"],

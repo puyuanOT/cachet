@@ -977,6 +977,10 @@ def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         issues.append(f"PR evidence sidecar record_type must be {PR_EVIDENCE_RECORD_TYPE!r}")
     if record.get("ok") is not True:
         issues.append("PR evidence sidecar ok must be true")
+    if evidence.pull_request_number is None:
+        issues.append("PR evidence sidecar pull_request_number must be a positive integer")
+    if not evidence.pull_request_url:
+        issues.append("PR evidence sidecar pull_request_url must be non-empty")
     if evidence.gpt55_review_completed is not True:
         issues.append("PR evidence sidecar GPT-5.5 review must be completed")
     if evidence.refactor_skill_applied is not True:
