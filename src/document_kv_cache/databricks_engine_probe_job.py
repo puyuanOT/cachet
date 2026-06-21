@@ -1004,7 +1004,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--extra-wheel-uri",
         action="append",
         help=(
-            "Additional cluster-visible wheel URI to install before the task. "
+            "Additional cluster-visible custom extension wheel URI to install before the task. "
+            "Cachet's built-in vLLM/SGLang adapter modules ship in --wheel-uri. "
             "May be repeated; wheels install after --wheel-uri in argument order."
         ),
     )

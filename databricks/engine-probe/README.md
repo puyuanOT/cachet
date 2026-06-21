@@ -5,6 +5,8 @@ engine-probe job on a single AWS g6/L4 node. It is for release evidence after an
 engine adapter has produced a `document_kv.engine_adapter_request.v1` handoff and
 either a workspace-specific native probe factory or a Cachet built-in factory
 plus backend-native delegate.
+The Cachet wheel supplies the runner contract, release-evidence schema, and
+built-in `vllm_kv_injection`/`sglang_kv_injection` adapter modules.
 
 Run bundle commands from this folder because `databricks.yml` is the bundle root.
 
