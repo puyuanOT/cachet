@@ -36,6 +36,8 @@ VLLM_NATIVE_PROBE_DELEGATE_ENV = "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY"
 SGLANG_NATIVE_PROBE_DELEGATE_ENV = "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY"
 NATIVE_PROBE_DELEGATE_CONTRACT_ATTR = "document_kv_native_probe_contract"
 NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR = "DOCUMENT_KV_NATIVE_PROBE_CONTRACT"
+NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR = "document_kv_native_probe_runtime_contract"
+NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR = "DOCUMENT_KV_NATIVE_PROBE_RUNTIME_CONTRACT"
 NATIVE_PROBE_FACTORIES_RECORD_TYPE = "document_kv.native_probe_factories.v1"
 _REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS = ("vllm", "sglang")
 _NATIVE_PROBE_FACTORIES_KEYS = frozenset({"record_type", "factories"})
@@ -46,6 +48,8 @@ _NATIVE_PROBE_FACTORY_KEYS = frozenset(
         "delegate_adapter_contract",
         "delegate_adapter_contract_valid",
         "delegate_factory_path",
+        "delegate_runtime_contract",
+        "delegate_runtime_contract_valid",
         "factory_path",
         "package_name",
         "package_importable",
@@ -53,6 +57,17 @@ _NATIVE_PROBE_FACTORY_KEYS = frozenset(
         "serving_environment_profile",
         "supported",
         "reason",
+    }
+)
+_NATIVE_PROBE_RUNTIME_CONTRACT_KEYS = frozenset(
+    {
+        "record_type",
+        "schema_version",
+        "runtime",
+        "doc_url",
+        "required_methods",
+        "optional_methods",
+        "handoff_contract",
     }
 )
 NATIVE_PROBE_ADAPTER_CONTRACT: Mapping[str, str | int | bool] = MappingProxyType(
@@ -69,6 +84,32 @@ NATIVE_PROBE_ADAPTER_CONTRACT: Mapping[str, str | int | bool] = MappingProxyType
     }
 )
 _NATIVE_PROBE_ADAPTER_CONTRACT_KEYS = frozenset(NATIVE_PROBE_ADAPTER_CONTRACT)
+_VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS = (
+    "get_num_new_matched_tokens",
+    "update_state_after_alloc",
+    "build_connector_meta",
+    "register_kv_caches",
+    "start_load_kv",
+    "wait_for_layer_load",
+    "save_kv_layer",
+    "wait_for_save",
+    "request_finished",
+)
+_VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS = (
+    "bind_connector_metadata",
+    "clear_connector_metadata",
+    "get_finished",
+    "get_kv_connector_kv_cache_events",
+    "get_kv_connector_stats",
+    "shutdown",
+    "take_events",
+)
+_SGLANG_RUNTIME_CACHE_REQUIRED_METHODS = (
+    "stage",
+    "attach",
+    "release",
+)
+_SGLANG_RUNTIME_CACHE_OPTIONAL_METHODS: tuple[str, ...] = ()
 _BUILTIN_NATIVE_PROBE_FACTORY_PATHS = {
     "vllm": VLLM_NATIVE_PROBE_FACTORY,
     "sglang": SGLANG_NATIVE_PROBE_FACTORY,
@@ -107,6 +148,8 @@ class NativeProbeFactoryInspection:
     delegate_factory_path: str | None = None
     delegate_adapter_contract: Mapping[str, Any] | None = None
     delegate_adapter_contract_valid: bool = False
+    delegate_runtime_contract: Mapping[str, Any] | None = None
+    delegate_runtime_contract_valid: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", _serving_backend(self.backend))
@@ -130,6 +173,16 @@ class NativeProbeFactoryInspection:
             )
         if type(self.delegate_adapter_contract_valid) is not bool:
             raise TypeError("delegate_adapter_contract_valid must be a boolean")
+        if self.delegate_runtime_contract is not None:
+            if not isinstance(self.delegate_runtime_contract, Mapping):
+                raise TypeError("delegate_runtime_contract must be a mapping when provided")
+            object.__setattr__(
+                self,
+                "delegate_runtime_contract",
+                MappingProxyType(_contract_snapshot(self.delegate_runtime_contract)),
+            )
+        if type(self.delegate_runtime_contract_valid) is not bool:
+            raise TypeError("delegate_runtime_contract_valid must be a boolean")
         if type(self.supported) is not bool:
             raise ValueError("supported must be a boolean")
         if not self.reason:
@@ -162,6 +215,8 @@ def inspect_builtin_native_probe_factory(backend: ServingBackend | str) -> Nativ
     delegate_factory_path = _delegate_factory_path_from_env(backend)
     delegate_adapter_contract: Mapping[str, Any] | None = None
     delegate_adapter_contract_valid = False
+    delegate_runtime_contract: Mapping[str, Any] | None = None
+    delegate_runtime_contract_valid = False
     if version is None and not package_importable:
         reason = f"{package_name!r} is not installed in this environment"
         supported = False
@@ -201,18 +256,30 @@ def inspect_builtin_native_probe_factory(backend: ServingBackend | str) -> Nativ
                 (
                     delegate_adapter_contract,
                     delegate_adapter_contract_valid,
-                    contract_reason,
+                    adapter_contract_reason,
                 ) = _inspect_delegate_adapter_contract(delegate_factory)
                 if delegate_adapter_contract_valid:
-                    reason = (
-                        f"{package_name} {version} is installed; delegate native probe factory is "
-                        "loadable and declares the Document KV adapter contract"
-                    )
-                    supported = True
+                    (
+                        delegate_runtime_contract,
+                        delegate_runtime_contract_valid,
+                        runtime_contract_reason,
+                    ) = _inspect_delegate_runtime_contract(delegate_factory, backend)
+                    if delegate_runtime_contract_valid:
+                        reason = (
+                            f"{package_name} {version} is installed; delegate native probe factory is "
+                            "loadable and declares the Document KV adapter and runtime contracts"
+                        )
+                        supported = True
+                    else:
+                        reason = (
+                            f"{package_name} {version} is installed; delegate native probe factory "
+                            f"{delegate_factory_path!r} is loadable but {runtime_contract_reason}"
+                        )
+                        supported = False
                 else:
                     reason = (
                         f"{package_name} {version} is installed; delegate native probe factory "
-                        f"{delegate_factory_path!r} is loadable but {contract_reason}"
+                        f"{delegate_factory_path!r} is loadable but {adapter_contract_reason}"
                     )
                     supported = False
     return NativeProbeFactoryInspection(
@@ -224,6 +291,8 @@ def inspect_builtin_native_probe_factory(backend: ServingBackend | str) -> Nativ
         delegate_factory_path=delegate_factory_path,
         delegate_adapter_contract=delegate_adapter_contract,
         delegate_adapter_contract_valid=delegate_adapter_contract_valid,
+        delegate_runtime_contract=delegate_runtime_contract,
+        delegate_runtime_contract_valid=delegate_runtime_contract_valid,
         supported=supported,
         reason=reason,
     )
@@ -249,6 +318,12 @@ def native_probe_factory_inspection_to_record(
             else None
         ),
         "delegate_adapter_contract_valid": inspection.delegate_adapter_contract_valid,
+        "delegate_runtime_contract": (
+            dict(inspection.delegate_runtime_contract)
+            if inspection.delegate_runtime_contract is not None
+            else None
+        ),
+        "delegate_runtime_contract_valid": inspection.delegate_runtime_contract_valid,
         "serving_environment_profile": serving_environment_profile_to_record(serving_profile),
         "supported": inspection.supported,
         "reason": inspection.reason,
@@ -259,6 +334,33 @@ def native_probe_adapter_contract_to_record() -> dict[str, str | int | bool]:
     """Return the engine handoff contract required by built-in native probe factories."""
 
     return dict(NATIVE_PROBE_ADAPTER_CONTRACT)
+
+
+def native_probe_runtime_contract_to_record(backend: ServingBackend | str) -> dict[str, Any]:
+    """Return the backend runtime lifecycle contract required for native V1 evidence."""
+
+    backend = _serving_backend(backend)
+    if backend == ServingBackend.VLLM:
+        return {
+            "record_type": "vllm_kv_injection.kv_connector_v1_contract.v1",
+            "schema_version": 1,
+            "runtime": "vllm-kv-connector-v1",
+            "doc_url": "https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/",
+            "required_methods": list(_VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS),
+            "optional_methods": list(_VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS),
+            "handoff_contract": native_probe_adapter_contract_to_record(),
+        }
+    if backend == ServingBackend.SGLANG:
+        return {
+            "record_type": "sglang_kv_injection.runtime_cache_contract.v1",
+            "schema_version": 1,
+            "runtime": "sglang-runtime-cache",
+            "doc_url": "https://docs.sglang.io/docs/advanced_features/hicache_design",
+            "required_methods": list(_SGLANG_RUNTIME_CACHE_REQUIRED_METHODS),
+            "optional_methods": list(_SGLANG_RUNTIME_CACHE_OPTIONAL_METHODS),
+            "handoff_contract": native_probe_adapter_contract_to_record(),
+        }
+    raise ValueError(f"Unsupported serving backend {backend!r}")
 
 
 def inspect_builtin_native_probe_factories() -> tuple[NativeProbeFactoryInspection, ...]:
@@ -392,10 +494,31 @@ def _inspect_delegate_adapter_contract(factory: Any) -> tuple[Mapping[str, Any] 
     if not isinstance(contract, Mapping):
         return None, False, "declares a non-object Document KV adapter contract"
     issues = _native_probe_adapter_contract_issues(contract, label="delegate adapter contract")
-    snapshot = _delegate_adapter_contract_snapshot(contract)
+    snapshot = _contract_snapshot(contract)
     if issues:
         return snapshot, False, "declares an incompatible Document KV adapter contract: " + "; ".join(issues)
     return snapshot, True, "declares the Document KV adapter contract"
+
+
+def _inspect_delegate_runtime_contract(
+    factory: Any,
+    backend: ServingBackend,
+) -> tuple[Mapping[str, Any] | None, bool, str]:
+    contract = _delegate_runtime_contract(factory)
+    if contract is None:
+        return (
+            None,
+            False,
+            f"must declare {NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR} on the factory callable "
+            f"or {NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR} in the factory module",
+        )
+    if not isinstance(contract, Mapping):
+        return None, False, "declares a non-object native runtime contract"
+    issues = _native_probe_runtime_contract_issues(contract, backend=backend, label="delegate runtime contract")
+    snapshot = _contract_snapshot(contract)
+    if issues:
+        return snapshot, False, "declares an incompatible native runtime contract: " + "; ".join(issues)
+    return snapshot, True, "declares the native runtime contract"
 
 
 def _delegate_adapter_contract(factory: Any) -> Any:
@@ -409,13 +532,34 @@ def _delegate_adapter_contract(factory: Any) -> Any:
     return getattr(module, NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR, None)
 
 
-def _delegate_adapter_contract_snapshot(contract: Mapping[str, Any]) -> dict[str, Any]:
-    """Return a JSON-safe snapshot of a declared adapter contract."""
+def _delegate_runtime_contract(factory: Any) -> Any:
+    callable_contract = getattr(factory, NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR, None)
+    if callable_contract is not None:
+        return callable_contract
+    module_name = getattr(factory, "__module__", None)
+    module = sys.modules.get(module_name) if isinstance(module_name, str) else None
+    if module is None:
+        return None
+    return getattr(module, NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR, None)
+
+
+def _contract_snapshot(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a JSON-safe snapshot of a declared contract."""
 
     snapshot: dict[str, Any] = {}
     for key, value in contract.items():
-        snapshot[str(key)] = value if isinstance(value, str | int | bool) or value is None else repr(value)
+        snapshot[str(key)] = _contract_snapshot_value(value)
     return snapshot
+
+
+def _contract_snapshot_value(value: Any) -> Any:
+    if isinstance(value, str | int | bool) or value is None:
+        return value
+    if isinstance(value, Mapping):
+        return _contract_snapshot(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_contract_snapshot_value(item) for item in value]
+    return repr(value)
 
 
 def _is_builtin_native_probe_factory_path(factory_path: str) -> bool:
@@ -467,6 +611,8 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
     issues.extend(_optional_str_field(factory, "delegate_factory_path", label))
     if "delegate_adapter_contract_valid" in factory:
         issues.extend(_bool_field(factory, "delegate_adapter_contract_valid", label))
+    if "delegate_runtime_contract_valid" in factory:
+        issues.extend(_bool_field(factory, "delegate_runtime_contract_valid", label))
     for field_name in ("package_importable", "supported"):
         issues.extend(_bool_field(factory, field_name, label))
     adapter_contract = factory.get("adapter_contract")
@@ -491,6 +637,27 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
             f"{label}.delegate_adapter_contract must be an object when "
             "delegate_adapter_contract_valid is true"
         )
+    delegate_runtime_contract = factory.get("delegate_runtime_contract")
+    if delegate_runtime_contract is not None and not isinstance(delegate_runtime_contract, Mapping):
+        issues.append(f"{label}.delegate_runtime_contract must be an object or null")
+    elif isinstance(delegate_runtime_contract, Mapping) and isinstance(
+        backend,
+        str,
+    ) and backend in _REQUIRED_NATIVE_PROBE_FACTORY_BACKENDS:
+        issues.extend(
+            _native_probe_runtime_contract_issues(
+                delegate_runtime_contract,
+                backend=backend,
+                label=f"{label}.delegate_runtime_contract",
+            )
+        )
+    if factory.get("delegate_runtime_contract_valid") is True and not isinstance(
+        delegate_runtime_contract, Mapping
+    ):
+        issues.append(
+            f"{label}.delegate_runtime_contract must be an object when "
+            "delegate_runtime_contract_valid is true"
+        )
     if factory.get("supported") is True:
         if factory.get("package_importable") is not True:
             issues.append(f"{label}.package_importable must be true when supported is true")
@@ -510,6 +677,13 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
                 )
             if not isinstance(delegate_adapter_contract, Mapping):
                 issues.append(f"{label}.delegate_adapter_contract must be an object when supported is true")
+        if "delegate_runtime_contract_valid" in factory or "delegate_runtime_contract" in factory:
+            if factory.get("delegate_runtime_contract_valid") is not True:
+                issues.append(
+                    f"{label}.delegate_runtime_contract_valid must be true when supported is true"
+                )
+            if not isinstance(delegate_runtime_contract, Mapping):
+                issues.append(f"{label}.delegate_runtime_contract must be an object when supported is true")
     serving_profile = factory.get("serving_environment_profile")
     if not isinstance(serving_profile, Mapping):
         issues.append(f"{label}.serving_environment_profile must be an object")
@@ -540,6 +714,59 @@ def _native_probe_adapter_contract_issues(contract: Mapping[str, Any], *, label:
             continue
         if value != expected_value:
             issues.append(f"{field_label} must match the built-in native probe adapter contract")
+    return tuple(issues)
+
+
+def _native_probe_runtime_contract_issues(
+    contract: Mapping[str, Any],
+    *,
+    backend: ServingBackend | str,
+    label: str,
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(contract, _NATIVE_PROBE_RUNTIME_CONTRACT_KEYS, label))
+    expected = native_probe_runtime_contract_to_record(backend)
+    for field_name, expected_value in expected.items():
+        value = contract.get(field_name)
+        field_label = f"{label}.{field_name}"
+        if isinstance(expected_value, bool):
+            if type(value) is not bool:
+                issues.append(f"{field_label} must be boolean")
+                continue
+        elif isinstance(expected_value, int):
+            if type(value) is not int:
+                issues.append(f"{field_label} must be an integer")
+                continue
+        elif isinstance(expected_value, str):
+            if not isinstance(value, str):
+                issues.append(f"{field_label} must be a string")
+                continue
+        elif isinstance(expected_value, list):
+            if not (
+                isinstance(value, Sequence)
+                and not isinstance(value, (str, bytes, bytearray))
+                and all(isinstance(item, str) and item for item in value)
+            ):
+                issues.append(f"{field_label} must be an array of strings")
+                continue
+            value = list(value)
+        elif isinstance(expected_value, Mapping):
+            if not isinstance(value, Mapping):
+                issues.append(f"{field_label} must be an object")
+                continue
+            if field_name == "handoff_contract":
+                issues.extend(
+                    _native_probe_adapter_contract_issues(
+                        value,
+                        label=field_label,
+                    )
+                )
+        else:  # pragma: no cover - expected contract values are fixed above
+            if value != expected_value:
+                issues.append(f"{field_label} must match the built-in native runtime contract")
+                continue
+        if _contract_snapshot_value(value) != _contract_snapshot_value(expected_value):
+            issues.append(f"{field_label} must match the built-in native runtime contract")
     return tuple(issues)
 
 
@@ -605,6 +832,8 @@ __all__ = [
     "NATIVE_PROBE_ADAPTER_CONTRACT",
     "NATIVE_PROBE_DELEGATE_CONTRACT_ATTR",
     "NATIVE_PROBE_DELEGATE_CONTRACT_MODULE_ATTR",
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_ATTR",
+    "NATIVE_PROBE_DELEGATE_RUNTIME_CONTRACT_MODULE_ATTR",
     "NATIVE_PROBE_FACTORIES_RECORD_TYPE",
     "NativeProbeFactoryInspection",
     "NativeProbeFactoryUnavailable",
@@ -620,6 +849,7 @@ __all__ = [
     "native_probe_adapter_contract_to_record",
     "native_probe_factories_record_issues",
     "native_probe_factory_inspection_to_record",
+    "native_probe_runtime_contract_to_record",
     "sglang_native_probe_factory",
     "validate_native_probe_factories_record",
     "vllm_native_probe_factory",

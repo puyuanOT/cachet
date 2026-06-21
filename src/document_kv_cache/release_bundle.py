@@ -57,6 +57,7 @@ from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     native_probe_adapter_contract_to_record,
     native_probe_factories_record_issues,
+    native_probe_runtime_contract_to_record,
 )
 from document_kv_cache.pr_evidence import _PR_EVIDENCE_RECORD_KEYS, PR_EVIDENCE_RECORD_TYPE, evaluate_pr_evidence_record
 from document_kv_cache.repository_hygiene import (
@@ -882,10 +883,16 @@ def _supported_native_probe_factory_backends(record: Mapping[str, Any]) -> set[s
 
 
 def _strict_native_probe_factory_has_delegate_contract(factory: Mapping[str, Any]) -> bool:
+    backend = factory.get("backend")
+    if not isinstance(backend, str):
+        return False
     return (
         factory.get("delegate_adapter_contract_valid") is True
         and isinstance(factory.get("delegate_adapter_contract"), Mapping)
         and dict(factory["delegate_adapter_contract"]) == native_probe_adapter_contract_to_record()
+        and factory.get("delegate_runtime_contract_valid") is True
+        and isinstance(factory.get("delegate_runtime_contract"), Mapping)
+        and dict(factory["delegate_runtime_contract"]) == native_probe_runtime_contract_to_record(backend)
     )
 
 
