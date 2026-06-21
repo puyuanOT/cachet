@@ -937,6 +937,30 @@ python -m document_kv_cache.vllm_smoke \
   --output-dir /Volumes/catalog/schema/volume/document-kv-v1-smoke
 ```
 
+For release-grade or long-context evidence, prepare one canonical JSONL file per
+V1 dataset and pass all four paths explicitly. The same helper still owns the
+isolated vLLM environment and Databricks-local model cache, but it no longer
+writes the tiny built-in smoke files:
+
+```bash
+python -m document_kv_cache.vllm_smoke \
+  --benchmark-id v1_vllm_prepared_001 \
+  --output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared \
+  --max-model-len 32768 \
+  --max-num-seqs 1 \
+  --gpu-memory-utilization 0.9 \
+  --max-tokens 100 \
+  --dataset biography=/Volumes/catalog/schema/volume/v1/biography.jsonl \
+  --dataset hotpotqa=/Volumes/catalog/schema/volume/v1/hotpotqa.jsonl \
+  --dataset musique=/Volumes/catalog/schema/volume/v1/musique.jsonl \
+  --dataset niah=/Volumes/catalog/schema/volume/v1/niah.jsonl
+```
+
+Prepared dataset mode requires exactly Biography, HotpotQA, MusiQue, and NIAH.
+The metadata records `dataset_source`, `dataset_specs`, `max_model_len`,
+`max_num_seqs`, and `gpu_memory_utilization` so release evidence can distinguish
+tiny smoke checks from full or long-context benchmark runs.
+
 To launch that same smoke through a Databricks managed task, upload the wheel
 and generated runner script, then emit a single-node AWS g6/L4 `runs/submit`
 payload:
@@ -950,6 +974,30 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --output-json databricks-vllm-smoke-submit.json
+```
+
+The Databricks submit helper accepts the same prepared dataset and sizing flags,
+so the managed task can run either the built-in smoke or a prepared long-context
+benchmark on the target `g6.8xlarge`/L4 node:
+
+```bash
+python -m document_kv_cache.databricks_vllm_smoke_job \
+  --benchmark-id v1_vllm_prepared_001 \
+  --output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared \
+  --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
+  --runner-script-output run_vllm_smoke.py \
+  --wheel-uri dbfs:/benchmarks/cachet-v1/document_kv_cache-0.2.0-py3-none-any.whl \
+  --single-user-name user@example.com \
+  --node-type-id g6.8xlarge \
+  --max-model-len 32768 \
+  --max-num-seqs 1 \
+  --gpu-memory-utilization 0.9 \
+  --max-tokens 100 \
+  --dataset biography=dbfs:/benchmarks/v1/biography.jsonl \
+  --dataset hotpotqa=dbfs:/benchmarks/v1/hotpotqa.jsonl \
+  --dataset musique=dbfs:/benchmarks/v1/musique.jsonl \
+  --dataset niah=dbfs:/benchmarks/v1/niah.jsonl \
+  --output-json databricks-vllm-prepared-submit.json
 ```
 
 This emits suite metadata, per-request measurements, per-dataset quality/latency
