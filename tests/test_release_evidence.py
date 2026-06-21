@@ -949,6 +949,28 @@ def test_evaluate_release_evidence_rejects_report_row_aggregate_mismatch():
     assert any("output_tokens_per_second must match measurements" in issue for issue in evidence.issues)
 
 
+def test_evaluate_release_evidence_rejects_report_row_quality_rate_mismatch():
+    v1_record = _v1_record(ok=True)
+    v1_record["report_rows"][0] = {
+        **v1_record["report_rows"][0],
+        "exact_match_rate": 0.0,
+        "answer_found_rate": 0.0,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any("exact_match_rate must match measurements" in issue for issue in evidence.issues)
+    assert any("answer_found_rate must match measurements" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_throughput_when_measurements_have_zero_total_time():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
