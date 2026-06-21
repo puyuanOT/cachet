@@ -70,6 +70,17 @@ def test_packaged_storage_template_matches_checked_in_bundle_install_path():
     assert "--package-wheel-uri" in packaged_text
 
 
+def test_packaged_engine_probe_template_matches_checked_in_bundle_install_path():
+    packaged_text = read_template_resource("databricks/engine-probe/databricks.yml")
+    checked_in_text = (REPO_ROOT / "databricks" / "engine-probe" / "databricks.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert packaged_text == checked_in_text
+    assert "libraries:" not in packaged_text
+    assert "--package-wheel-uri" in packaged_text
+
+
 def test_packaged_databricks_readme_explains_installed_wheel_extraction():
     readme_text = read_template_resource("databricks/README.md")
 

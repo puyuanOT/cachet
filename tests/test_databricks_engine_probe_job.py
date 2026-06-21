@@ -77,7 +77,7 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
 
     assert payload["run_name"] == DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
     assert task["task_key"] == DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY
-    assert task["libraries"] == [{"whl": WHEEL_URI}]
+    assert "libraries" not in task
     assert cluster["node_type_id"] == "g5.8xlarge"
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
     assert cluster["data_security_mode"] == "SINGLE_USER"
@@ -106,6 +106,8 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
             "--allow-non-native-probe",
             "--metadata",
             "probe.source=single",
+            "--package-wheel-uri",
+            WHEEL_URI,
         ],
     }
 
@@ -180,7 +182,7 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
     for task, backend in zip(payload["tasks"], ("vllm", "sglang"), strict=True):
         cluster = task["new_cluster"]
         parameters = task["spark_python_task"]["parameters"]
-        assert task["libraries"] == [{"whl": WHEEL_URI}]
+        assert "libraries" not in task
         assert cluster["node_type_id"].startswith("g5.")
         assert cluster["driver_node_type_id"] == cluster["node_type_id"]
         assert cluster["data_security_mode"] == "SINGLE_USER"
@@ -208,6 +210,7 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
             ]
         if backend == "vllm":
             expected_parameters.extend(["--metadata", "probe.source=matrix"])
+        expected_parameters.extend(["--package-wheel-uri", WHEEL_URI])
         assert parameters == expected_parameters
         assert "--engine-version" not in parameters
         assert "--allow-non-native-probe" not in parameters
@@ -898,9 +901,105 @@ def test_write_databricks_engine_probe_runner_script_imports_task_runner(tmp_pat
     write_databricks_engine_probe_runner_script(path)
 
     runner_text = path.read_text(encoding="utf-8")
+    assert "--package-wheel-uri" in runner_text
+    assert "pip\", \"install\"" in runner_text
+    assert "dbfs:/" in runner_text
     assert "document_kv_cache.databricks_engine_probe_job" in runner_text
     assert "run_engine_probe_task" in runner_text
     assert "if exit_code:" in runner_text
+
+
+def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    pip_call_path = tmp_path / "pip-call.json"
+    task_args_path = tmp_path / "task-args.json"
+    events_path = tmp_path / "events.jsonl"
+    package_dir = tmp_path / "document_kv_cache"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "databricks_engine_probe_job.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "",
+                "with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "    handle.write(json.dumps({'event': 'engine_probe_job_import'}) + '\\n')",
+                "",
+                "def run_engine_probe_task(argv=None):",
+                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "        handle.write(json.dumps({'event': 'run_engine_probe_task'}) + '\\n')",
+                "    with open(os.environ['TASK_ARGS_JSON'], 'w', encoding='utf-8') as handle:",
+                "        json.dump(argv, handle)",
+                "    return 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "sitecustomize.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "import subprocess",
+                "",
+                "def _capture_check_call(argv):",
+                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "        handle.write(json.dumps({'event': 'pip_install'}) + '\\n')",
+                "    with open(os.environ['PIP_CALL_JSON'], 'w', encoding='utf-8') as handle:",
+                "        json.dump(argv, handle)",
+                "    return 0",
+                "",
+                "subprocess.check_call = _capture_check_call",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    write_databricks_engine_probe_runner_script(runner_path)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(tmp_path),
+        "PIP_CALL_JSON": str(pip_call_path),
+        "TASK_ARGS_JSON": str(task_args_path),
+        "RUNNER_EVENTS_JSONL": str(events_path),
+    }
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--package-wheel-uri",
+            "dbfs:/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "--expected-backend",
+            "vllm",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    pip_call = json.loads(pip_call_path.read_text(encoding="utf-8"))
+    assert Path(pip_call[0]).resolve() == Path(sys.executable).resolve()
+    assert pip_call[1:] == [
+        "-m",
+        "pip",
+        "install",
+        "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    ]
+    assert json.loads(task_args_path.read_text(encoding="utf-8")) == [
+        "--handoff-json",
+        "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        "--expected-backend",
+        "vllm",
+    ]
+    events = [json.loads(line)["event"] for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events == ["pip_install", "engine_probe_job_import", "run_engine_probe_task"]
 
 
 def test_write_databricks_engine_probe_run_submit_json_writes_payload(tmp_path):
@@ -953,8 +1052,10 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
 
     assert exit_code == 0
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
-    assert payload["tasks"][0]["libraries"] == [{"whl": WHEEL_URI}]
-    assert "--actions-output-json" in payload["tasks"][0]["spark_python_task"]["parameters"]
+    task = payload["tasks"][0]
+    assert "libraries" not in task
+    assert "--actions-output-json" in task["spark_python_task"]["parameters"]
+    assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
     assert "engine_probe" in runner_path.read_text(encoding="utf-8")
 
 
@@ -1080,7 +1181,11 @@ def test_main_writes_engine_probe_matrix_payload_from_backend_config_json(tmp_pa
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm",
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang",
     ]
-    assert all(task["libraries"] == [{"whl": WHEEL_URI}] for task in payload["tasks"])
+    assert all("libraries" not in task for task in payload["tasks"])
+    assert all(
+        task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
+        for task in payload["tasks"]
+    )
     assert "engine_probe" in runner_path.read_text(encoding="utf-8")
 
 

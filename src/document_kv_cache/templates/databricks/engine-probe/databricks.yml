@@ -59,8 +59,6 @@ resources:
             aws_attributes:
               availability: ON_DEMAND
               zone_id: auto
-          libraries:
-            - whl: ${var.wheel_uri}
           spark_python_task:
             python_file: ${var.runner_python_file}
             parameters:
@@ -76,3 +74,5 @@ resources:
               - ${var.payload_uri}
               - --expected-backend
               - ${var.expected_backend}
+              - --package-wheel-uri
+              - ${var.wheel_uri}

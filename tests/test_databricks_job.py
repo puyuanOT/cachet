@@ -74,9 +74,11 @@ def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
             "dbfs:/benchmarks/v1-plan.json",
             "--result-json",
             "dbfs:/benchmarks/result.json",
+            "--package-wheel-uri",
+            WHEEL_URI,
         ],
     }
-    assert task["libraries"] == [{"whl": WHEEL_URI}]
+    assert "libraries" not in task
 
 
 def test_build_single_node_g5_cluster_is_reusable_with_custom_purpose():
@@ -187,9 +189,105 @@ def test_write_databricks_runner_script_imports_plan_executor(tmp_path):
     write_databricks_runner_script(path)
 
     runner_text = path.read_text(encoding="utf-8")
+    assert "--package-wheel-uri" in runner_text
+    assert "pip\", \"install\"" in runner_text
+    assert "dbfs:/" in runner_text
     assert "document_kv_cache.benchmark_plan_executor" in runner_text
     assert "raise SystemExit(main())" not in runner_text
     assert "if exit_code:" in runner_text
+
+
+def test_generated_databricks_runner_installs_wheel_before_forwarding_args(tmp_path):
+    runner_path = tmp_path / "run_plan.py"
+    pip_call_path = tmp_path / "pip-call.json"
+    main_args_path = tmp_path / "main-args.json"
+    events_path = tmp_path / "events.jsonl"
+    package_dir = tmp_path / "document_kv_cache"
+    package_dir.mkdir()
+    (package_dir / "__init__.py").write_text("", encoding="utf-8")
+    (package_dir / "benchmark_plan_executor.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "",
+                "with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "    handle.write(json.dumps({'event': 'benchmark_plan_executor_import'}) + '\\n')",
+                "",
+                "def main(argv=None):",
+                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "        handle.write(json.dumps({'event': 'main'}) + '\\n')",
+                "    with open(os.environ['MAIN_ARGS_JSON'], 'w', encoding='utf-8') as handle:",
+                "        json.dump(argv, handle)",
+                "    return 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "sitecustomize.py").write_text(
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "import subprocess",
+                "",
+                "def _capture_check_call(argv):",
+                "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
+                "        handle.write(json.dumps({'event': 'pip_install'}) + '\\n')",
+                "    with open(os.environ['PIP_CALL_JSON'], 'w', encoding='utf-8') as handle:",
+                "        json.dump(argv, handle)",
+                "    return 0",
+                "",
+                "subprocess.check_call = _capture_check_call",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    write_databricks_runner_script(runner_path)
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(tmp_path),
+        "PIP_CALL_JSON": str(pip_call_path),
+        "MAIN_ARGS_JSON": str(main_args_path),
+        "RUNNER_EVENTS_JSONL": str(events_path),
+    }
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--package-wheel-uri",
+            "dbfs:/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--plan-json",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--result-json",
+            "dbfs:/benchmarks/result.json",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    pip_call = json.loads(pip_call_path.read_text(encoding="utf-8"))
+    assert Path(pip_call[0]).resolve() == Path(sys.executable).resolve()
+    assert pip_call[1:] == [
+        "-m",
+        "pip",
+        "install",
+        "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    ]
+    assert json.loads(main_args_path.read_text(encoding="utf-8")) == [
+        "--plan-json",
+        "dbfs:/benchmarks/v1-plan.json",
+        "--result-json",
+        "dbfs:/benchmarks/result.json",
+    ]
+    events = [json.loads(line)["event"] for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert events == ["pip_install", "benchmark_plan_executor_import", "main"]
 
 
 def test_write_databricks_run_submit_json_writes_payload(tmp_path):
@@ -234,7 +332,8 @@ def test_main_writes_payload_and_runner_script(tmp_path):
 
     assert exit_code == 0
     task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
-    assert task["libraries"]
+    assert "libraries" not in task
+    assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
     assert task["new_cluster"]["spark_env_vars"] == {
         VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe",
         SGLANG_NATIVE_PROBE_DELEGATE_ENV: "document_kv_sglang_native_adapter:build_probe",
@@ -1018,7 +1117,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
         "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY": "${var.sglang_native_probe_delegate_factory}",
     }
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
-    assert task["libraries"] == [{"whl": "${var.wheel_uri}"}]
+    assert "libraries" not in task
     assert task["spark_python_task"] == {
         "python_file": "${var.runner_python_file}",
         "parameters": [
@@ -1026,6 +1125,8 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
             "${var.plan_json_uri}",
             "--result-json",
             "${var.execution_result_json_uri}",
+            "--package-wheel-uri",
+            "${var.wheel_uri}",
         ],
     }
 
@@ -1169,7 +1270,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
         "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY": "${var.sglang_native_probe_delegate_factory}",
     }
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
-    assert task["libraries"] == [{"whl": "${var.wheel_uri}"}]
+    assert "libraries" not in task
     assert task["spark_python_task"] == {
         "python_file": "${var.runner_python_file}",
         "parameters": [
@@ -1185,6 +1286,8 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
             "${var.payload_uri}",
             "--expected-backend",
             "${var.expected_backend}",
+            "--package-wheel-uri",
+            "${var.wheel_uri}",
         ],
     }
     assert "--allow-non-native-probe" not in bundle_text
