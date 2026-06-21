@@ -344,14 +344,15 @@ class DocumentKVWorkflow:
         trainer: TrainingAdapter | None = None,
         align_bytes: int = 4096,
     ) -> CacheGenerationResult:
-        training_artifacts = trainer.fit(documents, config) if trainer is not None else None
+        documents_tuple = _source_documents_tuple(documents)
+        training_artifacts = trainer.fit(documents_tuple, config) if trainer is not None else None
         cache_method = _effective_cache_method(config, trainer)
-        pack_chunks = tuple(self._iter_pack_chunks(documents, generator, config, training_artifacts))
+        pack_chunks = tuple(self._iter_pack_chunks(documents_tuple, generator, config, training_artifacts))
         refs = self._write_pack_chunks(shard_uri, pack_chunks, align_bytes=align_bytes)
         self.manifest.put_many(refs)
         return CacheGenerationResult(
             refs=refs,
-            document_ids=tuple(document.document_id for document in documents),
+            document_ids=tuple(document.document_id for document in documents_tuple),
             chunk_count=len(pack_chunks),
             total_bytes=sum(ref.byte_length for ref in refs),
             training_artifacts=training_artifacts,
@@ -566,6 +567,34 @@ def _chunk_ref_tuple(refs: Iterable[ChunkRef]) -> tuple[ChunkRef, ...]:
         if not isinstance(ref, ChunkRef):
             raise TypeError("refs entries must be ChunkRef instances")
     return refs_tuple
+
+
+def _source_documents_tuple(documents: Sequence[SourceDocument]) -> tuple[SourceDocument, ...]:
+    if isinstance(documents, (str, bytes, bytearray)):
+        raise TypeError("documents must be a sequence of SourceDocument instances")
+    documents_tuple = tuple(documents)
+    for document in documents_tuple:
+        if not isinstance(document, SourceDocument):
+            raise TypeError("documents entries must be SourceDocument instances")
+    duplicate_document_ids = _duplicate_document_ids(documents_tuple)
+    if duplicate_document_ids:
+        raise ValueError("documents contain duplicate document ids: " + ", ".join(duplicate_document_ids))
+    return documents_tuple
+
+
+def _duplicate_document_ids(documents: Sequence[SourceDocument]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    duplicate_labels: set[str] = set()
+    for document in documents:
+        document_id = document.document_id
+        if document_id not in seen:
+            seen.add(document_id)
+            continue
+        if document_id not in duplicate_labels:
+            duplicates.append(document_id)
+            duplicate_labels.add(document_id)
+    return tuple(duplicates)
 
 
 def _document_chunk_type(chunk_type: DocumentChunkType | str) -> DocumentChunkType:

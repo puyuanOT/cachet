@@ -1,0 +1,24 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved the generate_cache document sequence validation with no actionable findings.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/workflow.py",
+    "tests/test_workflow.py",
+    "pr-evidence/reject-duplicate-generation-documents/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_workflow.py::test_workflow_generates_and_prepares_multi_document_selection tests/test_workflow.py::test_workflow_rejects_duplicate_generation_document_ids_before_training tests/test_workflow.py::test_workflow_rejects_non_source_document_generation_entries tests/test_workflow.py::test_workflow_invokes_optional_training_adapter -q -> 4 passed",
+    "poetry run pytest tests/test_workflow.py tests/test_planner_materializer.py -q -> 110 passed",
+    "git diff --check && poetry run pytest -q && poetry check && poetry run python -m compileall -q src tests -> 1217 passed; poetry check All set"
+  ],
+  "what_changed": [
+    "Normalized generate_cache documents once, rejected non-SourceDocument entries, and rejected duplicate document_id values before trainer, generator, shard write, or manifest mutation hooks run."
+  ],
+  "why": "Cache-generation batches should not produce ambiguous document-level cache keys or let malformed document entries reach optional training and generation hooks."
+}

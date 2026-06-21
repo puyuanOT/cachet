@@ -989,6 +989,48 @@ def test_workflow_generates_and_prepares_multi_document_selection(tmp_path):
     assert b"doc-b:review-2:second b" not in materialized.payload
 
 
+def test_workflow_rejects_duplicate_generation_document_ids_before_training(tmp_path):
+    trainer = RecordingTrainer()
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+    )
+    documents = (
+        SourceDocument.from_text(document_id="doc-a", text="first"),
+        SourceDocument.from_text(document_id="doc-a", text="second"),
+    )
+
+    with pytest.raises(ValueError, match="documents contain duplicate document ids: doc-a"):
+        workflow.generate_cache(
+            documents=documents,
+            generator=EchoGenerator(),
+            config=config(),
+            shard_uri=tmp_path / "duplicate-documents.kvpack",
+            trainer=trainer,
+            align_bytes=1,
+        )
+
+    assert trainer.document_ids == ()
+    assert not (tmp_path / "duplicate-documents.kvpack").exists()
+    assert workflow.manifest.keys_for_document("doc-a") == []
+
+
+def test_workflow_rejects_non_source_document_generation_entries(tmp_path):
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=4096), reader=DiskRangeReader()),
+    )
+
+    with pytest.raises(TypeError, match="documents entries must be SourceDocument"):
+        workflow.generate_cache(
+            documents=(object(),),  # type: ignore[arg-type]
+            generator=EchoGenerator(),
+            config=config(),
+            shard_uri=tmp_path / "bad-document-entry.kvpack",
+            align_bytes=1,
+        )
+
+
 def test_workflow_invokes_optional_training_adapter(tmp_path):
     trainer = RecordingTrainer()
     workflow = DocumentKVWorkflow(
