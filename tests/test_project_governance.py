@@ -8,6 +8,8 @@ import tomllib
 
 import pytest
 
+from document_kv_cache.release_bundle import STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LEGACY_PACKAGE_NAME = "restaurant_kv_serving"
@@ -849,6 +851,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 def test_readme_release_bundle_documents_artifact_validation_contracts():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     compact_text = " ".join(text.split())
+    remaining_v1_work = _markdown_section(text, "Remaining V1 Work")
+    compact_remaining_v1_work = " ".join(remaining_v1_work.split())
 
     assert "package name/version for wheel artifacts" in compact_text
     assert "records the normalized package name and package version" in compact_text
@@ -857,6 +861,8 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "task summaries carry non-empty `purpose` tags" in compact_text
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
+    for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
+        assert label in compact_remaining_v1_work
 
 
 def test_readme_native_probe_diagnostics_include_serving_environment_profile():

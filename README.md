@@ -1276,7 +1276,13 @@ type annotations after installation.
 
 ## Remaining V1 Work
 
-- Run and publish the complete release bundle from target AWS g5/UC runs, including the V1 benchmark, storage-reader benchmark, native engine probes, connector-action sidecars, release evidence, preflight sidecar, GitHub governance sidecar, repository hygiene sidecar, native-probe factory diagnostics, plan execution record, Databricks run-status sidecars, tested package wheel, and PR-evidence sidecars.
+- Run and publish the complete release bundle from target AWS g5/UC runs,
+  including the V1 benchmark and storage-reader benchmark plus the strict
+  artifact set: release evidence sidecar, preflight sidecar, vLLM/SGLang native
+  engine probe sidecars, vLLM/SGLang connector action sidecars, benchmark plan
+  execution sidecar, Databricks run-status sidecar, tested package wheel, PR
+  evidence sidecar, V1 requirements matrix, GitHub governance sidecar,
+  repository hygiene sidecar, and native probe factory diagnostics sidecar.
 - Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.
