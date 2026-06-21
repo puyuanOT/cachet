@@ -1,0 +1,25 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer initially found that writer normalization did not enforce the benchmark loader contract for invalid chunk types, duplicate chunk ids, and metadata keys; the patch now validates through benchmark_runner before opening the output path, adds regressions, and the reviewer approved the amended diff.",
+  "issues": [],
+  "ok": true,
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/dataset_prep.py",
+    "src/document_kv_cache/benchmark_runner.py",
+    "tests/test_dataset_prep.py",
+    "pr-evidence/validate-v1-jsonl-writer/README.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_dataset_prep.py tests/test_benchmark_runner.py::test_load_benchmark_jsonl_accepts_canonical_schema tests/test_benchmark_runner.py::test_load_benchmark_jsonl_validates_records tests/test_benchmark_runner.py::test_load_v1_jsonl_suite_combines_dataset_files tests/test_benchmark_runner.py::test_load_v1_jsonl_suite_rejects_dataset_mismatch -> 19 passed",
+    "git diff --check && poetry run pytest -q && poetry check && poetry run python -m compileall -q src tests -> 1225 passed; poetry check All set"
+  ],
+  "what_changed": [
+    "Validated write_v1_jsonl records through the benchmark runner contract before creating the output path.",
+    "Added regression coverage for invalid chunk_type, duplicate chunk identities, empty metadata keys, and invalid later rows leaving no partial output."
+  ],
+  "why": "Prepared V1 benchmark JSONL should be loadable by the benchmark runner immediately, with malformed rows rejected before partial files can be emitted."
+}

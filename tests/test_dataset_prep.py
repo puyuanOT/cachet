@@ -140,6 +140,125 @@ def test_write_v1_jsonl_rejects_empty_iterable(tmp_path):
         write_v1_jsonl([], tmp_path / "empty.jsonl")
 
 
+def test_write_v1_jsonl_writes_loadable_canonical_rows(tmp_path):
+    output_path = tmp_path / "bio.jsonl"
+
+    count = write_v1_jsonl(
+        [
+            {
+                "dataset": "biography",
+                "example_id": "bio-1",
+                "query": "Who wrote notes?",
+                "expected_answer": "Ada Lovelace",
+                "documents": [
+                    {
+                        "document_id": "ada",
+                        "title": "Ada",
+                        "static_text": "Biography",
+                        "chunks": [
+                            {"chunk_id": "p1", "text": "Ada wrote notes.", "metadata": {"source": 1}},
+                            "String chunk",
+                        ],
+                    }
+                ],
+                "metadata": {"split": "dev"},
+            }
+        ],
+        output_path,
+    )
+    loaded = load_benchmark_jsonl(output_path, dataset="biography", require_dataset=True)
+
+    assert count == 1
+    assert loaded[0].example_id == "bio-1"
+    assert loaded[0].documents[0].chunks[0].chunk_id == "static"
+    assert loaded[0].documents[0].chunks[1].metadata == {"source": "1"}
+
+
+def test_write_v1_jsonl_validates_all_rows_before_writing(tmp_path):
+    output_path = tmp_path / "bad" / "bio.jsonl"
+
+    with pytest.raises(ValueError, match="Record line 2: Missing required field: query"):
+        write_v1_jsonl(
+            [
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-1",
+                    "query": "Who wrote notes?",
+                    "documents": ["Ada wrote notes."],
+                },
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-2",
+                    "documents": ["Grace worked on compilers."],
+                },
+            ],
+            output_path,
+        )
+
+    assert not output_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        (
+            {
+                "dataset": "biography",
+                "example_id": "bio-1",
+                "query": "Who wrote notes?",
+                "documents": [
+                    {
+                        "document_id": "ada",
+                        "chunks": [
+                            {
+                                "chunk_id": "p1",
+                                "text": "Ada wrote notes.",
+                                "chunk_type": "not-a-real-type",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "Unsupported chunk_type",
+        ),
+        (
+            {
+                "dataset": "biography",
+                "example_id": "bio-1",
+                "query": "Who wrote notes?",
+                "documents": [
+                    {
+                        "document_id": "ada",
+                        "chunks": [
+                            {"chunk_id": "p1", "text": "Ada wrote notes."},
+                            {"chunk_id": "p1", "text": "Ada wrote more notes."},
+                        ],
+                    }
+                ],
+            },
+            "duplicate chunk identities",
+        ),
+        (
+            {
+                "dataset": "biography",
+                "example_id": "bio-1",
+                "query": "Who wrote notes?",
+                "documents": ["Ada wrote notes."],
+                "metadata": {"": "dev"},
+            },
+            "metadata keys must be non-empty strings",
+        ),
+    ],
+)
+def test_write_v1_jsonl_rejects_rows_that_benchmark_loader_rejects(tmp_path, record, message):
+    output_path = tmp_path / "bad" / "bio.jsonl"
+
+    with pytest.raises(ValueError, match=message):
+        write_v1_jsonl([record], output_path)
+
+    assert not output_path.exists()
+
+
 def test_normalize_v1_record_rejects_dataset_mismatch():
     with pytest.raises(ValueError, match="does not match expected"):
         normalize_v1_record({"dataset": "biography", "query": "Q", "documents": ["D"]}, dataset="hotpotqa")
