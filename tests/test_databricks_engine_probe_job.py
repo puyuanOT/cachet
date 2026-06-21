@@ -42,7 +42,7 @@ WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-n
 VLLM_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/vllm_kv_injection-0.2.0-py3-none-any.whl"
 SGLANG_ADAPTER_WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/sglang_kv_injection-0.2.0-py3-none-any.whl"
 VLLM_RUNTIME_PACKAGE = "vllm==0.23.0"
-SGLANG_RUNTIME_PACKAGE = "sglang==0.5.13.post1"
+SGLANG_RUNTIME_PACKAGE = "sglang==0.5.10.post1"
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

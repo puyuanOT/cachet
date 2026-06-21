@@ -1425,6 +1425,18 @@ def test_cachet_cli_module_facades_execute_with_python_m():
     assert "benchmark_plan" in result.stdout
 
 
+def test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages():
+    cachet_vllm = importlib.import_module("cachet.adapters.vllm")
+    cachet_sglang = importlib.import_module("cachet.adapters.sglang")
+    vllm_adapter = importlib.import_module("vllm_kv_injection")
+    sglang_adapter = importlib.import_module("sglang_kv_injection")
+
+    assert cachet_vllm is vllm_adapter
+    assert cachet_sglang is sglang_adapter
+    assert cachet_vllm.DocumentKVNativeProvider is vllm_adapter.DocumentKVNativeProvider
+    assert cachet_sglang.DocumentKVHiCacheBackend is sglang_adapter.DocumentKVHiCacheBackend
+
+
 def test_public_document_submodules_have_curated_star_import_surfaces():
     admission = importlib.import_module("document_kv_cache.admission")
     cache = importlib.import_module("document_kv_cache.cache")
@@ -2181,6 +2193,14 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
             "format": ["sdist", "wheel"],
         },
         {
+            "path": "src/vllm_kv_injection/py.typed",
+            "format": ["sdist", "wheel"],
+        },
+        {
+            "path": "src/sglang_kv_injection/py.typed",
+            "format": ["sdist", "wheel"],
+        },
+        {
             "path": "src/document_kv_cache/templates/**/*.yml",
             "format": ["sdist", "wheel"],
         },
@@ -2224,6 +2244,8 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "cachet",
         "document_kv_cache",
         "restaurant_kv_serving",
+        "vllm_kv_injection",
+        "sglang_kv_injection",
     }
     assert artifact_includes == expected_includes
     assert scripts == expected_scripts

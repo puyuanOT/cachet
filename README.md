@@ -44,10 +44,10 @@ The package deliberately stops at the engine handoff boundary. vLLM, SGLang, or
 another established serving engine owns scheduling, decode, LoRA execution, and
 native KV block management. Cachet provides the manifest, storage, materialized
 payload, admission metadata, benchmark evidence, and adapter contracts that let
-those engines reuse precomputed document context safely. Cachet keeps the
-vLLM/SGLang adapter contracts and launch metadata in this package while the
-thin adapter wheels remain separately installable until they are published or
-vendored under the Cachet repository with release-safe extras.
+those engines reuse precomputed document context safely. Cachet now vendors the
+thin vLLM/SGLang adapter packages in this repository while preserving their
+existing `vllm_kv_injection.*` and `sglang_kv_injection.*` import paths for
+Databricks probe metadata and launch-config compatibility.
 
 The current implementation and release gaps are tracked in
 `docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1
@@ -483,7 +483,7 @@ the same AWS g6/L4 policy:
       "output_json": "/Volumes/catalog/schema/volume/probes/sglang-engine-probe.json",
       "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-connector-actions.json",
       "payload_uri": "/Volumes/catalog/schema/volume/probes/sglang-payload.kv",
-      "pip_packages": ["sglang==0.5.13.post1"]
+      "pip_packages": ["sglang==0.5.10.post1"]
     }
   ]
 }
@@ -1404,10 +1404,11 @@ The command prints a JSON record with TTFT, time-to-completion, token counts, `p
 This package uses Poetry metadata with exact direct dependency pins: Python
 `>=3.11,<4.0`, `poetry-core==2.4.1`, optional Databricks extras
 `pyspark==4.1.2` and `databricks-sdk==0.118.0`, and test extra
-`pytest==9.1.1`. vLLM and SGLang are intentionally not Poetry extras because
-current engine releases pin incompatible Torch/Transformers stacks; install the
-target engine in its own serving environment. The Databricks vLLM smoke helper
-creates one such isolated local-NVMe environment and pins `vllm==0.23.0`.
+`pytest==9.1.1`. Raw vLLM and SGLang runtimes are intentionally not Poetry
+extras because their current dependency graphs conflict in one resolver; use
+the vendored adapter code from the Cachet wheel and install exactly one serving
+runtime in an isolated environment. The Databricks vLLM smoke helper creates
+one such isolated local-NVMe environment and pins `vllm==0.23.0`.
 `document_kv_cache.serving_env` records the exact helper profiles for vLLM and
 SGLang so future smoke/probe jobs share the same install boundary.
 

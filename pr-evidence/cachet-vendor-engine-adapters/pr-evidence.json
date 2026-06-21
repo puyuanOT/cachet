@@ -1,0 +1,43 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer Huygens initially blocked on SGLang version drift, then stale release-probe example pins, then Poetry resolver conflict from raw runtime extras; after fixes, Huygens approved with no findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 303,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/303",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/vllm_kv_injection/",
+    "src/sglang_kv_injection/",
+    "src/cachet/adapters/",
+    "pyproject.toml",
+    "README.md",
+    "src/README.md",
+    "src/document_kv_cache/README.md",
+    "docs/v1-requirements-matrix.md",
+    "tests/test_vllm_kv_injection_*.py",
+    "tests/test_sglang_kv_injection_*.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry install --dry-run -> passed after removing raw serving runtime extras",
+    "python -m pytest tests/test_project_governance.py tests/test_public_package.py tests/test_vllm_kv_injection_project_governance.py tests/test_sglang_kv_injection_project_governance.py -q -> 57 passed",
+    "python -m pytest tests/test_vllm_kv_injection_*.py tests/test_sglang_kv_injection_*.py -q -> 169 passed",
+    "python -m pytest tests/test_databricks_engine_probe_job.py tests/test_project_governance.py::test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver tests/test_sglang_kv_injection_project_governance.py tests/test_serving_env.py -q -> 88 passed",
+    "python -m pytest -q -> 1567 passed",
+    "poetry build -> built sdist and wheel",
+    "installed-wheel smoke for cachet.adapters.vllm/cachet.adapters.sglang and vendored compatibility packages -> passed",
+    "gh pr checks 303 --watch -> Test and build passed",
+    "GPT-5.5 high-reasoning review by Huygens approved after SGLang pin and resolver findings were resolved"
+  ],
+  "what_changed": [
+    "Vendored vllm_kv_injection and sglang_kv_injection into the Cachet repository while preserving their existing import paths for launch/probe compatibility.",
+    "Added cachet.adapters.vllm and cachet.adapters.sglang aliases over the vendored compatibility packages.",
+    "Packaged adapter py.typed markers and copied/adapted the adapter tests into the Cachet suite without adding raw serving runtimes to Poetry extras."
+  ],
+  "why": "Collapse the engine adapter source into the Cachet repo so users and release evidence start from one project surface while keeping runtime engine installs isolated and probe metadata stable."
+}
