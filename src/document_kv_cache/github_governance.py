@@ -112,12 +112,13 @@ def summarize_github_repository_governance(
 ) -> dict[str, Any]:
     repository = _github_api_json(config, f"/repos/{_quote_path(config.repository)}", opener=opener)
     protection = _github_branch_protection_summary(config, opener=opener)
+    merge_settings = _github_repository_merge_settings(repository)
     open_pull_requests = _github_open_pull_requests_summary(
         config,
         allowed_open_pull_request_numbers=allowed_open_pull_request_numbers,
         opener=opener,
     )
-    issues = _release_readiness_issues(repository, protection, open_pull_requests)
+    issues = _release_readiness_issues(repository, protection, merge_settings, open_pull_requests)
     return {
         "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
         "ok": not issues,
@@ -132,6 +133,7 @@ def summarize_github_repository_governance(
         "homepage": repository.get("homepage"),
         "topics": _sorted_texts(repository.get("topics")),
         "branch_protection": protection,
+        "merge_settings": merge_settings,
         "open_pull_requests": open_pull_requests,
         "issues": issues,
     }
@@ -220,6 +222,16 @@ def _github_open_pull_requests_summary(
     }
 
 
+def _github_repository_merge_settings(repository: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "allow_squash_merge": repository.get("allow_squash_merge"),
+        "allow_rebase_merge": repository.get("allow_rebase_merge"),
+        "allow_merge_commit": repository.get("allow_merge_commit"),
+        "allow_auto_merge": repository.get("allow_auto_merge"),
+        "delete_branch_on_merge": repository.get("delete_branch_on_merge"),
+    }
+
+
 def _github_api_json(
     config: GitHubRepositoryConfig,
     path: str,
@@ -277,6 +289,7 @@ def _github_api_json_value(
 def _release_readiness_issues(
     repository: Mapping[str, Any],
     protection: Mapping[str, Any],
+    merge_settings: Mapping[str, Any],
     open_pull_requests: Mapping[str, Any],
 ) -> list[str]:
     issues: list[str] = []
@@ -289,6 +302,7 @@ def _release_readiness_issues(
     if repository.get("disabled") is True:
         issues.append("repository must not be disabled")
     issues.extend(_repository_branding_issues(repository))
+    issues.extend(_repository_merge_settings_issues(merge_settings))
     if protection.get("enabled") is not True:
         issues.append("main branch protection must be enabled")
         return issues
@@ -326,6 +340,17 @@ def _release_readiness_issues(
         )
     if open_pull_requests.get("truncated") is True:
         issues.append("open pull request inspection must not be truncated")
+    return issues
+
+
+def _repository_merge_settings_issues(merge_settings: Mapping[str, Any]) -> list[str]:
+    issues: list[str] = []
+    if merge_settings.get("allow_squash_merge") is not True and merge_settings.get("allow_rebase_merge") is not True:
+        issues.append("repository must allow squash or rebase merging")
+    if merge_settings.get("allow_auto_merge") is not True:
+        issues.append("repository must enable GitHub auto-merge")
+    if merge_settings.get("delete_branch_on_merge") is not True:
+        issues.append("repository must delete head branches after merge")
     return issues
 
 

@@ -1,0 +1,26 @@
+{
+  "files": {
+    "pr-evidence/github-governance-merge-settings/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "Carson the 3rd reviewed with GPT-5.5, found merge-settings schema gaps, old-sidecar migration ambiguity, and missing auto-merge enforcement. The branch was updated to require all merge-setting keys, validate boolean values, enforce auto-merge, document/regress old-sidecar rejection, and Carson approved.",
+      "issues": [],
+      "ok": true,
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "GitHub governance and release-bundle sidecar validation only; benchmark execution, storage readers, engine adapters, and serving behavior are unchanged."
+      ],
+      "verification": [
+        "poetry run pytest tests/test_github_governance.py tests/test_release_bundle.py::test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_github_governance tests/test_project_governance.py::test_github_docs_explain_branch_protection_application_and_plan_limit -q; poetry run pytest tests/test_github_governance.py tests/test_release_bundle.py tests/test_project_governance.py -q; poetry run pytest -q; poetry check; git diff --check; poetry run python -m compileall -q src tests"
+      ],
+      "what_changed": [
+        "Added GitHub repository merge settings to governance sidecars and strict release-bundle validation, including squash/rebase merge, GitHub auto-merge, and delete-branch-on-merge readiness."
+      ],
+      "why": "The PR-driven release workflow requires automatic merge readiness and branch cleanup; strict release evidence should prove the repository settings support that process instead of relying on prose only."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

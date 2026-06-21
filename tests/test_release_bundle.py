@@ -928,6 +928,42 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "raw-pr-reviews-github-governance.json",
         raw_pr_reviews_github_governance_record,
     )
+    missing_merge_settings_github_governance_record = _github_governance_cli_record(ok=True)
+    missing_merge_settings_github_governance_record["summary"].pop("merge_settings")
+    missing_merge_settings_github_governance = _write_json(
+        tmp_path / "missing-merge-settings-github-governance.json",
+        missing_merge_settings_github_governance_record,
+    )
+    raw_merge_settings_github_governance_record = _github_governance_cli_record(ok=True)
+    raw_merge_settings_github_governance_record["summary"]["merge_settings"]["raw"] = {
+        "headers": {"authorization": "do-not-bundle-me"}
+    }
+    raw_merge_settings_github_governance = _write_json(
+        tmp_path / "raw-merge-settings-github-governance.json",
+        raw_merge_settings_github_governance_record,
+    )
+    object_merge_settings_github_governance_record = _github_governance_cli_record(ok=True)
+    object_merge_settings_github_governance_record["summary"]["merge_settings"]["allow_merge_commit"] = {
+        "enabled": False
+    }
+    object_merge_settings_github_governance = _write_json(
+        tmp_path / "object-merge-settings-github-governance.json",
+        object_merge_settings_github_governance_record,
+    )
+    missing_merge_setting_github_governance = {}
+    for field_name in (
+        "allow_auto_merge",
+        "allow_merge_commit",
+        "allow_rebase_merge",
+        "allow_squash_merge",
+        "delete_branch_on_merge",
+    ):
+        missing_field_record = _github_governance_cli_record(ok=True)
+        missing_field_record["summary"]["merge_settings"].pop(field_name)
+        missing_merge_setting_github_governance[field_name] = _write_json(
+            tmp_path / f"missing-{field_name.replace('_', '-')}-github-governance.json",
+            missing_field_record,
+        )
     raw_contexts_github_governance_record = _github_governance_cli_record(ok=True)
     raw_contexts_github_governance_record["summary"]["branch_protection"]["required_status_checks"]["contexts"] = [
         "Test and build",
@@ -969,6 +1005,20 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
     admin_bypass_github_governance = _write_json(
         tmp_path / "admin-bypass-github-governance.json",
         admin_bypass_github_governance_record,
+    )
+    unsafe_merge_github_governance_record = _github_governance_cli_record(ok=True)
+    unsafe_merge_github_governance_record["summary"]["merge_settings"]["allow_squash_merge"] = False
+    unsafe_merge_github_governance_record["summary"]["merge_settings"]["allow_rebase_merge"] = False
+    unsafe_merge_github_governance_record["summary"]["merge_settings"]["delete_branch_on_merge"] = False
+    unsafe_merge_github_governance = _write_json(
+        tmp_path / "unsafe-merge-github-governance.json",
+        unsafe_merge_github_governance_record,
+    )
+    disabled_auto_merge_github_governance_record = _github_governance_cli_record(ok=True)
+    disabled_auto_merge_github_governance_record["summary"]["merge_settings"]["allow_auto_merge"] = False
+    disabled_auto_merge_github_governance = _write_json(
+        tmp_path / "disabled-auto-merge-github-governance.json",
+        disabled_auto_merge_github_governance_record,
     )
     raw_open_pr_github_governance_record = _github_governance_cli_record(ok=True)
     raw_open_pr_github_governance_record["summary"]["open_pull_requests"]["response"] = {
@@ -1603,6 +1653,57 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "admin-bypass-github-governance-bundle",
         )
 
+    with pytest.raises(ValueError, match="merge_settings must be an object"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=missing_merge_settings_github_governance,
+            output_dir=tmp_path / "missing-merge-settings-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match="merge_settings must allow squash or rebase merging"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=unsafe_merge_github_governance,
+            output_dir=tmp_path / "unsafe-merge-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match=r"merge_settings\.allow_auto_merge must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=disabled_auto_merge_github_governance,
+            output_dir=tmp_path / "disabled-auto-merge-github-governance-bundle",
+        )
+
+    with pytest.raises(ValueError, match=r"merge_settings\.allow_merge_commit must be boolean"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=object_merge_settings_github_governance,
+            output_dir=tmp_path / "object-merge-settings-github-governance-bundle",
+        )
+
+    for field_name, github_governance_path in missing_merge_setting_github_governance.items():
+        with pytest.raises(ValueError, match=rf"merge_settings\.{field_name} must be present"):
+            build_release_bundle(
+                v1_benchmark_json=artifacts["v1"],
+                storage_benchmark_json=artifacts["storage"],
+                engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+                engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+                github_governance_json=github_governance_path,
+                output_dir=tmp_path / f"missing-{field_name.replace('_', '-')}-github-governance-bundle",
+            )
+
     with pytest.raises(ValueError, match="visibility must be 'public'"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
@@ -1688,6 +1789,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         (raw_branch_protection_github_governance, "raw-branch-protection-github-governance-bundle"),
         (raw_status_checks_github_governance, "raw-status-checks-github-governance-bundle"),
         (raw_pr_reviews_github_governance, "raw-pr-reviews-github-governance-bundle"),
+        (raw_merge_settings_github_governance, "raw-merge-settings-github-governance-bundle"),
         (raw_open_pr_github_governance, "raw-open-pr-github-governance-bundle"),
     ):
         with pytest.raises(ValueError, match="unsupported keys"):
@@ -2819,6 +2921,13 @@ def _github_governance_cli_record(*, ok: bool):
             "enforce_admins": ok,
             "allow_force_pushes": False,
             "allow_deletions": False,
+        },
+        "merge_settings": {
+            "allow_squash_merge": ok,
+            "allow_rebase_merge": ok,
+            "allow_merge_commit": False,
+            "allow_auto_merge": ok,
+            "delete_branch_on_merge": ok,
         },
         "open_pull_requests": {
             "checked": ok,

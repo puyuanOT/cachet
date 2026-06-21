@@ -30,4 +30,5 @@ plan that supports private-repository branch protection before this API accepts
 the payload. Until that protection is active, direct pushes to `main` remain a
 process violation even though GitHub cannot reject them automatically.
 Because the payload enables `required_linear_history`, repository settings must
-also keep squash or rebase merging enabled before applying the payload.
+also keep squash or rebase merging enabled, enable GitHub auto-merge, and delete
+head branches after merge before applying the payload.

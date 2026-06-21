@@ -196,6 +196,7 @@ _GITHUB_GOVERNANCE_SUMMARY_KEYS = frozenset(
         "homepage",
         "topics",
         "branch_protection",
+        "merge_settings",
         "open_pull_requests",
         "issues",
     }
@@ -218,6 +219,15 @@ _GITHUB_REQUIRED_PULL_REQUEST_REVIEWS_KEYS = frozenset(
         "dismiss_stale_reviews",
         "require_last_push_approval",
         "required_approving_review_count",
+    }
+)
+_GITHUB_MERGE_SETTINGS_KEYS = frozenset(
+    {
+        "allow_squash_merge",
+        "allow_rebase_merge",
+        "allow_merge_commit",
+        "allow_auto_merge",
+        "delete_branch_on_merge",
     }
 )
 _GITHUB_REQUIRED_REPOSITORY_DESCRIPTION_TERM = "cachet"
@@ -823,6 +833,11 @@ def _github_governance_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, .
         issues.append("GitHub governance sidecar branch_protection must be an object")
     else:
         issues.extend(_github_branch_protection_issues(branch_protection))
+    merge_settings = governance_record.get("merge_settings")
+    if not isinstance(merge_settings, Mapping):
+        issues.append("GitHub governance sidecar merge_settings must be an object")
+    else:
+        issues.extend(_github_merge_settings_issues(merge_settings))
     open_pull_requests = governance_record.get("open_pull_requests")
     if not isinstance(open_pull_requests, Mapping):
         issues.append("GitHub governance sidecar open_pull_requests must be an object")
@@ -945,6 +960,30 @@ def _github_branch_protection_issues(record: Mapping[str, Any]) -> tuple[str, ..
         issues.append("GitHub governance sidecar allow_force_pushes must be false")
     if record.get("allow_deletions") is not False:
         issues.append("GitHub governance sidecar allow_deletions must be false")
+    return tuple(issues)
+
+
+def _github_merge_settings_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    issues.extend(
+        _unexpected_keys(
+            record,
+            _GITHUB_MERGE_SETTINGS_KEYS,
+            "GitHub governance sidecar merge_settings",
+        )
+    )
+    for field_name in sorted(_GITHUB_MERGE_SETTINGS_KEYS):
+        if field_name not in record:
+            issues.append(f"GitHub governance sidecar merge_settings.{field_name} must be present")
+            continue
+        if field_name in record and not isinstance(record[field_name], bool):
+            issues.append(f"GitHub governance sidecar merge_settings.{field_name} must be boolean")
+    if record.get("allow_squash_merge") is not True and record.get("allow_rebase_merge") is not True:
+        issues.append("GitHub governance sidecar merge_settings must allow squash or rebase merging")
+    if record.get("allow_auto_merge") is not True:
+        issues.append("GitHub governance sidecar merge_settings.allow_auto_merge must be true")
+    if record.get("delete_branch_on_merge") is not True:
+        issues.append("GitHub governance sidecar merge_settings.delete_branch_on_merge must be true")
     return tuple(issues)
 
 

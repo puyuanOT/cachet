@@ -904,6 +904,8 @@ def test_github_docs_explain_branch_protection_application_and_plan_limit():
     assert "direct pushes to `main` remain a process violation" in compact_text
     assert "private-repository branch protection" in text
     assert "squash or rebase merging enabled" in compact_text
+    assert "auto-merge" in compact_text
+    assert "delete head branches after merge" in compact_text or "merged PR branches are deleted" in compact_text
 
 
 def test_github_ci_workflow_runs_pr_quality_gate():
