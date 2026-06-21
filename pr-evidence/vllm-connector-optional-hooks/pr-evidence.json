@@ -1,0 +1,32 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5/high reviewer Pascal found missing has_pending_push_work coverage and missing prefer_cross_layer_blocks delegation, then found the duplicated native-probe contract also needed has_pending_push_work; all findings were fixed and final re-review reported no remaining issues.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 309,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/309",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/vllm_kv_injection/vllm_dynamic_connector.py",
+    "src/vllm_kv_injection/vllm_runtime_contract.py",
+    "src/document_kv_cache/native_probe_factories.py",
+    "tests/test_vllm_kv_injection_vllm_dynamic_connector.py",
+    "tests/test_vllm_kv_injection_vllm_runtime_contract.py",
+    "tests/test_native_probe_factories.py"
+  ],
+  "verification": [
+    "PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider -q tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_native_probe_factories.py::test_native_probe_runtime_contract_records_required_backend_lifecycles tests/test_native_probe_factories.py tests/test_vllm_kv_injection_probe.py::test_native_connector_probe_declares_vllm_runtime_contract tests/test_adapter_scaffold.py::test_render_native_probe_delegate_module_declares_fail_closed_vllm_contract tests/test_adapter_scaffold.py::test_write_native_probe_delegate_module_can_be_imported_and_rejects_wrong_backend -> 58 passed",
+    "python -m pytest -q tests/test_vllm_kv_injection_*.py tests/test_native_probe_factories.py tests/test_adapter_scaffold.py tests/test_public_package.py tests/test_project_governance.py tests/test_repository_hygiene.py -> 201 passed",
+    "python -m pytest -q -> 1590 passed",
+    "GPT-5.5/high reviewer Pascal found optional-hook and duplicate-contract gaps; both were fixed and final re-review reported no remaining issues"
+  ],
+  "what_changed": [
+    "Extended the vendored vLLM DocumentKVConnector to expose and safely default/delegate the optional vLLM V1 connector lifecycle hooks used by current runtimes.",
+    "Delegated provider preferences for cross-layer KV blocks and push-mode pending work while preserving no-provider inert defaults.",
+    "Aligned the package vLLM runtime contract and Cachet native-probe contract tables so strict release diagnostics describe the same optional lifecycle surface."
+  ],
+  "why": "The provider-backed g6/L4 launch path should not fail or silently hide provider capabilities when a newer vLLM runtime calls optional KV connector hooks around scheduling, metadata, stats, handshakes, or shutdown."
+}
