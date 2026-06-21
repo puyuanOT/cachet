@@ -2653,8 +2653,11 @@ def _v1_record(*, ok: bool):
     return {
         "record_type": BENCHMARK_RUN_RECORD_TYPE,
         "suite": {
+            "suite_id": "v1-suite",
             "hardware_target": "aws-g5",
             "model_id": "qwen3:4b-instruct",
+            "datasets": list(datasets),
+            "examples": len(datasets),
         },
         "measurements": [_v1_measurement_record(dataset, arm) for dataset in datasets for arm in arms],
         "report_rows": [_v1_report_row_record(dataset, arm) for dataset in datasets for arm in arms],
