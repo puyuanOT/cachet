@@ -173,13 +173,11 @@ def test_databricks_config_keeps_single_user_name_for_dedicated_clusters():
     assert payload["tasks"][0]["new_cluster"]["single_user_name"] == SINGLE_USER_NAME
 
 
-def test_validate_aws_g5_node_type_rejects_other_gpu_families():
+def test_validate_aws_g5_node_type_accepts_g5_and_g6_gpu_families():
     validate_aws_g5_node_type("g5.xlarge")
+    validate_aws_g5_node_type("g6.8xlarge")
 
-    with pytest.raises(ValueError, match="AWS g5"):
-        validate_aws_g5_node_type("g6.8xlarge")
-
-    with pytest.raises(ValueError, match="AWS g5"):
+    with pytest.raises(ValueError, match="AWS g5, g6"):
         validate_aws_g5_node_type("g6e.8xlarge")
 
 
