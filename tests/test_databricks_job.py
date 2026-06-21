@@ -1077,11 +1077,15 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
         "actions_output_json",
         "payload_uri",
         "expected_backend",
+        "vllm_native_probe_delegate_factory",
+        "sglang_native_probe_delegate_factory",
         "wheel_uri",
         "node_type_id",
         "spark_version",
         "single_user_name",
     }
+    assert variables["vllm_native_probe_delegate_factory"]["default"] == '""'
+    assert variables["sglang_native_probe_delegate_factory"]["default"] == '""'
     assert variables["node_type_id"]["default"] == "g5.4xlarge"
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
@@ -1099,6 +1103,10 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     }
     assert cluster["custom_tags"]["ResourceClass"] == "SingleNode"
     assert cluster["custom_tags"]["purpose"] == "document-kv-engine-probe"
+    assert cluster["spark_env_vars"] == {
+        "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY": "${var.vllm_native_probe_delegate_factory}",
+        "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY": "${var.sglang_native_probe_delegate_factory}",
+    }
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
     assert task["libraries"] == [{"whl": "${var.wheel_uri}"}]
     assert task["spark_python_task"] == {
@@ -1132,10 +1140,14 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--var payload_uri=" in probe_readme_text
     assert "--var actions_output_json=" in readme_text
     assert "--var actions_output_json=" in probe_readme_text
+    assert "--var vllm_native_probe_delegate_factory=" in probe_readme_text
+    assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in probe_readme_text
+    assert "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "native vLLM or SGLang" in probe_readme_text
     assert "target AWS g5 Databricks runtime" in packaged_probe_readme_text
     assert "uploaded payload URI" in packaged_probe_readme_text
     assert "document_kv.engine_kv_connector_actions.v1" in packaged_probe_readme_text
+    assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in packaged_probe_readme_text
 
 
 def _parse_simple_yaml(text: str) -> dict:
