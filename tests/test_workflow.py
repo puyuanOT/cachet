@@ -140,18 +140,18 @@ def config(*, cache_method: CacheGenerationMethod = CacheGenerationMethod.VANILL
     )
 
 
-def result_ref(tmp_path):
+def result_ref(tmp_path, *, document_id: str = "doc-a", chunk_id: str = "section-1", filename: str = "result-ref.kvpack"):
     return write_kvpack(
-        tmp_path / "result-ref.kvpack",
+        tmp_path / filename,
         [
             PackChunk(
                 key=KVCacheKey.for_document(
                     model_id="qwen3:4b-instruct",
                     lora_id="base",
                     prompt_template_version="v1",
-                    document_id="doc-a",
+                    document_id=document_id,
                     chunk_type=DocumentChunkType.DOCUMENT_CHUNK,
-                    chunk_id="section-1",
+                    chunk_id=chunk_id,
                 ),
                 payload=b"result-bytes",
                 token_count=2,
@@ -235,6 +235,21 @@ def test_cache_generation_result_normalizes_public_fields(tmp_path):
     assert result.adapter_ids == ("packet-adapter",)
 
 
+def test_cache_generation_result_derives_document_id_order_from_refs(tmp_path):
+    first_ref = result_ref(tmp_path, document_id="doc-a", chunk_id="section-1", filename="doc-a-1.kvpack")
+    second_ref = result_ref(tmp_path, document_id="doc-b", chunk_id="section-1", filename="doc-b-1.kvpack")
+    repeated_first_ref = result_ref(tmp_path, document_id="doc-a", chunk_id="section-2", filename="doc-a-2.kvpack")
+
+    result = CacheGenerationResult(
+        refs=(first_ref, second_ref, repeated_first_ref),
+        document_ids=("doc-a", "doc-b"),
+        chunk_count=3,
+        total_bytes=first_ref.byte_length + second_ref.byte_length + repeated_first_ref.byte_length,
+    )
+
+    assert result.document_ids == ("doc-a", "doc-b")
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     (
@@ -242,6 +257,8 @@ def test_cache_generation_result_normalizes_public_fields(tmp_path):
         ({"refs": [object()]}, "refs entries"),
         ({"document_ids": "doc-a"}, "document_ids"),
         ({"document_ids": [""]}, "document_ids"),
+        ({"document_ids": ("doc-b",)}, "document_ids must match refs document_id order"),
+        ({"document_ids": ("doc-a", "doc-a")}, "document_ids must match refs document_id order"),
         ({"chunk_count": -1}, "chunk_count"),
         ({"chunk_count": True}, "chunk_count"),
         ({"chunk_count": 2}, "chunk_count must match"),

@@ -236,6 +236,9 @@ class CacheGenerationResult:
     def __post_init__(self) -> None:
         refs = _chunk_ref_tuple(self.refs)
         document_ids = _non_empty_string_tuple("document_ids", self.document_ids)
+        expected_document_ids = _document_ids_for_refs(refs)
+        if document_ids != expected_document_ids:
+            raise ValueError("document_ids must match refs document_id order")
         if type(self.chunk_count) is not int or self.chunk_count < 0:
             raise ValueError("chunk_count must be a non-negative integer")
         if self.chunk_count != len(refs):
@@ -567,6 +570,18 @@ def _chunk_ref_tuple(refs: Iterable[ChunkRef]) -> tuple[ChunkRef, ...]:
         if not isinstance(ref, ChunkRef):
             raise TypeError("refs entries must be ChunkRef instances")
     return refs_tuple
+
+
+def _document_ids_for_refs(refs: Sequence[ChunkRef]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    document_ids: list[str] = []
+    for ref in refs:
+        document_id = ref.key.document_id
+        if document_id in seen:
+            continue
+        seen.add(document_id)
+        document_ids.append(document_id)
+    return tuple(document_ids)
 
 
 def _source_documents_tuple(documents: Sequence[SourceDocument]) -> tuple[SourceDocument, ...]:
