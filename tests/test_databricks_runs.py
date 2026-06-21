@@ -598,16 +598,17 @@ def test_main_put_dbfs_file_writes_sanitized_artifact_record(monkeypatch, tmp_pa
     local_path.write_text("print('cachet')\n", encoding="utf-8")
     raw_secret = "secret-token"
 
-    def fake_put(config, local_path_arg, dbfs_path, *, overwrite=False):
+    def fake_api_json(config, method, path_and_query, *, opener, payload=None):
         assert config.normalized_host == "https://dbc.example"
-        assert local_path_arg == str(local_path)
-        assert dbfs_path == "dbfs:/FileStore/cachet/run_engine_probe.py"
-        assert overwrite is True
+        assert method == "POST"
+        assert path_and_query == "/api/2.0/dbfs/put"
+        assert payload["path"] == "/FileStore/cachet/run_engine_probe.py"
+        assert payload["overwrite"] is True
         return {"status": "ok"}
 
     monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
     monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, raw_secret)
-    monkeypatch.setattr(legacy_databricks_runs, "put_databricks_dbfs_file", fake_put)
+    monkeypatch.setattr(legacy_databricks_runs, "_databricks_api_json", fake_api_json)
 
     exit_code = legacy_databricks_runs.main(
         [
@@ -638,6 +639,41 @@ def test_main_put_dbfs_file_writes_sanitized_artifact_record(monkeypatch, tmp_pa
             "sha256": hashlib.sha256(b"print('cachet')\n").hexdigest(),
         },
     }
+
+
+def test_main_put_dbfs_file_artifact_record_uses_uploaded_bytes(monkeypatch, tmp_path):
+    local_path = tmp_path / "run_engine_probe.py"
+    output_path = tmp_path / "upload.json"
+    uploaded_bytes = b"print('before')\n"
+    changed_bytes = b"print('after')\n"
+    local_path.write_bytes(uploaded_bytes)
+
+    def fake_api_json(config, method, path_and_query, *, opener, payload=None):
+        assert json.loads(json.dumps(payload))["contents"] == "cHJpbnQoJ2JlZm9yZScpCg=="
+        local_path.write_bytes(changed_bytes)
+        return {"status": "ok"}
+
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(legacy_databricks_runs, "_databricks_api_json", fake_api_json)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "put-dbfs-file",
+            "--local-path",
+            str(local_path),
+            "--dbfs-path",
+            "dbfs:/FileStore/cachet/run_engine_probe.py",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["artifact"]["bytes"] == len(uploaded_bytes)
+    assert record["artifact"]["sha256"] == hashlib.sha256(uploaded_bytes).hexdigest()
+    assert record["artifact"]["sha256"] != hashlib.sha256(changed_bytes).hexdigest()
 
 
 def test_main_get_can_write_summary(monkeypatch, tmp_path):
@@ -1026,6 +1062,39 @@ print(json.dumps({"host": config.normalized_host, "module": type(config).__modul
     assert json.loads(result.stdout) == {
         "host": "https://dbc.example",
         "module": "restaurant_kv_serving.databricks_runs",
+    }
+
+
+def test_legacy_databricks_runs_uses_source_dbfs_limit_when_public_constant_is_replaced_before_import():
+    env = {
+        **os.environ,
+        "PYTHONPATH": "src",
+    }
+    script = """
+import json
+import document_kv_cache.databricks_runs as public_runs
+
+public_runs.DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 7
+
+import restaurant_kv_serving.databricks_runs as legacy_runs
+
+print(json.dumps({
+    "document_limit": public_runs.DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
+    "legacy_limit": legacy_runs.DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
+}))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "document_limit": 7,
+        "legacy_limit": DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
     }
 
 

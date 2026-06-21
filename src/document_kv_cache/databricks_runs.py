@@ -211,14 +211,34 @@ def put_databricks_dbfs_file(
     overwrite: bool = False,
     opener: DatabricksURLOpener = urllib.request.urlopen,
 ) -> dict[str, Any]:
-    payload, _metadata = _databricks_dbfs_put_payload(local_path, dbfs_path, overwrite=overwrite)
-    return _databricks_api_json(
+    response, _metadata = _put_databricks_dbfs_file_response_and_metadata(
         config,
-        "POST",
-        "/api/2.0/dbfs/put",
-        payload=payload,
+        local_path,
+        dbfs_path,
+        overwrite=overwrite,
         opener=opener,
     )
+    return response
+
+
+def _put_databricks_dbfs_file_record(
+    config: DatabricksWorkspaceConfig,
+    local_path: str | Path,
+    dbfs_path: str,
+    *,
+    overwrite: bool = False,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    response, metadata = _put_databricks_dbfs_file_response_and_metadata(
+        config,
+        local_path,
+        dbfs_path,
+        overwrite=overwrite,
+        opener=opener,
+    )
+    result = _success_record("put-dbfs-file", response)
+    result["artifact"] = metadata
+    return result
 
 
 def write_databricks_run_response_json(response: dict[str, Any], path: str | Path) -> None:
@@ -875,6 +895,25 @@ def _databricks_dbfs_put_payload(
     }, metadata
 
 
+def _put_databricks_dbfs_file_response_and_metadata(
+    config: DatabricksWorkspaceConfig,
+    local_path: str | Path,
+    dbfs_path: str,
+    *,
+    overwrite: bool,
+    opener: DatabricksURLOpener,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    payload, metadata = _databricks_dbfs_put_payload(local_path, dbfs_path, overwrite=overwrite)
+    response = _databricks_api_json(
+        config,
+        "POST",
+        "/api/2.0/dbfs/put",
+        payload=payload,
+        opener=opener,
+    )
+    return response, metadata
+
+
 def _databricks_dbfs_file_metadata(local_path: str | Path, dbfs_path: str) -> dict[str, Any]:
     path = Path(local_path)
     if not path.is_file():
@@ -1001,12 +1040,13 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "get":
             response = get_databricks_run(config, args.run_id)
         elif args.command == "put-dbfs-file":
-            response = put_databricks_dbfs_file(
+            result = _put_databricks_dbfs_file_record(
                 config,
                 args.local_path,
                 args.dbfs_path,
                 overwrite=args.overwrite,
             )
+            response = None
         else:  # pragma: no cover - argparse enforces this.
             raise ValueError(f"unknown command {args.command!r}")
         if args.command == "get" and args.summary:
@@ -1022,8 +1062,7 @@ def main(argv: list[str] | None = None) -> int:
                 submit_payload_path=args.submit_payload_json,
             )
         elif args.command == "put-dbfs-file":
-            result = _success_record(args.command, response)
-            result["artifact"] = _databricks_dbfs_file_metadata(args.local_path, args.dbfs_path)
+            pass
         else:
             result = _success_record(args.command, response)
         if args.output_json:
