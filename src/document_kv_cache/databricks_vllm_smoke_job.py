@@ -201,7 +201,7 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Emit a Databricks runs/submit payload for the AWS g5 vLLM smoke.")
+    parser = argparse.ArgumentParser(description="Emit a Databricks runs/submit payload for the AWS g5/g6 vLLM smoke.")
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True, help="Cluster-visible output directory for smoke artifacts.")
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")

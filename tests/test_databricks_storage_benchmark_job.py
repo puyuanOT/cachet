@@ -569,7 +569,8 @@ def test_legacy_storage_benchmark_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for an AWS g5 storage-reader benchmark." in result.stdout
+    assert "Emit a Databricks runs/submit payload for an AWS g5/g6 storage-reader" in result.stdout
+    assert "benchmark." in result.stdout
 
 
 def test_legacy_storage_benchmark_job_reexports_document_owned_types():

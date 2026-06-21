@@ -13,9 +13,9 @@ from typing import Any
 
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
-    DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     SUPPORTED_V1_DATASETS,
+    SUPPORTED_V1_HARDWARE_TARGETS,
     BASELINE_PREFILL_ARM,
     answer_found as _benchmark_answer_found,
     exact_match as _benchmark_exact_match,
@@ -653,8 +653,8 @@ def _validate_v1_suite_metadata(suite: Mapping[str, Any], issues: list[str]) -> 
         issues.append("v1 benchmark suite datasets must match the V1 release datasets")
     if not _is_positive_int(suite.get("examples")):
         issues.append("v1 benchmark suite examples must be a positive integer")
-    if suite.get("hardware_target") != DEFAULT_HARDWARE_TARGET:
-        issues.append(f"v1 benchmark hardware_target must be {DEFAULT_HARDWARE_TARGET!r}")
+    if suite.get("hardware_target") not in SUPPORTED_V1_HARDWARE_TARGETS:
+        issues.append(f"v1 benchmark hardware_target must be one of {SUPPORTED_V1_HARDWARE_TARGETS!r}")
     if suite.get("model_id") != DEFAULT_V1_MODEL_ID:
         issues.append(f"v1 benchmark model_id must be {DEFAULT_V1_MODEL_ID!r}")
 

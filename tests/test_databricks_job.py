@@ -57,8 +57,8 @@ def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
     cluster = task["new_cluster"]
 
     assert payload["run_name"] == "document-kv-v1-benchmark"
-    assert cluster["node_type_id"] == "g5.4xlarge"
-    assert cluster["driver_node_type_id"] == "g5.4xlarge"
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["data_security_mode"] == "SINGLE_USER"
     assert cluster["single_user_name"] == SINGLE_USER_NAME
     assert cluster["num_workers"] == 0
@@ -571,7 +571,7 @@ public_databricks_job.write_databricks_runner_script = public_runner_writer_shou
 import restaurant_kv_serving.databricks_job as legacy_databricks_job
 
 assert legacy_databricks_job.DatabricksBenchmarkJobConfig is not FakeDatabricksBenchmarkJobConfig
-assert legacy_databricks_job.DEFAULT_AWS_G5_NODE_TYPE == "g5.4xlarge"
+assert legacy_databricks_job.DEFAULT_AWS_G5_NODE_TYPE == "g6.8xlarge"
 legacy_databricks_job.validate_aws_g5_node_type("g5.xlarge")
 
 with tempfile.TemporaryDirectory() as raw_tmp:
@@ -594,7 +594,7 @@ with tempfile.TemporaryDirectory() as raw_tmp:
     )
     assert exit_code == 0
     payload = json.loads(output_json.read_text(encoding="utf-8"))
-    assert payload["tasks"][0]["new_cluster"]["node_type_id"] == "g5.4xlarge"
+    assert payload["tasks"][0]["new_cluster"]["node_type_id"] == "g6.8xlarge"
     runner_text = runner_path.read_text(encoding="utf-8")
     assert "# unexpected public hook" not in runner_text
     assert "document_kv_cache.benchmark_plan_executor" in runner_text
@@ -659,7 +659,7 @@ config = legacy_databricks_job.DatabricksSingleNodeG5ClusterConfig(
     purpose="document-kv-v1-benchmark",
     single_user_name={SINGLE_USER_NAME!r},
 )
-assert config.node_type_id == "g5.4xlarge"
+assert config.node_type_id == "g6.8xlarge"
 assert legacy_databricks_job.DatabricksSingleNodeG5ClusterConfig.__module__ == "restaurant_kv_serving.databricks_job"
 try:
     public_databricks_job.DatabricksSingleNodeG5ClusterConfig(
@@ -977,7 +977,7 @@ def test_legacy_databricks_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for a V1 AWS g5 benchmark." in result.stdout
+    assert "Emit a Databricks runs/submit payload for a V1 AWS single-node GPU benchmark." in result.stdout
 
 
 def test_legacy_databricks_job_reexports_document_owned_types():
@@ -1027,6 +1027,7 @@ def test_legacy_databricks_job_keeps_previous_star_import_surface():
     assert set(legacy_databricks_job.__all__) == {
         "Any",
         "DEDICATED_DATABRICKS_DATA_SECURITY_MODE",
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
         "DEFAULT_AWS_G5_NODE_TYPE",
         "DEFAULT_DATABRICKS_DATA_SECURITY_MODE",
         "DEFAULT_DATABRICKS_PURPOSE",
@@ -1088,7 +1089,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
         "spark_version",
         "single_user_name",
     }
-    assert variables["node_type_id"]["default"] == "g5.4xlarge"
+    assert variables["node_type_id"]["default"] == "g6.8xlarge"
     assert variables["vllm_native_probe_delegate_factory"]["default"] == '""'
     assert variables["sglang_native_probe_delegate_factory"]["default"] == '""'
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
@@ -1140,7 +1141,7 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert "--sglang-native-probe-delegate-factory" in readme_text
     assert "--var vllm_native_probe_delegate_factory=" in readme_text
     assert "--var sglang_native_probe_delegate_factory=" in readme_text
-    assert "single-node AWS `g5` GPU cluster" in readme_text
+    assert "single-node AWS `g5` or `g6` GPU cluster" in readme_text
     assert "document_kv_cache/templates/databricks/" in readme_text
 
 
@@ -1171,7 +1172,7 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
         "spark_version",
         "single_user_name",
     }
-    assert variables["node_type_id"]["default"] == "g5.4xlarge"
+    assert variables["node_type_id"]["default"] == "g6.8xlarge"
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
     assert jobs["document_kv_vllm_smoke"]["name"] == "document-kv-vllm-smoke"
@@ -1206,7 +1207,7 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
     assert "cd databricks/vllm-smoke" in readme_text
     assert "does not require full V1 raw datasets" in " ".join(readme_text.split())
     assert "smallest runtime check" in " ".join(smoke_readme_text.split())
-    assert "target AWS g5 Databricks runtime" in packaged_smoke_readme_text
+    assert "target AWS g5/g6 Databricks runtime" in packaged_smoke_readme_text
 
 
 def test_databricks_engine_probe_asset_bundle_template_is_independent_and_release_safe():
@@ -1246,7 +1247,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     }
     assert variables["vllm_native_probe_delegate_factory"]["default"] == '""'
     assert variables["sglang_native_probe_delegate_factory"]["default"] == '""'
-    assert variables["node_type_id"]["default"] == "g5.4xlarge"
+    assert variables["node_type_id"]["default"] == "g6.8xlarge"
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
     assert jobs["document_kv_engine_probe"]["name"] == "document-kv-engine-probe"
@@ -1306,7 +1307,7 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "native vLLM or SGLang" in probe_readme_text
-    assert "target AWS g5 Databricks runtime" in packaged_probe_readme_text
+    assert "target AWS g5/g6 Databricks runtime" in packaged_probe_readme_text
     assert "uploaded payload URI" in packaged_probe_readme_text
     assert "document_kv.engine_kv_connector_actions.v1" in packaged_probe_readme_text
     assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in packaged_probe_readme_text

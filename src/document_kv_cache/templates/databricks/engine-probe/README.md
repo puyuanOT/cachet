@@ -2,7 +2,7 @@
 
 This packaged Databricks Asset Bundle template mirrors
 `databricks/engine-probe/databricks.yml` from the repository. It runs one native
-vLLM or SGLang engine-probe job on the target AWS g5 Databricks runtime.
+vLLM or SGLang engine-probe job on the target AWS g5/g6 Databricks runtime.
 
 The workspace still supplies the native probe factory module, handoff JSON,
 uploaded payload URI, and connector-actions output URI; the package supplies

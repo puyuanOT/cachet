@@ -29,6 +29,7 @@ from document_kv_cache.benchmarks import (
     evaluate_v1_benchmark_evidence,
     summarize_measurements,
     validate_v1_dataset,
+    validate_v1_hardware_target,
 )
 from document_kv_cache.models import DocumentChunkType
 from document_kv_cache.storage import local_path
@@ -166,6 +167,7 @@ class OpenAICompatibleBenchmarkConfig:
             _validate_non_empty_string(self.cache_endpoint, "cache_endpoint")
         _validate_non_empty_string(self.model_id, "model_id")
         _validate_non_empty_string(self.hardware_target, "hardware_target")
+        validate_v1_hardware_target(self.hardware_target)
         if self.limit_per_dataset is not None and (
             type(self.limit_per_dataset) is not int or self.limit_per_dataset <= 0
         ):

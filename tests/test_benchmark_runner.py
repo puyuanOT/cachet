@@ -109,7 +109,7 @@ def test_run_benchmark_suite_records_baseline_and_cache_measurements():
     assert cache.requests[0].prompt_text == cache.requests[0].cache_suffix_text
     assert cache.requests[0].cache_prefix_text + cache.requests[0].cache_suffix_text == baseline.requests[0].logical_prompt_text
     assert cache.requests[0].model_id == "qwen3:4b-instruct"
-    assert cache.requests[0].hardware_target == "aws-g5"
+    assert cache.requests[0].hardware_target == "aws-g6-l4"
 
 
 def test_benchmark_generation_validates_output_timing_tokens_and_metadata():
@@ -230,7 +230,7 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
     assert record["suite"] == {
         "suite_id": "v1-smoke",
         "model_id": "qwen3:4b-instruct",
-        "hardware_target": "aws-g5",
+        "hardware_target": "aws-g6-l4",
         "datasets": ["biography", "hotpotqa", "musique", "niah"],
         "examples": 1,
     }
@@ -356,6 +356,7 @@ def test_openai_compatible_benchmark_config_rejects_empty_limit_and_unsafe_runti
         ("cache_endpoint", "", "cache_endpoint must be non-empty"),
         ("model_id", "", "model_id must be non-empty"),
         ("hardware_target", "", "hardware_target must be non-empty"),
+        ("hardware_target", "aws-g6e", "Unsupported V1 hardware target"),
         ("limit_per_dataset", True, "limit_per_dataset must be positive"),
         ("repeats", True, "repeats must be positive"),
         ("seed", True, "seed must be an integer"),

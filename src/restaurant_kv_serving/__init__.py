@@ -9,6 +9,10 @@ from typing import Any
 _EXPORTS = {
     "BASELINE_PREFILL_ARM": ("restaurant_kv_serving.benchmarks", "BASELINE_PREFILL_ARM"),
     "CACHE_REUSE_ARM": ("restaurant_kv_serving.benchmarks", "CACHE_REUSE_ARM"),
+    "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE": (
+        "restaurant_kv_serving.databricks_job",
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
+    ),
     "DEFAULT_AWS_G5_NODE_TYPE": ("restaurant_kv_serving.databricks_job", "DEFAULT_AWS_G5_NODE_TYPE"),
     "DEFAULT_DATABRICKS_RUN_NAME": ("restaurant_kv_serving.databricks_job", "DEFAULT_DATABRICKS_RUN_NAME"),
     "DEFAULT_DATABRICKS_SPARK_VERSION": ("restaurant_kv_serving.databricks_job", "DEFAULT_DATABRICKS_SPARK_VERSION"),
@@ -158,6 +162,10 @@ _EXPORTS = {
         "SUPPORTED_STORAGE_BENCHMARK_READERS",
     ),
     "SUPPORTED_V1_DATASETS": ("restaurant_kv_serving.benchmarks", "SUPPORTED_V1_DATASETS"),
+    "SUPPORTED_V1_HARDWARE_TARGETS": (
+        "restaurant_kv_serving.benchmarks",
+        "SUPPORTED_V1_HARDWARE_TARGETS",
+    ),
     "AdmissionQueue": ("restaurant_kv_serving.admission", "AdmissionQueue"),
     "AttentionMechanism": ("restaurant_kv_serving.engine_protocol", "AttentionMechanism"),
     "BenchmarkArm": ("restaurant_kv_serving.benchmarks", "BenchmarkArm"),
@@ -700,6 +708,7 @@ _EXPORTS = {
     "validate_aws_g5_node_type": ("restaurant_kv_serving.databricks_job", "validate_aws_g5_node_type"),
     "v1_dataset_specs": ("restaurant_kv_serving.benchmarks", "v1_dataset_specs"),
     "validate_v1_dataset": ("restaurant_kv_serving.benchmarks", "validate_v1_dataset"),
+    "validate_v1_hardware_target": ("restaurant_kv_serving.benchmarks", "validate_v1_hardware_target"),
     "vllm_adapter_spec": ("restaurant_kv_serving.engine_adapters", "vllm_adapter_spec"),
     "vllm_native_probe_factory": (
         "restaurant_kv_serving.native_probe_factories",
@@ -832,6 +841,7 @@ _EXPORTS = {
 __all__ = [
     "BASELINE_PREFILL_ARM",
     "CACHE_REUSE_ARM",
+    "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
     "DEFAULT_AWS_G5_NODE_TYPE",
     "DEFAULT_DATABRICKS_RUN_NAME",
     "DEFAULT_DATABRICKS_SPARK_VERSION",
@@ -875,6 +885,7 @@ __all__ = [
     "SERVING_ENVIRONMENT_PROFILES_RECORD_TYPE",
     "SUPPORTED_STORAGE_BENCHMARK_READERS",
     "SUPPORTED_V1_DATASETS",
+    "SUPPORTED_V1_HARDWARE_TARGETS",
     "AdmissionQueue",
     "AttentionMechanism",
     "BenchmarkArm",
@@ -1131,6 +1142,7 @@ __all__ = [
     "storage_benchmark_result_to_record",
     "storage_benchmark_evidence_to_record",
     "validate_aws_g5_node_type",
+    "validate_v1_hardware_target",
     "validate_databricks_run_status_sidecar",
     "v1_dataset_specs",
     "validate_v1_dataset",

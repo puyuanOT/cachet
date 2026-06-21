@@ -107,6 +107,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.benchmark_plan",
         "write_engine_probe_targets_json",
     ),
+    "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE": (
+        "document_kv_cache.databricks_job",
+        "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
+    ),
     "DEFAULT_AWS_G5_NODE_TYPE": ("document_kv_cache.databricks_job", "DEFAULT_AWS_G5_NODE_TYPE"),
     "DEFAULT_DATABRICKS_SPARK_VERSION": (
         "document_kv_cache.databricks_job",

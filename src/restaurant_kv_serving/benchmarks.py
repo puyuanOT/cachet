@@ -8,6 +8,7 @@ __all__ = reexport_public(
     "document_kv_cache.benchmarks",
     (
         "SUPPORTED_V1_DATASETS",
+        "SUPPORTED_V1_HARDWARE_TARGETS",
         "DEFAULT_V1_MODEL_ID",
         "DEFAULT_HARDWARE_TARGET",
         "BASELINE_PREFILL_ARM",
@@ -38,6 +39,7 @@ __all__ = reexport_public(
         "normalize_answer",
         "exact_match",
         "answer_found",
+        "validate_v1_hardware_target",
         "validate_v1_dataset",
     ),
     globals(),

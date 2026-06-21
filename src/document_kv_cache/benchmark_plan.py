@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_DATASETS
-from document_kv_cache.benchmarks import validate_v1_dataset
+from document_kv_cache.benchmarks import validate_v1_dataset, validate_v1_hardware_target
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.native_probe_factories import builtin_native_probe_factory_path
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
@@ -310,6 +310,7 @@ class BenchmarkPlanConfig:
             raise ValueError("model_id must be non-empty")
         if not self.hardware_target:
             raise ValueError("hardware_target must be non-empty")
+        validate_v1_hardware_target(self.hardware_target)
         if not self.python_executable:
             raise ValueError("python_executable must be non-empty")
         if self.limit_per_dataset is not None and self.limit_per_dataset <= 0:
@@ -468,7 +469,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
         benchmark_command=_benchmark_runner_command(config),
         post_benchmark_commands=tuple(post_benchmark_commands),
         notes=(
-            "Run these commands on an AWS g5-compatible environment with the target server already listening.",
+            "Run these commands on an AWS g5/g6-compatible environment with the target server already listening.",
             "The benchmark compares baseline full-prefill requests with the document KV-cache arm.",
             "When configured, the storage-reader benchmark runs after inference to capture selected reader load evidence on the same node.",
             "When configured, GitHub governance inspection runs before release validation and can be bundled as release governance evidence.",

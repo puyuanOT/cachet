@@ -5,6 +5,7 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
+    SUPPORTED_V1_HARDWARE_TARGETS,
     SUPPORTED_V1_DATASETS,
     BenchmarkComparison,
     BenchmarkExample,
@@ -25,6 +26,7 @@ from document_kv_cache.benchmarks import (
     format_document_context,
     normalize_answer,
     summarize_measurements,
+    validate_v1_hardware_target,
     v1_dataset_specs,
 )
 from document_kv_cache.workflow import SourceDocument
@@ -86,6 +88,12 @@ def test_benchmark_suite_defaults_to_v1_contract():
 
     assert suite.model_id == DEFAULT_V1_MODEL_ID
     assert suite.hardware_target == DEFAULT_HARDWARE_TARGET
+    assert DEFAULT_HARDWARE_TARGET == "aws-g6-l4"
+    assert SUPPORTED_V1_HARDWARE_TARGETS == ("aws-g6-l4", "aws-g5")
+    validate_v1_hardware_target("aws-g6-l4")
+    validate_v1_hardware_target("aws-g5")
+    with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
+        validate_v1_hardware_target("aws-g6e")
     assert suite.datasets == SUPPORTED_V1_DATASETS
     assert baseline_prefill_arm().uses_cache is False
     assert document_kv_cache_arm().uses_cache is True
@@ -193,6 +201,8 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         BenchmarkSuite(suite_id="v1", examples=(example,), model_id="")
     with pytest.raises(ValueError, match="hardware_target must be non-empty"):
         BenchmarkSuite(suite_id="v1", examples=(example,), hardware_target="")
+    with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
+        BenchmarkSuite(suite_id="v1", examples=(example,), hardware_target="aws-g6e")
     with pytest.raises(ValueError, match="examples must include"):
         BenchmarkSuite(suite_id="v1", examples=())
     with pytest.raises(TypeError, match=r"examples\[0\]"):

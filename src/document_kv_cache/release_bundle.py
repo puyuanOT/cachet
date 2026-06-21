@@ -27,7 +27,7 @@ from document_kv_cache.release_evidence import (
     REQUIRED_ENGINE_PROBE_BACKENDS,
     evaluate_release_evidence,
 )
-from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID
+from document_kv_cache.benchmarks import DEFAULT_V1_MODEL_ID, SUPPORTED_V1_HARDWARE_TARGETS
 from document_kv_cache.benchmark_plan_executor import (
     BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
     BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
@@ -610,6 +610,7 @@ def _validate_release_bundle_inputs(
         artifact.record for artifact in artifacts if artifact.role == "engine_connector_actions"
     )
     strict_v1_suite_id = _strict_v1_benchmark_suite_id(v1_record) if require_complete_v1 else None
+    strict_v1_hardware_target = _strict_v1_benchmark_hardware_target(v1_record) if require_complete_v1 else None
     evidence = evaluate_release_evidence(
         v1_record,
         storage_record,
@@ -659,13 +660,19 @@ def _validate_release_bundle_inputs(
                     artifact.record,
                     strict_v1_target=require_complete_v1,
                     expected_suite_id=strict_v1_suite_id,
+                    expected_hardware_target=strict_v1_hardware_target,
                 )
             )
         elif artifact.role == "databricks_run_status":
             if artifact.record is None:
                 issues.append("Databricks run status sidecar must be JSON")
                 continue
-            issues.extend(databricks_run_status_sidecar_issues(artifact.record))
+            issues.extend(
+                databricks_run_status_sidecar_issues(
+                    artifact.record,
+                    expected_hardware_target=strict_v1_hardware_target,
+                )
+            )
         elif artifact.role == "package_wheel":
             issues.extend(
                 _package_wheel_issues(
@@ -1338,6 +1345,7 @@ def _plan_execution_sidecar_issues(
     *,
     strict_v1_target: bool = False,
     expected_suite_id: str | None = None,
+    expected_hardware_target: str | None = None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     issues.extend(_unexpected_keys(record, _BENCHMARK_PLAN_EXECUTION_KEYS, "benchmark plan execution sidecar"))
@@ -1359,6 +1367,7 @@ def _plan_execution_sidecar_issues(
                 plan_source,
                 strict_v1_target=strict_v1_target,
                 expected_suite_id=expected_suite_id,
+                expected_hardware_target=expected_hardware_target,
             )
         )
         if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes, bytearray)):
@@ -1416,6 +1425,7 @@ def _plan_source_issues(
     *,
     strict_v1_target: bool = False,
     expected_suite_id: str | None = None,
+    expected_hardware_target: str | None = None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     label = "benchmark plan execution sidecar plan_source"
@@ -1432,7 +1442,14 @@ def _plan_source_issues(
     if "command_count" in record and (type(record["command_count"]) is not int or record["command_count"] <= 0):
         issues.append("benchmark plan execution sidecar plan_source.command_count must be a positive integer when present")
     if strict_v1_target:
-        issues.extend(_strict_v1_plan_source_issues(record, label=label, expected_suite_id=expected_suite_id))
+        issues.extend(
+            _strict_v1_plan_source_issues(
+                record,
+                label=label,
+                expected_suite_id=expected_suite_id,
+                expected_hardware_target=expected_hardware_target,
+            )
+        )
     return tuple(issues)
 
 
@@ -1441,15 +1458,20 @@ def _strict_v1_plan_source_issues(
     *,
     label: str,
     expected_suite_id: str | None,
+    expected_hardware_target: str | None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     for field_name, expected_value in (
         ("plan_version", PLAN_VERSION),
         ("model_id", DEFAULT_V1_MODEL_ID),
-        ("hardware_target", DEFAULT_HARDWARE_TARGET),
     ):
         if record.get(field_name) != expected_value:
             issues.append(f"{label}.{field_name} must be {expected_value!r}")
+    hardware_target = record.get("hardware_target")
+    if hardware_target not in SUPPORTED_V1_HARDWARE_TARGETS:
+        issues.append(f"{label}.hardware_target must be one of {SUPPORTED_V1_HARDWARE_TARGETS!r}")
+    if expected_hardware_target is not None and hardware_target != expected_hardware_target:
+        issues.append(f"{label}.hardware_target must match V1 benchmark hardware_target {expected_hardware_target!r}")
     issues.extend(_required_str_field(record, "suite_id", label))
     if expected_suite_id is not None and record.get("suite_id") != expected_suite_id:
         issues.append(f"{label}.suite_id must match V1 benchmark suite_id {expected_suite_id!r}")
@@ -1467,6 +1489,18 @@ def _strict_v1_benchmark_suite_id(record: Mapping[str, Any] | None) -> str | Non
     suite_id = suite.get("suite_id")
     if isinstance(suite_id, str) and suite_id:
         return suite_id
+    return None
+
+
+def _strict_v1_benchmark_hardware_target(record: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(record, Mapping):
+        return None
+    suite = record.get("suite")
+    if not isinstance(suite, Mapping):
+        return None
+    hardware_target = suite.get("hardware_target")
+    if isinstance(hardware_target, str) and hardware_target:
+        return hardware_target
     return None
 
 

@@ -69,7 +69,7 @@ def test_run_openai_compatible_live_check_returns_json_ready_record():
         "ok": True,
         "suite_id": LIVE_CHECK_SUITE_ID,
         "model_id": "qwen3:4b-instruct",
-        "hardware_target": "aws-g5",
+        "hardware_target": "aws-g6-l4",
         "dataset": "niah",
         "arm_id": BASELINE_PREFILL_ARM,
         "prompt_text_mode": "logical",

@@ -15,7 +15,8 @@ from document_kv_cache.native_probe_factories import (
 )
 
 
-DEFAULT_AWS_G5_NODE_TYPE = "g5.4xlarge"
+DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE = "g6.8xlarge"
+DEFAULT_AWS_G5_NODE_TYPE = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
 DEFAULT_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
 DEFAULT_DATABRICKS_RUN_NAME = "document-kv-v1-benchmark"
 DEFAULT_DATABRICKS_TASK_KEY = "document_kv_v1_benchmark"
@@ -60,6 +61,7 @@ if __name__ == "__main__":
 """
 
 __all__ = [
+    "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
     "DEFAULT_AWS_G5_NODE_TYPE",
     "DEFAULT_DATABRICKS_SPARK_VERSION",
     "DEFAULT_DATABRICKS_RUN_NAME",
@@ -256,7 +258,9 @@ def _runner_parameters(config: DatabricksBenchmarkJobConfig) -> list[str]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Emit a Databricks runs/submit payload for a V1 AWS g5 benchmark.")
+    parser = argparse.ArgumentParser(
+        description="Emit a Databricks runs/submit payload for a V1 AWS single-node GPU benchmark."
+    )
     parser.add_argument("--plan-json-uri", required=True, help="Cluster-visible plan JSON path or URI.")
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_RUN_NAME)

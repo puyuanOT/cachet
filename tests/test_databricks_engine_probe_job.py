@@ -269,7 +269,7 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
         cluster = task["new_cluster"]
         parameters = task["spark_python_task"]["parameters"]
         assert "libraries" not in task
-        assert cluster["node_type_id"].startswith("g5.")
+        assert cluster["node_type_id"].startswith(("g5.", "g6."))
         assert cluster["driver_node_type_id"] == cluster["node_type_id"]
         assert cluster["data_security_mode"] == "SINGLE_USER"
         assert cluster["single_user_name"] == SINGLE_USER_NAME
@@ -1872,7 +1872,7 @@ def test_legacy_engine_probe_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for an AWS g5 engine probe." in result.stdout
+    assert "Emit a Databricks runs/submit payload for an AWS g5/g6 engine probe." in result.stdout
 
 
 def test_legacy_engine_probe_job_reexports_document_owned_types():

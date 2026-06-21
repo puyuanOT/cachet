@@ -169,7 +169,7 @@ def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_p
 
     assert record["plan_version"] == "v1"
     assert record["model_id"] == "qwen3:4b-instruct"
-    assert record["hardware_target"] == "aws-g5"
+    assert record["hardware_target"] == "aws-g6-l4"
     assert [command.name for command in plan.preparation_commands] == [
         "prepare-biography",
         "prepare-hotpotqa",
@@ -188,6 +188,17 @@ def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_p
     assert "--cache-runtime-prompt" in plan.benchmark_command.argv
     assert "--dataset" in plan.benchmark_command.argv
     assert "biography=" + str(tmp_path / "prepared" / "biography.jsonl") in plan.benchmark_command.argv
+
+
+def test_benchmark_plan_config_rejects_unsupported_v1_hardware_target(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
+        BenchmarkPlanConfig(
+            suite_id="v1",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            hardware_target="aws-g6e",
+        )
 
 
 def test_build_v1_benchmark_plan_can_append_storage_reader_benchmark(tmp_path):
