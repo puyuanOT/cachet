@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from document_kv_cache.storage import local_path
 
@@ -16,9 +17,7 @@ from document_kv_cache.storage import local_path
 PR_EVIDENCE_RECORD_TYPE = "document_kv.pr_evidence.v1"
 PR_EVIDENCE_VALIDATION_RECORD_TYPE = "document_kv.pr_evidence_validation.v1"
 GPT55_REVIEW_OUTCOMES = ("clean", "findings_resolved")
-_GITHUB_PULL_REQUEST_URL_RE = re.compile(
-    r"^https://github\.com/([^/\s]+)/([^/\s]+)/pull/([1-9][0-9]*)/?$"
-)
+_GITHUB_REPOSITORY_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _PR_EVIDENCE_RECORD_KEYS = frozenset(
     {
         "record_type",
@@ -180,11 +179,29 @@ def evaluate_pr_evidence_record(record: Mapping[str, Any]) -> PullRequestEvidenc
 
 
 def _github_pull_request_url_identity(url: str) -> tuple[str, int] | None:
-    match = _GITHUB_PULL_REQUEST_URL_RE.fullmatch(url)
-    if match is None:
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+    ):
         return None
-    owner, repository, number = match.groups()
-    return f"{owner}/{repository}", int(number)
+    path_parts = parsed.path.strip("/").split("/")
+    if len(path_parts) != 4 or path_parts[2] != "pull":
+        return None
+    owner, repository, _pull, number = path_parts
+    if (
+        not _GITHUB_REPOSITORY_PATH_SEGMENT_RE.fullmatch(owner)
+        or not _GITHUB_REPOSITORY_PATH_SEGMENT_RE.fullmatch(repository)
+        or not number.isdecimal()
+    ):
+        return None
+    pull_request_number = int(number)
+    if pull_request_number <= 0:
+        return None
+    return f"{owner}/{repository}", pull_request_number
 
 
 def evaluate_pr_evidence_file(path: str | Path) -> PullRequestEvidence:
