@@ -1,0 +1,22 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 high-reasoning review found no blocking issues and identified two residual risks: databricks_runs.py still hardcoded the g6 prefix map and direct validator imports could change public __module__ identity. The PR was patched to route databricks_runs.py through _hardware_targets.py, preserve public wrapper module identities in benchmarks.py and databricks_job.py, and add focused regression tests. Delta review approved with no findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 298,
+  "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/298",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/_hardware_targets.py; src/document_kv_cache/benchmarks.py; src/document_kv_cache/databricks_job.py; src/document_kv_cache/databricks_runs.py; tests/test_benchmarks.py; tests/test_databricks_job.py; tests/test_databricks_runs.py; docs/v1-requirements-matrix.md; pr-evidence/centralize-hardware-targets"
+  ],
+  "verification": [
+    "PYTHONPATH=src pytest tests/test_benchmarks.py::test_benchmark_suite_defaults_to_v1_contract tests/test_databricks_job.py::test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names tests/test_databricks_runs.py::test_databricks_run_status_uses_shared_hardware_target_prefixes -q (3 passed); PYTHONPATH=src pytest tests/test_benchmarks.py tests/test_databricks_job.py tests/test_databricks_runs.py tests/test_public_package.py tests/test_project_governance.py -q (169 passed); python -m compileall -q src tests; git diff --check; PYTHONPATH=src pytest -q (1381 passed)"
+  ],
+  "what_changed": [
+    "Centralized the V1 hardware-target identifier, display name, default Databricks node type, and accepted Databricks node-type prefixes in a private hardware-target profile, then wired benchmark defaults, Databricks job defaults, and Databricks run-status validation to that shared profile while preserving legacy public aliases."
+  ],
+  "why": "V1 hardware-target metadata was duplicated across benchmark and Databricks modules, making future hardware-target changes easy to apply inconsistently. Centralizing the profile keeps the current aws-g6-l4 behavior unchanged while making later g5/g6 target changes safer and auditable."
+}

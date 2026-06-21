@@ -15,6 +15,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from document_kv_cache._hardware_targets import (
+    HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES,
+    SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
+)
+
 
 __all__ = [
     "DEFAULT_DATABRICKS_HOST_ENV",
@@ -459,10 +464,8 @@ def _sorted_unique_texts(values: Sequence[Any]) -> list[str]:
     return sorted({value for value in values if isinstance(value, str) and value})
 
 
-_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g6.",)
-_HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = {
-    "aws-g6-l4": ("g6.",),
-}
+_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
+_HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
 
 
 def _is_supported_aws_single_node_gpu_type(value: Any) -> bool:

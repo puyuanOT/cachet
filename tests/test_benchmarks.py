@@ -91,6 +91,7 @@ def test_benchmark_suite_defaults_to_v1_contract():
     assert DEFAULT_HARDWARE_TARGET == "aws-g6-l4"
     assert SUPPORTED_V1_HARDWARE_TARGETS == ("aws-g6-l4",)
     validate_v1_hardware_target("aws-g6-l4")
+    assert validate_v1_hardware_target.__module__ == "document_kv_cache.benchmarks"
     with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
         validate_v1_hardware_target("aws-g5")
     with pytest.raises(ValueError, match="Unsupported V1 hardware target"):

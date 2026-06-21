@@ -9,13 +9,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache._hardware_targets import (
+    DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
+    SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
+    validate_aws_single_node_gpu_type as _validate_aws_single_node_gpu_type,
+)
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
 )
 
 
-DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE = "g6.8xlarge"
 DEFAULT_AWS_G5_NODE_TYPE = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
 DEFAULT_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
 DEFAULT_DATABRICKS_RUN_NAME = "document-kv-v1-benchmark"
@@ -28,7 +32,6 @@ SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
 )
 RESERVED_SINGLE_NODE_GPU_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
 RESERVED_SINGLE_NODE_G5_TAG_KEYS = RESERVED_SINGLE_NODE_GPU_TAG_KEYS
-SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = ("g6.",)
 RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
@@ -160,10 +163,7 @@ class DatabricksBenchmarkJobConfig:
 
 
 def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
-    if not node_type_id:
-        raise ValueError("node_type_id must be non-empty")
-    if not node_type_id.lower().startswith(SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES):
-        raise ValueError(f"node_type_id must be an AWS g6/L4 Databricks node type, got {node_type_id!r}")
+    _validate_aws_single_node_gpu_type(node_type_id)
 
 
 validate_aws_g5_node_type = validate_aws_single_node_gpu_type

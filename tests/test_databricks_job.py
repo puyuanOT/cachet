@@ -9,6 +9,7 @@ import pytest
 
 import document_kv_cache.databricks_job as public_databricks_job
 import restaurant_kv_serving.databricks_job as legacy_databricks_job
+from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET
 from document_kv_cache.databricks_job import (
     DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_PURPOSE,
@@ -26,6 +27,7 @@ from document_kv_cache.databricks_job import (
     write_databricks_runner_script,
     write_databricks_run_submit_json,
 )
+from document_kv_cache._hardware_targets import V1_HARDWARE_TARGET_PROFILE
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
@@ -188,6 +190,18 @@ def test_validate_aws_g5_node_type_alias_accepts_only_g6_l4_family():
         validate_aws_g5_node_type("g6e.8xlarge")
 
 
+def test_databricks_defaults_share_v1_hardware_target_profile():
+    assert DEFAULT_HARDWARE_TARGET == V1_HARDWARE_TARGET_PROFILE.hardware_target
+    assert (
+        public_databricks_job.DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
+        == V1_HARDWARE_TARGET_PROFILE.default_databricks_node_type_id
+    )
+    assert (
+        public_databricks_job.SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
+        == V1_HARDWARE_TARGET_PROFILE.databricks_node_type_prefixes
+    )
+
+
 def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
     assert RESERVED_SINGLE_NODE_GPU_TAG_KEYS is RESERVED_SINGLE_NODE_G5_TAG_KEYS
     assert DatabricksSingleNodeGPUClusterConfig is DatabricksSingleNodeG5ClusterConfig
@@ -195,6 +209,8 @@ def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
     assert build_single_node_gpu_cluster is build_single_node_g5_cluster
     assert DatabricksSingleNodeGPUClusterConfig.__name__ == "DatabricksSingleNodeGPUClusterConfig"
     assert validate_aws_single_node_gpu_type.__name__ == "validate_aws_single_node_gpu_type"
+    assert validate_aws_single_node_gpu_type.__module__ == "document_kv_cache.databricks_job"
+    assert validate_aws_g5_node_type.__module__ == "document_kv_cache.databricks_job"
     assert build_single_node_gpu_cluster.__name__ == "build_single_node_gpu_cluster"
 
     validate_aws_single_node_gpu_type("g6.8xlarge")

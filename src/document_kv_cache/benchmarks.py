@@ -7,13 +7,16 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from html import escape
 
+from document_kv_cache._hardware_targets import (
+    DEFAULT_HARDWARE_TARGET,
+    SUPPORTED_V1_HARDWARE_TARGETS,
+    validate_v1_hardware_target as _validate_v1_hardware_target,
+)
 from document_kv_cache.workflow import SourceDocument
 
 
 SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
-SUPPORTED_V1_HARDWARE_TARGETS = ("aws-g6-l4",)
-DEFAULT_HARDWARE_TARGET = "aws-g6-l4"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"
 FINAL_ANSWER_CUE = "Answer:"
@@ -503,10 +506,7 @@ def validate_v1_dataset(dataset: str) -> None:
 
 
 def validate_v1_hardware_target(hardware_target: str) -> None:
-    if hardware_target not in SUPPORTED_V1_HARDWARE_TARGETS:
-        raise ValueError(
-            f"Unsupported V1 hardware target {hardware_target!r}; expected one of {SUPPORTED_V1_HARDWARE_TARGETS}"
-        )
+    _validate_v1_hardware_target(hardware_target)
 
 
 def _validate_non_empty_str(value: str, field_name: str) -> None:
