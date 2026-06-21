@@ -134,7 +134,7 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     (
         "databricks_run_status",
         3,
-        "Databricks run-status sidecars for benchmark, storage, and engine-probe runs",
+        "exactly three Databricks run-status sidecars for benchmark, storage, and engine-probe runs",
     ),
     ("package_wheel", 1, "tested package wheel"),
     ("pr_evidence", 1, "PR evidence sidecar"),

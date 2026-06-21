@@ -463,12 +463,35 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
         (
             {"databricks_run_status_jsons": ()},
             None,
-            "Databricks run-status sidecars for benchmark, storage, and engine-probe runs",
+            "exactly three distinct Databricks run-status sidecars",
         ),
         (
             {"databricks_run_status_jsons": ("databricks-run-status-benchmark.json",)},
             None,
-            "Databricks run-status sidecars for benchmark, storage, and engine-probe runs",
+            "exactly three distinct Databricks run-status sidecars",
+        ),
+        (
+            {
+                "databricks_run_status_jsons": (
+                    "databricks-run-status-benchmark.json",
+                    "databricks-run-status-storage.json",
+                    "databricks-run-status-engine-probe.json",
+                    "databricks-run-status-extra.json",
+                )
+            },
+            None,
+            "exactly three distinct Databricks run-status sidecars",
+        ),
+        (
+            {
+                "databricks_run_status_jsons": (
+                    "databricks-run-status-benchmark.json",
+                    "databricks-run-status-benchmark.json",
+                    "databricks-run-status-engine-probe.json",
+                )
+            },
+            None,
+            "exactly three distinct Databricks run-status sidecars",
         ),
         ({"package_wheel": None}, None, "tested package wheel"),
         ({"pr_evidence_jsons": ()}, None, "PR evidence sidecar"),

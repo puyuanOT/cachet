@@ -1072,7 +1072,8 @@ engine-probe, connector-action, and engine-launch-config sidecars,
 benchmark-plan execution, Databricks run-status sidecars for benchmark,
 storage, and engine-probe runs, tested wheel, PR evidence, V1 requirements
 matrix, GitHub governance, repository hygiene, and native-probe factory
-diagnostics sidecars are all present; the native factory diagnostics
+diagnostics sidecars are all present; the release bundle also verifies exactly
+one Databricks sidecar for each required purpose. The native factory diagnostics
 must also report supported built-in vLLM and SGLang factory entry points.
 Benchmark-plan execution sidecars are validated as closed schemas, including
 each command entry and the embedded plan-source provenance record, before they
@@ -1323,11 +1324,11 @@ type annotations after installation.
   including the V1 benchmark and storage-reader benchmark plus the strict
   artifact set: release evidence sidecar, preflight sidecar, vLLM/SGLang native
   engine probe sidecars, vLLM/SGLang connector action sidecars, vLLM/SGLang
-  engine launch config sidecars, benchmark plan execution sidecar, Databricks
-  run-status sidecars for benchmark, storage, and engine-probe runs, tested
-  package wheel, PR evidence sidecar, V1 requirements matrix, GitHub governance
-  sidecar, repository hygiene sidecar, and native probe factory diagnostics
-  sidecar.
+  engine launch config sidecars, benchmark plan execution sidecar, exactly
+  three Databricks run-status sidecars for benchmark, storage, and engine-probe
+  runs, tested package wheel, PR evidence sidecar, V1 requirements matrix,
+  GitHub governance sidecar, repository hygiene sidecar, and native probe
+  factory diagnostics sidecar.
 - Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.
