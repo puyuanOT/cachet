@@ -186,7 +186,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     try:
         wait_for_server(server, config.server_log_path, config, timeout_seconds=config.server_start_timeout_seconds)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
-        run(build_benchmark_runner_args(config, dataset_paths))
+        run_benchmark_runner(config, dataset_paths)
     finally:
         terminate_process(server)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
@@ -227,6 +227,51 @@ def installed_versions(python_executable: Path) -> dict[str, str]:
 def run(argv: list[str]) -> None:
     print("+", " ".join(argv), flush=True)
     subprocess.run(argv, check=True)
+
+
+def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+    try:
+        run(build_benchmark_runner_args(config, dataset_paths))
+    except subprocess.CalledProcessError as exc:
+        summary = benchmark_failure_summary(config.benchmark_output_path)
+        raise RuntimeError(
+            f"vLLM benchmark runner failed with exit code {exc.returncode}; {summary}"
+        ) from exc
+
+
+def benchmark_failure_summary(output_path: Path, *, limit: int = 3) -> str:
+    if not output_path.exists():
+        return f"benchmark output {output_path} was not written"
+    try:
+        record = json.loads(output_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return f"benchmark output {output_path} could not be read: {exc}"
+
+    measurements = record.get("measurements")
+    if not isinstance(measurements, list):
+        return f"benchmark output {output_path} did not include measurements"
+    errors = [
+        _benchmark_error_summary(measurement)
+        for measurement in measurements
+        if isinstance(measurement, dict) and measurement.get("error")
+    ]
+    if not errors:
+        return f"benchmark output {output_path} did not include row errors"
+
+    issue_count = len(errors)
+    shown = "; ".join(errors[:limit])
+    if issue_count > limit:
+        shown = f"{shown}; ... {issue_count - limit} more"
+    return f"benchmark output had {issue_count}/{len(measurements)} errored measurements: {shown}"
+
+
+def _benchmark_error_summary(measurement: dict[str, object], *, max_chars: int = 400) -> str:
+    dataset = measurement.get("dataset") or "unknown-dataset"
+    arm_id = measurement.get("arm_id") or "unknown-arm"
+    error = str(measurement.get("error") or "unknown error")
+    if len(error) > max_chars:
+        error = error[: max_chars - 3] + "..."
+    return f"{dataset}/{arm_id}: {error}"
 
 
 def create_venv(venv_dir: Path) -> None:

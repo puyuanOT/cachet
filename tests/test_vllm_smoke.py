@@ -22,6 +22,7 @@ from document_kv_cache.vllm_smoke import (
     VLLM_VERSION,
     VLLMSmokeBenchmarkConfig,
     benchmark_dataset_paths,
+    benchmark_failure_summary,
     build_benchmark_runner_args,
     build_metadata,
     build_vllm_server_args,
@@ -135,6 +136,52 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
         "--dataset",
         f"niah={tmp_path / 'niah.jsonl'}",
     ]
+
+
+def test_benchmark_failure_summary_reports_row_errors(tmp_path):
+    output_path = tmp_path / "v1-benchmark.json"
+    output_path.write_text(
+        (
+            '{"measurements": ['
+            '{"dataset": "biography", "arm_id": "full_prefill", "error": "context overflow"},'
+            '{"dataset": "hotpotqa", "arm_id": "full_prefill", "error": "server rejected request"},'
+            '{"dataset": "musique", "arm_id": "cache_reuse", "error": "another failure"},'
+            '{"dataset": "niah", "arm_id": "cache_reuse", "error": "last failure"}'
+            "]}\n"
+        ),
+        encoding="utf-8",
+    )
+
+    summary = benchmark_failure_summary(output_path, limit=2)
+
+    assert "4/4 errored measurements" in summary
+    assert "biography/full_prefill: context overflow" in summary
+    assert "hotpotqa/full_prefill: server rejected request" in summary
+    assert "2 more" in summary
+
+
+def test_run_benchmark_runner_reraises_with_failure_summary(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+    config.output_dir.mkdir()
+    config.benchmark_output_path.write_text(
+        '{"measurements": [{"dataset": "biography", "arm_id": "full_prefill", "error": "too long"}]}\n',
+        encoding="utf-8",
+    )
+
+    def fail_run(argv):
+        raise subprocess.CalledProcessError(2, argv)
+
+    monkeypatch.setattr(public_vllm_smoke, "run", fail_run)
+
+    with pytest.raises(RuntimeError, match="biography/full_prefill: too long"):
+        public_vllm_smoke.run_benchmark_runner(
+            config,
+            {dataset: tmp_path / f"{dataset}.jsonl" for dataset in SMOKE_DATASETS},
+        )
 
 
 def test_parse_dataset_specs_requires_complete_v1_dataset_set(tmp_path):
