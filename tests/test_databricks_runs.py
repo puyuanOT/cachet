@@ -26,6 +26,7 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_env,
     get_databricks_run,
     main,
+    plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
     stage_and_submit_databricks_run,
@@ -241,6 +242,39 @@ def test_stage_and_submit_databricks_run_validates_all_artifacts_before_upload(t
         )
 
     assert opener.requests == []
+
+
+def test_plan_databricks_stage_and_submit_validates_artifacts_without_network(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+
+    record = plan_databricks_stage_and_submit(
+        _dbfs_artifact_submit_payload(),
+        (
+            (runner_path, "dbfs:/cachet/run_engine_probe.py"),
+            (wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+        ),
+        overwrite=True,
+        require_payload_dbfs_artifacts=True,
+        submit_payload_path="/tmp/payload.json",
+    )
+
+    assert record["ok"] is True
+    assert record["action"] == "stage-and-submit-plan"
+    assert "response" not in record
+    assert record["submit_payload"]["source_path"] == "/tmp/payload.json"
+    assert record["submit_payload"]["task_keys"] == ["document_kv_engine_probe"]
+    assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
+        "dbfs:/cachet/run_engine_probe.py",
+        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    ]
+    assert record["artifact_uploads"][0]["upload_request"] == {
+        "path": "/cachet/run_engine_probe.py",
+        "overwrite": True,
+        "contents_base64_bytes": len("cHJpbnQoJ2NhY2hldCcpCg=="),
+    }
 
 
 def test_summarize_databricks_run_extracts_run_and_task_state():
@@ -812,6 +846,44 @@ def test_main_stage_and_submit_writes_sanitized_artifact_and_submit_record(monke
     assert responses == {"/api/2.0/dbfs/put": [], "/api/2.1/jobs/runs/submit": []}
 
 
+def test_main_stage_and_submit_dry_run_writes_plan_without_databricks_env(monkeypatch, tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    payload_path = tmp_path / "payload.json"
+    output_path = tmp_path / "stage-submit-plan.json"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    payload_path.write_text(json.dumps(_dbfs_artifact_submit_payload()), encoding="utf-8")
+    monkeypatch.delenv(DEFAULT_DATABRICKS_HOST_ENV, raising=False)
+    monkeypatch.delenv(DEFAULT_DATABRICKS_TOKEN_ENV, raising=False)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "stage-and-submit",
+            "--payload-json",
+            str(payload_path),
+            "--artifact",
+            f"{runner_path}=dbfs:/cachet/run_engine_probe.py",
+            "--artifact",
+            f"{wheel_path}=dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--require-payload-dbfs-artifacts",
+            "--dry-run",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["action"] == "stage-and-submit-plan"
+    assert "response" not in record
+    assert record["submit_payload"]["source_path"] == str(payload_path)
+    assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
+        "dbfs:/cachet/run_engine_probe.py",
+        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    ]
+
+
 def test_main_get_can_write_summary(monkeypatch, tmp_path):
     output_path = tmp_path / "response.json"
     raw_secret = "do-not-write-me"
@@ -1311,6 +1383,7 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "submit_databricks_run",
         "get_databricks_run",
         "put_databricks_dbfs_file",
+        "plan_databricks_stage_and_submit",
         "stage_and_submit_databricks_run",
         "summarize_databricks_run",
         "summarize_databricks_run_submit_payload",

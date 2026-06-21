@@ -676,6 +676,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "put_databricks_dbfs_file",
     ),
+    "plan_databricks_stage_and_submit": (
+        "restaurant_kv_serving.databricks_runs",
+        "plan_databricks_stage_and_submit",
+    ),
     "stage_and_submit_databricks_run": (
         "restaurant_kv_serving.databricks_runs",
         "stage_and_submit_databricks_run",
@@ -1241,6 +1245,7 @@ __all__ = [
     "normalize_answer",
     "build_live_server_check_request",
     "payload_mode_for",
+    "plan_databricks_stage_and_submit",
     "probe_engine_kv_connector_actions",
     "pr_evidence_validation_to_record",
     "pr_evidence_to_record",

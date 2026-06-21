@@ -45,9 +45,9 @@ new document modules depend on restaurant-owned implementations.
 - `databricks_job.py` emits the full V1 benchmark Databricks run payload,
   including optional native-probe delegate environment variables for benchmark
   plans that use Cachet's built-in vLLM/SGLang probe factories.
-- `databricks_runs.py` stages small DBFS artifacts, can stage-and-submit a
-  generated payload with one provenance sidecar, and checks/summarizes
-  Databricks runs using environment-provided credentials.
+- `databricks_runs.py` stages small DBFS artifacts, dry-runs or performs
+  stage-and-submit for a generated payload with one provenance sidecar, and
+  checks/summarizes Databricks runs using environment-provided credentials.
 - `databricks_storage_benchmark_job.py` owns standalone storage-reader
   benchmark run payloads.
 - `databricks_vllm_smoke_job.py` owns standalone Qwen3/vLLM smoke run payloads.

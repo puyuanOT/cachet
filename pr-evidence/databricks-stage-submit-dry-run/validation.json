@@ -1,0 +1,41 @@
+{
+  "files": {
+    "pr-evidence/databricks-stage-submit-dry-run/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": false,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5/high reviewer Hume reported no findings across correctness, token/secret hygiene, Databricks dry-run/stage-submit behavior, public API compatibility, docs, and tests; noted only a non-blocking direct CLI negative-test gap.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 308,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/308",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "databricks/README.md",
+        "src/cachet/__init__.pyi",
+        "src/document_kv_cache/databricks_runs.py",
+        "src/restaurant_kv_serving/databricks_runs.py",
+        "tests/test_databricks_runs.py",
+        "tests/test_public_package.py"
+      ],
+      "verification": [
+        "python -m pytest -q -> 1590 passed",
+        "python -m pytest -q tests/test_databricks_runs.py tests/test_public_package.py tests/test_project_governance.py tests/test_repository_hygiene.py -> 123 passed",
+        "poetry build -> passed",
+        "PYTHONPATH=src python -m document_kv_cache.databricks_runs ... stage-and-submit --dry-run on the saved g6.8xlarge payload -> wrote ok stage-and-submit-plan sidecar with no token-like strings",
+        "installed-wheel cachet-databricks-runs ... stage-and-submit --dry-run with DATABRICKS_HOST/TOKEN unset -> passed",
+        "GitHub CI Test and build for PR #308 -> SUCCESS"
+      ],
+      "what_changed": [
+        "Added plan_databricks_stage_and_submit and cachet-databricks-runs stage-and-submit --dry-run to validate staged DBFS artifacts and summarize submit payloads without Databricks credentials or network requests.",
+        "Shared stage-and-submit artifact preparation between dry-run planning and real uploads so strict payload DBFS coverage, local file validation, size limits, and DBFS path validation stay consistent.",
+        "Exposed the dry-run API through Cachet and legacy facades, and documented no-network preflight examples for benchmark and engine-probe payloads."
+      ],
+      "why": "The g6/L4 Databricks launch path needs a token-safe preflight that proves runner and wheel staging is complete before any Databricks upload or runs/submit request is attempted."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
