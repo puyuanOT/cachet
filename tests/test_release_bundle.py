@@ -958,6 +958,39 @@ def test_build_release_bundle_strict_v1_rejects_duplicate_databricks_purpose_evi
     assert "databricks-run-status-v1-stale.json#document_kv_v1_benchmark" in error
 
 
+def test_build_release_bundle_strict_v1_rejects_databricks_purpose_identity_mismatch(tmp_path):
+    source_dir = tmp_path / "sources"
+    mismatched_purpose, expected_run_name, expected_task_key, mismatched_suffix = (
+        STRICT_V1_DATABRICKS_RUN_STATUS_CASES[1]
+    )
+    run_statuses = tuple(
+        _write_json(
+            source_dir / f"databricks-run-status-{suffix}.json",
+            _strict_v1_databricks_run_status_record(
+                purpose=purpose,
+                run_name=f"{run_name}-stale" if purpose == mismatched_purpose else run_name,
+                task_key=f"{task_key}_stale" if purpose == mismatched_purpose else task_key,
+                wrapped=True,
+            ),
+        )
+        for purpose, run_name, task_key, suffix in STRICT_V1_DATABRICKS_RUN_STATUS_CASES
+    )
+    release_kwargs = _strict_v1_release_bundle_kwargs(source_dir, databricks_run_status_jsons=run_statuses)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **release_kwargs,
+            output_dir=tmp_path / "strict-mismatched-databricks-identity",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "storage-reader benchmark Databricks run-status evidence must use" in error
+    assert f"run_name {expected_run_name!r}" in error
+    assert f"task_key {expected_task_key!r}" in error
+    assert f"databricks-run-status-{mismatched_suffix}.json#document_kv_storage_benchmark_stale" in error
+
+
 def test_build_release_bundle_strict_v1_rejects_combined_databricks_purpose_sidecar(tmp_path):
     source_dir = tmp_path / "sources"
     source_records = [
@@ -3074,14 +3107,14 @@ def _actions_record(backend: ServingBackend, *, layout=None):
 
 
 STRICT_V1_DATABRICKS_RUN_STATUS_CASES = (
-    ("document-kv-v1-benchmark", "cachet-v1-target-run", "document_kv_v1_benchmark", "v1"),
+    ("document-kv-v1-benchmark", "document-kv-v1-benchmark", "document_kv_v1_benchmark", "v1"),
     (
         "document-kv-storage-benchmark",
-        "cachet-storage-target-run",
+        "document-kv-storage-benchmark",
         "document_kv_storage_benchmark",
         "storage",
     ),
-    ("document-kv-engine-probe", "cachet-engine-probe-target-run", "document_kv_engine_probe", "engine-probe"),
+    ("document-kv-engine-probe", "document-kv-engine-probe", "document_kv_engine_probe", "engine-probe"),
 )
 
 
