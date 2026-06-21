@@ -595,6 +595,8 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
+    if report_rows is not None and comparisons is not None:
+        _validate_v1_comparisons_match_report_rows(report_rows, comparisons, issues)
     if evidence is not None and evidence.get("ok") is not True:
         evidence_issues = evidence.get("issues")
         if isinstance(evidence_issues, list) and evidence_issues:
@@ -838,6 +840,94 @@ def _validate_v1_report_aggregate_number(
 ) -> None:
     if _is_finite_number(value) and not math.isclose(float(value), expected, rel_tol=1e-9, abs_tol=1e-9):
         issues.append(f"{label} must match measurements ({value!r} != {expected})")
+
+
+def _validate_v1_comparisons_match_report_rows(
+    report_rows: Sequence[Any],
+    comparisons: Sequence[Any],
+    issues: list[str],
+) -> None:
+    rows_by_key: dict[tuple[str, str], Mapping[str, Any]] = {}
+    for row in report_rows:
+        if not isinstance(row, Mapping):
+            continue
+        dataset = row.get("dataset")
+        arm_id = row.get("arm_id")
+        if _is_supported_v1_dataset_arm(dataset, arm_id):
+            rows_by_key[(dataset, arm_id)] = row
+
+    for comparison in comparisons:
+        if not isinstance(comparison, Mapping):
+            continue
+        dataset = comparison.get("dataset")
+        if not isinstance(dataset, str) or dataset not in SUPPORTED_V1_DATASETS:
+            continue
+        if comparison.get("baseline_arm_id") != BASELINE_PREFILL_ARM:
+            continue
+        if comparison.get("cache_arm_id") != CACHE_REUSE_ARM:
+            continue
+        baseline = rows_by_key.get((dataset, BASELINE_PREFILL_ARM))
+        cache = rows_by_key.get((dataset, CACHE_REUSE_ARM))
+        if baseline is None or cache is None:
+            continue
+        for metric_name, comparison_field in (
+            ("ttft", "ttft_speedup"),
+            ("time_to_completion", "time_to_completion_speedup"),
+        ):
+            baseline_p50 = _v1_report_metric_p50(baseline, metric_name)
+            cache_p50 = _v1_report_metric_p50(cache, metric_name)
+            comparison_value = comparison.get(comparison_field)
+            if baseline_p50 is None or cache_p50 is None:
+                continue
+            if baseline_p50 <= 0 or cache_p50 <= 0:
+                if _is_finite_number(comparison_value):
+                    issues.append(
+                        f"v1 benchmark comparison {dataset} {comparison_field} cannot be "
+                        "computed from non-positive report row p50 values"
+                    )
+            else:
+                _validate_v1_comparison_number(
+                    comparison_value,
+                    baseline_p50 / cache_p50,
+                    f"v1 benchmark comparison {dataset} {comparison_field}",
+                    issues,
+                )
+        for rate_name, comparison_field in (
+            ("exact_match_rate", "exact_match_delta"),
+            ("answer_found_rate", "answer_found_delta"),
+        ):
+            baseline_rate = _v1_report_optional_rate(baseline, rate_name)
+            cache_rate = _v1_report_optional_rate(cache, rate_name)
+            if baseline_rate is not None and cache_rate is not None:
+                _validate_v1_comparison_number(
+                    comparison.get(comparison_field),
+                    cache_rate - baseline_rate,
+                    f"v1 benchmark comparison {dataset} {comparison_field}",
+                    issues,
+                )
+
+
+def _v1_report_metric_p50(row: Mapping[str, Any], metric_name: str) -> float | None:
+    metric = row.get(metric_name)
+    if not isinstance(metric, Mapping):
+        return None
+    p50 = metric.get("p50")
+    return float(p50) if _is_non_negative_number(p50) else None
+
+
+def _v1_report_optional_rate(row: Mapping[str, Any], rate_name: str) -> float | None:
+    value = row.get(rate_name)
+    return float(value) if _is_finite_number(value) else None
+
+
+def _validate_v1_comparison_number(
+    value: Any,
+    expected: float,
+    label: str,
+    issues: list[str],
+) -> None:
+    if _is_finite_number(value) and not math.isclose(float(value), expected, rel_tol=1e-9, abs_tol=1e-9):
+        issues.append(f"{label} must match report rows ({value!r} != {expected})")
 
 
 def _storage_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
