@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import json
 import os
@@ -81,6 +81,7 @@ __all__ = [
     "run_vllm_smoke_benchmark",
     "build_metadata",
     "build_vllm_native_provider_probe_record",
+    "cuda_wheel_env_paths",
     "dependency_constraints",
     "dependency_override_constraints",
     "document_kv_package_install_spec",
@@ -99,6 +100,7 @@ __all__ = [
     "parse_dataset_specs",
     "dataset_args",
     "parse_args",
+    "site_packages_dirs",
     "main",
     "VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT",
 ]
@@ -229,6 +231,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     install_vllm(config.venv_python)
     install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
     metadata.update(installed_versions(config.venv_python))
+    metadata["cuda_wheel_env_paths"] = cuda_wheel_env_paths(config)
     write_json(config.metadata_path, metadata)
     probe_vllm_import(
         config.venv_python,
@@ -1086,7 +1089,60 @@ def server_env(config: VLLMSmokeBenchmarkConfig) -> dict[str, str]:
     env["PYTHONUNBUFFERED"] = "1"
     env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
     env["HF_HOME"] = str(config.hf_cache_dir)
+    paths = cuda_wheel_env_paths(config)
+    _prepend_env_paths(env, "CPATH", paths["include"])
+    _prepend_env_paths(env, "LIBRARY_PATH", paths["library"])
+    _prepend_env_paths(env, "LD_LIBRARY_PATH", paths["library"])
     return env
+
+
+def cuda_wheel_env_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, list[str]]:
+    site_packages = site_packages_dirs(config)
+    include_paths = _existing_paths(
+        include_dir
+        for site_package_dir in site_packages
+        for include_dir in sorted((site_package_dir / "nvidia").glob("*/include"))
+    )
+    library_paths = _existing_paths(
+        library_dir
+        for site_package_dir in site_packages
+        for library_dir in sorted((site_package_dir / "nvidia").glob("*/lib"))
+    )
+    return {"include": include_paths, "library": library_paths}
+
+
+def site_packages_dirs(config: VLLMSmokeBenchmarkConfig) -> list[Path]:
+    lib_dir = config.venv_dir / "lib"
+    if not lib_dir.exists():
+        return []
+    return sorted(
+        site_packages
+        for python_dir in lib_dir.glob("python*")
+        for site_packages in (python_dir / "site-packages",)
+        if site_packages.is_dir()
+    )
+
+
+def _existing_paths(paths: Iterable[Path]) -> list[str]:
+    existing = []
+    seen = set()
+    for path in paths:
+        path = Path(path)
+        if not path.is_dir():
+            continue
+        text = str(path)
+        if text in seen:
+            continue
+        seen.add(text)
+        existing.append(text)
+    return existing
+
+
+def _prepend_env_paths(env: dict[str, str], name: str, paths: list[str]) -> None:
+    if not paths:
+        return
+    current = env.get(name)
+    env[name] = os.pathsep.join([*paths, current] if current else paths)
 
 
 def tail_text(text: str | bytes | None, *, max_chars: int = 12000) -> str:
@@ -1134,7 +1190,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     args = parser.parse_args(argv)
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
-        output_dir=Path(args.output_dir),
+        output_dir=Path(_cluster_file_path(args.output_dir)),
         max_tokens=args.max_tokens,
         timeout_seconds=args.timeout_seconds,
         import_probe_timeout_seconds=args.import_probe_timeout_seconds,

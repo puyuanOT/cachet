@@ -49,6 +49,7 @@ __all__ = reexport_public(
         "VLLMSmokeBenchmarkConfig",
         "build_metadata",
         "build_vllm_native_provider_probe_record",
+        "cuda_wheel_env_paths",
         "dependency_constraints",
         "dependency_override_constraints",
         "document_kv_package_install_spec",
@@ -67,6 +68,7 @@ __all__ = reexport_public(
         "parse_dataset_specs",
         "dataset_args",
         "parse_args",
+        "site_packages_dirs",
         "VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT",
     ),
     globals(),
@@ -132,6 +134,10 @@ def dependency_constraints() -> list[str]:
 
 def dependency_override_constraints() -> list[str]:
     return _call_document_function("dependency_override_constraints")
+
+
+def cuda_wheel_env_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, list[str]]:
+    return _call_document_function("cuda_wheel_env_paths", config)
 
 
 def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
@@ -304,6 +310,10 @@ def server_env(config: VLLMSmokeBenchmarkConfig) -> dict[str, str]:
     return _call_document_function("server_env", config)
 
 
+def site_packages_dirs(config: VLLMSmokeBenchmarkConfig) -> list[Path]:
+    return _call_document_function("site_packages_dirs", config)
+
+
 def tail_text(text: str | bytes | None, *, max_chars: int = 12000) -> str:
     return _call_document_function("tail_text", text, max_chars=max_chars)
 
@@ -333,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
 _DEFAULT_COMPAT_FUNCTIONS = {
     "build_metadata": build_metadata,
     "build_vllm_native_provider_probe_record": build_vllm_native_provider_probe_record,
+    "cuda_wheel_env_paths": cuda_wheel_env_paths,
     "dependency_constraints": dependency_constraints,
     "dependency_override_constraints": dependency_override_constraints,
     "document_kv_package_install_spec": document_kv_package_install_spec,
@@ -365,6 +376,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "write_json": write_json,
     "copy_file_if_exists": copy_file_if_exists,
     "server_env": server_env,
+    "site_packages_dirs": site_packages_dirs,
     "tail_text": tail_text,
     "tail": tail,
     "run": run,

@@ -32,6 +32,7 @@ from document_kv_cache.vllm_smoke import (
     build_prompt_token_budget_rows,
     build_vllm_native_provider_probe_record,
     build_vllm_server_args,
+    cuda_wheel_env_paths,
     dataset_args,
     dependency_constraints,
     dependency_override_constraints,
@@ -43,6 +44,7 @@ from document_kv_cache.vllm_smoke import (
     prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
+    site_packages_dirs,
     smoke_dataset_records,
     validate_prepared_benchmark_handoffs,
 )
@@ -988,6 +990,12 @@ def test_parse_args_rejects_invalid_values_before_setup(tmp_path):
         )
 
 
+def test_parse_args_maps_dbfs_output_dir_to_driver_filesystem():
+    config = parse_args(["--benchmark-id", "smoke-1", "--output-dir", "dbfs:/benchmarks/cachet-smoke/output"])
+
+    assert config.output_dir == Path("/dbfs/benchmarks/cachet-smoke/output")
+
+
 def test_server_base_url_uses_client_host_not_bind_host(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -1007,17 +1015,35 @@ def test_server_base_url_uses_client_host_not_bind_host(tmp_path):
 
 def test_server_env_forces_local_root_hf_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", "/slow-or-wrong")
+    monkeypatch.setenv("CPATH", "/existing/include")
+    monkeypatch.setenv("LIBRARY_PATH", "/existing/lib")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/existing/ld-lib")
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
     )
+    site_packages = config.venv_dir / "lib" / "python3.12" / "site-packages"
+    curand_include = site_packages / "nvidia" / "curand" / "include"
+    curand_lib = site_packages / "nvidia" / "curand" / "lib"
+    runtime_include = site_packages / "nvidia" / "cuda_runtime" / "include"
+    runtime_lib = site_packages / "nvidia" / "cuda_runtime" / "lib"
+    for path in (curand_include, curand_lib, runtime_include, runtime_lib):
+        path.mkdir(parents=True)
 
     env = legacy_vllm_smoke.server_env(config)
 
     assert env["HF_HOME"] == str(tmp_path / "local" / "hf-cache")
     assert env["VLLM_WORKER_MULTIPROC_METHOD"] == "spawn"
     assert env["PYTHONUNBUFFERED"] == "1"
+    assert site_packages_dirs(config) == [site_packages]
+    assert cuda_wheel_env_paths(config) == {
+        "include": [str(runtime_include), str(curand_include)],
+        "library": [str(runtime_lib), str(curand_lib)],
+    }
+    assert env["CPATH"].split(os.pathsep) == [str(runtime_include), str(curand_include), "/existing/include"]
+    assert env["LIBRARY_PATH"].split(os.pathsep) == [str(runtime_lib), str(curand_lib), "/existing/lib"]
+    assert env["LD_LIBRARY_PATH"].split(os.pathsep) == [str(runtime_lib), str(curand_lib), "/existing/ld-lib"]
 
 
 class _FakeServer:
