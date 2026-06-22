@@ -840,6 +840,32 @@ def test_build_release_bundle_strict_v1_requires_matching_plan_source_suite_id(t
         )
 
 
+def test_build_release_bundle_strict_v1_requires_handoff_generation_plan_source(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+    missing_handoff_record = _plan_execution_record(ok=True)
+    missing_handoff_record["plan_source"]["benchmark_handoff_generation_datasets"] = [
+        "biography",
+        "hotpotqa",
+    ]
+    missing_handoff_record["plan_source"].pop("benchmark_handoff_enrichment_datasets")
+    missing_handoff_plan = _write_json(source_dir / "missing-handoff-plan-execution.json", missing_handoff_record)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **{**release_kwargs, "plan_execution_jsons": (missing_handoff_plan,)},
+            output_dir=tmp_path / "strict-missing-handoff-plan-source",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "plan_source.benchmark_handoff_generation_datasets must generate handoff bundles" in error
+    assert "plan_source.benchmark_handoff_enrichment_datasets must enrich handoff JSONL" in error
+
+
 def test_build_release_bundle_rejects_malformed_requirements_matrix(tmp_path):
     source_dir = tmp_path / "sources"
     release_kwargs = _strict_v1_release_bundle_kwargs(
@@ -3731,9 +3757,67 @@ def _plan_execution_record(
             "suite_id": suite_id,
             "model_id": "qwen3:4b-instruct",
             "hardware_target": hardware_target,
-            "command_count": 1,
+            "command_count": 9,
+            "benchmark_handoff_generation_datasets": ["biography", "hotpotqa", "musique", "niah"],
+            "benchmark_handoff_enrichment_datasets": ["biography", "hotpotqa", "musique", "niah"],
         },
         "commands": [
+            {
+                "name": "generate-biography-handoff-bundles",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoff_bundles"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
+            {
+                "name": "enrich-biography-handoffs",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoffs"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
+            {
+                "name": "generate-hotpotqa-handoff-bundles",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoff_bundles"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
+            {
+                "name": "enrich-hotpotqa-handoffs",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoffs"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
+            {
+                "name": "generate-musique-handoff-bundles",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoff_bundles"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
+            {
+                "name": "enrich-musique-handoffs",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoffs"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
+            {
+                "name": "generate-niah-handoff-bundles",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoff_bundles"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
+            {
+                "name": "enrich-niah-handoffs",
+                "argv": ["python", "-m", "document_kv_cache.benchmark_handoffs"],
+                "returncode": 0 if ok else 2,
+                "skipped": False,
+                "error": None if ok else "failed",
+            },
             {
                 "name": "run-benchmark",
                 "argv": ["python", "-m", "document_kv_cache.benchmark_runner"],

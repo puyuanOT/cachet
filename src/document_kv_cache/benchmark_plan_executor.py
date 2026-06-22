@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.storage import local_path
 
 
@@ -54,6 +55,10 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
     }
 )
 _BENCHMARK_JOB_PLAN_COMMAND_KEYS = frozenset({"name", "argv", "shell"})
+_HANDOFF_GENERATION_PREFIX = "generate-"
+_HANDOFF_GENERATION_SUFFIX = "-handoff-bundles"
+_HANDOFF_ENRICHMENT_PREFIX = "enrich-"
+_HANDOFF_ENRICHMENT_SUFFIX = "-handoffs"
 
 __all__ = [
     "BENCHMARK_PLAN_EXECUTION_RECORD_TYPE",
@@ -170,7 +175,43 @@ def benchmark_plan_source_payload_to_record(path: str, driver_path: str | Path, 
         commands = parsed.get("commands")
         if isinstance(commands, Sequence) and not isinstance(commands, (str, bytes, bytearray)):
             record["command_count"] = len(commands)
+            handoff_generation_datasets = _handoff_command_datasets(
+                commands,
+                prefix=_HANDOFF_GENERATION_PREFIX,
+                suffix=_HANDOFF_GENERATION_SUFFIX,
+            )
+            if handoff_generation_datasets:
+                record["benchmark_handoff_generation_datasets"] = list(handoff_generation_datasets)
+            handoff_enrichment_datasets = _handoff_command_datasets(
+                commands,
+                prefix=_HANDOFF_ENRICHMENT_PREFIX,
+                suffix=_HANDOFF_ENRICHMENT_SUFFIX,
+            )
+            if handoff_enrichment_datasets:
+                record["benchmark_handoff_enrichment_datasets"] = list(handoff_enrichment_datasets)
     return record
+
+
+def _handoff_command_datasets(
+    commands: Sequence[Any],
+    *,
+    prefix: str,
+    suffix: str,
+) -> tuple[str, ...]:
+    datasets: list[str] = []
+    seen: set[str] = set()
+    for command in commands:
+        if not isinstance(command, Mapping):
+            continue
+        name = command.get("name")
+        if not isinstance(name, str) or not name.startswith(prefix) or not name.endswith(suffix):
+            continue
+        dataset = name[len(prefix) : -len(suffix)]
+        if dataset not in SUPPORTED_V1_DATASETS or dataset in seen:
+            continue
+        seen.add(dataset)
+        datasets.append(dataset)
+    return tuple(datasets)
 
 
 def write_benchmark_command_results_json(

@@ -27,7 +27,12 @@ from document_kv_cache.release_evidence import (
     REQUIRED_ENGINE_PROBE_BACKENDS,
     evaluate_release_evidence,
 )
-from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_HARDWARE_TARGETS
+from document_kv_cache.benchmarks import (
+    DEFAULT_HARDWARE_TARGET,
+    DEFAULT_V1_MODEL_ID,
+    SUPPORTED_V1_DATASETS,
+    SUPPORTED_V1_HARDWARE_TARGETS,
+)
 from document_kv_cache.benchmark_plan_executor import (
     BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
     BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
@@ -257,6 +262,8 @@ _BENCHMARK_PLAN_SOURCE_KEYS = frozenset(
         "model_id",
         "hardware_target",
         "command_count",
+        "benchmark_handoff_generation_datasets",
+        "benchmark_handoff_enrichment_datasets",
     }
 )
 _GITHUB_GOVERNANCE_WRAPPER_KEYS = frozenset({"ok", "summary"})
@@ -1587,7 +1594,39 @@ def _strict_v1_plan_source_issues(
         issues.append(f"{label}.suite_id must match V1 benchmark suite_id {expected_suite_id!r}")
     if type(record.get("command_count")) is not int or record["command_count"] <= 0:
         issues.append(f"{label}.command_count must be a positive integer")
+    issues.extend(
+        _strict_v1_plan_source_handoff_dataset_issues(
+            record,
+            "benchmark_handoff_generation_datasets",
+            label,
+            "generate handoff bundles",
+        )
+    )
+    issues.extend(
+        _strict_v1_plan_source_handoff_dataset_issues(
+            record,
+            "benchmark_handoff_enrichment_datasets",
+            label,
+            "enrich handoff JSONL",
+        )
+    )
     return tuple(issues)
+
+
+def _strict_v1_plan_source_handoff_dataset_issues(
+    record: Mapping[str, Any],
+    field_name: str,
+    label: str,
+    description: str,
+) -> tuple[str, ...]:
+    value = record.get(field_name)
+    if (
+        isinstance(value, Sequence)
+        and not isinstance(value, (str, bytes, bytearray))
+        and tuple(value) == SUPPORTED_V1_DATASETS
+    ):
+        return ()
+    return (f"{label}.{field_name} must {description} for the V1 release datasets",)
 
 
 def _strict_v1_benchmark_suite_id(record: Mapping[str, Any] | None) -> str | None:

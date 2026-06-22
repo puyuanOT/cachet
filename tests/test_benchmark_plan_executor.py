@@ -130,6 +130,33 @@ def test_benchmark_plan_source_record_hashes_driver_visible_plan_json(tmp_path):
     }
 
 
+def test_benchmark_plan_source_record_summarizes_handoff_generation_commands(tmp_path):
+    path = tmp_path / "plan.json"
+    plan = {
+        "plan_version": "v1",
+        "suite_id": "suite-1",
+        "model_id": "qwen3:4b-instruct",
+        "hardware_target": "aws-g6-l4",
+        "commands": [
+            {"name": "prepare-biography", "argv": [sys.executable, "-c", "pass"]},
+            {"name": "generate-biography-handoff-bundles", "argv": [sys.executable, "-c", "pass"]},
+            {"name": "enrich-biography-handoffs", "argv": [sys.executable, "-c", "pass"]},
+            {"name": "generate-hotpotqa-handoff-bundles", "argv": [sys.executable, "-c", "pass"]},
+            {"name": "enrich-hotpotqa-handoffs", "argv": [sys.executable, "-c", "pass"]},
+            {"name": "generate-unknown-handoff-bundles", "argv": [sys.executable, "-c", "pass"]},
+            {"name": "generate-biography-handoff-bundles", "argv": [sys.executable, "-c", "pass"]},
+            {"name": "run-benchmark", "argv": [sys.executable, "-c", "pass"]},
+        ],
+    }
+    payload = json.dumps(plan, sort_keys=True).encode("utf-8")
+
+    record = benchmark_plan_source_payload_to_record(str(path), path, payload)
+
+    assert record["command_count"] == 8
+    assert record["benchmark_handoff_generation_datasets"] == ["biography", "hotpotqa"]
+    assert record["benchmark_handoff_enrichment_datasets"] == ["biography", "hotpotqa"]
+
+
 def test_main_hashes_the_plan_payload_that_was_executed(tmp_path):
     plan_path = tmp_path / "plan.json"
     result_path = tmp_path / "result.json"
