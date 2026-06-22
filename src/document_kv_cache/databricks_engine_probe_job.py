@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +36,7 @@ from document_kv_cache._native_probe_metadata import (
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     validate_known_native_delegate_metadata,
 )
+from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
 from document_kv_cache.serving_env import (
@@ -76,6 +76,7 @@ _PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES = {
     ServingBackend.VLLM: VLLM_DEPENDENCY_CONSTRAINTS,
     ServingBackend.SGLANG: SGLANG_DEPENDENCY_CONSTRAINTS,
 }
+_VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE = "opencv-python-headless==4.12.0.88"
 _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS = frozenset(
     {
         "record_type",
@@ -158,6 +159,7 @@ def _runner_script_path() -> str:
 def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--pip-package", action="append")
+    parser.add_argument("--pip-override-package", action="append")
     parser.add_argument("--package-wheel-uri", action="append")
     parser.add_argument("--serving-venv-dir")
     parser.add_argument("--skip-runtime-package-install", action="store_true")
@@ -174,6 +176,19 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
     subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"], env=venv_env)
     if args.pip_package:
         subprocess.check_call([venv_python, "-m", "pip", "install", *args.pip_package], env=venv_env)
+    if args.pip_override_package:
+        subprocess.check_call(
+            [
+                venv_python,
+                "-m",
+                "pip",
+                "install",
+                "--force-reinstall",
+                "--no-deps",
+                *args.pip_override_package,
+            ],
+            env=venv_env,
+        )
     for package_wheel_uri in args.package_wheel_uri or ():
         subprocess.check_call(
             [venv_python, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)],
@@ -196,7 +211,7 @@ if __name__ == "__main__":
     remaining_args, reexec_exit_code = _install_runtime_packages(sys.argv[1:])
     if reexec_exit_code is not None:
         raise SystemExit(reexec_exit_code)
-    from document_kv_cache.databricks_engine_probe_job import run_engine_probe_task
+    from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
 
     exit_code = run_engine_probe_task(remaining_args)
     if exit_code:
@@ -463,6 +478,9 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
         },
     }
     task["spark_python_task"]["parameters"].extend(_pip_package_parameters(_engine_probe_pip_packages(config)))
+    task["spark_python_task"]["parameters"].extend(
+        _pip_override_package_parameters(_engine_probe_pip_override_packages(config))
+    )
     task["spark_python_task"]["parameters"].extend(_package_wheel_parameters(config))
     return {
         "run_name": config.run_name,
@@ -515,124 +533,6 @@ def write_databricks_engine_probe_matrix_run_submit_json(
 
 def write_databricks_engine_probe_runner_script(path: str | Path) -> None:
     Path(path).write_text(ENGINE_PROBE_RUNNER_SCRIPT, encoding="utf-8")
-
-
-def run_engine_probe_task(argv: Sequence[str] | None = None) -> int:
-    """Run an optional generated fixture step, then the native engine probe."""
-
-    runner_argv = list(sys.argv[1:] if argv is None else argv)
-    runner_args, engine_probe_argv = _split_fixture_runner_args(runner_argv)
-    if runner_args.fixture_output_dir is not None:
-        from document_kv_cache import probe_fixtures
-
-        fixture_exit_code = probe_fixtures.main(
-            [
-                "--output-dir",
-                runner_args.fixture_output_dir,
-                "--backend",
-                runner_args.fixture_backend,
-                "--payload-mode",
-                runner_args.fixture_payload_mode,
-            ]
-        )
-        if fixture_exit_code:
-            return fixture_exit_code
-    if runner_args.vllm_runtime_preflight_output_json is not None:
-        preflight_exit_code = _run_vllm_runtime_preflight(runner_args)
-        if preflight_exit_code:
-            return preflight_exit_code
-    if runner_args.sglang_runtime_preflight_output_json is not None:
-        preflight_exit_code = _run_sglang_runtime_preflight(runner_args)
-        if preflight_exit_code:
-            return preflight_exit_code
-    from document_kv_cache import engine_probe
-
-    return engine_probe.main(engine_probe_argv)
-
-
-def _split_fixture_runner_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--fixture-output-dir")
-    parser.add_argument("--fixture-backend", choices=[backend.value for backend in ServingBackend])
-    parser.add_argument(
-        "--fixture-payload-mode",
-        choices=[mode.value for mode in PayloadMode],
-        default=PayloadMode.SEGMENTED.value,
-    )
-    parser.add_argument("--vllm-runtime-preflight-output-json")
-    parser.add_argument("--vllm-runtime-preflight-layer-names-json")
-    parser.add_argument("--sglang-runtime-preflight-output-json")
-    parser.add_argument("--sglang-runtime-preflight-launch-config-json")
-    fixture_args, engine_probe_argv = parser.parse_known_args(argv)
-    if fixture_args.fixture_output_dir is not None and fixture_args.fixture_backend is None:
-        raise ValueError("--fixture-backend is required when --fixture-output-dir is provided")
-    if fixture_args.fixture_output_dir is None and fixture_args.fixture_backend is not None:
-        raise ValueError("--fixture-backend requires --fixture-output-dir")
-    if (
-        fixture_args.vllm_runtime_preflight_output_json is None
-        and fixture_args.vllm_runtime_preflight_layer_names_json is not None
-    ):
-        raise ValueError(
-            "--vllm-runtime-preflight-layer-names-json requires --vllm-runtime-preflight-output-json"
-        )
-    if (
-        fixture_args.vllm_runtime_preflight_output_json is not None
-        and fixture_args.vllm_runtime_preflight_layer_names_json is None
-    ):
-        raise ValueError(
-            "--vllm-runtime-preflight-output-json requires --vllm-runtime-preflight-layer-names-json"
-        )
-    if (
-        fixture_args.sglang_runtime_preflight_output_json is None
-        and fixture_args.sglang_runtime_preflight_launch_config_json is not None
-    ):
-        raise ValueError(
-            "--sglang-runtime-preflight-launch-config-json requires --sglang-runtime-preflight-output-json"
-        )
-    if (
-        fixture_args.sglang_runtime_preflight_output_json is not None
-        and fixture_args.sglang_runtime_preflight_launch_config_json is None
-    ):
-        raise ValueError(
-            "--sglang-runtime-preflight-output-json requires --sglang-runtime-preflight-launch-config-json"
-        )
-    return fixture_args, engine_probe_argv
-
-
-def _run_vllm_runtime_preflight(runner_args: argparse.Namespace) -> int:
-    from vllm_kv_injection import vllm_runtime_preflight
-
-    return vllm_runtime_preflight.main(
-        [
-            "--layer-names-json",
-            _cluster_preflight_file_argument(runner_args.vllm_runtime_preflight_layer_names_json),
-            "--output-json",
-            _cluster_preflight_file_argument(runner_args.vllm_runtime_preflight_output_json),
-        ]
-    )
-
-
-def _run_sglang_runtime_preflight(runner_args: argparse.Namespace) -> int:
-    from sglang_kv_injection import sglang_runtime_preflight
-
-    return sglang_runtime_preflight.main(
-        [
-            "--launch-config-json",
-            _cluster_preflight_file_argument(runner_args.sglang_runtime_preflight_launch_config_json),
-            "--output-json",
-            _cluster_preflight_file_argument(runner_args.sglang_runtime_preflight_output_json),
-        ]
-    )
-
-
-def _cluster_preflight_file_argument(value: str) -> str:
-    stripped_value = value.lstrip()
-    if stripped_value.startswith(("{", "[")):
-        return value
-    scheme = _uri_scheme(value)
-    if scheme in {"dbfs", "disk", "file", "uc-volume"} or value == "/Volumes" or value.startswith("/Volumes/"):
-        return str(local_path(value))
-    return value
 
 
 def _cluster_config_from_engine_probe_job(
@@ -790,6 +690,13 @@ def _pip_package_parameters(pip_packages: Sequence[str]) -> list[str]:
     return parameters
 
 
+def _pip_override_package_parameters(pip_packages: Sequence[str]) -> list[str]:
+    parameters: list[str] = []
+    for pip_package in pip_packages:
+        parameters.extend(["--pip-override-package", pip_package])
+    return parameters
+
+
 def _engine_probe_pip_packages(config: DatabricksEngineProbeJobConfig) -> tuple[str, ...]:
     packages = list(config.extra_pip_packages)
     if config.release_safe and _is_provider_backed_native_probe(config):
@@ -799,6 +706,12 @@ def _engine_probe_pip_packages(config: DatabricksEngineProbeJobConfig) -> tuple[
             option_name=f"release-safe provider-backed {config.expected_backend.value} engine probe job",
         )
     return tuple(packages)
+
+
+def _engine_probe_pip_override_packages(config: DatabricksEngineProbeJobConfig) -> tuple[str, ...]:
+    if config.release_safe and _is_provider_backed_vllm_probe(config):
+        return (_VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE,)
+    return ()
 
 
 def _package_wheel_uris(
