@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import pickle
 from types import SimpleNamespace
 
+from document_kv_cache.benchmark_handoffs import generate_benchmark_handoff_bundles
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
     build_engine_adapter_request,
@@ -13,6 +15,8 @@ from document_kv_cache.engine_adapters import (
     view_engine_adapter_payload,
 )
 from document_kv_cache.engine_probe import write_engine_adapter_handoff_bundle
+from document_kv_cache.kvpack import PackChunk
+from document_kv_cache.models import KVCacheKey
 from vllm_kv_injection.protocol import KVCacheHandle, KVLayout, KVSegment
 from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
@@ -188,9 +192,47 @@ class AllocatedBlocks:
         return (self.block_ids,)
 
 
-def scheduler_output(block_ids: list[int]):
+class TwoTokenBenchmarkGenerator:
+    payload = bytes((1, 2, 3, 4, 11, 12, 13, 14, 5, 6, 7, 8, 15, 16, 17, 18))
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=self.payload,
+            token_count=2,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+def benchmark_jsonl_record() -> dict[str, object]:
+    return {
+        "dataset": "biography",
+        "example_id": "bio-provider-1",
+        "query": "Who wrote notes?",
+        "expected_answer": "Ada Lovelace",
+        "documents": [
+            {
+                "document_id": "ada",
+                "title": "Ada",
+                "text": "Ada Lovelace wrote notes on the Analytical Engine.",
+            }
+        ],
+    }
+
+
+def scheduler_output(block_ids: list[int], *, request_id: str = "req-1"):
     return SimpleNamespace(
-        scheduled_new_reqs=[SimpleNamespace(req_id="req-1", block_ids=(block_ids,))],
+        scheduled_new_reqs=[SimpleNamespace(req_id=request_id, block_ids=(block_ids,))],
         scheduled_cached_reqs=SimpleNamespace(req_ids=[], new_block_ids=[]),
     )
 
@@ -554,6 +596,45 @@ def test_kv_transfer_params_source_reads_cachet_handoff_bundle(tmp_path):
     assert load.request_id == "req-1"
     assert load.total_tokens == 3
     assert load.payload == payload()
+
+
+def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(benchmark_jsonl_record()) + "\n", encoding="utf-8")
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=TwoTokenBenchmarkGenerator(),
+        layout=layout(),
+        align_bytes=1,
+    )
+    entry = result.manifest.entries[0]
+    connector = DocumentKVConnector(provider=DocumentKVNativeProvider())
+    request = SimpleNamespace(
+        request_id=entry.request_id,
+        num_tokens=3,
+        kv_transfer_params=entry.kv_transfer_params(),
+    )
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([4]), 2)
+    meta = connector.build_connector_meta(scheduler_output([4], request_id=entry.request_id))
+    connector.register_kv_caches(
+        {
+            "model.layers.0.self_attn.attn": layer_0,
+            "model.layers.1.self_attn.attn": layer_1,
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_0[4, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
 
 
 def test_native_provider_factory_is_release_safe_provider_wiring():
