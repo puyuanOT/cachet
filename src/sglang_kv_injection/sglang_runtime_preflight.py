@@ -21,6 +21,7 @@ from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_BACKEND_CLASS,
     DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
+    DOCUMENT_KV_HICACHE_RUNTIME_METHODS,
     NoOpDocumentKVHiCacheProvider,
     load_document_kv_hicache_provider_factory,
 )
@@ -66,6 +67,7 @@ SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS = (
     "_load_backend_class",
     "create_backend",
 )
+SGLANG_HICACHE_REQUIRED_BACKEND_METHODS = DOCUMENT_KV_HICACHE_RUNTIME_METHODS
 SGLANG_HICACHE_PROVIDER_REQUIRED_METHODS = ("get", "set", "exists")
 
 _INSTALLED_CONTRACT_KEYS = frozenset(
@@ -82,6 +84,9 @@ _INSTALLED_CONTRACT_KEYS = frozenset(
         "cli_options",
         "hicache_storage_backend_choices",
         "storage_backend_factory_methods",
+        "document_kv_backend_importable",
+        "document_kv_backend_subclasses_hicache_storage",
+        "document_kv_backend_methods",
         "error",
         "ok",
     }
@@ -146,6 +151,7 @@ __all__ = [
     "SGLANG_HICACHE_DYNAMIC_BACKEND",
     "SGLANG_HICACHE_EXTRA_CONFIG_REQUIRED_FIELDS",
     "SGLANG_HICACHE_PROVIDER_REQUIRED_METHODS",
+    "SGLANG_HICACHE_REQUIRED_BACKEND_METHODS",
     "SGLANG_HICACHE_REQUIRED_CLI_OPTIONS",
     "SGLANG_HICACHE_REQUIRED_SERVER_ARG_FIELDS",
     "SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS",
@@ -175,6 +181,9 @@ class SGLangInstalledHiCacheContract:
     cli_options: tuple[str, ...] = ()
     hicache_storage_backend_choices: tuple[str, ...] = ()
     storage_backend_factory_methods: tuple[str, ...] = ()
+    document_kv_backend_importable: bool = False
+    document_kv_backend_subclasses_hicache_storage: bool = False
+    document_kv_backend_methods: tuple[str, ...] = ()
     error: str | None = None
 
 
@@ -200,6 +209,9 @@ def installed_sglang_hicache_contract_to_record(
         "cli_options": sorted(set(contract.cli_options)),
         "hicache_storage_backend_choices": sorted(set(contract.hicache_storage_backend_choices)),
         "storage_backend_factory_methods": sorted(set(contract.storage_backend_factory_methods)),
+        "document_kv_backend_importable": contract.document_kv_backend_importable,
+        "document_kv_backend_subclasses_hicache_storage": contract.document_kv_backend_subclasses_hicache_storage,
+        "document_kv_backend_methods": sorted(set(contract.document_kv_backend_methods)),
     }
     if contract.error:
         record["error"] = contract.error
@@ -243,6 +255,8 @@ def installed_sglang_hicache_contract_record_issues(record: object) -> tuple[str
         "server_args_importable",
         "storage_backend_factory_importable",
         "hicache_storage_base_importable",
+        "document_kv_backend_importable",
+        "document_kv_backend_subclasses_hicache_storage",
     ):
         if record.get(field_name) is not True:
             issues.append(f"installed SGLang HiCache contract {field_name} must be true")
@@ -272,6 +286,13 @@ def installed_sglang_hicache_contract_record_issues(record: object) -> tuple[str
             record.get("storage_backend_factory_methods"),
             required=SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
             field_name="installed SGLang HiCache contract storage_backend_factory_methods",
+        )
+    )
+    issues.extend(
+        _required_string_items_issues(
+            record.get("document_kv_backend_methods"),
+            required=SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
+            field_name="installed SGLang HiCache contract document_kv_backend_methods",
         )
     )
     if "error" in record and not isinstance(record.get("error"), str):
@@ -425,9 +446,30 @@ def _inspect_installed_sglang_hicache_contract() -> SGLangInstalledHiCacheContra
         hicache_storage_module = importlib.import_module("sglang.srt.mem_cache.hicache_storage")
         server_args_cls = getattr(server_args_module, "ServerArgs")
         storage_backend_factory_cls = getattr(storage_backend_factory_module, "StorageBackendFactory")
-        getattr(hicache_storage_module, "HiCacheStorage")
+        hicache_storage_cls = getattr(hicache_storage_module, "HiCacheStorage")
     except Exception as exc:
         return _failed_installed_contract(package_version=package_version, error=f"{type(exc).__name__}: {exc}")
+
+    document_kv_backend_importable = False
+    document_kv_backend_subclasses_hicache_storage = False
+    document_kv_backend_methods: tuple[str, ...] = ()
+    document_kv_backend_error: str | None = None
+    try:
+        backend_module = importlib.import_module(DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH)
+        backend_cls = getattr(backend_module, DOCUMENT_KV_HICACHE_BACKEND_CLASS)
+        document_kv_backend_importable = True
+        document_kv_backend_subclasses_hicache_storage = (
+            isinstance(backend_cls, type)
+            and isinstance(hicache_storage_cls, type)
+            and issubclass(backend_cls, hicache_storage_cls)
+        )
+        document_kv_backend_methods = tuple(
+            method_name
+            for method_name in SGLANG_HICACHE_REQUIRED_BACKEND_METHODS
+            if callable(getattr(backend_cls, method_name, None))
+        )
+    except Exception as exc:
+        document_kv_backend_error = f"{type(exc).__name__}: {exc}"
 
     cli_options, backend_choices = _server_args_cli_surface(server_args_cls)
     return SGLangInstalledHiCacheContract(
@@ -448,6 +490,10 @@ def _inspect_installed_sglang_hicache_contract() -> SGLangInstalledHiCacheContra
             for method_name in SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS
             if callable(getattr(storage_backend_factory_cls, method_name, None))
         ),
+        document_kv_backend_importable=document_kv_backend_importable,
+        document_kv_backend_subclasses_hicache_storage=document_kv_backend_subclasses_hicache_storage,
+        document_kv_backend_methods=document_kv_backend_methods,
+        error=document_kv_backend_error,
     )
 
 
@@ -458,6 +504,9 @@ def _failed_installed_contract(*, package_version: str | None, error: str) -> SG
         server_args_importable=False,
         storage_backend_factory_importable=False,
         hicache_storage_base_importable=False,
+        document_kv_backend_importable=False,
+        document_kv_backend_subclasses_hicache_storage=False,
+        document_kv_backend_methods=(),
         error=error,
     )
 
@@ -736,6 +785,12 @@ def _installed_sglang_hicache_contract_ok(record: Mapping[str, Any]) -> bool:
         and _contains_required_strings(
             record.get("storage_backend_factory_methods"),
             SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
+        )
+        and record.get("document_kv_backend_importable") is True
+        and record.get("document_kv_backend_subclasses_hicache_storage") is True
+        and _contains_required_strings(
+            record.get("document_kv_backend_methods"),
+            SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
         )
     )
 

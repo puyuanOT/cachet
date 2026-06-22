@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import sys
 from types import ModuleType
@@ -8,6 +9,7 @@ from types import ModuleType
 import pytest
 
 import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
+import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
 from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY
 from sglang_kv_injection.sglang_hicache_config import sglang_hicache_launch_config
 from sglang_kv_injection.sglang_runtime_preflight import (
@@ -15,6 +17,7 @@ from sglang_kv_injection.sglang_runtime_preflight import (
     DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE,
     DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION,
     SGLANG_HICACHE_DYNAMIC_RUNTIME,
+    SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
     SGLANG_HICACHE_REQUIRED_CLI_OPTIONS,
     SGLANG_HICACHE_REQUIRED_SERVER_ARG_FIELDS,
     SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
@@ -40,6 +43,9 @@ def matching_installed_contract() -> dict:
             cli_options=SGLANG_HICACHE_REQUIRED_CLI_OPTIONS,
             hicache_storage_backend_choices=("file", "dynamic"),
             storage_backend_factory_methods=SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
+            document_kv_backend_importable=True,
+            document_kv_backend_subclasses_hicache_storage=True,
+            document_kv_backend_methods=SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
         )
     )
 
@@ -64,6 +70,13 @@ def drifting_installed_contract() -> dict:
             ),
             hicache_storage_backend_choices=("file",),
             storage_backend_factory_methods=SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
+            document_kv_backend_importable=True,
+            document_kv_backend_subclasses_hicache_storage=True,
+            document_kv_backend_methods=tuple(
+                method_name
+                for method_name in SGLANG_HICACHE_REQUIRED_BACKEND_METHODS
+                if method_name != "batch_exists_v2"
+            ),
         )
     )
 
@@ -97,6 +110,9 @@ def test_installed_sglang_hicache_contract_accepts_dynamic_runtime_surface():
     assert record["runtime"] == SGLANG_HICACHE_DYNAMIC_RUNTIME
     assert record["package_version"] == "0.5.10.post1"
     assert "dynamic" in record["hicache_storage_backend_choices"]
+    assert record["document_kv_backend_importable"] is True
+    assert record["document_kv_backend_subclasses_hicache_storage"] is True
+    assert "batch_exists_v2" in record["document_kv_backend_methods"]
     assert record["ok"] is True
     validate_installed_sglang_hicache_contract_record(record)
 
@@ -109,6 +125,7 @@ def test_installed_sglang_hicache_contract_rejects_runtime_drift():
 
     assert any("hicache_storage_backend_extra_config" in issue for issue in issues)
     assert any("dynamic" in issue for issue in issues)
+    assert any("batch_exists_v2" in issue for issue in issues)
     with pytest.raises(ValueError, match="hicache_storage_backend_extra_config"):
         validate_installed_sglang_hicache_contract_record(record)
 
@@ -155,7 +172,50 @@ def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(mo
             return object()
 
     class HiCacheStorage:
-        pass
+        def register_mem_pool_host(self, mem_pool_host):
+            pass
+
+        def register_mem_host_pool_v2(self, host_pool, host_pool_name):
+            pass
+
+        def batch_exists(self, keys, extra_info=None):
+            pass
+
+        def batch_exists_v2(self, keys, pool_transfers=None, extra_info=None):
+            pass
+
+        def batch_get(self, keys, target_locations=None, target_sizes=None):
+            pass
+
+        def batch_get_v1(self, keys, host_indices, extra_info=None):
+            pass
+
+        def batch_get_v2(self, transfers, extra_info=None):
+            pass
+
+        def batch_set(self, keys, values=None, target_locations=None, target_sizes=None):
+            pass
+
+        def batch_set_v1(self, keys, host_indices, extra_info=None):
+            pass
+
+        def batch_set_v2(self, transfers, extra_info=None):
+            pass
+
+        def get(self, key, target_location=None, target_sizes=None):
+            pass
+
+        def set(self, key, value=None, target_location=None, target_sizes=None):
+            pass
+
+        def exists(self, key):
+            pass
+
+        def clear(self):
+            pass
+
+        def get_stats(self):
+            pass
 
     server_args_module.ServerArgs = ServerArgs
     backend_factory_module.StorageBackendFactory = StorageBackendFactory
@@ -171,12 +231,61 @@ def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(mo
     ):
         monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setattr(sglang_runtime_preflight.importlib_metadata, "version", lambda name: "0.5.10.post1")
+    try:
+        importlib.reload(sglang_dynamic_backend)
+        importlib.reload(sglang_runtime_preflight)
 
-    record = installed_sglang_hicache_contract_to_record()
+        record = sglang_runtime_preflight.installed_sglang_hicache_contract_to_record()
 
-    assert record["ok"] is True
-    assert record["package_version"] == "0.5.10.post1"
-    validate_installed_sglang_hicache_contract_record(record)
+        assert record["ok"] is True
+        assert record["package_version"] == "0.5.10.post1"
+        assert record["document_kv_backend_subclasses_hicache_storage"] is True
+        sglang_runtime_preflight.validate_installed_sglang_hicache_contract_record(record)
+    finally:
+        for module_name in (
+            "sglang",
+            "sglang.srt",
+            "sglang.srt.server_args",
+            "sglang.srt.mem_cache",
+            "sglang.srt.mem_cache.storage",
+            "sglang.srt.mem_cache.storage.backend_factory",
+            "sglang.srt.mem_cache.hicache_storage",
+        ):
+            sys.modules.pop(module_name, None)
+        importlib.reload(sglang_dynamic_backend)
+        importlib.reload(sglang_runtime_preflight)
+        importlib.reload(sys.modules["sglang_kv_injection"])
+        for facade_module_name in (
+            "document_kv_cache.sglang_runtime_preflight",
+            "cachet.sglang_runtime_preflight",
+        ):
+            facade_module = sys.modules.get(facade_module_name)
+            if facade_module is not None:
+                importlib.reload(facade_module)
+
+
+def test_installed_sglang_hicache_contract_rejects_document_backend_that_is_not_hicache_storage():
+    record = matching_installed_contract()
+    record["document_kv_backend_subclasses_hicache_storage"] = False
+    record["ok"] = False
+
+    issues = installed_sglang_hicache_contract_record_issues(record)
+
+    assert "installed SGLang HiCache contract document_kv_backend_subclasses_hicache_storage must be true" in issues
+    assert "installed SGLang HiCache contract ok must be true for a safe runtime preflight" in issues
+
+
+def test_installed_sglang_hicache_contract_rejects_missing_document_backend_methods():
+    record = matching_installed_contract()
+    record["document_kv_backend_methods"] = [
+        method_name for method_name in SGLANG_HICACHE_REQUIRED_BACKEND_METHODS if method_name != "batch_get_v2"
+    ]
+    record["ok"] = False
+
+    issues = installed_sglang_hicache_contract_record_issues(record)
+
+    assert any("document_kv_backend_methods" in issue and "batch_get_v2" in issue for issue in issues)
+    assert "installed SGLang HiCache contract ok must be true for a safe runtime preflight" in issues
 
 
 def test_sglang_runtime_preflight_accepts_dynamic_hicache_config_and_provider(monkeypatch):
