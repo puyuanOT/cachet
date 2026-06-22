@@ -63,6 +63,7 @@ SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
+VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 
 __all__ = [
     "VLLM_VERSION",
@@ -282,6 +283,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "gpu_memory_utilization": config.gpu_memory_utilization,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "dependency_override_constraints": dependency_override_constraints(),
+        "vllm_server_env_overrides": vllm_server_env_overrides(),
         "vllm_kv_transfer_config": document_kv_transfer_config(),
     }
 
@@ -1086,14 +1088,24 @@ def copy_file_if_exists(source_path: Path, target_path: Path) -> None:
 
 def server_env(config: VLLMSmokeBenchmarkConfig) -> dict[str, str]:
     env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    env["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+    env.update(vllm_server_env_overrides())
     env["HF_HOME"] = str(config.hf_cache_dir)
     paths = cuda_wheel_env_paths(config)
     _prepend_env_paths(env, "CPATH", paths["include"])
     _prepend_env_paths(env, "LIBRARY_PATH", paths["library"])
     _prepend_env_paths(env, "LD_LIBRARY_PATH", paths["library"])
     return env
+
+
+def vllm_server_env_overrides() -> dict[str, str]:
+    return {
+        "PYTHONUNBUFFERED": "1",
+        "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+        # Databricks' system nvcc can be older than the CUDA 13 headers in the
+        # vLLM wheel stack. The native sampler still exercises Cachet KV import
+        # while avoiding FlashInfer sampler JIT during the smoke.
+        VLLM_USE_FLASHINFER_SAMPLER_ENV: "0",
+    }
 
 
 def cuda_wheel_env_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, list[str]]:
