@@ -1,23 +1,25 @@
 {
-  "gpt55_review_completed": false,
-  "gpt55_review_findings_resolved": false,
-  "gpt55_review_outcome": "",
-  "gpt55_review_summary": "",
-  "issues": [
-    "GPT-5.5 review must be completed",
-    "gpt55_review_outcome must be 'clean' or 'findings_resolved'",
-    "gpt55_review_summary must describe findings and fixes, or state that the review was clean"
-  ],
-  "ok": false,
-  "pull_request_number": null,
-  "pull_request_url": "",
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Reviewer found no provider correctness issue. The only finding was the draft PR evidence sidecar being incomplete; this update fills PR #312 identity and review outcome fields and validates the evidence.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 312,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/312",
   "record_type": "document_kv.pr_evidence.v1",
   "refactor_skill_applied": true,
   "scope": [
-    "src/vllm_kv_injection/vllm_native_provider.py; tests/test_vllm_kv_injection_vllm_native_provider.py"
+    "src/vllm_kv_injection/vllm_native_provider.py",
+    "tests/test_vllm_kv_injection_vllm_native_provider.py",
+    "pr-evidence/vllm-layer-index-mapping"
   ],
   "verification": [
-    "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py; python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py tests/test_vllm_kv_injection_probe.py tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_vllm_kv_injection_vllm_transfer_config.py tests/test_native_probe_factories.py; python -m pytest -q; git diff --check"
+    "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py (12 passed)",
+    "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py tests/test_vllm_kv_injection_probe.py tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_vllm_kv_injection_vllm_transfer_config.py tests/test_native_probe_factories.py (107 passed)",
+    "python -m pytest -q (1601 passed)",
+    "git diff --check",
+    "changed/untracked credential-pattern scan returned 0 files"
   ],
   "what_changed": [
     "Mapped vLLM native provider registered KV cache tensors to Cachet payload layers by parsing vLLM layer indices from cache layer names, with fail-closed validation for unparseable or duplicate layer names."
