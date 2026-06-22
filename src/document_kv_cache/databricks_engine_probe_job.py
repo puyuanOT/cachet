@@ -205,6 +205,7 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("native_probe_delegate_factory must be non-empty when provided")
         if self.fixture_output_dir is not None and not self.fixture_output_dir:
             raise ValueError("fixture_output_dir must be non-empty when provided")
+        _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES(self, label="engine probe target")
         _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe target")
         if self.fixture_output_dir is not None:
             _DEFAULT_VALIDATE_FIXTURE_OUTPUT_DIR(self.fixture_output_dir)
@@ -307,6 +308,7 @@ class DatabricksEngineProbeJobConfig:
     vllm_runtime_preflight_layer_names_json: str | None = None
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
         object.__setattr__(self, "fixture_payload_mode", _DEFAULT_PAYLOAD_MODE(self.fixture_payload_mode))
         if not self.handoff_json:
             raise ValueError("handoff_json must be non-empty")
@@ -336,6 +338,7 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("native_probe_delegate_factory must be non-empty when provided")
         if self.fixture_output_dir is not None and not self.fixture_output_dir:
             raise ValueError("fixture_output_dir must be non-empty when provided")
+        _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES(self, label="engine probe job")
         _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe job")
         if self.fixture_output_dir is not None:
             _DEFAULT_VALIDATE_FIXTURE_OUTPUT_DIR(self.fixture_output_dir)
@@ -349,7 +352,6 @@ class DatabricksEngineProbeJobConfig:
             )
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
-        object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
         _DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA(
             expected_backend=self.expected_backend,
             native_probe_delegate_factory=self.native_probe_delegate_factory,
@@ -869,6 +871,34 @@ def _engine_probe_fixture_actions_json(fixture_output_dir: str) -> str:
     return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}"
 
 
+def _engine_probe_fixture_vllm_layer_names_json(fixture_output_dir: str) -> str:
+    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['vllm_layer_names']}"
+
+
+def _derive_vllm_fixture_runtime_preflight_layer_names(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+    *,
+    label: str,
+) -> None:
+    if (
+        config.expected_backend != ServingBackend.VLLM
+        or config.fixture_output_dir is None
+        or config.vllm_runtime_preflight_output_json is None
+    ):
+        return
+    derived_layer_names_json = _engine_probe_fixture_vllm_layer_names_json(config.fixture_output_dir)
+    if config.vllm_runtime_preflight_layer_names_json is None:
+        object.__setattr__(config, "vllm_runtime_preflight_layer_names_json", derived_layer_names_json)
+        return
+    if _same_artifact_path(config.vllm_runtime_preflight_layer_names_json, derived_layer_names_json):
+        return
+    raise ValueError(
+        f"{label} vllm_runtime_preflight_layer_names_json must match the derived fixture layer-name path "
+        f"when fixture_output_dir is set: expected {derived_layer_names_json!r}, "
+        f"got {config.vllm_runtime_preflight_layer_names_json!r}"
+    )
+
+
 def _engine_probe_uses_fixture_actions_output(
     config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
 ) -> bool:
@@ -936,6 +966,7 @@ _DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA = _validate_known_native_delega
 _DEFAULT_VALIDATE_WHEEL_URIS = _validate_wheel_uris
 _DEFAULT_VALIDATE_PIP_PACKAGES = _validate_pip_packages
 _DEFAULT_SERVING_BACKEND = _serving_backend
+_DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES = _derive_vllm_fixture_runtime_preflight_layer_names
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_JOB = _cluster_config_from_engine_probe_job
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_MATRIX_JOB = _cluster_config_from_engine_probe_matrix_job
 _DEFAULT_PAYLOAD_MODE = _payload_mode
@@ -1237,7 +1268,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--vllm-runtime-preflight-layer-names-json",
         help=(
             "Cluster-visible path, or inline JSON, containing registered vLLM KV cache layer names "
-            "for --vllm-runtime-preflight-output-json."
+            "for --vllm-runtime-preflight-output-json. When --fixture-output-dir is set for a vLLM "
+            "probe, this defaults to the fixture-generated vllm-layer-names.json sidecar."
         ),
     )
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME)
