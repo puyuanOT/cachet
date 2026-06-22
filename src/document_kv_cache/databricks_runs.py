@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+from configparser import ConfigParser
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import json
@@ -24,6 +25,7 @@ from document_kv_cache._hardware_targets import (
 
 __all__ = [
     "DEFAULT_DATABRICKS_HOST_ENV",
+    "DEFAULT_DATABRICKS_CONFIG_FILE",
     "DEFAULT_DATABRICKS_TOKEN_ENV",
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
     "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
@@ -31,6 +33,7 @@ __all__ = [
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
     "DatabricksWorkspaceConfig",
     "databricks_workspace_config_from_env",
+    "databricks_workspace_config_from_profile",
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
@@ -47,6 +50,7 @@ __all__ = [
 ]
 DEFAULT_DATABRICKS_HOST_ENV = "DATABRICKS_HOST"
 DEFAULT_DATABRICKS_TOKEN_ENV = "DATABRICKS_TOKEN"
+DEFAULT_DATABRICKS_CONFIG_FILE = "~/.databrickscfg"
 DEFAULT_DATABRICKS_TIMEOUT_SECONDS = 60.0
 DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 1_000_000
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
@@ -57,6 +61,7 @@ _DATABRICKS_GPU_TYPE_FIELDS = (
     _DATABRICKS_GPU_TYPE_FIELD,
     _LEGACY_DATABRICKS_GPU_TYPE_FIELD,
 )
+_DATABRICKS_CONFIG_DEFAULT_SECTION = "__cachet_no_inherited_databricks_defaults__"
 DATABRICKS_TERMINAL_LIFE_CYCLE_STATES = frozenset({"TERMINATED", "SKIPPED", "INTERNAL_ERROR"})
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _DATABRICKS_RUN_STATUS_WRAPPER_KEYS = frozenset({"ok", "action", "summary"})
@@ -171,6 +176,36 @@ def databricks_workspace_config_from_env(
     if not token:
         raise ValueError(f"{token_env} must be set")
     return DatabricksWorkspaceConfig(host=host, token=token, timeout_seconds=timeout_seconds)
+
+
+def databricks_workspace_config_from_profile(
+    profile: str,
+    *,
+    config_file: str | Path = DEFAULT_DATABRICKS_CONFIG_FILE,
+    timeout_seconds: float = DEFAULT_DATABRICKS_TIMEOUT_SECONDS,
+) -> DatabricksWorkspaceConfig:
+    profile_name = _required_profile_name(profile)
+    path = Path(config_file).expanduser()
+    parser = ConfigParser(default_section=_DATABRICKS_CONFIG_DEFAULT_SECTION)
+    read_files = parser.read(path)
+    if not read_files:
+        raise ValueError(f"Databricks config file was not found: {path}")
+    if profile_name not in parser:
+        raise ValueError(f"Databricks profile {profile_name!r} was not found in {path}")
+    section = parser[profile_name]
+    host = section.get("host", "").strip()
+    token = section.get("token", "").strip()
+    if not host:
+        raise ValueError(f"Databricks profile {profile_name!r} is missing host")
+    if not token:
+        raise ValueError(f"Databricks profile {profile_name!r} is missing token")
+    return DatabricksWorkspaceConfig(host=host, token=token, timeout_seconds=timeout_seconds)
+
+
+def _required_profile_name(profile: str) -> str:
+    if not isinstance(profile, str) or not profile.strip():
+        raise ValueError("profile must be a non-empty string")
+    return profile.strip()
 
 
 def submit_databricks_run(
@@ -1174,10 +1209,16 @@ def _write_error_record_or_stdout(result: dict[str, Any], output_json: str | Non
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Submit, inspect, or stage Databricks artifacts using env-provided credentials."
+        description="Submit, inspect, or stage Databricks artifacts using env or profile credentials."
     )
     parser.add_argument("--host-env", default=DEFAULT_DATABRICKS_HOST_ENV)
     parser.add_argument("--token-env", default=DEFAULT_DATABRICKS_TOKEN_ENV)
+    parser.add_argument("--profile", help="Databricks profile name from ~/.databrickscfg.")
+    parser.add_argument(
+        "--config-file",
+        default=DEFAULT_DATABRICKS_CONFIG_FILE,
+        help="Databricks CLI config file used with --profile.",
+    )
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_DATABRICKS_TIMEOUT_SECONDS)
     parser.add_argument("--output-json", help="Write the command result JSON to this path instead of stdout.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -1236,11 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
                 submit_payload_path=args.payload_json,
             )
         else:
-            config = databricks_workspace_config_from_env(
-                host_env=args.host_env,
-                token_env=args.token_env,
-                timeout_seconds=args.timeout_seconds,
-            )
+            config = _databricks_workspace_config_from_args(args)
             if args.command == "submit":
                 response = submit_databricks_run(config, read_databricks_run_submit_payload(args.payload_json))
             elif args.command == "get":
@@ -1291,6 +1328,22 @@ def main(argv: list[str] | None = None) -> int:
         _write_error_record_or_stdout(result, args.output_json)
         return 1
     return 0
+
+
+def _databricks_workspace_config_from_args(args: argparse.Namespace) -> DatabricksWorkspaceConfig:
+    if args.profile:
+        return databricks_workspace_config_from_profile(
+            args.profile,
+            config_file=args.config_file,
+            timeout_seconds=args.timeout_seconds,
+        )
+    if args.config_file != DEFAULT_DATABRICKS_CONFIG_FILE:
+        raise ValueError("--config-file requires --profile")
+    return databricks_workspace_config_from_env(
+        host_env=args.host_env,
+        token_env=args.token_env,
+        timeout_seconds=args.timeout_seconds,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -46,6 +46,7 @@ __all__ = reexport_public(
     "document_kv_cache.databricks_runs",
     (
         "DEFAULT_DATABRICKS_HOST_ENV",
+        "DEFAULT_DATABRICKS_CONFIG_FILE",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
@@ -61,6 +62,7 @@ __all__ += [
     "DatabricksURLOpener",
     "DatabricksWorkspaceConfig",
     "databricks_workspace_config_from_env",
+    "databricks_workspace_config_from_profile",
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
@@ -91,6 +93,7 @@ __all__ += [
 _PUBLIC_EXPORT_NAMES = frozenset(
     {
         "DEFAULT_DATABRICKS_HOST_ENV",
+        "DEFAULT_DATABRICKS_CONFIG_FILE",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
@@ -212,6 +215,20 @@ def databricks_workspace_config_from_env(
         token_env=token_env,
         timeout_seconds=timeout_seconds,
         environ=environ,
+    )
+
+
+def databricks_workspace_config_from_profile(
+    profile: str,
+    *,
+    config_file: str | Path = DEFAULT_DATABRICKS_CONFIG_FILE,
+    timeout_seconds: float = DEFAULT_DATABRICKS_TIMEOUT_SECONDS,
+) -> DatabricksWorkspaceConfig:
+    return _call_document_function(
+        "databricks_workspace_config_from_profile",
+        profile,
+        config_file=config_file,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -445,6 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 _DEFAULT_COMPAT_FUNCTIONS = {
     "databricks_workspace_config_from_env": databricks_workspace_config_from_env,
+    "databricks_workspace_config_from_profile": databricks_workspace_config_from_profile,
     "submit_databricks_run": submit_databricks_run,
     "get_databricks_run": get_databricks_run,
     "put_databricks_dbfs_file": put_databricks_dbfs_file,

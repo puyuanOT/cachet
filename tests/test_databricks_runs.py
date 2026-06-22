@@ -15,6 +15,7 @@ from document_kv_cache._hardware_targets import (
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
 )
 from document_kv_cache.databricks_runs import (
+    DEFAULT_DATABRICKS_CONFIG_FILE,
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
     DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
@@ -24,6 +25,7 @@ from document_kv_cache.databricks_runs import (
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
     databricks_workspace_config_from_env,
+    databricks_workspace_config_from_profile,
     get_databricks_run,
     main,
     plan_databricks_stage_and_submit,
@@ -69,6 +71,87 @@ def test_workspace_config_from_env_requires_host_and_token():
 
     with pytest.raises(ValueError, match=DEFAULT_DATABRICKS_TOKEN_ENV):
         databricks_workspace_config_from_env(environ={DEFAULT_DATABRICKS_HOST_ENV: "https://dbc.example"})
+
+
+def test_workspace_config_from_profile_reads_databricks_cli_config(tmp_path):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA]\n"
+        "host = https://dbc.example.cloud.databricks.com/\n"
+        "token = secret-token\n",
+        encoding="utf-8",
+    )
+
+    config = databricks_workspace_config_from_profile(
+        "QA",
+        config_file=config_path,
+        timeout_seconds=17,
+    )
+
+    assert config.normalized_host == "https://dbc.example.cloud.databricks.com"
+    assert config.timeout_seconds == 17
+    assert "secret-token" not in repr(config)
+
+
+def test_workspace_config_from_profile_supports_default_section(tmp_path):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[DEFAULT]\n"
+        "host = https://dbc.example.cloud.databricks.com\n"
+        "token = default-secret-token\n",
+        encoding="utf-8",
+    )
+
+    config = databricks_workspace_config_from_profile("DEFAULT", config_file=config_path)
+
+    assert config.normalized_host == "https://dbc.example.cloud.databricks.com"
+    assert "default-secret-token" not in repr(config)
+
+
+def test_workspace_config_from_profile_does_not_inherit_default_credentials(tmp_path):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[DEFAULT]\n"
+        "host = https://default.example.cloud.databricks.com\n"
+        "token = default-secret-token\n"
+        "[MISSING_HOST]\n"
+        "token = profile-secret-token\n"
+        "[MISSING_TOKEN]\n"
+        "host = https://profile.example.cloud.databricks.com\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing host"):
+        databricks_workspace_config_from_profile("MISSING_HOST", config_file=config_path)
+
+    with pytest.raises(ValueError, match="missing token"):
+        databricks_workspace_config_from_profile("MISSING_TOKEN", config_file=config_path)
+
+    config = databricks_workspace_config_from_profile("DEFAULT", config_file=config_path)
+
+    assert config.normalized_host == "https://default.example.cloud.databricks.com"
+    assert "default-secret-token" not in repr(config)
+
+
+def test_workspace_config_from_profile_validates_profile_file_host_and_token(tmp_path):
+    missing_config = tmp_path / "missing.cfg"
+    with pytest.raises(ValueError, match="was not found"):
+        databricks_workspace_config_from_profile("QA", config_file=missing_config)
+
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text("[QA]\nhost = https://dbc.example\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="missing token"):
+        databricks_workspace_config_from_profile("QA", config_file=config_path)
+
+    config_path.write_text("[QA]\ntoken = secret-token\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="missing host"):
+        databricks_workspace_config_from_profile("QA", config_file=config_path)
+
+    with pytest.raises(ValueError, match="was not found"):
+        databricks_workspace_config_from_profile("OTHER", config_file=config_path)
+
+    with pytest.raises(ValueError, match="profile must be"):
+        databricks_workspace_config_from_profile("", config_file=config_path)
 
 
 def test_submit_databricks_run_posts_payload_with_bearer_token():
@@ -724,6 +807,77 @@ def test_main_submit_writes_response_json(monkeypatch, tmp_path):
             "host": "https://dbc.example",
         },
     }
+
+
+def test_main_submit_can_use_databricks_profile_without_env(monkeypatch, tmp_path):
+    payload_path = tmp_path / "payload.json"
+    output_path = tmp_path / "response.json"
+    config_path = tmp_path / ".databrickscfg"
+    payload_path.write_text('{"run_name":"cachet-profile-smoke"}', encoding="utf-8")
+    config_path.write_text(
+        "[QA]\n"
+        "host = https://dbc.example.cloud.databricks.com/\n"
+        "token = profile-secret-token\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv(DEFAULT_DATABRICKS_HOST_ENV, raising=False)
+    monkeypatch.delenv(DEFAULT_DATABRICKS_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "submit_databricks_run",
+        lambda config, payload: {"run_id": 456, "host": config.normalized_host, "payload": payload},
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--profile",
+            "QA",
+            "--config-file",
+            str(config_path),
+            "--output-json",
+            str(output_path),
+            "submit",
+            "--payload-json",
+            str(payload_path),
+        ]
+    )
+
+    output = output_path.read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert "profile-secret-token" not in output
+    assert json.loads(output) == {
+        "ok": True,
+        "action": "submit",
+        "response": {
+            "run_id": 456,
+            "host": "https://dbc.example.cloud.databricks.com",
+            "payload": {"run_name": "cachet-profile-smoke"},
+        },
+    }
+
+
+def test_main_config_file_requires_profile(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    output_path = tmp_path / "response.json"
+    payload_path.write_text('{"run_name":"cachet-profile-smoke"}', encoding="utf-8")
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--config-file",
+            str(tmp_path / ".databrickscfg"),
+            "--output-json",
+            str(output_path),
+            "submit",
+            "--payload-json",
+            str(payload_path),
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["error_type"] == "ValueError"
+    assert "--config-file requires --profile" in record["error"]
 
 
 def test_main_put_dbfs_file_writes_sanitized_artifact_record(monkeypatch, tmp_path):
@@ -1385,8 +1539,31 @@ def test_legacy_workspace_config_factory_returns_picklable_legacy_config():
     assert not hasattr(config, "__dict__")
 
 
+def test_legacy_workspace_profile_config_factory_returns_picklable_legacy_config(tmp_path):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA]\n"
+        "host = https://dbc.example/\n"
+        "token = secret-token\n",
+        encoding="utf-8",
+    )
+
+    config = legacy_databricks_runs.databricks_workspace_config_from_profile(
+        "QA",
+        config_file=config_path,
+    )
+
+    round_tripped = pickle.loads(pickle.dumps(config))
+    assert type(config) is legacy_databricks_runs.DatabricksWorkspaceConfig
+    assert isinstance(config, public_databricks_runs.DatabricksWorkspaceConfig)
+    assert type(round_tripped) is legacy_databricks_runs.DatabricksWorkspaceConfig
+    assert round_tripped.normalized_host == "https://dbc.example"
+    assert "secret-token" not in repr(round_tripped)
+
+
 def test_databricks_runs_star_import_surfaces_are_stable():
     expected_legacy_exports = {
+        "DEFAULT_DATABRICKS_CONFIG_FILE",
         "DEFAULT_DATABRICKS_HOST_ENV",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
@@ -1398,6 +1575,7 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "DatabricksURLOpener",
         "DatabricksWorkspaceConfig",
         "databricks_workspace_config_from_env",
+        "databricks_workspace_config_from_profile",
         "submit_databricks_run",
         "get_databricks_run",
         "put_databricks_dbfs_file",

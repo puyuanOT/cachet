@@ -1403,7 +1403,10 @@ cachet-databricks-runs \
 ```
 
 Submit or inspect a generated payload with env-provided credentials, keeping
-tokens out of command arguments and JSON artifacts:
+tokens out of command arguments and JSON artifacts. If the workspace is already
+configured in `~/.databrickscfg`, pass `--profile PROFILE_NAME` instead of
+exporting `DATABRICKS_HOST` and `DATABRICKS_TOKEN`; use `--config-file PATH`
+when the profile lives outside the default config file:
 
 ```bash
 export DATABRICKS_HOST=https://dbc-...cloud.databricks.com
@@ -1424,6 +1427,20 @@ cachet-databricks-runs \
   --run-id 123456789 \
   --summary \
   --submit-payload-json databricks-run-submit.json
+```
+
+Equivalent profile-based submit:
+
+```bash
+cachet-databricks-runs \
+  --profile QA \
+  --output-json databricks-stage-submit-response.json \
+  stage-and-submit \
+  --payload-json databricks-run-submit.json \
+  --artifact v1-plan.json=dbfs:/benchmarks/v1-plan.json \
+  --artifact run_plan.py=dbfs:/benchmarks/run_plan.py \
+  --overwrite \
+  --require-payload-dbfs-artifacts
 ```
 
 When the managed runner is configured with `--execution-result-json-uri`, the
