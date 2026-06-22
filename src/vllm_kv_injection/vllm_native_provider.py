@@ -50,7 +50,7 @@ from vllm_kv_injection.vllm_layer_mapping import (
     inspect_document_kv_vllm_layer_mapping,
     validate_document_kv_vllm_layer_mapping_record,
 )
-from vllm_kv_injection.vllm_dynamic_connector import VLLMSupportsHMA
+from vllm_kv_injection.vllm_dynamic_connector import DocumentKVConnectorStats, VLLMSupportsHMA
 
 __all__ = [
     "DOCUMENT_KV_HANDOFF_JSON_PARAM",
@@ -398,12 +398,14 @@ class DocumentKVNativeProvider:
     def get_block_ids_with_load_errors(self) -> set[int]:
         return set(self._load_errors)
 
-    def get_kv_connector_stats(self) -> Mapping[str, int]:
-        return {
-            "document_kv_loads_started": self._loads_started,
-            "document_kv_layers_loaded": self._layers_loaded,
-            "document_kv_load_error_blocks": len(self._load_errors),
-        }
+    def get_kv_connector_stats(self) -> DocumentKVConnectorStats:
+        return DocumentKVConnectorStats.from_mapping(
+            {
+                "document_kv_loads_started": self._loads_started,
+                "document_kv_layers_loaded": self._layers_loaded,
+                "document_kv_load_error_blocks": len(self._load_errors),
+            }
+        )
 
     def vllm_layer_mapping_record(self) -> dict[str, Any]:
         """Return the last vLLM layer-name mapping accepted by the provider."""
@@ -548,7 +550,7 @@ class DocumentKVNativeProbeConnector(VLLMSupportsHMA):
     def get_block_ids_with_load_errors(self) -> set[int]:
         return self.provider.get_block_ids_with_load_errors()
 
-    def get_kv_connector_stats(self) -> Mapping[str, int]:
+    def get_kv_connector_stats(self) -> DocumentKVConnectorStats:
         return self.provider.get_kv_connector_stats()
 
     def get_handshake_metadata(self) -> Mapping[str, Any]:
