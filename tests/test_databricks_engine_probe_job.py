@@ -8,6 +8,7 @@ import sys
 import pytest
 
 import document_kv_cache.databricks_engine_probe_job as public_engine_probe_job
+import document_kv_cache._databricks_engine_probe_runner as engine_probe_runner
 import restaurant_kv_serving.databricks_engine_probe_job as legacy_engine_probe_job
 from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY,
@@ -59,6 +60,7 @@ VLLM_RUNTIME_PACKAGE = DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE
 SGLANG_RUNTIME_PACKAGE = DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE
 VLLM_RUNTIME_PACKAGES = VLLM_DEPENDENCY_CONSTRAINTS
 SGLANG_RUNTIME_PACKAGES = SGLANG_DEPENDENCY_CONSTRAINTS
+VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE = "opencv-python-headless==4.12.0.88"
 VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json"
 VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON = "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json"
 SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json"
@@ -329,6 +331,7 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
         VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
     }
     assert _parameter_values(parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
+    assert _parameter_values(parameters, "--pip-override-package") == [VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE]
     package_wheel_uris = _parameter_values(parameters, "--package-wheel-uri")
     assert package_wheel_uris == [WHEEL_URI]
     assert not any("vllm_kv_injection" in wheel_uri for wheel_uri in package_wheel_uris)
@@ -775,6 +778,7 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_pref
         VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
     ]
     assert _parameter_values(vllm_parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
+    assert _parameter_values(vllm_parameters, "--pip-override-package") == [VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE]
 
 
 def test_build_databricks_engine_probe_matrix_payload_rejects_conflicting_provider_backed_profile():
@@ -1701,10 +1705,13 @@ def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_p
     assert "_install_runtime_packages" in script
     assert "venv\", \"--clear\"" in script
     assert "virtualenv==20.39.1" in script
+    assert "--pip-override-package" in script
     assert "--skip-runtime-package-install" in script
     assert "PYTHONPATH" in script
     assert "PYTHONNOUSERSITE" in script
     assert "pip\", \"install\", *args.pip_package" in script
+    assert "\"--force-reinstall\"" in script
+    assert "\"--no-deps\"" in script
 
 
 def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tmp_path, monkeypatch):
@@ -1733,7 +1740,7 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
 
     monkeypatch.setattr(subprocess, "check_call", fake_check_call)
     monkeypatch.setattr(subprocess, "call", fake_call)
-    monkeypatch.setattr(public_engine_probe_job, "run_engine_probe_task", fake_run_engine_probe_task)
+    monkeypatch.setattr(engine_probe_runner, "run_engine_probe_task", fake_run_engine_probe_task)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -1745,6 +1752,8 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             VLLM_RUNTIME_PACKAGE,
             "--pip-package",
             "transformers==5.12.1",
+            "--pip-override-package",
+            VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE,
             "--package-wheel-uri",
             "dbfs:/wheels/document_kv_cache-0.2.0-py3-none-any.whl",
             "--handoff-json",
@@ -1764,6 +1773,15 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
         (sys.executable, "-m", "venv", "--clear", str(venv_dir)),
         (str(venv_python), "-m", "pip", "install", "--upgrade", "pip"),
         (str(venv_python), "-m", "pip", "install", VLLM_RUNTIME_PACKAGE, "transformers==5.12.1"),
+        (
+            str(venv_python),
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE,
+        ),
         (str(venv_python), "-m", "pip", "install", "/dbfs/wheels/document_kv_cache-0.2.0-py3-none-any.whl"),
     ]
     assert install_envs[0] is None
@@ -1883,7 +1901,7 @@ def test_generated_runner_skip_runtime_package_install_forwards_args(tmp_path, m
 
     monkeypatch.setattr(subprocess, "check_call", lambda argv, **kwargs: install_calls.append(tuple(argv)))
     monkeypatch.setattr(subprocess, "call", lambda argv, **kwargs: reexec_calls.append(tuple(argv)) or 0)
-    monkeypatch.setattr(public_engine_probe_job, "run_engine_probe_task", fake_run_engine_probe_task)
+    monkeypatch.setattr(engine_probe_runner, "run_engine_probe_task", fake_run_engine_probe_task)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -2345,7 +2363,8 @@ def test_write_databricks_engine_probe_runner_script_imports_task_runner(tmp_pat
     assert "--package-wheel-uri" in runner_text
     assert "pip\", \"install\"" in runner_text
     assert "dbfs:/" in runner_text
-    assert "document_kv_cache.databricks_engine_probe_job" in runner_text
+    assert "document_kv_cache._databricks_engine_probe_runner" in runner_text
+    assert "document_kv_cache.databricks_engine_probe_job" not in runner_text
     assert "run_engine_probe_task" in runner_text
     assert "if exit_code:" in runner_text
 
@@ -2361,14 +2380,14 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
     package_dir = tmp_path / "document_kv_cache"
     package_dir.mkdir()
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
-    (package_dir / "databricks_engine_probe_job.py").write_text(
+    (package_dir / "_databricks_engine_probe_runner.py").write_text(
         "\n".join(
             [
                 "import json",
                 "import os",
                 "",
                 "with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "    handle.write(json.dumps({'event': 'engine_probe_job_import'}) + '\\n')",
+                "    handle.write(json.dumps({'event': 'engine_probe_runner_import'}) + '\\n')",
                 "",
                 "def run_engine_probe_task(argv=None):",
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
@@ -2499,7 +2518,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
         "subprocess_check_call",
         "subprocess_check_call",
         "subprocess_call",
-        "engine_probe_job_import",
+        "engine_probe_runner_import",
         "run_engine_probe_task",
     ]
 
@@ -2670,6 +2689,7 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
         VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     ]
     assert _parameter_values(parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
+    assert _parameter_values(parameters, "--pip-override-package") == [VLLM_FIPS_OPENCV_OVERRIDE_PACKAGE]
     assert _parameter_values(parameters, "--package-wheel-uri") == [WHEEL_URI]
     assert "--allow-non-native-probe" not in parameters
     assert "--engine-version" not in parameters
