@@ -671,6 +671,62 @@ def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(
     assert released_after_generator_collectable == [True]
 
 
+def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_path, monkeypatch):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-generated-venv",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory="module:factory",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="bfloat16",
+            align_bytes=1,
+        ),
+    )
+    config.venv_python.parent.mkdir(parents=True)
+    config.venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    generated_biography = tmp_path / "generated-handoffs" / "biography.handoffs.jsonl"
+    calls = []
+
+    def fake_run(argv, *, check, capture_output, text, timeout, env):
+        calls.append((argv, check, capture_output, text, timeout, env))
+        assert argv[0] == str(config.venv_python)
+        assert argv[1] == "-c"
+        input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
+        assert input_payload["benchmark_id"] == "prepared-generated-venv"
+        assert input_payload["handoff_generation"]["generator_factory"] == "module:factory"
+        Path(argv[4]).parent.mkdir(parents=True, exist_ok=True)
+        Path(argv[4]).write_text(
+            json.dumps(
+                {
+                    "generated_paths": {"biography": str(generated_biography)},
+                    "record": {
+                        "ok": True,
+                        "dataset_source": "prepared",
+                        "generator_python": str(config.venv_python),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout="worker ok", stderr="")
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+
+    generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
+
+    assert generated_paths == {"biography": generated_biography}
+    generation = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    assert generation["ok"] is True
+    assert generation["generator_python"] == str(config.venv_python)
+    assert len(calls) == 1
+    assert calls[0][4] == config.timeout_seconds
+    assert calls[0][5]["HF_HOME"] == str(config.hf_cache_dir)
+
+
 def test_prepared_benchmark_handoff_coverage_record_counts_enriched_rows(tmp_path):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
