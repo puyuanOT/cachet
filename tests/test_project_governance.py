@@ -1038,6 +1038,10 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert 'Path("/tmp/cachet-pep517-wheelhouse").glob("document_kv_cache-*.whl")' in text
     assert "Verify built wheel metadata" in text
     assert 'Path("dist").glob("document_kv_cache-*.whl")' in text
+    assert "def read_dist_info(archive, filename):" in text
+    assert "assert len(roots) == 1" in text
+    assert 'archive.read(f"{roots.pop()}/{filename}").decode("utf-8")' in text
+    assert re.search(r"document_kv_cache-[^/\"']+\.dist-info/", text) is None
     assert "Requires-Python: >=3.11,<4.0" in text
     assert "Requires-Dist: packaging (==23.2)" in text
     assert "Tag: py3-none-any" in text
