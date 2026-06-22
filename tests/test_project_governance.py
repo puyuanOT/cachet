@@ -1043,7 +1043,7 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert 'archive.read(f"{roots.pop()}/{filename}").decode("utf-8")' in text
     assert re.search(r"document_kv_cache-[^/\"']+\.dist-info/", text) is None
     assert "Requires-Python: >=3.11,<4.0" in text
-    assert "Requires-Dist: packaging (==23.2)" in text
+    assert "Requires-Dist: packaging (==26.2)" in text
     assert "Tag: py3-none-any" in text
     assert "cachet-benchmark-plan=cachet.benchmark_plan:main" in text
     assert "cachet-pr-evidence=cachet.pr_evidence:main" in text
@@ -1352,7 +1352,7 @@ def test_runtime_packaging_pin_stays_databricks_ml_compatible():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     dependency_versions = _collect_poetry_dependency_versions(pyproject)
 
-    assert dependency_versions["project.dependencies.packaging"] == "==23.2"
+    assert dependency_versions["project.dependencies.packaging"] == "==26.2"
 
 
 def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver():
