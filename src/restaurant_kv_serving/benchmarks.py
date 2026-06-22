@@ -14,6 +14,8 @@ __all__ = reexport_public(
         "BASELINE_PREFILL_ARM",
         "CACHE_REUSE_ARM",
         "DOCUMENT_KV_REQUEST_ID_PARAM",
+        "DOCUMENT_KV_HANDOFF_JSON_PARAM",
+        "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
         "FINAL_ANSWER_CUE",
         "BenchmarkDatasetSpec",
         "BenchmarkPromptParts",
