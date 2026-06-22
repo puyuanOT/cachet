@@ -29,6 +29,7 @@ from document_kv_cache.serving_env import (
     serving_environment_profile,
     serving_environment_profile_to_record,
 )
+from document_kv_cache.vllm_runtime_contract_data import vllm_kv_connector_v1_contract_to_record
 
 VLLM_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:vllm_native_probe_factory"
 SGLANG_NATIVE_PROBE_FACTORY = "document_kv_cache.native_probe_factories:sglang_native_probe_factory"
@@ -111,52 +112,6 @@ _NATIVE_PROBE_RUNTIME_CONTRACT_SPECS: Mapping[
     ServingBackend, _NativeProbeRuntimeContractSpec
 ] = MappingProxyType(
     {
-        ServingBackend.VLLM: _NativeProbeRuntimeContractSpec(
-            record_type="vllm_kv_injection.kv_connector_v1_contract.v1",
-            schema_version=1,
-            runtime="vllm-kv-connector-v1",
-            doc_url="https://docs.vllm.ai/en/stable/api/vllm/distributed/kv_transfer/kv_connector/v1/",
-            required_methods=(
-                "get_num_new_matched_tokens",
-                "update_state_after_alloc",
-                "build_connector_meta",
-                "register_kv_caches",
-                "start_load_kv",
-                "wait_for_layer_load",
-                "save_kv_layer",
-                "wait_for_save",
-                "request_finished",
-                "request_finished_all_groups",
-            ),
-            optional_methods=(
-                "bind_connector_metadata",
-                "bind_gpu_block_pool",
-                "build_connector_worker_meta",
-                "build_kv_connector_stats",
-                "build_prom_metrics",
-                "clear_connector_metadata",
-                "get_block_ids_with_load_errors",
-                "get_finished",
-                "get_finished_count",
-                "get_handshake_metadata",
-                "get_kv_connector_kv_cache_events",
-                "get_kv_connector_stats",
-                "get_required_kvcache_layout",
-                "handle_preemptions",
-                "has_pending_push_work",
-                "has_connector_metadata",
-                "on_new_request",
-                "register_cross_layers_kv_cache",
-                "requires_piecewise_for_cudagraph",
-                "reset_cache",
-                "set_host_xfer_buffer_ops",
-                "set_xfer_handshake_metadata",
-                "set_xfer_handshake_metadata_pp_aware",
-                "shutdown",
-                "take_events",
-                "update_connector_output",
-            ),
-        ),
         ServingBackend.SGLANG: _NativeProbeRuntimeContractSpec(
             record_type="sglang_kv_injection.runtime_cache_contract.v1",
             schema_version=1,
@@ -396,6 +351,10 @@ def native_probe_runtime_contract_to_record(backend: ServingBackend | str) -> di
     """Return the backend runtime lifecycle contract required for native V1 evidence."""
 
     backend = _serving_backend(backend)
+    if backend == ServingBackend.VLLM:
+        return vllm_kv_connector_v1_contract_to_record(
+            handoff_contract=native_probe_adapter_contract_to_record()
+        )
     try:
         return _NATIVE_PROBE_RUNTIME_CONTRACT_SPECS[backend].to_record()
     except KeyError as exc:  # pragma: no cover - _serving_backend validates current enum values.

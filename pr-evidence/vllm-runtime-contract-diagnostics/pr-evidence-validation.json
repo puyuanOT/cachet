@@ -1,0 +1,45 @@
+{
+  "files": {
+    "pr-evidence/vllm-runtime-contract-diagnostics/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer Carver found a missing cachet.vllm_runtime_contract_data facade and internally inconsistent installed-vLLM diagnostic records being accepted. The PR added the facade, derived public-submodule import coverage, package_version type checking, recomputed missing/extra/ok validation, and regression tests; scoped re-review reported both findings resolved with no blockers.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 310,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/310",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/vllm_runtime_contract_data.py",
+        "src/document_kv_cache/native_probe_factories.py",
+        "src/vllm_kv_injection/vllm_runtime_contract.py",
+        "src/vllm_kv_injection/__init__.py",
+        "src/cachet/vllm_runtime_contract_data.py",
+        "tests/test_vllm_kv_injection_vllm_runtime_contract.py",
+        "tests/test_native_probe_factories.py",
+        "tests/test_public_package.py"
+      ],
+      "verification": [
+        "python -m pytest -q tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_native_probe_factories.py -> 47 passed before review fixes",
+        "python -m pytest -q tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_native_probe_factories.py tests/test_public_package.py -> 59 passed after review fixes",
+        "python -m pytest -q tests/test_project_governance.py tests/test_repository_hygiene.py tests/test_vllm_kv_injection_project_governance.py tests/test_public_package.py tests/test_native_probe_factories.py tests/test_vllm_kv_injection_vllm_runtime_contract.py -> 112 passed",
+        "python -m pytest -q tests/test_vllm_kv_injection_*.py tests/test_native_probe_factories.py tests/test_adapter_scaffold.py tests/test_public_package.py tests/test_project_governance.py tests/test_repository_hygiene.py -> 205 passed before review fixes",
+        "python -m pytest -q -> 1595 passed",
+        "PYTHONPATH=src python installed_vllm_kv_connector_v1_contract_to_record smoke -> local no-vLLM env emitted importable=false, ok=false, import_error_type=ModuleNotFoundError",
+        "changed-file secret-pattern scan for Databricks token and bearer credential patterns -> no matches",
+        "GPT-5.5 reviewer found Cachet facade and validator consistency gaps; both were fixed and scoped re-review reported no blockers",
+        "No Databricks probe was launched"
+      ],
+      "what_changed": [
+        "Single-sourced the vLLM V1 KV connector lifecycle contract data under document_kv_cache and reused it from native-probe diagnostics and the vendored vLLM adapter package.",
+        "Added an installed-vLLM KVConnectorBase/SupportsHMA drift diagnostic that reports import errors, missing required methods, extra installed hooks, allowed properties, and fail-closed ok status.",
+        "Added the Cachet-branded public module facade and regression tests for strict installed-runtime diagnostic validation."
+      ],
+      "why": "The g6/L4 Databricks native-probe path needs a local preflight that can detect vLLM runtime API drift before launching provider-backed engine probes, while preserving strict native-probe validation against no-op or test-double wiring."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

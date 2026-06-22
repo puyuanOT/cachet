@@ -3,6 +3,7 @@ import json
 import pytest
 
 import document_kv_cache.native_probe_factories as native_probe_factories
+from document_kv_cache.vllm_runtime_contract_data import vllm_kv_connector_v1_contract_to_record
 from document_kv_cache.engine_probe import EngineKVProbeFactoryContext
 from document_kv_cache.engine_probe import load_engine_kv_probe_factory
 from document_kv_cache.engine_adapters import (
@@ -627,6 +628,9 @@ def test_native_probe_adapter_contract_records_required_engine_handoff_versions(
 
 def test_native_probe_runtime_contract_records_required_backend_lifecycles():
     vllm_contract = native_probe_runtime_contract_to_record("vllm")
+    assert vllm_contract == vllm_kv_connector_v1_contract_to_record(
+        handoff_contract=native_probe_adapter_contract_to_record()
+    )
     assert vllm_contract["record_type"] == "vllm_kv_injection.kv_connector_v1_contract.v1"
     assert vllm_contract["runtime"] == "vllm-kv-connector-v1"
     assert vllm_contract["handoff_contract"] == native_probe_adapter_contract_to_record()

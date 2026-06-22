@@ -106,6 +106,9 @@ new document modules depend on restaurant-owned implementations.
 - `storage_benchmark.py` measures storage-reader latency and throughput.
 - `template_resources.py` lists and extracts packaged templates.
 - `vllm_smoke.py` owns the self-contained Qwen3/vLLM Databricks smoke.
+- `vllm_runtime_contract_data.py` single-sources the vLLM V1 KV connector
+  lifecycle contract shared by native-probe diagnostics and the vendored vLLM
+  adapter package.
 - `workflow.py` coordinates optional training, cache generation, manifest
   registration, materialization, and serving preparation.
 
