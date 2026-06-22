@@ -50,6 +50,7 @@ def test_public_document_package_reexports_core_api():
         ChunkCacheResult,
         ChunkCacheStats,
         DATABRICKS_AUTH_CHECK_RECORD_TYPE,
+        DATABRICKS_PROFILE_AUTH_MODES,
         DATABRICKS_RUN_STATUS_RECORD_TYPE,
         DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
         DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
@@ -306,6 +307,7 @@ def test_public_document_package_reexports_core_api():
     assert DATABRICKS_RUN_STATUS_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_STATUS_RECORD_TYPE
     assert DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
     assert DATABRICKS_AUTH_CHECK_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_AUTH_CHECK_RECORD_TYPE
+    assert DATABRICKS_PROFILE_AUTH_MODES is restaurant_kv_serving.DATABRICKS_PROFILE_AUTH_MODES
     assert DEDICATED_DATABRICKS_DATA_SECURITY_MODE is restaurant_kv_serving.DEDICATED_DATABRICKS_DATA_SECURITY_MODE
     assert DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME is restaurant_kv_serving.DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
     assert DEFAULT_DATABRICKS_CONFIG_FILE is restaurant_kv_serving.DEFAULT_DATABRICKS_CONFIG_FILE
@@ -1027,6 +1029,7 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "import document_kv_cache.storage as storage" not in stub_text
     assert "CacheTier as CacheTier" in stub_text
     assert "DATABRICKS_AUTH_CHECK_RECORD_TYPE as DATABRICKS_AUTH_CHECK_RECORD_TYPE" in stub_text
+    assert "DATABRICKS_PROFILE_AUTH_MODES as DATABRICKS_PROFILE_AUTH_MODES" in stub_text
     assert "check_databricks_auth as check_databricks_auth" in stub_text
     assert "DEFAULT_DATABRICKS_CONFIG_FILE as DEFAULT_DATABRICKS_CONFIG_FILE" in stub_text
     assert "databricks_workspace_config_from_profile as databricks_workspace_config_from_profile" in stub_text

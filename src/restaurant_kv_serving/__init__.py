@@ -34,6 +34,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
     ),
+    "DATABRICKS_PROFILE_AUTH_MODES": (
+        "restaurant_kv_serving.databricks_runs",
+        "DATABRICKS_PROFILE_AUTH_MODES",
+    ),
     "DATABRICKS_RUN_STATUS_RECORD_TYPE": (
         "restaurant_kv_serving.databricks_runs",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
@@ -989,6 +993,7 @@ __all__ = [
     "DEFAULT_DATABRICKS_CONFIG_FILE",
     "DEFAULT_DATABRICKS_TOKEN_ENV",
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+    "DATABRICKS_PROFILE_AUTH_MODES",
     "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",

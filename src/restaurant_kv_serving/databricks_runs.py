@@ -49,6 +49,7 @@ __all__ = reexport_public(
         "DEFAULT_DATABRICKS_CONFIG_FILE",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+        "DATABRICKS_PROFILE_AUTH_MODES",
         "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
@@ -99,6 +100,7 @@ _PUBLIC_EXPORT_NAMES = frozenset(
         "DEFAULT_DATABRICKS_CONFIG_FILE",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+        "DATABRICKS_PROFILE_AUTH_MODES",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
         "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
@@ -226,12 +228,14 @@ def databricks_workspace_config_from_profile(
     *,
     config_file: str | Path = DEFAULT_DATABRICKS_CONFIG_FILE,
     timeout_seconds: float = DEFAULT_DATABRICKS_TIMEOUT_SECONDS,
+    profile_auth_mode: str = "auto",
 ) -> DatabricksWorkspaceConfig:
     return _call_document_function(
         "databricks_workspace_config_from_profile",
         profile,
         config_file=config_file,
         timeout_seconds=timeout_seconds,
+        profile_auth_mode=profile_auth_mode,
     )
 
 

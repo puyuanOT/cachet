@@ -1456,9 +1456,13 @@ tokens out of command arguments and JSON artifacts. If the workspace is already
 configured in `~/.databrickscfg`, pass `--profile PROFILE_NAME` instead of
 exporting `DATABRICKS_HOST` and `DATABRICKS_TOKEN`; use `--config-file PATH`
 when the profile lives outside the default config file. Profiles with `host`
-and `token` are parsed directly. Profiles with `auth_type` and no static token
-are resolved through the optional Databricks SDK, so install the `databricks`
-extra before using OAuth or Databricks CLI auth profiles:
+and `token` are parsed directly by default. Profiles with `auth_type` and no
+static token are resolved through the optional Databricks SDK. For OAuth or
+Databricks CLI profiles that also contain a transient static token, pass
+`--profile-auth-mode sdk` to force SDK profile auth after refreshing the profile
+with the Databricks CLI. Use `--profile-auth-mode static` when a profile must
+fail unless its static token is present. Install the `databricks` extra before
+using SDK-backed OAuth or Databricks CLI auth profiles:
 
 ```bash
 export DATABRICKS_HOST=https://dbc-...cloud.databricks.com
@@ -1486,6 +1490,12 @@ Equivalent profile-based submit:
 ```bash
 cachet-databricks-runs \
   --profile QA \
+  --output-json databricks-auth-check.json \
+  auth-check
+
+cachet-databricks-runs \
+  --profile QA_OAUTH \
+  --profile-auth-mode sdk \
   --output-json databricks-auth-check.json \
   auth-check
 
