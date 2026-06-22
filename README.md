@@ -1411,10 +1411,18 @@ python -m document_kv_cache.databricks_job \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
+  --spark-env-var CACHET_TRANSFORMERS_MODEL_ID=Qwen/Qwen3-4B-Instruct-2507 \
+  --spark-env-var CACHET_TRANSFORMERS_DEVICE=cuda \
+  --spark-env-var CACHET_TRANSFORMERS_TORCH_DTYPE=bfloat16 \
   --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
   --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json databricks-run-submit.json
 ```
+
+Use `--spark-env-var` only for non-secret runtime configuration, such as the
+Transformers generator model id, device, dtype, or cache-axis order. The helper
+rejects secret-looking env names and Databricks PAT-shaped values so generated
+payloads stay suitable for release evidence.
 
 Set the native-probe delegate factory flags only when the benchmark plan uses
 Cachet's built-in reserved vLLM or SGLang native probe factories. The Databricks
@@ -1516,7 +1524,9 @@ Workspace-specific automation can still POST the payload itself after applying
 the organization’s auth, cluster policy, and asset-upload conventions. Teams
 that manage jobs declaratively can use the reference Databricks Asset Bundle in
 `databricks/databricks.yml`; it mirrors the same single-node AWS g6/L4 benchmark
-contract without embedding workspace credentials or paths.
+contract without embedding workspace credentials or paths. The bundle exposes
+non-secret `transformers_*` variables for generator runtime settings and maps
+them to `CACHET_TRANSFORMERS_*` cluster `spark_env_vars`.
 Standalone bundles for the runtime smoke, storage-reader benchmark, and native
 engine-probe evidence live under `databricks/vllm-smoke/`,
 `databricks/storage-benchmark/`, and `databricks/engine-probe/`.

@@ -50,8 +50,9 @@ new document modules depend on restaurant-owned implementations.
   targets also run strict vLLM/SGLang runtime preflights before native probe
   execution.
 - `databricks_job.py` emits the full V1 benchmark Databricks run payload,
-  including optional native-probe delegate environment variables for benchmark
-  plans that use Cachet's built-in vLLM/SGLang probe factories.
+  including optional non-secret generator runtime environment variables and
+  native-probe delegate environment variables for benchmark plans that use
+  Cachet's built-in vLLM/SGLang probe factories.
 - `databricks_runs.py` stages small DBFS artifacts, dry-runs or performs
   stage-and-submit for a generated payload with one provenance sidecar, and
   checks/summarizes Databricks runs using environment variables, static

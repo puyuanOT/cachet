@@ -257,15 +257,15 @@ def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
     """Build a Transformers generator from Cachet environment variables."""
 
     config = TransformersKVGeneratorConfig(
-        model_id=os.environ.get(CACHET_TRANSFORMERS_MODEL_ID_ENV, QWEN3_4B_INSTRUCT_HF_MODEL_ID),
-        tokenizer_id=os.environ.get(CACHET_TRANSFORMERS_TOKENIZER_ID_ENV),
-        device=os.environ.get(CACHET_TRANSFORMERS_DEVICE_ENV),
-        torch_dtype=os.environ.get(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, "auto"),
+        model_id=_env_string(CACHET_TRANSFORMERS_MODEL_ID_ENV, default=QWEN3_4B_INSTRUCT_HF_MODEL_ID),
+        tokenizer_id=_env_string(CACHET_TRANSFORMERS_TOKENIZER_ID_ENV),
+        device=_env_string(CACHET_TRANSFORMERS_DEVICE_ENV),
+        torch_dtype=_env_string(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, default="auto"),
         trust_remote_code=_env_bool(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, default=False),
         add_special_tokens=_env_bool(CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV, default=False),
-        cache_axis_order=os.environ.get(
+        cache_axis_order=_env_string(
             CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
-            _CACHE_AXIS_ORDER_HEAD_MAJOR,
+            default=_CACHE_AXIS_ORDER_HEAD_MAJOR,
         ),
         model_kwargs=_env_json_object(CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV),
         tokenizer_kwargs=_env_json_object(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV),
@@ -534,8 +534,15 @@ def _transformers() -> Any:
     return transformers
 
 
-def _env_bool(name: str, *, default: bool) -> bool:
+def _env_string(name: str, *, default: str | None = None) -> str | None:
     value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    return value
+
+
+def _env_bool(name: str, *, default: bool) -> bool:
+    value = _env_string(name)
     if value is None:
         return default
     normalized = value.strip().lower()

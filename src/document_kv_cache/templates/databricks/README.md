@@ -10,7 +10,9 @@ provide the same benchmark and smoke-test scaffolding without a source checkout.
 - `vllm-smoke/` contains the self-contained Qwen3/vLLM smoke bundle template.
 
 All templates expect caller-supplied variables for workspace paths, wheel URIs,
-and the single-user identity used by Unity Catalog enabled clusters.
+and the single-user identity used by Unity Catalog enabled clusters. The main
+benchmark bundle also accepts non-secret `transformers_*` variables for
+`CACHET_TRANSFORMERS_*` generator runtime settings.
 Use the `document-kv-templates` CLI from an installed wheel to inspect or
 extract these package-data files before running Databricks Asset Bundle
 commands:

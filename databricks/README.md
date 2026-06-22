@@ -51,6 +51,9 @@ databricks bundle validate \
   --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com \
   --var execution_result_json_uri=dbfs:/benchmarks/result.json \
+  --var transformers_model_id=Qwen/Qwen3-4B-Instruct-2507 \
+  --var transformers_device=cuda \
+  --var transformers_torch_dtype=bfloat16 \
   --var vllm_native_probe_delegate_factory=vllm_kv_injection.probe:build_native_connector_probe \
   --var sglang_native_probe_delegate_factory=my_sglang_adapter.probes:build_probe
 ```
@@ -67,6 +70,10 @@ uses Cachet's built-in reserved vLLM or SGLang probe factories. The helper and
 bundle map those values to cluster `spark_env_vars`, leaving the benchmark
 runner arguments stable. Empty bundle defaults are treated as unset by the
 built-in factories.
+Set the `transformers_*` variables only for non-secret generator runtime
+configuration, such as model id, device, dtype, or cache-axis order.
+The bundle maps them to `CACHET_TRANSFORMERS_*` cluster `spark_env_vars`; leave
+them empty when the benchmark plan does not use the Transformers KV generator.
 
 For the smallest managed runtime check, use the standalone smoke bundle or
 generate the equivalent one-off `runs/submit` payload. The smoke bundle only

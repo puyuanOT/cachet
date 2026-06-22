@@ -7,6 +7,7 @@ import pytest
 import cachet.transformers_generator as cachet_transformers_generator
 import document_kv_cache.transformers_generator as public_transformers_generator
 from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout
+from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
     CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
@@ -326,6 +327,48 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     assert config.cache_axis_order == "token_major"
     assert config.model_kwargs == {"attn_implementation": "eager"}
     assert config.tokenizer_kwargs == {"padding_side": "left"}
+
+
+def test_transformers_generator_env_factory_treats_blank_values_as_unset(monkeypatch):
+    calls = []
+    sentinel = object()
+
+    def fake_from_pretrained(cls, config, *, layout=None):
+        calls.append((cls, config, layout))
+        return sentinel
+
+    monkeypatch.setattr(
+        TransformersKVChunkGenerator,
+        "from_pretrained",
+        classmethod(fake_from_pretrained),
+    )
+    for name in (
+        CACHET_TRANSFORMERS_MODEL_ID_ENV,
+        CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
+        CACHET_TRANSFORMERS_DEVICE_ENV,
+        CACHET_TRANSFORMERS_TORCH_DTYPE_ENV,
+        CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV,
+        CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
+        CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
+        CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
+        CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
+    ):
+        monkeypatch.setenv(name, " ")
+
+    generator = build_transformers_kv_chunk_generator()
+
+    assert generator is sentinel
+    _cls, config, layout = calls[0]
+    assert layout is None
+    assert config.model_id == QWEN3_4B_INSTRUCT_HF_MODEL_ID
+    assert config.tokenizer_id is None
+    assert config.device is None
+    assert config.torch_dtype == "auto"
+    assert config.trust_remote_code is False
+    assert config.add_special_tokens is False
+    assert config.cache_axis_order == "head_major"
+    assert config.model_kwargs == {}
+    assert config.tokenizer_kwargs == {}
 
 
 def test_transformers_generator_public_facade_aliases_document_module():
