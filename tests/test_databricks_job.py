@@ -1537,6 +1537,9 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--provider-backed-sglang-native-probe" in readme_text
     assert "--provider-backed-sglang-native-probe" in root_readme_text
     assert "--provider-backed-sglang-native-probe" in module_readme_text
+    assert "--require-payload-staged-dbfs-artifacts" in readme_text
+    assert "--require-payload-staged-dbfs-artifacts" in root_readme_text
+    assert "sglang-launch-config.json=dbfs:/benchmarks/sglang-launch-config.json" in readme_text
     assert (
         '"probe_factory": "document_kv_cache.native_probe_factories:sglang_native_probe_factory"'
         in root_readme_text

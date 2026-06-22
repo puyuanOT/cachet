@@ -205,11 +205,13 @@ through `native_probe_metadata`. Use the Python
 `document-kv-engine-probe-databricks-job` helper shown above for two-backend
 release-safe probe matrices.
 
-Small runner or wheel artifacts can be staged to DBFS with the same
+Small runner, wheel, or SGLang launch-config artifacts can be staged to DBFS with the same
 environment-provided Databricks credentials before submitting the generated
-payload. `stage-and-submit` writes one sidecar with artifact upload provenance
-and the Databricks submit response; use a streaming upload tool or a UC Volume
-for larger artifacts.
+payload. Use `--require-payload-staged-dbfs-artifacts` for fixture-backed native
+probes so generated DBFS output paths do not need fake local upload artifacts.
+`stage-and-submit` writes one sidecar with artifact upload provenance and the
+Databricks submit response; use a streaming upload tool or a UC Volume for
+larger artifacts.
 
 ```bash
 cachet-databricks-runs \
@@ -217,7 +219,7 @@ cachet-databricks-runs \
   stage-and-submit \
   --payload-json engine-probe-runs-submit-reference.json \
   --artifact run_engine_probe.py=dbfs:/benchmarks/run_engine_probe.py \
-  --require-payload-dbfs-artifacts \
+  --require-payload-staged-dbfs-artifacts \
   --dry-run
 
 cachet-databricks-runs \
@@ -226,8 +228,14 @@ cachet-databricks-runs \
   --payload-json engine-probe-runs-submit-reference.json \
   --artifact run_engine_probe.py=dbfs:/benchmarks/run_engine_probe.py \
   --overwrite \
-  --require-payload-dbfs-artifacts
+  --require-payload-staged-dbfs-artifacts
 ```
+
+If the payload also reads a wheel or SGLang launch config from DBFS, add matching
+artifact mappings such as
+`--artifact document_kv_cache-0.2.0-py3-none-any.whl=dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl`
+and
+`--artifact sglang-launch-config.json=dbfs:/benchmarks/sglang-launch-config.json`.
 
 Then inspect generated runs from a shell with `DATABRICKS_HOST` and
 `DATABRICKS_TOKEN` set:

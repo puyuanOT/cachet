@@ -303,6 +303,7 @@ def plan_databricks_stage_and_submit(
     *,
     overwrite: bool = False,
     require_payload_dbfs_artifacts: bool = False,
+    require_payload_staged_dbfs_artifacts: bool = False,
     submit_payload_path: str | None = None,
 ) -> dict[str, Any]:
     return _call_document_function(
@@ -311,6 +312,7 @@ def plan_databricks_stage_and_submit(
         artifacts,
         overwrite=overwrite,
         require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
+        require_payload_staged_dbfs_artifacts=require_payload_staged_dbfs_artifacts,
         submit_payload_path=submit_payload_path,
     )
 
@@ -322,6 +324,7 @@ def stage_and_submit_databricks_run(
     *,
     overwrite: bool = False,
     require_payload_dbfs_artifacts: bool = False,
+    require_payload_staged_dbfs_artifacts: bool = False,
     preflight_auth_check: bool = False,
     opener: DatabricksURLOpener = urllib.request.urlopen,
 ) -> dict[str, Any]:
@@ -332,6 +335,7 @@ def stage_and_submit_databricks_run(
         artifacts,
         overwrite=overwrite,
         require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
+        require_payload_staged_dbfs_artifacts=require_payload_staged_dbfs_artifacts,
         preflight_auth_check=preflight_auth_check,
         opener=opener,
     )

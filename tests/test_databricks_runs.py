@@ -695,6 +695,126 @@ def test_stage_and_submit_databricks_run_rejects_unstaged_payload_dbfs_uri_befor
     assert opener.requests == []
 
 
+def test_plan_stage_and_submit_can_require_only_staged_payload_artifacts(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    launch_config_path = tmp_path / "sglang-launch-config.json"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    launch_config_path.write_text('{"hicache_storage_backend":"dynamic"}\n', encoding="utf-8")
+
+    record = plan_databricks_stage_and_submit(
+        _generated_native_probe_submit_payload(),
+        (
+            (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
+            (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (launch_config_path, "dbfs:/benchmarks/cachet/sglang-launch-config.json"),
+        ),
+        require_payload_staged_dbfs_artifacts=True,
+    )
+
+    assert record["ok"] is True
+    assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
+        "dbfs:/benchmarks/cachet/run_engine_probe.py",
+        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/benchmarks/cachet/sglang-launch-config.json",
+    ]
+
+
+def test_strict_payload_dbfs_artifact_check_still_rejects_generated_probe_outputs(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    launch_config_path = tmp_path / "sglang-launch-config.json"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    launch_config_path.write_text('{"hicache_storage_backend":"dynamic"}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="sglang-fixture"):
+        plan_databricks_stage_and_submit(
+            _generated_native_probe_submit_payload(),
+            (
+                (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
+                (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+                (launch_config_path, "dbfs:/benchmarks/cachet/sglang-launch-config.json"),
+            ),
+            require_payload_dbfs_artifacts=True,
+        )
+
+
+def test_stage_and_submit_rejects_missing_staged_payload_artifact_before_network(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    opener = _FakeOpener({})
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+
+    with pytest.raises(ValueError, match="sglang-launch-config.json"):
+        stage_and_submit_databricks_run(
+            config,
+            _generated_native_probe_submit_payload(),
+            (
+                (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
+                (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            ),
+            require_payload_staged_dbfs_artifacts=True,
+            opener=opener,
+        )
+
+    assert opener.requests == []
+
+
+def test_stage_and_submit_requires_non_fixture_engine_probe_inputs(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    handoff_path = tmp_path / "request.handoff.json"
+    payload_path = tmp_path / "request.payload.kv"
+    layer_names_path = tmp_path / "vllm-layer-names.json"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    handoff_path.write_text('{"record_type":"handoff"}\n', encoding="utf-8")
+    payload_path.write_bytes(b"payload")
+    layer_names_path.write_text('["layer.0"]\n', encoding="utf-8")
+
+    record = plan_databricks_stage_and_submit(
+        _non_fixture_engine_probe_submit_payload(),
+        (
+            (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
+            (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (handoff_path, "dbfs:/benchmarks/cachet/request.handoff.json"),
+            (payload_path, "dbfs:/benchmarks/cachet/request.payload.kv"),
+            (layer_names_path, "dbfs:/benchmarks/cachet/vllm-layer-names.json"),
+        ),
+        require_payload_staged_dbfs_artifacts=True,
+    )
+
+    assert record["ok"] is True
+    assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
+        "dbfs:/benchmarks/cachet/run_engine_probe.py",
+        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/benchmarks/cachet/request.handoff.json",
+        "dbfs:/benchmarks/cachet/request.payload.kv",
+        "dbfs:/benchmarks/cachet/vllm-layer-names.json",
+    ]
+
+
+def test_stage_and_submit_rejects_missing_non_fixture_engine_probe_inputs(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+
+    with pytest.raises(ValueError, match="request.handoff.json"):
+        plan_databricks_stage_and_submit(
+            _non_fixture_engine_probe_submit_payload(),
+            (
+                (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
+                (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            ),
+            require_payload_staged_dbfs_artifacts=True,
+        )
+
+
 def test_stage_and_submit_databricks_run_validates_all_artifacts_before_upload(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
     missing_wheel_path = tmp_path / "missing.whl"
@@ -1838,6 +1958,7 @@ def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_pa
         *,
         overwrite=False,
         require_payload_dbfs_artifacts=False,
+        require_payload_staged_dbfs_artifacts=False,
         preflight_auth_check=False,
     ):
         seen["host"] = config.normalized_host
@@ -1845,6 +1966,7 @@ def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_pa
         seen["artifacts"] = tuple((str(local_path), dbfs_path) for local_path, dbfs_path in artifacts)
         seen["overwrite"] = overwrite
         seen["require_payload_dbfs_artifacts"] = require_payload_dbfs_artifacts
+        seen["require_payload_staged_dbfs_artifacts"] = require_payload_staged_dbfs_artifacts
         seen["preflight_auth_check"] = preflight_auth_check
         return {
             "ok": True,
@@ -1871,6 +1993,7 @@ def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_pa
             f"{wheel_path}=dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
             "--overwrite",
             "--require-payload-dbfs-artifacts",
+            "--require-payload-staged-dbfs-artifacts",
             "--preflight-auth-check",
         ]
     )
@@ -1885,6 +2008,7 @@ def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_pa
         ),
         "overwrite": True,
         "require_payload_dbfs_artifacts": True,
+        "require_payload_staged_dbfs_artifacts": True,
         "preflight_auth_check": True,
     }
     assert json.loads(output_path.read_text(encoding="utf-8"))["auth"] == {
@@ -3018,6 +3142,72 @@ def _dbfs_artifact_submit_payload():
                     "parameters": [
                         "--package-wheel-uri",
                         "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def _generated_native_probe_submit_payload():
+    return {
+        "run_name": "document-kv-engine-probe",
+        "tasks": [
+            {
+                "task_key": "document_kv_engine_probe",
+                "spark_python_task": {
+                    "python_file": "dbfs:/benchmarks/cachet/run_engine_probe.py",
+                    "parameters": [
+                        "--fixture-output-dir",
+                        "dbfs:/benchmarks/cachet/probes/sglang-fixture",
+                        "--fixture-backend",
+                        "sglang",
+                        "--sglang-runtime-preflight-output-json",
+                        "dbfs:/benchmarks/cachet/probes/sglang-fixture/sglang-runtime-preflight.json",
+                        "--sglang-runtime-preflight-launch-config-json",
+                        "dbfs:/benchmarks/cachet/sglang-launch-config.json",
+                        "--handoff-json",
+                        "dbfs:/benchmarks/cachet/probes/sglang-fixture/qwen3-v1-fixture.handoff.json",
+                        "--probe-factory",
+                        "document_kv_cache.native_probe_factories:sglang_native_probe_factory",
+                        "--output-json",
+                        "dbfs:/benchmarks/cachet/probes/sglang-engine-probe.json",
+                        "--expected-backend",
+                        "sglang",
+                        "--package-wheel-uri",
+                        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+                    ],
+                },
+            }
+        ],
+    }
+
+
+def _non_fixture_engine_probe_submit_payload():
+    return {
+        "run_name": "document-kv-engine-probe",
+        "tasks": [
+            {
+                "task_key": "document_kv_engine_probe",
+                "spark_python_task": {
+                    "python_file": "dbfs:/benchmarks/cachet/run_engine_probe.py",
+                    "parameters": [
+                        "--vllm-runtime-preflight-output-json",
+                        "dbfs:/benchmarks/cachet/vllm-runtime-preflight.json",
+                        "--vllm-runtime-preflight-layer-names-json",
+                        "dbfs:/benchmarks/cachet/vllm-layer-names.json",
+                        "--handoff-json",
+                        "dbfs:/benchmarks/cachet/request.handoff.json",
+                        "--probe-factory",
+                        "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                        "--output-json",
+                        "dbfs:/benchmarks/cachet/vllm-engine-probe.json",
+                        "--expected-backend",
+                        "vllm",
+                        "--payload-uri",
+                        "dbfs:/benchmarks/cachet/request.payload.kv",
+                        "--package-wheel-uri",
+                        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
                     ],
                 },
             }
