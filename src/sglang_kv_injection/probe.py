@@ -31,6 +31,9 @@ SGLANG_PROBE_METADATA_PROBE_KIND = "sglang_kv_injection.probe_kind"
 SGLANG_PROBE_METADATA_REQUEST_ID = "sglang_kv_injection.request_id"
 SGLANG_PROBE_METADATA_CONNECTOR_FACTORY = "sglang_kv_injection.connector_factory"
 SGLANG_PROBE_METADATA_RUNTIME_CONTRACT = "sglang_kv_injection.runtime_contract"
+SGLANG_CONNECTOR_FACTORY_METADATA_EXAMPLE = (
+    f"{SGLANG_PROBE_METADATA_CONNECTOR_FACTORY}=company_sglang_patch.probe:build_connector"
+)
 _SGLANG_NATIVE_CONNECTOR_METHODS = ("stage", "attach", "release")
 _SGLANG_WRAPPER_METADATA_KEYS = frozenset(
     {
@@ -131,7 +134,7 @@ def build_native_connector_probe(context: EngineKVProbeFactoryContext) -> Engine
     factory_path = context.metadata.get(SGLANG_PROBE_METADATA_CONNECTOR_FACTORY)
     if not factory_path:
         raise ValueError(
-            f"Native SGLang probe requires {SGLANG_PROBE_METADATA_CONNECTOR_FACTORY}=module:factory metadata"
+            f"Native SGLang probe requires metadata entry {SGLANG_CONNECTOR_FACTORY_METADATA_EXAMPLE}"
         )
     _reject_wrapper_owned_metadata(
         context.metadata,

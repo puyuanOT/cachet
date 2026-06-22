@@ -27,6 +27,7 @@ from document_kv_cache.native_probe_factories import (
 )
 from sglang_kv_injection.probe import (
     NativeSGLangConnectorFactoryResult,
+    SGLANG_CONNECTOR_FACTORY_METADATA_EXAMPLE,
     SGLANG_NATIVE_PROBE_CONTRACT,
     SGLANG_PROBE_METADATA_CONNECTOR_CLASS,
     SGLANG_PROBE_METADATA_CONNECTOR_FACTORY,
@@ -302,7 +303,7 @@ def test_build_native_connector_probe_requires_connector_factory_metadata(tmp_pa
     )
     handoff_path = write_debug_handoff(tmp_path, ready)
 
-    with pytest.raises(ValueError, match=SGLANG_PROBE_METADATA_CONNECTOR_FACTORY):
+    with pytest.raises(ValueError, match=SGLANG_PROBE_METADATA_CONNECTOR_FACTORY) as exc_info:
         run_engine_kv_connector_probe(
             EngineKVProbeConfig(
                 handoff_json=handoff_path,
@@ -310,6 +311,10 @@ def test_build_native_connector_probe_requires_connector_factory_metadata(tmp_pa
                 expected_backend=ServingBackend.SGLANG,
             )
         )
+
+    message = str(exc_info.value)
+    assert SGLANG_CONNECTOR_FACTORY_METADATA_EXAMPLE in message
+    assert f"{SGLANG_PROBE_METADATA_CONNECTOR_FACTORY}=module:factory" not in message
 
 
 @pytest.mark.parametrize(
