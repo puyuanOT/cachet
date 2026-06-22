@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY = "document_kv.handoff_source_factory"
 DOCUMENT_KV_NATIVE_PROVIDER_FACTORY = "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
+_VLLM_LAYER_INDEX_RE = re.compile(r"(?:^|\.)(?:layers?|h|blocks?)\.(\d+)(?:\.|$)")
 
 __all__ = [
     "DOCUMENT_KV_HANDOFF_JSON_PARAM",
@@ -306,7 +308,7 @@ class DocumentKVNativeProvider:
 
     def register_kv_caches(self, kv_caches: Mapping[str, object]) -> None:
         self._kv_caches = dict(kv_caches)
-        self._layer_indices = {layer_name: index for index, layer_name in enumerate(self._kv_caches)}
+        self._layer_indices = _vllm_layer_indices(self._kv_caches)
 
     def start_load_kv(self, forward_context: object, **kwargs: object) -> None:
         del forward_context, kwargs
@@ -705,6 +707,45 @@ def _add_scheduled_request_blocks(scheduled: dict[str, object], request_id: str,
     if request_id in scheduled:
         raise ValueError(f"duplicate scheduled vLLM block ids for request {request_id!r}")
     scheduled[request_id] = block_ids
+
+
+def _vllm_layer_indices(kv_caches: Mapping[str, object]) -> dict[str, int]:
+    indices: dict[str, int] = {}
+    unresolved_layer_names: list[str] = []
+    duplicate_layer_indices: dict[int, list[str]] = {}
+    for layer_name in kv_caches:
+        layer_index = _vllm_layer_index_from_name(layer_name)
+        if layer_index is None:
+            unresolved_layer_names.append(layer_name)
+            continue
+        duplicate_layer_indices.setdefault(layer_index, []).append(layer_name)
+        indices[layer_name] = layer_index
+    duplicates = {
+        layer_index: names
+        for layer_index, names in duplicate_layer_indices.items()
+        if len(names) > 1
+    }
+    if unresolved_layer_names:
+        raise ValueError(
+            "Cannot determine vLLM layer index for registered KV cache layer(s): "
+            + ", ".join(sorted(unresolved_layer_names))
+        )
+    if duplicates:
+        details = "; ".join(
+            f"{layer_index}: {', '.join(sorted(names))}"
+            for layer_index, names in sorted(duplicates.items())
+        )
+        raise ValueError("Duplicate vLLM layer index in registered KV cache layers: " + details)
+    return indices
+
+
+def _vllm_layer_index_from_name(layer_name: object) -> int | None:
+    if not isinstance(layer_name, str):
+        return None
+    matches = _VLLM_LAYER_INDEX_RE.findall(layer_name)
+    if len(matches) != 1:
+        return None
+    return int(matches[0])
 
 
 def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> int:

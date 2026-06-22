@@ -246,6 +246,54 @@ def test_native_provider_copies_materialized_payload_into_registered_paged_kv_la
     assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
 
 
+def test_native_provider_maps_vllm_layer_names_independently_of_registration_order():
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+
+    connector.register_kv_caches(
+        {
+            "model.layers.1.self_attn.attn": layer_1,
+            "model.layers.0.self_attn.attn": layer_0,
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_1[5, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+
+
+def test_native_provider_rejects_unparseable_registered_vllm_layer_names():
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+
+    with pytest.raises(ValueError, match="Cannot determine vLLM layer index"):
+        provider.register_kv_caches(
+            {
+                "attention_a": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+                "attention_b": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            }
+        )
+
+
+def test_native_provider_rejects_duplicate_registered_vllm_layer_indices():
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+
+    with pytest.raises(ValueError, match="Duplicate vLLM layer index"):
+        provider.register_kv_caches(
+            {
+                "model.layers.0.self_attn.attn": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+                "decoder.layers.0.self_attn.attn": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            }
+        )
+
+
 def test_kv_transfer_params_source_reads_cachet_handoff_bundle(tmp_path):
     adapter_request = build_engine_adapter_request(ready_request(), spec=vllm_adapter_spec())
     handoff_path, _payload_path = write_engine_adapter_handoff_bundle(
