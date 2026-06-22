@@ -427,17 +427,17 @@ def test_databricks_run_status_sidecar_validation_rejects_expected_hardware_targ
 
     issues = databricks_run_status_sidecar_issues(
         status_record,
-        expected_hardware_target="aws-g5",
+        expected_hardware_target="aws-g5-a10g",
     )
 
     assert (
         "Databricks run status sidecar submit_payload.tasks[0].node_type_id must match "
-        "hardware_target 'aws-g5'"
+        "hardware_target 'aws-g5-a10g'"
         in issues
     )
     assert (
         "Databricks run status sidecar submit_payload.tasks[0].driver_node_type_id must match "
-        "hardware_target 'aws-g5'"
+        "hardware_target 'aws-g5-a10g'"
         in issues
     )
 
@@ -446,8 +446,8 @@ def test_validate_databricks_run_status_sidecar_honors_expected_hardware_target(
     status_record = _valid_databricks_run_status_record()
 
     validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g6-l4")
-    with pytest.raises(ValueError, match=r"hardware_target 'aws-g5'"):
-        validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g5")
+    with pytest.raises(ValueError, match=r"hardware_target 'aws-g5-a10g'"):
+        validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g5-a10g")
 
 
 def test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records():
@@ -517,7 +517,7 @@ def test_databricks_run_status_sidecar_validation_rejects_unsupported_gpu_or_mis
 
     assert "Databricks run status sidecar submit_payload.aws_single_node_gpu_type must be true" in issues
     assert (
-        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be an AWS g6/L4 node type"
+        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be a supported V1 AWS GPU node type"
         in issues
     )
     assert "Databricks run status sidecar submit_payload.task_keys must match status task keys" in issues
@@ -547,6 +547,23 @@ def test_databricks_run_status_sidecar_validation_accepts_legacy_gpu_flag_only()
 
     assert databricks_run_status_sidecar_issues(bad_record, expected_hardware_target="aws-g6-l4") == ()
     validate_databricks_run_status_sidecar(bad_record, expected_hardware_target="aws-g6-l4")
+
+
+def test_databricks_run_status_sidecar_validation_accepts_g5_hardware_target():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["tasks"][0]["node_type_id"] = "g5.8xlarge"
+    submit_payload["tasks"][0]["driver_node_type_id"] = "g5.8xlarge"
+    submit_payload["node_type_ids"] = ["g5.8xlarge"]
+    submit_payload["driver_node_type_ids"] = ["g5.8xlarge"]
+    g5_record = {**status_record, "submit_payload": submit_payload}
+
+    assert databricks_run_status_sidecar_issues(g5_record, expected_hardware_target="aws-g5-a10g") == ()
+    validate_databricks_run_status_sidecar(g5_record, expected_hardware_target="aws-g5-a10g")
+    assert any(
+        "hardware_target 'aws-g6-l4'" in issue
+        for issue in databricks_run_status_sidecar_issues(g5_record, expected_hardware_target="aws-g6-l4")
+    )
 
 
 def test_databricks_run_status_sidecar_validation_matches_submit_payload_run_name():
@@ -1324,23 +1341,24 @@ def test_legacy_databricks_runs_forwards_expected_hardware_target_keyword():
 
     legacy_issues = legacy_databricks_runs.databricks_run_status_sidecar_issues(
         status_record,
-        expected_hardware_target="aws-g5",
+        expected_hardware_target="aws-g5-a10g",
     )
     public_issues = public_databricks_runs.databricks_run_status_sidecar_issues(
         status_record,
-        expected_hardware_target="aws-g5",
+        expected_hardware_target="aws-g5-a10g",
     )
 
     assert legacy_issues == public_issues
-    assert any("hardware_target 'aws-g5'" in issue for issue in legacy_issues)
-    with pytest.raises(ValueError, match=r"hardware_target 'aws-g5'"):
+    assert any("hardware_target 'aws-g5-a10g'" in issue for issue in legacy_issues)
+    with pytest.raises(ValueError, match=r"hardware_target 'aws-g5-a10g'"):
         legacy_databricks_runs.validate_databricks_run_status_sidecar(
             status_record,
-            expected_hardware_target="aws-g5",
+            expected_hardware_target="aws-g5-a10g",
         )
 
 
-def test_legacy_databricks_runs_private_g5_gpu_shim_uses_generic_g6_l4_check():
+def test_legacy_databricks_runs_private_g5_gpu_shim_uses_generic_v1_gpu_check():
+    assert legacy_databricks_runs._is_aws_g5_node_type("g5.8xlarge") is True
     assert legacy_databricks_runs._is_aws_g5_node_type("g6.8xlarge") is True
     assert legacy_databricks_runs._is_aws_g5_node_type("g6e.8xlarge") is False
     assert (

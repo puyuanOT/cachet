@@ -762,7 +762,7 @@ write_model_profile_definition_json(
 
 ## Benchmark Contract
 
-The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g6/L4 with Qwen3 4B Instruct. It defines a common schema for comparing the no-cache prefill baseline with document KV-cache reuse:
+The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g6/L4 with Qwen3 4B Instruct. The default and release QA target remains `aws-g6-l4` on plain AWS `g6.8xlarge` Databricks hardware; Cachet also models the explicit non-default `aws-g5-a10g` target for g5/A10G compatibility runs. It defines a common schema for comparing the no-cache prefill baseline with document KV-cache reuse:
 
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.

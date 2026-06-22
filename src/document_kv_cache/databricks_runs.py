@@ -572,14 +572,14 @@ _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = HARDWARE_TARGET_AWS_SINGLE_NODE_
 
 
 def _is_supported_aws_single_node_gpu_type(value: Any) -> bool:
-    return isinstance(value, str) and value.startswith(_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES)
+    return isinstance(value, str) and value.lower().startswith(_SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES)
 
 
 def _is_expected_aws_single_node_gpu_type(value: Any, expected_hardware_target: str | None) -> bool:
     if expected_hardware_target is None:
         return _is_supported_aws_single_node_gpu_type(value)
     prefixes = _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.get(expected_hardware_target)
-    return isinstance(value, str) and prefixes is not None and value.startswith(prefixes)
+    return isinstance(value, str) and prefixes is not None and value.lower().startswith(prefixes)
 
 
 def _submit_payload_gpu_type_supported(record: Mapping[str, Any]) -> bool:
@@ -736,7 +736,8 @@ def _databricks_submit_payload_task_issues(
             value = task.get(field_name)
             if not _is_supported_aws_single_node_gpu_type(value):
                 issues.append(
-                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be an AWS g6/L4 node type"
+                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} "
+                    "must be a supported V1 AWS GPU node type"
                 )
             elif not _is_expected_aws_single_node_gpu_type(value, expected_hardware_target):
                 issues.append(

@@ -27,7 +27,7 @@ from document_kv_cache.release_evidence import (
     REQUIRED_ENGINE_PROBE_BACKENDS,
     evaluate_release_evidence,
 )
-from document_kv_cache.benchmarks import DEFAULT_V1_MODEL_ID, SUPPORTED_V1_HARDWARE_TARGETS
+from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_HARDWARE_TARGETS
 from document_kv_cache.benchmark_plan_executor import (
     BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
     BENCHMARK_PLAN_SOURCE_RECORD_TYPE,
@@ -635,7 +635,7 @@ def _validate_release_bundle_inputs(
         artifact.record for artifact in artifacts if artifact.role == "engine_connector_actions"
     )
     strict_v1_suite_id = _strict_v1_benchmark_suite_id(v1_record) if require_complete_v1 else None
-    strict_v1_hardware_target = _strict_v1_benchmark_hardware_target(v1_record) if require_complete_v1 else None
+    strict_v1_hardware_target = DEFAULT_HARDWARE_TARGET if require_complete_v1 else None
     evidence = evaluate_release_evidence(
         v1_record,
         storage_record,
@@ -648,6 +648,10 @@ def _validate_release_bundle_inputs(
         if artifact.role in ("v1_benchmark", "storage_benchmark", "engine_probe", "engine_connector_actions")
     )
     issues = list(evidence.issues)
+    if require_complete_v1 and _strict_v1_benchmark_hardware_target(v1_record) != DEFAULT_HARDWARE_TARGET:
+        issues.append(
+            f"v1 benchmark hardware_target must be the strict V1 release target {DEFAULT_HARDWARE_TARGET!r}"
+        )
     for artifact in artifacts:
         if artifact.role == "release_evidence":
             if artifact.record is None:
@@ -1577,7 +1581,7 @@ def _strict_v1_plan_source_issues(
     if hardware_target not in SUPPORTED_V1_HARDWARE_TARGETS:
         issues.append(f"{label}.hardware_target must be one of {SUPPORTED_V1_HARDWARE_TARGETS!r}")
     if expected_hardware_target is not None and hardware_target != expected_hardware_target:
-        issues.append(f"{label}.hardware_target must match V1 benchmark hardware_target {expected_hardware_target!r}")
+        issues.append(f"{label}.hardware_target must match strict V1 release target {expected_hardware_target!r}")
     issues.extend(_required_str_field(record, "suite_id", label))
     if expected_suite_id is not None and record.get("suite_id") != expected_suite_id:
         issues.append(f"{label}.suite_id must match V1 benchmark suite_id {expected_suite_id!r}")

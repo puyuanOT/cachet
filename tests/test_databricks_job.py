@@ -30,7 +30,10 @@ from document_kv_cache.databricks_job import (
 from document_kv_cache.databricks_engine_probe_job import (
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
 )
-from document_kv_cache._hardware_targets import V1_HARDWARE_TARGET_PROFILE
+from document_kv_cache._hardware_targets import (
+    SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
+    V1_HARDWARE_TARGET_PROFILE,
+)
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
@@ -95,14 +98,14 @@ def test_build_single_node_g5_cluster_is_reusable_with_custom_purpose():
     cluster = build_single_node_g5_cluster(
         DatabricksSingleNodeG5ClusterConfig(
             purpose="document-kv-vllm-smoke",
-            node_type_id="g6.8xlarge",
+            node_type_id="g5.8xlarge",
             single_user_name=SINGLE_USER_NAME,
             custom_tags={"team": "document-kv"},
         )
     )
 
-    assert cluster["node_type_id"] == "g6.8xlarge"
-    assert cluster["driver_node_type_id"] == "g6.8xlarge"
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
     assert cluster["custom_tags"] == {
         "ResourceClass": "SingleNode",
         "purpose": "document-kv-vllm-smoke",
@@ -183,13 +186,11 @@ def test_databricks_config_keeps_single_user_name_for_dedicated_clusters():
     assert payload["tasks"][0]["new_cluster"]["single_user_name"] == SINGLE_USER_NAME
 
 
-def test_validate_aws_g5_node_type_alias_accepts_only_g6_l4_family():
+def test_validate_aws_g5_node_type_alias_accepts_v1_g5_and_g6_families():
+    validate_aws_g5_node_type("g5.8xlarge")
     validate_aws_g5_node_type("g6.8xlarge")
 
-    with pytest.raises(ValueError, match="AWS g6/L4"):
-        validate_aws_g5_node_type("g5.xlarge")
-
-    with pytest.raises(ValueError, match="AWS g6/L4"):
+    with pytest.raises(ValueError, match="supported V1 Databricks node type"):
         validate_aws_g5_node_type("g6e.8xlarge")
 
 
@@ -201,7 +202,7 @@ def test_databricks_defaults_share_v1_hardware_target_profile():
     )
     assert (
         public_databricks_job.SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
-        == V1_HARDWARE_TARGET_PROFILE.databricks_node_type_prefixes
+        == SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
     )
 
 
@@ -217,6 +218,7 @@ def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
     assert build_single_node_gpu_cluster.__name__ == "build_single_node_gpu_cluster"
 
     validate_aws_single_node_gpu_type("g6.8xlarge")
+    validate_aws_single_node_gpu_type("g5.8xlarge")
 
 
 def test_write_databricks_runner_script_imports_plan_executor(tmp_path):
