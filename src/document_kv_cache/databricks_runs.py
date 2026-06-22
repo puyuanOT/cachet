@@ -23,6 +23,7 @@ from document_kv_cache._hardware_targets import (
     SUPPORTED_V1_HARDWARE_TARGETS,
     V1_HARDWARE_TARGET_PROFILES,
 )
+from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 
 
 __all__ = [
@@ -71,6 +72,20 @@ _DATABRICKS_GPU_TYPE_FIELDS = (
     _LEGACY_DATABRICKS_GPU_TYPE_FIELD,
 )
 _DATABRICKS_CONFIG_DEFAULT_SECTION = "__cachet_no_inherited_databricks_defaults__"
+_DATABRICKS_ALWAYS_STAGED_ARTIFACT_PARAMETER_FLAGS = frozenset(
+    {
+        "--package-wheel-uri",
+        "--plan-json",
+        "--sglang-runtime-preflight-launch-config-json",
+    }
+)
+_DATABRICKS_ENGINE_PROBE_INPUT_ARTIFACT_PARAMETER_FLAGS = frozenset(
+    {
+        "--handoff-json",
+        "--payload-uri",
+        "--vllm-runtime-preflight-layer-names-json",
+    }
+)
 _DATABRICKS_SDK_PROFILE_ISOLATION_ATTRIBUTES = frozenset(
     {
         "account_id",
@@ -481,6 +496,7 @@ def plan_databricks_stage_and_submit(
     *,
     overwrite: bool = False,
     require_payload_dbfs_artifacts: bool = False,
+    require_payload_staged_dbfs_artifacts: bool = False,
     submit_payload_path: str | None = None,
 ) -> dict[str, Any]:
     prepared_artifacts = _prepare_databricks_stage_artifacts(
@@ -488,6 +504,7 @@ def plan_databricks_stage_and_submit(
         artifacts,
         overwrite=overwrite,
         require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
+        require_payload_staged_dbfs_artifacts=require_payload_staged_dbfs_artifacts,
     )
     result = _success_record("stage-and-submit-plan")
     result["artifact_uploads"] = [
@@ -508,6 +525,7 @@ def stage_and_submit_databricks_run(
     *,
     overwrite: bool = False,
     require_payload_dbfs_artifacts: bool = False,
+    require_payload_staged_dbfs_artifacts: bool = False,
     preflight_auth_check: bool = False,
     opener: DatabricksURLOpener = urllib.request.urlopen,
 ) -> dict[str, Any]:
@@ -516,6 +534,7 @@ def stage_and_submit_databricks_run(
         artifacts,
         overwrite=overwrite,
         require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
+        require_payload_staged_dbfs_artifacts=require_payload_staged_dbfs_artifacts,
     )
     auth_record = check_databricks_auth(config, opener=opener) if preflight_auth_check else None
     artifact_uploads = [
@@ -1448,12 +1467,15 @@ def _prepare_databricks_stage_artifacts(
     *,
     overwrite: bool,
     require_payload_dbfs_artifacts: bool,
+    require_payload_staged_dbfs_artifacts: bool,
 ) -> tuple[tuple[dict[str, Any], dict[str, Any]], ...]:
     artifact_pairs = tuple(artifacts)
     if not artifact_pairs:
         raise ValueError("stage-and-submit requires at least one artifact")
     if require_payload_dbfs_artifacts:
         _validate_payload_dbfs_artifacts_are_staged(payload, artifact_pairs)
+    if require_payload_staged_dbfs_artifacts:
+        _validate_payload_staged_dbfs_artifacts_are_staged(payload, artifact_pairs)
     return tuple(
         _databricks_dbfs_put_payload(local_path, dbfs_path, overwrite=overwrite)
         for local_path, dbfs_path in artifact_pairs
@@ -1572,6 +1594,91 @@ def _validate_payload_dbfs_artifacts_are_staged(
     if missing:
         raise ValueError(
             "Databricks submit payload references DBFS URIs without staged artifacts: "
+            + ", ".join(missing)
+        )
+
+
+def _submit_payload_staged_dbfs_uris(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    found: list[str] = []
+    for task in _payload_task_mappings(payload):
+        spark_python_task = task.get("spark_python_task")
+        if isinstance(spark_python_task, Mapping):
+            _collect_staged_dbfs_uri(spark_python_task.get("python_file"), found)
+            _collect_staged_parameter_dbfs_uris(spark_python_task.get("parameters"), found)
+        _collect_library_dbfs_uris(task.get("libraries"), found)
+    return _dedupe_strings(found)
+
+
+def _payload_task_mappings(payload: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)):
+        return ()
+    return tuple(task for task in tasks if isinstance(task, Mapping))
+
+
+def _collect_staged_parameter_dbfs_uris(parameters: Any, found: list[str]) -> None:
+    if not isinstance(parameters, Sequence) or isinstance(parameters, (str, bytes, bytearray)):
+        return
+    generated_fixture_uris = _generated_fixture_dbfs_uris(parameters)
+    for index, value in enumerate(parameters[:-1]):
+        next_value = parameters[index + 1]
+        if value in _DATABRICKS_ALWAYS_STAGED_ARTIFACT_PARAMETER_FLAGS:
+            _collect_staged_dbfs_uri(next_value, found)
+        elif value in _DATABRICKS_ENGINE_PROBE_INPUT_ARTIFACT_PARAMETER_FLAGS:
+            _collect_staged_dbfs_uri(next_value, found, exclude=generated_fixture_uris)
+
+
+def _generated_fixture_dbfs_uris(parameters: Sequence[Any]) -> frozenset[str]:
+    fixture_output_dir = _parameter_value(parameters, "--fixture-output-dir")
+    if not isinstance(fixture_output_dir, str) or not fixture_output_dir.startswith("dbfs:/"):
+        return frozenset()
+    fixture_root = _canonical_dbfs_uri(fixture_output_dir).rstrip("/")
+    return frozenset(
+        _canonical_dbfs_uri(f"{fixture_root}/{filename}")
+        for filename in DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES.values()
+    )
+
+
+def _parameter_value(parameters: Sequence[Any], flag: str) -> Any:
+    for index, value in enumerate(parameters[:-1]):
+        if value == flag:
+            return parameters[index + 1]
+    return None
+
+
+def _collect_library_dbfs_uris(libraries: Any, found: list[str]) -> None:
+    if not isinstance(libraries, Sequence) or isinstance(libraries, (str, bytes, bytearray)):
+        return
+    for library in libraries:
+        if not isinstance(library, Mapping):
+            continue
+        for key in ("whl", "jar", "egg"):
+            _collect_staged_dbfs_uri(library.get(key), found)
+
+
+def _collect_staged_dbfs_uri(value: Any, found: list[str], *, exclude: frozenset[str] = frozenset()) -> None:
+    if isinstance(value, str) and value.startswith("dbfs:/"):
+        uri = _canonical_dbfs_uri(value)
+        if uri not in exclude:
+            found.append(uri)
+
+
+def _validate_payload_staged_dbfs_artifacts_are_staged(
+    payload: Mapping[str, Any],
+    artifacts: Sequence[tuple[str | Path, str]],
+) -> None:
+    staged_uris = {
+        _canonical_dbfs_uri(dbfs_path)
+        for _local_path, dbfs_path in artifacts
+    }
+    missing = tuple(
+        uri
+        for uri in _submit_payload_staged_dbfs_uris(payload)
+        if uri not in staged_uris
+    )
+    if missing:
+        raise ValueError(
+            "Databricks submit payload references staged DBFS artifacts without matching --artifact entries: "
             + ", ".join(missing)
         )
 
@@ -1756,6 +1863,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail before uploading unless every dbfs:/ URI in the payload has a matching --artifact destination.",
     )
     stage_submit_parser.add_argument(
+        "--require-payload-staged-dbfs-artifacts",
+        action="store_true",
+        help=(
+            "Fail before uploading unless DBFS runner, wheel, plan, and SGLang launch-config artifacts "
+            "that the payload reads have matching --artifact destinations. Generated DBFS outputs are ignored."
+        ),
+    )
+    stage_submit_parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Validate artifacts and payload DBFS references without Databricks credentials or network requests.",
@@ -1788,6 +1903,7 @@ def main(argv: list[str] | None = None) -> int:
                 tuple(_parse_dbfs_artifact_mapping(artifact) for artifact in args.artifact),
                 overwrite=args.overwrite,
                 require_payload_dbfs_artifacts=args.require_payload_dbfs_artifacts,
+                require_payload_staged_dbfs_artifacts=args.require_payload_staged_dbfs_artifacts,
                 submit_payload_path=args.payload_json,
             )
         elif args.command == "payload-summary":
@@ -1835,6 +1951,7 @@ def main(argv: list[str] | None = None) -> int:
                     tuple(_parse_dbfs_artifact_mapping(artifact) for artifact in args.artifact),
                     overwrite=args.overwrite,
                     require_payload_dbfs_artifacts=args.require_payload_dbfs_artifacts,
+                    require_payload_staged_dbfs_artifacts=args.require_payload_staged_dbfs_artifacts,
                     preflight_auth_check=args.preflight_auth_check,
                 )
                 response = None

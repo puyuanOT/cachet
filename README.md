@@ -1474,6 +1474,12 @@ cachet-databricks-runs \
   --dry-run
 ```
 
+For payloads that intentionally write generated DBFS outputs during the run,
+such as fixture-backed native engine probes, use
+`--require-payload-staged-dbfs-artifacts` instead. It still checks DBFS runner,
+wheel, plan, and SGLang launch-config inputs, but does not require upload
+artifacts for output JSONs or generated fixture paths.
+
 Submit or inspect a generated payload with env-provided credentials, keeping
 tokens out of command arguments and JSON artifacts. If the workspace is already
 configured in `~/.databrickscfg`, pass `--profile PROFILE_NAME` instead of
