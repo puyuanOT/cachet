@@ -559,11 +559,13 @@ evidence rejects those records. Use `--release-safe` on the Databricks
 `runs/submit` helper to fail fast if debug-only probe flags are present.
 The built-in reserved vLLM/SGLang probe factories fail closed unless the target
 serving environment has the backend package installed and points the matching
-delegate environment variable at a backend-native factory:
+delegate environment variable at a native factory:
 `DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY=module:callable` or
-`DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. The public built-in
-factory paths stay stable for release bundles, while the delegate callable owns
-the actual vLLM/SGLang block-manager integration.
+`DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. Cachet's wheel now
+ships the provider-backed vLLM delegate path; SGLang still needs a
+backend-native delegate. The public built-in factory paths stay stable for
+release bundles, while the delegate callable owns the runtime block-manager
+integration.
 When using the adapter-package delegates
 `vllm_kv_injection.probe:build_native_connector_probe` or
 `sglang_kv_injection.probe:build_native_connector_probe`, also add target
@@ -931,9 +933,11 @@ schema: unsupported top-level plan keys or per-command keys are rejected before
 any command is run.
 `--engine-probe-use-builtin-factories` fills missing planned factories with
 package-owned vLLM/SGLang factory paths. Those factories are stable release-plan
-targets but still fail closed until the backend-native block-manager adapter is
-available; pass explicit `--engine-probe-factory BACKEND=MODULE:CALLABLE` to use
-a downstream adapter module.
+targets: the vLLM path can use Cachet's provider-backed delegate with strict
+connector-factory metadata and runtime preflight, while SGLang still requires a
+backend-native delegate. Pass explicit
+`--engine-probe-factory BACKEND=MODULE:CALLABLE` to use a downstream adapter
+module.
 Add `--github-governance-output-json` to the benchmark plan to emit the
 matching `document_kv.github_repository_governance.v1` sidecar using
 environment-provided GitHub credentials; when release-bundle assembly is also

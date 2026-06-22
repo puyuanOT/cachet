@@ -1761,8 +1761,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="store_true",
         help=(
             "Fill missing planned engine-probe factories with package-owned "
-            "vLLM/SGLang native factory paths. These factories fail closed until "
-            "a backend-native block-manager adapter is available."
+            "vLLM/SGLang native factory paths. The vLLM path can use Cachet's "
+            "provider-backed delegate with strict connector metadata; SGLang "
+            "still requires a backend-native delegate."
         ),
     )
     parser.add_argument(
