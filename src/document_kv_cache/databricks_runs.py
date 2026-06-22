@@ -953,7 +953,10 @@ def _databricks_submit_payload_summary_field_issues(
             issues.append(
                 f"Databricks run status sidecar submit_payload.{summary_field} must match submit_payload.tasks"
             )
-    actual_hardware_targets = _valid_string_list(record.get("hardware_targets"))
+    if "hardware_targets" in record:
+        actual_hardware_targets = _valid_string_list(record.get("hardware_targets"))
+    else:
+        actual_hardware_targets = None
     if actual_hardware_targets is not None:
         expected_hardware_targets = _hardware_targets_for_task_summaries(tasks)
         if actual_hardware_targets != expected_hardware_targets:
@@ -1040,9 +1043,10 @@ def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[
     issues.extend(_optional_str_field(record, "run_name", "Databricks run status sidecar submit_payload"))
     for field_name in ("task_keys", "node_type_ids", "driver_node_type_ids", "spark_versions", "data_security_modes"):
         issues.extend(_list_of_strings_field(record, field_name, "Databricks run status sidecar submit_payload"))
-    issues.extend(
-        _optional_list_of_strings_field(record, "hardware_targets", "Databricks run status sidecar submit_payload")
-    )
+    if "hardware_targets" in record:
+        issues.extend(
+            _list_of_strings_field(record, "hardware_targets", "Databricks run status sidecar submit_payload")
+        )
     issues.extend(_bool_field(record, "single_node", "Databricks run status sidecar submit_payload"))
     if not _present_gpu_type_fields(record):
         issues.append(
@@ -1149,13 +1153,6 @@ def _list_of_strings_field(record: Mapping[str, Any], field_name: str, label: st
     if _valid_string_list(value) is not None:
         return ()
     return (f"{label}.{field_name} must be an array of non-empty strings",)
-
-
-def _optional_list_of_strings_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
-    value = record.get(field_name)
-    if value is None or _valid_string_list(value) is not None:
-        return ()
-    return (f"{label}.{field_name} must be an array of non-empty strings or null",)
 
 
 def _valid_string_list(value: Any) -> list[str] | None:

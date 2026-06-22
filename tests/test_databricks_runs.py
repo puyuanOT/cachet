@@ -945,6 +945,30 @@ def test_databricks_run_status_sidecar_validation_accepts_legacy_gpu_flag_only()
     validate_databricks_run_status_sidecar(bad_record, expected_hardware_target="aws-g6-l4")
 
 
+def test_databricks_run_status_sidecar_validation_accepts_missing_hardware_targets_for_legacy_sidecars():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    del submit_payload["hardware_targets"]
+    legacy_record = {**status_record, "submit_payload": submit_payload}
+
+    assert databricks_run_status_sidecar_issues(legacy_record, expected_hardware_target="aws-g6-l4") == ()
+    validate_databricks_run_status_sidecar(legacy_record, expected_hardware_target="aws-g6-l4")
+
+
+def test_databricks_run_status_sidecar_validation_rejects_null_hardware_targets():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["hardware_targets"] = None
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert (
+        "Databricks run status sidecar submit_payload.hardware_targets must be an array of non-empty strings"
+        in issues
+    )
+
+
 def test_databricks_run_status_sidecar_validation_accepts_g5_hardware_target():
     status_record = _valid_databricks_run_status_record()
     submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
