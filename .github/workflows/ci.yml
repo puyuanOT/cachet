@@ -91,7 +91,7 @@ jobs:
               entry_points = read_dist_info(archive, "entry_points.txt")
 
           assert "Requires-Python: >=3.11,<4.0" in metadata
-          assert "Requires-Dist: packaging (==23.2)" in metadata
+          assert "Requires-Dist: packaging (==26.2)" in metadata
           assert "Provides-Extra: databricks" in metadata
           assert "Project-URL: Repository, https://github.com/puyuanOT/cachet" in metadata
           assert "Tag: py3-none-any" in wheel_metadata
@@ -124,7 +124,7 @@ jobs:
               entry_points = read_dist_info(archive, "entry_points.txt")
 
           assert "Requires-Python: >=3.11,<4.0" in metadata
-          assert "Requires-Dist: packaging (==23.2)" in metadata
+          assert "Requires-Dist: packaging (==26.2)" in metadata
           assert "Provides-Extra: test" in metadata
           assert "Project-URL: Issues, https://github.com/puyuanOT/cachet/issues" in metadata
           assert "Tag: py3-none-any" in wheel_metadata
