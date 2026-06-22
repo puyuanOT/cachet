@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 DOCUMENT_KV_CONNECTOR_CLASS = "DocumentKVConnector"
@@ -16,6 +17,7 @@ __all__ = [
     "DOCUMENT_KV_CONNECTOR_MODULE_PATH",
     "DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY",
     "DocumentKVConnector",
+    "DocumentKVConnectorStats",
     "DocumentKVProvider",
     "NoOpDocumentKVProvider",
     "VLLMSupportsHMA",
@@ -68,7 +70,89 @@ except Exception as exc:  # pragma: no cover - local lightweight or broken-runti
             return self._connector_metadata is not None
 
 
+try:  # pragma: no cover - exercised in live vLLM environments.
+    from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (  # type: ignore[import-not-found]
+        KVConnectorStats as _KVConnectorStats,
+    )
+except Exception as exc:  # pragma: no cover - local lightweight or broken-runtime path.
+    if _VLLM_RUNTIME_IMPORT_ERROR is None:
+        _VLLM_RUNTIME_IMPORT_ERROR = exc
+
+    @dataclass
+    class _KVConnectorStats:
+        data: dict[str, Any] = field(default_factory=dict)
+
+        def reset(self) -> None:
+            raise NotImplementedError
+
+        def aggregate(self, other: "_KVConnectorStats") -> "_KVConnectorStats":
+            raise NotImplementedError
+
+        def reduce(self) -> dict[str, int | float]:
+            raise NotImplementedError
+
+        def is_empty(self) -> bool:
+            raise NotImplementedError
+
+
 VLLMSupportsHMA = _SupportsHMA
+
+
+@dataclass
+class DocumentKVConnectorStats(_KVConnectorStats):
+    """vLLM-compatible counter stats for the Cachet document KV connector."""
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any] | None = None) -> "DocumentKVConnectorStats":
+        return cls(_numeric_stats_data(data or {}))
+
+    def __post_init__(self) -> None:
+        self.data = _numeric_stats_data(self.data)
+
+    def reset(self) -> None:
+        self.data = {}
+
+    def aggregate(self, other: _KVConnectorStats) -> "DocumentKVConnectorStats":
+        other_stats = _coerce_document_kv_connector_stats(other)
+        if other_stats is None or other_stats.is_empty():
+            return self
+        for key, value in other_stats.data.items():
+            self.data[key] = self.data.get(key, 0) + value
+        return self
+
+    def reduce(self) -> dict[str, int | float]:
+        return dict(self.data)
+
+    def is_empty(self) -> bool:
+        return not self.data or all(value == 0 for value in self.data.values())
+
+    def __getitem__(self, key: str) -> int | float:
+        return self.data[key]
+
+
+def _numeric_stats_data(data: Mapping[str, Any]) -> dict[str, int | float]:
+    stats: dict[str, int | float] = {}
+    for key, value in data.items():
+        if not isinstance(key, str):
+            raise TypeError("document KV connector stats keys must be strings")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError(f"document KV connector stats value for {key!r} must be numeric")
+        stats[key] = value
+    return stats
+
+
+def _coerce_document_kv_connector_stats(stats: object | None) -> DocumentKVConnectorStats | None:
+    if stats is None:
+        return None
+    if isinstance(stats, DocumentKVConnectorStats):
+        return stats
+    if isinstance(stats, Mapping):
+        return DocumentKVConnectorStats.from_mapping(stats)
+    if isinstance(stats, _KVConnectorStats):
+        return DocumentKVConnectorStats.from_mapping(stats.data)
+    raise TypeError(
+        "document KV connector stats must be a mapping or KVConnectorStats-compatible object"
+    )
 
 
 def vllm_runtime_import_error() -> Exception | None:
@@ -260,7 +344,7 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
     def get_kv_connector_stats(self) -> object | None:
         getter = getattr(self.provider, "get_kv_connector_stats", None)
         if callable(getter):
-            return getter()
+            return _coerce_document_kv_connector_stats(getter())
         return None
 
     def get_kv_connector_kv_cache_events(self) -> object | None:
@@ -326,8 +410,7 @@ class DocumentKVConnector(_KVConnectorBaseV1, _SupportsHMA):
 
     @classmethod
     def build_kv_connector_stats(cls, data: dict[str, Any] | None = None) -> object | None:
-        del data
-        return None
+        return DocumentKVConnectorStats.from_mapping(data)
 
     def set_xfer_handshake_metadata(self, metadata: Mapping[int, object]) -> None:
         setter = getattr(self.provider, "set_xfer_handshake_metadata", None)

@@ -15,6 +15,7 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_CONNECTOR_MODULE_PATH,
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
     DocumentKVConnector,
+    DocumentKVConnectorStats,
     NoOpDocumentKVProvider,
     VLLMSupportsHMA,
     load_document_kv_provider_factory,
@@ -164,7 +165,13 @@ def test_document_kv_connector_exposes_vllm_v1_lifecycle():
         {"request_id": "req-1", "groups": 2},
     )
     assert connector.get_block_ids_with_load_errors() == {3}
-    assert connector.get_kv_connector_stats() == {"loads": 1}
+    stats = connector.get_kv_connector_stats()
+    assert isinstance(stats, DocumentKVConnectorStats)
+    assert stats.data == {"loads": 1}
+    assert stats.aggregate(DocumentKVConnectorStats.from_mapping({"loads": 2, "saves": 1})).data == {
+        "loads": 3,
+        "saves": 1,
+    }
     assert connector.get_kv_connector_kv_cache_events() == {"events": 1}
     assert connector.get_handshake_metadata() == {"rank": 0}
     assert connector.build_connector_worker_meta() == {"worker": "meta"}
@@ -180,7 +187,8 @@ def test_document_kv_connector_exposes_vllm_v1_lifecycle():
     connector.shutdown()
     assert DocumentKVConnector.get_required_kvcache_layout("config") is None
     assert DocumentKVConnector.requires_piecewise_for_cudagraph({}) is False
-    assert DocumentKVConnector.build_kv_connector_stats({}) is None
+    assert DocumentKVConnector.build_kv_connector_stats({}).is_empty()
+    assert DocumentKVConnector.build_kv_connector_stats({"loads": 1}).reduce() == {"loads": 1}
     assert DocumentKVConnector.build_prom_metrics("config", {}, [], {}) is None
     assert [call[0] for call in provider.calls] == [
         "get_num_new_matched_tokens",
