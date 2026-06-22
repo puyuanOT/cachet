@@ -1074,6 +1074,39 @@ def test_build_v1_benchmark_plan_derives_fixture_actions_output_json(tmp_path):
     assert "--actions-output-json" not in probe_command.argv
 
 
+def test_engine_probe_plan_derives_vllm_preflight_layer_names_from_fixture(tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+    handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+    layer_names_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"]
+
+    probe = EngineProbePlanConfig(
+        backend="vllm",
+        handoff_json=str(handoff_json),
+        probe_factory="vllm_probe:factory",
+        output_json=str(tmp_path / "vllm-probe.json"),
+        fixture_output_dir=str(fixture_dir),
+        vllm_runtime_preflight_output_json=str(fixture_dir / "vllm-runtime-preflight.json"),
+    )
+
+    assert probe.vllm_runtime_preflight_layer_names_json == str(layer_names_json)
+
+
+def test_engine_probe_plan_rejects_programmatic_conflicting_fixture_layer_names(tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+    handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+
+    with pytest.raises(ValueError, match="fixture layer-name path"):
+        EngineProbePlanConfig(
+            backend="vllm",
+            handoff_json=str(handoff_json),
+            probe_factory="vllm_probe:factory",
+            output_json=str(tmp_path / "vllm-probe.json"),
+            fixture_output_dir=str(fixture_dir),
+            vllm_runtime_preflight_output_json=str(fixture_dir / "vllm-runtime-preflight.json"),
+            vllm_runtime_preflight_layer_names_json=str(tmp_path / "manual-layer-names.json"),
+        )
+
+
 def test_engine_probe_plan_rejects_fixture_handoff_mismatch_for_programmatic_config(tmp_path):
     with pytest.raises(ValueError, match="derived fixture handoff path"):
         EngineProbePlanConfig(
@@ -1107,9 +1140,33 @@ def test_benchmark_plan_rejects_fixture_child_output_path_collisions(tmp_path):
         )
 
 
+def test_benchmark_plan_does_not_treat_sglang_fixture_as_vllm_layer_name_writer(tmp_path):
+    fixture_dir = tmp_path / "sglang-fixture"
+    handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"]),
+        engine_probes=(
+            EngineProbePlanConfig(
+                backend="sglang",
+                handoff_json=str(handoff_json),
+                probe_factory="sglang_probe:factory",
+                output_json=str(tmp_path / "sglang-probe.json"),
+                fixture_output_dir=str(fixture_dir),
+            ),
+        ),
+    )
+
+    assert config.benchmark_output_json.endswith("/vllm-layer-names.json")
+
+
 def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path):
     vllm_fixture_dir = tmp_path / "vllm-fixture"
     vllm_fixture_handoff_json = vllm_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+    vllm_layer_names_json = vllm_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"]
     probes = (
         EngineProbePlanConfig(
             backend="vllm",
@@ -1121,7 +1178,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
             fixture_output_dir=str(vllm_fixture_dir),
             fixture_payload_mode="merged",
             vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
-            vllm_runtime_preflight_layer_names_json=str(tmp_path / "vllm-layer-names.json"),
+            vllm_runtime_preflight_layer_names_json=str(vllm_layer_names_json),
         ),
         EngineProbePlanConfig(
             backend="sglang",
@@ -1149,7 +1206,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
                 "fixture_output_dir": str(vllm_fixture_dir),
                 "fixture_payload_mode": "merged",
                 "vllm_runtime_preflight_output_json": str(tmp_path / "vllm-runtime-preflight.json"),
-                "vllm_runtime_preflight_layer_names_json": str(tmp_path / "vllm-layer-names.json"),
+                "vllm_runtime_preflight_layer_names_json": str(vllm_layer_names_json),
             },
             {
                 "allow_non_native_probe": False,
@@ -1185,7 +1242,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
     assert targets[0].fixture_output_dir == str(vllm_fixture_dir)
     assert targets[0].fixture_payload_mode == "merged"
     assert targets[0].vllm_runtime_preflight_output_json == str(tmp_path / "vllm-runtime-preflight.json")
-    assert targets[0].vllm_runtime_preflight_layer_names_json == str(tmp_path / "vllm-layer-names.json")
+    assert targets[0].vllm_runtime_preflight_layer_names_json == str(vllm_layer_names_json)
 
 
 def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_probes(tmp_path):
@@ -1257,6 +1314,37 @@ def test_engine_probe_plan_requires_vllm_runtime_preflight_paths_together(tmp_pa
             output_json=str(tmp_path / "vllm-probe.json"),
             vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
         )
+
+
+def test_engine_probe_plan_rejects_conflicting_fixture_derived_layer_names(capsys, tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--engine-probe-fixture-output-dir",
+            f"vllm={fixture_dir}",
+            "--engine-probe-factory",
+            "vllm=vllm_probe:factory",
+            "--engine-probe-output-json",
+            f"vllm={tmp_path / 'vllm-probe.json'}",
+            "--engine-probe-vllm-runtime-preflight-output-json",
+            f"vllm={fixture_dir / 'vllm-runtime-preflight.json'}",
+            "--engine-probe-vllm-runtime-preflight-layer-names-json",
+            f"vllm={tmp_path / 'manual-layer-names.json'}",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "fixture layer-name path" in record["error"]
 
 
 def test_engine_probe_plan_rejects_vllm_runtime_preflight_for_sglang(tmp_path):
@@ -2488,8 +2576,10 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
 
 def test_main_can_derive_planned_engine_probe_handoff_from_fixture_output_dir(tmp_path):
     plan_json = tmp_path / "plan.json"
+    targets_json = tmp_path / "targets.json"
     fixture_dir = tmp_path / "vllm-fixture"
     expected_handoff_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+    expected_layer_names_json = fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"]
 
     exit_code = main(
         [
@@ -2508,14 +2598,19 @@ def test_main_can_derive_planned_engine_probe_handoff_from_fixture_output_dir(tm
             "vllm=vllm_probe:factory",
             "--engine-probe-output-json",
             f"vllm={tmp_path / 'vllm-probe.json'}",
+            "--engine-probe-vllm-runtime-preflight-output-json",
+            f"vllm={fixture_dir / 'vllm-runtime-preflight.json'}",
             "--engine-probe-actions-output-json",
             f"vllm={tmp_path / 'vllm-actions.json'}",
             "--plan-output-json",
             str(plan_json),
+            "--engine-probe-targets-output-json",
+            str(targets_json),
         ]
     )
 
     record = json.loads(plan_json.read_text(encoding="utf-8"))
+    targets_record = json.loads(targets_json.read_text(encoding="utf-8"))
     command_names = [command["name"] for command in record["commands"]]
     fixture_argv = record["commands"][command_names.index("write-vllm-engine-probe-fixture")]["argv"]
     probe_argv = record["commands"][command_names.index("run-vllm-engine-probe")]["argv"]
@@ -2531,6 +2626,12 @@ def test_main_can_derive_planned_engine_probe_handoff_from_fixture_output_dir(tm
     assert record["planned_engine_probes"][0]["handoff_json"] == str(expected_handoff_json)
     assert record["planned_engine_probes"][0]["fixture_output_dir"] == str(fixture_dir)
     assert record["planned_engine_probes"][0]["fixture_payload_mode"] == "merged"
+    assert record["planned_engine_probes"][0]["vllm_runtime_preflight_layer_names_json"] == str(
+        expected_layer_names_json
+    )
+    assert targets_record["probes"][0]["vllm_runtime_preflight_layer_names_json"] == str(
+        expected_layer_names_json
+    )
     assert record["release_engine_probe_jsons"] == []
     assert record["release_engine_actions_jsons"] == []
 
