@@ -34,6 +34,7 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
+from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
 
 
@@ -86,10 +87,45 @@ def factory():
     return Generator()
 """
 
+PROFILE_GENERATOR_MODULE_SOURCE = """
+from document_kv_cache.kvpack import PackChunk
+from document_kv_cache.models import KVCacheKey
+
+
+class Generator:
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        payload = b"q" * 73728
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=payload,
+            token_count=1,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+def factory():
+    return Generator()
+"""
+
 
 def write_generator_module(tmp_path, module_name):
     module_path = tmp_path / f"{module_name}.py"
     module_path.write_text(GENERATOR_MODULE_SOURCE, encoding="utf-8")
+    return module_path
+
+
+def write_profile_generator_module(tmp_path, module_name):
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(PROFILE_GENERATOR_MODULE_SOURCE, encoding="utf-8")
     return module_path
 
 
@@ -577,6 +613,73 @@ def test_bundle_main_writes_manifest_from_generator_factory(tmp_path, monkeypatc
     assert output["cache_refs"] == 1
     assert output["manifest_json"] == str(manifest_path)
     assert read_benchmark_handoff_manifest_json(manifest_path).entries[0].example_id == "bio-1"
+
+
+def test_bundle_main_defaults_to_builtin_model_profile_layout(tmp_path, monkeypatch, capsys):
+    write_profile_generator_module(tmp_path, "profile_cli_generator")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    manifest_path = tmp_path / "handoffs.json"
+
+    exit_code = public_benchmark_handoffs.bundle_main(
+        [
+            "--input-jsonl",
+            str(input_path),
+            "--output-dir",
+            str(tmp_path / "bundles"),
+            "--output-manifest-json",
+            str(manifest_path),
+            "--generator-factory",
+            "profile_cli_generator:factory",
+            "--align-bytes",
+            "1",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    entry = read_benchmark_handoff_manifest_json(manifest_path).entries[0]
+    handoff_path = tmp_path / "bundles" / "biography" / f"{entry.request_id}.handoff.json"
+    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
+    expected_layout = layout_for_model("qwen3:4b-instruct")
+
+    assert exit_code == 0
+    assert output["ok"] is True
+    assert handoff_record["handle"]["layout"]["layout_version"] == expected_layout.layout_version
+    assert handoff_record["handle"]["layout"]["num_layers"] == expected_layout.num_layers
+    assert handoff_record["handle"]["layout"]["num_query_heads"] == expected_layout.num_query_heads
+    assert handoff_record["handle"]["layout"]["num_kv_heads"] == expected_layout.num_kv_heads
+    assert handoff_record["handle"]["layout"]["bytes_per_token"] == expected_layout.bytes_per_token
+    assert handoff_record["handle"]["layout"]["storage_layout"] == "shared_key_value"
+    assert handoff_record["handle"]["total_tokens"] == 1
+    assert handoff_record["handle"]["total_bytes"] == expected_layout.bytes_per_token
+
+
+def test_bundle_main_rejects_partial_manual_layout(tmp_path, monkeypatch, capsys):
+    write_generator_module(tmp_path, "partial_cli_generator")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+
+    exit_code = public_benchmark_handoffs.bundle_main(
+        [
+            "--input-jsonl",
+            str(input_path),
+            "--output-dir",
+            str(tmp_path / "bundles"),
+            "--output-manifest-json",
+            str(tmp_path / "handoffs.json"),
+            "--generator-factory",
+            "partial_cli_generator:factory",
+            "--num-layers",
+            "1",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["error_type"] == "ValueError"
+    assert "Manual benchmark layout requires" in output["error"]
 
 
 @pytest.mark.parametrize(

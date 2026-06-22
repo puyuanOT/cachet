@@ -39,6 +39,7 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.engine_probe import _validate_local_payload_uri, write_engine_adapter_handoff_bundle
 from document_kv_cache.manifest import InMemoryManifestStore
+from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import CacheGenerationMethod, ChunkRef
 from document_kv_cache.storage import local_path
 from document_kv_cache.workflow import (
@@ -54,6 +55,14 @@ BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION = 1
 _TEMPLATE_FIELDS = frozenset({"dataset", "example_id"})
 _BUNDLE_TEMPLATE_FIELDS = frozenset({"dataset", "example_id", "artifact_stem"})
 _DEFAULT_BUNDLE_SHARD_FILENAME = "cachet-benchmark.kvpack"
+_MANUAL_LAYOUT_REQUIRED_FIELDS = ("layout_version", "dtype", "num_layers", "block_size", "bytes_per_token")
+_MANUAL_LAYOUT_TRIGGER_FIELDS = (
+    "num_layers",
+    "bytes_per_token",
+    "num_query_heads",
+    "num_kv_heads",
+    "head_size",
+)
 _MANIFEST_KEYS = frozenset({"record_type", "schema_version", "entries"})
 _ENTRY_KEYS = frozenset(
     {
@@ -618,11 +627,11 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model-id", default=DEFAULT_V1_MODEL_ID)
     parser.add_argument("--lora-id", default=DEFAULT_V1_LORA_ID)
     parser.add_argument("--prompt-template-version", default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION)
-    parser.add_argument("--layout-version", required=True)
-    parser.add_argument("--dtype", required=True)
-    parser.add_argument("--num-layers", type=int, required=True)
-    parser.add_argument("--block-size", type=int, required=True)
-    parser.add_argument("--bytes-per-token", type=int, required=True)
+    parser.add_argument("--layout-version", help="Override the built-in model profile layout version.")
+    parser.add_argument("--dtype", help="Override the built-in model profile dtype.")
+    parser.add_argument("--num-layers", type=int, help="Manual layout layer count for custom models.")
+    parser.add_argument("--block-size", type=int, help="Override the built-in model profile block size.")
+    parser.add_argument("--bytes-per-token", type=int, help="Manual layout bytes per token for custom models.")
     parser.add_argument("--num-query-heads", type=int)
     parser.add_argument("--num-kv-heads", type=int)
     parser.add_argument("--head-size", type=int)
@@ -637,21 +646,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--uc-volume-root", help="Optional UC Volume root for relative kvpack shard URIs.")
     try:
         args = parser.parse_args(argv)
-        layout = KVLayout(
-            model_id=args.model_id,
-            lora_id=args.lora_id,
-            layout_version=args.layout_version,
-            dtype=args.dtype,
-            num_layers=args.num_layers,
-            block_size=args.block_size,
-            bytes_per_token=args.bytes_per_token,
-            num_query_heads=args.num_query_heads,
-            num_kv_heads=args.num_kv_heads,
-            head_size=args.head_size,
-            kv_stride_bytes=args.kv_stride_bytes,
-            shares_kv_storage=args.shares_kv_storage,
-            storage_layout=args.storage_layout,
-        )
+        layout = _bundle_layout_from_args(args)
         generator = load_benchmark_kv_chunk_generator(args.generator_factory)
         result = generate_benchmark_handoff_bundles(
             args.input_jsonl,
@@ -692,6 +687,58 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
         return 1
     return 0
+
+
+def _bundle_layout_from_args(args: argparse.Namespace) -> KVLayout:
+    if _uses_manual_layout(args):
+        missing = tuple(field for field in _MANUAL_LAYOUT_REQUIRED_FIELDS if getattr(args, field) is None)
+        if missing:
+            required_flags = ", ".join(_field_to_flag(field) for field in _MANUAL_LAYOUT_REQUIRED_FIELDS)
+            missing_flags = ", ".join(_field_to_flag(field) for field in missing)
+            raise ValueError(
+                "Manual benchmark layout requires "
+                f"{required_flags}; missing {missing_flags}. "
+                "Omit manual geometry to use the built-in model profile."
+            )
+        return KVLayout(
+            model_id=args.model_id,
+            lora_id=args.lora_id,
+            layout_version=args.layout_version,
+            dtype=args.dtype,
+            num_layers=args.num_layers,
+            block_size=args.block_size,
+            bytes_per_token=args.bytes_per_token,
+            num_query_heads=args.num_query_heads,
+            num_kv_heads=args.num_kv_heads,
+            head_size=args.head_size,
+            kv_stride_bytes=args.kv_stride_bytes,
+            shares_kv_storage=args.shares_kv_storage,
+            storage_layout=args.storage_layout,
+        )
+    try:
+        return layout_for_model(
+            args.model_id,
+            dtype=args.dtype,
+            lora_id=args.lora_id,
+            block_size=args.block_size,
+            layout_version=args.layout_version,
+            kv_stride_bytes=args.kv_stride_bytes,
+            shares_kv_storage=True if args.shares_kv_storage else None,
+            storage_layout=args.storage_layout,
+        )
+    except KeyError as exc:
+        required_flags = ", ".join(_field_to_flag(field) for field in _MANUAL_LAYOUT_REQUIRED_FIELDS)
+        raise ValueError(
+            f"Unknown model profile {args.model_id!r}; pass complete manual layout flags: {required_flags}"
+        ) from exc
+
+
+def _uses_manual_layout(args: argparse.Namespace) -> bool:
+    return any(getattr(args, field) is not None for field in _MANUAL_LAYOUT_TRIGGER_FIELDS)
+
+
+def _field_to_flag(field: str) -> str:
+    return "--" + field.replace("_", "-")
 
 
 def manifest_main(argv: Sequence[str] | None = None) -> int:
