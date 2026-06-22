@@ -40,6 +40,9 @@ VLLM_PROBE_METADATA_RUNTIME_CONTRACT = "vllm_kv_injection.runtime_contract"
 VLLM_DOCUMENT_KV_NATIVE_PROBE_CONNECTOR_FACTORY = (
     "vllm_kv_injection.probe:build_document_kv_native_probe_connector"
 )
+VLLM_CONNECTOR_FACTORY_METADATA_EXAMPLE = (
+    f"{VLLM_PROBE_METADATA_CONNECTOR_FACTORY}={VLLM_DOCUMENT_KV_NATIVE_PROBE_CONNECTOR_FACTORY}"
+)
 _VLLM_NATIVE_CONNECTOR_METHODS = ("reserve", "inject", "release")
 _VLLM_WRAPPER_METADATA_KEYS = frozenset(
     {
@@ -139,7 +142,7 @@ def build_native_connector_probe(context: EngineKVProbeFactoryContext) -> Engine
     factory_path = context.metadata.get(VLLM_PROBE_METADATA_CONNECTOR_FACTORY)
     if not factory_path:
         raise ValueError(
-            f"Native vLLM probe requires {VLLM_PROBE_METADATA_CONNECTOR_FACTORY}=module:factory metadata"
+            f"Native vLLM probe requires metadata entry {VLLM_CONNECTOR_FACTORY_METADATA_EXAMPLE}"
         )
     _reject_wrapper_owned_metadata(
         context.metadata,

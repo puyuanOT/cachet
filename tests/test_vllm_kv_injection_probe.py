@@ -27,6 +27,7 @@ from document_kv_cache.native_probe_factories import (
 )
 from vllm_kv_injection.probe import (
     NativeVLLMConnectorFactoryResult,
+    VLLM_CONNECTOR_FACTORY_METADATA_EXAMPLE,
     VLLM_DOCUMENT_KV_NATIVE_PROBE_CONNECTOR_FACTORY,
     VLLM_NATIVE_PROBE_CONTRACT,
     VLLM_PROBE_METADATA_CONNECTOR_CLASS,
@@ -432,7 +433,7 @@ def test_build_native_connector_probe_requires_connector_factory_metadata(tmp_pa
     )
     handoff_path = write_debug_handoff(tmp_path, ready)
 
-    with pytest.raises(ValueError, match=VLLM_PROBE_METADATA_CONNECTOR_FACTORY):
+    with pytest.raises(ValueError, match=VLLM_PROBE_METADATA_CONNECTOR_FACTORY) as exc_info:
         run_engine_kv_connector_probe(
             EngineKVProbeConfig(
                 handoff_json=handoff_path,
@@ -440,6 +441,10 @@ def test_build_native_connector_probe_requires_connector_factory_metadata(tmp_pa
                 expected_backend=ServingBackend.VLLM,
             )
         )
+
+    message = str(exc_info.value)
+    assert VLLM_CONNECTOR_FACTORY_METADATA_EXAMPLE in message
+    assert f"{VLLM_PROBE_METADATA_CONNECTOR_FACTORY}=module:factory" not in message
 
 
 @pytest.mark.parametrize(
