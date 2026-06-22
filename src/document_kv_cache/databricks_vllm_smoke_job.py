@@ -104,6 +104,10 @@ class DatabricksVLLMSmokeJobConfig:
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
     dataset_specs: tuple[str, ...] = ()
+    benchmark_handoff_generator_factory: str | None = None
+    benchmark_handoff_output_dir: str | None = None
+    benchmark_handoff_dtype: str = "bfloat16"
+    benchmark_handoff_align_bytes: int = 4096
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
@@ -146,6 +150,19 @@ class DatabricksVLLMSmokeJobConfig:
         object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
         if self.dataset_specs:
             parse_dataset_specs(self.dataset_specs)
+        if self.benchmark_handoff_generator_factory is not None:
+            if not self.benchmark_handoff_generator_factory.strip():
+                raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
+            if not self.dataset_specs:
+                raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+        if self.benchmark_handoff_output_dir is not None and not self.benchmark_handoff_output_dir:
+            raise ValueError("benchmark_handoff_output_dir must be non-empty when provided")
+        if self.benchmark_handoff_output_dir is not None and self.benchmark_handoff_generator_factory is None:
+            raise ValueError("benchmark_handoff_output_dir requires benchmark_handoff_generator_factory")
+        if not self.benchmark_handoff_dtype:
+            raise ValueError("benchmark_handoff_dtype must be non-empty")
+        if type(self.benchmark_handoff_align_bytes) is not int or self.benchmark_handoff_align_bytes <= 0:
+            raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
 
 
@@ -227,6 +244,19 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
     ]
     for dataset_spec in config.dataset_specs:
         parameters.extend(["--dataset", dataset_spec])
+    if config.benchmark_handoff_generator_factory is not None:
+        parameters.extend(
+            [
+                "--benchmark-handoff-generator-factory",
+                config.benchmark_handoff_generator_factory,
+                "--benchmark-handoff-dtype",
+                config.benchmark_handoff_dtype,
+                "--benchmark-handoff-align-bytes",
+                str(config.benchmark_handoff_align_bytes),
+            ]
+        )
+        if config.benchmark_handoff_output_dir is not None:
+            parameters.extend(["--benchmark-handoff-output-dir", config.benchmark_handoff_output_dir])
     return parameters
 
 
@@ -269,6 +299,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Prepared V1 benchmark dataset in DATASET=JSONL_PATH form. Repeat for all four V1 datasets.",
     )
+    parser.add_argument(
+        "--benchmark-handoff-generator-factory",
+        help=(
+            "Generate Cachet handoff bundles inside the vLLM task before serving. "
+            "Value must be a module:callable returning a KVChunkGenerator."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-handoff-output-dir",
+        help="Cluster-visible output directory for generated handoff bundles and enriched JSONL.",
+    )
+    parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
+    parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
     parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
     parser.add_argument("--runner-script-output", help="Write the tiny vLLM smoke runner script to this path.")
     args = parser.parse_args(argv)
@@ -297,6 +340,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_num_seqs=args.max_num_seqs,
             gpu_memory_utilization=args.gpu_memory_utilization,
             dataset_specs=tuple(args.dataset or ()),
+            benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,
+            benchmark_handoff_output_dir=args.benchmark_handoff_output_dir,
+            benchmark_handoff_dtype=args.benchmark_handoff_dtype,
+            benchmark_handoff_align_bytes=args.benchmark_handoff_align_bytes,
         )
         if args.runner_script_output:
             write_databricks_vllm_smoke_runner_script(args.runner_script_output)

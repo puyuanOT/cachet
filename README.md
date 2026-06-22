@@ -1147,16 +1147,18 @@ python -m document_kv_cache.vllm_smoke \
 ```
 
 For release-grade or long-context evidence, prepare one canonical JSONL file per
-V1 dataset, enrich every row with Cachet `kv_transfer_params` using the
-benchmark handoff tooling, and pass all four enriched paths explicitly. The same
-helper still owns the isolated vLLM environment and Databricks-local model
-cache, but it no longer writes the tiny built-in smoke files. Prepared mode
-writes `prepared-handoff-coverage.json`, fails before model startup when any row
-lacks handoff params or points at an unreadable/non-vLLM Cachet handoff, and runs
-the cache arm with the full logical prompt plus `kv_transfer_params` against the
-same native vLLM server. vLLM's V1 connector scheduler must see the logical
-prefix token positions before it can allocate external KV blocks, so suffix-only
-cache prompts are intentionally not used for native vLLM evidence:
+V1 dataset. You can either enrich those files ahead of time with the benchmark
+handoff tooling or let this runner generate Transformers-backed Cachet handoff
+bundles before vLLM starts. The same helper still owns the isolated vLLM
+environment and Databricks-local model cache, but it no longer writes the tiny
+built-in smoke files. Prepared mode writes `prepared-handoff-generation.json`
+when generation is enabled, always writes `prepared-handoff-coverage.json`, fails
+before model startup when any row lacks handoff params or points at an
+unreadable/non-vLLM Cachet handoff, and runs the cache arm with the full logical
+prompt plus `kv_transfer_params` against the same native vLLM server. vLLM's V1
+connector scheduler must see the logical prefix token positions before it can
+allocate external KV blocks, so suffix-only cache prompts are intentionally not
+used for native vLLM evidence:
 
 ```bash
 python -m document_kv_cache.vllm_smoke \
@@ -1166,6 +1168,9 @@ python -m document_kv_cache.vllm_smoke \
   --max-num-seqs 1 \
   --gpu-memory-utilization 0.9 \
   --max-tokens 100 \
+  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --benchmark-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared/handoffs \
+  --benchmark-handoff-dtype bfloat16 \
   --dataset biography=/Volumes/catalog/schema/volume/v1/biography.jsonl \
   --dataset hotpotqa=/Volumes/catalog/schema/volume/v1/hotpotqa.jsonl \
   --dataset musique=/Volumes/catalog/schema/volume/v1/musique.jsonl \
@@ -1216,6 +1221,9 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --max-num-seqs 1 \
   --gpu-memory-utilization 0.9 \
   --max-tokens 100 \
+  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --benchmark-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared/handoffs \
+  --benchmark-handoff-dtype bfloat16 \
   --dataset biography=dbfs:/benchmarks/v1/biography.jsonl \
   --dataset hotpotqa=dbfs:/benchmarks/v1/hotpotqa.jsonl \
   --dataset musique=dbfs:/benchmarks/v1/musique.jsonl \

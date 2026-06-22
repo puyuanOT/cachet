@@ -128,6 +128,16 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
+        (
+            {"benchmark_handoff_generator_factory": "document_kv_cache.transformers_generator:build"},
+            "requires prepared dataset specs",
+        ),
+        (
+            {"benchmark_handoff_output_dir": "/Volumes/catalog/schema/volume/handoffs"},
+            "requires benchmark_handoff_generator_factory",
+        ),
+        ({"benchmark_handoff_dtype": ""}, "benchmark_handoff_dtype must be non-empty"),
+        ({"benchmark_handoff_align_bytes": 0}, "benchmark_handoff_align_bytes must be a positive integer"),
     ]
 
     for overrides, message in invalid_cases:
@@ -144,6 +154,35 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
             assert message in str(exc)
         else:
             raise AssertionError(f"expected validation to fail for {overrides!r}")
+
+
+def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="v1-vllm-prepared-001",
+        output_dir="/Volumes/catalog/schema/volume/v1-vllm-prepared",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        dataset_specs=DATASET_SPECS,
+        benchmark_handoff_generator_factory=(
+            "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
+        ),
+        benchmark_handoff_output_dir="/Volumes/catalog/schema/volume/v1-vllm-prepared/handoffs",
+        benchmark_handoff_dtype="bfloat16",
+        benchmark_handoff_align_bytes=1,
+    )
+
+    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0]["spark_python_task"][
+        "parameters"
+    ]
+
+    assert parameters[parameters.index("--benchmark-handoff-generator-factory") + 1] == (
+        "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
+    )
+    assert parameters[parameters.index("--benchmark-handoff-output-dir") + 1] == (
+        "/Volumes/catalog/schema/volume/v1-vllm-prepared/handoffs"
+    )
+    assert parameters[parameters.index("--benchmark-handoff-dtype") + 1] == "bfloat16"
+    assert parameters[parameters.index("--benchmark-handoff-align-bytes") + 1] == "1"
 
 
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):

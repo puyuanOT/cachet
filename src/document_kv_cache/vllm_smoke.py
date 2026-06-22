@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import json
@@ -18,6 +19,11 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+from document_kv_cache.benchmark_handoffs import (
+    enrich_benchmark_jsonl_with_handoffs,
+    generate_benchmark_handoff_bundles,
+    load_benchmark_kv_chunk_generator,
+)
 from document_kv_cache.benchmark_runner import load_v1_jsonl_suite
 from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
@@ -33,6 +39,7 @@ from document_kv_cache.engine_adapters import (
     validate_engine_adapter_request_record,
 )
 from document_kv_cache.engine_probe import _validate_local_payload_uri
+from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -79,6 +86,7 @@ __all__ = [
     "SMOKE_DATASETS",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "VLLMSmokeBenchmarkConfig",
+    "VLLMPreparedHandoffGenerationConfig",
     "run_vllm_smoke_benchmark",
     "build_metadata",
     "build_vllm_native_provider_probe_record",
@@ -97,6 +105,8 @@ __all__ = [
     "write_prompt_token_budget_jsonl",
     "benchmark_dataset_paths",
     "write_smoke_datasets",
+    "prepare_generated_benchmark_handoffs",
+    "release_handoff_generation_resources",
     "smoke_dataset_records",
     "parse_dataset_specs",
     "dataset_args",
@@ -105,6 +115,35 @@ __all__ = [
     "main",
     "VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class VLLMPreparedHandoffGenerationConfig:
+    """Optional generation settings for prepared vLLM benchmark handoffs."""
+
+    generator_factory: str
+    output_dir: Path
+    dtype: str = "bfloat16"
+    align_bytes: int = 4096
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
+            raise ValueError("benchmark_handoff_generator_factory must be non-empty")
+        if self.output_dir is None:
+            raise ValueError("benchmark_handoff_output_dir must be provided")
+        if not isinstance(self.dtype, str) or not self.dtype.strip():
+            raise ValueError("benchmark_handoff_dtype must be non-empty")
+        if type(self.align_bytes) is not int or self.align_bytes <= 0:
+            raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
+        object.__setattr__(self, "output_dir", Path(self.output_dir))
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "generator_factory": self.generator_factory,
+            "output_dir": str(self.output_dir),
+            "dtype": self.dtype,
+            "align_bytes": self.align_bytes,
+        }
 
 
 @dataclass(frozen=True)
@@ -126,6 +165,7 @@ class VLLMSmokeBenchmarkConfig:
     gpu_memory_utilization: float = 0.85
     dataset_specs: tuple[str, ...] = ()
     package_install_spec: str | None = None
+    handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -159,6 +199,11 @@ class VLLMSmokeBenchmarkConfig:
             parse_dataset_specs(self.dataset_specs)
         if self.package_install_spec is not None and not self.package_install_spec.strip():
             raise ValueError("package_install_spec must be non-empty when provided")
+        if self.handoff_generation is not None:
+            if not isinstance(self.handoff_generation, VLLMPreparedHandoffGenerationConfig):
+                raise TypeError("handoff_generation must be a VLLMPreparedHandoffGenerationConfig")
+            if not self.dataset_specs:
+                raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
 
     @property
     def local_dir(self) -> Path:
@@ -213,6 +258,10 @@ class VLLMSmokeBenchmarkConfig:
         return self.output_dir / "prepared-handoff-coverage.json"
 
     @property
+    def prepared_handoff_generation_path(self) -> Path:
+        return self.output_dir / "prepared-handoff-generation.json"
+
+    @property
     def uses_prepared_datasets(self) -> bool:
         return bool(self.dataset_specs)
 
@@ -242,6 +291,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     )
 
     dataset_paths = benchmark_dataset_paths(config)
+    dataset_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
     validate_prepared_benchmark_handoffs(config, dataset_paths)
     validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
@@ -249,6 +299,8 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
     if config.uses_prepared_datasets:
         metadata["prepared_handoff_coverage_path"] = str(config.prepared_handoff_coverage_path)
+    if config.handoff_generation is not None:
+        metadata["prepared_handoff_generation_path"] = str(config.prepared_handoff_generation_path)
     write_json(config.metadata_path, metadata)
 
     server = start_vllm_server(config, config.venv_python, config.server_log_path)
@@ -278,6 +330,10 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "cache_runtime_prompt": False,
         "cache_prompt_text_mode": "logical",
         "requires_kv_transfer_params": config.uses_prepared_datasets,
+        "generates_prepared_handoffs": config.handoff_generation is not None,
+        "benchmark_handoff_generation": (
+            None if config.handoff_generation is None else config.handoff_generation.to_metadata()
+        ),
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
@@ -571,6 +627,85 @@ def write_prompt_token_budget_jsonl(path: Path, rows: tuple[dict[str, str], ...]
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def prepare_generated_benchmark_handoffs(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> dict[str, Path]:
+    """Generate and attach Cachet handoffs for prepared vLLM benchmark rows."""
+
+    generation = config.handoff_generation
+    if generation is None:
+        return dataset_paths
+    generation.output_dir.mkdir(parents=True, exist_ok=True)
+    generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
+    layout = layout_for_model(SERVED_MODEL_NAME, dtype=generation.dtype)
+    generated_paths: dict[str, Path] = {}
+    dataset_records: dict[str, dict[str, object]] = {}
+    try:
+        for dataset in SMOKE_DATASETS:
+            input_jsonl = dataset_paths[dataset]
+            dataset_output_dir = generation.output_dir / dataset
+            manifest_json = generation.output_dir / f"{dataset}-manifest.json"
+            output_jsonl = generation.output_dir / f"{dataset}.handoffs.jsonl"
+            result = generate_benchmark_handoff_bundles(
+                input_jsonl,
+                output_dir=dataset_output_dir,
+                generator=generator,
+                layout=layout,
+                dataset=dataset,
+                backend="vllm",
+                manifest_json=manifest_json,
+                align_bytes=generation.align_bytes,
+            )
+            enriched_rows = enrich_benchmark_jsonl_with_handoffs(
+                input_jsonl,
+                manifest_json,
+                output_jsonl,
+                dataset=dataset,
+                overwrite=True,
+            )
+            generated_paths[dataset] = output_jsonl
+            dataset_records[dataset] = {
+                "input_jsonl": str(input_jsonl),
+                "output_jsonl": str(output_jsonl),
+                "manifest_json": str(manifest_json),
+                "bundle_output_dir": str(dataset_output_dir),
+                "entries": len(result.manifest.entries),
+                "enriched_rows": enriched_rows,
+                "cache_refs": len(result.cache_refs),
+                "shard_uri": result.shard_uri,
+            }
+    finally:
+        release_handoff_generation_resources()
+
+    record = {
+        "ok": True,
+        "dataset_source": "prepared",
+        "benchmark_id": config.benchmark_id,
+        "generator_factory": generation.generator_factory,
+        "output_dir": str(generation.output_dir),
+        "dtype": generation.dtype,
+        "align_bytes": generation.align_bytes,
+        "datasets": dataset_records,
+    }
+    write_json(config.prepared_handoff_generation_path, record)
+    return generated_paths
+
+
+def release_handoff_generation_resources() -> None:
+    """Release best-effort Transformers/Torch memory before vLLM starts."""
+
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    cuda = getattr(torch, "cuda", None)
+    empty_cache = getattr(cuda, "empty_cache", None)
+    if callable(empty_cache):
+        empty_cache()
 
 
 def run_prompt_token_budget_probe(
@@ -867,7 +1002,7 @@ def parse_dataset_specs(dataset_specs: tuple[str, ...]) -> dict[str, Path]:
             raise ValueError(f"Unsupported V1 smoke dataset {dataset!r}")
         if dataset in paths:
             raise ValueError(f"duplicate dataset spec for {dataset!r}")
-        paths[dataset] = Path(raw_path)
+        paths[dataset] = Path(_cluster_file_path(raw_path))
     missing = set(SMOKE_DATASETS).difference(paths)
     if missing:
         raise ValueError(f"dataset specs missing required V1 datasets: {sorted(missing)}")
@@ -1199,10 +1334,25 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         default=None,
         help="Prepared V1 benchmark dataset in DATASET=JSONL_PATH form. Repeat for all four V1 datasets.",
     )
+    parser.add_argument(
+        "--benchmark-handoff-generator-factory",
+        help=(
+            "Generate Cachet handoff bundles for the prepared datasets before starting vLLM. "
+            "Value must be a module:callable returning a KVChunkGenerator."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-handoff-output-dir",
+        help="Output directory for generated handoff bundles and enriched JSONL. Defaults under --output-dir.",
+    )
+    parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
+    parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
     args = parser.parse_args(argv)
+    output_dir = Path(_cluster_file_path(args.output_dir))
+    handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
-        output_dir=Path(_cluster_file_path(args.output_dir)),
+        output_dir=output_dir,
         max_tokens=args.max_tokens,
         timeout_seconds=args.timeout_seconds,
         import_probe_timeout_seconds=args.import_probe_timeout_seconds,
@@ -1216,6 +1366,27 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         gpu_memory_utilization=args.gpu_memory_utilization,
         dataset_specs=tuple(args.dataset or ()),
         package_install_spec=args.package_install_spec,
+        handoff_generation=handoff_generation,
+    )
+
+
+def _handoff_generation_config_from_args(
+    args: argparse.Namespace,
+    *,
+    output_dir: Path,
+) -> VLLMPreparedHandoffGenerationConfig | None:
+    if args.benchmark_handoff_generator_factory is None:
+        if args.benchmark_handoff_output_dir is not None:
+            raise ValueError(
+                "--benchmark-handoff-output-dir requires --benchmark-handoff-generator-factory"
+            )
+        return None
+    output = args.benchmark_handoff_output_dir or str(output_dir / "generated-handoffs")
+    return VLLMPreparedHandoffGenerationConfig(
+        generator_factory=args.benchmark_handoff_generator_factory,
+        output_dir=Path(_cluster_file_path(output)),
+        dtype=args.benchmark_handoff_dtype,
+        align_bytes=args.benchmark_handoff_align_bytes,
     )
 
 
