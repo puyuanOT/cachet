@@ -10,6 +10,7 @@ import pytest
 
 import document_kv_cache.benchmark_plan as public_benchmark_plan
 import restaurant_kv_serving.benchmark_plan as legacy_benchmark_plan
+from document_kv_cache._native_probe_metadata import SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
 from document_kv_cache.benchmark_plan import (
     BenchmarkDatasetPath,
     BenchmarkPlanConfig,
@@ -37,6 +38,17 @@ from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENA
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_benchmark_plan_preserves_sglang_native_delegate_factory_alias():
+    assert (
+        public_benchmark_plan.SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
+        == SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
+    )
+    assert (
+        legacy_benchmark_plan.SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
+        == SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
+    )
 
 
 def dataset_paths(tmp_path):

@@ -23,6 +23,12 @@ from document_kv_cache.native_probe_factories import (
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_FACTORY,
 )
+from document_kv_cache._native_probe_metadata import (
+    VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+    VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY,
+    VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+    validate_known_native_delegate_metadata,
+)
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
 from document_kv_cache.serving_env import VLLM_VERSION
@@ -35,13 +41,6 @@ DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE = "document-kv-engine-probe"
 DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY = "probes"
 ENGINE_PROBE_TARGETS_RECORD_TYPE = "document_kv.engine_probe_targets.v1"
 ENGINE_PROBE_TARGETS_SCHEMA_VERSION = 1
-VLLM_NATIVE_PROBE_DELEGATE_FACTORY = "vllm_kv_injection.probe:build_native_connector_probe"
-VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY = (
-    "vllm_kv_injection.probe:build_document_kv_native_probe_connector"
-)
-VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA = (
-    f"vllm_kv_injection.connector_factory={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY}"
-)
 DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE = f"vllm=={VLLM_VERSION}"
 _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS = frozenset(
     {
@@ -74,23 +73,6 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "vllm_runtime_preflight_layer_names_json",
     }
 )
-_KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
-    VLLM_NATIVE_PROBE_DELEGATE_FACTORY: (
-        ServingBackend.VLLM,
-        "vllm_kv_injection.connector_factory",
-    ),
-    "sglang_kv_injection.probe:build_native_connector_probe": (
-        ServingBackend.SGLANG,
-        "sglang_kv_injection.connector_factory",
-    ),
-}
-_PLACEHOLDER_CONNECTOR_FACTORY_PATHS = frozenset({"module:factory"})
-_KNOWN_NATIVE_DELEGATE_METADATA_EXAMPLES = {
-    VLLM_NATIVE_PROBE_DELEGATE_FACTORY: VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
-    "sglang_kv_injection.probe:build_native_connector_probe": (
-        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"
-    ),
-}
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
@@ -781,43 +763,13 @@ def _validate_known_native_delegate_metadata(
     metadata: Sequence[str],
     label: str,
 ) -> None:
-    if native_probe_delegate_factory is None:
-        return
-    requirement = _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA.get(native_probe_delegate_factory)
-    if requirement is None:
-        return
-    delegate_backend, required_key = requirement
-    if expected_backend != delegate_backend:
-        raise ValueError(
-            f"{label} native_probe_delegate_factory {native_probe_delegate_factory!r} is for "
-            f"{delegate_backend.value}, but expected_backend is {expected_backend.value}"
-        )
-    metadata_map = _metadata_item_map(metadata)
-    metadata_value = metadata_map.get(required_key)
-    if not metadata_value:
-        example = _KNOWN_NATIVE_DELEGATE_METADATA_EXAMPLES.get(
-            native_probe_delegate_factory,
-            f"{required_key}=module:factory",
-        )
-        raise ValueError(
-            f"{label} native_probe_delegate_factory {native_probe_delegate_factory!r} requires "
-            f"metadata entry {example}"
-        )
-    _validate_connector_factory_metadata_value(metadata_value, metadata_key=required_key, label=label)
-
-
-def _validate_connector_factory_metadata_value(value: str, *, metadata_key: str, label: str) -> None:
-    module_name, separator, attribute_name = value.partition(":")
-    if (
-        value in _PLACEHOLDER_CONNECTOR_FACTORY_PATHS
-        or any(character.isspace() for character in value)
-        or not separator
-        or not module_name
-        or not attribute_name
-    ):
-        raise ValueError(
-            f"{label} metadata entry {metadata_key} must be a real module:attribute connector factory"
-        )
+    validate_known_native_delegate_metadata(
+        backend=expected_backend,
+        native_probe_delegate_factory=native_probe_delegate_factory,
+        metadata=metadata,
+        label=label,
+        backend_field_label="expected_backend",
+    )
 
 
 def _metadata_item_map(items: Sequence[str]) -> dict[str, str]:
