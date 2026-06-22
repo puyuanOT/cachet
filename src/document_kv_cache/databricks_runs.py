@@ -20,6 +20,7 @@ import urllib.request
 from document_kv_cache._hardware_targets import (
     HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES,
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
+    V1_HARDWARE_TARGET_PROFILES,
 )
 
 
@@ -130,6 +131,7 @@ _DATABRICKS_SUBMIT_PAYLOAD_KEYS = frozenset(
         "tasks",
         "node_type_ids",
         "driver_node_type_ids",
+        "hardware_targets",
         "spark_versions",
         "data_security_modes",
         "single_node",
@@ -552,6 +554,7 @@ def summarize_databricks_run_submit_payload(
     task_summaries = tuple(_submit_payload_task_summary(task) for task in tasks)
     node_type_ids = _sorted_unique_texts(summary.get("node_type_id") for summary in task_summaries)
     driver_node_type_ids = _sorted_unique_texts(summary.get("driver_node_type_id") for summary in task_summaries)
+    hardware_targets = _hardware_targets_for_task_summaries(task_summaries)
     spark_versions = _sorted_unique_texts(summary.get("spark_version") for summary in task_summaries)
     data_security_modes = _sorted_unique_texts(summary.get("data_security_mode") for summary in task_summaries)
     canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -574,6 +577,7 @@ def summarize_databricks_run_submit_payload(
         "tasks": list(task_summaries),
         "node_type_ids": node_type_ids,
         "driver_node_type_ids": driver_node_type_ids,
+        "hardware_targets": hardware_targets,
         "spark_versions": spark_versions,
         "data_security_modes": data_security_modes,
         "single_node": bool(task_summaries) and all(summary["single_node"] for summary in task_summaries),
@@ -783,6 +787,10 @@ def _sorted_unique_texts(values: Sequence[Any]) -> list[str]:
 
 _SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
 _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
+_V1_HARDWARE_TARGET_PREFIXES = tuple(
+    (profile.hardware_target, profile.databricks_node_type_prefixes)
+    for profile in V1_HARDWARE_TARGET_PROFILES
+)
 
 
 def _is_supported_aws_single_node_gpu_type(value: Any) -> bool:
@@ -794,6 +802,28 @@ def _is_expected_aws_single_node_gpu_type(value: Any, expected_hardware_target: 
         return _is_supported_aws_single_node_gpu_type(value)
     prefixes = _HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.get(expected_hardware_target)
     return isinstance(value, str) and prefixes is not None and value.lower().startswith(prefixes)
+
+
+def _hardware_target_for_node_type(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    lowered = value.lower()
+    for hardware_target, prefixes in _V1_HARDWARE_TARGET_PREFIXES:
+        if lowered.startswith(prefixes):
+            return hardware_target
+    return None
+
+
+def _hardware_targets_for_task_summaries(tasks: Sequence[Any]) -> list[str]:
+    hardware_targets = {
+        hardware_target
+        for task in tasks
+        if isinstance(task, Mapping)
+        for field_name in ("node_type_id", "driver_node_type_id")
+        for hardware_target in (_hardware_target_for_node_type(task.get(field_name)),)
+        if hardware_target is not None
+    }
+    return sorted(hardware_targets)
 
 
 def _submit_payload_gpu_type_supported(record: Mapping[str, Any]) -> bool:
@@ -923,6 +953,16 @@ def _databricks_submit_payload_summary_field_issues(
             issues.append(
                 f"Databricks run status sidecar submit_payload.{summary_field} must match submit_payload.tasks"
             )
+    if "hardware_targets" in record:
+        actual_hardware_targets = _valid_string_list(record.get("hardware_targets"))
+    else:
+        actual_hardware_targets = None
+    if actual_hardware_targets is not None:
+        expected_hardware_targets = _hardware_targets_for_task_summaries(tasks)
+        if actual_hardware_targets != expected_hardware_targets:
+            issues.append(
+                "Databricks run status sidecar submit_payload.hardware_targets must match submit_payload.tasks"
+            )
     return tuple(issues)
 
 
@@ -1003,6 +1043,10 @@ def _databricks_submit_payload_field_issues(record: Mapping[str, Any]) -> tuple[
     issues.extend(_optional_str_field(record, "run_name", "Databricks run status sidecar submit_payload"))
     for field_name in ("task_keys", "node_type_ids", "driver_node_type_ids", "spark_versions", "data_security_modes"):
         issues.extend(_list_of_strings_field(record, field_name, "Databricks run status sidecar submit_payload"))
+    if "hardware_targets" in record:
+        issues.extend(
+            _list_of_strings_field(record, "hardware_targets", "Databricks run status sidecar submit_payload")
+        )
     issues.extend(_bool_field(record, "single_node", "Databricks run status sidecar submit_payload"))
     if not _present_gpu_type_fields(record):
         issues.append(
