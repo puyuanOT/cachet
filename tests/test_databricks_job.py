@@ -28,6 +28,7 @@ from document_kv_cache.databricks_job import (
     write_databricks_run_submit_json,
 )
 from document_kv_cache.databricks_engine_probe_job import (
+    SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
 )
 from document_kv_cache._hardware_targets import (
@@ -1553,11 +1554,8 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--var native_probe_metadata=" in probe_readme_text
     assert "--var vllm_native_probe_delegate_factory=" in probe_readme_text
     assert VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in probe_readme_text
-    sglang_connector_example = (
-        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"
-    )
-    assert sglang_connector_example in probe_readme_text
-    assert sglang_connector_example in packaged_probe_readme_text
+    assert SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in probe_readme_text
+    assert SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in packaged_probe_readme_text
     assert "placeholder connector factory metadata" in probe_readme_text
     assert "placeholder connector factory metadata" in packaged_probe_readme_text
     assert "sglang_kv_injection.connector_factory=module:factory" not in probe_readme_text

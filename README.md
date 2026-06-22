@@ -561,18 +561,19 @@ The built-in reserved vLLM/SGLang probe factories fail closed unless the target
 serving environment has the backend package installed and points the matching
 delegate environment variable at a native factory:
 `DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY=module:callable` or
-`DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. Cachet's wheel now
-ships the provider-backed vLLM delegate path; SGLang still needs a
-backend-native delegate. The public built-in factory paths stay stable for
-release bundles, while the delegate callable owns the runtime block-manager
-integration.
+`DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY=module:callable`. Cachet's wheel ships
+provider-backed delegate paths for vLLM and SGLang HiCache. The SGLang path
+exercises Cachet's runtime-facing HiCache provider and launch preflight; live
+decode-time prefix binding still needs validation in the installed SGLang
+runtime before it can produce benchmark evidence.
 When using the adapter-package delegates
 `vllm_kv_injection.probe:build_native_connector_probe` or
 `sglang_kv_injection.probe:build_native_connector_probe`, also add target
 metadata for the backend-native connector factory, for example
 `"metadata": ["vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector"]`
 for the built-in provider-backed vLLM path, or
-`"metadata": ["sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"]`.
+`"metadata": ["sglang_kv_injection.connector_factory=sglang_kv_injection.probe:build_document_kv_hicache_probe_connector"]`
+for the built-in provider-backed SGLang HiCache path.
 The Databricks target parser rejects those known delegates without the matching
 connector-factory metadata so release-safe jobs fail before requesting GPU
 capacity.
@@ -1400,9 +1401,11 @@ tracked or exposed as untracked, every non-generated tracked/untracked
 directory is documented, and no tracked files differ from `HEAD`.
 
 For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g6/L4 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers. The Databricks payload CLIs accept `--hardware-target aws-g6-l4` or `--hardware-target aws-g5-a10g` and derive the default node type from the shared V1 hardware profile unless `--node-type-id` is explicitly supplied.
-When generating `v1-plan.json` for the provider-backed vLLM native probe path,
+When generating `v1-plan.json` for the provider-backed native probe paths,
 include
 `--engine-probe-metadata vllm=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
+and
+`--engine-probe-metadata sglang=sglang_kv_injection.connector_factory=sglang_kv_injection.probe:build_document_kv_hicache_probe_connector`
 so the plan carries the strict connector-factory metadata before a Databricks
 GPU job is submitted.
 

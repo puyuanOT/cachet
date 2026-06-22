@@ -15,6 +15,7 @@ from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
     DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
+    SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     DatabricksEngineProbeJobConfig,
@@ -1684,6 +1685,34 @@ def test_read_databricks_engine_probe_targets_json_accepts_known_delegate_connec
     assert targets[0].metadata == (VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,)
 
 
+def test_read_databricks_engine_probe_targets_json_accepts_sglang_provider_backed_metadata(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "document_kv.engine_probe_targets.v1",
+                "schema_version": 1,
+                "release_safe": True,
+                "probes": [
+                    {
+                        "backend": "sglang",
+                        "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+                        "probe_factory": "document_kv_cache.native_probe_factories:sglang_native_probe_factory",
+                        "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "native_probe_delegate_factory": "sglang_kv_injection.probe:build_native_connector_probe",
+                        "metadata": [SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    targets = read_databricks_engine_probe_targets_json(path)
+
+    assert targets[0].metadata == (SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,)
+
+
 @pytest.mark.parametrize(
     ("backend", "delegate_factory", "metadata"),
     [
@@ -1787,7 +1816,7 @@ def test_legacy_databricks_engine_probe_targets_reject_known_delegate_missing_co
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="company_sglang_patch\\.probe:build_connector"):
+    with pytest.raises(ValueError, match="build_document_kv_hicache_probe_connector"):
         legacy_engine_probe_job.read_databricks_engine_probe_targets_json(path)
 
 
@@ -3196,6 +3225,8 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "REQUIRED_ENGINE_PROBE_BACKENDS",
         "Sequence",
         "ServingBackend",
+        "SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY",
+        "SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA",
         "VLLM_NATIVE_PROBE_DELEGATE_FACTORY",
         "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY",
         "VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA",

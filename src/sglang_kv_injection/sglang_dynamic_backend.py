@@ -106,6 +106,8 @@ class NoOpDocumentKVHiCacheProvider:
 class DocumentKVHiCachePageProvider:
     """Runtime-facing HiCache page provider backed by memory or a filesystem path."""
 
+    document_kv_hicache_provider = True
+
     def __init__(self, *, store_uri: str | None = None, storage_identity: str | None = None) -> None:
         store_uri = _optional_config_string(
             store_uri,
@@ -162,6 +164,17 @@ class DocumentKVHiCachePageProvider:
         if self.root is not None:
             for path in self.root.glob(f"{_page_namespace_prefix(self.storage_identity)}-*{_PAGE_FILE_SUFFIX}"):
                 path.unlink(missing_ok=True)
+
+    def delete(self, key: object) -> bool:
+        if self.root is None:
+            return self._memory_pages.pop(_page_key(key, self.storage_identity), None) is not None
+        try:
+            _page_path(self.root, key, self.storage_identity).unlink()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return False
+        return True
 
     def get_stats(self) -> dict[str, object]:
         return {
