@@ -59,11 +59,15 @@ DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD = "native-kv-import"
 DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_VLLM_RECORD_TYPE_PREFIX}launch_config.v1"
 DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_SGLANG_RECORD_TYPE_PREFIX}launch_config.v1"
 DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
+DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY = (
+    "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider"
+)
 
 __all__ = [
     "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
     "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
     "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
+    "DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY",
     "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
     "DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY",
     "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",
@@ -162,7 +166,7 @@ def build_sglang_launch_config(
     schema_version: int = DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
     kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
     extra_config: Mapping[str, Any] | None = None,
-    provider_factory: str | None = None,
+    provider_factory: str | None = DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY,
     encode_extra_config_as_json: bool = True,
 ) -> dict[str, Any]:
     """Build a validated SGLang HiCache config for the document KV backend."""
@@ -478,7 +482,7 @@ def _validate_document_kv_extra_config(
     if extra_config.get("document_kv.requires_native_runtime") is not True:
         issues.append("document_kv.requires_native_runtime must be true")
     provider_factory = extra_config.get(DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY)
-    if expected_backend == ServingBackend.VLLM or provider_factory is not None:
+    if expected_backend in {ServingBackend.VLLM, ServingBackend.SGLANG} or provider_factory is not None:
         provider_factory_issues = _module_attribute_issues(
             provider_factory,
             field_name=DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
@@ -652,9 +656,10 @@ def _add_sglang_parser(subparsers: Any) -> None:
     parser.add_argument("--module-path", default=DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH)
     parser.add_argument(
         "--provider-factory",
+        default=DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY,
         help=(
-            "SGLang document KV provider factory module:attribute path. Required by strict "
-            "runtime preflight records."
+            "SGLang document KV provider factory module:attribute path. Defaults to Cachet's "
+            "built-in HiCache page provider."
         ),
     )
     _add_common_build_args(parser, default_record_type=DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)

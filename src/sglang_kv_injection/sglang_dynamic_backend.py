@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import json
+import os
+import tempfile
 from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -22,7 +26,11 @@ def _load_sglang_hicache_storage_base() -> type:
 
 DOCUMENT_KV_HICACHE_BACKEND_CLASS = "DocumentKVHiCacheBackend"
 DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH = "sglang_kv_injection.sglang_dynamic_backend"
+DOCUMENT_KV_HICACHE_PROVIDER_FACTORY = (
+    "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider"
+)
 DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY = "document_kv.provider_factory"
+DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY = "cachet.hicache_page_store_uri"
 DOCUMENT_KV_HICACHE_RUNTIME_METHODS = (
     "register_mem_pool_host",
     "register_mem_host_pool_v2",
@@ -45,11 +53,15 @@ _SGLANG_HICACHE_STORAGE_BASE = _load_sglang_hicache_storage_base()
 __all__ = [
     "DOCUMENT_KV_HICACHE_BACKEND_CLASS",
     "DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH",
+    "DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY",
+    "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY",
     "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY",
     "DOCUMENT_KV_HICACHE_RUNTIME_METHODS",
     "DocumentKVHiCacheBackend",
+    "DocumentKVHiCachePageProvider",
     "DocumentKVHiCacheProvider",
     "NoOpDocumentKVHiCacheProvider",
+    "build_document_kv_hicache_provider",
     "load_document_kv_hicache_provider_factory",
 ]
 
@@ -91,6 +103,101 @@ class NoOpDocumentKVHiCacheProvider:
         return None
 
 
+class DocumentKVHiCachePageProvider:
+    """Runtime-facing HiCache page provider backed by memory or a filesystem path."""
+
+    def __init__(self, *, store_uri: str | None = None, storage_identity: str | None = None) -> None:
+        store_uri = _optional_config_string(
+            store_uri,
+            field_name=DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
+        )
+        self.store_uri = store_uri
+        self.storage_identity = storage_identity
+        self.root = None if _is_memory_page_store_uri(store_uri) else _page_store_root(store_uri)
+        self._memory_pages: dict[str, bytes] = {}
+        self.hits = 0
+        self.misses = 0
+        self.sets = 0
+        if self.root is not None:
+            self.root.mkdir(parents=True, exist_ok=True)
+
+    def get(
+        self,
+        key: object,
+        target_location: object | None = None,
+        target_sizes: object | None = None,
+    ) -> object | None:
+        raw_page = self._read_page(key)
+        if raw_page is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        return _copy_page_to_target(raw_page, target_location)
+
+    def exists(self, key: object) -> bool:
+        if self.root is None:
+            return _page_key(key, self.storage_identity) in self._memory_pages
+        return _page_path(self.root, key, self.storage_identity).is_file()
+
+    def exist(self, key: object) -> bool:
+        return self.exists(key)
+
+    def set(
+        self,
+        key: object,
+        value: object | None = None,
+        target_location: object | None = None,
+        target_sizes: object | None = None,
+    ) -> bool:
+        raw_page = _page_bytes(value if value is not None else target_location)
+        try:
+            self._write_page(key, raw_page)
+        except OSError:
+            return False
+        self.sets += 1
+        return True
+
+    def clear(self) -> None:
+        self._memory_pages.clear()
+        if self.root is not None:
+            for path in self.root.glob(f"{_page_namespace_prefix(self.storage_identity)}-*{_PAGE_FILE_SUFFIX}"):
+                path.unlink(missing_ok=True)
+
+    def get_stats(self) -> dict[str, object]:
+        return {
+            "provider": self.__class__.__name__,
+            "store": "memory" if self.root is None else "filesystem",
+            "store_uri": self.store_uri,
+            "storage_identity": self.storage_identity,
+            "pages": self._page_count(),
+            "hits": self.hits,
+            "misses": self.misses,
+            "sets": self.sets,
+        }
+
+    def _read_page(self, key: object) -> bytes | None:
+        if self.root is None:
+            return self._memory_pages.get(_page_key(key, self.storage_identity))
+        path = _page_path(self.root, key, self.storage_identity)
+        if not path.is_file():
+            return None
+        try:
+            return path.read_bytes()
+        except OSError:
+            return None
+
+    def _write_page(self, key: object, raw_page: bytes) -> None:
+        if self.root is None:
+            self._memory_pages[_page_key(key, self.storage_identity)] = raw_page
+            return
+        _atomic_write_page(_page_path(self.root, key, self.storage_identity), raw_page)
+
+    def _page_count(self) -> int:
+        if self.root is None:
+            return len(self._memory_pages)
+        return sum(1 for _ in self.root.glob(f"{_page_namespace_prefix(self.storage_identity)}-*{_PAGE_FILE_SUFFIX}"))
+
+
 class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
     """Dynamic SGLang HiCache backend that delegates storage calls to a provider.
 
@@ -105,8 +212,12 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
         provider: DocumentKVHiCacheProvider | None = None,
         **kwargs: object,
     ) -> None:
+        self.storage_identity = _storage_identity_from_runtime_args(args=args, kwargs=kwargs)
         self.extra_config = _backend_extra_config(args=args, kwargs=kwargs)
-        self.provider = provider or _provider_from_extra_config(self.extra_config)
+        self.provider = provider or _provider_from_extra_config(
+            self.extra_config,
+            storage_identity=self.storage_identity,
+        )
 
     def register_mem_pool_host(self, mem_pool_host: object) -> object | None:
         self.mem_pool_host = mem_pool_host
@@ -365,7 +476,29 @@ def load_document_kv_hicache_provider_factory(factory_path: str) -> object:
     return factory
 
 
-def _provider_from_extra_config(extra_config: Mapping[str, Any]) -> DocumentKVHiCacheProvider:
+def build_document_kv_hicache_provider(
+    *,
+    extra_config: Mapping[str, Any] | None = None,
+    storage_identity: str | None = None,
+) -> DocumentKVHiCachePageProvider:
+    """Build Cachet's built-in SGLang HiCache page provider."""
+
+    if extra_config is None:
+        extra_config = {}
+    if not isinstance(extra_config, Mapping):
+        raise TypeError("SGLang HiCache provider extra_config must be a mapping")
+    store_uri = _optional_config_string(
+        extra_config.get(DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY),
+        field_name=DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
+    )
+    return DocumentKVHiCachePageProvider(store_uri=store_uri, storage_identity=storage_identity)
+
+
+def _provider_from_extra_config(
+    extra_config: Mapping[str, Any],
+    *,
+    storage_identity: str | None = None,
+) -> DocumentKVHiCacheProvider:
     factory_path = extra_config.get(DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY)
     if factory_path is None:
         return NoOpDocumentKVHiCacheProvider()
@@ -375,11 +508,231 @@ def _provider_from_extra_config(extra_config: Mapping[str, Any]) -> DocumentKVHi
             "must be a non-empty module:attribute string"
         )
     factory = load_document_kv_hicache_provider_factory(factory_path)
-    provider = factory(extra_config=extra_config)
+    provider = _call_provider_factory(factory, extra_config=extra_config, storage_identity=storage_identity)
     if isinstance(provider, NoOpDocumentKVHiCacheProvider):
         raise ValueError("configured document KV HiCache provider factory cannot return NoOpDocumentKVHiCacheProvider")
     _validate_provider(provider)
     return provider
+
+
+_PAGE_FILE_SUFFIX = ".cachet-hicache-page"
+
+
+def _is_memory_page_store_uri(store_uri: str | None) -> bool:
+    if store_uri is None:
+        return True
+    normalized = store_uri.strip()
+    return normalized in {"memory", "mem"} or normalized.startswith(("memory:", "mem:"))
+
+
+def _page_store_root(store_uri: str | None) -> Path | None:
+    if store_uri is None:
+        return None
+    from document_kv_cache.storage import local_path
+
+    return local_path(store_uri)
+
+
+def _page_namespace_prefix(storage_identity: str | None) -> str:
+    raw_identity = storage_identity or "default"
+    return hashlib.sha256(raw_identity.encode("utf-8")).hexdigest()[:16]
+
+
+def _page_key(key: object, storage_identity: str | None) -> str:
+    key_hash = hashlib.sha256(str(key).encode("utf-8")).hexdigest()
+    return f"{_page_namespace_prefix(storage_identity)}-{key_hash}"
+
+
+def _page_path(root: Path, key: object, storage_identity: str | None) -> Path:
+    return root / f"{_page_key(key, storage_identity)}{_PAGE_FILE_SUFFIX}"
+
+
+def _atomic_write_page(path: Path, raw_page: bytes) -> None:
+    temp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb",
+            dir=path.parent,
+            prefix=f".{path.stem}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = handle.name
+            handle.write(raw_page)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
+
+
+def _call_provider_factory(
+    factory: object,
+    *,
+    extra_config: Mapping[str, Any],
+    storage_identity: str | None,
+) -> object:
+    if not callable(factory):  # pragma: no cover - load helper validates this.
+        raise TypeError("document KV HiCache provider factory must be callable")
+    kwargs: dict[str, object] = {"extra_config": extra_config}
+    if storage_identity is not None and _accepts_provider_factory_kwarg(factory, "storage_identity"):
+        kwargs["storage_identity"] = storage_identity
+    return factory(**kwargs)
+
+
+def _accepts_provider_factory_kwarg(factory: object, name: str) -> bool:
+    try:
+        parameters = inspect.signature(factory).parameters.values()
+    except (TypeError, ValueError):
+        return True
+    for parameter in parameters:
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ) and parameter.name == name:
+            return True
+    return False
+
+
+def _storage_identity_from_runtime_args(*, args: tuple[object, ...], kwargs: Mapping[str, object]) -> str | None:
+    for candidate in (*args, *kwargs.values()):
+        identity = _storage_identity(candidate)
+        if identity is not None:
+            return identity
+    return None
+
+
+def _storage_identity(value: object) -> str | None:
+    model_name = _first_attr(value, "model_name", "served_model_name", "model_path")
+    tp_rank = _first_attr(value, "tp_rank")
+    tp_size = _first_attr(value, "tp_size")
+    pp_rank = _first_attr(value, "pp_rank")
+    pp_size = _first_attr(value, "pp_size")
+    cp_rank = _first_attr(value, "cp_rank", "attn_cp_rank", "context_parallel_rank")
+    cp_size = _first_attr(value, "cp_size", "attn_cp_size", "context_parallel_size")
+    is_mla_model = getattr(value, "is_mla_model", None)
+    if all(item is None for item in (model_name, tp_rank, tp_size, pp_rank, pp_size, cp_rank, cp_size, is_mla_model)):
+        return None
+    model_segment = _safe_identity_segment(model_name or "model")
+    segments = [model_segment]
+    if is_mla_model is True:
+        segments.append("mla")
+    if tp_rank is not None or tp_size is not None or is_mla_model is not True:
+        segments.extend(("tp", _identity_int(tp_rank, default=0), "of", _identity_int(tp_size, default=1)))
+    if pp_rank is not None or _identity_int(pp_size, default=1) > 1:
+        segments.extend(("pp", _identity_int(pp_rank, default=0), "of", _identity_int(pp_size, default=1)))
+    if cp_rank is not None or _identity_int(cp_size, default=1) > 1:
+        segments.extend(("cp", _identity_int(cp_rank, default=0), "of", _identity_int(cp_size, default=1)))
+    return "_".join(str(segment) for segment in segments)
+
+
+def _first_attr(value: object, *names: str) -> object | None:
+    for name in names:
+        attribute = getattr(value, name, None)
+        if attribute is not None:
+            return attribute
+    return None
+
+
+def _safe_identity_segment(value: object) -> str:
+    raw_value = str(value)
+    return "-".join(part for part in raw_value.replace("\\", "/").split("/") if part) or "model"
+
+
+def _identity_int(value: object, *, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_config_string(value: object, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string when provided")
+    return value
+
+
+def _page_bytes(value: object | None) -> bytes:
+    if value is None:
+        raise ValueError("SGLang HiCache page payload must be provided")
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, memoryview):
+        return value.tobytes()
+    tensor_bytes = _torch_tensor_bytes(value)
+    if tensor_bytes is not None:
+        return tensor_bytes
+    try:
+        return memoryview(value).tobytes()
+    except TypeError as exc:
+        raise TypeError("SGLang HiCache page payload must be bytes-like or a torch.Tensor") from exc
+
+
+def _torch_tensor_bytes(value: object) -> bytes | None:
+    try:
+        torch = importlib.import_module("torch")
+    except Exception:
+        return None
+    if not isinstance(value, torch.Tensor):
+        return None
+    tensor = value.detach().contiguous()
+    byte_tensor = tensor.view(torch.uint8).reshape(-1)
+    if byte_tensor.device.type != "cpu":
+        byte_tensor = byte_tensor.cpu()
+    return byte_tensor.numpy().tobytes()
+
+
+def _copy_page_to_target(raw_page: bytes, target_location: object | None) -> object:
+    if target_location is None:
+        return raw_page
+    if _copy_page_to_torch_target(raw_page, target_location):
+        return target_location
+    try:
+        target_view = memoryview(target_location).cast("B")
+    except TypeError as exc:
+        raise TypeError("SGLang HiCache target_location must be a mutable byte buffer or torch.Tensor") from exc
+    if target_view.readonly:
+        raise TypeError("SGLang HiCache target_location must be mutable")
+    if len(target_view) != len(raw_page):
+        raise ValueError(
+            "SGLang HiCache target_location byte length must match stored page byte length"
+        )
+    target_view[:] = raw_page
+    return target_location
+
+
+def _copy_page_to_torch_target(raw_page: bytes, target_location: object) -> bool:
+    try:
+        torch = importlib.import_module("torch")
+    except Exception:
+        return False
+    if not isinstance(target_location, torch.Tensor):
+        return False
+    if not target_location.is_contiguous():
+        raise ValueError("SGLang HiCache target_location tensor must be contiguous")
+    target_bytes = target_location.view(torch.uint8).reshape(-1)
+    if int(target_bytes.numel()) != len(raw_page):
+        raise ValueError(
+            "SGLang HiCache target_location byte length must match stored page byte length"
+        )
+    source = torch.frombuffer(bytearray(raw_page), dtype=torch.uint8)
+    if target_bytes.device != source.device:
+        source = source.to(device=target_bytes.device)
+    target_bytes.copy_(source)
+    return True
 
 
 def _backend_extra_config(*, args: tuple[object, ...], kwargs: Mapping[str, object]) -> dict[str, Any]:

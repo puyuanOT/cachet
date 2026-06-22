@@ -35,6 +35,7 @@ from document_kv_cache.databricks_engine_probe_job import (
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import SGLANG_NATIVE_PROBE_FACTORY, VLLM_NATIVE_PROBE_FACTORY
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
+from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -3750,7 +3751,7 @@ def test_main_rejects_mismatched_generated_and_explicit_engine_launch_configs(ca
     assert "engine_launch_config_jsons must match engine_launch_config_output_dir" in record["error"]
 
 
-def test_main_rejects_generated_sglang_launch_config_without_provider_factory(capsys, tmp_path):
+def test_main_generates_sglang_launch_config_with_builtin_provider_factory(capsys, tmp_path):
     exit_code = main(
         [
             "--raw-dataset",
@@ -3767,11 +3768,17 @@ def test_main_rejects_generated_sglang_launch_config_without_provider_factory(ca
         ]
     )
 
-    record = json.loads(capsys.readouterr().out)
+    capsys.readouterr()
+    record = json.loads((tmp_path / "plan.json").read_text(encoding="utf-8"))
 
-    assert exit_code == 1
-    assert record["ok"] is False
-    assert "engine_launch_config_sglang_provider_factory" in record["error"]
+    assert exit_code == 0
+    assert record["engine_launch_config_sglang_provider_factory"] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
+    sglang_launch_argv = next(
+        command["argv"] for command in record["commands"] if command["name"] == "write-sglang-engine-launch-config"
+    )
+    assert sglang_launch_argv[sglang_launch_argv.index("--provider-factory") + 1] == (
+        DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
+    )
 
 
 def test_main_rejects_plan_output_json_colliding_with_generated_artifact(capsys, tmp_path):

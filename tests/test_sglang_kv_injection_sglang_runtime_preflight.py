@@ -10,7 +10,10 @@ import pytest
 
 import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
 import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
-from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY
+from sglang_kv_injection.sglang_dynamic_backend import (
+    DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
+    DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
+)
 from sglang_kv_injection.sglang_hicache_config import sglang_hicache_launch_config
 from sglang_kv_injection.sglang_runtime_preflight import (
     DOCUMENT_KV_SGLANG_INSTALLED_HICACHE_CONTRACT_RECORD_TYPE,
@@ -185,6 +188,18 @@ def ok_must_match_issue() -> str:
         "ok must match installed contract, launch config, provider factory, "
         "and dynamic backend factory safety"
     )
+
+
+def launch_config_without_provider_factory() -> dict:
+    launch_config = sglang_hicache_launch_config()
+    extra_config = json.loads(launch_config["hicache_storage_backend_extra_config"])
+    extra_config.pop(DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY, None)
+    launch_config["hicache_storage_backend_extra_config"] = json.dumps(
+        extra_config,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return launch_config
 
 
 def test_installed_sglang_hicache_contract_accepts_dynamic_runtime_surface():
@@ -418,7 +433,7 @@ def test_sglang_runtime_preflight_rejects_mutated_dynamic_backend_factory_subrec
 
 def test_sglang_runtime_preflight_rejects_missing_provider_factory_and_runtime_drift():
     record = document_kv_sglang_runtime_preflight_to_record(
-        sglang_hicache_launch_config(),
+        launch_config_without_provider_factory(),
         installed_contract=drifting_installed_contract(),
     )
 
@@ -566,7 +581,8 @@ def test_sglang_runtime_preflight_cli_accepts_launch_config_json_file(tmp_path, 
     validate_document_kv_sglang_runtime_preflight_record(record)
 
 
-def test_sglang_runtime_preflight_cli_fails_without_provider_factory(tmp_path, monkeypatch):
+def test_sglang_runtime_preflight_cli_uses_builtin_provider_factory_by_default(tmp_path, monkeypatch):
+    install_storage_backend_factory_module(monkeypatch)
     monkeypatch.setattr(
         sglang_runtime_preflight,
         "installed_sglang_hicache_contract_to_record",
@@ -577,9 +593,12 @@ def test_sglang_runtime_preflight_cli_fails_without_provider_factory(tmp_path, m
     exit_code = sglang_runtime_preflight.main(["--output-json", str(output_path)])
 
     record = json.loads(output_path.read_text(encoding="utf-8"))
-    assert exit_code == 2
-    assert record["provider_factory"]["ok"] is False
-    assert record["ok"] is False
+    assert exit_code == 0
+    assert record["provider_factory"]["path"] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
+    assert record["provider_factory"]["provider_class"] == "DocumentKVHiCachePageProvider"
+    assert record["provider_factory"]["ok"] is True
+    assert record["ok"] is True
+    validate_document_kv_sglang_runtime_preflight_record(record)
 
 
 def test_sglang_runtime_preflight_is_exposed_through_document_and_cachet_facades():

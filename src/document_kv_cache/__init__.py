@@ -367,6 +367,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.engine_launch_config",
         "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
     ),
+    "DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY": (
+        "document_kv_cache.engine_launch_config",
+        "DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY",
+    ),
     "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE": (
         "document_kv_cache.engine_launch_config",
         "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
