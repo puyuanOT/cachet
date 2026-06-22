@@ -10,9 +10,11 @@ from document_kv_cache.benchmark_handoffs import (
     BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION,
     BenchmarkHandoffEntry,
     BenchmarkHandoffManifest,
+    build_benchmark_handoff_manifest_from_jsonl,
     benchmark_handoff_manifest_to_record,
     enrich_benchmark_jsonl_with_handoffs,
     enrich_benchmark_records_with_handoffs,
+    read_benchmark_handoff_manifest_json,
 )
 from document_kv_cache.benchmark_runner import load_benchmark_jsonl
 from document_kv_cache.benchmarks import (
@@ -90,6 +92,14 @@ def inline_handoff_record(*, request_id="cachet-bio-1", payload_uri=None):
     )
 
 
+def write_handoff_json(path, *, request_id="cachet-bio-1", payload_uri=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(inline_handoff_record(request_id=request_id, payload_uri=payload_uri)),
+        encoding="utf-8",
+    )
+
+
 def test_enrich_benchmark_jsonl_with_handoffs_writes_loadable_rows(tmp_path):
     input_path = tmp_path / "bio.jsonl"
     manifest_path = tmp_path / "handoffs.json"
@@ -110,6 +120,124 @@ def test_enrich_benchmark_jsonl_with_handoffs_writes_loadable_rows(tmp_path):
         DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/catalog/schema/volume/cachet/cachet-bio-1.handoff.json",
         DOCUMENT_KV_PAYLOAD_URI_PARAM: "uc-volume:/catalog/schema/volume/cachet/cachet-bio-1.kv",
     }
+
+
+def test_build_manifest_from_jsonl_reads_handoff_records(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(
+        json.dumps(record("bio-1")) + "\n" + json.dumps(record("bio-2")) + "\n",
+        encoding="utf-8",
+    )
+    first_handoff = tmp_path / "handoffs" / "biography" / "bio-1.handoff.json"
+    second_handoff = tmp_path / "handoffs" / "biography" / "bio-2.handoff.json"
+    write_handoff_json(first_handoff, request_id="cachet-bio-1")
+    write_handoff_json(second_handoff, request_id="cachet-bio-2")
+
+    handoffs = build_benchmark_handoff_manifest_from_jsonl(
+        input_path,
+        handoff_json_template=str(tmp_path / "handoffs" / "{dataset}" / "{example_id}.handoff.json"),
+        expected_backend="vllm",
+    )
+
+    assert benchmark_handoff_manifest_to_record(handoffs)["entries"] == [
+        {
+            "dataset": "biography",
+            "example_id": "bio-1",
+            "request_id": "cachet-bio-1",
+            "handoff_json": str(first_handoff),
+            "payload_uri": "disk:/tmp/cachet-bio-1.kv",
+        },
+        {
+            "dataset": "biography",
+            "example_id": "bio-2",
+            "request_id": "cachet-bio-2",
+            "handoff_json": str(second_handoff),
+            "payload_uri": "disk:/tmp/cachet-bio-2.kv",
+        },
+    ]
+
+
+def test_build_manifest_from_jsonl_can_override_payload_uri(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    handoff_path = tmp_path / "handoffs" / "biography" / "bio-1.handoff.json"
+    write_handoff_json(
+        handoff_path,
+        request_id="cachet-bio-1",
+        payload_uri="s3://bucket/cachet-bio-1.kv",
+    )
+
+    handoffs = build_benchmark_handoff_manifest_from_jsonl(
+        input_path,
+        handoff_json_template=str(tmp_path / "handoffs" / "{dataset}" / "{example_id}.handoff.json"),
+        payload_uri_template="disk:/tmp/cachet/{dataset}/{example_id}.kv",
+    )
+
+    assert handoffs.entries[0].payload_uri == "disk:/tmp/cachet/biography/bio-1.kv"
+
+
+def test_build_manifest_from_jsonl_rejects_missing_handoff_by_default(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Missing handoff JSON for biography/bio-1"):
+        build_benchmark_handoff_manifest_from_jsonl(
+            input_path,
+            handoff_json_template=str(tmp_path / "handoffs" / "{dataset}" / "{example_id}.handoff.json"),
+        )
+
+
+def test_build_manifest_from_jsonl_can_skip_missing_handoffs(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(
+        json.dumps(record("bio-1")) + "\n" + json.dumps(record("bio-2")) + "\n",
+        encoding="utf-8",
+    )
+    write_handoff_json(
+        tmp_path / "handoffs" / "biography" / "bio-2.handoff.json",
+        request_id="cachet-bio-2",
+    )
+
+    handoffs = build_benchmark_handoff_manifest_from_jsonl(
+        input_path,
+        handoff_json_template=str(tmp_path / "handoffs" / "{dataset}" / "{example_id}.handoff.json"),
+        allow_missing=True,
+    )
+
+    assert [entry.example_id for entry in handoffs.entries] == ["bio-2"]
+
+
+def test_build_manifest_from_jsonl_rejects_backend_mismatch(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    write_handoff_json(tmp_path / "handoffs" / "biography" / "bio-1.handoff.json")
+
+    with pytest.raises(ValueError, match="does not match expected_backend"):
+        build_benchmark_handoff_manifest_from_jsonl(
+            input_path,
+            handoff_json_template=str(tmp_path / "handoffs" / "{dataset}" / "{example_id}.handoff.json"),
+            expected_backend="sglang",
+        )
+
+
+@pytest.mark.parametrize(
+    ("template", "error"),
+    (
+        ("{dataset[0]}/{example_id}.handoff.json", "supports only"),
+        ("{dataset.__class__}/{example_id}.handoff.json", "supports only"),
+        ("{dataset!r}/{example_id}.handoff.json", "plain"),
+        ("{dataset:>10}/{example_id}.handoff.json", "plain"),
+    ),
+)
+def test_build_manifest_from_jsonl_rejects_non_plain_template_fields(tmp_path, template, error):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        build_benchmark_handoff_manifest_from_jsonl(
+            input_path,
+            handoff_json_template=template,
+        )
 
 
 def test_benchmark_handoff_manifest_record_is_stable():
@@ -292,7 +420,38 @@ def test_main_writes_enriched_jsonl(tmp_path, capsys):
     assert load_benchmark_jsonl(output_path, dataset="biography", require_dataset=True)
 
 
+def test_manifest_main_writes_manifest_json(tmp_path, capsys):
+    input_path = tmp_path / "bio.jsonl"
+    output_path = tmp_path / "handoffs.json"
+    handoff_path = tmp_path / "handoffs" / "biography" / "bio-1.handoff.json"
+    input_path.write_text(json.dumps(record()) + "\n", encoding="utf-8")
+    write_handoff_json(handoff_path)
+
+    exit_code = public_benchmark_handoffs.manifest_main(
+        [
+            "--input-jsonl",
+            str(input_path),
+            "--handoff-json-template",
+            str(tmp_path / "handoffs" / "{dataset}" / "{example_id}.handoff.json"),
+            "--expected-backend",
+            "vllm",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    handoffs = read_benchmark_handoff_manifest_json(output_path)
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out) == {"ok": True, "entries": 1}
+    assert handoffs.entries[0].handoff_json == str(handoff_path)
+
+
 def test_cachet_and_legacy_facades_share_public_module():
     assert cachet_benchmark_handoffs is public_benchmark_handoffs
+    assert legacy_benchmark_handoffs.build_benchmark_handoff_manifest_from_jsonl is (
+        build_benchmark_handoff_manifest_from_jsonl
+    )
     assert legacy_benchmark_handoffs.BenchmarkHandoffManifest is BenchmarkHandoffManifest
     assert legacy_benchmark_handoffs.enrich_benchmark_jsonl_with_handoffs is enrich_benchmark_jsonl_with_handoffs
+    assert legacy_benchmark_handoffs.manifest_main is public_benchmark_handoffs.manifest_main
