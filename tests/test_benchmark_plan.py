@@ -1449,6 +1449,117 @@ def test_engine_probe_targets_release_safe_requires_provider_backed_vllm_preflig
         )
 
 
+@pytest.mark.parametrize(
+    ("backend", "delegate_factory", "expected_metadata_key"),
+    [
+        ("vllm", VLLM_NATIVE_PROBE_DELEGATE_FACTORY, "vllm_kv_injection.connector_factory"),
+        (
+            "sglang",
+            "sglang_kv_injection.probe:build_native_connector_probe",
+            "sglang_kv_injection.connector_factory",
+        ),
+    ],
+)
+def test_engine_probe_targets_release_safe_requires_known_delegate_connector_metadata(
+    tmp_path,
+    backend,
+    delegate_factory,
+    expected_metadata_key,
+):
+    probes = [
+        EngineProbePlanConfig(
+            backend="vllm",
+            handoff_json=str(tmp_path / "vllm-handoff.json"),
+            probe_factory=VLLM_NATIVE_PROBE_FACTORY,
+            output_json=str(tmp_path / "vllm-probe.json"),
+            actions_output_json=str(tmp_path / "vllm-actions.json"),
+            vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
+            vllm_runtime_preflight_layer_names_json=str(tmp_path / "vllm-layer-names.json"),
+        ),
+        EngineProbePlanConfig(
+            backend="sglang",
+            handoff_json=str(tmp_path / "sglang-handoff.json"),
+            probe_factory=SGLANG_NATIVE_PROBE_FACTORY,
+            output_json=str(tmp_path / "sglang-probe.json"),
+            actions_output_json=str(tmp_path / "sglang-actions.json"),
+        ),
+    ]
+    for index, probe in enumerate(probes):
+        if probe.backend.value == backend:
+            probes[index] = EngineProbePlanConfig(
+                backend=probe.backend,
+                handoff_json=probe.handoff_json,
+                probe_factory=probe.probe_factory,
+                output_json=probe.output_json,
+                actions_output_json=probe.actions_output_json,
+                native_probe_delegate_factory=delegate_factory,
+                vllm_runtime_preflight_output_json=probe.vllm_runtime_preflight_output_json,
+                vllm_runtime_preflight_layer_names_json=probe.vllm_runtime_preflight_layer_names_json,
+            )
+
+    with pytest.raises(ValueError, match=expected_metadata_key):
+        engine_probe_targets_to_record(tuple(probes), release_safe=True)
+
+
+def test_engine_probe_targets_release_safe_accepts_sglang_known_delegate_connector_metadata(tmp_path):
+    record = engine_probe_targets_to_record(
+        (
+            EngineProbePlanConfig(
+                backend="vllm",
+                handoff_json=str(tmp_path / "vllm-handoff.json"),
+                probe_factory=VLLM_NATIVE_PROBE_FACTORY,
+                output_json=str(tmp_path / "vllm-probe.json"),
+                actions_output_json=str(tmp_path / "vllm-actions.json"),
+                vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
+                vllm_runtime_preflight_layer_names_json=str(tmp_path / "vllm-layer-names.json"),
+            ),
+            EngineProbePlanConfig(
+                backend="sglang",
+                handoff_json=str(tmp_path / "sglang-handoff.json"),
+                probe_factory=SGLANG_NATIVE_PROBE_FACTORY,
+                output_json=str(tmp_path / "sglang-probe.json"),
+                actions_output_json=str(tmp_path / "sglang-actions.json"),
+                native_probe_delegate_factory="sglang_kv_injection.probe:build_native_connector_probe",
+                metadata=("sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector",),
+            ),
+        ),
+        release_safe=True,
+    )
+
+    sglang_target = next(probe for probe in record["probes"] if probe["backend"] == "sglang")
+    assert sglang_target["native_probe_delegate_factory"] == "sglang_kv_injection.probe:build_native_connector_probe"
+    assert sglang_target["metadata"] == [
+        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"
+    ]
+
+
+def test_engine_probe_targets_release_safe_rejects_known_delegate_backend_mismatch(tmp_path):
+    with pytest.raises(ValueError, match="is for sglang, but backend is vllm"):
+        engine_probe_targets_to_record(
+            (
+                EngineProbePlanConfig(
+                    backend="vllm",
+                    handoff_json=str(tmp_path / "vllm-handoff.json"),
+                    probe_factory=VLLM_NATIVE_PROBE_FACTORY,
+                    output_json=str(tmp_path / "vllm-probe.json"),
+                    actions_output_json=str(tmp_path / "vllm-actions.json"),
+                    native_probe_delegate_factory="sglang_kv_injection.probe:build_native_connector_probe",
+                    metadata=("sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector",),
+                    vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
+                    vllm_runtime_preflight_layer_names_json=str(tmp_path / "vllm-layer-names.json"),
+                ),
+                EngineProbePlanConfig(
+                    backend="sglang",
+                    handoff_json=str(tmp_path / "sglang-handoff.json"),
+                    probe_factory=SGLANG_NATIVE_PROBE_FACTORY,
+                    output_json=str(tmp_path / "sglang-probe.json"),
+                    actions_output_json=str(tmp_path / "sglang-actions.json"),
+                ),
+            ),
+            release_safe=True,
+        )
+
+
 def test_engine_probe_plan_requires_vllm_runtime_preflight_paths_together(tmp_path):
     with pytest.raises(ValueError, match="requires both"):
         EngineProbePlanConfig(

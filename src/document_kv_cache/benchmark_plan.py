@@ -48,6 +48,19 @@ STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
     "exactly three distinct Databricks run-status sidecars "
     "for benchmark, storage, and engine-probe runs"
 )
+SGLANG_NATIVE_PROBE_DELEGATE_FACTORY = "sglang_kv_injection.probe:build_native_connector_probe"
+_KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
+    VLLM_NATIVE_PROBE_DELEGATE_FACTORY: (
+        ServingBackend.VLLM,
+        "vllm_kv_injection.connector_factory",
+        f"vllm_kv_injection.connector_factory={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY}",
+    ),
+    SGLANG_NATIVE_PROBE_DELEGATE_FACTORY: (
+        ServingBackend.SGLANG,
+        "sglang_kv_injection.connector_factory",
+        "sglang_kv_injection.connector_factory=module:factory",
+    ),
+}
 
 __all__ = [
     "PLAN_VERSION",
@@ -1584,7 +1597,31 @@ def _validate_engine_probe_targets(
             f"missing={missing_backends}, unexpected={unexpected_backends}"
         )
     _validate_release_planned_engine_probe_actions(engine_probes)
+    _validate_release_known_native_delegate_metadata(engine_probes)
     _validate_release_provider_backed_vllm_preflights(engine_probes)
+
+
+def _validate_release_known_native_delegate_metadata(
+    engine_probes: Sequence[EngineProbePlanConfig],
+) -> None:
+    for probe in engine_probes:
+        if probe.native_probe_delegate_factory is None:
+            continue
+        requirement = _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA.get(probe.native_probe_delegate_factory)
+        if requirement is None:
+            continue
+        delegate_backend, required_key, example = requirement
+        if probe.backend != delegate_backend:
+            raise ValueError(
+                "release-safe engine_probe_targets native_probe_delegate_factory "
+                f"{probe.native_probe_delegate_factory!r} is for {delegate_backend.value}, "
+                f"but backend is {probe.backend.value}"
+            )
+        if not _metadata_item_map(probe.metadata).get(required_key):
+            raise ValueError(
+                "release-safe engine_probe_targets native_probe_delegate_factory "
+                f"{probe.native_probe_delegate_factory!r} requires metadata entry {example}"
+            )
 
 
 def _validate_release_provider_backed_vllm_preflights(
