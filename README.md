@@ -817,15 +817,26 @@ By default this engine posts the full logical prompt, which is the correct behav
 Generate per-example handoff JSON and payload files from prepared benchmark rows
 by supplying the runtime KV generator factory. Cachet does not ship a fake
 benchmark generator; the factory must return a `KVChunkGenerator` whose payload
-geometry matches the supplied model layout. Default bundle filenames use a
-stable path-safe `{artifact_stem}` derived from `(dataset, example_id)`:
+geometry matches the supplied model layout. For vanilla prefill generation in a
+Transformers environment, Cachet provides
+`document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator`.
+Use a floating KV dtype, such as `--dtype bfloat16`, for model-produced payloads.
+Set `CACHET_TRANSFORMERS_TRUST_REMOTE_CODE=true` only for model repositories that
+require custom Transformers code. The generator expects Hugging Face
+head-major cache tensors by default; custom token-major runtimes can set
+`CACHET_TRANSFORMERS_CACHE_AXIS_ORDER=token_major`.
+Default bundle filenames use a stable path-safe `{artifact_stem}` derived from
+`(dataset, example_id)`:
 
 ```bash
+CACHET_TRANSFORMERS_MODEL_ID=Qwen/Qwen3-4B-Instruct-2507 \
+CACHET_TRANSFORMERS_DEVICE=cuda \
 cachet-benchmark-handoff-bundles \
   --input-jsonl /data/v1-prepared/biography.jsonl \
   --output-dir /Volumes/catalog/schema/volume/cachet/handoffs \
   --output-manifest-json /data/handoffs/biography-manifest.json \
-  --generator-factory my_runtime.kv_generator:create_generator
+  --generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --dtype bfloat16
 ```
 
 The bundle CLI derives the default `qwen3:4b-instruct` layout from the built-in
@@ -860,7 +871,8 @@ python -m document_kv_cache.benchmark_plan \
   --benchmark-handoff-manifest-json hotpotqa=/data/handoffs/hotpotqa-manifest.json \
   --benchmark-handoff-manifest-json musique=/data/handoffs/musique-manifest.json \
   --benchmark-handoff-manifest-json niah=/data/handoffs/niah-manifest.json \
-  --benchmark-handoff-generator-factory my_runtime.kv_generator:create_generator \
+  --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --benchmark-handoff-dtype bfloat16 \
   --benchmark-handoff-output-dir /data/handoffs/generated \
   --base-url http://localhost:8000 \
   --storage-benchmark-workspace-dir /local_disk0/document-kv-storage-benchmark \
