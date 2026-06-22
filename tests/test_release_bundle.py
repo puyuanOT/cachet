@@ -3889,6 +3889,7 @@ def _databricks_run_status_record(
                 "cluster_id": "cluster-123",
                 "start_time": 1001,
                 "end_time": 2000 if succeeded else None,
+                "spark_env_keys": [],
             }
         ],
         "cluster_id": "cluster-123",
@@ -3921,6 +3922,7 @@ def _databricks_run_submit_payload_record(
                 "node_type_id": node_type_id,
                 "driver_node_type_id": node_type_id,
                 "spark_version": "15.4.x-gpu-ml-scala2.12",
+                "spark_env_keys": [],
                 "data_security_mode": "SINGLE_USER",
                 "num_workers": 0,
                 "single_node": True,
@@ -3930,6 +3932,7 @@ def _databricks_run_submit_payload_record(
         "node_type_ids": [node_type_id],
         "driver_node_type_ids": [node_type_id],
         "spark_versions": ["15.4.x-gpu-ml-scala2.12"],
+        "spark_env_keys": [],
         "data_security_modes": ["SINGLE_USER"],
         "single_node": True,
         "aws_single_node_gpu_type": True,
