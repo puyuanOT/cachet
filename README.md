@@ -822,7 +822,9 @@ Transformers environment, Cachet provides
 `document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator`.
 Use a floating KV dtype, such as `--dtype bfloat16`, for model-produced payloads.
 Set `CACHET_TRANSFORMERS_TRUST_REMOTE_CODE=true` only for model repositories that
-require custom Transformers code.
+require custom Transformers code. The generator expects Hugging Face
+head-major cache tensors by default; custom token-major runtimes can set
+`CACHET_TRANSFORMERS_CACHE_AXIS_ORDER=token_major`.
 Default bundle filenames use a stable path-safe `{artifact_stem}` derived from
 `(dataset, example_id)`:
 

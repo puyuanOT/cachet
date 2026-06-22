@@ -2016,6 +2016,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     ]
     assert transformers_generator.__all__ == [
         "CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV",
+        "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV",
         "CACHET_TRANSFORMERS_DEVICE_ENV",
         "CACHET_TRANSFORMERS_MODEL_ID_ENV",
         "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV",

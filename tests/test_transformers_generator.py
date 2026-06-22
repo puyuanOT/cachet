@@ -9,6 +9,7 @@ import document_kv_cache.transformers_generator as public_transformers_generator
 from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
+    CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
     CACHET_TRANSFORMERS_DEVICE_ENV,
     CACHET_TRANSFORMERS_MODEL_ID_ENV,
     CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
@@ -67,6 +68,8 @@ def tiny_layout(
     *,
     dtype: str = "float32",
     num_layers: int = 2,
+    num_kv_heads: int = 1,
+    num_query_heads: int | None = None,
     head_size: int = 2,
     kv_stride_bytes: int | None = None,
     storage_layout: KVStorageLayout = KVStorageLayout.SEPARATE_KEY_VALUE,
@@ -81,9 +84,9 @@ def tiny_layout(
         dtype=dtype,
         num_layers=num_layers,
         block_size=2,
-        bytes_per_token=num_layers * stride * 2,
-        num_query_heads=1,
-        num_kv_heads=1,
+        bytes_per_token=num_layers * num_kv_heads * stride * 2,
+        num_query_heads=num_kv_heads if num_query_heads is None else num_query_heads,
+        num_kv_heads=num_kv_heads,
         head_size=head_size,
         kv_stride_bytes=stride,
         shares_kv_storage=shares_kv_storage,
@@ -203,7 +206,12 @@ def test_transformers_generator_pads_head_stride_and_accepts_token_major_cache_s
     tokenizer = TinyTokenizer(token_count=2)
     model = TinyModel(((key, value),))
     source = document()
-    generator = TransformersKVChunkGenerator(model=model, tokenizer=tokenizer, layout=layout)
+    generator = TransformersKVChunkGenerator(
+        model=model,
+        tokenizer=tokenizer,
+        layout=layout,
+        cache_axis_order="token_major",
+    )
 
     pack_chunk = generator.generate(
         document=source,
@@ -219,6 +227,30 @@ def test_transformers_generator_pads_head_stride_and_accepts_token_major_cache_s
     )
     assert pack_chunk.token_count == 2
     assert len(pack_chunk.payload) == layout.bytes_per_token * 2
+    assert pack_chunk.payload == tensor_bytes(expected)
+
+
+def test_transformers_generator_token_major_axis_order_handles_ambiguous_shape():
+    layout = tiny_layout(num_layers=1, num_kv_heads=2, head_size=1)
+    key = torch.tensor([[[[1.0], [2.0]], [[3.0], [4.0]]]])
+    value = torch.tensor([[[[11.0], [12.0]], [[13.0], [14.0]]]])
+    tokenizer = TinyTokenizer(token_count=2)
+    model = TinyModel(((key, value),))
+    source = document()
+    generator = TransformersKVChunkGenerator(
+        model=model,
+        tokenizer=tokenizer,
+        layout=layout,
+        cache_axis_order="token_major",
+    )
+
+    pack_chunk = generator.generate(
+        document=source,
+        chunk=source.chunks[0],
+        config=build_config(layout),
+    )
+
+    expected = torch.stack((key[0], value[0]), dim=1).reshape(2, 1, 2, 2, 1)
     assert pack_chunk.payload == tensor_bytes(expected)
 
 
@@ -271,6 +303,7 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     monkeypatch.setenv(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, "bfloat16")
     monkeypatch.setenv(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, "false")
     monkeypatch.setenv(CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV, "true")
+    monkeypatch.setenv(CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV, "token-major")
     monkeypatch.setenv(
         CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
         '{"attn_implementation":"eager"}',
@@ -290,6 +323,7 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     assert config.torch_dtype == "bfloat16"
     assert config.trust_remote_code is False
     assert config.add_special_tokens is True
+    assert config.cache_axis_order == "token_major"
     assert config.model_kwargs == {"attn_implementation": "eager"}
     assert config.tokenizer_kwargs == {"padding_side": "left"}
 

@@ -26,8 +26,17 @@ CACHET_TRANSFORMERS_DEVICE_ENV = "CACHET_TRANSFORMERS_DEVICE"
 CACHET_TRANSFORMERS_TORCH_DTYPE_ENV = "CACHET_TRANSFORMERS_TORCH_DTYPE"
 CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV = "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE"
 CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV = "CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS"
+CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV = "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER"
 CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON"
 CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON"
+_CACHE_AXIS_ORDER_HEAD_MAJOR = "head_major"
+_CACHE_AXIS_ORDER_TOKEN_MAJOR = "token_major"
+_CACHE_AXIS_ORDERS = frozenset(
+    {
+        _CACHE_AXIS_ORDER_HEAD_MAJOR,
+        _CACHE_AXIS_ORDER_TOKEN_MAJOR,
+    }
+)
 _FLOAT_KV_DTYPES = frozenset({"bf16", "bfloat16", "fp16", "float16", "fp32", "float32"})
 _SUPPORTED_STORAGE_LAYOUTS = frozenset(
     {
@@ -38,6 +47,7 @@ _SUPPORTED_STORAGE_LAYOUTS = frozenset(
 
 __all__ = [
     "CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV",
+    "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV",
     "CACHET_TRANSFORMERS_DEVICE_ENV",
     "CACHET_TRANSFORMERS_MODEL_ID_ENV",
     "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV",
@@ -61,6 +71,7 @@ class TransformersKVGeneratorConfig:
     torch_dtype: str | None = "auto"
     trust_remote_code: bool = False
     add_special_tokens: bool = False
+    cache_axis_order: str = _CACHE_AXIS_ORDER_HEAD_MAJOR
     model_kwargs: Mapping[str, Any] = field(default_factory=dict)
     tokenizer_kwargs: Mapping[str, Any] = field(default_factory=dict)
 
@@ -84,6 +95,11 @@ class TransformersKVGeneratorConfig:
             raise ValueError("trust_remote_code must be a boolean")
         if type(self.add_special_tokens) is not bool:
             raise ValueError("add_special_tokens must be a boolean")
+        object.__setattr__(
+            self,
+            "cache_axis_order",
+            _cache_axis_order_from_value(self.cache_axis_order),
+        )
         object.__setattr__(
             self,
             "model_kwargs",
@@ -115,6 +131,7 @@ class TransformersKVChunkGenerator:
         tokenizer: object,
         layout: KVLayout | None = None,
         add_special_tokens: bool = False,
+        cache_axis_order: str = _CACHE_AXIS_ORDER_HEAD_MAJOR,
     ) -> None:
         if model is None:
             raise TypeError("model must be provided")
@@ -128,6 +145,7 @@ class TransformersKVChunkGenerator:
         self.tokenizer = tokenizer
         self.layout = layout
         self.add_special_tokens = add_special_tokens
+        self.cache_axis_order = _cache_axis_order_from_value(cache_axis_order)
 
     @classmethod
     def from_pretrained(
@@ -171,6 +189,7 @@ class TransformersKVChunkGenerator:
             tokenizer=tokenizer,
             layout=layout,
             add_special_tokens=resolved.add_special_tokens,
+            cache_axis_order=resolved.cache_axis_order,
         )
 
     def generate(
@@ -200,6 +219,7 @@ class TransformersKVChunkGenerator:
             past_key_values,
             token_count=token_count,
             layout=layout,
+            cache_axis_order=self.cache_axis_order,
         )
         expected_bytes = token_count * layout.bytes_per_token
         if len(payload) != expected_bytes:
@@ -243,6 +263,10 @@ def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
         torch_dtype=os.environ.get(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, "auto"),
         trust_remote_code=_env_bool(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, default=False),
         add_special_tokens=_env_bool(CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV, default=False),
+        cache_axis_order=os.environ.get(
+            CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
+            _CACHE_AXIS_ORDER_HEAD_MAJOR,
+        ),
         model_kwargs=_env_json_object(CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV),
         tokenizer_kwargs=_env_json_object(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV),
     )
@@ -304,6 +328,7 @@ def _payload_from_past_key_values(
     *,
     token_count: int,
     layout: KVLayout,
+    cache_axis_order: str,
 ) -> bytes:
     torch = _torch()
     legacy_cache = _legacy_past_key_values(past_key_values)
@@ -321,12 +346,14 @@ def _payload_from_past_key_values(
             token_count=token_count,
             layout=layout,
             label="key",
+            cache_axis_order=cache_axis_order,
         )
         value_values = _normalize_cache_tensor(
             value,
             token_count=token_count,
             layout=layout,
             label="value",
+            cache_axis_order=cache_axis_order,
         )
         layer_values.append(_layer_values(key_values, value_values, dtype=dtype, layout=layout))
     stacked = torch.stack(layer_values, dim=1).contiguous()
@@ -358,6 +385,7 @@ def _normalize_cache_tensor(
     token_count: int,
     layout: KVLayout,
     label: str,
+    cache_axis_order: str,
 ) -> object:
     torch = _torch()
     if not torch.is_tensor(tensor):
@@ -368,15 +396,17 @@ def _normalize_cache_tensor(
         raise ValueError(f"{label} cache batch dimension must be 1")
     assert layout.num_kv_heads is not None
     assert layout.head_size is not None
-    if tensor.shape[1] == layout.num_kv_heads and tensor.shape[2] == token_count:
+    cache_axis_order = _cache_axis_order_from_value(cache_axis_order)
+    if cache_axis_order == _CACHE_AXIS_ORDER_HEAD_MAJOR:
+        if tensor.shape[1] != layout.num_kv_heads or tensor.shape[2] != token_count:
+            raise ValueError(f"{label} cache shape must be [1, num_kv_heads, tokens, head_size]")
         normalized = tensor[0].permute(1, 0, 2)
-    elif tensor.shape[1] == token_count and tensor.shape[2] == layout.num_kv_heads:
+    elif cache_axis_order == _CACHE_AXIS_ORDER_TOKEN_MAJOR:
+        if tensor.shape[1] != token_count or tensor.shape[2] != layout.num_kv_heads:
+            raise ValueError(f"{label} cache shape must be [1, tokens, num_kv_heads, head_size]")
         normalized = tensor[0]
     else:
-        raise ValueError(
-            f"{label} cache shape must be [1, num_kv_heads, tokens, head_size] "
-            "or [1, tokens, num_kv_heads, head_size]"
-        )
+        raise AssertionError("unsupported cache axis order")
     if normalized.shape[2] != layout.head_size:
         raise ValueError(f"{label} cache head dimension does not match layout.head_size")
     return normalized.contiguous()
@@ -472,6 +502,16 @@ def _torch_dtype_from_name(torch: object, dtype: str) -> object:
 
 def _dtype_kind(dtype: str) -> str:
     return "float" if dtype.lower() in _FLOAT_KV_DTYPES else "other"
+
+
+def _cache_axis_order_from_value(value: object) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError("cache_axis_order must be a non-empty string")
+    normalized = value.strip().lower().replace("-", "_")
+    if normalized not in _CACHE_AXIS_ORDERS:
+        supported = ", ".join(sorted(_CACHE_AXIS_ORDERS))
+        raise ValueError(f"Unsupported cache_axis_order {value!r}; supported values: {supported}")
+    return normalized
 
 
 def _torch() -> Any:
