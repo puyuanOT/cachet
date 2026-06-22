@@ -58,6 +58,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "repository_hygiene",
         "service",
         "serving_env",
+        "sglang_runtime_preflight",
         "storage",
         "storage_benchmark",
         "template_resources",

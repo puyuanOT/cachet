@@ -110,6 +110,9 @@ new document modules depend on restaurant-owned implementations.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.
+- `sglang_runtime_preflight.py` exposes the Cachet-branded CLI wrapper for the
+  strict installed-SGLang HiCache dynamic-backend and provider-factory
+  preflight required before provider-backed native SGLang probes.
 - `storage.py` provides Memory, Disk, Unity Catalog Volume, and routed range
   readers.
 - `storage_benchmark.py` measures storage-reader latency and throughput.
@@ -160,6 +163,7 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-engine-probe-fixture`
 - `document-kv-engine-probe-databricks-job`
 - `document-kv-vllm-runtime-preflight`
+- `document-kv-sglang-runtime-preflight`
 - `document-kv-vllm-smoke`
 - `document-kv-vllm-smoke-databricks-job`
 
@@ -188,6 +192,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-engine-probe-fixture`
 - `cachet-engine-probe-databricks-job`
 - `cachet-vllm-runtime-preflight`
+- `cachet-sglang-runtime-preflight`
 - `cachet-vllm-smoke`
 - `cachet-vllm-smoke-databricks-job`
 
