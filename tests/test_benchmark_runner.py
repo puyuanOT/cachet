@@ -22,6 +22,7 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
+    DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     BenchmarkArm,
     BenchmarkExample,
@@ -101,7 +102,7 @@ def example(
     )
 
 
-def inline_handoff_record(*, request_id: str = "cachet-bio-1"):
+def inline_handoff_record(*, request_id: str = "cachet-bio-1", payload_uri: str | None = None):
     layout = KVLayout(
         model_id="tiny-test-model",
         lora_id="base",
@@ -121,7 +122,7 @@ def inline_handoff_record(*, request_id: str = "cachet-bio-1"):
     )
     ready = EngineReadyRequest(handle=handle, payload=b"data", estimated_gpu_bytes=4)
     adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
-    return engine_adapter_request_to_record(adapter_request, payload_uri=f"disk:/tmp/{request_id}.kv")
+    return engine_adapter_request_to_record(adapter_request, payload_uri=payload_uri or f"disk:/tmp/{request_id}.kv")
 
 
 def test_run_benchmark_suite_records_baseline_and_cache_measurements():
@@ -155,7 +156,7 @@ def test_run_benchmark_suite_attaches_kv_transfer_params_to_cache_arm_only():
     kv_transfer_params = {
         DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
         DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
-        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+        DOCUMENT_KV_PAYLOAD_URI_PARAM: "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
     }
     suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(kv_transfer_params=kv_transfer_params),))
     baseline = RecordingEngine()
@@ -246,6 +247,15 @@ def test_benchmark_example_validates_kv_transfer_params():
             }
         )
 
+    with pytest.raises(ValueError, match="kv_transfer_params.document_kv.payload_uri: payload_uri must be an absolute"):
+        example(
+            kv_transfer_params={
+                DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: "/tmp/cachet.handoff.json",
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: "not-a-uri-or-absolute-path",
+            }
+        )
+
     with pytest.raises(ValueError, match="kv_transfer_params.document_kv.handoff_record must be an object"):
         example(
             kv_transfer_params={
@@ -266,6 +276,17 @@ def test_benchmark_example_validates_kv_transfer_params():
             kv_transfer_params={
                 DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
                 DOCUMENT_KV_HANDOFF_RECORD_PARAM: inline_handoff_record(request_id="different"),
+            }
+        )
+
+    with pytest.raises(ValueError, match="kv_transfer_params.document_kv.handoff_record.payload_source.uri"):
+        example(
+            kv_transfer_params={
+                DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+                DOCUMENT_KV_HANDOFF_RECORD_PARAM: inline_handoff_record(
+                    request_id="cachet-bio-1",
+                    payload_uri="s3://bucket/cachet-bio-1.kv",
+                ),
             }
         )
 
@@ -831,7 +852,7 @@ def test_load_benchmark_jsonl_accepts_canonical_schema(tmp_path):
     assert loaded[0].kv_transfer_params == {
         DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
         DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
-        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+        DOCUMENT_KV_PAYLOAD_URI_PARAM: "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
     }
     assert loaded[0].documents[0].metadata["title"] == "Ada"
     assert [chunk.chunk_id for chunk in loaded[0].documents[0].chunks] == ["static", "p1", "chunk-1"]
