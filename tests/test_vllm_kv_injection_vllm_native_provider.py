@@ -21,10 +21,17 @@ from vllm_kv_injection.vllm_dynamic_connector import (
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
+    DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION,
     DocumentKVHandoffLoad,
     DocumentKVNativeProvider,
     DocumentKVNativeProbeConnector,
     KVTransferParamsDocumentKVSource,
+    document_kv_vllm_layer_index_from_name,
+    document_kv_vllm_layer_mapping_record_issues,
+    document_kv_vllm_layer_mapping_to_record,
+    inspect_document_kv_vllm_layer_mapping,
+    validate_document_kv_vllm_layer_mapping_record,
 )
 
 import pytest
@@ -292,6 +299,100 @@ def test_native_provider_rejects_duplicate_registered_vllm_layer_indices():
                 "decoder.layers.0.self_attn.attn": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
             }
         )
+
+
+def test_vllm_layer_mapping_diagnostic_accepts_runtime_layer_names():
+    inspection = inspect_document_kv_vllm_layer_mapping(
+        [
+            "model.layers.1.self_attn.attn",
+            "model.layers.0.self_attn.attn",
+        ]
+    )
+
+    assert inspection.ok is True
+    assert inspection.layer_indices == {
+        "model.layers.1.self_attn.attn": 1,
+        "model.layers.0.self_attn.attn": 0,
+    }
+    assert document_kv_vllm_layer_index_from_name("language_model.model.layers.12.self_attn") == 12
+    assert document_kv_vllm_layer_index_from_name("attention") is None
+
+    record = document_kv_vllm_layer_mapping_to_record(inspection)
+
+    assert record == {
+        "record_type": DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
+        "schema_version": DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION,
+        "runtime": "vllm-kv-connector-v1",
+        "layer_names": [
+            "model.layers.1.self_attn.attn",
+            "model.layers.0.self_attn.attn",
+        ],
+        "layer_indices": {
+            "model.layers.1.self_attn.attn": 1,
+            "model.layers.0.self_attn.attn": 0,
+        },
+        "unresolved_layer_names": [],
+        "duplicate_layer_indices": {},
+        "ok": True,
+    }
+    validate_document_kv_vllm_layer_mapping_record(record)
+
+
+def test_vllm_layer_mapping_preflight_rejects_unresolved_and_duplicate_names():
+    record = document_kv_vllm_layer_mapping_to_record(
+        [
+            "attention_without_index",
+            "model.layers.0.self_attn.attn",
+            "decoder.layers.0.self_attn.attn",
+        ]
+    )
+
+    assert record["ok"] is False
+    assert record["layer_indices"] == {
+        "model.layers.0.self_attn.attn": 0,
+        "decoder.layers.0.self_attn.attn": 0,
+    }
+    assert record["unresolved_layer_names"] == ["attention_without_index"]
+    assert record["duplicate_layer_indices"] == {
+        "0": [
+            "decoder.layers.0.self_attn.attn",
+            "model.layers.0.self_attn.attn",
+        ]
+    }
+    assert "ok must be true for a safe vLLM layer mapping preflight" in (
+        document_kv_vllm_layer_mapping_record_issues(record)
+    )
+    with pytest.raises(ValueError, match="ok must be true"):
+        validate_document_kv_vllm_layer_mapping_record(record)
+
+
+def test_vllm_layer_mapping_record_rejects_inconsistent_derived_fields():
+    record = document_kv_vllm_layer_mapping_to_record(["model.layers.0.self_attn.attn"])
+    record["ok"] = False
+    record["layer_indices"] = {"model.layers.0.self_attn.attn": 2}
+    record["unexpected"] = True
+
+    issues = document_kv_vllm_layer_mapping_record_issues(record)
+
+    assert any("unsupported keys" in issue and "unexpected" in issue for issue in issues)
+    assert "layer_indices must match layer_names" in issues
+    assert "ok must match layer_names" in issues
+    with pytest.raises(ValueError, match="layer_indices"):
+        validate_document_kv_vllm_layer_mapping_record(record)
+
+
+def test_vllm_layer_mapping_diagnostic_is_exported_from_cachet_adapter_facade():
+    import cachet.adapters.vllm as cachet_vllm
+    import vllm_kv_injection
+
+    assert (
+        cachet_vllm.inspect_document_kv_vllm_layer_mapping
+        is vllm_kv_injection.inspect_document_kv_vllm_layer_mapping
+    )
+    assert (
+        cachet_vllm.document_kv_vllm_layer_mapping_to_record(["model.layers.0.self_attn.attn"])["ok"]
+        is True
+    )
 
 
 def test_kv_transfer_params_source_reads_cachet_handoff_bundle(tmp_path):
