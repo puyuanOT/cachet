@@ -16,6 +16,27 @@ variables:
   sglang_native_probe_delegate_factory:
     default: ""
     description: Optional backend-native delegate factory for benchmark plans that run Cachet's built-in SGLang probe.
+  transformers_model_id:
+    default: ""
+    description: Optional non-secret CACHET_TRANSFORMERS_MODEL_ID runtime value for Transformers KV generation.
+  transformers_tokenizer_id:
+    default: ""
+    description: Optional non-secret CACHET_TRANSFORMERS_TOKENIZER_ID runtime value for Transformers KV generation.
+  transformers_device:
+    default: ""
+    description: Optional non-secret CACHET_TRANSFORMERS_DEVICE runtime value for Transformers KV generation.
+  transformers_torch_dtype:
+    default: ""
+    description: Optional non-secret CACHET_TRANSFORMERS_TORCH_DTYPE runtime value for Transformers KV generation.
+  transformers_trust_remote_code:
+    default: ""
+    description: Optional non-secret CACHET_TRANSFORMERS_TRUST_REMOTE_CODE runtime value for Transformers KV generation.
+  transformers_add_special_tokens:
+    default: ""
+    description: Optional non-secret CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS runtime value for Transformers KV generation.
+  transformers_cache_axis_order:
+    default: ""
+    description: Optional non-secret CACHET_TRANSFORMERS_CACHE_AXIS_ORDER runtime value for Transformers KV generation.
   node_type_id:
     default: g6.8xlarge
     description: AWS g5/g6 node type for the single-node GPU benchmark.
@@ -48,6 +69,13 @@ resources:
             spark_env_vars:
               DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY: ${var.vllm_native_probe_delegate_factory}
               DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY: ${var.sglang_native_probe_delegate_factory}
+              CACHET_TRANSFORMERS_MODEL_ID: ${var.transformers_model_id}
+              CACHET_TRANSFORMERS_TOKENIZER_ID: ${var.transformers_tokenizer_id}
+              CACHET_TRANSFORMERS_DEVICE: ${var.transformers_device}
+              CACHET_TRANSFORMERS_TORCH_DTYPE: ${var.transformers_torch_dtype}
+              CACHET_TRANSFORMERS_TRUST_REMOTE_CODE: ${var.transformers_trust_remote_code}
+              CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS: ${var.transformers_add_special_tokens}
+              CACHET_TRANSFORMERS_CACHE_AXIS_ORDER: ${var.transformers_cache_axis_order}
             aws_attributes:
               availability: ON_DEMAND
               zone_id: auto

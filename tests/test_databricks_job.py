@@ -137,6 +137,68 @@ def test_build_databricks_run_submit_payload_sets_native_probe_delegate_env_vars
     assert "--sglang-native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
 
 
+def test_build_databricks_run_submit_payload_sets_generator_runtime_env_vars():
+    config = DatabricksBenchmarkJobConfig(
+        plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+        runner_python_file="dbfs:/benchmarks/run_plan.py",
+        single_user_name=SINGLE_USER_NAME,
+        vllm_native_probe_delegate_factory="document_kv_vllm_native_adapter:build_probe",
+        spark_env_vars={
+            "CACHET_TRANSFORMERS_MODEL_ID": "Qwen/Qwen3-4B-Instruct-2507",
+            "CACHET_TRANSFORMERS_TOKENIZER_ID": "Qwen/Qwen3-4B-Instruct-2507",
+            "CACHET_TRANSFORMERS_DEVICE": "cuda",
+            "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
+            "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON": '{"attn_implementation":"eager"}',
+        },
+    )
+
+    payload = build_databricks_run_submit_payload(config)
+    cluster = payload["tasks"][0]["new_cluster"]
+
+    assert cluster["spark_env_vars"] == {
+        "CACHET_TRANSFORMERS_MODEL_ID": "Qwen/Qwen3-4B-Instruct-2507",
+        "CACHET_TRANSFORMERS_TOKENIZER_ID": "Qwen/Qwen3-4B-Instruct-2507",
+        "CACHET_TRANSFORMERS_DEVICE": "cuda",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
+        "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON": '{"attn_implementation":"eager"}',
+        VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe",
+    }
+
+
+def test_databricks_run_submit_payload_rejects_secret_like_spark_env_vars():
+    kwargs = {
+        "plan_json_uri": "dbfs:/benchmarks/v1-plan.json",
+        "runner_python_file": "dbfs:/benchmarks/run_plan.py",
+        "single_user_name": SINGLE_USER_NAME,
+    }
+    token_like_value = "dapi" + "0" * 32
+
+    with pytest.raises(ValueError, match="valid environment variable name"):
+        DatabricksBenchmarkJobConfig(**kwargs, spark_env_vars={"BAD-NAME": "value"})
+    with pytest.raises(ValueError, match="secret-bearing"):
+        DatabricksBenchmarkJobConfig(**kwargs, spark_env_vars={"DATABRICKS_TOKEN": "redacted"})
+    with pytest.raises(ValueError, match="Databricks token pattern"):
+        DatabricksBenchmarkJobConfig(
+            **kwargs,
+            spark_env_vars={"CACHET_TRANSFORMERS_DEVICE": token_like_value},
+        )
+    with pytest.raises(ValueError, match="reserved native-probe key"):
+        DatabricksBenchmarkJobConfig(
+            **kwargs,
+            spark_env_vars={VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe"},
+        )
+    with pytest.raises(ValueError, match="JSON object"):
+        DatabricksBenchmarkJobConfig(
+            **kwargs,
+            spark_env_vars={"CACHET_TRANSFORMERS_MODEL_KWARGS_JSON": "not-json"},
+        )
+    with pytest.raises(ValueError, match="secret-bearing"):
+        DatabricksBenchmarkJobConfig(
+            **kwargs,
+            spark_env_vars={"CACHET_TRANSFORMERS_MODEL_KWARGS_JSON": '{"api_key":"redacted"}'},
+        )
+
+
 def test_single_node_g5_cluster_rejects_reserved_custom_tags():
     with pytest.raises(ValueError, match="reserved tags"):
         DatabricksSingleNodeG5ClusterConfig(
@@ -377,6 +439,10 @@ def test_main_writes_payload_and_runner_script(tmp_path):
             "document_kv_vllm_native_adapter:build_probe",
             "--sglang-native-probe-delegate-factory",
             "document_kv_sglang_native_adapter:build_probe",
+            "--spark-env-var",
+            "CACHET_TRANSFORMERS_DEVICE=cuda",
+            "--spark-env-var",
+            "CACHET_TRANSFORMERS_TOKENIZER_ID=Qwen/Qwen3-4B-Instruct-2507",
             "--output-json",
             str(payload_path),
             "--runner-script-output",
@@ -389,6 +455,8 @@ def test_main_writes_payload_and_runner_script(tmp_path):
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
     assert task["new_cluster"]["spark_env_vars"] == {
+        "CACHET_TRANSFORMERS_DEVICE": "cuda",
+        "CACHET_TRANSFORMERS_TOKENIZER_ID": "Qwen/Qwen3-4B-Instruct-2507",
         VLLM_NATIVE_PROBE_DELEGATE_ENV: "document_kv_vllm_native_adapter:build_probe",
         SGLANG_NATIVE_PROBE_DELEGATE_ENV: "document_kv_sglang_native_adapter:build_probe",
     }
@@ -1225,6 +1293,13 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
         "execution_result_json_uri",
         "vllm_native_probe_delegate_factory",
         "sglang_native_probe_delegate_factory",
+        "transformers_model_id",
+        "transformers_tokenizer_id",
+        "transformers_device",
+        "transformers_torch_dtype",
+        "transformers_trust_remote_code",
+        "transformers_add_special_tokens",
+        "transformers_cache_axis_order",
         "node_type_id",
         "spark_version",
         "single_user_name",
@@ -1232,6 +1307,14 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert variables["node_type_id"]["default"] == "g6.8xlarge"
     assert variables["vllm_native_probe_delegate_factory"]["default"] == '""'
     assert variables["sglang_native_probe_delegate_factory"]["default"] == '""'
+    assert variables["transformers_model_id"]["default"] == '""'
+    assert "non-secret CACHET_TRANSFORMERS_MODEL_ID" in variables["transformers_model_id"]["description"]
+    assert variables["transformers_tokenizer_id"]["default"] == '""'
+    assert variables["transformers_device"]["default"] == '""'
+    assert variables["transformers_torch_dtype"]["default"] == '""'
+    assert variables["transformers_trust_remote_code"]["default"] == '""'
+    assert variables["transformers_add_special_tokens"]["default"] == '""'
+    assert variables["transformers_cache_axis_order"]["default"] == '""'
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert "data_security_mode" not in variables
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
@@ -1254,6 +1337,13 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert cluster["spark_env_vars"] == {
         "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY": "${var.vllm_native_probe_delegate_factory}",
         "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY": "${var.sglang_native_probe_delegate_factory}",
+        "CACHET_TRANSFORMERS_MODEL_ID": "${var.transformers_model_id}",
+        "CACHET_TRANSFORMERS_TOKENIZER_ID": "${var.transformers_tokenizer_id}",
+        "CACHET_TRANSFORMERS_DEVICE": "${var.transformers_device}",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE": "${var.transformers_torch_dtype}",
+        "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "${var.transformers_trust_remote_code}",
+        "CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS": "${var.transformers_add_special_tokens}",
+        "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER": "${var.transformers_cache_axis_order}",
     }
     assert cluster["aws_attributes"] == {"availability": "ON_DEMAND", "zone_id": "auto"}
     assert "libraries" not in task

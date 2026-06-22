@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,10 @@ from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
 )
+from document_kv_cache.transformers_generator import (
+    CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
+    CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
+)
 
 
 DEFAULT_AWS_G5_NODE_TYPE = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
@@ -34,6 +39,33 @@ SINGLE_USER_DATABRICKS_DATA_SECURITY_MODES = frozenset(
 )
 RESERVED_SINGLE_NODE_GPU_TAG_KEYS = frozenset({"ResourceClass", "purpose"})
 RESERVED_SINGLE_NODE_G5_TAG_KEYS = RESERVED_SINGLE_NODE_GPU_TAG_KEYS
+RESERVED_SPARK_ENV_VAR_KEYS = frozenset(
+    {
+        VLLM_NATIVE_PROBE_DELEGATE_ENV,
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+    }
+)
+SECRET_LIKE_SPARK_ENV_KEY_PARTS = frozenset(
+    {
+        "CREDENTIAL",
+        "CREDENTIALS",
+        "KEY",
+        "PASS",
+        "PASSWORD",
+        "PAT",
+        "SECRET",
+        "TOKEN",
+    }
+)
+_DATABRICKS_TOKEN_PATTERN = re.compile(r"dapi[0-9a-fA-F]{32}")
+_ENV_KEY_PART_RE = re.compile(r"[A-Za-z0-9]+")
+_SPARK_ENV_VAR_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_JSON_SPARK_ENV_VAR_KEYS = frozenset(
+    {
+        CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
+        CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
+    }
+)
 RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
@@ -143,6 +175,7 @@ class DatabricksBenchmarkJobConfig:
     custom_tags: Mapping[str, str] = field(default_factory=dict)
     vllm_native_probe_delegate_factory: str | None = None
     sglang_native_probe_delegate_factory: str | None = None
+    spark_env_vars: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.plan_json_uri:
@@ -162,6 +195,7 @@ class DatabricksBenchmarkJobConfig:
             raise ValueError("vllm_native_probe_delegate_factory must be non-empty when provided")
         if self.sglang_native_probe_delegate_factory is not None and not self.sglang_native_probe_delegate_factory:
             raise ValueError("sglang_native_probe_delegate_factory must be non-empty when provided")
+        object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
 
 
 def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
@@ -255,12 +289,70 @@ def _is_single_user_mode(data_security_mode: str) -> bool:
 
 
 def _native_probe_delegate_env_vars(config: DatabricksBenchmarkJobConfig) -> dict[str, str]:
-    spark_env_vars: dict[str, str] = {}
+    spark_env_vars = dict(config.spark_env_vars)
     if config.vllm_native_probe_delegate_factory is not None:
         spark_env_vars[VLLM_NATIVE_PROBE_DELEGATE_ENV] = config.vllm_native_probe_delegate_factory
     if config.sglang_native_probe_delegate_factory is not None:
         spark_env_vars[SGLANG_NATIVE_PROBE_DELEGATE_ENV] = config.sglang_native_probe_delegate_factory
     return spark_env_vars
+
+
+def _validated_spark_env_vars(value: Mapping[str, str]) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError("spark_env_vars must be a mapping")
+    normalized: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError("spark_env_vars keys must be non-empty strings")
+        if _SPARK_ENV_VAR_KEY_RE.fullmatch(key) is None:
+            raise ValueError(
+                f"spark_env_vars key {key!r} must be a valid environment variable name"
+            )
+        if key in RESERVED_SPARK_ENV_VAR_KEYS:
+            raise ValueError(
+                f"spark_env_vars cannot set reserved native-probe key {key!r}; "
+                "use the dedicated native-probe delegate factory options"
+            )
+        if _looks_secret_like_env_key(key):
+            raise ValueError(f"spark_env_vars key {key!r} looks secret-bearing")
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"spark_env_vars.{key} must be a non-empty string")
+        if _DATABRICKS_TOKEN_PATTERN.search(item):
+            raise ValueError(f"spark_env_vars.{key} must not contain a Databricks token pattern")
+        if key in _JSON_SPARK_ENV_VAR_KEYS:
+            _validate_non_secret_json_env_value(key, item)
+        normalized[key] = item
+    return normalized
+
+
+def _validate_non_secret_json_env_value(env_key: str, value: str) -> None:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"spark_env_vars.{env_key} must contain a JSON object") from exc
+    if not isinstance(parsed, Mapping):
+        raise ValueError(f"spark_env_vars.{env_key} must contain a JSON object")
+    _validate_json_value_without_secret_paths(parsed, f"spark_env_vars.{env_key}")
+
+
+def _validate_json_value_without_secret_paths(value: object, path: str) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(f"{path} keys must be non-empty strings")
+            if _looks_secret_like_env_key(key):
+                raise ValueError(f"{path}.{key} looks secret-bearing")
+            _validate_json_value_without_secret_paths(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value_without_secret_paths(item, f"{path}[{index}]")
+    elif isinstance(value, str) and _DATABRICKS_TOKEN_PATTERN.search(value):
+        raise ValueError(f"{path} must not contain a Databricks token pattern")
+
+
+def _looks_secret_like_env_key(key: str) -> bool:
+    parts = {part.upper() for part in _ENV_KEY_PART_RE.findall(key)}
+    return bool(parts.intersection(SECRET_LIKE_SPARK_ENV_KEY_PARTS))
 
 
 _DEFAULT_VALIDATE_AWS_SINGLE_NODE_GPU_TYPE = validate_aws_single_node_gpu_type
@@ -306,6 +398,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--sglang-native-probe-delegate-factory",
         help="Optional backend-native delegate factory for benchmark plans that run Cachet's built-in SGLang probe.",
     )
+    parser.add_argument(
+        "--spark-env-var",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help=(
+            "Non-secret Databricks cluster spark_env_vars entry for runtime configuration, "
+            "for example CACHET_TRANSFORMERS_DEVICE=cuda. Repeat as needed."
+        ),
+    )
     parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
     parser.add_argument("--runner-script-output", help="Write the tiny benchmark plan runner script to this path.")
     args = parser.parse_args(argv)
@@ -324,6 +426,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             execution_result_json_uri=args.execution_result_json_uri,
             vllm_native_probe_delegate_factory=args.vllm_native_probe_delegate_factory,
             sglang_native_probe_delegate_factory=args.sglang_native_probe_delegate_factory,
+            spark_env_vars=_spark_env_vars_from_cli(args.spark_env_var or ()),
         )
         if args.runner_script_output:
             write_databricks_runner_script(args.runner_script_output)
@@ -336,6 +439,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
         return 1
     return 0
+
+
+def _spark_env_vars_from_cli(values: Sequence[str]) -> dict[str, str]:
+    spark_env_vars: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise ValueError("spark env var entries must use KEY=VALUE syntax")
+        key, item = value.split("=", 1)
+        if key in spark_env_vars:
+            raise ValueError(f"duplicate spark env var key {key!r}")
+        spark_env_vars[key] = item
+    return _validated_spark_env_vars(spark_env_vars)
 
 
 if __name__ == "__main__":  # pragma: no cover
