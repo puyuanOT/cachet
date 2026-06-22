@@ -210,12 +210,14 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
 if __name__ == "__main__":
     remaining_args, reexec_exit_code = _install_runtime_packages(sys.argv[1:])
     if reexec_exit_code is not None:
-        raise SystemExit(reexec_exit_code)
-    from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
+        if reexec_exit_code:
+            raise SystemExit(reexec_exit_code)
+    else:
+        from document_kv_cache._databricks_engine_probe_runner import run_engine_probe_task
 
-    exit_code = run_engine_probe_task(remaining_args)
-    if exit_code:
-        raise SystemExit(exit_code)
+        exit_code = run_engine_probe_task(remaining_args)
+        if exit_code:
+            raise SystemExit(exit_code)
 """
 
 __all__ = [
