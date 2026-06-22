@@ -329,6 +329,29 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     assert config.tokenizer_kwargs == {"padding_side": "left"}
 
 
+def test_transformers_generator_env_factory_accepts_databricks_escaped_json(monkeypatch):
+    calls = []
+    sentinel = object()
+
+    def fake_from_pretrained(cls, config, *, layout=None):
+        calls.append((cls, config, layout))
+        return sentinel
+
+    monkeypatch.setattr(
+        TransformersKVChunkGenerator,
+        "from_pretrained",
+        classmethod(fake_from_pretrained),
+    )
+    monkeypatch.setenv(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV, r"{\"use_fast\":false}")
+
+    generator = build_transformers_kv_chunk_generator()
+
+    assert generator is sentinel
+    _cls, config, layout = calls[0]
+    assert layout is None
+    assert config.tokenizer_kwargs == {"use_fast": False}
+
+
 def test_transformers_generator_env_factory_treats_blank_values_as_unset(monkeypatch):
     calls = []
     sentinel = object()
