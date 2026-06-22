@@ -15,8 +15,14 @@ VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA = (
     f"vllm_kv_injection.connector_factory={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY}"
 )
 SGLANG_NATIVE_PROBE_DELEGATE_FACTORY = "sglang_kv_injection.probe:build_native_connector_probe"
+SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY = (
+    "sglang_kv_injection.probe:build_document_kv_hicache_probe_connector"
+)
+SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA = (
+    f"sglang_kv_injection.connector_factory={SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY}"
+)
 SGLANG_CONNECTOR_FACTORY_METADATA_EXAMPLE = (
-    "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"
+    SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA
 )
 
 _PLACEHOLDER_CONNECTOR_FACTORY_PATHS = frozenset({"module:factory"})
@@ -38,7 +44,7 @@ KNOWN_NATIVE_DELEGATE_METADATA_REQUIREMENTS: Mapping[str, NativeDelegateMetadata
     SGLANG_NATIVE_PROBE_DELEGATE_FACTORY: NativeDelegateMetadataRequirement(
         backend=ServingBackend.SGLANG,
         metadata_key="sglang_kv_injection.connector_factory",
-        example_metadata=SGLANG_CONNECTOR_FACTORY_METADATA_EXAMPLE,
+        example_metadata=SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     ),
 }
 

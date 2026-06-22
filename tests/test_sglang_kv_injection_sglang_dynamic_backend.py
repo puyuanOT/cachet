@@ -88,6 +88,10 @@ def test_document_kv_hicache_page_provider_round_trips_memory_pages():
     assert provider.exists("doc-1") is True
     assert provider.get("doc-1", target_location=target) is target
     assert target == bytearray(b"page1")
+    assert provider.delete("doc-1") is True
+    assert provider.exists("doc-1") is False
+    assert provider.delete("doc-1") is False
+    assert provider.set("doc-1", bytearray(b"page1")) is True
     assert provider.get("missing") is None
     assert provider.get_stats() == {
         "provider": "DocumentKVHiCachePageProvider",
@@ -97,7 +101,7 @@ def test_document_kv_hicache_page_provider_round_trips_memory_pages():
         "pages": 1,
         "hits": 1,
         "misses": 1,
-        "sets": 1,
+        "sets": 2,
     }
 
 
@@ -110,6 +114,10 @@ def test_document_kv_hicache_page_provider_round_trips_disk_pages(tmp_path):
     assert provider.exists("doc-1") is True
     assert provider.get("doc-1") == b"disk-page"
     assert len(list(tmp_path.glob("*.cachet-hicache-page"))) == 1
+    assert provider.delete("doc-1") is True
+    assert provider.exists("doc-1") is False
+    assert list(tmp_path.glob("*.cachet-hicache-page")) == []
+    assert provider.set("doc-1", b"disk-page") is True
 
     provider.clear()
 

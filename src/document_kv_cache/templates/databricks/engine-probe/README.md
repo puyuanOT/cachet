@@ -2,7 +2,9 @@
 
 This packaged Databricks Asset Bundle template mirrors
 `databricks/engine-probe/databricks.yml` from the repository. It runs one native
-vLLM or SGLang engine-probe job on the target AWS g6/L4 Databricks runtime.
+vLLM or SGLang engine-probe job on the target AWS g6/L4 Databricks runtime. Use
+the Python helper for release-safe provider-backed targets that also require
+runtime preflight sidecars.
 
 The workspace still supplies the native probe factory module, handoff JSON,
 uploaded payload URI, and connector-actions output URI; the Cachet wheel
@@ -19,10 +21,10 @@ wrapper `vllm_kv_injection.probe:build_native_connector_probe` or
 `native_probe_metadata` to the matching connector factory metadata:
 `vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
 for the built-in provider-backed vLLM path, or
-`sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector`
-for a real SGLang backend-native connector. The standalone bundle forwards
-`native_probe_metadata` to the runner, so replace the example module path with
-the connector factory shipped in your SGLang runtime patch. The Python
+`sglang_kv_injection.connector_factory=sglang_kv_injection.probe:build_document_kv_hicache_probe_connector`
+for the built-in provider-backed SGLang HiCache path. The standalone bundle forwards
+`native_probe_metadata` to the runner; custom runtime patches may still replace
+that value with their own connector factory. The Python
 Databricks helper remains the path for two-backend release-safe probe matrices
 and for provider-backed vLLM or SGLang jobs that require strict runtime
 preflight fields.

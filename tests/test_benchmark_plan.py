@@ -28,6 +28,7 @@ from document_kv_cache.benchmark_plan import (
     write_benchmark_job_plan_shell,
 )
 from document_kv_cache.databricks_engine_probe_job import (
+    SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     read_databricks_engine_probe_targets_json,
@@ -1544,7 +1545,7 @@ def test_engine_probe_targets_release_safe_accepts_sglang_known_delegate_connect
                 output_json=str(tmp_path / "sglang-probe.json"),
                 actions_output_json=str(tmp_path / "sglang-actions.json"),
                 native_probe_delegate_factory="sglang_kv_injection.probe:build_native_connector_probe",
-                metadata=("sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector",),
+                metadata=(SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
                 sglang_runtime_preflight_output_json=str(tmp_path / "sglang-runtime-preflight.json"),
                 sglang_runtime_preflight_launch_config_json=str(tmp_path / "sglang-launch-config.json"),
             ),
@@ -1554,9 +1555,7 @@ def test_engine_probe_targets_release_safe_accepts_sglang_known_delegate_connect
 
     sglang_target = next(probe for probe in record["probes"] if probe["backend"] == "sglang")
     assert sglang_target["native_probe_delegate_factory"] == "sglang_kv_injection.probe:build_native_connector_probe"
-    assert sglang_target["metadata"] == [
-        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"
-    ]
+    assert sglang_target["metadata"] == [SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA]
     assert sglang_target["sglang_runtime_preflight_output_json"] == str(
         tmp_path / "sglang-runtime-preflight.json"
     )

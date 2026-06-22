@@ -25,13 +25,17 @@ from document_kv_cache.native_probe_factories import (
     _inspect_delegate_adapter_contract,
     native_probe_adapter_contract_to_record,
 )
+from document_kv_cache.serving_env import SGLANG_VERSION
 from sglang_kv_injection.probe import (
+    DocumentKVHiCacheProbeConnector,
     NativeSGLangConnectorFactoryResult,
     SGLANG_CONNECTOR_FACTORY_METADATA_EXAMPLE,
+    SGLANG_DOCUMENT_KV_HICACHE_PROBE_CONNECTOR_FACTORY,
     SGLANG_NATIVE_PROBE_CONTRACT,
     SGLANG_PROBE_METADATA_CONNECTOR_CLASS,
     SGLANG_PROBE_METADATA_CONNECTOR_FACTORY,
     SGLANG_PROBE_METADATA_NATIVE_RUNTIME,
+    SGLANG_PROBE_METADATA_PROVIDER_FACTORY,
     SGLANG_PROBE_METADATA_PROBE,
     SGLANG_PROBE_METADATA_PROBE_KIND,
     SGLANG_PROBE_METADATA_REQUEST_ID,
@@ -40,9 +44,14 @@ from sglang_kv_injection.probe import (
     build_native_connector_probe,
 )
 from sglang_kv_injection.protocol import KVCacheHandle, KVLayout, KVSegment
+from sglang_kv_injection.record import SGLangCacheRecord
 from sglang_kv_injection.sglang_runtime_contract import (
     SGLANG_RUNTIME_CACHE_RUNTIME,
     sglang_runtime_cache_contract_to_record,
+)
+from sglang_kv_injection.sglang_dynamic_backend import (
+    DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
+    DocumentKVHiCachePageProvider,
 )
 
 
@@ -191,6 +200,87 @@ def write_invalid_native_connector_factory_module(tmp_path, monkeypatch, *, modu
     return f"{module_name}:build_connector"
 
 
+def write_unwired_native_connector_factory_module(tmp_path, monkeypatch, *, module_name: str) -> str:
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        dedent(
+            """
+            from sglang_kv_injection.probe import NativeSGLangConnectorFactoryResult
+
+            class NativeLookingConnector:
+                def stage(self, record, *, payload=None):
+                    if payload is None:
+                        raise AssertionError("native probe requires copied payload")
+
+                def attach(self, *, request_id, record):
+                    pass
+
+                def release(self, request_id):
+                    pass
+
+            def build_connector(context):
+                return NativeSGLangConnectorFactoryResult(
+                    connector=NativeLookingConnector(),
+                    engine_version="sglang-native-looking-test",
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return f"{module_name}:build_connector"
+
+
+def write_spoofed_native_connector_factory_module(tmp_path, monkeypatch, *, module_name: str) -> str:
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        dedent(
+            """
+            from document_kv_cache.serving_env import SGLANG_VERSION
+            from sglang_kv_injection.probe import NativeSGLangConnectorFactoryResult
+
+            class SpoofedConnector:
+                document_kv_hicache_provider = True
+
+                def stage(self, record, *, payload=None):
+                    pass
+
+                def attach(self, *, request_id, record):
+                    pass
+
+                def release(self, request_id):
+                    pass
+
+            def build_connector(context):
+                return NativeSGLangConnectorFactoryResult(
+                    connector=SpoofedConnector(),
+                    engine_version=SGLANG_VERSION,
+                )
+            """
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    return f"{module_name}:build_connector"
+
+
+class FailingSecondPageProvider(DocumentKVHiCachePageProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.set_calls = 0
+
+    def set(self, key, value=None, target_location=None, target_sizes=None):
+        self.set_calls += 1
+        if self.set_calls == 2:
+            return False
+        return super().set(
+            key,
+            value=value,
+            target_location=target_location,
+            target_sizes=target_sizes,
+        )
+
+
 def test_build_in_memory_debug_probe_for_engine_probe_runner(tmp_path):
     ready = EngineReadyRequest(
         handle=handle(),
@@ -258,38 +348,36 @@ def test_build_in_memory_debug_probe_accepts_qwen3_gqa_release_layout(tmp_path):
         validate_engine_kv_connector_probe_record(record)
 
 
-def test_build_native_connector_probe_for_engine_probe_runner(tmp_path, monkeypatch):
+def test_build_native_connector_probe_for_engine_probe_runner(tmp_path):
     ready = EngineReadyRequest(
         handle=handle(),
         payload=(b"s" * 8, b"c" * 12),
         estimated_gpu_bytes=40,
     )
     handoff_path = write_debug_handoff(tmp_path, ready)
-    connector_factory = write_native_connector_factory_module(
-        tmp_path,
-        monkeypatch,
-        module_name="native_sglang_probe_factory",
-    )
 
     result = run_engine_kv_connector_probe(
         EngineKVProbeConfig(
             handoff_json=handoff_path,
             probe_factory="sglang_kv_injection.probe:build_native_connector_probe",
             expected_backend=ServingBackend.SGLANG,
-            metadata={SGLANG_PROBE_METADATA_CONNECTOR_FACTORY: connector_factory},
+            metadata={SGLANG_PROBE_METADATA_CONNECTOR_FACTORY: SGLANG_DOCUMENT_KV_HICACHE_PROBE_CONNECTOR_FACTORY},
         )
     )
 
     record = engine_kv_connector_probe_result_to_record(result)
     assert record["backend"] == "sglang"
     assert record["native_probe"] is True
-    assert record["engine_version"] == "sglang-native-test"
-    assert record["metadata"][SGLANG_PROBE_METADATA_CONNECTOR_CLASS] == "NativeConnector"
-    assert record["metadata"][SGLANG_PROBE_METADATA_CONNECTOR_FACTORY] == connector_factory
+    assert record["engine_version"] == SGLANG_VERSION
+    assert record["metadata"][SGLANG_PROBE_METADATA_CONNECTOR_CLASS] == "DocumentKVHiCacheProbeConnector"
+    assert record["metadata"][SGLANG_PROBE_METADATA_CONNECTOR_FACTORY] == (
+        SGLANG_DOCUMENT_KV_HICACHE_PROBE_CONNECTOR_FACTORY
+    )
     assert record["metadata"][SGLANG_PROBE_METADATA_NATIVE_RUNTIME] == "true"
     assert record["metadata"][SGLANG_PROBE_METADATA_PROBE] == "native_connector"
     assert record["metadata"][SGLANG_PROBE_METADATA_PROBE_KIND] == "native_runtime"
     assert record["metadata"][SGLANG_PROBE_METADATA_REQUEST_ID] == "req-1"
+    assert record["metadata"][SGLANG_PROBE_METADATA_PROVIDER_FACTORY] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
     assert record["metadata"][SGLANG_PROBE_METADATA_RUNTIME_CONTRACT] == SGLANG_RUNTIME_CACHE_RUNTIME
     assert record["metadata"]["runtime.owner"] == "sglang"
     validate_engine_kv_connector_probe_record(record)
@@ -437,6 +525,88 @@ def test_build_native_connector_probe_rejects_connector_without_required_methods
         )
 
 
+def test_build_native_connector_probe_rejects_connector_without_hicache_provider_wiring(
+    tmp_path,
+    monkeypatch,
+):
+    ready = EngineReadyRequest(
+        handle=handle(),
+        payload=(b"s" * 8, b"c" * 12),
+        estimated_gpu_bytes=40,
+    )
+    handoff_path = write_debug_handoff(tmp_path, ready)
+    connector_factory = write_unwired_native_connector_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="native_sglang_unwired_probe_factory",
+    )
+
+    with pytest.raises(TypeError, match="provider-backed HiCache probe connector"):
+        run_engine_kv_connector_probe(
+            EngineKVProbeConfig(
+                handoff_json=handoff_path,
+                probe_factory="sglang_kv_injection.probe:build_native_connector_probe",
+                expected_backend=ServingBackend.SGLANG,
+                metadata={SGLANG_PROBE_METADATA_CONNECTOR_FACTORY: connector_factory},
+            )
+        )
+
+
+def test_build_native_connector_probe_rejects_marker_only_spoofed_connector(
+    tmp_path,
+    monkeypatch,
+):
+    ready = EngineReadyRequest(
+        handle=handle(),
+        payload=(b"s" * 8, b"c" * 12),
+        estimated_gpu_bytes=40,
+    )
+    handoff_path = write_debug_handoff(tmp_path, ready)
+    connector_factory = write_spoofed_native_connector_factory_module(
+        tmp_path,
+        monkeypatch,
+        module_name="native_sglang_spoofed_probe_factory",
+    )
+
+    with pytest.raises(TypeError, match="provider-backed HiCache probe connector"):
+        run_engine_kv_connector_probe(
+            EngineKVProbeConfig(
+                handoff_json=handoff_path,
+                probe_factory="sglang_kv_injection.probe:build_native_connector_probe",
+                expected_backend=ServingBackend.SGLANG,
+                metadata={SGLANG_PROBE_METADATA_CONNECTOR_FACTORY: connector_factory},
+            )
+        )
+
+
+def test_document_kv_hicache_probe_connector_round_trips_provider_pages():
+    provider = DocumentKVHiCachePageProvider()
+    connector = DocumentKVHiCacheProbeConnector(provider=provider)
+    cache_record = SGLangCacheRecord.from_handle(handle())
+
+    connector.stage(cache_record, payload=(b"s" * 8, b"c" * 12))
+    connector.attach(request_id=cache_record.request_id, record=cache_record)
+
+    assert provider.get_stats()["pages"] == 2
+
+    connector.release(cache_record.request_id)
+
+    assert provider.get_stats()["pages"] == 0
+
+
+def test_document_kv_hicache_probe_connector_rolls_back_partial_stage_failure():
+    provider = FailingSecondPageProvider()
+    connector = DocumentKVHiCacheProbeConnector(provider=provider)
+    cache_record = SGLangCacheRecord.from_handle(handle())
+
+    with pytest.raises(ValueError, match="rejected a staged page"):
+        connector.stage(cache_record, payload=(b"s" * 8, b"c" * 12))
+
+    connector.release(cache_record.request_id)
+
+    assert provider.get_stats()["pages"] == 0
+
+
 def test_build_in_memory_debug_probe_is_exported_debug_factory():
     assert build_in_memory_debug_probe.__name__ == "build_in_memory_debug_probe"
     assert build_native_connector_probe.__name__ == "build_native_connector_probe"
@@ -445,7 +615,16 @@ def test_build_in_memory_debug_probe_is_exported_debug_factory():
 
     assert sglang_kv_injection.SGLANG_PROBE_METADATA_PROBE_KIND == SGLANG_PROBE_METADATA_PROBE_KIND
     assert sglang_kv_injection.SGLANG_PROBE_METADATA_CONNECTOR_FACTORY == SGLANG_PROBE_METADATA_CONNECTOR_FACTORY
+    assert sglang_kv_injection.SGLANG_PROBE_METADATA_PROVIDER_FACTORY == SGLANG_PROBE_METADATA_PROVIDER_FACTORY
+    assert (
+        sglang_kv_injection.SGLANG_DOCUMENT_KV_HICACHE_PROBE_CONNECTOR_FACTORY
+        == SGLANG_DOCUMENT_KV_HICACHE_PROBE_CONNECTOR_FACTORY
+    )
+    assert sglang_kv_injection.DocumentKVHiCacheProbeConnector is DocumentKVHiCacheProbeConnector
     assert sglang_kv_injection.SGLANG_PROBE_METADATA_RUNTIME_CONTRACT == SGLANG_PROBE_METADATA_RUNTIME_CONTRACT
+    assert sglang_kv_injection.build_document_kv_hicache_probe_connector.__name__ == (
+        "build_document_kv_hicache_probe_connector"
+    )
     assert sglang_kv_injection.build_native_connector_probe is build_native_connector_probe
 
 
