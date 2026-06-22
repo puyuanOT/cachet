@@ -2196,7 +2196,9 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
     }
     expected_cachet_scripts = {
-        script_name.replace("document-kv-", "cachet-", 1): target
+        script_name.replace("document-kv-", "cachet-", 1): target.replace(
+            "document_kv_cache.", "cachet.", 1
+        )
         for script_name, target in expected_document_scripts.items()
     }
     expected_legacy_scripts = {
@@ -2298,5 +2300,26 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     }
     assert artifact_includes == expected_includes
     assert scripts == expected_scripts
-    assert scripts["cachet-benchmark-plan"] == scripts["document-kv-benchmark-plan"]
-    assert scripts["cachet-templates"] == scripts["document-kv-templates"]
+    assert scripts["cachet-benchmark-plan"] == "cachet.benchmark_plan:main"
+    assert scripts["cachet-templates"] == "cachet.template_resources:main"
+    assert scripts["document-kv-benchmark-plan"] == "document_kv_cache.benchmark_plan:main"
+    assert scripts["document-kv-templates"] == "document_kv_cache.template_resources:main"
+
+
+def test_cachet_console_script_targets_resolve_through_cachet_facades():
+    scripts = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "scripts"
+    ]
+    cachet_scripts = {
+        script_name: target
+        for script_name, target in scripts.items()
+        if script_name.startswith("cachet-")
+    }
+
+    assert cachet_scripts
+    for script_name, target in sorted(cachet_scripts.items()):
+        module_name, separator, attribute_name = target.partition(":")
+        assert separator == ":", script_name
+        assert module_name.startswith("cachet."), script_name
+        module = importlib.import_module(module_name)
+        assert hasattr(module, attribute_name), script_name
