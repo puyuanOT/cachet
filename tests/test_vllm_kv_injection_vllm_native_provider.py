@@ -26,6 +26,7 @@ import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION,
@@ -263,7 +264,7 @@ def resumed_cached_scheduler_output(block_ids: list[int]):
 def test_native_provider_records_matched_token_allocation_metadata():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
-    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
     assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
     provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
@@ -284,7 +285,7 @@ def test_native_provider_records_matched_token_allocation_metadata():
 def test_native_provider_records_cached_request_allocation_metadata():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
-    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
     assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
     provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
@@ -300,7 +301,7 @@ def test_native_provider_records_cached_request_allocation_metadata():
 def test_native_provider_treats_cached_request_new_blocks_as_relative_metadata():
     source = StaticHandoffSource(extended_handoff_load())
     provider = DocumentKVNativeProvider(source=source)
-    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=7, kv_transfer_params={})
 
     assert provider.get_num_new_matched_tokens(request, 2) == (2, False)
     provider.update_state_after_alloc(request, AllocatedBlocks([3, 5, 7]), 2)
@@ -318,7 +319,7 @@ def test_native_provider_treats_cached_request_new_blocks_as_relative_metadata()
 def test_native_provider_treats_resumed_cached_request_blocks_as_full_metadata():
     source = StaticHandoffSource(extended_handoff_load())
     provider = DocumentKVNativeProvider(source=source)
-    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=7, kv_transfer_params={})
 
     assert provider.get_num_new_matched_tokens(request, 2) == (2, False)
     provider.update_state_after_alloc(request, AllocatedBlocks([3, 5, 7]), 2)
@@ -336,7 +337,7 @@ def test_native_provider_treats_resumed_cached_request_blocks_as_full_metadata()
 def test_native_provider_rejects_allocations_missing_from_scheduler_output():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
-    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
     assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
     provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
@@ -353,7 +354,7 @@ def test_native_provider_rejects_allocations_missing_from_scheduler_output():
 def test_native_provider_rejects_duplicate_scheduler_block_metadata():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
-    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
     assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
     provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
@@ -370,15 +371,37 @@ def test_native_provider_rejects_duplicate_scheduler_block_metadata():
 def test_native_provider_reports_only_block_aligned_prefix_tokens():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
-    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
     assert provider.get_num_new_matched_tokens(request, 1) == (0, False)
+
+
+def test_native_provider_rejects_suffix_only_prompt_length():
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+
+    with pytest.raises(ValueError, match="full logical prompt"):
+        provider.get_num_new_matched_tokens(request, 0)
+
+
+def test_native_provider_rejects_runtime_prompt_mode_even_when_prompt_is_long():
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(
+        request_id="req-1",
+        num_tokens=99,
+        kv_transfer_params={DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime"},
+    )
+
+    with pytest.raises(ValueError, match=DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM):
+        provider.get_num_new_matched_tokens(request, 0)
 
 
 def test_native_provider_copies_materialized_payload_into_registered_paged_kv_layers():
     provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
     connector = DocumentKVConnector(provider=provider)
-    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
@@ -403,7 +426,7 @@ def test_native_provider_copies_materialized_payload_into_registered_paged_kv_la
 def test_native_provider_maps_vllm_layer_names_independently_of_registration_order():
     provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
     connector = DocumentKVConnector(provider=provider)
-    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)

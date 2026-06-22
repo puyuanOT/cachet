@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from document_kv_cache.benchmark_runner import BenchmarkEngineRequest, BenchmarkGeneration
+from document_kv_cache.benchmarks import DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM
 
 __all__ = [
     "TokenCounter",
@@ -191,7 +192,9 @@ class OpenAICompatibleCompletionEngine:
         if request.kv_transfer_params:
             if request.request_id:
                 payload["request_id"] = request.request_id
-            payload["kv_transfer_params"] = dict(request.kv_transfer_params)
+            kv_transfer_params = dict(request.kv_transfer_params)
+            kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = self.config.prompt_text_mode
+            payload["kv_transfer_params"] = kv_transfer_params
         return payload
 
     def _prompt_text(self, request: BenchmarkEngineRequest) -> str:

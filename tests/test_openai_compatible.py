@@ -8,6 +8,7 @@ import document_kv_cache.openai_compatible as openai_module
 import restaurant_kv_serving.openai_compatible as legacy_openai_module
 from document_kv_cache.benchmark_runner import BenchmarkEngineRequest
 from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     BenchmarkExample,
     build_prompt_parts,
@@ -210,7 +211,10 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
 
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
     assert engine.payloads[0]["request_id"] == "cachet-bio-1"
-    assert engine.payloads[0]["kv_transfer_params"] == kv_transfer_params
+    assert engine.payloads[0]["kv_transfer_params"] == {
+        **kv_transfer_params,
+        DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
+    }
     assert generation.metadata["kv_transfer_params_attached"] == "true"
     assert generation.metadata["request_id"] == "cachet-bio-1"
 

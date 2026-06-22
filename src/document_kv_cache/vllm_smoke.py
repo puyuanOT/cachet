@@ -268,7 +268,8 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "dependency_constraints": dependency_constraints(),
         "dataset_source": "prepared" if config.dataset_specs else "smoke",
         "dataset_specs": list(config.dataset_specs),
-        "cache_runtime_prompt": config.uses_prepared_datasets,
+        "cache_runtime_prompt": False,
+        "cache_prompt_text_mode": "logical",
         "requires_kv_transfer_params": config.uses_prepared_datasets,
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
@@ -1030,7 +1031,7 @@ def build_benchmark_runner_args(
         str(config.benchmark_output_path),
     ]
     if config.uses_prepared_datasets:
-        args.extend(["--cache-base-url", config.server_base_url, "--cache-runtime-prompt"])
+        args.extend(["--cache-base-url", config.server_base_url])
     args.extend(dataset_args(dataset_paths))
     return args
 

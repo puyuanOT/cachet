@@ -21,6 +21,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     benchmark_cache_artifact_stem,
     benchmark_cache_request,
@@ -148,6 +149,7 @@ class BenchmarkHandoffEntry:
     def kv_transfer_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             DOCUMENT_KV_REQUEST_ID_PARAM: self.request_id,
+            DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "logical",
         }
         if self.handoff_json is not None:
             params[DOCUMENT_KV_HANDOFF_JSON_PARAM] = self.handoff_json

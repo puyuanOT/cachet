@@ -37,6 +37,7 @@ DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
+DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
 DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY = "document_kv.handoff_source_factory"
 DOCUMENT_KV_NATIVE_PROVIDER_FACTORY = "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
 DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE = "vllm_kv_injection.document_kv_layer_mapping.v1"
@@ -61,6 +62,7 @@ __all__ = [
     "DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY",
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
+    "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "DOCUMENT_KV_REQUEST_ID_PARAM",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION",
@@ -645,7 +647,7 @@ class DocumentKVNativeProbeConnector(VLLMSupportsHMA):
         load = DocumentKVHandoffLoad(actions=actions, payload=payload_bytes)
         self._probe_source.set_load(load)
 
-        request = SimpleNamespace(request_id=request_id, num_tokens=ready_request.handle.total_tokens)
+        request = SimpleNamespace(request_id=request_id, num_tokens=ready_request.handle.total_tokens + 1)
         external_tokens, _ = self.get_num_new_matched_tokens(request, 0)
         if external_tokens <= 0:
             raise ValueError("document KV native probe requires at least one block-aligned prefix token")
@@ -1093,12 +1095,35 @@ def _string_tuple(values: Sequence[str], field_name: str) -> tuple[str, ...]:
 
 def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> int:
     block_size = load.actions.reservation.layout.block_size
+    prompt_text_mode = _document_kv_prompt_text_mode(request)
+    if prompt_text_mode == "runtime":
+        raise ValueError(
+            "Document KV vLLM loads require the full logical prompt; "
+            f"{DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM}='runtime' cannot be used"
+        )
     request_tokens = getattr(request, "num_tokens", None)
     if isinstance(request_tokens, int):
+        if request_tokens <= load.total_tokens:
+            raise ValueError(
+                "Document KV vLLM loads require the full logical prompt; "
+                "the visible vLLM request must be longer than the cached prefix"
+            )
         candidate_tokens = min(load.total_tokens, max(request_tokens - 1, 0))
     else:
         candidate_tokens = max(load.total_tokens - 1, 0)
     return (candidate_tokens // block_size) * block_size
+
+
+def _document_kv_prompt_text_mode(request: object) -> str | None:
+    params = getattr(request, "kv_transfer_params", None)
+    if not isinstance(params, Mapping):
+        return None
+    value = params.get(DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM)
+    if value is None:
+        return None
+    if value not in {"logical", "runtime"}:
+        raise ValueError(f"{DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM} must be 'logical' or 'runtime'")
+    return value
 
 
 def _payload_layer_tensor(

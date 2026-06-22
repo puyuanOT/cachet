@@ -24,6 +24,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
 )
 from document_kv_cache.engine import EngineReadyRequest
@@ -226,6 +227,7 @@ def test_enrich_benchmark_jsonl_with_handoffs_writes_loadable_rows(tmp_path):
     assert count == 1
     assert loaded[0].kv_transfer_params == {
         DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "logical",
         DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/catalog/schema/volume/cachet/cachet-bio-1.handoff.json",
         DOCUMENT_KV_PAYLOAD_URI_PARAM: "uc-volume:/catalog/schema/volume/cachet/cachet-bio-1.kv",
     }
@@ -852,6 +854,7 @@ def test_inline_handoff_entry_builds_kv_transfer_params():
 
     assert enriched[0]["kv_transfer_params"] == {
         DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "logical",
         DOCUMENT_KV_HANDOFF_RECORD_PARAM: handoff_record,
     }
 

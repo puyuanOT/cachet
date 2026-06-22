@@ -133,8 +133,8 @@ server `KVTransferConfig` and fails unless the configured provider factory
 resolves to native document-KV wiring.
 When all four prepared dataset paths are supplied, the smoke requires every row
 to carry Cachet `kv_transfer_params`, writes `prepared-handoff-coverage.json`,
-and runs the cache arm from the runtime suffix so the native provider path is
-exercised.
+and runs the cache arm with the logical prompt so the native provider path is
+exercised against vLLM's connector scheduler.
 
 To emit a Databricks `runs/submit` payload for that same smoke task, use:
 

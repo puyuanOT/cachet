@@ -787,8 +787,8 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
   JSONL.
 - `build_v1_benchmark_plan` and the `benchmark_plan` CLI emit a portable command plan that prepares all four V1 datasets, runs the OpenAI-compatible benchmark on AWS g6/L4/Qwen3, and can append storage-reader benchmarking on the same node.
 - `benchmark_plan_executor` and `databricks_job` let managed job runners execute that plan on single-node AWS g6/L4 Databricks clusters; `databricks_runs` can submit/check those payloads using credentials supplied only through environment variables.
-- `run_benchmark_suite` executes caller-provided baseline and KV-cache engines against the same logical prompt parts and emits `InferenceMeasurement` rows. Cache engines receive the runtime suffix as `prompt_text`; the full logical prompt remains available as `logical_prompt_text`.
-- `InferenceMeasurement` records prompt tokens, completion tokens, TTFT, time-to-completion, generated text, expected answer, and errors. OpenAI-compatible V1 measurements also carry `logical_prompt_tokens`, `runtime_prompt_tokens`, and `kv_transfer_params_attached` metadata so release evidence proves the no-cache baseline saw the full prompt and the KV-cache arm generated from a smaller runtime suffix with native transfer params attached.
+- `run_benchmark_suite` executes caller-provided baseline and KV-cache engines against the same logical prompt parts and emits `InferenceMeasurement` rows. Cache engines can post the full logical prompt for native serving connectors, or the runtime suffix for an explicit KV-aware proxy; both prompt views remain available on each benchmark request.
+- `InferenceMeasurement` records prompt tokens, completion tokens, TTFT, time-to-completion, generated text, expected answer, and errors. OpenAI-compatible V1 measurements also carry `logical_prompt_tokens`, `runtime_prompt_tokens`, `prompt_text_mode`, and `kv_transfer_params_attached` metadata so release evidence proves the no-cache baseline saw the full prompt and the KV-cache arm attached native transfer params in its declared prompt mode.
 - `summarize_measurements` produces per-dataset/per-arm latency and quality rows.
 - `compare_to_baseline` reports cache speedups and quality deltas against `baseline_prefill`.
 - `evaluate_v1_benchmark_evidence` marks whether the report is release-evaluable:
@@ -812,7 +812,7 @@ engine = OpenAICompatibleCompletionEngine(
 
 Streaming responses provide TTFT; non-streaming responses report TTFT equal to total completion latency. If the server omits usage fields, the engine falls back to a simple token counter that callers can replace with a tokenizer-aware implementation.
 
-By default this engine posts the full logical prompt, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers and for platform-managed prefix caching. Set `prompt_text_mode="runtime"` only when the server endpoint is a KV-aware adapter or proxy that binds the cached prefix out of band and expects only the runtime suffix in the `prompt` field. The engine records both logical and runtime prompt-token counts in measurement metadata; strict V1 release evidence rejects cache measurements whose runtime prompt is not smaller than the logical prompt.
+By default this engine posts the full logical prompt, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers, native vLLM connector scheduling, and platform-managed prefix caching. Set `prompt_text_mode="runtime"` only when the server endpoint is a KV-aware adapter or proxy that binds the cached prefix out of band and expects only the runtime suffix in the `prompt` field. The engine records both logical and runtime prompt-token counts in measurement metadata; strict V1 release evidence accepts either logical native-cache measurements or runtime proxy-cache measurements when KV transfer params are attached.
 
 Generate per-example handoff JSON and payload files from prepared benchmark rows
 by supplying the runtime KV generator factory. Cachet does not ship a fake
@@ -1114,7 +1114,10 @@ helper still owns the isolated vLLM environment and Databricks-local model
 cache, but it no longer writes the tiny built-in smoke files. Prepared mode
 writes `prepared-handoff-coverage.json`, fails before model startup when any row
 lacks handoff params or points at an unreadable/non-vLLM Cachet handoff, and runs
-the cache arm with `--cache-runtime-prompt` against the same native vLLM server:
+the cache arm with the full logical prompt plus `kv_transfer_params` against the
+same native vLLM server. vLLM's V1 connector scheduler must see the logical
+prefix token positions before it can allocate external KV blocks, so suffix-only
+cache prompts are intentionally not used for native vLLM evidence:
 
 ```bash
 python -m document_kv_cache.vllm_smoke \
