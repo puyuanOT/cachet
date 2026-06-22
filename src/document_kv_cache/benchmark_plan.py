@@ -49,6 +49,7 @@ STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
     "for benchmark, storage, and engine-probe runs"
 )
 SGLANG_NATIVE_PROBE_DELEGATE_FACTORY = "sglang_kv_injection.probe:build_native_connector_probe"
+PLACEHOLDER_CONNECTOR_FACTORY_PATHS = frozenset({"module:factory"})
 _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY: (
         ServingBackend.VLLM,
@@ -58,7 +59,7 @@ _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
     SGLANG_NATIVE_PROBE_DELEGATE_FACTORY: (
         ServingBackend.SGLANG,
         "sglang_kv_injection.connector_factory",
-        "sglang_kv_injection.connector_factory=module:factory",
+        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector",
     ),
 }
 
@@ -1617,11 +1618,36 @@ def _validate_release_known_native_delegate_metadata(
                 f"{probe.native_probe_delegate_factory!r} is for {delegate_backend.value}, "
                 f"but backend is {probe.backend.value}"
             )
-        if not _metadata_item_map(probe.metadata).get(required_key):
+        metadata_value = _metadata_item_map(probe.metadata).get(required_key)
+        if not metadata_value:
             raise ValueError(
                 "release-safe engine_probe_targets native_probe_delegate_factory "
                 f"{probe.native_probe_delegate_factory!r} requires metadata entry {example}"
             )
+        _validate_connector_factory_metadata_value(
+            metadata_value,
+            metadata_key=required_key,
+            label="release-safe engine_probe_targets native_probe_delegate_factory",
+        )
+
+
+def _validate_connector_factory_metadata_value(
+    value: str,
+    *,
+    metadata_key: str,
+    label: str,
+) -> None:
+    module_name, separator, attribute_name = value.partition(":")
+    if (
+        value in PLACEHOLDER_CONNECTOR_FACTORY_PATHS
+        or any(character.isspace() for character in value)
+        or not separator
+        or not module_name
+        or not attribute_name
+    ):
+        raise ValueError(
+            f"{label} metadata entry {metadata_key} must be a real module:attribute connector factory"
+        )
 
 
 def _validate_release_provider_backed_vllm_preflights(

@@ -1509,6 +1509,73 @@ def test_read_databricks_engine_probe_targets_json_accepts_known_delegate_connec
     assert targets[0].metadata == (VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,)
 
 
+@pytest.mark.parametrize(
+    ("backend", "delegate_factory", "metadata"),
+    [
+        (
+            "vllm",
+            VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+            "vllm_kv_injection.connector_factory=module:factory",
+        ),
+        (
+            "vllm",
+            VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+            "vllm_kv_injection.connector_factory=module:factory ",
+        ),
+        (
+            "vllm",
+            VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+            "vllm_kv_injection.connector_factory=company_vllm_patch_probe",
+        ),
+        (
+            "sglang",
+            "sglang_kv_injection.probe:build_native_connector_probe",
+            "sglang_kv_injection.connector_factory=module:factory",
+        ),
+        (
+            "sglang",
+            "sglang_kv_injection.probe:build_native_connector_probe",
+            "sglang_kv_injection.connector_factory=module:factory ",
+        ),
+        (
+            "sglang",
+            "sglang_kv_injection.probe:build_native_connector_probe",
+            "sglang_kv_injection.connector_factory=company_sglang_patch_probe",
+        ),
+    ],
+)
+def test_read_databricks_engine_probe_targets_json_rejects_placeholder_connector_factory_metadata(
+    tmp_path,
+    backend,
+    delegate_factory,
+    metadata,
+):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            {
+                "record_type": "document_kv.engine_probe_targets.v1",
+                "schema_version": 1,
+                "release_safe": True,
+                "probes": [
+                    {
+                        "backend": backend,
+                        "handoff_json": f"/Volumes/catalog/schema/volume/probes/{backend}-handoff.json",
+                        "probe_factory": f"document_kv_cache.native_probe_factories:{backend}_native_probe_factory",
+                        "output_json": f"/Volumes/catalog/schema/volume/probes/{backend}-probe.json",
+                        "native_probe_delegate_factory": delegate_factory,
+                        "metadata": [metadata],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="real module:attribute connector factory"):
+        read_databricks_engine_probe_targets_json(path)
+
+
 def test_databricks_engine_probe_config_rejects_known_delegate_backend_mismatch():
     with pytest.raises(ValueError, match="is for sglang, but expected_backend is vllm"):
         DatabricksEngineProbeJobConfig(
@@ -1545,7 +1612,7 @@ def test_legacy_databricks_engine_probe_targets_reject_known_delegate_missing_co
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="sglang_kv_injection\\.connector_factory=module:factory"):
+    with pytest.raises(ValueError, match="company_sglang_patch\\.probe:build_connector"):
         legacy_engine_probe_job.read_databricks_engine_probe_targets_json(path)
 
 

@@ -84,8 +84,12 @@ _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
         "sglang_kv_injection.connector_factory",
     ),
 }
+_PLACEHOLDER_CONNECTOR_FACTORY_PATHS = frozenset({"module:factory"})
 _KNOWN_NATIVE_DELEGATE_METADATA_EXAMPLES = {
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY: VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+    "sglang_kv_injection.probe:build_native_connector_probe": (
+        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"
+    ),
 }
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
 
@@ -789,7 +793,8 @@ def _validate_known_native_delegate_metadata(
             f"{delegate_backend.value}, but expected_backend is {expected_backend.value}"
         )
     metadata_map = _metadata_item_map(metadata)
-    if not metadata_map.get(required_key):
+    metadata_value = metadata_map.get(required_key)
+    if not metadata_value:
         example = _KNOWN_NATIVE_DELEGATE_METADATA_EXAMPLES.get(
             native_probe_delegate_factory,
             f"{required_key}=module:factory",
@@ -797,6 +802,21 @@ def _validate_known_native_delegate_metadata(
         raise ValueError(
             f"{label} native_probe_delegate_factory {native_probe_delegate_factory!r} requires "
             f"metadata entry {example}"
+        )
+    _validate_connector_factory_metadata_value(metadata_value, metadata_key=required_key, label=label)
+
+
+def _validate_connector_factory_metadata_value(value: str, *, metadata_key: str, label: str) -> None:
+    module_name, separator, attribute_name = value.partition(":")
+    if (
+        value in _PLACEHOLDER_CONNECTOR_FACTORY_PATHS
+        or any(character.isspace() for character in value)
+        or not separator
+        or not module_name
+        or not attribute_name
+    ):
+        raise ValueError(
+            f"{label} metadata entry {metadata_key} must be a real module:attribute connector factory"
         )
 
 
