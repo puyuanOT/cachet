@@ -8,13 +8,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from vllm_kv_injection.vllm_native_provider import (
-    DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+from vllm_kv_injection.vllm_layer_mapping import (
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
     DocumentKVVLLMLayerMappingInspection,
     document_kv_vllm_layer_mapping_record_issues,
     document_kv_vllm_layer_mapping_to_record,
 )
+from vllm_kv_injection.vllm_native_provider_constants import DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
 from vllm_kv_injection.vllm_runtime_contract import (
     VLLM_KV_CONNECTOR_V1_RUNTIME,
     installed_vllm_kv_connector_v1_contract_record_issues,

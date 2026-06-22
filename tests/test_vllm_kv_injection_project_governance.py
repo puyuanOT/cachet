@@ -1,4 +1,8 @@
+import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tomllib
 
 
@@ -35,3 +39,129 @@ def test_vllm_adapter_readme_keeps_engine_boundary_in_cachet_monorepo():
         "lora routing",
     ):
         assert out_of_scope_term in package_readme
+
+
+def test_vllm_package_root_import_does_not_import_runtime_modules():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys; "
+                "import vllm_kv_injection; "
+                "print(json.dumps({"
+                "'vllm': 'vllm' in sys.modules, "
+                "'dynamic': 'vllm_kv_injection.vllm_dynamic_connector' in sys.modules, "
+                "'native_provider': 'vllm_kv_injection.vllm_native_provider' in sys.modules, "
+                "'probe': 'vllm_kv_injection.probe' in sys.modules"
+                "}, sort_keys=True))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "dynamic": False,
+        "native_provider": False,
+        "probe": False,
+        "vllm": False,
+    }
+
+
+def test_probe_fixtures_import_does_not_import_vllm_runtime_modules():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys; "
+                "import document_kv_cache.probe_fixtures; "
+                "print(json.dumps({"
+                "'vllm': 'vllm' in sys.modules, "
+                "'dynamic': 'vllm_kv_injection.vllm_dynamic_connector' in sys.modules, "
+                "'native_provider': 'vllm_kv_injection.vllm_native_provider' in sys.modules, "
+                "'layer_mapping': 'vllm_kv_injection.vllm_layer_mapping' in sys.modules"
+                "}, sort_keys=True))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "dynamic": False,
+        "layer_mapping": True,
+        "native_provider": False,
+        "vllm": False,
+    }
+
+
+def test_vllm_runtime_preflight_import_does_not_import_runtime_modules():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys; "
+                "import vllm_kv_injection.vllm_runtime_preflight; "
+                "print(json.dumps({"
+                "'vllm': 'vllm' in sys.modules, "
+                "'dynamic': 'vllm_kv_injection.vllm_dynamic_connector' in sys.modules, "
+                "'native_provider': 'vllm_kv_injection.vllm_native_provider' in sys.modules, "
+                "'runtime_contract': 'vllm_kv_injection.vllm_runtime_contract' in sys.modules"
+                "}, sort_keys=True))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "dynamic": False,
+        "native_provider": False,
+        "runtime_contract": True,
+        "vllm": False,
+    }
+
+
+def test_cachet_vllm_adapter_facade_import_does_not_import_native_provider_modules():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json, sys; "
+                "import cachet.adapters.vllm; "
+                "print(json.dumps({"
+                "'vllm': 'vllm' in sys.modules, "
+                "'native_provider': 'vllm_kv_injection.vllm_native_provider' in sys.modules, "
+                "'probe': 'vllm_kv_injection.probe' in sys.modules"
+                "}, sort_keys=True))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "native_provider": False,
+        "probe": False,
+        "vllm": False,
+    }
