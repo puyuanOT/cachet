@@ -1482,6 +1482,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     native_probe_factories = importlib.import_module("document_kv_cache.native_probe_factories")
     service = importlib.import_module("document_kv_cache.service")
     storage_benchmark = importlib.import_module("document_kv_cache.storage_benchmark")
+    transformers_generator = importlib.import_module("document_kv_cache.transformers_generator")
     workflow = importlib.import_module("document_kv_cache.workflow")
 
     assert admission.__all__ == ["PreparedRequest", "AdmissionQueue"]
@@ -2012,6 +2013,19 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "model_profile_definition_to_record",
         "read_model_profile_definition_json",
         "write_model_profile_definition_json",
+    ]
+    assert transformers_generator.__all__ == [
+        "CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV",
+        "CACHET_TRANSFORMERS_DEVICE_ENV",
+        "CACHET_TRANSFORMERS_MODEL_ID_ENV",
+        "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV",
+        "CACHET_TRANSFORMERS_TOKENIZER_ID_ENV",
+        "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE_ENV",
+        "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV",
+        "TransformersKVGeneratorConfig",
+        "TransformersKVChunkGenerator",
+        "build_transformers_kv_chunk_generator",
     ]
     assert workflow.__all__ == [
         "SourceChunk",

@@ -2804,6 +2804,8 @@ def test_main_can_plan_generated_benchmark_handoff_bundles(tmp_path):
             "my_runtime.kv_generator:create_generator",
             "--benchmark-handoff-output-dir",
             str(tmp_path / "cachet-handoffs"),
+            "--benchmark-handoff-dtype",
+            "bfloat16",
             "--plan-output-json",
             str(plan_json),
         ]
@@ -2829,9 +2831,11 @@ def test_main_can_plan_generated_benchmark_handoff_bundles(tmp_path):
     )
     assert bundle_argv[bundle_argv.index("--output-manifest-json") + 1] == str(expected_manifest_json)
     assert bundle_argv[bundle_argv.index("--generator-factory") + 1] == "my_runtime.kv_generator:create_generator"
+    assert bundle_argv[bundle_argv.index("--dtype") + 1] == "bfloat16"
     assert enrich_argv[enrich_argv.index("--manifest-json") + 1] == str(expected_manifest_json)
     assert record["benchmark_handoff_generator_factory"] == "my_runtime.kv_generator:create_generator"
     assert record["benchmark_handoff_output_dir"] == str(tmp_path / "cachet-handoffs")
+    assert record["benchmark_handoff_dtype"] == "bfloat16"
     assert record["benchmark_handoff_backend"] == "vllm"
     assert record["datasets"][0]["handoff_manifest_json"] == str(expected_manifest_json)
     assert record["datasets"][0]["handoff_jsonl"] == str(expected_handoff_jsonl)

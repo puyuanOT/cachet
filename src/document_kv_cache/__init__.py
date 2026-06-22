@@ -62,6 +62,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "storage",
         "storage_benchmark",
         "template_resources",
+        "transformers_generator",
         "vllm_runtime_contract_data",
         "vllm_runtime_preflight",
         "vllm_smoke",

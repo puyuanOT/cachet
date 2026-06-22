@@ -20,6 +20,7 @@ from document_kv_cache._native_probe_metadata import (
     validate_known_native_delegate_metadata,
 )
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
+from document_kv_cache.engine_protocol import dtype_byte_width
 from document_kv_cache.native_probe_factories import builtin_native_probe_factory_path
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.storage import local_path
@@ -383,6 +384,7 @@ class BenchmarkPlanConfig:
     cache_extra_body_json: str | None = None
     benchmark_handoff_generator_factory: str | None = None
     benchmark_handoff_output_dir: str | None = None
+    benchmark_handoff_dtype: str | None = None
     benchmark_handoff_backend: ServingBackend | str = ServingBackend.VLLM
     storage_benchmark: StorageBenchmarkPlanConfig | None = None
     engine_probes: tuple[EngineProbePlanConfig, ...] = ()
@@ -443,8 +445,17 @@ class BenchmarkPlanConfig:
             raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
         if self.benchmark_handoff_output_dir is not None and not self.benchmark_handoff_output_dir:
             raise ValueError("benchmark_handoff_output_dir must be non-empty when provided")
+        if self.benchmark_handoff_dtype is not None:
+            if not self.benchmark_handoff_dtype:
+                raise ValueError("benchmark_handoff_dtype must be non-empty when provided")
+            dtype_byte_width(self.benchmark_handoff_dtype)
         if self.benchmark_handoff_output_dir is not None and self.benchmark_handoff_generator_factory is None:
             raise ValueError("benchmark_handoff_output_dir requires benchmark_handoff_generator_factory")
+        if (
+            self.benchmark_handoff_dtype is not None
+            and self.benchmark_handoff_generator_factory is None
+        ):
+            raise ValueError("benchmark_handoff_dtype requires benchmark_handoff_generator_factory")
         if self.benchmark_handoff_generator_factory is not None:
             if self.benchmark_handoff_output_dir is None:
                 raise ValueError("benchmark_handoff_generator_factory requires benchmark_handoff_output_dir")
@@ -688,6 +699,7 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         "engine_launch_config_output_dir": plan.config.engine_launch_config_output_dir,
         "benchmark_handoff_generator_factory": plan.config.benchmark_handoff_generator_factory,
         "benchmark_handoff_output_dir": plan.config.benchmark_handoff_output_dir,
+        "benchmark_handoff_dtype": plan.config.benchmark_handoff_dtype,
         "benchmark_handoff_backend": plan.config.benchmark_handoff_backend.value,
         "planned_engine_probes": [_planned_engine_probe_to_record(probe) for probe in plan.config.engine_probes],
         "notes": list(plan.notes),
@@ -808,29 +820,32 @@ def _benchmark_handoff_bundle_command(
         raise ValueError("benchmark handoff bundle generation requires a generator factory and output directory")
     if dataset_path.handoff_manifest_json is None:
         raise ValueError("benchmark handoff bundle generation requires handoff_manifest_json")
+    argv = (
+        config.python_executable,
+        "-m",
+        "document_kv_cache.benchmark_handoff_bundles",
+        "--dataset",
+        dataset_path.dataset,
+        "--input-jsonl",
+        dataset_path.prepared_jsonl,
+        "--output-dir",
+        config.benchmark_handoff_output_dir,
+        "--shard-uri",
+        _benchmark_handoff_bundle_shard_uri(config, dataset_path.dataset),
+        "--output-manifest-json",
+        dataset_path.handoff_manifest_json,
+        "--generator-factory",
+        config.benchmark_handoff_generator_factory,
+        "--backend",
+        config.benchmark_handoff_backend.value,
+        "--model-id",
+        config.model_id,
+    )
+    if config.benchmark_handoff_dtype is not None:
+        argv = (*argv, "--dtype", config.benchmark_handoff_dtype)
     return BenchmarkCommand(
         name=f"generate-{dataset_path.dataset}-handoff-bundles",
-        argv=(
-            config.python_executable,
-            "-m",
-            "document_kv_cache.benchmark_handoff_bundles",
-            "--dataset",
-            dataset_path.dataset,
-            "--input-jsonl",
-            dataset_path.prepared_jsonl,
-            "--output-dir",
-            config.benchmark_handoff_output_dir,
-            "--shard-uri",
-            _benchmark_handoff_bundle_shard_uri(config, dataset_path.dataset),
-            "--output-manifest-json",
-            dataset_path.handoff_manifest_json,
-            "--generator-factory",
-            config.benchmark_handoff_generator_factory,
-            "--backend",
-            config.benchmark_handoff_backend.value,
-            "--model-id",
-            config.model_id,
-        ),
+        argv=argv,
     )
 
 
@@ -1772,6 +1787,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Root directory for generated benchmark handoff bundles. Defaults under --prepared-dir.",
     )
     parser.add_argument(
+        "--benchmark-handoff-dtype",
+        help=(
+            "KV dtype passed to generated benchmark handoff bundle commands, "
+            "for example bfloat16."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-handoff-backend",
         choices=[backend.value for backend in ServingBackend],
         help="Adapter backend for generated benchmark handoff bundles. Defaults to vllm when generation is enabled.",
@@ -2043,6 +2065,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cache_extra_body_json=args.cache_extra_body_json,
             benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,
             benchmark_handoff_output_dir=benchmark_handoff_output_dir,
+            benchmark_handoff_dtype=args.benchmark_handoff_dtype,
             benchmark_handoff_backend=args.benchmark_handoff_backend or ServingBackend.VLLM,
             benchmark_output_json=args.benchmark_output_json
             or str(prepared_dir / f"{args.suite_id}-results.json"),
@@ -2445,7 +2468,11 @@ def _release_bundle_config_from_cli(
 
 def _benchmark_handoff_output_dir_from_cli(args: argparse.Namespace, *, prepared_dir: Path) -> str | None:
     if args.benchmark_handoff_generator_factory is None:
-        if args.benchmark_handoff_output_dir is not None or args.benchmark_handoff_backend is not None:
+        if (
+            args.benchmark_handoff_output_dir is not None
+            or args.benchmark_handoff_dtype is not None
+            or args.benchmark_handoff_backend is not None
+        ):
             raise ValueError(
                 "benchmark handoff bundle generation options require --benchmark-handoff-generator-factory"
             )
