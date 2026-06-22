@@ -541,9 +541,9 @@ def _run_vllm_runtime_preflight(runner_args: argparse.Namespace) -> int:
     return vllm_runtime_preflight.main(
         [
             "--layer-names-json",
-            runner_args.vllm_runtime_preflight_layer_names_json,
+            _cluster_preflight_file_argument(runner_args.vllm_runtime_preflight_layer_names_json),
             "--output-json",
-            runner_args.vllm_runtime_preflight_output_json,
+            _cluster_preflight_file_argument(runner_args.vllm_runtime_preflight_output_json),
         ]
     )
 
@@ -554,11 +554,21 @@ def _run_sglang_runtime_preflight(runner_args: argparse.Namespace) -> int:
     return sglang_runtime_preflight.main(
         [
             "--launch-config-json",
-            runner_args.sglang_runtime_preflight_launch_config_json,
+            _cluster_preflight_file_argument(runner_args.sglang_runtime_preflight_launch_config_json),
             "--output-json",
-            runner_args.sglang_runtime_preflight_output_json,
+            _cluster_preflight_file_argument(runner_args.sglang_runtime_preflight_output_json),
         ]
     )
+
+
+def _cluster_preflight_file_argument(value: str) -> str:
+    stripped_value = value.lstrip()
+    if stripped_value.startswith(("{", "[")):
+        return value
+    scheme = _uri_scheme(value)
+    if scheme in {"dbfs", "disk", "file", "uc-volume"} or value == "/Volumes" or value.startswith("/Volumes/"):
+        return str(local_path(value))
+    return value
 
 
 def _cluster_config_from_engine_probe_job(

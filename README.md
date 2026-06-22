@@ -1032,6 +1032,10 @@ native probe starts. Use
 `--engine-probe-sglang-runtime-preflight-output-json` and
 `--engine-probe-sglang-runtime-preflight-launch-config-json` when generating
 target JSON.
+Preflight sidecar paths may use Databricks `dbfs:/...` URIs; the managed runner
+normalizes those file arguments to the driver-local `/dbfs/...` FUSE path before
+calling the runtime preflight CLIs, while preserving inline JSON layer-name or
+launch-config values.
 When release-evidence flags are supplied, the plan appends
 `document_kv_cache.release_evidence` last so the V1 benchmark, storage
 benchmark, and vLLM/SGLang probe artifacts are validated together. Release
@@ -1641,6 +1645,10 @@ Release-safe SGLang targets must include
 `cachet-sglang-runtime-preflight` against that provider-backed HiCache launch
 config before the native engine probe and returns its nonzero exit code without
 starting the probe if validation fails.
+For Databricks-managed probes, `dbfs:/...` preflight sidecar paths are
+normalized to `/dbfs/...` on the driver before the preflight CLI reads or writes
+them; inline JSON layer-name or launch-config arguments are passed through
+unchanged.
 
 To verify a live endpoint without adding custom serving code, run the OpenAI-compatible smoke check against a vLLM or SGLang server:
 
