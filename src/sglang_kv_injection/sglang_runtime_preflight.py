@@ -69,6 +69,7 @@ SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS = (
 )
 SGLANG_HICACHE_REQUIRED_BACKEND_METHODS = DOCUMENT_KV_HICACHE_RUNTIME_METHODS
 SGLANG_HICACHE_PROVIDER_REQUIRED_METHODS = ("get", "set", "exists")
+SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE = "sglang_kv_injection.dynamic_backend_factory_preflight.v1"
 
 _INSTALLED_CONTRACT_KEYS = frozenset(
     {
@@ -131,6 +132,26 @@ _PROVIDER_FACTORY_RECORD_KEYS = frozenset(
         "ok",
     }
 )
+_DYNAMIC_BACKEND_FACTORY_RECORD_KEYS = frozenset(
+    {
+        "record_type",
+        "schema_version",
+        "storage_backend",
+        "backend_name",
+        "module_path",
+        "class_name",
+        "provider_factory",
+        "factory_importable",
+        "create_backend_callable",
+        "backend_constructed",
+        "backend_class",
+        "backend_methods",
+        "backend_provider_class",
+        "backend_provider_known_noop",
+        "error",
+        "ok",
+    }
+)
 _RUNTIME_PREFLIGHT_KEYS = frozenset(
     {
         "record_type",
@@ -139,6 +160,7 @@ _RUNTIME_PREFLIGHT_KEYS = frozenset(
         "installed_contract",
         "launch_config",
         "provider_factory",
+        "dynamic_backend_factory",
         "ok",
     }
 )
@@ -156,6 +178,7 @@ __all__ = [
     "SGLANG_HICACHE_REQUIRED_SERVER_ARG_FIELDS",
     "SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS",
     "SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME",
+    "SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE",
     "SGLangInstalledHiCacheContract",
     "document_kv_sglang_runtime_preflight_record_issues",
     "document_kv_sglang_runtime_preflight_to_record",
@@ -185,6 +208,11 @@ class SGLangInstalledHiCacheContract:
     document_kv_backend_subclasses_hicache_storage: bool = False
     document_kv_backend_methods: tuple[str, ...] = ()
     error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SGLangPreflightStorageConfig:
+    extra_config: Mapping[str, Any]
 
 
 def installed_sglang_hicache_contract_to_record(
@@ -317,19 +345,26 @@ def document_kv_sglang_runtime_preflight_to_record(
     if launch_config is None:
         launch_config = sglang_hicache_launch_config()
     launch_config = _json_safe_mapping(launch_config, field_name="launch_config")
+    extra_config = _decode_hicache_extra_config(launch_config.get("hicache_storage_backend_extra_config")) or {}
     installed_contract_record = installed_sglang_hicache_contract_to_record(installed_contract)
     launch_config_record = _sglang_launch_config_to_record(launch_config)
     provider_factory_record = _provider_factory_to_record(
         launch_config_record.get("provider_factory"),
-        extra_config=_decode_hicache_extra_config(launch_config.get("hicache_storage_backend_extra_config")) or {},
+        extra_config=extra_config,
+    )
+    dynamic_backend_factory_record = _dynamic_backend_factory_to_record(
+        launch_config_record,
+        extra_config=extra_config,
     )
     ok = (
         installed_contract_record.get("ok") is True
         and launch_config_record.get("ok") is True
         and provider_factory_record.get("ok") is True
+        and dynamic_backend_factory_record.get("ok") is True
         and not installed_sglang_hicache_contract_record_issues(installed_contract_record)
         and not _sglang_launch_config_record_issues(launch_config_record)
         and not _provider_factory_record_issues(provider_factory_record)
+        and not _dynamic_backend_factory_record_issues(dynamic_backend_factory_record)
     )
     return {
         "record_type": DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE,
@@ -338,6 +373,7 @@ def document_kv_sglang_runtime_preflight_to_record(
         "installed_contract": installed_contract_record,
         "launch_config": launch_config_record,
         "provider_factory": provider_factory_record,
+        "dynamic_backend_factory": dynamic_backend_factory_record,
         "ok": ok,
     }
 
@@ -393,19 +429,46 @@ def document_kv_sglang_runtime_preflight_record_issues(record: object) -> tuple[
         issues.extend(f"provider_factory.{issue}" for issue in provider_issues)
         provider_safe = not provider_issues and provider_factory.get("ok") is True
 
+    dynamic_backend_factory = record.get("dynamic_backend_factory")
+    dynamic_backend_safe = False
+    if not isinstance(dynamic_backend_factory, Mapping):
+        issues.append("dynamic_backend_factory must be an object")
+    else:
+        dynamic_backend_issues = _dynamic_backend_factory_record_issues(dynamic_backend_factory)
+        issues.extend(f"dynamic_backend_factory.{issue}" for issue in dynamic_backend_issues)
+        dynamic_backend_safe = not dynamic_backend_issues and dynamic_backend_factory.get("ok") is True
+
     provider_matches_launch = False
     if isinstance(launch_config, Mapping) and isinstance(provider_factory, Mapping):
         provider_matches_launch = launch_config.get("provider_factory") == provider_factory.get("path")
         if not provider_matches_launch:
             issues.append("provider_factory.path must match launch_config.provider_factory")
 
+    dynamic_backend_matches_launch = False
+    if isinstance(launch_config, Mapping) and isinstance(dynamic_backend_factory, Mapping):
+        dynamic_backend_matches_launch = (
+            launch_config.get("provider_factory") == dynamic_backend_factory.get("provider_factory")
+        )
+        if not dynamic_backend_matches_launch:
+            issues.append("dynamic_backend_factory.provider_factory must match launch_config.provider_factory")
+
     ok = record.get("ok")
     if type(ok) is not bool:
         issues.append("ok must be boolean")
     else:
-        expected_ok = installed_safe and launch_safe and provider_safe and provider_matches_launch
+        expected_ok = (
+            installed_safe
+            and launch_safe
+            and provider_safe
+            and dynamic_backend_safe
+            and provider_matches_launch
+            and dynamic_backend_matches_launch
+        )
         if ok != expected_ok:
-            issues.append("ok must match installed contract, launch config, and provider factory safety")
+            issues.append(
+                "ok must match installed contract, launch config, provider factory, "
+                "and dynamic backend factory safety"
+            )
         if ok is False:
             issues.append("ok must be true for a safe SGLang runtime preflight")
     return tuple(issues)
@@ -772,6 +835,153 @@ def _provider_factory_record_issues(record: Mapping[str, Any]) -> tuple[str, ...
     return tuple(issues)
 
 
+def _dynamic_backend_factory_to_record(
+    launch_config_record: Mapping[str, Any],
+    *,
+    extra_config: Mapping[str, Any],
+) -> dict[str, Any]:
+    provider_factory = extra_config.get(DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY)
+    record: dict[str, Any] = {
+        "record_type": SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE,
+        "schema_version": DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION,
+        "storage_backend": launch_config_record.get("hicache_storage_backend"),
+        "backend_name": extra_config.get("backend_name"),
+        "module_path": extra_config.get("module_path"),
+        "class_name": extra_config.get("class_name"),
+        "provider_factory": provider_factory,
+        "factory_importable": False,
+        "create_backend_callable": False,
+        "backend_constructed": False,
+        "backend_class": None,
+        "backend_methods": [],
+        "backend_provider_class": None,
+        "backend_provider_known_noop": False,
+    }
+    try:
+        backend_factory_module = importlib.import_module("sglang.srt.mem_cache.storage.backend_factory")
+        backend_factory_cls = getattr(backend_factory_module, "StorageBackendFactory")
+        record["factory_importable"] = True
+        create_backend = getattr(backend_factory_cls, "create_backend", None)
+        record["create_backend_callable"] = callable(create_backend)
+        if callable(create_backend):
+            storage_config = _SGLangPreflightStorageConfig(extra_config=dict(extra_config))
+            backend = create_backend(launch_config_record.get("hicache_storage_backend"), storage_config, object())
+            record["backend_constructed"] = True
+            record["backend_class"] = backend.__class__.__name__
+            record["backend_methods"] = list(_backend_method_names(backend))
+            provider = getattr(backend, "provider", None)
+            if provider is not None:
+                record["backend_provider_class"] = provider.__class__.__name__
+                record["backend_provider_known_noop"] = isinstance(provider, NoOpDocumentKVHiCacheProvider)
+    except Exception as exc:
+        record["error"] = f"{type(exc).__name__}: {exc}"
+    record["ok"] = (
+        record["storage_backend"] == SGLANG_HICACHE_DYNAMIC_BACKEND
+        and record["backend_name"] == SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME
+        and record["module_path"] == DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH
+        and record["class_name"] == DOCUMENT_KV_HICACHE_BACKEND_CLASS
+        and _module_attribute_path_ok(record["provider_factory"])
+        and record["factory_importable"]
+        and record["create_backend_callable"]
+        and record["backend_constructed"]
+        and record["backend_class"] == DOCUMENT_KV_HICACHE_BACKEND_CLASS
+        and _contains_required_strings(record["backend_methods"], SGLANG_HICACHE_REQUIRED_BACKEND_METHODS)
+        and _non_empty_string(record["backend_provider_class"])
+        and not record["backend_provider_known_noop"]
+        and "error" not in record
+    )
+    return record
+
+
+def _dynamic_backend_factory_record_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    issues: list[str] = []
+    unexpected = sorted(str(key) for key in record if key not in _DYNAMIC_BACKEND_FACTORY_RECORD_KEYS)
+    if unexpected:
+        issues.append(f"SGLang dynamic backend factory preflight has unsupported keys: {unexpected}")
+    if record.get("record_type") != SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE:
+        issues.append("SGLang dynamic backend factory preflight record_type is invalid")
+    if record.get("schema_version") != DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION:
+        issues.append(
+            "SGLang dynamic backend factory preflight schema_version must be "
+            f"{DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION}"
+        )
+    if record.get("storage_backend") != SGLANG_HICACHE_DYNAMIC_BACKEND:
+        issues.append(f"SGLang dynamic backend factory storage_backend must be {SGLANG_HICACHE_DYNAMIC_BACKEND!r}")
+    if record.get("backend_name") != SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME:
+        issues.append(
+            "SGLang dynamic backend factory backend_name must be "
+            f"{SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME!r}"
+        )
+    if record.get("module_path") != DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH:
+        issues.append(
+            "SGLang dynamic backend factory module_path must be "
+            f"{DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH!r}"
+        )
+    if record.get("class_name") != DOCUMENT_KV_HICACHE_BACKEND_CLASS:
+        issues.append(
+            "SGLang dynamic backend factory class_name must be "
+            f"{DOCUMENT_KV_HICACHE_BACKEND_CLASS!r}"
+        )
+    if not _module_attribute_path_ok(record.get("provider_factory")):
+        issues.append("SGLang dynamic backend factory provider_factory must use module:attribute syntax")
+    for field_name in (
+        "factory_importable",
+        "create_backend_callable",
+        "backend_constructed",
+        "backend_provider_known_noop",
+    ):
+        if type(record.get(field_name)) is not bool:
+            issues.append(f"SGLang dynamic backend factory {field_name} must be boolean")
+    if record.get("factory_importable") is not True:
+        issues.append("SGLang dynamic backend factory StorageBackendFactory importable must be true")
+    if record.get("create_backend_callable") is not True:
+        issues.append("SGLang dynamic backend factory create_backend must be callable")
+    if record.get("backend_constructed") is not True:
+        issues.append("SGLang dynamic backend factory must construct the backend through create_backend")
+    if record.get("backend_class") != DOCUMENT_KV_HICACHE_BACKEND_CLASS:
+        issues.append(
+            "SGLang dynamic backend factory backend_class must be "
+            f"{DOCUMENT_KV_HICACHE_BACKEND_CLASS!r}"
+        )
+    issues.extend(
+        _required_string_items_issues(
+            record.get("backend_methods"),
+            required=SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
+            field_name="SGLang dynamic backend factory backend_methods",
+        )
+    )
+    if not _non_empty_string(record.get("backend_provider_class")):
+        issues.append("SGLang dynamic backend factory backend_provider_class must be a non-empty string")
+    if record.get("backend_provider_known_noop") is not False:
+        issues.append("SGLang dynamic backend factory backend provider cannot be NoOpDocumentKVHiCacheProvider")
+    if "error" in record and not isinstance(record.get("error"), str):
+        issues.append("SGLang dynamic backend factory error must be a string when present")
+    ok = record.get("ok")
+    if type(ok) is not bool:
+        issues.append("SGLang dynamic backend factory ok must be boolean")
+    else:
+        expected_ok = (
+            record.get("storage_backend") == SGLANG_HICACHE_DYNAMIC_BACKEND
+            and record.get("backend_name") == SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME
+            and record.get("module_path") == DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH
+            and record.get("class_name") == DOCUMENT_KV_HICACHE_BACKEND_CLASS
+            and _module_attribute_path_ok(record.get("provider_factory"))
+            and record.get("factory_importable") is True
+            and record.get("create_backend_callable") is True
+            and record.get("backend_constructed") is True
+            and record.get("backend_class") == DOCUMENT_KV_HICACHE_BACKEND_CLASS
+            and _contains_required_strings(record.get("backend_methods"), SGLANG_HICACHE_REQUIRED_BACKEND_METHODS)
+            and _non_empty_string(record.get("backend_provider_class"))
+            and record.get("backend_provider_known_noop") is False
+            and "error" not in record
+        )
+        if ok != expected_ok:
+            issues.append("SGLang dynamic backend factory ok must match construction and backend safety")
+        if ok is False:
+            issues.append("SGLang dynamic backend factory ok must be true for a safe runtime preflight")
+    return tuple(issues)
+
+
 def _installed_sglang_hicache_contract_ok(record: Mapping[str, Any]) -> bool:
     return (
         _non_empty_string(record.get("package_version"))
@@ -802,6 +1012,14 @@ def _provider_method_names(provider: object) -> tuple[str, ...]:
         if callable(getattr(provider, method_name, None))
     ]
     return tuple(method_names)
+
+
+def _backend_method_names(backend: object) -> tuple[str, ...]:
+    return tuple(
+        method_name
+        for method_name in SGLANG_HICACHE_REQUIRED_BACKEND_METHODS
+        if callable(getattr(backend, method_name, None))
+    )
 
 
 def _provider_method_issues(provider: object) -> tuple[str, ...]:
