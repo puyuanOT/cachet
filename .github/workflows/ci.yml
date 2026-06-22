@@ -65,8 +65,53 @@ jobs:
       - name: Run tests
         run: poetry run pytest -q
 
+      - name: Verify PEP 517 wheel build
+        run: |
+          python -m venv /tmp/cachet-pep517-wheel
+          /tmp/cachet-pep517-wheel/bin/python -m pip install --upgrade pip
+          /tmp/cachet-pep517-wheel/bin/python -m pip wheel . --no-deps -w /tmp/cachet-pep517-wheelhouse
+          /tmp/cachet-pep517-wheel/bin/python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = next(Path("/tmp/cachet-pep517-wheelhouse").glob("document_kv_cache-*.whl"))
+          assert wheel.name.endswith("-py3-none-any.whl")
+          with ZipFile(wheel) as archive:
+              metadata = archive.read("document_kv_cache-0.2.0.dist-info/METADATA").decode("utf-8")
+              wheel_metadata = archive.read("document_kv_cache-0.2.0.dist-info/WHEEL").decode("utf-8")
+              entry_points = archive.read("document_kv_cache-0.2.0.dist-info/entry_points.txt").decode("utf-8")
+
+          assert "Requires-Python: >=3.11,<4.0" in metadata
+          assert "Requires-Dist: packaging (==23.2)" in metadata
+          assert "Provides-Extra: databricks" in metadata
+          assert "Project-URL: Repository, https://github.com/puyuanOT/cachet" in metadata
+          assert "Tag: py3-none-any" in wheel_metadata
+          assert "cachet-benchmark-plan=cachet.benchmark_plan:main" in entry_points
+          PY
+
       - name: Build package
         run: poetry build
+
+      - name: Verify built wheel metadata
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = next(Path("dist").glob("document_kv_cache-*.whl"))
+          assert wheel.name.endswith("-py3-none-any.whl")
+          with ZipFile(wheel) as archive:
+              metadata = archive.read("document_kv_cache-0.2.0.dist-info/METADATA").decode("utf-8")
+              wheel_metadata = archive.read("document_kv_cache-0.2.0.dist-info/WHEEL").decode("utf-8")
+              entry_points = archive.read("document_kv_cache-0.2.0.dist-info/entry_points.txt").decode("utf-8")
+
+          assert "Requires-Python: >=3.11,<4.0" in metadata
+          assert "Requires-Dist: packaging (==23.2)" in metadata
+          assert "Provides-Extra: test" in metadata
+          assert "Project-URL: Issues, https://github.com/puyuanOT/cachet/issues" in metadata
+          assert "Tag: py3-none-any" in wheel_metadata
+          assert "cachet-pr-evidence=cachet.pr_evidence:main" in entry_points
+          PY
 
       - name: Verify built wheel import smoke
         run: |

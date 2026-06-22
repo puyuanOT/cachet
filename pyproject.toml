@@ -114,6 +114,10 @@ restaurant-kv-vllm-smoke = "restaurant_kv_serving.vllm_smoke:main"
 restaurant-kv-vllm-smoke-databricks-job = "restaurant_kv_serving.databricks_vllm_smoke_job:main"
 
 [tool.poetry]
+name = "document-kv-cache"
+version = "0.2.0"
+description = "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
+authors = ["OpenTable Data Science"]
 packages = [
   { include = "cachet", from = "src" },
   { include = "document_kv_cache", from = "src" },

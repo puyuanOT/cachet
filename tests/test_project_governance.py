@@ -100,6 +100,12 @@ DEPRECATED_TOOL_POETRY_METADATA_KEYS = {
     "scripts",
     "version",
 }
+POETRY_BACKEND_IDENTITY_MIRROR_KEYS = {
+    "authors",
+    "description",
+    "name",
+    "version",
+}
 ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_benchmark_plan_executor.py": {
         "restaurant_kv_serving.benchmark_plan_executor",
@@ -1024,7 +1030,19 @@ def test_github_ci_workflow_verifies_installed_console_scripts():
 def test_github_ci_workflow_smokes_built_wheel_imports():
     text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     workflow_readme = (REPO_ROOT / ".github" / "workflows" / "README.md").read_text(encoding="utf-8")
+    compact_workflow_readme = " ".join(workflow_readme.split())
 
+    assert "Verify PEP 517 wheel build" in text
+    assert "python -m venv /tmp/cachet-pep517-wheel" in text
+    assert "/tmp/cachet-pep517-wheel/bin/python -m pip wheel . --no-deps" in text
+    assert 'Path("/tmp/cachet-pep517-wheelhouse").glob("document_kv_cache-*.whl")' in text
+    assert "Verify built wheel metadata" in text
+    assert 'Path("dist").glob("document_kv_cache-*.whl")' in text
+    assert "Requires-Python: >=3.11,<4.0" in text
+    assert "Requires-Dist: packaging (==23.2)" in text
+    assert "Tag: py3-none-any" in text
+    assert "cachet-benchmark-plan=cachet.benchmark_plan:main" in text
+    assert "cachet-pr-evidence=cachet.pr_evidence:main" in text
     assert "Verify built wheel import smoke" in text
     assert "python -m venv /tmp/cachet-wheel-smoke" in text
     assert "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/document_kv_cache-*.whl" in text
@@ -1035,8 +1053,11 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert 'not hasattr(cachet, "RestaurantKVRequest")' in text
     assert "assert cachet.storage is document_kv_cache.storage" in text
     assert "/tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null" in text
-    assert "install the built wheel into a fresh venv" in workflow_readme
-    assert "`cachet`, `document_kv_cache`, and `restaurant_kv_serving`" in workflow_readme
+    assert "clean PEP 517 wheel build" in compact_workflow_readme
+    assert "build with Cachet metadata" in compact_workflow_readme
+    assert "verify the built wheel metadata" in compact_workflow_readme
+    assert "built wheel into a fresh venv" in compact_workflow_readme
+    assert "`cachet`, `document_kv_cache`, and `restaurant_kv_serving`" in compact_workflow_readme
 
 
 def test_gitignore_blocks_local_secrets_and_generated_artifacts():
@@ -1159,6 +1180,25 @@ def _requirement_version(requirement: str) -> str:
     return f"=={match.group(1)}"
 
 
+def _project_author_to_poetry_author(author: dict[str, str]) -> str:
+    name = author["name"]
+    email = author.get("email")
+    return f"{name} <{email}>" if email else name
+
+
+def _assert_poetry_backend_identity_mirrors_project(project_config: dict, poetry_config: dict) -> None:
+    assert POETRY_BACKEND_IDENTITY_MIRROR_KEYS <= set(poetry_config), (
+        "[tool.poetry] must mirror the backend-required project identity fields"
+    )
+    mirror = {key: poetry_config.get(key) for key in POETRY_BACKEND_IDENTITY_MIRROR_KEYS}
+    assert mirror["name"] == project_config["name"]
+    assert mirror["version"] == project_config["version"]
+    assert mirror["description"] == project_config["description"]
+    assert mirror["authors"] == [
+        _project_author_to_poetry_author(author) for author in project_config["authors"]
+    ]
+
+
 def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
     dependency_versions = {}
     assert "dependency-groups" not in pyproject, "Use [tool.poetry.group.*.dependencies] for dependency groups"
@@ -1172,13 +1212,18 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
     dependency_versions["build-system.poetry-core"] = _requirement_version(poetry_core_requirements[0])
 
     poetry_config = pyproject["tool"]["poetry"]
-    deprecated_keys = DEPRECATED_TOOL_POETRY_METADATA_KEYS & set(poetry_config)
-    assert deprecated_keys == set(), f"Move deprecated [tool.poetry] keys to [project]: {sorted(deprecated_keys)}"
+    project_config = pyproject["project"]
+    _assert_poetry_backend_identity_mirrors_project(project_config, poetry_config)
+    deprecated_keys = (DEPRECATED_TOOL_POETRY_METADATA_KEYS - POETRY_BACKEND_IDENTITY_MIRROR_KEYS) & set(
+        poetry_config
+    )
+    assert deprecated_keys == set(), (
+        f"Move deprecated [tool.poetry] keys to [project]: {sorted(deprecated_keys)}"
+    )
     assert "dev-dependencies" not in poetry_config, (
         "[tool.poetry.dev-dependencies] is deprecated; use [tool.poetry.group.*.dependencies]"
     )
 
-    project_config = pyproject["project"]
     for requirement in project_config.get("dependencies", ()):
         dependency_versions[f"project.dependencies.{_requirement_name(requirement)}"] = _requirement_version(requirement)
     for extra_name, requirements in project_config.get("optional-dependencies", {}).items():
@@ -1214,6 +1259,10 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
     pyproject = {
         "build-system": {"requires": ["poetry-core==2.4.1"]},
         "project": {
+            "name": "example-package",
+            "version": "1.2.3",
+            "description": "Example package.",
+            "authors": [{"name": "Example Team"}],
             "dependencies": ["requests==2.34.2"],
             "optional-dependencies": {
                 "databricks": ["pyspark==4.1.2"],
@@ -1221,6 +1270,10 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
         },
         "tool": {
             "poetry": {
+                "name": "example-package",
+                "version": "1.2.3",
+                "description": "Example package.",
+                "authors": ["Example Team"],
                 "packages": [],
                 "group": {
                     "dev": {
@@ -1270,6 +1323,12 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
         _collect_poetry_dependency_versions(pyproject)
 
     del pyproject["tool"]["poetry"]["scripts"]
+    pyproject["tool"]["poetry"]["version"] = "9.9.9"
+
+    with pytest.raises(AssertionError):
+        _collect_poetry_dependency_versions(pyproject)
+
+    pyproject["tool"]["poetry"]["version"] = "1.2.3"
     pyproject["dependency-groups"] = {"dev": ["ruff>=0.8"]}
 
     with pytest.raises(AssertionError):
