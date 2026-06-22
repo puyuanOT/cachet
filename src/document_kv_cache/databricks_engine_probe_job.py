@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from document_kv_cache._hardware_targets import (
-    DEFAULT_HARDWARE_TARGET,
     SUPPORTED_V1_HARDWARE_TARGETS,
     databricks_node_type_for_hardware_target,
 )
@@ -1254,7 +1253,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
-        default=DEFAULT_HARDWARE_TARGET,
         help="V1 hardware target used to derive --node-type-id when it is omitted.",
     )
     parser.add_argument(

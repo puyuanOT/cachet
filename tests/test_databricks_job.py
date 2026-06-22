@@ -212,6 +212,8 @@ def test_databricks_defaults_share_v1_hardware_target_profile():
 def test_hardware_target_node_type_helpers_map_v1_databricks_defaults():
     assert default_databricks_node_type_for_hardware_target("aws-g6-l4") == "g6.8xlarge"
     assert default_databricks_node_type_for_hardware_target("aws-g5-a10g") == "g5.8xlarge"
+    assert databricks_node_type_for_hardware_target() == "g6.8xlarge"
+    assert databricks_node_type_for_hardware_target(node_type_id="g5.8xlarge") == "g5.8xlarge"
     assert databricks_node_type_for_hardware_target("aws-g5-a10g") == "g5.8xlarge"
     assert databricks_node_type_for_hardware_target("aws-g5-a10g", "g5.12xlarge") == "g5.12xlarge"
 
@@ -406,6 +408,30 @@ def test_main_derives_node_type_from_g5_hardware_target(tmp_path):
             "dbfs:/benchmarks/run_plan.py",
             "--hardware-target",
             "aws-g5-a10g",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+
+
+def test_main_preserves_legacy_g5_node_type_without_hardware_target(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--node-type-id",
+            "g5.8xlarge",
             "--single-user-name",
             SINGLE_USER_NAME,
             "--output-json",

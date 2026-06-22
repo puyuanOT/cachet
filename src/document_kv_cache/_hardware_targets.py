@@ -100,11 +100,14 @@ def default_databricks_node_type_for_hardware_target(hardware_target: str) -> st
 
 
 def databricks_node_type_for_hardware_target(
-    hardware_target: str,
+    hardware_target: str | None = None,
     node_type_id: str | None = None,
 ) -> str:
     if node_type_id is None:
-        return default_databricks_node_type_for_hardware_target(hardware_target)
+        return default_databricks_node_type_for_hardware_target(hardware_target or DEFAULT_HARDWARE_TARGET)
+    if hardware_target is None:
+        validate_aws_single_node_gpu_type(node_type_id)
+        return node_type_id
     validate_aws_single_node_gpu_type_for_hardware_target(node_type_id, hardware_target)
     return node_type_id
 

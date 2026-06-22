@@ -333,6 +333,32 @@ def test_main_derives_vllm_smoke_node_type_from_g5_hardware_target(tmp_path):
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
 
 
+def test_main_preserves_legacy_vllm_smoke_g5_node_type_without_hardware_target(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--benchmark-id",
+            "v1-vllm-smoke-001",
+            "--output-dir",
+            "/Volumes/catalog/schema/volume/v1-vllm-smoke",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_vllm_smoke.py",
+            "--node-type-id",
+            "g5.8xlarge",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+
+
 def test_public_vllm_smoke_job_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):
     output_path = tmp_path / "payload.json"
     original_legacy_build = legacy_vllm_smoke_job.build_databricks_vllm_smoke_run_submit_payload
