@@ -21,6 +21,8 @@ DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"
 DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
+DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
+DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 FINAL_ANSWER_CUE = "Answer:"
 
 __all__ = [
@@ -31,6 +33,8 @@ __all__ = [
     "BASELINE_PREFILL_ARM",
     "CACHE_REUSE_ARM",
     "DOCUMENT_KV_REQUEST_ID_PARAM",
+    "DOCUMENT_KV_HANDOFF_JSON_PARAM",
+    "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",
@@ -125,7 +129,7 @@ class BenchmarkExample:
         object.__setattr__(self, "documents", documents)
         object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
         kv_transfer_params = _dict_from_json_object_mapping(self.kv_transfer_params, "kv_transfer_params")
-        _validate_kv_transfer_request_id(kv_transfer_params)
+        _validate_kv_transfer_params(kv_transfer_params)
         object.__setattr__(self, "kv_transfer_params", kv_transfer_params)
 
 
@@ -572,7 +576,7 @@ def _json_compatible_value(value: Any, field_name: str) -> Any:
     raise ValueError(f"{field_name} must be JSON-compatible")
 
 
-def _validate_kv_transfer_request_id(kv_transfer_params: Mapping[str, Any]) -> None:
+def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
     if not kv_transfer_params:
         return
     request_id = kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
@@ -582,6 +586,36 @@ def _validate_kv_transfer_request_id(kv_transfer_params: Mapping[str, Any]) -> N
         )
     if not isinstance(request_id, str) or not request_id:
         raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} must be a non-empty string")
+    handoff_json = kv_transfer_params.get(DOCUMENT_KV_HANDOFF_JSON_PARAM)
+    handoff_record = kv_transfer_params.get(DOCUMENT_KV_HANDOFF_RECORD_PARAM)
+    if handoff_json is None and handoff_record is None:
+        raise ValueError(
+            "kv_transfer_params must include "
+            f"{DOCUMENT_KV_HANDOFF_JSON_PARAM} or {DOCUMENT_KV_HANDOFF_RECORD_PARAM}"
+        )
+    if handoff_json is not None and handoff_record is not None:
+        raise ValueError(
+            "kv_transfer_params must include only one of "
+            f"{DOCUMENT_KV_HANDOFF_JSON_PARAM} or {DOCUMENT_KV_HANDOFF_RECORD_PARAM}"
+        )
+    if handoff_json is not None and (not isinstance(handoff_json, str) or not handoff_json):
+        raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_JSON_PARAM} must be a non-empty string")
+    if handoff_record is not None:
+        if not isinstance(handoff_record, Mapping):
+            raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")
+        _validate_inline_handoff_record(handoff_record, request_id=request_id)
+
+
+def _validate_inline_handoff_record(handoff_record: Mapping[str, Any], *, request_id: str) -> None:
+    from document_kv_cache.engine_adapters import validate_engine_adapter_request_record
+
+    validate_engine_adapter_request_record(handoff_record, require_external_payload_uri=False)
+    handoff_request_id = handoff_record.get("request_id")
+    if handoff_request_id != request_id:
+        raise ValueError(
+            f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM}.request_id must match "
+            f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM}"
+        )
 
 
 def _validate_non_negative_int(value: int, field_name: str) -> None:
