@@ -1415,6 +1415,87 @@ def test_run_engine_probe_task_runs_vllm_runtime_preflight_before_probe(monkeypa
     ]
 
 
+def test_run_engine_probe_task_normalizes_dbfs_vllm_runtime_preflight_paths(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
+
+    calls = []
+
+    def fake_preflight_main(argv):
+        calls.append(("preflight", tuple(argv)))
+        return 0
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(vllm_runtime_preflight, "main", fake_preflight_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--vllm-runtime-preflight-output-json",
+            "dbfs:/benchmarks/cachet/probes/vllm-runtime-preflight.json",
+            "--vllm-runtime-preflight-layer-names-json",
+            "dbfs:/benchmarks/cachet/probes/vllm-layer-names.json",
+            "--handoff-json",
+            "dbfs:/benchmarks/cachet/probes/vllm-handoff.json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls[0] == (
+        "preflight",
+        (
+            "--layer-names-json",
+            "/dbfs/benchmarks/cachet/probes/vllm-layer-names.json",
+            "--output-json",
+            "/dbfs/benchmarks/cachet/probes/vllm-runtime-preflight.json",
+        ),
+    )
+
+
+def test_run_engine_probe_task_preserves_inline_vllm_layer_names_json(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
+
+    calls = []
+    inline_layer_names = '{"layer_names": ["probe.layer.0"]}'
+
+    def fake_preflight_main(argv):
+        calls.append(("preflight", tuple(argv)))
+        return 0
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(vllm_runtime_preflight, "main", fake_preflight_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--vllm-runtime-preflight-output-json",
+            "dbfs:/benchmarks/cachet/probes/vllm-runtime-preflight.json",
+            "--vllm-runtime-preflight-layer-names-json",
+            inline_layer_names,
+            "--handoff-json",
+            "dbfs:/benchmarks/cachet/probes/vllm-handoff.json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls[0] == (
+        "preflight",
+        (
+            "--layer-names-json",
+            inline_layer_names,
+            "--output-json",
+            "/dbfs/benchmarks/cachet/probes/vllm-runtime-preflight.json",
+        ),
+    )
+
+
 def test_run_engine_probe_task_stops_when_vllm_runtime_preflight_fails(monkeypatch):
     import document_kv_cache.engine_probe as engine_probe
     import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
@@ -1506,6 +1587,46 @@ def test_run_engine_probe_task_runs_sglang_runtime_preflight_before_probe(monkey
             ),
         ),
     ]
+
+
+def test_run_engine_probe_task_normalizes_dbfs_sglang_runtime_preflight_paths(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
+
+    calls = []
+
+    def fake_preflight_main(argv):
+        calls.append(("preflight", tuple(argv)))
+        return 0
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(sglang_runtime_preflight, "main", fake_preflight_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--sglang-runtime-preflight-output-json",
+            "dbfs:/benchmarks/cachet/probes/sglang-runtime-preflight.json",
+            "--sglang-runtime-preflight-launch-config-json",
+            "dbfs:/benchmarks/cachet/probes/sglang-launch-config.json",
+            "--handoff-json",
+            "dbfs:/benchmarks/cachet/probes/sglang-handoff.json",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls[0] == (
+        "preflight",
+        (
+            "--launch-config-json",
+            "/dbfs/benchmarks/cachet/probes/sglang-launch-config.json",
+            "--output-json",
+            "/dbfs/benchmarks/cachet/probes/sglang-runtime-preflight.json",
+        ),
+    )
 
 
 def test_run_engine_probe_task_stops_when_sglang_runtime_preflight_fails(monkeypatch):
