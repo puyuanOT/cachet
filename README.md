@@ -817,6 +817,10 @@ python -m document_kv_cache.benchmark_plan \
   --raw-dataset musique=/raw/musique.jsonl \
   --raw-dataset niah=/raw/niah.jsonl \
   --prepared-dir /data/v1-prepared \
+  --benchmark-handoff-manifest-json biography=/data/handoffs/biography-manifest.json \
+  --benchmark-handoff-manifest-json hotpotqa=/data/handoffs/hotpotqa-manifest.json \
+  --benchmark-handoff-manifest-json musique=/data/handoffs/musique-manifest.json \
+  --benchmark-handoff-manifest-json niah=/data/handoffs/niah-manifest.json \
   --base-url http://localhost:8000 \
   --storage-benchmark-workspace-dir /local_disk0/document-kv-storage-benchmark \
   --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
@@ -846,16 +850,17 @@ python -m document_kv_cache.benchmark_plan \
   --plan-output-sh /data/run-v1-benchmark.sh
 ```
 
-The generated shell script runs `dataset_prep` for each raw file, invokes
-`benchmark_runner`, and, when `--storage-benchmark-workspace-dir` is provided,
-appends a `document_kv_cache.storage_benchmark` command. The storage command
-captures Memory and Disk reader latency/throughput on the same AWS g6/L4 node, and
-adds the Unity Catalog reader only when `--storage-benchmark-uc-volume-root`
-points at a real UC Volume. It writes `<suite-id>-storage-benchmark.json` under
+The generated shell script runs `dataset_prep` for each raw file, enriches any
+dataset configured with `--benchmark-handoff-manifest-json` by invoking
+`document_kv_cache.benchmark_handoffs`, then invokes `benchmark_runner` against
+the enriched JSONL. Unless `--benchmark-handoff-output-jsonl DATASET=PATH` is
+provided, enriched inputs are written as `<prepared-dir>/<dataset>.handoffs.jsonl`.
+When `--storage-benchmark-workspace-dir` is provided, the plan also appends a
+`document_kv_cache.storage_benchmark` command. The storage command captures
+Memory and Disk reader latency/throughput on the same AWS g6/L4 node, and adds
+the Unity Catalog reader only when `--storage-benchmark-uc-volume-root` points
+at a real UC Volume. It writes `<suite-id>-storage-benchmark.json` under
 `--prepared-dir` unless `--storage-benchmark-output-json` is set.
-Use `python -m document_kv_cache.benchmark_handoffs --input-jsonl ... --manifest-json ... --output-jsonl ...`
-between dataset preparation and benchmark execution when a prior Cachet cache
-generation step has emitted per-example handoff JSON/payload artifacts.
 Backend-keyed
 `--engine-probe-*` options append native `document_kv_cache.engine_probe`
 commands for vLLM and SGLang handoffs; release evidence automatically consumes

@@ -74,6 +74,8 @@ class BenchmarkDatasetPath:
     dataset: str
     raw_jsonl: str
     prepared_jsonl: str
+    handoff_manifest_json: str | None = None
+    handoff_jsonl: str | None = None
 
     def __post_init__(self) -> None:
         validate_v1_dataset(self.dataset)
@@ -81,6 +83,17 @@ class BenchmarkDatasetPath:
             raise ValueError("raw_jsonl must be non-empty")
         if not self.prepared_jsonl:
             raise ValueError("prepared_jsonl must be non-empty")
+        if (self.handoff_manifest_json is None) != (self.handoff_jsonl is None):
+            raise ValueError("handoff_manifest_json and handoff_jsonl must be configured together")
+        if self.handoff_manifest_json is not None and not self.handoff_manifest_json:
+            raise ValueError("handoff_manifest_json must be non-empty when provided")
+        if self.handoff_jsonl is not None and not self.handoff_jsonl:
+            raise ValueError("handoff_jsonl must be non-empty when provided")
+        if (
+            self.handoff_jsonl is not None
+            and _same_artifact_path(self.prepared_jsonl, self.handoff_jsonl)
+        ):
+            raise ValueError("handoff_jsonl must be distinct from prepared_jsonl")
 
 
 @dataclass(frozen=True, slots=True)
@@ -511,7 +524,11 @@ class BenchmarkJobPlan:
 
 
 def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
-    preparation_commands = tuple(_dataset_prep_command(config, dataset_path) for dataset_path in config.dataset_paths)
+    preparation_commands = tuple(
+        command
+        for dataset_path in config.dataset_paths
+        for command in _dataset_preparation_commands(config, dataset_path)
+    )
     post_benchmark_commands = []
     if config.storage_benchmark is not None:
         post_benchmark_commands.append(_storage_benchmark_command(config))
@@ -542,6 +559,7 @@ def build_v1_benchmark_plan(config: BenchmarkPlanConfig) -> BenchmarkJobPlan:
         notes=(
             "Run these commands on an AWS g6/L4-compatible environment with the target server already listening.",
             "The benchmark compares baseline full-prefill requests with the document KV-cache arm.",
+            "When configured, benchmark handoff enrichment runs after dataset preparation and before inference.",
             "When configured, the storage-reader benchmark runs after inference to capture selected reader load evidence on the same node.",
             "When configured, GitHub governance inspection runs before release validation and can be bundled as release governance evidence.",
             "When configured, repository hygiene inspection runs before release validation and can be bundled as release hygiene evidence.",
@@ -567,6 +585,9 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
                 "dataset": dataset_path.dataset,
                 "raw_jsonl": dataset_path.raw_jsonl,
                 "prepared_jsonl": dataset_path.prepared_jsonl,
+                "handoff_manifest_json": dataset_path.handoff_manifest_json,
+                "handoff_jsonl": dataset_path.handoff_jsonl,
+                "benchmark_jsonl": _benchmark_dataset_jsonl(dataset_path),
             }
             for dataset_path in plan.config.dataset_paths
         ],
@@ -713,6 +734,37 @@ def _dataset_prep_command(config: BenchmarkPlanConfig, dataset_path: BenchmarkDa
     return BenchmarkCommand(name=f"prepare-{dataset_path.dataset}", argv=argv)
 
 
+def _dataset_preparation_commands(
+    config: BenchmarkPlanConfig,
+    dataset_path: BenchmarkDatasetPath,
+) -> tuple[BenchmarkCommand, ...]:
+    commands = [_dataset_prep_command(config, dataset_path)]
+    if dataset_path.handoff_manifest_json is not None:
+        commands.append(_benchmark_handoff_command(config, dataset_path))
+    return tuple(commands)
+
+
+def _benchmark_handoff_command(config: BenchmarkPlanConfig, dataset_path: BenchmarkDatasetPath) -> BenchmarkCommand:
+    if dataset_path.handoff_manifest_json is None or dataset_path.handoff_jsonl is None:
+        raise ValueError("benchmark handoff enrichment requires handoff_manifest_json and handoff_jsonl")
+    return BenchmarkCommand(
+        name=f"enrich-{dataset_path.dataset}-handoffs",
+        argv=(
+            config.python_executable,
+            "-m",
+            "document_kv_cache.benchmark_handoffs",
+            "--dataset",
+            dataset_path.dataset,
+            "--input-jsonl",
+            dataset_path.prepared_jsonl,
+            "--manifest-json",
+            dataset_path.handoff_manifest_json,
+            "--output-jsonl",
+            dataset_path.handoff_jsonl,
+        ),
+    )
+
+
 def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     argv = (
         config.python_executable,
@@ -736,7 +788,7 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         config.benchmark_output_json,
     )
     for dataset_path in config.dataset_paths:
-        argv = (*argv, "--dataset", f"{dataset_path.dataset}={dataset_path.prepared_jsonl}")
+        argv = (*argv, "--dataset", f"{dataset_path.dataset}={_benchmark_dataset_jsonl(dataset_path)}")
     if config.cache_base_url is not None:
         argv = (*argv, "--cache-base-url", config.cache_base_url)
     if config.limit_per_dataset is not None:
@@ -752,6 +804,10 @@ def _benchmark_runner_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     if config.cache_extra_body_json is not None:
         argv = (*argv, "--cache-extra-body-json", config.cache_extra_body_json)
     return BenchmarkCommand(name="run-benchmark", argv=argv)
+
+
+def _benchmark_dataset_jsonl(dataset_path: BenchmarkDatasetPath) -> str:
+    return dataset_path.handoff_jsonl or dataset_path.prepared_jsonl
 
 
 def _storage_benchmark_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
@@ -1337,6 +1393,11 @@ def _validate_plan_output_paths(
 
 def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple[str, str], ...]:
     output_paths: list[tuple[str, str]] = [("benchmark_output_json", config.benchmark_output_json)]
+    output_paths.extend(
+        (f"dataset_paths[{dataset_path.dataset}].handoff_jsonl", dataset_path.handoff_jsonl)
+        for dataset_path in config.dataset_paths
+        if dataset_path.handoff_jsonl is not None
+    )
     if config.storage_benchmark is not None:
         output_paths.append(("storage_benchmark.output_json", config.storage_benchmark.output_json))
     output_paths.extend(
@@ -1538,6 +1599,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--baseline-extra-body-json")
     parser.add_argument("--cache-extra-body-json")
     parser.add_argument("--benchmark-output-json", help="Benchmark result path. Defaults under --prepared-dir.")
+    parser.add_argument(
+        "--benchmark-handoff-manifest-json",
+        "--benchmark-handoff-manifest",
+        dest="benchmark_handoff_manifest_json",
+        action="append",
+        metavar="DATASET=PATH",
+        help=(
+            "Cachet benchmark handoff manifest JSON for a prepared dataset. "
+            "Repeat for datasets that should run with enriched kv_transfer_params."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-handoff-output-jsonl",
+        action="append",
+        metavar="DATASET=PATH",
+        help=(
+            "Enriched benchmark JSONL output path for a dataset configured with "
+            "--benchmark-handoff-manifest-json. Defaults to <prepared-dir>/<dataset>.handoffs.jsonl."
+        ),
+    )
     parser.add_argument(
         "--storage-benchmark-workspace-dir",
         help="Enable the storage-reader benchmark and use this workspace directory for synthetic shards.",
@@ -1761,7 +1842,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         engine_probes = _engine_probe_configs_from_cli(args)
         config = BenchmarkPlanConfig(
             suite_id=args.suite_id,
-            dataset_paths=_dataset_paths_from_cli(args.raw_dataset, prepared_dir=prepared_dir),
+            dataset_paths=_dataset_paths_from_cli(
+                args.raw_dataset,
+                prepared_dir=prepared_dir,
+                handoff_manifests=_dataset_value_map(
+                    args.benchmark_handoff_manifest_json or (),
+                    "--benchmark-handoff-manifest-json",
+                ),
+                handoff_jsonls=_dataset_value_map(
+                    args.benchmark_handoff_output_jsonl or (),
+                    "--benchmark-handoff-output-jsonl",
+                ),
+            ),
             base_url=args.base_url,
             cache_base_url=args.cache_base_url,
             model_id=args.model_id,
@@ -2177,6 +2269,16 @@ def _named_value_map(values: Sequence[str], option_name: str) -> dict[str, str]:
     return result
 
 
+def _dataset_value_map(values: Sequence[str], option_name: str) -> dict[str, str]:
+    result = {}
+    for value in values:
+        dataset, path = _split_dataset_path(value, option_name=option_name)
+        if dataset in result:
+            raise ValueError(f"Duplicate dataset for {option_name}: {dataset!r}")
+        result[dataset] = path
+    return result
+
+
 def _named_value_lists(values: Sequence[str], option_name: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for value in values:
@@ -2215,18 +2317,65 @@ def _default_storage_benchmark_readers(uc_volume_root: str | None) -> tuple[str,
     return SUPPORTED_STORAGE_BENCHMARK_READERS
 
 
-def _dataset_paths_from_cli(values: Sequence[str], *, prepared_dir: Path) -> tuple[BenchmarkDatasetPath, ...]:
+def _dataset_paths_from_cli(
+    values: Sequence[str],
+    *,
+    prepared_dir: Path,
+    handoff_manifests: Mapping[str, str] | None = None,
+    handoff_jsonls: Mapping[str, str] | None = None,
+) -> tuple[BenchmarkDatasetPath, ...]:
+    handoff_manifest_paths = dict(handoff_manifests or {})
+    handoff_jsonl_paths = dict(handoff_jsonls or {})
     dataset_paths: dict[str, BenchmarkDatasetPath] = {}
     for value in values:
         dataset, raw_jsonl = _split_dataset_path(value, option_name="--raw-dataset")
         if dataset in dataset_paths:
             raise ValueError(f"Duplicate raw dataset path for {dataset!r}")
+        handoff_manifest_json = handoff_manifest_paths.get(dataset)
         dataset_paths[dataset] = BenchmarkDatasetPath(
             dataset=dataset,
             raw_jsonl=raw_jsonl,
             prepared_jsonl=str(prepared_dir / f"{dataset}.jsonl"),
+            handoff_manifest_json=handoff_manifest_json,
+            handoff_jsonl=_benchmark_handoff_jsonl(
+                dataset,
+                prepared_dir=prepared_dir,
+                handoff_manifest_json=handoff_manifest_json,
+                handoff_jsonls=handoff_jsonl_paths,
+            ),
+        )
+    raw_datasets = set(dataset_paths)
+    _require_subset_dataset_keys(raw_datasets, handoff_manifest_paths, "--benchmark-handoff-manifest-json")
+    _require_subset_dataset_keys(raw_datasets, handoff_jsonl_paths, "--benchmark-handoff-output-jsonl")
+    output_without_manifest = sorted(set(handoff_jsonl_paths).difference(handoff_manifest_paths))
+    if output_without_manifest:
+        raise ValueError(
+            "--benchmark-handoff-output-jsonl requires --benchmark-handoff-manifest-json "
+            f"for datasets: {output_without_manifest}"
         )
     return tuple(dataset_paths[dataset] for dataset in SUPPORTED_V1_DATASETS if dataset in dataset_paths)
+
+
+def _benchmark_handoff_jsonl(
+    dataset: str,
+    *,
+    prepared_dir: Path,
+    handoff_manifest_json: str | None,
+    handoff_jsonls: Mapping[str, str],
+) -> str | None:
+    if handoff_manifest_json is None:
+        return None
+    return handoff_jsonls.get(dataset) or str(prepared_dir / f"{dataset}.handoffs.jsonl")
+
+
+def _require_subset_dataset_keys(
+    expected: set[str],
+    actual: Mapping[str, object],
+    option_name: str,
+) -> None:
+    extra = sorted(set(actual).difference(expected))
+    if extra:
+        raise ValueError(f"{option_name} has no raw dataset: {extra}")
 
 
 def _split_dataset_path(value: str, *, option_name: str) -> tuple[str, str]:
