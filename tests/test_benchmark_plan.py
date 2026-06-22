@@ -206,6 +206,82 @@ def test_build_v1_benchmark_plan_prepares_all_datasets_then_runs_benchmark(tmp_p
     assert "biography=" + str(tmp_path / "prepared" / "biography.jsonl") in plan.benchmark_command.argv
 
 
+def test_build_v1_benchmark_plan_enriches_configured_handoff_datasets(tmp_path):
+    biography_handoff_jsonl = tmp_path / "prepared" / "biography.handoffs.jsonl"
+    paths = (
+        BenchmarkDatasetPath(
+            dataset="biography",
+            raw_jsonl=str(tmp_path / "raw" / "biography.jsonl"),
+            prepared_jsonl=str(tmp_path / "prepared" / "biography.jsonl"),
+            handoff_manifest_json=str(tmp_path / "handoffs" / "biography-manifest.json"),
+            handoff_jsonl=str(biography_handoff_jsonl),
+        ),
+        *tuple(path for path in dataset_paths(tmp_path) if path.dataset != "biography"),
+    )
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=paths,
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    enrich_command = plan.preparation_commands[1]
+
+    assert [command.name for command in plan.preparation_commands] == [
+        "prepare-biography",
+        "enrich-biography-handoffs",
+        "prepare-hotpotqa",
+        "prepare-musique",
+        "prepare-niah",
+    ]
+    assert enrich_command.argv == (
+        "python",
+        "-m",
+        "document_kv_cache.benchmark_handoffs",
+        "--dataset",
+        "biography",
+        "--input-jsonl",
+        str(tmp_path / "prepared" / "biography.jsonl"),
+        "--manifest-json",
+        str(tmp_path / "handoffs" / "biography-manifest.json"),
+        "--output-jsonl",
+        str(biography_handoff_jsonl),
+    )
+    assert f"biography={biography_handoff_jsonl}" in plan.benchmark_command.argv
+    assert f"hotpotqa={tmp_path / 'prepared' / 'hotpotqa.jsonl'}" in plan.benchmark_command.argv
+    assert record["datasets"][0]["handoff_manifest_json"] == str(
+        tmp_path / "handoffs" / "biography-manifest.json"
+    )
+    assert record["datasets"][0]["handoff_jsonl"] == str(biography_handoff_jsonl)
+    assert record["datasets"][0]["benchmark_jsonl"] == str(biography_handoff_jsonl)
+    assert record["datasets"][1]["handoff_manifest_json"] is None
+    assert record["datasets"][1]["benchmark_jsonl"] == str(tmp_path / "prepared" / "hotpotqa.jsonl")
+
+
+def test_benchmark_dataset_path_rejects_incomplete_handoff_configuration(tmp_path):
+    with pytest.raises(ValueError, match="configured together"):
+        BenchmarkDatasetPath(
+            dataset="biography",
+            raw_jsonl=str(tmp_path / "raw" / "biography.jsonl"),
+            prepared_jsonl=str(tmp_path / "prepared" / "biography.jsonl"),
+            handoff_manifest_json=str(tmp_path / "handoffs" / "biography-manifest.json"),
+        )
+
+
+def test_benchmark_dataset_path_rejects_handoff_jsonl_overwriting_prepared_jsonl(tmp_path):
+    prepared_jsonl = tmp_path / "prepared" / "biography.jsonl"
+    with pytest.raises(ValueError, match="distinct from prepared_jsonl"):
+        BenchmarkDatasetPath(
+            dataset="biography",
+            raw_jsonl=str(tmp_path / "raw" / "biography.jsonl"),
+            prepared_jsonl=str(prepared_jsonl),
+            handoff_manifest_json=str(tmp_path / "handoffs" / "biography-manifest.json"),
+            handoff_jsonl=str(prepared_jsonl),
+        )
+
+
 def test_benchmark_plan_config_rejects_unsupported_v1_hardware_target(tmp_path):
     with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
         BenchmarkPlanConfig(
@@ -2174,7 +2250,10 @@ def test_legacy_benchmark_plan_main_isolates_dataclass_method_globals(monkeypatc
     assert exit_code == 0
     assert record["datasets"] == [
         {
+            "benchmark_jsonl": str(tmp_path / "prepared" / "custom.jsonl"),
             "dataset": "custom",
+            "handoff_jsonl": None,
+            "handoff_manifest_json": None,
             "raw_jsonl": str(tmp_path / "raw" / "custom.jsonl"),
             "prepared_jsonl": str(tmp_path / "prepared" / "custom.jsonl"),
         }
@@ -2362,6 +2441,72 @@ def test_main_writes_json_and_shell_outputs(tmp_path):
     assert exit_code == 0
     assert json.loads(plan_json.read_text(encoding="utf-8"))["datasets"][0]["dataset"] == "biography"
     assert "document_kv_cache.benchmark_runner" in plan_sh.read_text(encoding="utf-8")
+
+
+def test_main_can_plan_benchmark_handoff_enrichment(tmp_path):
+    plan_json = tmp_path / "plan.json"
+
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-manifest-json",
+            f"biography={tmp_path / 'handoffs' / 'biography-manifest.json'}",
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    command_names = [command["name"] for command in record["commands"]]
+    enrich_argv = record["commands"][command_names.index("enrich-biography-handoffs")]["argv"]
+    benchmark_argv = record["commands"][command_names.index("run-benchmark")]["argv"]
+    expected_handoff_jsonl = tmp_path / "prepared" / "biography.handoffs.jsonl"
+
+    assert exit_code == 0
+    assert command_names == ["prepare-biography", "enrich-biography-handoffs", "run-benchmark"]
+    assert enrich_argv[enrich_argv.index("--manifest-json") + 1] == str(
+        tmp_path / "handoffs" / "biography-manifest.json"
+    )
+    assert enrich_argv[enrich_argv.index("--output-jsonl") + 1] == str(expected_handoff_jsonl)
+    assert f"biography={expected_handoff_jsonl}" in benchmark_argv
+    assert record["datasets"][0]["handoff_jsonl"] == str(expected_handoff_jsonl)
+    assert record["datasets"][0]["benchmark_jsonl"] == str(expected_handoff_jsonl)
+
+
+def test_main_can_use_explicit_benchmark_handoff_output_jsonl(tmp_path):
+    plan_json = tmp_path / "plan.json"
+    handoff_jsonl = tmp_path / "benchmarks" / "biography.enriched.jsonl"
+
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-manifest",
+            f"biography={tmp_path / 'handoffs' / 'biography-manifest.json'}",
+            "--benchmark-handoff-output-jsonl",
+            f"biography={handoff_jsonl}",
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    benchmark_argv = record["commands"][-1]["argv"]
+
+    assert exit_code == 0
+    assert record["datasets"][0]["handoff_jsonl"] == str(handoff_jsonl)
+    assert f"biography={handoff_jsonl}" in benchmark_argv
 
 
 def test_main_can_include_storage_benchmark_command(tmp_path):
@@ -3363,6 +3508,75 @@ def test_main_rejects_storage_options_without_workspace(capsys, tmp_path):
     assert exit_code == 1
     assert record["ok"] is False
     assert "--storage-benchmark-workspace-dir" in record["error"]
+
+
+def test_main_rejects_benchmark_handoff_manifest_for_missing_raw_dataset(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-manifest-json",
+            f"hotpotqa={tmp_path / 'handoffs' / 'hotpotqa-manifest.json'}",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "--benchmark-handoff-manifest-json" in record["error"]
+    assert "no raw dataset" in record["error"]
+
+
+def test_main_rejects_benchmark_handoff_output_without_manifest(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-output-jsonl",
+            f"biography={tmp_path / 'prepared' / 'biography.handoffs.jsonl'}",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "--benchmark-handoff-output-jsonl requires --benchmark-handoff-manifest-json" in record["error"]
+
+
+def test_main_rejects_benchmark_handoff_output_overwriting_prepared_jsonl(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-manifest-json",
+            f"biography={tmp_path / 'handoffs' / 'biography-manifest.json'}",
+            "--benchmark-handoff-output-jsonl",
+            f"biography={tmp_path / 'prepared' / 'biography.jsonl'}",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "handoff_jsonl must be distinct from prepared_jsonl" in record["error"]
 
 
 def test_main_rejects_release_evidence_options_without_output(capsys, tmp_path):
