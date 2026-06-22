@@ -140,6 +140,19 @@ def test_document_kv_hicache_backend_rejects_invalid_provider(monkeypatch):
         )
 
 
+def test_document_kv_hicache_backend_rejects_noop_provider_factory(monkeypatch):
+    module = ModuleType("sglang_document_kv_noop_provider")
+    module.build_provider = lambda *, extra_config: NoOpDocumentKVHiCacheProvider()
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    with pytest.raises(ValueError, match="NoOpDocumentKVHiCacheProvider"):
+        DocumentKVHiCacheBackend(
+            {
+                DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
+            }
+        )
+
+
 def test_document_kv_hicache_backend_identity_is_exported_from_package_root():
     assert DOCUMENT_KV_HICACHE_BACKEND_CLASS == "DocumentKVHiCacheBackend"
     assert DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH == "sglang_kv_injection.sglang_dynamic_backend"

@@ -111,6 +111,8 @@ def _provider_from_extra_config(extra_config: Mapping[str, Any]) -> DocumentKVHi
         raise ValueError(f"{DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY} must be a non-empty module:attribute string")
     factory = load_document_kv_hicache_provider_factory(factory_path)
     provider = factory(extra_config=extra_config)
+    if isinstance(provider, NoOpDocumentKVHiCacheProvider):
+        raise ValueError("configured document KV HiCache provider factory cannot return NoOpDocumentKVHiCacheProvider")
     _validate_provider(provider)
     return provider
 
