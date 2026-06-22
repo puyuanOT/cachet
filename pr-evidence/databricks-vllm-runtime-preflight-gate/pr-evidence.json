@@ -1,0 +1,36 @@
+{
+  "gpt55_review_completed": false,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "pending",
+  "gpt55_review_summary": "Pending GPT-5.5 reviewer pass for PR #315.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 315,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/315",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/databricks_engine_probe_job.py",
+    "src/document_kv_cache/benchmark_plan.py",
+    "tests/test_databricks_engine_probe_job.py",
+    "tests/test_benchmark_plan.py",
+    "README.md",
+    "databricks/README.md",
+    "databricks/engine-probe/README.md",
+    "src/document_kv_cache/templates/databricks/engine-probe/README.md",
+    "pr-evidence/databricks-vllm-runtime-preflight-gate"
+  ],
+  "verification": [
+    "python -m pytest -q tests/test_databricks_engine_probe_job.py tests/test_benchmark_plan.py (210 passed)",
+    "poetry check",
+    "python -m pytest -q (1625 passed)",
+    "git diff --check",
+    "changed-file credential-pattern scan found only existing redacted placeholders; no literal Databricks tokens or concrete workspace URLs"
+  ],
+  "what_changed": [
+    "Added runner-level vLLM runtime preflight arguments to Databricks engine-probe jobs and execute the strict preflight before native probes.",
+    "Made release-safe provider-backed vLLM Databricks configs fail closed unless they carry preflight output and layer-name JSON inputs.",
+    "Threaded the same preflight fields through benchmark-plan engine-probe target JSON and documented the g6 QA handoff path."
+  ],
+  "why": "The next provider-backed vLLM Databricks QA run must fail before GPU probe execution when the installed vLLM contract, provider factory, or layer mapping is not strict enough for release evidence."
+}
