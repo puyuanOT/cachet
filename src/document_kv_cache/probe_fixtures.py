@@ -43,6 +43,11 @@ from document_kv_cache.models import (
 from document_kv_cache.planner import CachePlanner
 from document_kv_cache.service import DocumentKVService
 from document_kv_cache.storage import DiskRangeReader, local_path
+from vllm_kv_injection.vllm_native_provider import (
+    document_kv_vllm_layer_mapping_to_record,
+    document_kv_vllm_probe_layer_names,
+    validate_document_kv_vllm_layer_mapping_record,
+)
 
 ENGINE_PROBE_FIXTURE_RECORD_TYPE = "document_kv.engine_probe_fixture.v1"
 ENGINE_PROBE_FIXTURE_SCHEMA_VERSION = 1
@@ -59,6 +64,7 @@ DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES = MappingProxyType(
         "handoff": "qwen3-v1-fixture.handoff.json",
         "actions": "qwen3-v1-fixture.actions.json",
         "manifest": "qwen3-v1-fixture.manifest.json",
+        "vllm_layer_names": "vllm-layer-names.json",
     }
 )
 
@@ -133,15 +139,18 @@ class EngineProbeFixtureResult:
     handoff_uri: str
     actions_uri: str
     manifest_uri: str
+    vllm_layer_names_uri: str | None
     pack_path: Path
     payload_path: Path
     handoff_json: Path
     actions_json: Path
     manifest_json: Path
+    vllm_layer_names_json: Path | None
     pack_sha256: str
     payload_sha256: str
     handoff_sha256: str
     actions_sha256: str
+    vllm_layer_names_sha256: str | None
 
     @property
     def total_tokens(self) -> int:
@@ -176,6 +185,7 @@ def write_qwen3_v1_engine_probe_fixture(config: EngineProbeFixtureConfig) -> Eng
     handoff_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"])
     actions_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["actions"])
     manifest_uri = _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["manifest"])
+    vllm_layer_names_uri = _vllm_layer_names_uri(config.backend, output_dir_uri)
 
     chunks = _fixture_pack_chunks(config, layout=layout)
     refs = write_kvpack(pack_uri, chunks, align_bytes=1)
@@ -209,6 +219,7 @@ def write_qwen3_v1_engine_probe_fixture(config: EngineProbeFixtureConfig) -> Eng
         expected_backend=config.backend,
     )
     manifest_path = local_path(manifest_uri)
+    vllm_layer_names_path = _write_vllm_layer_names_json(vllm_layer_names_uri, layout=layout)
     result = EngineProbeFixtureResult(
         config=config,
         layout=layout,
@@ -218,15 +229,20 @@ def write_qwen3_v1_engine_probe_fixture(config: EngineProbeFixtureConfig) -> Eng
         handoff_uri=handoff_uri,
         actions_uri=actions_uri,
         manifest_uri=manifest_uri,
+        vllm_layer_names_uri=vllm_layer_names_uri,
         pack_path=pack_path,
         payload_path=payload_path,
         handoff_json=handoff_path,
         actions_json=actions_path,
         manifest_json=manifest_path,
+        vllm_layer_names_json=vllm_layer_names_path,
         pack_sha256=_file_sha256(pack_path),
         payload_sha256=_file_sha256(payload_path),
         handoff_sha256=_file_sha256(handoff_path),
         actions_sha256=_file_sha256(actions_path),
+        vllm_layer_names_sha256=(
+            _file_sha256(vllm_layer_names_path) if vllm_layer_names_path is not None else None
+        ),
     )
     _write_fixture_manifest(result)
     _validate_written_fixture(result)
@@ -240,6 +256,37 @@ def engine_probe_fixture_result_to_record(result: EngineProbeFixtureResult) -> d
         raise TypeError("result must be an EngineProbeFixtureResult")
     handle = result.adapter_request.ready_request.handle
     layout = handle.layout
+    uris = {
+        "pack": result.pack_uri,
+        "payload": result.payload_uri,
+        "handoff_json": result.handoff_uri,
+        "actions_json": result.actions_uri,
+        "manifest_json": result.manifest_uri,
+    }
+    paths = {
+        "pack": str(result.pack_path),
+        "payload": str(result.payload_path),
+        "handoff_json": str(result.handoff_json),
+        "actions_json": str(result.actions_json),
+        "manifest_json": str(result.manifest_json),
+    }
+    sha256 = {
+        "pack": result.pack_sha256,
+        "payload": result.payload_sha256,
+        "handoff_json": result.handoff_sha256,
+        "actions_json": result.actions_sha256,
+    }
+    if result.vllm_layer_names_json is not None:
+        uris["vllm_layer_names_json"] = _required_optional_string(
+            result.vllm_layer_names_uri,
+            field_name="vllm_layer_names_uri",
+        )
+        paths["vllm_layer_names_json"] = str(result.vllm_layer_names_json)
+        sha256["vllm_layer_names_json"] = _required_optional_string(
+            result.vllm_layer_names_sha256,
+            field_name="vllm_layer_names_sha256",
+        )
+
     return {
         "record_type": ENGINE_PROBE_FIXTURE_RECORD_TYPE,
         "schema_version": ENGINE_PROBE_FIXTURE_SCHEMA_VERSION,
@@ -279,26 +326,9 @@ def engine_probe_fixture_result_to_record(result: EngineProbeFixtureResult) -> d
             }
             for segment in handle.segments
         ],
-        "uris": {
-            "pack": result.pack_uri,
-            "payload": result.payload_uri,
-            "handoff_json": result.handoff_uri,
-            "actions_json": result.actions_uri,
-            "manifest_json": result.manifest_uri,
-        },
-        "paths": {
-            "pack": str(result.pack_path),
-            "payload": str(result.payload_path),
-            "handoff_json": str(result.handoff_json),
-            "actions_json": str(result.actions_json),
-            "manifest_json": str(result.manifest_json),
-        },
-        "sha256": {
-            "pack": result.pack_sha256,
-            "payload": result.payload_sha256,
-            "handoff_json": result.handoff_sha256,
-            "actions_json": result.actions_sha256,
-        },
+        "uris": uris,
+        "paths": paths,
+        "sha256": sha256,
     }
 
 
@@ -443,6 +473,26 @@ def _write_fixture_manifest(result: EngineProbeFixtureResult) -> None:
     )
 
 
+def _vllm_layer_names_uri(backend: ServingBackend, output_dir_uri: str) -> str | None:
+    if backend != ServingBackend.VLLM:
+        return None
+    return _output_uri(output_dir_uri, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"])
+
+
+def _write_vllm_layer_names_json(vllm_layer_names_uri: str | None, *, layout: KVLayout) -> Path | None:
+    if vllm_layer_names_uri is None:
+        return None
+    layer_names = document_kv_vllm_probe_layer_names(layout)
+    validate_document_kv_vllm_layer_mapping_record(document_kv_vllm_layer_mapping_to_record(layer_names))
+    path = local_path(vllm_layer_names_uri)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"layer_names": list(layer_names)}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def _write_fixture_actions_record(
     handoff_json: Path,
     payload_path: Path,
@@ -483,6 +533,24 @@ def _validate_written_fixture(result: EngineProbeFixtureResult) -> None:
     if actions_record != expected_actions_record:
         raise ValueError("generated fixture connector actions mismatch")
     validate_engine_kv_connector_actions_record(actions_record, expected_backend=result.adapter_request.backend)
+    _validate_written_vllm_layer_names(result)
+
+
+def _validate_written_vllm_layer_names(result: EngineProbeFixtureResult) -> None:
+    if result.adapter_request.backend != ServingBackend.VLLM:
+        if result.vllm_layer_names_json is not None:
+            raise ValueError("non-vLLM fixture must not include a vLLM layer-name sidecar")
+        return
+    if result.vllm_layer_names_json is None:
+        raise ValueError("vLLM fixture must include a layer-name sidecar")
+    payload = json.loads(result.vllm_layer_names_json.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("vLLM layer-name sidecar must be a JSON object")
+    if payload.get("layer_names") != list(document_kv_vllm_probe_layer_names(result.layout)):
+        raise ValueError("vLLM layer-name sidecar does not match the fixture layout")
+    validate_document_kv_vllm_layer_mapping_record(
+        document_kv_vllm_layer_mapping_to_record(payload["layer_names"])
+    )
 
 
 def _payload_for_connector_actions(result: EngineProbeFixtureResult, payload: bytes) -> bytes | tuple[bytes, ...]:
@@ -592,6 +660,12 @@ def _validate_nonempty_string(value: object, *, field_name: str) -> None:
         raise ValueError(f"{field_name} must be non-empty")
     if "|" in value:
         raise ValueError(f"{field_name} must not contain '|'")
+
+
+def _required_optional_string(value: str | None, *, field_name: str) -> str:
+    if value is None:
+        raise ValueError(f"{field_name} must be set")
+    return value
 
 
 def _validate_positive_int(value: object, *, field_name: str) -> None:

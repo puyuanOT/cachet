@@ -71,6 +71,7 @@ __all__ = [
     "DocumentKVNativeProbeConnector",
     "KVTransferParamsDocumentKVSource",
     "build_document_kv_provider",
+    "document_kv_vllm_probe_layer_names",
     "document_kv_vllm_layer_index_from_name",
     "document_kv_vllm_layer_mapping_record_issues",
     "document_kv_vllm_layer_mapping_to_record",
@@ -827,6 +828,15 @@ def document_kv_vllm_layer_index_from_name(layer_name: object) -> int | None:
     return int(matches[0])
 
 
+def document_kv_vllm_probe_layer_names(layout: object) -> tuple[str, ...]:
+    """Return deterministic vLLM KV cache layer names for native probe fixtures."""
+
+    return tuple(
+        f"probe.layer.{layer_index}"
+        for layer_index in range(_positive_int(getattr(layout, "num_layers", None), field_name="num_layers"))
+    )
+
+
 def inspect_document_kv_vllm_layer_mapping(
     kv_caches_or_layer_names: Mapping[str, object] | Sequence[str],
 ) -> DocumentKVVLLMLayerMappingInspection:
@@ -1208,8 +1218,8 @@ def _probe_kv_caches(layout: object, *, block_count: int) -> dict[str, object]:
     dtype = _torch_dtype(getattr(layout, "dtype"))
     shape = _probe_kv_cache_shape(layout, block_count=block_count)
     return {
-        f"probe.layer.{layer_index}": torch.zeros(shape, dtype=dtype)
-        for layer_index in range(_positive_int(getattr(layout, "num_layers", None), field_name="num_layers"))
+        layer_name: torch.zeros(shape, dtype=dtype)
+        for layer_name in document_kv_vllm_probe_layer_names(layout)
     }
 
 

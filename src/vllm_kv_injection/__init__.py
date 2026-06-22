@@ -65,6 +65,7 @@ from vllm_kv_injection.vllm_native_provider import (
     document_kv_vllm_layer_index_from_name,
     document_kv_vllm_layer_mapping_record_issues,
     document_kv_vllm_layer_mapping_to_record,
+    document_kv_vllm_probe_layer_names,
     inspect_document_kv_vllm_layer_mapping,
     validate_document_kv_vllm_layer_mapping_record,
 )
@@ -178,6 +179,7 @@ __all__ = [
     "document_kv_vllm_layer_index_from_name",
     "document_kv_vllm_layer_mapping_record_issues",
     "document_kv_vllm_layer_mapping_to_record",
+    "document_kv_vllm_probe_layer_names",
     "document_kv_vllm_runtime_preflight_record_issues",
     "document_kv_vllm_runtime_preflight_to_record",
     "document_kv_transfer_config",
