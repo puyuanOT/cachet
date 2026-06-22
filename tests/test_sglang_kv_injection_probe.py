@@ -318,6 +318,36 @@ def test_build_native_connector_probe_requires_connector_factory_metadata(tmp_pa
 
 
 @pytest.mark.parametrize(
+    "connector_factory",
+    [
+        "native_sglang_probe_factory",
+        "native_sglang_probe_factory:build_connector ",
+        "native_sglang_probe_factory :build_connector",
+    ],
+)
+def test_build_native_connector_probe_rejects_malformed_connector_factory_metadata(
+    tmp_path,
+    connector_factory,
+):
+    ready = EngineReadyRequest(
+        handle=handle(),
+        payload=(b"s" * 8, b"c" * 12),
+        estimated_gpu_bytes=40,
+    )
+    handoff_path = write_debug_handoff(tmp_path, ready)
+
+    with pytest.raises(ValueError, match="module:attribute syntax without whitespace"):
+        run_engine_kv_connector_probe(
+            EngineKVProbeConfig(
+                handoff_json=handoff_path,
+                probe_factory="sglang_kv_injection.probe:build_native_connector_probe",
+                expected_backend=ServingBackend.SGLANG,
+                metadata={SGLANG_PROBE_METADATA_CONNECTOR_FACTORY: connector_factory},
+            )
+        )
+
+
+@pytest.mark.parametrize(
     "wrapper_key",
     [
         SGLANG_PROBE_METADATA_CONNECTOR_CLASS,
