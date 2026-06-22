@@ -1,0 +1,26 @@
+{
+  "gpt55_review_completed": false,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "",
+  "gpt55_review_summary": "",
+  "issues": [
+    "GPT-5.5 review must be completed",
+    "gpt55_review_outcome must be 'clean' or 'findings_resolved'",
+    "gpt55_review_summary must describe findings and fixes, or state that the review was clean"
+  ],
+  "ok": false,
+  "pull_request_number": null,
+  "pull_request_url": "",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/vllm_kv_injection/vllm_native_provider.py; tests/test_vllm_kv_injection_vllm_native_provider.py"
+  ],
+  "verification": [
+    "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py; python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py tests/test_vllm_kv_injection_probe.py tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_vllm_kv_injection_vllm_transfer_config.py tests/test_native_probe_factories.py; python -m pytest -q; git diff --check"
+  ],
+  "what_changed": [
+    "Mapped vLLM native provider registered KV cache tensors to Cachet payload layers by parsing vLLM layer indices from cache layer names, with fail-closed validation for unparseable or duplicate layer names."
+  ],
+  "why": "Real vLLM runtimes do not guarantee that the kv_caches mapping arrives in model-layer order, and insertion-order based mapping can silently copy external document KV payloads into the wrong physical layer tensors on g5/g6 benchmarks."
+}
