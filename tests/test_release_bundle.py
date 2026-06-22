@@ -733,6 +733,23 @@ def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_misma
     assert "g5.4xlarge" not in error
 
 
+def test_build_release_bundle_strict_v1_rejects_non_default_g6_node_type(tmp_path):
+    source_dir = tmp_path / "sources"
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir, node_type_id="g6.4xlarge")
+    release_kwargs = _strict_v1_release_bundle_kwargs(source_dir, databricks_run_status_jsons=run_statuses)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **release_kwargs,
+            output_dir=tmp_path / "strict-wrong-g6-node-type",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "node_type_id 'g6.8xlarge'" in error
+    assert "g6.4xlarge" not in error
+
+
 def test_build_release_bundle_strict_v1_requires_default_g6_release_target(tmp_path):
     source_dir = tmp_path / "sources"
     run_statuses = _strict_v1_databricks_run_status_paths(source_dir, node_type_id="g5.8xlarge")
@@ -3891,6 +3908,8 @@ def _databricks_run_status_record(
                 "result_state": result_state,
                 "state_message": None,
                 "cluster_id": "cluster-123",
+                "node_type_id": node_type_id,
+                "driver_node_type_id": node_type_id,
                 "start_time": 1001,
                 "end_time": 2000 if succeeded else None,
                 "spark_env_keys": [],

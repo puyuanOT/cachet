@@ -379,11 +379,13 @@ def databricks_run_status_sidecar_issues(
     record: Mapping[str, Any],
     *,
     expected_hardware_target: str | None = None,
+    expected_node_type_id: str | None = None,
 ) -> tuple[str, ...]:
     return _call_document_function(
         "databricks_run_status_sidecar_issues",
         record,
         expected_hardware_target=expected_hardware_target,
+        expected_node_type_id=expected_node_type_id,
     )
 
 
@@ -391,11 +393,13 @@ def validate_databricks_run_status_sidecar(
     record: Mapping[str, Any],
     *,
     expected_hardware_target: str | None = None,
+    expected_node_type_id: str | None = None,
 ) -> None:
     return _call_document_function(
         "validate_databricks_run_status_sidecar",
         record,
         expected_hardware_target=expected_hardware_target,
+        expected_node_type_id=expected_node_type_id,
     )
 
 

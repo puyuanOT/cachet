@@ -907,6 +907,10 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
                     "task_key": "run-benchmark",
                     "run_id": 124,
                     "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "new_cluster": {
+                        "node_type_id": "g6.8xlarge",
+                        "driver_node_type_id": "g6.8xlarge",
+                    },
                 }
             ],
         },
@@ -918,6 +922,8 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
     assert summary["submit_payload"]["aws_g5_node_type"] is True
     assert summary["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
     assert summary["submit_payload"]["hardware_targets"] == ["aws-g6-l4"]
+    assert summary["tasks"][0]["node_type_id"] == "g6.8xlarge"
+    assert summary["tasks"][0]["driver_node_type_id"] == "g6.8xlarge"
     assert databricks_run_status_sidecar_issues(summary) == ()
     assert databricks_run_status_sidecar_issues(summary, expected_hardware_target="aws-g6-l4") == ()
 
@@ -948,6 +954,138 @@ def test_validate_databricks_run_status_sidecar_honors_expected_hardware_target(
     validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g6-l4")
     with pytest.raises(ValueError, match=r"hardware_target 'aws-g5-a10g'"):
         validate_databricks_run_status_sidecar(status_record, expected_hardware_target="aws-g5-a10g")
+
+
+def test_databricks_run_status_sidecar_validation_can_require_exact_node_type():
+    status_record = _valid_databricks_run_status_record()
+
+    assert databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+        expected_node_type_id="g6.8xlarge",
+    ) == (
+        "Databricks run status sidecar tasks[0].node_type_id must be present for "
+        "node_type_id 'g6.8xlarge' validation",
+        "Databricks run status sidecar tasks[0].driver_node_type_id must be present for "
+        "node_type_id 'g6.8xlarge' validation",
+        "Databricks run status sidecar submit_payload.tasks[0].node_type_id must be "
+        "node_type_id 'g6.8xlarge'",
+        "Databricks run status sidecar submit_payload.tasks[0].driver_node_type_id must be "
+        "node_type_id 'g6.8xlarge'",
+    )
+
+    payload = _single_node_g5_submit_payload()
+    cluster = payload["tasks"][0]["new_cluster"]
+    cluster["node_type_id"] = "g6.8xlarge"
+    cluster["driver_node_type_id"] = "g6.8xlarge"
+    exact_record = summarize_databricks_run(
+        {
+            "run_id": 123,
+            "run_name": "document-kv-v1",
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "new_cluster": {
+                        "node_type_id": "g6.8xlarge",
+                        "driver_node_type_id": "g6.8xlarge",
+                    },
+                }
+            ],
+        },
+        submit_payload=payload,
+        submit_payload_path="/Volumes/catalog/schema/volume/databricks-run-submit.json",
+    )
+
+    validate_databricks_run_status_sidecar(
+        exact_record,
+        expected_hardware_target="aws-g6-l4",
+        expected_node_type_id="g6.8xlarge",
+    )
+
+
+def test_databricks_run_status_sidecar_validation_rejects_live_node_type_mismatch():
+    payload = _single_node_g5_submit_payload()
+    payload_cluster = payload["tasks"][0]["new_cluster"]
+    payload_cluster["node_type_id"] = "g6.8xlarge"
+    payload_cluster["driver_node_type_id"] = "g6.8xlarge"
+    status_record = summarize_databricks_run(
+        {
+            "run_id": 123,
+            "run_name": "document-kv-v1",
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "new_cluster": {
+                        "node_type_id": "g6e.8xlarge",
+                        "driver_node_type_id": "g6e.8xlarge",
+                    },
+                }
+            ],
+        },
+        submit_payload=payload,
+        submit_payload_path="/Volumes/catalog/schema/volume/databricks-run-submit.json",
+    )
+
+    issues = databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+        expected_node_type_id="g6.8xlarge",
+    )
+
+    assert (
+        "Databricks run status sidecar tasks[0].node_type_id must be a supported V1 AWS GPU node type"
+        in issues
+    )
+    assert (
+        "Databricks run status sidecar tasks[0].driver_node_type_id must be a supported V1 AWS GPU node type"
+        in issues
+    )
+
+
+def test_databricks_run_status_sidecar_validation_requires_live_node_evidence_for_exact_node_type():
+    payload = _single_node_g5_submit_payload()
+    payload_cluster = payload["tasks"][0]["new_cluster"]
+    payload_cluster["node_type_id"] = "g6.8xlarge"
+    payload_cluster["driver_node_type_id"] = "g6.8xlarge"
+    status_record = summarize_databricks_run(
+        {
+            "run_id": 123,
+            "run_name": "document-kv-v1",
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                }
+            ],
+        },
+        submit_payload=payload,
+        submit_payload_path="/Volumes/catalog/schema/volume/databricks-run-submit.json",
+    )
+
+    issues = databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+        expected_node_type_id="g6.8xlarge",
+    )
+
+    assert (
+        "Databricks run status sidecar tasks[0].node_type_id must be present for "
+        "node_type_id 'g6.8xlarge' validation"
+        in issues
+    )
+    assert (
+        "Databricks run status sidecar tasks[0].driver_node_type_id must be present for "
+        "node_type_id 'g6.8xlarge' validation"
+        in issues
+    )
 
 
 def test_databricks_run_status_sidecar_validation_accepts_direct_and_wrapped_records():
@@ -1853,6 +1991,36 @@ def test_main_payload_summary_rejects_unexpected_hardware_target_before_auth(mon
     assert DEFAULT_DATABRICKS_TOKEN_ENV not in record["error"]
 
 
+def test_main_payload_summary_rejects_unexpected_node_type_before_auth(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload-summary.json"
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(_single_node_g5_submit_payload()), encoding="utf-8")
+    monkeypatch.delenv(DEFAULT_DATABRICKS_HOST_ENV, raising=False)
+    monkeypatch.delenv(DEFAULT_DATABRICKS_TOKEN_ENV, raising=False)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "payload-summary",
+            "--payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+            "--expected-node-type-id",
+            "g6.8xlarge",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error_type"] == "ValueError"
+    assert "node_type_id 'g6.8xlarge'" in record["error"]
+    assert DEFAULT_DATABRICKS_HOST_ENV not in record["error"]
+    assert DEFAULT_DATABRICKS_TOKEN_ENV not in record["error"]
+
+
 def test_main_payload_summary_rejects_malformed_raw_task_array_before_auth(monkeypatch, tmp_path):
     output_path = tmp_path / "payload-summary.json"
     payload_path = tmp_path / "payload.json"
@@ -1934,6 +2102,10 @@ def test_main_get_summary_can_include_submit_payload_provenance(monkeypatch, tmp
                     "task_key": "run-benchmark",
                     "run_id": 124,
                     "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "new_cluster": {
+                        "node_type_id": "g6.4xlarge",
+                        "driver_node_type_id": "g6.4xlarge",
+                    },
                 }
             ],
             "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
@@ -2049,6 +2221,59 @@ def test_main_get_summary_rejects_unexpected_hardware_target(monkeypatch, tmp_pa
     assert record["error_type"] == "ValueError"
     assert "hardware_target 'aws-g5-a10g'" in record["error"]
     assert "response" not in record
+
+
+def test_main_get_summary_can_validate_expected_node_type(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+    payload_path = tmp_path / "payload.json"
+    payload = _single_node_g5_submit_payload()
+    cluster = payload["tasks"][0]["new_cluster"]
+    cluster["node_type_id"] = "g6.8xlarge"
+    cluster["driver_node_type_id"] = "g6.8xlarge"
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "get_databricks_run",
+        lambda config, run_id: {
+            "run_id": int(run_id),
+            "run_name": "document-kv-v1",
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "new_cluster": {
+                        "node_type_id": "g6.8xlarge",
+                        "driver_node_type_id": "g6.8xlarge",
+                    },
+                }
+            ],
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+        },
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--summary",
+            "--submit-payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+            "--expected-node-type-id",
+            "g6.8xlarge",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["summary"]["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
 
 
 def test_main_get_expected_hardware_target_requires_submit_payload(tmp_path):
@@ -2515,6 +2740,30 @@ def test_legacy_databricks_runs_forwards_expected_hardware_target_keyword():
         legacy_databricks_runs.validate_databricks_run_status_sidecar(
             status_record,
             expected_hardware_target="aws-g5-a10g",
+        )
+
+
+def test_legacy_databricks_runs_forwards_expected_node_type_keyword():
+    status_record = _valid_databricks_run_status_record()
+
+    legacy_issues = legacy_databricks_runs.databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+        expected_node_type_id="g6.8xlarge",
+    )
+    public_issues = public_databricks_runs.databricks_run_status_sidecar_issues(
+        status_record,
+        expected_hardware_target="aws-g6-l4",
+        expected_node_type_id="g6.8xlarge",
+    )
+
+    assert legacy_issues == public_issues
+    assert any("node_type_id 'g6.8xlarge'" in issue for issue in legacy_issues)
+    with pytest.raises(ValueError, match=r"node_type_id 'g6.8xlarge'"):
+        legacy_databricks_runs.validate_databricks_run_status_sidecar(
+            status_record,
+            expected_hardware_target="aws-g6-l4",
+            expected_node_type_id="g6.8xlarge",
         )
 
 
