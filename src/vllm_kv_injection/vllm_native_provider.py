@@ -7,7 +7,7 @@ import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Protocol
 
@@ -36,6 +36,7 @@ from vllm_kv_injection.vllm_dynamic_connector import VLLMSupportsHMA
 DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
+DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
 DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY = "document_kv.handoff_source_factory"
 DOCUMENT_KV_NATIVE_PROVIDER_FACTORY = "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
 DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE = "vllm_kv_injection.document_kv_layer_mapping.v1"
@@ -60,6 +61,7 @@ __all__ = [
     "DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY",
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
+    "DOCUMENT_KV_REQUEST_ID_PARAM",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION",
     "DocumentKVHandoffLoad",
@@ -241,8 +243,13 @@ class KVTransferParamsDocumentKVSource:
                 require_external_payload_uri=payload_uri_override is None,
             )
 
-        request_id = getattr(request, "request_id", None)
-        if isinstance(request_id, str) and record.get("request_id") != request_id:
+        handoff_request_id = _handoff_request_id(params, record)
+        runtime_request_id = getattr(request, "request_id", None)
+        if (
+            handoff_request_id is None
+            and isinstance(runtime_request_id, str)
+            and record.get("request_id") != runtime_request_id
+        ):
             raise ValueError("document KV handoff request_id does not match vLLM request_id")
 
         plan = build_engine_kv_injection_plan(
@@ -336,9 +343,10 @@ class DocumentKVNativeProvider:
             source_token_start=source_token_start,
             token_count=num_external_tokens,
         )
+        runtime_actions = _connector_actions_for_runtime_request(load.actions, request_id)
         self._allocated[request_id] = DocumentKVLoadRequest(
             request_id=request_id,
-            actions_record=engine_kv_connector_actions_to_record(load.actions),
+            actions_record=engine_kv_connector_actions_to_record(runtime_actions),
             payload=load.payload,
             blocks=block_spans,
             source_token_start=source_token_start,
@@ -739,6 +747,33 @@ def _actions_record(actions_record: Mapping[str, Any]) -> dict[str, Any]:
     normalized = json.loads(json.dumps(actions_record))
     engine_kv_connector_actions_from_record(normalized, expected_backend=ServingBackend.VLLM)
     return normalized
+
+
+def _handoff_request_id(params: Mapping[str, Any], record: Mapping[str, Any]) -> str | None:
+    value = params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+    if value is None:
+        return None
+    expected_request_id = _required_string(value, field_name=DOCUMENT_KV_REQUEST_ID_PARAM)
+    record_request_id = _required_string(record.get("request_id"), field_name="handoff_record.request_id")
+    if expected_request_id != record_request_id:
+        raise ValueError(f"{DOCUMENT_KV_REQUEST_ID_PARAM} must match handoff request_id")
+    return expected_request_id
+
+
+def _connector_actions_for_runtime_request(
+    actions: EngineKVConnectorActions,
+    runtime_request_id: str,
+) -> EngineKVConnectorActions:
+    if actions.reservation.request_id == runtime_request_id:
+        return actions
+    rebound = EngineKVConnectorActions(
+        reservation=replace(actions.reservation, request_id=runtime_request_id),
+        copies=tuple(replace(copy, request_id=runtime_request_id) for copy in actions.copies),
+        bind=replace(actions.bind, request_id=runtime_request_id),
+        release=replace(actions.release, request_id=runtime_request_id),
+    )
+    validate_engine_kv_connector_actions(rebound)
+    return rebound
 
 
 def _merged_payload(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> bytes:

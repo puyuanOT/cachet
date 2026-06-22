@@ -26,6 +26,7 @@ import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION,
     DocumentKVHandoffLoad,
@@ -598,6 +599,47 @@ def test_kv_transfer_params_source_reads_cachet_handoff_bundle(tmp_path):
     assert load.payload == payload()
 
 
+def test_kv_transfer_params_source_uses_cachet_request_id_for_wrapped_vllm_request(tmp_path):
+    adapter_request = build_engine_adapter_request(ready_request(), spec=vllm_adapter_spec())
+    handoff_path, _payload_path = write_engine_adapter_handoff_bundle(
+        adapter_request,
+        tmp_path / "handoff.json",
+        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+    )
+    request = SimpleNamespace(
+        request_id="cmpl-req-1-0",
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: "req-1",
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+        },
+    )
+
+    load = KVTransferParamsDocumentKVSource().get_load(request)
+
+    assert load is not None
+    assert load.request_id == "req-1"
+    assert load.payload == payload()
+
+
+def test_kv_transfer_params_source_rejects_cachet_request_id_mismatch(tmp_path):
+    adapter_request = build_engine_adapter_request(ready_request(), spec=vllm_adapter_spec())
+    handoff_path, _payload_path = write_engine_adapter_handoff_bundle(
+        adapter_request,
+        tmp_path / "handoff.json",
+        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+    )
+    request = SimpleNamespace(
+        request_id="cmpl-req-1-0",
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: "other-req",
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+        },
+    )
+
+    with pytest.raises(ValueError, match="document_kv.request_id must match handoff request_id"):
+        KVTransferParamsDocumentKVSource().get_load(request)
+
+
 def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path):
     input_path = tmp_path / "bio.jsonl"
     input_path.write_text(json.dumps(benchmark_jsonl_record()) + "\n", encoding="utf-8")
@@ -609,9 +651,10 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
         align_bytes=1,
     )
     entry = result.manifest.entries[0]
+    runtime_request_id = f"cmpl-{entry.request_id}-0"
     connector = DocumentKVConnector(provider=DocumentKVNativeProvider())
     request = SimpleNamespace(
-        request_id=entry.request_id,
+        request_id=runtime_request_id,
         num_tokens=3,
         kv_transfer_params=entry.kv_transfer_params(),
     )
@@ -620,7 +663,9 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
 
     assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([4]), 2)
-    meta = connector.build_connector_meta(scheduler_output([4], request_id=entry.request_id))
+    meta = connector.build_connector_meta(scheduler_output([4], request_id=runtime_request_id))
+    assert meta.loads[0].request_id == runtime_request_id
+    assert meta.loads[0].actions.reservation.request_id == runtime_request_id
     connector.register_kv_caches(
         {
             "model.layers.0.self_attn.attn": layer_0,
