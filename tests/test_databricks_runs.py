@@ -4,6 +4,7 @@ import os
 import pickle
 import subprocess
 import sys
+import types
 import urllib.error
 
 import pytest
@@ -26,6 +27,7 @@ from document_kv_cache.databricks_runs import (
     databricks_run_status_sidecar_issues,
     databricks_workspace_config_from_env,
     databricks_workspace_config_from_profile,
+    databricks_workspace_config_from_sdk_profile,
     get_databricks_run,
     main,
     plan_databricks_stage_and_submit,
@@ -152,6 +154,201 @@ def test_workspace_config_from_profile_validates_profile_file_host_and_token(tmp
 
     with pytest.raises(ValueError, match="profile must be"):
         databricks_workspace_config_from_profile("", config_file=config_path)
+
+
+def test_workspace_config_from_profile_uses_sdk_for_oauth_profile(tmp_path, monkeypatch):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://profile.example.cloud.databricks.com\n"
+        "auth_type = databricks-cli\n"
+        "workspace_id = 123456\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    class FakeSdkConfig:
+        host = "https://resolved.example.cloud.databricks.com/"
+
+        def authenticate(self):
+            return {"Authorization": "Bearer oauth-secret-token"}
+
+    def fake_sdk_config(profile, *, config_file, timeout_seconds):
+        calls.append((profile, config_file, timeout_seconds))
+        return FakeSdkConfig()
+
+    monkeypatch.setattr(public_databricks_runs, "_databricks_sdk_config", fake_sdk_config)
+
+    config = databricks_workspace_config_from_profile(
+        "QA_OAUTH",
+        config_file=config_path,
+        timeout_seconds=11,
+    )
+
+    assert calls == [("QA_OAUTH", config_path, 11)]
+    assert config.normalized_host == "https://resolved.example.cloud.databricks.com"
+    assert config.timeout_seconds == 11
+    assert config.token == "oauth-secret-token"
+    assert "oauth-secret-token" not in repr(config)
+
+
+def test_workspace_config_from_sdk_profile_requires_bearer_authorization(tmp_path, monkeypatch):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://profile.example.cloud.databricks.com\n"
+        "auth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+
+    class FakeSdkConfig:
+        host = "https://profile.example.cloud.databricks.com"
+
+        def authenticate(self):
+            return {"Authorization": "Basic not-supported"}
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_databricks_sdk_config",
+        lambda *args, **kwargs: FakeSdkConfig(),
+    )
+
+    with pytest.raises(ValueError, match="Bearer Authorization"):
+        databricks_workspace_config_from_sdk_profile("QA_OAUTH", config_file=config_path)
+
+
+def test_workspace_config_from_sdk_profile_redacts_sdk_load_errors(tmp_path, monkeypatch):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://profile.example.cloud.databricks.com\n"
+        "auth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+
+    def raise_sdk_error(*args, **kwargs):
+        raise ValueError("Bearer sdk-secret-token")
+
+    monkeypatch.setattr(public_databricks_runs, "_databricks_sdk_config", raise_sdk_error)
+
+    with pytest.raises(ValueError) as exc_info:
+        databricks_workspace_config_from_sdk_profile("QA_OAUTH", config_file=config_path)
+
+    message = str(exc_info.value)
+    assert "sdk-secret-token" not in message
+    assert "Bearer [REDACTED]" in message
+
+
+def test_workspace_config_from_sdk_profile_redacts_authenticate_errors(tmp_path, monkeypatch):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://profile.example.cloud.databricks.com\n"
+        "auth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+
+    class FakeSdkConfig:
+        host = "https://profile.example.cloud.databricks.com"
+
+        def authenticate(self):
+            raise RuntimeError("Bearer refresh-secret-token")
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "_databricks_sdk_config",
+        lambda *args, **kwargs: FakeSdkConfig(),
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        databricks_workspace_config_from_sdk_profile("QA_OAUTH", config_file=config_path)
+
+    message = str(exc_info.value)
+    assert "refresh-secret-token" not in message
+    assert "could not authenticate: Bearer [REDACTED]" in message
+
+
+def test_sdk_profile_config_ignores_ambient_databricks_auth_env(monkeypatch, tmp_path):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://profile.example.cloud.databricks.com\n"
+        "auth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+    observed_env = []
+
+    class FakeSdkAttribute:
+        def __init__(self, name, env=None, auth=None, env_aliases=()):
+            self.name = name
+            self.env = env
+            self.auth = auth
+            self.env_aliases = env_aliases
+
+    class FakeSdkConfig:
+        def __init__(self, **kwargs):
+            observed_env.append(
+                {
+                    "DATABRICKS_AUTH_TYPE": os.environ.get("DATABRICKS_AUTH_TYPE"),
+                    "DATABRICKS_CLI_PATH": os.environ.get("DATABRICKS_CLI_PATH"),
+                    "DATABRICKS_CONFIG_FILE": os.environ.get("DATABRICKS_CONFIG_FILE"),
+                    "DATABRICKS_CONFIG_PROFILE": os.environ.get("DATABRICKS_CONFIG_PROFILE"),
+                    "DATABRICKS_HOST": os.environ.get("DATABRICKS_HOST"),
+                    "DATABRICKS_TOKEN": os.environ.get("DATABRICKS_TOKEN"),
+                }
+            )
+            self.kwargs = kwargs
+            self.host = "https://profile.example.cloud.databricks.com"
+
+        @classmethod
+        def attributes(cls):
+            return [
+                FakeSdkAttribute("auth_type", "DATABRICKS_AUTH_TYPE"),
+                FakeSdkAttribute("config_file", "DATABRICKS_CONFIG_FILE"),
+                FakeSdkAttribute("databricks_cli_path", "DATABRICKS_CLI_PATH"),
+                FakeSdkAttribute("host", "DATABRICKS_HOST"),
+                FakeSdkAttribute("profile", "DATABRICKS_CONFIG_PROFILE"),
+                FakeSdkAttribute("token", "DATABRICKS_TOKEN", auth="pat"),
+            ]
+
+        def authenticate(self):
+            return {"Authorization": "Bearer profile-oauth-token"}
+
+    databricks_module = types.ModuleType("databricks")
+    sdk_module = types.ModuleType("databricks.sdk")
+    core_module = types.ModuleType("databricks.sdk.core")
+    core_module.Config = FakeSdkConfig
+    databricks_module.sdk = sdk_module
+    sdk_module.core = core_module
+    monkeypatch.setitem(sys.modules, "databricks", databricks_module)
+    monkeypatch.setitem(sys.modules, "databricks.sdk", sdk_module)
+    monkeypatch.setitem(sys.modules, "databricks.sdk.core", core_module)
+    monkeypatch.setenv("DATABRICKS_AUTH_TYPE", "pat")
+    monkeypatch.setenv("DATABRICKS_CLI_PATH", "/custom/databricks")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", "/ambient/.databrickscfg")
+    monkeypatch.setenv("DATABRICKS_CONFIG_PROFILE", "AMBIENT")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://ambient.example.cloud.databricks.com")
+    monkeypatch.setenv("DATABRICKS_TOKEN", "ambient-secret-token")
+
+    config = databricks_workspace_config_from_profile("QA_OAUTH", config_file=config_path)
+
+    assert config.normalized_host == "https://profile.example.cloud.databricks.com"
+    assert config.token == "profile-oauth-token"
+    assert observed_env == [
+        {
+            "DATABRICKS_AUTH_TYPE": None,
+            "DATABRICKS_CLI_PATH": "/custom/databricks",
+            "DATABRICKS_CONFIG_FILE": None,
+            "DATABRICKS_CONFIG_PROFILE": None,
+            "DATABRICKS_HOST": None,
+            "DATABRICKS_TOKEN": None,
+        }
+    ]
+    assert os.environ["DATABRICKS_AUTH_TYPE"] == "pat"
+    assert os.environ["DATABRICKS_CONFIG_FILE"] == "/ambient/.databrickscfg"
+    assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "AMBIENT"
+    assert os.environ["DATABRICKS_HOST"] == "https://ambient.example.cloud.databricks.com"
+    assert os.environ["DATABRICKS_TOKEN"] == "ambient-secret-token"
 
 
 def test_submit_databricks_run_posts_payload_with_bearer_token():
@@ -1576,6 +1773,7 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "DatabricksWorkspaceConfig",
         "databricks_workspace_config_from_env",
         "databricks_workspace_config_from_profile",
+        "databricks_workspace_config_from_sdk_profile",
         "submit_databricks_run",
         "get_databricks_run",
         "put_databricks_dbfs_file",

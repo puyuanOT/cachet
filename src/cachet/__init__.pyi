@@ -150,6 +150,7 @@ from document_kv_cache.databricks_runs import (
     databricks_run_status_sidecar_issues as databricks_run_status_sidecar_issues,
     databricks_workspace_config_from_env as databricks_workspace_config_from_env,
     databricks_workspace_config_from_profile as databricks_workspace_config_from_profile,
+    databricks_workspace_config_from_sdk_profile as databricks_workspace_config_from_sdk_profile,
     get_databricks_run as get_databricks_run,
     plan_databricks_stage_and_submit as plan_databricks_stage_and_submit,
     put_databricks_dbfs_file as put_databricks_dbfs_file,

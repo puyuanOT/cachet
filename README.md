@@ -1406,7 +1406,10 @@ Submit or inspect a generated payload with env-provided credentials, keeping
 tokens out of command arguments and JSON artifacts. If the workspace is already
 configured in `~/.databrickscfg`, pass `--profile PROFILE_NAME` instead of
 exporting `DATABRICKS_HOST` and `DATABRICKS_TOKEN`; use `--config-file PATH`
-when the profile lives outside the default config file:
+when the profile lives outside the default config file. Profiles with `host`
+and `token` are parsed directly. Profiles with `auth_type` and no static token
+are resolved through the optional Databricks SDK, so install the `databricks`
+extra before using OAuth or Databricks CLI auth profiles:
 
 ```bash
 export DATABRICKS_HOST=https://dbc-...cloud.databricks.com
