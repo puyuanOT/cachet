@@ -13,9 +13,11 @@ from typing import Any
 
 from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_DATASETS
 from document_kv_cache.benchmarks import validate_v1_dataset, validate_v1_hardware_target
-from document_kv_cache.databricks_engine_probe_job import (
+from document_kv_cache._native_probe_metadata import (
+    SGLANG_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY,
+    validate_known_native_delegate_metadata,
 )
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.native_probe_factories import builtin_native_probe_factory_path
@@ -48,20 +50,6 @@ STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
     "exactly three distinct Databricks run-status sidecars "
     "for benchmark, storage, and engine-probe runs"
 )
-SGLANG_NATIVE_PROBE_DELEGATE_FACTORY = "sglang_kv_injection.probe:build_native_connector_probe"
-PLACEHOLDER_CONNECTOR_FACTORY_PATHS = frozenset({"module:factory"})
-_KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA = {
-    VLLM_NATIVE_PROBE_DELEGATE_FACTORY: (
-        ServingBackend.VLLM,
-        "vllm_kv_injection.connector_factory",
-        f"vllm_kv_injection.connector_factory={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY}",
-    ),
-    SGLANG_NATIVE_PROBE_DELEGATE_FACTORY: (
-        ServingBackend.SGLANG,
-        "sglang_kv_injection.connector_factory",
-        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector",
-    ),
-}
 
 __all__ = [
     "PLAN_VERSION",
@@ -1606,47 +1594,12 @@ def _validate_release_known_native_delegate_metadata(
     engine_probes: Sequence[EngineProbePlanConfig],
 ) -> None:
     for probe in engine_probes:
-        if probe.native_probe_delegate_factory is None:
-            continue
-        requirement = _KNOWN_NATIVE_DELEGATE_REQUIRED_METADATA.get(probe.native_probe_delegate_factory)
-        if requirement is None:
-            continue
-        delegate_backend, required_key, example = requirement
-        if probe.backend != delegate_backend:
-            raise ValueError(
-                "release-safe engine_probe_targets native_probe_delegate_factory "
-                f"{probe.native_probe_delegate_factory!r} is for {delegate_backend.value}, "
-                f"but backend is {probe.backend.value}"
-            )
-        metadata_value = _metadata_item_map(probe.metadata).get(required_key)
-        if not metadata_value:
-            raise ValueError(
-                "release-safe engine_probe_targets native_probe_delegate_factory "
-                f"{probe.native_probe_delegate_factory!r} requires metadata entry {example}"
-            )
-        _validate_connector_factory_metadata_value(
-            metadata_value,
-            metadata_key=required_key,
-            label="release-safe engine_probe_targets native_probe_delegate_factory",
-        )
-
-
-def _validate_connector_factory_metadata_value(
-    value: str,
-    *,
-    metadata_key: str,
-    label: str,
-) -> None:
-    module_name, separator, attribute_name = value.partition(":")
-    if (
-        value in PLACEHOLDER_CONNECTOR_FACTORY_PATHS
-        or any(character.isspace() for character in value)
-        or not separator
-        or not module_name
-        or not attribute_name
-    ):
-        raise ValueError(
-            f"{label} metadata entry {metadata_key} must be a real module:attribute connector factory"
+        validate_known_native_delegate_metadata(
+            backend=probe.backend,
+            native_probe_delegate_factory=probe.native_probe_delegate_factory,
+            metadata=probe.metadata,
+            label="release-safe engine_probe_targets",
+            backend_field_label="backend",
         )
 
 
