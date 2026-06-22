@@ -1101,8 +1101,8 @@ benchmark handoff tooling, and pass all four enriched paths explicitly. The same
 helper still owns the isolated vLLM environment and Databricks-local model
 cache, but it no longer writes the tiny built-in smoke files. Prepared mode
 writes `prepared-handoff-coverage.json`, fails before model startup when any row
-lacks handoff params, and runs the cache arm with `--cache-runtime-prompt`
-against the same native vLLM server:
+lacks handoff params or points at an unreadable/non-vLLM Cachet handoff, and runs
+the cache arm with `--cache-runtime-prompt` against the same native vLLM server:
 
 ```bash
 python -m document_kv_cache.vllm_smoke \
