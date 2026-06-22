@@ -263,9 +263,12 @@ class DocumentKVNativeProvider:
 
     def build_connector_meta(self, scheduler_output: object) -> DocumentKVConnectorMetadata:
         loads: list[DocumentKVLoadRequest] = []
-        for request_id, block_ids in _scheduled_request_block_ids(scheduler_output):
-            allocated = self._allocated.get(request_id)
-            if allocated is None:
+        scheduled_block_ids = _scheduled_request_block_ids(scheduler_output)
+        missing_request_ids: list[str] = []
+        for request_id, allocated in self._allocated.items():
+            block_ids = scheduled_block_ids.get(request_id)
+            if block_ids is None:
+                missing_request_ids.append(request_id)
                 continue
             blocks = _block_spans_for_token_range(
                 block_ids,
@@ -283,8 +286,11 @@ class DocumentKVNativeProvider:
                     token_count=allocated.token_count,
                 )
             )
-        if not loads:
-            loads = list(self._allocated.values())
+        if missing_request_ids:
+            raise ValueError(
+                "Document KV allocation is missing scheduled vLLM block ids for request(s): "
+                + ", ".join(sorted(missing_request_ids))
+            )
         for load in loads:
             self._allocated.pop(load.request_id, None)
             self._loads.pop(load.request_id, None)
@@ -678,21 +684,27 @@ def _first_group_block_ids(blocks: object) -> tuple[int, ...]:
     raise TypeError("allocated vLLM blocks must be KVCacheBlocks, tuple[list[int]], or list[int]")
 
 
-def _scheduled_request_block_ids(scheduler_output: object) -> list[tuple[str, object]]:
-    scheduled: list[tuple[str, object]] = []
+def _scheduled_request_block_ids(scheduler_output: object) -> dict[str, object]:
+    scheduled: dict[str, object] = {}
     for new_req in getattr(scheduler_output, "scheduled_new_reqs", ()) or ():
         req_id = getattr(new_req, "req_id", None)
         block_ids = getattr(new_req, "block_ids", None)
         if isinstance(req_id, str) and block_ids is not None:
-            scheduled.append((req_id, block_ids))
+            _add_scheduled_request_blocks(scheduled, req_id, block_ids)
     cached = getattr(scheduler_output, "scheduled_cached_reqs", None)
     if cached is not None:
         req_ids = getattr(cached, "req_ids", ()) or ()
         new_block_ids = getattr(cached, "new_block_ids", ()) or ()
         for req_id, block_ids in zip(req_ids, new_block_ids, strict=False):
             if isinstance(req_id, str) and block_ids is not None:
-                scheduled.append((req_id, block_ids))
+                _add_scheduled_request_blocks(scheduled, req_id, block_ids)
     return scheduled
+
+
+def _add_scheduled_request_blocks(scheduled: dict[str, object], request_id: str, block_ids: object) -> None:
+    if request_id in scheduled:
+        raise ValueError(f"duplicate scheduled vLLM block ids for request {request_id!r}")
+    scheduled[request_id] = block_ids
 
 
 def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> int:

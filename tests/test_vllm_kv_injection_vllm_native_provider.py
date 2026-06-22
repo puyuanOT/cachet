@@ -131,6 +131,17 @@ def scheduler_output(block_ids: list[int]):
     )
 
 
+def cached_scheduler_output(block_ids: list[int]):
+    return SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=SimpleNamespace(
+            req_ids=["req-1"],
+            resumed_req_ids={"req-1"},
+            new_block_ids=[(block_ids,)],
+        ),
+    )
+
+
 def test_native_provider_records_matched_token_allocation_metadata():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
@@ -150,6 +161,56 @@ def test_native_provider_records_matched_token_allocation_metadata():
         (5, 0, 2, 0),
     ]
     pickle.loads(pickle.dumps(meta))
+
+
+def test_native_provider_records_cached_request_allocation_metadata():
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = provider.build_connector_meta(cached_scheduler_output([11, 13]))
+
+    assert len(meta.loads) == 1
+    load = meta.loads[0]
+    assert [(block.block_id, block.token_start, block.token_count, block.block_offset) for block in load.blocks] == [
+        (11, 0, 2, 0),
+    ]
+
+
+def test_native_provider_rejects_allocations_missing_from_scheduler_output():
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+
+    with pytest.raises(ValueError, match="scheduled vLLM block ids"):
+        provider.build_connector_meta(
+            SimpleNamespace(
+                scheduled_new_reqs=[],
+                scheduled_cached_reqs=SimpleNamespace(req_ids=[], new_block_ids=[]),
+            )
+        )
+
+
+def test_native_provider_rejects_duplicate_scheduler_block_metadata():
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=3, kv_transfer_params={})
+
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+
+    with pytest.raises(ValueError, match="duplicate scheduled vLLM block ids"):
+        provider.build_connector_meta(
+            SimpleNamespace(
+                scheduled_new_reqs=[SimpleNamespace(req_id="req-1", block_ids=([5, 7],))],
+                scheduled_cached_reqs=SimpleNamespace(req_ids=["req-1"], new_block_ids=[([5, 7],)]),
+            )
+        )
 
 
 def test_native_provider_reports_only_block_aligned_prefix_tokens():
