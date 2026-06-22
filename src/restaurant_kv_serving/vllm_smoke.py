@@ -55,6 +55,8 @@ __all__ = reexport_public(
         "build_vllm_server_args",
         "build_benchmark_runner_args",
         "build_prompt_token_budget_rows",
+        "prepared_benchmark_handoff_coverage_record",
+        "validate_prepared_benchmark_handoffs",
         "run_prompt_token_budget_probe",
         "validate_prompt_token_budget",
         "write_prompt_token_budget_jsonl",
@@ -139,6 +141,20 @@ def build_benchmark_runner_args(config: VLLMSmokeBenchmarkConfig, dataset_paths:
 
 def build_prompt_token_budget_rows(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]):
     return _call_document_function("build_prompt_token_budget_rows", config, dataset_paths)
+
+
+def prepared_benchmark_handoff_coverage_record(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> dict[str, object]:
+    return _call_document_function("prepared_benchmark_handoff_coverage_record", config, dataset_paths)
+
+
+def validate_prepared_benchmark_handoffs(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> dict[str, object] | None:
+    return _call_document_function("validate_prepared_benchmark_handoffs", config, dataset_paths)
 
 
 def run_prompt_token_budget_probe(
@@ -316,6 +332,8 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "build_vllm_server_args": build_vllm_server_args,
     "build_benchmark_runner_args": build_benchmark_runner_args,
     "build_prompt_token_budget_rows": build_prompt_token_budget_rows,
+    "prepared_benchmark_handoff_coverage_record": prepared_benchmark_handoff_coverage_record,
+    "validate_prepared_benchmark_handoffs": validate_prepared_benchmark_handoffs,
     "run_prompt_token_budget_probe": run_prompt_token_budget_probe,
     "validate_prompt_token_budget": validate_prompt_token_budget,
     "write_prompt_token_budget_jsonl": write_prompt_token_budget_jsonl,

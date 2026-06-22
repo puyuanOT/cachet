@@ -73,6 +73,8 @@ __all__ = [
     "build_vllm_server_args",
     "build_benchmark_runner_args",
     "build_prompt_token_budget_rows",
+    "prepared_benchmark_handoff_coverage_record",
+    "validate_prepared_benchmark_handoffs",
     "run_prompt_token_budget_probe",
     "validate_prompt_token_budget",
     "write_prompt_token_budget_jsonl",
@@ -187,6 +189,14 @@ class VLLMSmokeBenchmarkConfig:
     def import_probe_path(self) -> Path:
         return self.output_dir / "vllm-import-probe.json"
 
+    @property
+    def prepared_handoff_coverage_path(self) -> Path:
+        return self.output_dir / "prepared-handoff-coverage.json"
+
+    @property
+    def uses_prepared_datasets(self) -> bool:
+        return bool(self.dataset_specs)
+
 
 def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     """Create an isolated vLLM env, start Qwen3, and run the V1 smoke suite."""
@@ -212,10 +222,13 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     )
 
     dataset_paths = benchmark_dataset_paths(config)
+    validate_prepared_benchmark_handoffs(config, dataset_paths)
     validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
     metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
+    if config.uses_prepared_datasets:
+        metadata["prepared_handoff_coverage_path"] = str(config.prepared_handoff_coverage_path)
     write_json(config.metadata_path, metadata)
 
     server = start_vllm_server(config, config.venv_python, config.server_log_path)
@@ -242,6 +255,8 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "dependency_constraints": dependency_constraints(),
         "dataset_source": "prepared" if config.dataset_specs else "smoke",
         "dataset_specs": list(config.dataset_specs),
+        "cache_runtime_prompt": config.uses_prepared_datasets,
+        "requires_kv_transfer_params": config.uses_prepared_datasets,
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
@@ -380,6 +395,58 @@ def build_prompt_token_budget_rows(
         prompt = build_prompt_parts(example).prefill_prompt
         rows.append({"dataset": example.dataset, "example_id": example.example_id, "prompt": prompt})
     return tuple(rows)
+
+
+def validate_prepared_benchmark_handoffs(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> dict[str, object] | None:
+    """Require prepared benchmark rows to carry Cachet handoff params."""
+
+    if not config.uses_prepared_datasets:
+        return None
+    record = prepared_benchmark_handoff_coverage_record(config, dataset_paths)
+    write_json(config.prepared_handoff_coverage_path, record)
+    if record.get("ok") is not True:
+        missing = record.get("missing_kv_transfer_params")
+        raise ValueError(
+            "Prepared vLLM benchmark datasets must be enriched with Cachet kv_transfer_params; "
+            f"missing rows: {missing!r}. See {config.prepared_handoff_coverage_path}."
+        )
+    return record
+
+
+def prepared_benchmark_handoff_coverage_record(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> dict[str, object]:
+    suite = load_v1_jsonl_suite(
+        suite_id=config.benchmark_id,
+        paths=dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=DEFAULT_HARDWARE_TARGET,
+    )
+    missing = tuple(
+        f"{example.dataset}/{example.example_id}"
+        for example in suite.examples
+        if not example.kv_transfer_params
+    )
+    counts_by_dataset: dict[str, int] = {}
+    for example in suite.examples:
+        counts_by_dataset[example.dataset] = counts_by_dataset.get(example.dataset, 0) + 1
+    issues = []
+    if missing:
+        issues.append("prepared benchmark rows missing kv_transfer_params")
+    return {
+        "ok": not missing,
+        "required": True,
+        "dataset_source": "prepared",
+        "datasets": counts_by_dataset,
+        "examples": len(suite.examples),
+        "examples_with_kv_transfer_params": len(suite.examples) - len(missing),
+        "missing_kv_transfer_params": list(missing),
+        "issues": issues,
+    }
 
 
 def write_prompt_token_budget_jsonl(path: Path, rows: tuple[dict[str, str], ...]) -> None:
@@ -843,7 +910,7 @@ def fetch_served_model_ids(models_url: str) -> set[str]:
 def build_benchmark_runner_args(
     config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
 ) -> list[str]:
-    return [
+    args = [
         sys.executable,
         "-m",
         "document_kv_cache.benchmark_runner",
@@ -862,8 +929,11 @@ def build_benchmark_runner_args(
         "--server-usage",
         "--output-json",
         str(config.benchmark_output_path),
-        *dataset_args(dataset_paths),
     ]
+    if config.uses_prepared_datasets:
+        args.extend(["--cache-base-url", config.server_base_url, "--cache-runtime-prompt"])
+    args.extend(dataset_args(dataset_paths))
+    return args
 
 
 def terminate_process(process: subprocess.Popen) -> None:
