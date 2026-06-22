@@ -43,9 +43,11 @@ When the delegate is the adapter-package wrapper
 `native_probe_metadata` to the matching connector factory metadata:
 `vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
 for the built-in provider-backed vLLM path, or
-`sglang_kv_injection.connector_factory=module:factory` for SGLang. The
-connector factory is the backend-native implementation that actually reserves,
-imports, binds, and releases engine KV blocks.
+`sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector`
+for a real SGLang backend-native connector. The connector factory is the
+backend-native implementation that actually reserves, imports, binds, and
+releases engine KV blocks; replace the example module path with the connector
+factory shipped in your SGLang runtime patch.
 For release-safe provider-backed vLLM jobs, prefer the Python helper below so
 the target JSON can include `vllm_runtime_preflight_output_json` and
 `vllm_runtime_preflight_layer_names_json`; the runner validates that preflight
@@ -77,3 +79,6 @@ generate that target JSON from the same planned probe artifacts consumed by
 release evidence.
 Target records can carry `native_probe_delegate_factory` when the planned
 factory is one of Cachet's built-in reserved factory paths.
+Release-safe target JSON generated or read by the Python helper rejects
+placeholder connector factory metadata such as `module:factory` before writing
+or submitting a Databricks payload.
