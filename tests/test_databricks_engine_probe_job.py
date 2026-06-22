@@ -1829,6 +1829,47 @@ def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensure
     ]
 
 
+def test_generated_runner_reexec_uses_argv0_when_databricks_exec_omits_file(tmp_path, monkeypatch):
+    path = tmp_path / "run_engine_probe.py"
+    write_databricks_engine_probe_runner_script(path)
+    venv_dir = tmp_path / "serving-venv"
+    venv_python = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
+    reexec_calls = []
+
+    monkeypatch.setattr(subprocess, "check_call", lambda argv, **kwargs: None)
+    monkeypatch.setattr(subprocess, "call", lambda argv, **kwargs: reexec_calls.append(tuple(argv)) or 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(path),
+            "--serving-venv-dir",
+            str(venv_dir),
+            "--package-wheel-uri",
+            "dbfs:/wheels/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        exec(
+            compile(path.read_text(encoding="utf-8"), str(path), "exec"),
+            {"__name__": "__main__"},
+        )
+
+    assert exc_info.value.code == 0
+    assert reexec_calls == [
+        (
+            str(venv_python),
+            str(path),
+            "--skip-runtime-package-install",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        )
+    ]
+
+
 def test_generated_runner_skip_runtime_package_install_forwards_args(tmp_path, monkeypatch):
     path = tmp_path / "run_engine_probe.py"
     write_databricks_engine_probe_runner_script(path)
