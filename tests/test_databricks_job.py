@@ -1374,7 +1374,15 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--var native_probe_metadata=" in probe_readme_text
     assert "--var vllm_native_probe_delegate_factory=" in probe_readme_text
     assert VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in probe_readme_text
-    assert "sglang_kv_injection.connector_factory=module:factory" in packaged_probe_readme_text
+    sglang_connector_example = (
+        "sglang_kv_injection.connector_factory=company_sglang_patch.probe:build_connector"
+    )
+    assert sglang_connector_example in probe_readme_text
+    assert sglang_connector_example in packaged_probe_readme_text
+    assert "placeholder connector factory metadata" in probe_readme_text
+    assert "placeholder connector factory metadata" in packaged_probe_readme_text
+    assert "sglang_kv_injection.connector_factory=module:factory" not in probe_readme_text
+    assert "sglang_kv_injection.connector_factory=module:factory" not in packaged_probe_readme_text
     assert "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "DOCUMENT_KV_SGLANG_NATIVE_PROBE_FACTORY" in probe_readme_text
     assert "native vLLM or SGLang" in probe_readme_text
