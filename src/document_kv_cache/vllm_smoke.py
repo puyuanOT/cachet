@@ -19,7 +19,20 @@ import urllib.error
 import urllib.request
 
 from document_kv_cache.benchmark_runner import load_v1_jsonl_suite
-from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, build_prompt_parts
+from document_kv_cache.benchmarks import (
+    DEFAULT_HARDWARE_TARGET,
+    DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_HANDOFF_RECORD_PARAM,
+    DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
+    build_prompt_parts,
+)
+from document_kv_cache.engine_adapters import (
+    ServingBackend,
+    read_engine_adapter_request_json,
+    validate_engine_adapter_request_record,
+)
+from document_kv_cache.engine_probe import _validate_local_payload_uri
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -401,7 +414,7 @@ def validate_prepared_benchmark_handoffs(
     config: VLLMSmokeBenchmarkConfig,
     dataset_paths: dict[str, Path],
 ) -> dict[str, object] | None:
-    """Require prepared benchmark rows to carry Cachet handoff params."""
+    """Require prepared benchmark rows to carry loadable Cachet handoff params."""
 
     if not config.uses_prepared_datasets:
         return None
@@ -409,9 +422,12 @@ def validate_prepared_benchmark_handoffs(
     write_json(config.prepared_handoff_coverage_path, record)
     if record.get("ok") is not True:
         missing = record.get("missing_kv_transfer_params")
+        invalid = record.get("invalid_handoff_references")
         raise ValueError(
-            "Prepared vLLM benchmark datasets must be enriched with Cachet kv_transfer_params; "
-            f"missing rows: {missing!r}. See {config.prepared_handoff_coverage_path}."
+            "Prepared vLLM benchmark datasets must be enriched with Cachet kv_transfer_params "
+            "that reference readable vLLM handoffs; "
+            f"missing rows: {missing!r}; invalid handoff references: {invalid!r}. "
+            f"See {config.prepared_handoff_coverage_path}."
         )
     return record
 
@@ -431,22 +447,105 @@ def prepared_benchmark_handoff_coverage_record(
         for example in suite.examples
         if not example.kv_transfer_params
     )
+    invalid = tuple(
+        issue
+        for example in suite.examples
+        if example.kv_transfer_params
+        for issue in (_prepared_handoff_reference_issue(example),)
+        if issue is not None
+    )
     counts_by_dataset: dict[str, int] = {}
     for example in suite.examples:
         counts_by_dataset[example.dataset] = counts_by_dataset.get(example.dataset, 0) + 1
     issues = []
     if missing:
         issues.append("prepared benchmark rows missing kv_transfer_params")
+    if invalid:
+        issues.append("prepared benchmark rows reference unloadable Cachet handoffs")
     return {
-        "ok": not missing,
+        "ok": not missing and not invalid,
         "required": True,
         "dataset_source": "prepared",
         "datasets": counts_by_dataset,
         "examples": len(suite.examples),
         "examples_with_kv_transfer_params": len(suite.examples) - len(missing),
+        "examples_with_loadable_handoff_references": len(suite.examples) - len(missing) - len(invalid),
         "missing_kv_transfer_params": list(missing),
+        "invalid_handoff_references": list(invalid),
         "issues": issues,
     }
+
+
+def _prepared_handoff_reference_issue(example: object) -> dict[str, object] | None:
+    params = getattr(example, "kv_transfer_params", {})
+    if not isinstance(params, Mapping):
+        return _handoff_reference_issue(example, "kv_transfer_params must be a mapping")
+    handoff_json: str | None = None
+    payload_override = params.get(DOCUMENT_KV_PAYLOAD_URI_PARAM)
+    try:
+        handoff_record = params.get(DOCUMENT_KV_HANDOFF_RECORD_PARAM)
+        if handoff_record is not None:
+            record = handoff_record
+            if not isinstance(record, Mapping):
+                raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")
+            validate_engine_adapter_request_record(
+                record,
+                expected_backend=ServingBackend.VLLM,
+                require_external_payload_uri=payload_override is None,
+            )
+        else:
+            handoff_json_value = params.get(DOCUMENT_KV_HANDOFF_JSON_PARAM)
+            if not isinstance(handoff_json_value, str) or not handoff_json_value:
+                raise ValueError(
+                    f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_JSON_PARAM} must be a non-empty string"
+                )
+            handoff_json = handoff_json_value
+            record = read_engine_adapter_request_json(
+                handoff_json,
+                expected_backend=ServingBackend.VLLM,
+                require_external_payload_uri=payload_override is None,
+            )
+        request_id = params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+        if record.get("request_id") != request_id:
+            raise ValueError(
+                f"handoff request_id {record.get('request_id')!r} does not match "
+                f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} {request_id!r}"
+            )
+        payload_uri = payload_override
+        if payload_uri is None:
+            payload_source = record.get("payload_source")
+            if not isinstance(payload_source, Mapping):
+                raise ValueError("handoff payload_source must be an object")
+            payload_uri = payload_source.get("uri")
+        if not isinstance(payload_uri, str) or not payload_uri:
+            raise ValueError("handoff payload URI must be a non-empty string")
+        _validate_local_payload_uri(payload_uri)
+    except Exception as exc:
+        return _handoff_reference_issue(
+            example,
+            str(exc),
+            error_type=type(exc).__name__,
+            handoff_json=handoff_json,
+        )
+    return None
+
+
+def _handoff_reference_issue(
+    example: object,
+    error: str,
+    *,
+    error_type: str = "ValueError",
+    handoff_json: str | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "dataset": str(getattr(example, "dataset", "")),
+        "example_id": str(getattr(example, "example_id", "")),
+        "error_type": error_type,
+        "error": error,
+    }
+    if handoff_json is not None:
+        record["handoff_json"] = handoff_json
+    return record
 
 
 def write_prompt_token_budget_jsonl(path: Path, rows: tuple[dict[str, str], ...]) -> None:

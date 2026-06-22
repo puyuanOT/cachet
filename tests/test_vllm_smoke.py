@@ -45,9 +45,18 @@ from document_kv_cache.vllm_smoke import (
 )
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
 )
+from document_kv_cache.engine import EngineReadyRequest
+from document_kv_cache.engine_adapters import (
+    build_engine_adapter_request,
+    engine_adapter_request_to_record,
+    sglang_adapter_spec,
+    vllm_adapter_spec,
+)
+from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
@@ -57,6 +66,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def prepared_dataset_paths(tmp_path, *, include_handoffs=True):
     paths = {}
     for dataset in SMOKE_DATASETS:
+        request_id = f"cachet-{dataset}-1"
+        handoff_path = tmp_path / "handoffs" / dataset / f"{dataset}-1.handoff.json"
+        payload_uri = f"disk:{tmp_path / 'payloads' / dataset / f'{dataset}-1.kv'}"
         record = {
             "dataset": dataset,
             "example_id": f"{dataset}-1",
@@ -65,17 +77,48 @@ def prepared_dataset_paths(tmp_path, *, include_handoffs=True):
             "documents": [{"document_id": "ada", "text": "Ada Lovelace biography"}],
         }
         if include_handoffs:
+            write_handoff_json(handoff_path, request_id=request_id, payload_uri=payload_uri)
             record["kv_transfer_params"] = {
-                DOCUMENT_KV_REQUEST_ID_PARAM: f"cachet-{dataset}-1",
-                DOCUMENT_KV_HANDOFF_JSON_PARAM: (
-                    f"/Volumes/catalog/schema/volume/cachet/{dataset}-1.handoff.json"
-                ),
-                DOCUMENT_KV_PAYLOAD_URI_PARAM: f"uc-volume:/catalog/schema/volume/cachet/{dataset}-1.kv",
+                DOCUMENT_KV_REQUEST_ID_PARAM: request_id,
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: payload_uri,
             }
         path = tmp_path / f"{dataset}.jsonl"
         path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
         paths[dataset] = path
     return paths
+
+
+def handoff_record(*, request_id: str, payload_uri: str, backend: str = "vllm") -> dict[str, object]:
+    layout = KVLayout(
+        model_id="tiny-test-model",
+        lora_id="base",
+        layout_version="standard-v1",
+        dtype="int8",
+        num_layers=1,
+        block_size=2,
+        bytes_per_token=4,
+    )
+    handle = KVCacheHandle(
+        request_id=request_id,
+        handle_uri=f"document-kv://{request_id}",
+        layout=layout,
+        segments=(KVSegment("doc-1", "document_static", "static", 0, 1, 0, 4),),
+        total_tokens=1,
+        total_bytes=4,
+    )
+    ready = EngineReadyRequest(handle=handle, payload=b"data", estimated_gpu_bytes=4)
+    spec = vllm_adapter_spec() if backend == "vllm" else sglang_adapter_spec()
+    adapter_request = build_engine_adapter_request(ready, spec=spec)
+    return engine_adapter_request_to_record(adapter_request, payload_uri=payload_uri)
+
+
+def write_handoff_json(path: Path, *, request_id: str, payload_uri: str, backend: str = "vllm") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(handoff_record(request_id=request_id, payload_uri=payload_uri, backend=backend), sort_keys=True),
+        encoding="utf-8",
+    )
 
 
 def test_dependency_constraints_match_pinned_g5_vllm_stack():
@@ -492,8 +535,29 @@ def test_prepared_benchmark_handoff_coverage_record_counts_enriched_rows(tmp_pat
     assert record["required"] is True
     assert record["examples"] == len(SMOKE_DATASETS)
     assert record["examples_with_kv_transfer_params"] == len(SMOKE_DATASETS)
+    assert record["examples_with_loadable_handoff_references"] == len(SMOKE_DATASETS)
     assert record["missing_kv_transfer_params"] == []
+    assert record["invalid_handoff_references"] == []
     assert record["datasets"] == {dataset: 1 for dataset in SMOKE_DATASETS}
+
+
+def test_prepared_benchmark_handoff_coverage_treats_null_inline_record_as_absent(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
+    record = json.loads(dataset_paths["biography"].read_text(encoding="utf-8"))
+    record["kv_transfer_params"][DOCUMENT_KV_HANDOFF_RECORD_PARAM] = None
+    dataset_paths["biography"].write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+    )
+
+    coverage = prepared_benchmark_handoff_coverage_record(config, dataset_paths)
+
+    assert coverage["ok"] is True
+    assert coverage["invalid_handoff_references"] == []
 
 
 def test_validate_prepared_benchmark_handoffs_writes_artifact_and_rejects_missing_params(tmp_path):
@@ -512,7 +576,104 @@ def test_validate_prepared_benchmark_handoffs_writes_artifact_and_rejects_missin
     record = json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
     assert record["ok"] is False
     assert record["examples_with_kv_transfer_params"] == 0
+    assert record["examples_with_loadable_handoff_references"] == 0
     assert record["missing_kv_transfer_params"] == [f"{dataset}/{dataset}-1" for dataset in SMOKE_DATASETS]
+    assert record["invalid_handoff_references"] == []
+
+
+def test_validate_prepared_benchmark_handoffs_rejects_unloadable_handoff_references(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
+    bad_handoff = tmp_path / "missing-handoff.json"
+    bad_backend = tmp_path / "sglang-handoff.json"
+    bad_request = tmp_path / "wrong-request.handoff.json"
+    bad_payload_uri = tmp_path / "remote-payload.handoff.json"
+    write_handoff_json(
+        bad_backend,
+        request_id="cachet-hotpotqa-1",
+        payload_uri=f"disk:{tmp_path / 'payloads' / 'hotpotqa' / 'hotpotqa-1.kv'}",
+        backend="sglang",
+    )
+    write_handoff_json(
+        bad_request,
+        request_id="different-request",
+        payload_uri=f"disk:{tmp_path / 'payloads' / 'musique' / 'musique-1.kv'}",
+    )
+    write_handoff_json(
+        bad_payload_uri,
+        request_id="cachet-niah-1",
+        payload_uri="s3://cachet-bucket/niah-1.kv",
+    )
+    replacements = {
+        "biography": bad_handoff,
+        "hotpotqa": bad_backend,
+        "musique": bad_request,
+        "niah": bad_payload_uri,
+    }
+    for dataset, handoff_path in replacements.items():
+        record = json.loads(dataset_paths[dataset].read_text(encoding="utf-8"))
+        record["kv_transfer_params"][DOCUMENT_KV_HANDOFF_JSON_PARAM] = str(handoff_path)
+        if dataset == "niah":
+            record["kv_transfer_params"].pop(DOCUMENT_KV_PAYLOAD_URI_PARAM)
+        dataset_paths[dataset].write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+    )
+
+    with pytest.raises(ValueError, match="invalid handoff references"):
+        validate_prepared_benchmark_handoffs(config, dataset_paths)
+
+    record = json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
+    invalid = record["invalid_handoff_references"]
+    assert record["ok"] is False
+    assert record["examples_with_kv_transfer_params"] == len(SMOKE_DATASETS)
+    assert record["examples_with_loadable_handoff_references"] == 0
+    assert [issue["dataset"] for issue in invalid] == ["biography", "hotpotqa", "musique", "niah"]
+    assert invalid[0]["error_type"] == "FileNotFoundError"
+    assert "expected_backend" in invalid[1]["error"]
+    assert "request_id" in invalid[2]["error"]
+    assert "Engine probe runner can read only" in invalid[3]["error"]
+
+
+def test_validate_prepared_benchmark_handoffs_rejects_inline_non_vllm_handoff_record(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
+    record = json.loads(dataset_paths["biography"].read_text(encoding="utf-8"))
+    request_id = "cachet-biography-1"
+    record["kv_transfer_params"] = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: request_id,
+        DOCUMENT_KV_HANDOFF_RECORD_PARAM: handoff_record(
+            request_id=request_id,
+            payload_uri=f"disk:{tmp_path / 'payloads' / 'biography' / 'biography-1.kv'}",
+            backend="sglang",
+        ),
+    }
+    dataset_paths["biography"].write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+    )
+
+    with pytest.raises(ValueError, match="invalid handoff references"):
+        validate_prepared_benchmark_handoffs(config, dataset_paths)
+
+    record = json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
+    invalid = record["invalid_handoff_references"]
+    assert record["ok"] is False
+    assert record["examples_with_loadable_handoff_references"] == len(SMOKE_DATASETS) - 1
+    assert invalid == [
+        {
+            "dataset": "biography",
+            "example_id": "biography-1",
+            "error_type": "ValueError",
+            "error": "Engine adapter handoff backend 'sglang' does not match expected_backend",
+        }
+    ]
 
 
 def test_validate_prepared_benchmark_handoffs_skips_builtin_smoke(tmp_path):
