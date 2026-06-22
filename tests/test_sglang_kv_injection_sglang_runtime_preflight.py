@@ -8,6 +8,7 @@ from types import ModuleType
 
 import pytest
 
+import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
 import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
 from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY
 from sglang_kv_injection.sglang_hicache_config import sglang_hicache_launch_config
@@ -102,27 +103,77 @@ def install_provider_module(monkeypatch: pytest.MonkeyPatch, module_name: str = 
     return f"{module_name}:build_provider"
 
 
+def install_document_kv_backend_class(monkeypatch: pytest.MonkeyPatch, hicache_storage_cls: type) -> type:
+    class DocumentKVHiCacheBackend(hicache_storage_cls):
+        def __init__(self, storage_config=None, *args, **kwargs):
+            self.provider = None
+            extra_config = getattr(storage_config, "extra_config", None)
+            if not isinstance(extra_config, dict):
+                return
+            factory_path = extra_config.get(DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY)
+            if not isinstance(factory_path, str):
+                return
+            module_name, _, attribute_name = factory_path.partition(":")
+            provider_factory = getattr(importlib.import_module(module_name), attribute_name)
+            self.provider = provider_factory(extra_config=extra_config)
+
+    for method_name in SGLANG_HICACHE_REQUIRED_BACKEND_METHODS:
+        setattr(DocumentKVHiCacheBackend, method_name, lambda self, *args, **kwargs: None)
+
+    monkeypatch.setattr(
+        sglang_dynamic_backend,
+        "DocumentKVHiCacheBackend",
+        DocumentKVHiCacheBackend,
+    )
+    return DocumentKVHiCacheBackend
+
+
 def install_storage_backend_factory_module(monkeypatch: pytest.MonkeyPatch) -> None:
     sglang_module = ModuleType("sglang")
     srt_module = ModuleType("sglang.srt")
     mem_cache_module = ModuleType("sglang.srt.mem_cache")
+    hicache_storage_module = ModuleType("sglang.srt.mem_cache.hicache_storage")
     storage_module = ModuleType("sglang.srt.mem_cache.storage")
     backend_factory_module = ModuleType("sglang.srt.mem_cache.storage.backend_factory")
 
+    class HiCacheStorage:
+        pass
+
+    install_document_kv_backend_class(monkeypatch, HiCacheStorage)
+
     class StorageBackendFactory:
+        loader_calls = []
+
+        @staticmethod
+        def _load_backend_class(module_path, class_name, backend_name):
+            StorageBackendFactory.loader_calls.append((module_path, class_name, backend_name))
+            module = importlib.import_module(module_path)
+            backend_cls = getattr(module, class_name)
+            if not issubclass(backend_cls, HiCacheStorage):
+                raise TypeError(f"{module_path}:{class_name} must subclass HiCacheStorage")
+            return backend_cls
+
+        @classmethod
+        def _create_dynamic_backend(cls, backend_config, storage_config, mem_pool_host, **kwargs):
+            backend_cls = cls._load_backend_class(
+                backend_config["module_path"],
+                backend_config["class_name"],
+                backend_config["backend_name"],
+            )
+            return backend_cls(storage_config, mem_pool_host, **kwargs)
+
         @classmethod
         def create_backend(cls, backend_name, storage_config, mem_pool_host, **kwargs):
             assert backend_name == "dynamic"
-            backend_config = storage_config.extra_config
-            module = importlib.import_module(backend_config["module_path"])
-            backend_cls = getattr(module, backend_config["class_name"])
-            return backend_cls(storage_config, kwargs)
+            return cls._create_dynamic_backend(storage_config.extra_config, storage_config, mem_pool_host, **kwargs)
 
+    hicache_storage_module.HiCacheStorage = HiCacheStorage
     backend_factory_module.StorageBackendFactory = StorageBackendFactory
     for module in (
         sglang_module,
         srt_module,
         mem_cache_module,
+        hicache_storage_module,
         storage_module,
         backend_factory_module,
     ):
@@ -195,19 +246,28 @@ def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(mo
     class StorageBackendFactory:
         @staticmethod
         def _load_backend_class(module_path, class_name, backend_name):
-            return object
+            module = importlib.import_module(module_path)
+            return getattr(module, class_name)
 
         @classmethod
         def _create_dynamic_backend(cls, backend_config, storage_config, mem_pool_host, **kwargs):
-            return object()
+            return cls._load_backend_class(
+                backend_config["module_path"],
+                backend_config["class_name"],
+                backend_config["backend_name"],
+            )(storage_config)
 
         @classmethod
         def create_backend(cls, backend_name, storage_config, mem_pool_host, **kwargs):
-            return object()
+            return cls._create_dynamic_backend(storage_config.extra_config, storage_config, mem_pool_host, **kwargs)
 
+    class HiCacheStorage:
+        pass
+
+    install_document_kv_backend_class(monkeypatch, HiCacheStorage)
     server_args_module.ServerArgs = ServerArgs
     backend_factory_module.StorageBackendFactory = StorageBackendFactory
-    hicache_storage_module.HiCacheStorage = object
+    hicache_storage_module.HiCacheStorage = HiCacheStorage
     for module in (
         sglang_module,
         srt_module,
@@ -275,6 +335,14 @@ def test_sglang_runtime_preflight_accepts_dynamic_hicache_config_and_provider(mo
     assert record["dynamic_backend_factory"]["backend_class"] == "DocumentKVHiCacheBackend"
     assert record["dynamic_backend_factory"]["backend_provider_class"] == "Provider"
     assert record["dynamic_backend_factory"]["ok"] is True
+    factory_cls = sys.modules["sglang.srt.mem_cache.storage.backend_factory"].StorageBackendFactory
+    assert factory_cls.loader_calls == [
+        (
+            "sglang_kv_injection.sglang_dynamic_backend",
+            "DocumentKVHiCacheBackend",
+            "document_kv",
+        )
+    ]
     assert record["ok"] is True
     validate_document_kv_sglang_runtime_preflight_record(record)
 
