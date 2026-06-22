@@ -43,6 +43,7 @@ REQUIRED_GITIGNORE_PATTERNS = (
     "*.secrets",
     "*.log",
     "*.tmp",
+    "databricks-runs/",
     "terraform.tfstate",
     "terraform.tfstate.*",
 )
@@ -93,6 +94,8 @@ FORBIDDEN_TRACKED_ARTIFACT_PATTERNS = (
     "*.secrets",
     "*.log",
     "*.tmp",
+    "databricks-runs/*",
+    "*/databricks-runs/*",
     "terraform.tfstate",
     "*/terraform.tfstate",
     "terraform.tfstate.*",
@@ -116,6 +119,7 @@ GENERATED_OR_TOOLING_DIRECTORY_NAMES = frozenset(
         "__pycache__",
         "build",
         "coverage",
+        "databricks-runs",
         "dist",
         "htmlcov",
     }
