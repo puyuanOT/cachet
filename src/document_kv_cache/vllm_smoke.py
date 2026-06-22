@@ -28,6 +28,10 @@ from document_kv_cache.serving_env import (
     VLLM_SERVING_ENVIRONMENT_PROFILE,
     VLLM_VERSION,
 )
+from vllm_kv_injection.vllm_transfer_config import (
+    document_kv_transfer_config,
+    document_kv_transfer_config_json,
+)
 
 HF_MODEL_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
 SERVED_MODEL_NAME = "qwen3:4b-instruct"
@@ -36,6 +40,7 @@ SERVER_PORT = 8000
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
+DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 
 __all__ = [
     "VLLM_VERSION",
@@ -49,10 +54,13 @@ __all__ = [
     "SERVED_MODEL_NAME",
     "SERVER_BASE_URL",
     "SMOKE_DATASETS",
+    "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "VLLMSmokeBenchmarkConfig",
     "run_vllm_smoke_benchmark",
     "build_metadata",
     "dependency_constraints",
+    "document_kv_package_install_spec",
+    "install_document_kv_package",
     "build_vllm_server_args",
     "build_benchmark_runner_args",
     "build_prompt_token_budget_rows",
@@ -87,6 +95,7 @@ class VLLMSmokeBenchmarkConfig:
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
     dataset_specs: tuple[str, ...] = ()
+    package_install_spec: str | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -118,6 +127,8 @@ class VLLMSmokeBenchmarkConfig:
         object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
         if self.dataset_specs:
             parse_dataset_specs(self.dataset_specs)
+        if self.package_install_spec is not None and not self.package_install_spec.strip():
+            raise ValueError("package_install_spec must be non-empty when provided")
 
     @property
     def local_dir(self) -> Path:
@@ -181,6 +192,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
 
     create_venv(config.venv_dir)
     install_vllm(config.venv_python)
+    install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
     metadata.update(installed_versions(config.venv_python))
     write_json(config.metadata_path, metadata)
     probe_vllm_import(
@@ -224,6 +236,8 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
+        "document_kv_package_install_spec": document_kv_package_install_spec(config),
+        "vllm_kv_transfer_config": document_kv_transfer_config(),
     }
 
 
@@ -231,9 +245,42 @@ def dependency_constraints() -> list[str]:
     return list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
 
 
+def _cluster_file_path(uri: str) -> str:
+    if uri.startswith("dbfs:/"):
+        return "/dbfs/" + uri.removeprefix("dbfs:/").lstrip("/")
+    return uri
+
+
+def _source_checkout_root() -> Path | None:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists() and (parent / "src" / "document_kv_cache").exists():
+            return parent
+    return None
+
+
+def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
+    """Return the package spec that must be installed into the vLLM venv."""
+
+    if config.package_install_spec is not None:
+        return _cluster_file_path(config.package_install_spec)
+    env_value = os.environ.get(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV)
+    if env_value is not None:
+        if not env_value.strip():
+            raise ValueError(f"{DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV} must be non-empty when set")
+        return _cluster_file_path(env_value)
+    source_root = _source_checkout_root()
+    if source_root is not None:
+        return str(source_root)
+    raise RuntimeError(
+        "vLLM smoke benchmark requires a Cachet package install spec for the isolated vLLM environment; "
+        f"set {DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV} or pass --package-install-spec"
+    )
+
+
 def installed_versions(python_executable: Path) -> dict[str, str]:
     return {
         "vllm_version_installed": installed_package_version(python_executable, "vllm"),
+        "document_kv_cache_version_installed": installed_package_version(python_executable, "document-kv-cache"),
         "transformers_version_installed": installed_package_version(python_executable, "transformers"),
         "torch_version_installed": installed_package_version(python_executable, "torch"),
     }
@@ -456,6 +503,10 @@ def install_vllm(python_executable: Path) -> None:
     )
 
 
+def install_document_kv_package(python_executable: Path, install_spec: str) -> None:
+    run([str(python_executable), "-m", "pip", "install", "--no-deps", install_spec])
+
+
 def installed_package_version(python_executable: Path, package_name: str) -> str:
     completed = subprocess.run(
         [str(python_executable), "-m", "pip", "show", package_name],
@@ -482,6 +533,9 @@ import json
 import torch
 import vllm
 import vllm.entrypoints.openai.api_server
+import document_kv_cache
+import vllm_kv_injection.vllm_dynamic_connector as document_kv_vllm_connector
+from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 payload = {
     "ok": True,
@@ -489,6 +543,10 @@ payload = {
     "cuda_available": torch.cuda.is_available(),
     "cuda_device_count": torch.cuda.device_count(),
     "vllm_version": md.version("vllm"),
+    "document_kv_cache_version": md.version("document-kv-cache"),
+    "document_kv_cache_module": document_kv_cache.__name__,
+    "document_kv_connector_module": document_kv_vllm_connector.__name__,
+    "document_kv_connector": document_kv_transfer_config()["kv_connector"],
 }
 if torch.cuda.is_available():
     payload["cuda_device_name"] = torch.cuda.get_device_name(0)
@@ -675,6 +733,8 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         str(config.max_num_seqs),
         "--gpu-memory-utilization",
         str(config.gpu_memory_utilization),
+        "--kv-transfer-config",
+        document_kv_transfer_config_json(),
         "--trust-remote-code",
         "--no-enable-log-requests",
     ]
@@ -817,6 +877,13 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument(
+        "--package-install-spec",
+        help=(
+            "Cachet wheel path or source checkout to install into the isolated vLLM environment. "
+            f"Defaults to ${DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV} or the local source checkout."
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         action="append",
         default=None,
@@ -838,6 +905,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
         dataset_specs=tuple(args.dataset or ()),
+        package_install_spec=args.package_install_spec,
     )
 
 

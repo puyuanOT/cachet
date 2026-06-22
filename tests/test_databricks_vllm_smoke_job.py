@@ -153,6 +153,7 @@ def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
 
     runner_text = path.read_text(encoding="utf-8")
     assert "--package-wheel-uri" in runner_text
+    assert "DOCUMENT_KV_PACKAGE_INSTALL_SPEC" in runner_text
     assert "pip\", \"install\"" in runner_text
     assert "dbfs:/" in runner_text
     assert "document_kv_cache.vllm_smoke" in runner_text
@@ -180,7 +181,10 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
                 "        handle.write(json.dumps({'event': 'main'}) + '\\n')",
                 "    with open(os.environ['MAIN_ARGS_JSON'], 'w', encoding='utf-8') as handle:",
-                "        json.dump(argv, handle)",
+                "        json.dump({",
+                "            'argv': argv,",
+                "            'package_install_spec': os.environ.get('DOCUMENT_KV_PACKAGE_INSTALL_SPEC'),",
+                "        }, handle)",
                 "    return 0",
                 "",
             ]
@@ -242,12 +246,16 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
         "install",
         "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
     ]
-    assert json.loads(main_args_path.read_text(encoding="utf-8")) == [
-        "--benchmark-id",
-        "v1-vllm-smoke-001",
-        "--output-dir",
-        "/dbfs/tmp/cachet/output",
-    ]
+    main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
+    assert main_payload == {
+        "argv": [
+            "--benchmark-id",
+            "v1-vllm-smoke-001",
+            "--output-dir",
+            "/dbfs/tmp/cachet/output",
+        ],
+        "package_install_spec": "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+    }
     events = [json.loads(line)["event"] for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert events == ["pip_install", "vllm_smoke_import", "main"]
 

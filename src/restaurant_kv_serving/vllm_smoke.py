@@ -45,9 +45,12 @@ __all__ = reexport_public(
         "SERVED_MODEL_NAME",
         "SERVER_BASE_URL",
         "SMOKE_DATASETS",
+        "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
         "VLLMSmokeBenchmarkConfig",
         "build_metadata",
         "dependency_constraints",
+        "document_kv_package_install_spec",
+        "install_document_kv_package",
         "build_vllm_server_args",
         "build_benchmark_runner_args",
         "build_prompt_token_budget_rows",
@@ -82,6 +85,8 @@ __all__ += [
     "create_venv",
     "venv_python",
     "install_vllm",
+    "document_kv_package_install_spec",
+    "install_document_kv_package",
     "installed_versions",
     "installed_package_version",
     "probe_vllm_import",
@@ -104,6 +109,7 @@ __all__ += [
 DEFAULT_LOCAL_ROOT = _document_module.DEFAULT_LOCAL_ROOT
 SERVER_HOST = _document_module.SERVER_HOST
 SERVER_PORT = _document_module.SERVER_PORT
+DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = _document_module.DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV
 
 
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
@@ -112,6 +118,10 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
 
 def dependency_constraints() -> list[str]:
     return _call_document_function("dependency_constraints")
+
+
+def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
+    return _call_document_function("document_kv_package_install_spec", config)
 
 
 def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: Path) -> list[str]:
@@ -190,6 +200,10 @@ def venv_python(venv_dir: Path) -> Path:
 
 def install_vllm(python_executable: Path) -> None:
     return _call_document_function("install_vllm", python_executable)
+
+
+def install_document_kv_package(python_executable: Path, install_spec: str) -> None:
+    return _call_document_function("install_document_kv_package", python_executable, install_spec)
 
 
 def installed_versions(python_executable: Path) -> dict[str, str]:
@@ -291,6 +305,8 @@ def main(argv: list[str] | None = None) -> int:
 _DEFAULT_COMPAT_FUNCTIONS = {
     "build_metadata": build_metadata,
     "dependency_constraints": dependency_constraints,
+    "document_kv_package_install_spec": document_kv_package_install_spec,
+    "install_document_kv_package": install_document_kv_package,
     "build_vllm_server_args": build_vllm_server_args,
     "build_benchmark_runner_args": build_benchmark_runner_args,
     "build_prompt_token_budget_rows": build_prompt_token_budget_rows,

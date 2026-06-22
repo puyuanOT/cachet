@@ -11,6 +11,7 @@ import document_kv_cache.vllm_smoke as public_vllm_smoke
 import restaurant_kv_serving.vllm_smoke as legacy_vllm_smoke
 from document_kv_cache.serving_env import VLLM_SERVING_ENVIRONMENT_PROFILE
 from document_kv_cache.vllm_smoke import (
+    DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     HF_MODEL_ID,
@@ -30,12 +31,15 @@ from document_kv_cache.vllm_smoke import (
     build_vllm_server_args,
     dataset_args,
     dependency_constraints,
+    document_kv_package_install_spec,
+    install_document_kv_package,
     parse_args,
     parse_dataset_specs,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
     smoke_dataset_records,
 )
+from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -69,6 +73,55 @@ def test_smoke_dataset_records_cover_v1_release_datasets():
     assert all(record["documents"] for record in records.values())
 
 
+def test_document_kv_package_install_spec_prefers_config_then_env(monkeypatch, tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        package_install_spec="dbfs:/tmp/cachet/document_kv_cache.whl",
+    )
+
+    assert document_kv_package_install_spec(config) == "/dbfs/tmp/cachet/document_kv_cache.whl"
+
+    monkeypatch.setenv(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV, "dbfs:/tmp/cachet/from-env.whl")
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+
+    assert document_kv_package_install_spec(config) == "/dbfs/tmp/cachet/from-env.whl"
+
+
+def test_document_kv_package_install_spec_falls_back_to_source_checkout(monkeypatch, tmp_path):
+    monkeypatch.delenv(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV, raising=False)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+
+    assert document_kv_package_install_spec(config) == str(REPO_ROOT)
+
+
+def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(argv))
+
+    install_document_kv_package(tmp_path / "venv" / "bin" / "python", "/tmp/cachet.whl")
+
+    assert calls == [
+        [
+            str(tmp_path / "venv" / "bin" / "python"),
+            "-m",
+            "pip",
+            "install",
+            "--no-deps",
+            "/tmp/cachet.whl",
+        ]
+    ]
+
+
 def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -87,6 +140,7 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert args[args.index("--max-model-len") + 1] == "4096"
     assert args[args.index("--max-num-seqs") + 1] == "2"
     assert args[args.index("--gpu-memory-utilization") + 1] == "0.85"
+    assert json.loads(args[args.index("--kv-transfer-config") + 1]) == document_kv_transfer_config()
     assert "--trust-remote-code" in args
     assert "--no-enable-log-requests" in args
     assert "--disable-log-requests" not in args
@@ -393,6 +447,8 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["max_model_len"] == 4096
     assert metadata["max_num_seqs"] == 2
     assert metadata["gpu_memory_utilization"] == 0.85
+    assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
+    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config()
 
 
 def test_metadata_records_prepared_dataset_context(tmp_path):
@@ -414,6 +470,7 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
     assert metadata["max_model_len"] == 32768
     assert metadata["max_num_seqs"] == 8
     assert metadata["gpu_memory_utilization"] == 0.72
+    assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
 
 
 def test_parse_args_builds_config_with_overrides(tmp_path):
@@ -446,6 +503,8 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "8",
             "--gpu-memory-utilization",
             "0.72",
+            "--package-install-spec",
+            str(tmp_path / "cachet.whl"),
             *sum((["--dataset", spec] for spec in specs), []),
         ]
     )
@@ -465,6 +524,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         max_num_seqs=8,
         gpu_memory_utilization=0.72,
         dataset_specs=specs,
+        package_install_spec=str(tmp_path / "cachet.whl"),
     )
 
 
@@ -484,6 +544,7 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
+        ({"package_install_spec": ""}, "package_install_spec must be non-empty"),
     ]
 
     for overrides, message in invalid_cases:
@@ -615,6 +676,11 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     monkeypatch.setattr(public_vllm_smoke, "install_vllm", lambda python: calls.append(("install_vllm", python)))
     monkeypatch.setattr(
         public_vllm_smoke,
+        "install_document_kv_package",
+        lambda python, install_spec: calls.append(("install_document_kv_package", python, install_spec)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
         "installed_versions",
         lambda python: {"vllm_version_installed": "0.23.0", "transformers_version_installed": "5.12.1"},
     )
@@ -661,6 +727,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     assert calls == [
         ("create_venv", config.venv_dir),
         ("install_vllm", config.venv_python),
+        ("install_document_kv_package", config.venv_python, str(REPO_ROOT)),
         (
             "probe_vllm_import",
             config.venv_python,
@@ -713,6 +780,11 @@ def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursi
     monkeypatch.setattr(legacy_vllm_smoke, "install_vllm", lambda python: calls.append(("install_vllm", python)))
     monkeypatch.setattr(
         legacy_vllm_smoke,
+        "install_document_kv_package",
+        lambda python, install_spec: calls.append(("install_document_kv_package", install_spec)),
+    )
+    monkeypatch.setattr(
+        legacy_vllm_smoke,
         "installed_versions",
         lambda python: {"vllm_version_installed": "0.23.0"},
     )
@@ -751,6 +823,7 @@ def test_legacy_vllm_smoke_run_reaches_dataset_selection_without_wrapper_recursi
 
     legacy_vllm_smoke.run_vllm_smoke_benchmark(config)
 
+    assert ("install_document_kv_package", str(REPO_ROOT)) in calls
     assert ("write_smoke_datasets", config.local_dir) in calls
     assert ("validate_prompt_token_budget", "smoke-1") in calls
     assert ("run", build_benchmark_runner_args(config, dataset_paths)) in calls

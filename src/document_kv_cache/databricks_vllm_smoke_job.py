@@ -30,6 +30,7 @@ DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE = "document-kv-vllm-smoke"
 VLLM_SMOKE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 
@@ -45,9 +46,11 @@ def _install_package_wheel(argv: list[str]) -> list[str]:
     parser.add_argument("--package-wheel-uri")
     args, remaining = parser.parse_known_args(argv)
     if args.package_wheel_uri:
+        package_wheel_path = _cluster_file_path(args.package_wheel_uri)
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", _cluster_file_path(args.package_wheel_uri)]
+            [sys.executable, "-m", "pip", "install", package_wheel_path]
         )
+        os.environ["DOCUMENT_KV_PACKAGE_INSTALL_SPEC"] = package_wheel_path
     return remaining
 
 
