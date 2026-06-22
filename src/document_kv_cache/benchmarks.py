@@ -5,6 +5,7 @@ import re
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from hashlib import sha256
 from html import escape
 from typing import Any
 
@@ -13,11 +14,16 @@ from document_kv_cache._hardware_targets import (
     SUPPORTED_V1_HARDWARE_TARGETS,
     validate_v1_hardware_target as _validate_v1_hardware_target,
 )
+from document_kv_cache.models import DocumentKVRequest
 from document_kv_cache.workflow import SourceDocument
 
 
 SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
+DEFAULT_V1_LORA_ID = "base"
+DEFAULT_V1_PROMPT_TEMPLATE_VERSION = "v1-benchmark"
+BENCHMARK_CACHE_PREFIX_CHUNK_ID = "cache_prefix"
+BENCHMARK_CACHE_ARTIFACT_PREFIX = "cachet"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"
 DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
@@ -30,6 +36,10 @@ __all__ = [
     "SUPPORTED_V1_DATASETS",
     "SUPPORTED_V1_HARDWARE_TARGETS",
     "DEFAULT_V1_MODEL_ID",
+    "DEFAULT_V1_LORA_ID",
+    "DEFAULT_V1_PROMPT_TEMPLATE_VERSION",
+    "BENCHMARK_CACHE_PREFIX_CHUNK_ID",
+    "BENCHMARK_CACHE_ARTIFACT_PREFIX",
     "DEFAULT_HARDWARE_TARGET",
     "BASELINE_PREFILL_ARM",
     "CACHE_REUSE_ARM",
@@ -56,6 +66,10 @@ __all__ = [
     "build_prefill_prompt",
     "build_cache_prefix_text",
     "build_cache_suffix_text",
+    "benchmark_cache_artifact_stem",
+    "benchmark_cache_document_id",
+    "benchmark_cache_source_document",
+    "benchmark_cache_request",
     "format_document_context",
     "summarize_measurements",
     "compare_to_baseline",
@@ -373,6 +387,89 @@ def build_cache_suffix_text(example: BenchmarkExample) -> str:
     return build_prompt_parts(example).cache_suffix_text
 
 
+def benchmark_cache_artifact_stem(
+    example: BenchmarkExample,
+    *,
+    prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+) -> str:
+    """Return a stable path-safe stem for benchmark cache artifacts."""
+
+    benchmark_example = _benchmark_example(example)
+    prefix_slug = _artifact_slug(prefix, field_name="prefix")
+    label = _artifact_slug(
+        f"{benchmark_example.dataset}-{benchmark_example.example_id}",
+        field_name="dataset/example_id",
+    )
+    digest = sha256(f"{benchmark_example.dataset}\0{benchmark_example.example_id}".encode("utf-8")).hexdigest()[:12]
+    max_label_chars = max(8, 96 - len(prefix_slug) - len(digest) - 2)
+    label = label[:max_label_chars].rstrip("-") or "example"
+    return f"{prefix_slug}-{label}-{digest}"
+
+
+def benchmark_cache_document_id(
+    example: BenchmarkExample,
+    *,
+    prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+) -> str:
+    """Return the synthetic Cachet document id for this example's cached prefix."""
+
+    return benchmark_cache_artifact_stem(example, prefix=prefix)
+
+
+def benchmark_cache_source_document(
+    example: BenchmarkExample,
+    *,
+    document_id: str | None = None,
+    chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
+    prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+) -> SourceDocument:
+    """Represent the exact V1 benchmark cache prefix as a Cachet source document."""
+
+    benchmark_example = _benchmark_example(example)
+    resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
+    return SourceDocument.from_text(
+        document_id=resolved_document_id,
+        text=build_cache_prefix_text(benchmark_example),
+        chunk_id=chunk_id,
+        metadata={
+            "cachet.benchmark.dataset": benchmark_example.dataset,
+            "cachet.benchmark.example_id": benchmark_example.example_id,
+            "cachet.benchmark.role": "cache_prefix",
+        },
+        chunk_metadata={
+            "cachet.benchmark.prompt_part": "system_prompt_and_document_context",
+        },
+    )
+
+
+def benchmark_cache_request(
+    example: BenchmarkExample,
+    *,
+    model_id: str = DEFAULT_V1_MODEL_ID,
+    lora_id: str = DEFAULT_V1_LORA_ID,
+    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    request_id: str | None = None,
+    task_id: str | None = None,
+    document_id: str | None = None,
+    chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
+    prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+) -> DocumentKVRequest:
+    """Build the Cachet request that materializes this example's cached prefix."""
+
+    benchmark_example = _benchmark_example(example)
+    resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
+    resolved_request_id = request_id or benchmark_cache_artifact_stem(benchmark_example, prefix=prefix)
+    return DocumentKVRequest.for_text_document(
+        request_id=resolved_request_id,
+        task_id=task_id or f"v1-benchmark-{benchmark_example.dataset}",
+        model_id=model_id,
+        lora_id=lora_id,
+        prompt_template_version=prompt_template_version,
+        document_id=resolved_document_id,
+        chunk_id=chunk_id,
+    )
+
+
 def format_document_context(documents: Sequence[SourceDocument]) -> str:
     if not documents:
         raise ValueError("Benchmark examples must include at least one source document")
@@ -520,6 +617,20 @@ def validate_v1_dataset(dataset: str) -> None:
 
 def validate_v1_hardware_target(hardware_target: str) -> None:
     _validate_v1_hardware_target(hardware_target)
+
+
+def _benchmark_example(example: BenchmarkExample) -> BenchmarkExample:
+    if not isinstance(example, BenchmarkExample):
+        raise TypeError("example must be a BenchmarkExample")
+    return example
+
+
+def _artifact_slug(value: str, *, field_name: str) -> str:
+    _validate_non_empty_str(value, field_name)
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._").lower()
+    if not slug:
+        raise ValueError(f"{field_name} must contain at least one path-safe character")
+    return slug
 
 
 def _validate_non_empty_str(value: str, field_name: str) -> None:

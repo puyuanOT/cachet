@@ -2,9 +2,13 @@ import pytest
 
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
+    BENCHMARK_CACHE_ARTIFACT_PREFIX,
+    BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
+    DEFAULT_V1_LORA_ID,
     DEFAULT_V1_MODEL_ID,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     SUPPORTED_V1_HARDWARE_TARGETS,
     SUPPORTED_V1_DATASETS,
     BenchmarkComparison,
@@ -18,6 +22,10 @@ from document_kv_cache.benchmarks import (
     build_cache_suffix_text,
     build_prefill_prompt,
     build_prompt_parts,
+    benchmark_cache_artifact_stem,
+    benchmark_cache_document_id,
+    benchmark_cache_request,
+    benchmark_cache_source_document,
     compare_to_baseline,
     dataset_spec,
     document_kv_cache_arm,
@@ -29,6 +37,7 @@ from document_kv_cache.benchmarks import (
     validate_v1_hardware_target,
     v1_dataset_specs,
 )
+from document_kv_cache.models import DocumentKVRequest
 from document_kv_cache.workflow import SourceDocument
 
 
@@ -304,6 +313,132 @@ def test_prompt_parts_split_prefill_context_from_cache_suffix():
     assert "Ada Lovelace biography" not in parts.cache_suffix_text
     assert parts.prefill_prompt.endswith("Answer:")
     assert parts.cache_suffix_text.endswith("Answer:")
+
+
+def test_benchmark_cache_source_document_contains_exact_cache_prefix():
+    example = BenchmarkExample(
+        example_id="Bio Example/1",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+        expected_answer="Ada Lovelace",
+    )
+
+    source_document = benchmark_cache_source_document(example)
+    chunk = source_document.chunks[0]
+    stem = benchmark_cache_artifact_stem(example)
+
+    assert stem == benchmark_cache_document_id(example)
+    assert stem.startswith(f"{BENCHMARK_CACHE_ARTIFACT_PREFIX}-biography-bio-example-1-")
+    assert "|" not in stem
+    assert source_document.document_id == stem
+    assert source_document.metadata == {
+        "cachet.benchmark.dataset": "biography",
+        "cachet.benchmark.example_id": "Bio Example/1",
+        "cachet.benchmark.role": "cache_prefix",
+    }
+    assert chunk.chunk_id == BENCHMARK_CACHE_PREFIX_CHUNK_ID
+    assert chunk.text == build_cache_prefix_text(example)
+    assert chunk.metadata == {
+        "cachet.benchmark.prompt_part": "system_prompt_and_document_context",
+    }
+
+
+def test_benchmark_cache_request_selects_synthetic_prefix_document():
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+    )
+
+    request = benchmark_cache_request(example)
+
+    assert isinstance(request, DocumentKVRequest)
+    assert request.request_id == benchmark_cache_artifact_stem(example)
+    assert request.task_id == "v1-benchmark-biography"
+    assert request.model_id == DEFAULT_V1_MODEL_ID
+    assert request.lora_id == DEFAULT_V1_LORA_ID
+    assert request.prompt_template_version == DEFAULT_V1_PROMPT_TEMPLATE_VERSION
+    assert request.include_static is False
+    assert request.document_chunks == {
+        benchmark_cache_document_id(example): (BENCHMARK_CACHE_PREFIX_CHUNK_ID,),
+    }
+
+
+def test_benchmark_cache_helpers_share_custom_artifact_prefix():
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+    )
+
+    source_document = benchmark_cache_source_document(example, prefix="qa cache")
+    request = benchmark_cache_request(example, prefix="qa cache")
+
+    assert source_document.document_id == benchmark_cache_document_id(example, prefix="qa cache")
+    assert request.document_chunks == {
+        source_document.document_id: (BENCHMARK_CACHE_PREFIX_CHUNK_ID,),
+    }
+
+
+def test_benchmark_cache_request_allows_explicit_serving_identity_overrides():
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+    )
+
+    request = benchmark_cache_request(
+        example,
+        model_id="qwen3.5",
+        lora_id="adapter-a",
+        prompt_template_version="custom-v1",
+        request_id="req-custom",
+        task_id="qa-custom",
+        document_id="doc-custom",
+        chunk_id="prefix-custom",
+    )
+
+    assert request.request_id == "req-custom"
+    assert request.task_id == "qa-custom"
+    assert request.model_id == "qwen3.5"
+    assert request.lora_id == "adapter-a"
+    assert request.prompt_template_version == "custom-v1"
+    assert request.document_chunks == {"doc-custom": ("prefix-custom",)}
+
+
+def test_benchmark_cache_artifact_stem_is_dataset_scoped_and_stable():
+    biography = BenchmarkExample(
+        example_id="shared",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+    )
+    hotpotqa = BenchmarkExample(
+        example_id="shared",
+        dataset="hotpotqa",
+        documents=(document(),),
+        query="Which dataset reuses this local id?",
+    )
+
+    assert benchmark_cache_artifact_stem(biography) == benchmark_cache_artifact_stem(biography)
+    assert benchmark_cache_artifact_stem(biography) != benchmark_cache_artifact_stem(hotpotqa)
+    assert benchmark_cache_artifact_stem(biography, prefix="My Cache").startswith("my-cache-biography-shared-")
+
+
+def test_benchmark_cache_artifact_stem_rejects_empty_safe_prefix():
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+    )
+
+    with pytest.raises(ValueError, match="path-safe"):
+        benchmark_cache_artifact_stem(example, prefix="***")
 
 
 def test_format_document_context_preserves_order_and_quotes_body_lines():

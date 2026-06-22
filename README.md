@@ -769,6 +769,9 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
 - `build_prompt_parts` splits each example into `system_prompt`, `document_context`, and `user_prompt`.
 - `build_prefill_prompt` concatenates all three parts for the no-cache baseline.
 - `build_cache_prefix_text` returns the text that should be represented by cached KV, while `build_cache_suffix_text` returns the query suffix appended at inference time.
+- `benchmark_cache_source_document` and `benchmark_cache_request` turn a V1
+  example into the exact Cachet source document/request pair for that cached
+  prefix, with stable request/artifact IDs for generated handoff bundles.
 - `load_benchmark_jsonl` and `load_v1_jsonl_suite` load normalized JSONL
   plus common HotpotQA-style `context` pairs and MusiQue-style `paragraphs`,
   without adding a hard dependency on any one dataset host. Malformed benchmark
