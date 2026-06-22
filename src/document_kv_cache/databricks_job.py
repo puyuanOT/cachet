@@ -11,7 +11,10 @@ from typing import Any
 
 from document_kv_cache._hardware_targets import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
+    DEFAULT_HARDWARE_TARGET,
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
+    SUPPORTED_V1_HARDWARE_TARGETS,
+    databricks_node_type_for_hardware_target,
     validate_aws_single_node_gpu_type as _validate_aws_single_node_gpu_type,
 )
 from document_kv_cache.native_probe_factories import (
@@ -282,7 +285,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_TASK_KEY)
-    parser.add_argument("--node-type-id", default=DEFAULT_AWS_G5_NODE_TYPE)
+    parser.add_argument(
+        "--hardware-target",
+        choices=SUPPORTED_V1_HARDWARE_TARGETS,
+        default=DEFAULT_HARDWARE_TARGET,
+        help="V1 hardware target used to derive --node-type-id when it is omitted.",
+    )
+    parser.add_argument(
+        "--node-type-id",
+        help="Databricks node type override. Must match --hardware-target when provided.",
+    )
     parser.add_argument("--spark-version", default=DEFAULT_DATABRICKS_SPARK_VERSION)
     parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
@@ -306,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner_python_file=args.runner_python_file,
             run_name=args.run_name,
             task_key=args.task_key,
-            node_type_id=args.node_type_id,
+            node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
             spark_version=args.spark_version,
             data_security_mode=args.data_security_mode,
             single_user_name=args.single_user_name,

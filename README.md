@@ -1123,7 +1123,10 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
 
 The Databricks submit helper accepts the same prepared dataset and sizing flags,
 so the managed task can run either the built-in smoke or a prepared long-context
-benchmark on the target `g6.8xlarge`/L4 node:
+benchmark on the target AWS g6/L4 profile. Use `--hardware-target` to derive
+the default Databricks node family (`aws-g6-l4` -> `g6.8xlarge`,
+`aws-g5-a10g` -> `g5.8xlarge`); pass `--node-type-id` only when a workspace
+cluster policy requires a specific matching size:
 
 ```bash
 python -m document_kv_cache.databricks_vllm_smoke_job \
@@ -1133,7 +1136,7 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --runner-script-output run_vllm_smoke.py \
   --wheel-uri dbfs:/benchmarks/cachet-v1/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
-  --node-type-id g6.8xlarge \
+  --hardware-target aws-g6-l4 \
   --max-model-len 32768 \
   --max-num-seqs 1 \
   --gpu-memory-utilization 0.9 \
@@ -1362,7 +1365,7 @@ until all required ignore patterns are present, no forbidden artifact paths are
 tracked or exposed as untracked, every non-generated tracked/untracked
 directory is documented, and no tracked files differ from `HEAD`.
 
-For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g6/L4 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers.
+For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g6/L4 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers. The Databricks payload CLIs accept `--hardware-target aws-g6-l4` or `--hardware-target aws-g5-a10g` and derive the default node type from the shared V1 hardware profile unless `--node-type-id` is explicitly supplied.
 When generating `v1-plan.json` for the provider-backed vLLM native probe path,
 include
 `--engine-probe-metadata vllm=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
@@ -1376,6 +1379,7 @@ python -m document_kv_cache.databricks_job \
   --runner-script-output run_plan.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
+  --hardware-target aws-g6-l4 \
   --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
   --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
   --output-json databricks-run-submit.json

@@ -15,8 +15,12 @@ __all__ = [
     "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
     "SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES",
     "HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES",
+    "hardware_target_profile",
+    "default_databricks_node_type_for_hardware_target",
+    "databricks_node_type_for_hardware_target",
     "validate_v1_hardware_target",
     "validate_aws_single_node_gpu_type",
+    "validate_aws_single_node_gpu_type_for_hardware_target",
 ]
 
 
@@ -73,6 +77,10 @@ HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = {
     profile.hardware_target: profile.databricks_node_type_prefixes
     for profile in V1_HARDWARE_TARGET_PROFILES
 }
+_HARDWARE_TARGET_PROFILE_BY_ID = {
+    profile.hardware_target: profile
+    for profile in V1_HARDWARE_TARGET_PROFILES
+}
 
 
 def validate_v1_hardware_target(hardware_target: str) -> None:
@@ -80,6 +88,25 @@ def validate_v1_hardware_target(hardware_target: str) -> None:
         raise ValueError(
             f"Unsupported V1 hardware target {hardware_target!r}; expected one of {SUPPORTED_V1_HARDWARE_TARGETS}"
         )
+
+
+def hardware_target_profile(hardware_target: str) -> HardwareTargetProfile:
+    validate_v1_hardware_target(hardware_target)
+    return _HARDWARE_TARGET_PROFILE_BY_ID[hardware_target]
+
+
+def default_databricks_node_type_for_hardware_target(hardware_target: str) -> str:
+    return hardware_target_profile(hardware_target).default_databricks_node_type_id
+
+
+def databricks_node_type_for_hardware_target(
+    hardware_target: str,
+    node_type_id: str | None = None,
+) -> str:
+    if node_type_id is None:
+        return default_databricks_node_type_for_hardware_target(hardware_target)
+    validate_aws_single_node_gpu_type_for_hardware_target(node_type_id, hardware_target)
+    return node_type_id
 
 
 def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
@@ -90,4 +117,16 @@ def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
         raise ValueError(
             f"node_type_id must be a supported V1 Databricks node type ({supported}), "
             f"got {node_type_id!r}"
+        )
+
+
+def validate_aws_single_node_gpu_type_for_hardware_target(node_type_id: str, hardware_target: str) -> None:
+    if not node_type_id:
+        raise ValueError("node_type_id must be non-empty")
+    profile = hardware_target_profile(hardware_target)
+    if not node_type_id.lower().startswith(profile.databricks_node_type_prefixes):
+        prefixes = ", ".join(profile.databricks_node_type_prefixes)
+        raise ValueError(
+            f"node_type_id must match V1 hardware target {hardware_target!r} "
+            f"({profile.display_name}; Databricks prefixes: {prefixes}), got {node_type_id!r}"
         )

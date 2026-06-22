@@ -33,6 +33,9 @@ from document_kv_cache.databricks_engine_probe_job import (
 from document_kv_cache._hardware_targets import (
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
     V1_HARDWARE_TARGET_PROFILE,
+    databricks_node_type_for_hardware_target,
+    default_databricks_node_type_for_hardware_target,
+    validate_aws_single_node_gpu_type_for_hardware_target,
 )
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
@@ -204,6 +207,17 @@ def test_databricks_defaults_share_v1_hardware_target_profile():
         public_databricks_job.SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
         == SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES
     )
+
+
+def test_hardware_target_node_type_helpers_map_v1_databricks_defaults():
+    assert default_databricks_node_type_for_hardware_target("aws-g6-l4") == "g6.8xlarge"
+    assert default_databricks_node_type_for_hardware_target("aws-g5-a10g") == "g5.8xlarge"
+    assert databricks_node_type_for_hardware_target("aws-g5-a10g") == "g5.8xlarge"
+    assert databricks_node_type_for_hardware_target("aws-g5-a10g", "g5.12xlarge") == "g5.12xlarge"
+
+    validate_aws_single_node_gpu_type_for_hardware_target("g6.8xlarge", "aws-g6-l4")
+    with pytest.raises(ValueError, match="hardware target 'aws-g5-a10g'"):
+        validate_aws_single_node_gpu_type_for_hardware_target("g6.8xlarge", "aws-g5-a10g")
 
 
 def test_generic_single_node_gpu_aliases_preserve_g5_compatibility_names():
@@ -379,6 +393,55 @@ def test_main_writes_payload_and_runner_script(tmp_path):
     assert "--vllm-native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
     assert "--sglang-native-probe-delegate-factory" not in task["spark_python_task"]["parameters"]
     assert "benchmark_plan_executor" in runner_path.read_text(encoding="utf-8")
+
+
+def test_main_derives_node_type_from_g5_hardware_target(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--hardware-target",
+            "aws-g5-a10g",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+
+
+def test_main_rejects_node_type_that_does_not_match_hardware_target(tmp_path, capsys):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--plan-json-uri",
+            "dbfs:/benchmarks/v1-plan.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_plan.py",
+            "--hardware-target",
+            "aws-g5-a10g",
+            "--node-type-id",
+            "g6.8xlarge",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    assert exit_code == 1
+    assert not payload_path.exists()
+    assert "hardware target 'aws-g5-a10g'" in json.loads(capsys.readouterr().out)["error"]
 
 
 def test_public_databricks_job_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):
