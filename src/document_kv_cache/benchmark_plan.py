@@ -259,6 +259,24 @@ class EngineProbePlanConfig:
             raise ValueError("engine probe native_probe_delegate_factory must be non-empty when provided")
         if self.fixture_output_dir is not None and not self.fixture_output_dir:
             raise ValueError("engine probe fixture_output_dir must be non-empty when provided")
+        if (
+            self.backend == ServingBackend.VLLM
+            and self.fixture_output_dir is not None
+            and self.vllm_runtime_preflight_output_json is not None
+        ):
+            derived_layer_names_json = _engine_probe_fixture_vllm_layer_names_json(self.fixture_output_dir)
+            if self.vllm_runtime_preflight_layer_names_json is None:
+                object.__setattr__(
+                    self,
+                    "vllm_runtime_preflight_layer_names_json",
+                    derived_layer_names_json,
+                )
+            elif not _same_artifact_path(self.vllm_runtime_preflight_layer_names_json, derived_layer_names_json):
+                raise ValueError(
+                    "engine probe vllm_runtime_preflight_layer_names_json must match the derived "
+                    f"fixture layer-name path when fixture_output_dir is set: "
+                    f"expected {derived_layer_names_json!r}, got {self.vllm_runtime_preflight_layer_names_json!r}"
+                )
         if self.vllm_runtime_preflight_output_json is not None and not self.vllm_runtime_preflight_output_json:
             raise ValueError("engine probe vllm_runtime_preflight_output_json must be non-empty when provided")
         if (
@@ -1351,7 +1369,7 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
                 f"engine_probes[{probe.backend.value}].fixture_{artifact_name}",
                 _uri_child(probe.fixture_output_dir, filename),
             )
-            for artifact_name, filename in DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES.items()
+            for artifact_name, filename in _engine_probe_fixture_filenames(probe.backend).items()
         )
     if config.release_evidence is not None:
         output_paths.append(("release_evidence.output_json", config.release_evidence.output_json))
@@ -1906,6 +1924,11 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
         "--engine-probe-fixture-payload-mode",
     )
     handoff_jsons = _engine_probe_handoff_jsons_with_fixtures(handoff_jsons, fixture_output_dirs)
+    vllm_runtime_preflight_layer_names_jsons = _engine_probe_vllm_layer_names_jsons_with_fixtures(
+        vllm_runtime_preflight_layer_names_jsons,
+        preflight_output_jsons=vllm_runtime_preflight_output_jsons,
+        fixture_output_dirs=fixture_output_dirs,
+    )
 
     if not handoff_jsons:
         if (
@@ -2003,6 +2026,43 @@ def _engine_probe_fixture_payload_uri(fixture_output_dir: str) -> str:
 
 def _engine_probe_fixture_actions_json(fixture_output_dir: str) -> str:
     return _uri_child(fixture_output_dir, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["actions"])
+
+
+def _engine_probe_fixture_vllm_layer_names_json(fixture_output_dir: str) -> str:
+    return _uri_child(fixture_output_dir, DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"])
+
+
+def _engine_probe_fixture_filenames(backend: ServingBackend) -> Mapping[str, str]:
+    if backend == ServingBackend.VLLM:
+        return DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
+    return {
+        artifact_name: filename
+        for artifact_name, filename in DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES.items()
+        if artifact_name != "vllm_layer_names"
+    }
+
+
+def _engine_probe_vllm_layer_names_jsons_with_fixtures(
+    layer_names_jsons: Mapping[str, str],
+    *,
+    preflight_output_jsons: Mapping[str, str],
+    fixture_output_dirs: Mapping[str, str],
+) -> dict[str, str]:
+    merged = dict(layer_names_jsons)
+    for backend, output_json in preflight_output_jsons.items():
+        if backend != ServingBackend.VLLM.value or backend not in fixture_output_dirs:
+            continue
+        derived = _engine_probe_fixture_vllm_layer_names_json(fixture_output_dirs[backend])
+        explicit = merged.get(backend)
+        if explicit is not None and not _same_artifact_path(explicit, derived):
+            raise ValueError(
+                "--engine-probe-vllm-runtime-preflight-layer-names-json must match the derived "
+                f"fixture layer-name path when --engine-probe-fixture-output-dir is set for {backend!r}: "
+                f"expected {derived!r}, got {explicit!r}"
+            )
+        if output_json:
+            merged[backend] = derived
+    return merged
 
 
 def _engine_probe_uses_fixture_actions_output(probe: EngineProbePlanConfig) -> bool:
