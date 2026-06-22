@@ -19,6 +19,7 @@ from sglang_kv_injection.sglang_hicache_config import (
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_BACKEND_CLASS,
     DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
+    DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
 )
 
@@ -65,6 +66,13 @@ def test_sglang_hicache_launch_config_builds_dynamic_backend_payload():
     assert extra["document_kv.engine_handoff_record_type"] == "document_kv.engine_adapter_request.v1"
     assert extra["document_kv.engine_handoff_schema_version"] == 2
     assert extra["document_kv.requires_native_runtime"] is True
+
+
+def test_sglang_hicache_launch_config_defaults_to_builtin_page_provider():
+    config = sglang_hicache_launch_config()
+    extra = json.loads(config["hicache_storage_backend_extra_config"])
+
+    assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
 
 
 def test_sglang_hicache_cli_args_are_launch_server_ready():
@@ -236,6 +244,7 @@ def test_main_prints_hicache_config_to_stdout(capsys):
     assert extra["backend_name"] == "document_kv"
     assert extra["module_path"] == DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH
     assert extra["class_name"] == DOCUMENT_KV_HICACHE_BACKEND_CLASS
+    assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
 
 
 def test_main_reports_invalid_extra_config(capsys):
@@ -287,3 +296,4 @@ def test_advertised_python_module_cli_writes_sidecar_without_runtime_warning(tmp
     assert config["hicache_storage_backend"] == SGLANG_HICACHE_DYNAMIC_BACKEND
     assert extra["module_path"] == DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH
     assert extra["class_name"] == DOCUMENT_KV_HICACHE_BACKEND_CLASS
+    assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY

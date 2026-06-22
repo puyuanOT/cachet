@@ -40,7 +40,10 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
-from document_kv_cache.engine_launch_config import DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY
+from document_kv_cache.engine_launch_config import (
+    DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY,
+    DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
+)
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.native_probe_factories import (
@@ -3399,6 +3402,7 @@ def _launch_config_record(backend: ServingBackend):
             "kv_connector_extra_config": extra,
         }
     if backend is ServingBackend.SGLANG:
+        extra["document_kv.provider_factory"] = DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY
         return {
             "enable_hierarchical_cache": True,
             "hicache_storage_backend": "dynamic",

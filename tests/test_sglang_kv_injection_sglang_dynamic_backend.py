@@ -14,10 +14,14 @@ import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_BACKEND_CLASS,
     DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
+    DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
+    DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_HICACHE_RUNTIME_METHODS,
     DocumentKVHiCacheBackend,
+    DocumentKVHiCachePageProvider,
     NoOpDocumentKVHiCacheProvider,
+    build_document_kv_hicache_provider,
     load_document_kv_hicache_provider_factory,
 )
 
@@ -76,6 +80,121 @@ def test_document_kv_hicache_backend_defaults_to_safe_miss_provider():
     assert backend.get_stats() is None
 
 
+def test_document_kv_hicache_page_provider_round_trips_memory_pages():
+    provider = DocumentKVHiCachePageProvider()
+    target = bytearray(b"\x00" * 5)
+
+    assert provider.set("doc-1", bytearray(b"page1")) is True
+    assert provider.exists("doc-1") is True
+    assert provider.get("doc-1", target_location=target) is target
+    assert target == bytearray(b"page1")
+    assert provider.get("missing") is None
+    assert provider.get_stats() == {
+        "provider": "DocumentKVHiCachePageProvider",
+        "store": "memory",
+        "store_uri": None,
+        "storage_identity": None,
+        "pages": 1,
+        "hits": 1,
+        "misses": 1,
+        "sets": 1,
+    }
+
+
+def test_document_kv_hicache_page_provider_round_trips_disk_pages(tmp_path):
+    provider = build_document_kv_hicache_provider(
+        extra_config={DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY: f"disk:{tmp_path}"}
+    )
+
+    assert provider.set("doc-1", b"disk-page") is True
+    assert provider.exists("doc-1") is True
+    assert provider.get("doc-1") == b"disk-page"
+    assert len(list(tmp_path.glob("*.cachet-hicache-page"))) == 1
+
+    provider.clear()
+
+    assert provider.exists("doc-1") is False
+    assert list(tmp_path.glob("*.cachet-hicache-page")) == []
+
+
+def test_document_kv_hicache_page_provider_namespaces_disk_pages_by_runtime_identity(tmp_path):
+    extra_config = {
+        DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
+        DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY: f"disk:{tmp_path}",
+    }
+    rank0_config = SimpleNamespace(
+        extra_config=extra_config,
+        model_path="Qwen/Qwen3",
+        tp_rank=0,
+        tp_size=2,
+        pp_rank=0,
+        pp_size=2,
+        attn_cp_rank=0,
+        attn_cp_size=2,
+        is_mla_model=False,
+    )
+    rank1_config = SimpleNamespace(
+        extra_config=extra_config,
+        model_path="Qwen/Qwen3",
+        tp_rank=1,
+        tp_size=2,
+        pp_rank=1,
+        pp_size=2,
+        attn_cp_rank=1,
+        attn_cp_size=2,
+        is_mla_model=False,
+    )
+    backend0 = DocumentKVHiCacheBackend(rank0_config, {})
+    backend1 = DocumentKVHiCacheBackend(rank1_config, {})
+
+    assert backend0.storage_identity == "Qwen-Qwen3_tp_0_of_2_pp_0_of_2_cp_0_of_2"
+    assert backend1.storage_identity == "Qwen-Qwen3_tp_1_of_2_pp_1_of_2_cp_1_of_2"
+    assert backend0.set("shared-page", b"rank0") is True
+    assert backend1.set("shared-page", b"rank1") is True
+    assert backend0.get("shared-page") == b"rank0"
+    assert backend1.get("shared-page") == b"rank1"
+    assert len(list(tmp_path.glob("*.cachet-hicache-page"))) == 2
+
+
+def test_document_kv_hicache_page_provider_returns_false_when_atomic_disk_write_fails(tmp_path, monkeypatch):
+    provider = build_document_kv_hicache_provider(
+        extra_config={DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY: f"disk:{tmp_path}"},
+        storage_identity="rank0",
+    )
+
+    def fail_replace(source, destination):
+        assert Path(source).is_file()
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(sglang_dynamic_backend.os, "replace", fail_replace)
+
+    assert provider.set("doc-1", b"payload") is False
+    assert provider.exists("doc-1") is False
+    assert provider.get("doc-1") is None
+    assert list(tmp_path.glob("*.tmp")) == []
+    assert list(tmp_path.glob("*.cachet-hicache-page")) == []
+
+
+def test_document_kv_hicache_backend_builtin_provider_transfers_v1_host_pages():
+    backend = DocumentKVHiCacheBackend(provider=DocumentKVHiCachePageProvider())
+    host_pool = FakeHostPool()
+    host_pool.pages[0] = b"page1"
+    host_pool.pages[2] = b"page2"
+    backend.register_mem_pool_host(host_pool)
+
+    assert backend.batch_set_v1(["a", "b"], [0, 1, 2, 3]) == [True, True]
+    assert backend.batch_get_v1(["a", "missing"], [10, 11, 12, 13]) == [True, False]
+    assert host_pool.loaded == [(10, bytearray(b"page1"))]
+
+
+def test_document_kv_hicache_builtin_provider_factory_path_constructs_non_noop_provider():
+    factory = load_document_kv_hicache_provider_factory(DOCUMENT_KV_HICACHE_PROVIDER_FACTORY)
+    provider = factory(extra_config={})
+
+    assert isinstance(provider, DocumentKVHiCachePageProvider)
+    assert not isinstance(provider, NoOpDocumentKVHiCacheProvider)
+
+
 def test_document_kv_hicache_backend_loads_provider_factory_from_mapping(monkeypatch):
     module = ModuleType("sglang_document_kv_provider")
     provider = RecordingProvider()
@@ -104,9 +223,11 @@ def test_document_kv_hicache_backend_loads_provider_factory_from_mapping(monkeyp
 def test_document_kv_hicache_backend_loads_provider_factory_from_sglang_storage_config(monkeypatch):
     module = ModuleType("sglang_document_kv_storage_config_provider")
     provider = RecordingProvider()
+    seen_storage_identities = []
 
-    def build_provider(*, extra_config):
+    def build_provider(*, extra_config, storage_identity):
         assert extra_config["tenant"] == "runtime"
+        seen_storage_identities.append(storage_identity)
         return provider
 
     module.build_provider = build_provider
@@ -115,13 +236,45 @@ def test_document_kv_hicache_backend_loads_provider_factory_from_sglang_storage_
         extra_config={
             "tenant": "runtime",
             DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
-        }
+        },
+        model_name="runtime-model",
+        tp_rank=1,
+        tp_size=2,
+        pp_rank=0,
+        pp_size=1,
     )
 
     backend = DocumentKVHiCacheBackend(storage_config, {})
 
     assert backend.provider is provider
     assert backend.extra_config["tenant"] == "runtime"
+    assert seen_storage_identities == ["runtime-model_tp_1_of_2_pp_0_of_1"]
+
+
+def test_document_kv_hicache_backend_keeps_legacy_provider_factory_signature(monkeypatch):
+    module = ModuleType("sglang_document_kv_legacy_provider")
+    provider = RecordingProvider()
+
+    def build_provider(*, extra_config):
+        assert extra_config["tenant"] == "legacy"
+        return provider
+
+    module.build_provider = build_provider
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    storage_config = SimpleNamespace(
+        extra_config={
+            "tenant": "legacy",
+            DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY: f"{module.__name__}:build_provider",
+        },
+        model_name="legacy-model",
+        tp_rank=0,
+        tp_size=1,
+    )
+
+    backend = DocumentKVHiCacheBackend(storage_config, {})
+
+    assert backend.provider is provider
+    assert backend.storage_identity == "legacy-model_tp_0_of_1"
 
 
 def test_document_kv_hicache_backend_loads_provider_factory_from_json(monkeypatch):

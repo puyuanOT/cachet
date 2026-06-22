@@ -46,6 +46,9 @@ DEFAULT_ENGINE_LAUNCH_CONFIG_FILENAMES = {
     ServingBackend.VLLM: "vllm-launch-config.json",
     ServingBackend.SGLANG: "sglang-launch-config.json",
 }
+DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_PROVIDER_FACTORY = (
+    "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider"
+)
 STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_COUNT = 3
 STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
     "exactly three distinct Databricks run-status sidecars "
@@ -395,7 +398,9 @@ class BenchmarkPlanConfig:
     github_governance_output_json: str | None = None
     release_preflight_output_json: str | None = None
     engine_launch_config_output_dir: str | None = None
-    engine_launch_config_sglang_provider_factory: str | None = None
+    engine_launch_config_sglang_provider_factory: str | None = (
+        DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_PROVIDER_FACTORY
+    )
 
     def __post_init__(self) -> None:
         if not self.suite_id:
@@ -2069,6 +2074,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--engine-launch-config-sglang-provider-factory",
+        default=DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_PROVIDER_FACTORY,
         help=(
             "SGLang provider factory module:attribute path to stamp into generated "
             "launch-config sidecars for strict runtime preflight."

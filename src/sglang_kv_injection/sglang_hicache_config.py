@@ -17,6 +17,7 @@ from document_kv_cache.engine_adapters import (
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_BACKEND_CLASS,
     DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
+    DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
 )
 
@@ -30,6 +31,7 @@ __all__ = [
     "DOCUMENT_KV_HICACHE_CONFIG_PREFIX",
     "DOCUMENT_KV_HICACHE_CONFIG_RECORD_TYPE",
     "DOCUMENT_KV_HICACHE_CONFIG_SCHEMA_VERSION",
+    "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY",
     "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY",
     "SGLANG_HICACHE_DYNAMIC_BACKEND",
     "main",
@@ -43,7 +45,7 @@ def sglang_hicache_launch_config(
     backend_name: str = "document_kv",
     module_path: str = DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
     class_name: str = DOCUMENT_KV_HICACHE_BACKEND_CLASS,
-    provider_factory: str | None = None,
+    provider_factory: str | None = DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
     extra_config: Mapping[str, Any] | None = None,
     page_size: int | None = None,
     hicache_ratio: float | None = None,
@@ -92,7 +94,7 @@ def sglang_hicache_cli_args(
     backend_name: str = "document_kv",
     module_path: str = DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
     class_name: str = DOCUMENT_KV_HICACHE_BACKEND_CLASS,
-    provider_factory: str | None = None,
+    provider_factory: str | None = DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
     extra_config: Mapping[str, Any] | None = None,
     page_size: int | None = None,
     hicache_ratio: float | None = None,
@@ -145,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--provider-factory",
+        default=DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
         help="Optional Cachet provider factory in module:attribute form.",
     )
     parser.add_argument(

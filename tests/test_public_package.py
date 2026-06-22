@@ -79,6 +79,7 @@ def test_public_document_package_reexports_core_api():
         DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
         DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
         DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH,
+        DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY,
         DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
         DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH,
         DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
@@ -429,6 +430,9 @@ def test_public_document_package_reexports_core_api():
     assert DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD == "native-kv-import"
     assert DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION == 1
     assert DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH == "sglang_kv_injection.sglang_dynamic_backend"
+    assert DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY == (
+        "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider"
+    )
     assert DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE == "sglang_kv_injection.launch_config.v1"
     assert DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH == "vllm_kv_injection.vllm_dynamic_connector"
     assert DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE == "vllm_kv_injection.launch_config.v1"
@@ -785,6 +789,7 @@ def test_public_document_package_star_exports_are_document_first_with_legacy_get
     assert "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD" in document_kv_cache.__all__
     assert "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION" in document_kv_cache.__all__
     assert "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH" in document_kv_cache.__all__
+    assert "DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY" in document_kv_cache.__all__
     assert "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE" in document_kv_cache.__all__
     assert "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH" in document_kv_cache.__all__
     assert "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE" in document_kv_cache.__all__
@@ -1590,6 +1595,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
         "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
         "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
+        "DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY",
         "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
         "DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY",
         "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",

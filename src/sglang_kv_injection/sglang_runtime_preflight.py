@@ -1142,7 +1142,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     launch_config = (
         _read_launch_config_json(args.launch_config_json)
         if args.launch_config_json
-        else sglang_hicache_launch_config(provider_factory=args.provider_factory)
+        else (
+            sglang_hicache_launch_config(provider_factory=args.provider_factory)
+            if args.provider_factory is not None
+            else sglang_hicache_launch_config()
+        )
     )
     record = document_kv_sglang_runtime_preflight_to_record(launch_config)
     output = json.dumps(record, indent=2, sort_keys=True) + "\n"

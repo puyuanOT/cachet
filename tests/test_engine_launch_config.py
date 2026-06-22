@@ -8,6 +8,7 @@ from document_kv_cache.engine_adapters import (
     ServingBackend,
 )
 from document_kv_cache.engine_launch_config import (
+    DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY,
     DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
     DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
     DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
@@ -147,6 +148,14 @@ def test_build_sglang_launch_config_emits_valid_release_shape():
         **_document_kv_extra("sglang", provider_factory=SGLANG_TEST_PROVIDER_FACTORY),
         "document_kv.record_type": DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
     }
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
+
+
+def test_build_sglang_launch_config_defaults_to_builtin_provider_factory():
+    record = build_sglang_launch_config()
+    extra = json.loads(record["hicache_storage_backend_extra_config"])
+
+    assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == DEFAULT_SGLANG_DOCUMENT_KV_PROVIDER_FACTORY
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
 
 
