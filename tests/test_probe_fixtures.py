@@ -20,12 +20,26 @@ from document_kv_cache.engine_adapters import (
 from document_kv_cache.engine_probe import read_engine_adapter_payload
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_PROFILE
 from document_kv_cache.probe_fixtures import (
+    DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES,
     DEFAULT_ENGINE_PROBE_FIXTURE_REQUEST_ID,
     ENGINE_PROBE_FIXTURE_RECORD_TYPE,
     ENGINE_PROBE_FIXTURE_SCHEMA_VERSION,
     EngineProbeFixtureConfig,
     engine_probe_fixture_result_to_record,
     write_qwen3_v1_engine_probe_fixture,
+)
+from vllm_kv_injection.vllm_native_provider import (
+    document_kv_vllm_probe_layer_names,
+)
+from vllm_kv_injection.vllm_runtime_contract import (
+    VLLMInstalledKVConnectorContract,
+    VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+    VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+    installed_vllm_kv_connector_v1_contract_to_record,
+)
+from vllm_kv_injection.vllm_runtime_preflight import (
+    document_kv_vllm_runtime_preflight_to_record,
+    validate_document_kv_vllm_runtime_preflight_record,
 )
 
 
@@ -47,6 +61,7 @@ def test_write_qwen3_v1_engine_probe_fixture_generates_valid_vllm_merged_bundle(
     actions = build_engine_kv_connector_actions(plan, payload)
     actions_record = engine_kv_connector_actions_to_record(actions)
     written_actions_record = json.loads(result.actions_json.read_text(encoding="utf-8"))
+    layer_names_record = json.loads(result.vllm_layer_names_json.read_text(encoding="utf-8"))
 
     assert record == engine_probe_fixture_result_to_record(result)
     assert record["record_type"] == ENGINE_PROBE_FIXTURE_RECORD_TYPE
@@ -71,12 +86,26 @@ def test_write_qwen3_v1_engine_probe_fixture_generates_valid_vllm_merged_bundle(
         "document_chunk",
     ]
     assert result.actions_json.name == "qwen3-v1-fixture.actions.json"
+    assert result.vllm_layer_names_json.name == DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"]
     assert record["uris"]["actions_json"] == result.actions_uri
     assert record["paths"]["actions_json"] == str(result.actions_json)
     assert record["sha256"]["actions_json"] == result.actions_sha256
+    assert record["uris"]["vllm_layer_names_json"] == result.vllm_layer_names_uri
+    assert record["paths"]["vllm_layer_names_json"] == str(result.vllm_layer_names_json)
+    assert record["sha256"]["vllm_layer_names_json"] == result.vllm_layer_names_sha256
     assert hashlib.sha256(result.actions_json.read_bytes()).hexdigest() == result.actions_sha256
+    assert (
+        hashlib.sha256(result.vllm_layer_names_json.read_bytes()).hexdigest()
+        == result.vllm_layer_names_sha256
+    )
     assert hashlib.sha256(payload).hexdigest() == result.payload_sha256
     assert written_actions_record == actions_record
+    assert layer_names_record == {"layer_names": list(document_kv_vllm_probe_layer_names(result.layout))}
+    preflight_record = document_kv_vllm_runtime_preflight_to_record(
+        layer_names_record["layer_names"],
+        installed_contract=_matching_installed_vllm_contract_record(),
+    )
+    validate_document_kv_vllm_runtime_preflight_record(preflight_record)
     validate_engine_kv_connector_actions_record(actions_record)
     assert actions_record["reservation"]["total_tokens"] == 6
     assert [copy["payload_index"] for copy in actions_record["copies"]] == [None, None, None]
@@ -104,6 +133,9 @@ def test_write_qwen3_v1_engine_probe_fixture_generates_segmented_sglang_bundle(t
 
     assert result.adapter_request.backend == ServingBackend.SGLANG
     assert result.adapter_request.payload_mode == PayloadMode.SEGMENTED
+    assert result.vllm_layer_names_uri is None
+    assert result.vllm_layer_names_json is None
+    assert result.vllm_layer_names_sha256 is None
     assert plan.adapter_ids == ("selection-lora",)
     assert plan.total_tokens == 2
     assert len(payload_segments) == 2
@@ -158,7 +190,9 @@ def test_qwen3_v1_engine_probe_fixture_cli_writes_manifest(tmp_path):
     assert stdout_record["total_tokens"] == 2
     assert stdout_record["payload_mode"] == "merged"
     assert (output_dir / "qwen3-v1-fixture.actions.json").exists()
+    assert (output_dir / "vllm-layer-names.json").exists()
     assert stdout_record["uris"]["actions_json"].endswith("/qwen3-v1-fixture.actions.json")
+    assert stdout_record["uris"]["vllm_layer_names_json"].endswith("/vllm-layer-names.json")
 
 
 def test_qwen3_v1_engine_probe_fixture_accepts_relative_output_dir(tmp_path, monkeypatch):
@@ -177,6 +211,7 @@ def test_qwen3_v1_engine_probe_fixture_accepts_relative_output_dir(tmp_path, mon
     assert payload_uri.startswith(str(tmp_path))
     assert (tmp_path / "relative-fixture" / "qwen3-v1-fixture.kvpack").exists()
     assert (tmp_path / "relative-fixture" / "qwen3-v1-fixture.actions.json").exists()
+    assert (tmp_path / "relative-fixture" / "vllm-layer-names.json").exists()
 
 
 def test_qwen3_v1_engine_probe_fixture_rejects_reserved_metadata(tmp_path):
@@ -195,4 +230,22 @@ def test_legacy_probe_fixtures_reexports_document_fixture_api():
     assert (
         legacy_probe_fixtures.write_qwen3_v1_engine_probe_fixture
         is public_probe_fixtures.write_qwen3_v1_engine_probe_fixture
+    )
+
+
+def _matching_installed_vllm_contract_record() -> dict:
+    return installed_vllm_kv_connector_v1_contract_to_record(
+        VLLMInstalledKVConnectorContract(
+            package_version="0.23.0",
+            importable=True,
+            installed_methods=tuple(
+                sorted(
+                    (
+                        *VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+                        *VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+                    )
+                )
+            ),
+            installed_properties=("prefer_cross_layer_blocks", "role"),
+        )
     )

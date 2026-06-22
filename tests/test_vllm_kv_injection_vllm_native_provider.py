@@ -31,6 +31,7 @@ from vllm_kv_injection.vllm_native_provider import (
     document_kv_vllm_layer_index_from_name,
     document_kv_vllm_layer_mapping_record_issues,
     document_kv_vllm_layer_mapping_to_record,
+    document_kv_vllm_probe_layer_names,
     inspect_document_kv_vllm_layer_mapping,
     validate_document_kv_vllm_layer_mapping_record,
 )
@@ -366,6 +367,13 @@ def test_vllm_layer_mapping_diagnostic_accepts_runtime_layer_names():
     validate_document_kv_vllm_layer_mapping_record(record)
 
 
+def test_vllm_probe_layer_names_match_layer_mapping_contract():
+    names = document_kv_vllm_probe_layer_names(layout())
+
+    assert names == ("probe.layer.0", "probe.layer.1")
+    assert document_kv_vllm_layer_mapping_to_record(names)["ok"] is True
+
+
 def test_vllm_layer_mapping_preflight_rejects_unresolved_and_duplicate_names():
     record = document_kv_vllm_layer_mapping_to_record(
         [
@@ -421,6 +429,7 @@ def test_vllm_layer_mapping_diagnostic_is_exported_from_cachet_adapter_facade():
         cachet_vllm.document_kv_vllm_layer_mapping_to_record(["model.layers.0.self_attn.attn"])["ok"]
         is True
     )
+    assert cachet_vllm.document_kv_vllm_probe_layer_names(layout()) == ("probe.layer.0", "probe.layer.1")
 
 
 def test_native_provider_handshake_metadata_includes_runtime_preflight(monkeypatch):
