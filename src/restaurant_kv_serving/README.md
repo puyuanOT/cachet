@@ -28,7 +28,7 @@ module paths, root exports, and selected monkeypatch hooks.
 - `benchmarks.py` is a compatibility wrapper over `document_kv_cache.benchmarks`, which owns the V1 dataset specs, deterministic prompt/context builders, and quality/latency schema for comparing baseline prefill against document KV-cache reuse.
 - `dataset_prep.py` is a compatibility wrapper over `document_kv_cache.dataset_prep`, which owns Biography, HotpotQA, MusiQue, and NIAH normalization into the JSONL schema consumed by `benchmark_runner.py`, including synthetic NIAH generation.
 - `benchmark_plan.py` emits reproducible dataset-preparation and benchmark-runner command plans for target AWS g6/L4/Qwen3 V1 jobs, while the Databricks helpers enforce supported V1 GPU node families. The default/release target remains AWS g6/L4, with explicit AWS g5/A10G compatibility runs available under `aws-g5-a10g`.
-- `benchmark_handoffs.py` is a compatibility wrapper over `document_kv_cache.benchmark_handoffs`, which joins generated Cachet handoff artifacts onto prepared V1 benchmark JSONL rows before Databricks benchmark execution.
+- `benchmark_handoffs.py` is a compatibility wrapper over `document_kv_cache.benchmark_handoffs`, which generates per-row Cachet handoff bundles and joins those artifacts onto prepared V1 benchmark JSONL rows before Databricks benchmark execution.
 - `benchmark_plan_executor.py` executes a benchmark plan JSON command sequence, primarily for managed job runners.
 - `databricks_job.py` is a compatibility wrapper for the document-owned AWS g6/L4 Databricks V1 benchmark job payload helper.
 - `databricks_storage_benchmark_job.py` is a compatibility wrapper for the document-owned AWS g6/L4 Databricks storage-reader job payload helper.
