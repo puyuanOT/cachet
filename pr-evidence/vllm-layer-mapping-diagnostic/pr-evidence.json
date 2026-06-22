@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": false,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "",
+  "gpt55_review_summary": "",
+  "issues": [
+    "GPT-5.5 review must be completed",
+    "gpt55_review_outcome must be 'clean' or 'findings_resolved'",
+    "gpt55_review_summary must describe findings and fixes, or state that the review was clean"
+  ],
+  "ok": false,
+  "pull_request_number": null,
+  "pull_request_url": "",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/vllm_kv_injection/vllm_native_provider.py",
+    "src/vllm_kv_injection/__init__.py",
+    "src/vllm_kv_injection/README.md",
+    "tests/test_vllm_kv_injection_vllm_native_provider.py",
+    "pr-evidence/vllm-layer-mapping-diagnostic"
+  ],
+  "verification": [
+    "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py (16 passed)",
+    "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py tests/test_vllm_kv_injection_probe.py tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_vllm_kv_injection_vllm_transfer_config.py tests/test_native_probe_factories.py tests/test_public_package.py (122 passed)",
+    "python -m pytest -q (1605 passed)",
+    "git diff --check"
+  ],
+  "what_changed": [
+    "Added a vLLM layer-name mapping diagnostic that serializes how Cachet maps registered vLLM KV cache tensors to document-KV payload layer indices, and wired the provider registration path to use the same validator."
+  ],
+  "why": "Before launching provider-backed native probes on g5/g6, the target runtime needs a preflightable record proving real vLLM layer names can be mapped safely instead of relying on insertion order or silent best-effort behavior."
+}
