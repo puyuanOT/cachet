@@ -15,6 +15,7 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
     BenchmarkArm,
     BenchmarkComparison,
     BenchmarkExample,
@@ -90,6 +91,17 @@ class BenchmarkEngineRequest:
     example: BenchmarkExample
     arm: BenchmarkArm
     prompt_parts: BenchmarkPromptParts
+    request_id: str | None = None
+    kv_transfer_params: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.request_id is not None:
+            _validate_non_empty_string(self.request_id, "request_id")
+        object.__setattr__(
+            self,
+            "kv_transfer_params",
+            _json_object_mapping(self.kv_transfer_params, "kv_transfer_params"),
+        )
 
     @property
     def logical_prompt_text(self) -> str:
@@ -305,6 +317,8 @@ def run_benchmark_suite(
                 example=example,
                 arm=arm,
                 prompt_parts=prompt_parts,
+                request_id=_request_id_for_arm(example, arm),
+                kv_transfer_params=_kv_transfer_params_for_arm(example, arm),
             )
             measurements.append(_run_engine(request, engines[arm.arm_id]))
     report_rows = summarize_measurements(measurements)
@@ -637,6 +651,23 @@ def _arm_id_for_cache(arms: Sequence[BenchmarkArm]) -> str:
     return CACHE_REUSE_ARM
 
 
+def _kv_transfer_params_for_arm(example: BenchmarkExample, arm: BenchmarkArm) -> Mapping[str, Any]:
+    if not arm.uses_cache:
+        return {}
+    return example.kv_transfer_params
+
+
+def _request_id_for_arm(example: BenchmarkExample, arm: BenchmarkArm) -> str | None:
+    if not arm.uses_cache:
+        return None
+    request_id = example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+    if request_id is None:
+        return None
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} must be a non-empty string")
+    return request_id
+
+
 def _example_seed(seed: int | None, dataset: str, example_id: str) -> int:
     value = 0 if seed is None else seed
     for value_part in (dataset, "\0", example_id):
@@ -680,6 +711,7 @@ def _example_from_record(
         query=_string_field(record, "query", fallback_fields=("question",)),
         expected_answer=_optional_string_field(record, "expected_answer", fallback_fields=("answer", "target")),
         metadata=_string_mapping(record.get("metadata", {}), field_name="metadata"),
+        kv_transfer_params=_json_object_mapping(record.get("kv_transfer_params", {}), "kv_transfer_params"),
     )
 
 
