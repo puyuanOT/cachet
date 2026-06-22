@@ -12,6 +12,9 @@ This package defines the vLLM-facing document KV-cache integration contract.
 - `vllm_runtime_contract.py` documents the vLLM V1 KV connector lifecycle that
   a native patched runtime must implement around the shared document handoff and
   can emit an installed-runtime drift diagnostic before native probe launches.
+- `vllm_runtime_preflight.py` combines the installed-vLLM contract diagnostic
+  with the provider layer-name mapping record into the strict preflight that
+  must pass before provider-backed native probe launches.
 - `vllm_transfer_config.py` builds the vLLM launch config shape for a patched connector while reserving `document_kv.*` handoff keys.
 
 Keep this package close to vLLM internals and free of document retrieval, cache storage, CPU assembly, scheduling, or LoRA routing logic.

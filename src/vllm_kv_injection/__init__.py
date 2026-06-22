@@ -90,6 +90,14 @@ from vllm_kv_injection.vllm_runtime_contract import (
     vllm_kv_connector_v1_contract_to_record,
     vllm_kv_connector_v1_method_issues,
 )
+from vllm_kv_injection.vllm_runtime_preflight import (
+    DOCUMENT_KV_VLLM_RUNTIME_PREFLIGHT_RECORD_TYPE,
+    DOCUMENT_KV_VLLM_RUNTIME_PREFLIGHT_SCHEMA_VERSION,
+    document_kv_vllm_runtime_preflight_record_issues,
+    document_kv_vllm_runtime_preflight_to_record,
+    validate_document_kv_vllm_runtime_preflight_record,
+    write_document_kv_vllm_runtime_preflight_json,
+)
 from vllm_kv_injection.vllm_transfer_config import (
     DOCUMENT_KV_DEFAULT_ROLE,
     DOCUMENT_KV_TRANSFER_CONFIG_PREFIX,
@@ -115,6 +123,8 @@ __all__ = [
     "DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION",
+    "DOCUMENT_KV_VLLM_RUNTIME_PREFLIGHT_RECORD_TYPE",
+    "DOCUMENT_KV_VLLM_RUNTIME_PREFLIGHT_SCHEMA_VERSION",
     "DocumentKVConnectorMetadata",
     "DocumentKVConnector",
     "DocumentKVHandoffLoad",
@@ -168,6 +178,8 @@ __all__ = [
     "document_kv_vllm_layer_index_from_name",
     "document_kv_vllm_layer_mapping_record_issues",
     "document_kv_vllm_layer_mapping_to_record",
+    "document_kv_vllm_runtime_preflight_record_issues",
+    "document_kv_vllm_runtime_preflight_to_record",
     "document_kv_transfer_config",
     "document_kv_transfer_config_json",
     "inspect_installed_vllm_kv_connector_v1_contract",
@@ -183,10 +195,12 @@ __all__ = [
     "slot_mapping_from_blocks",
     "validate_installed_vllm_kv_connector_v1_contract_record",
     "validate_document_kv_vllm_layer_mapping_record",
+    "validate_document_kv_vllm_runtime_preflight_record",
     "validate_vllm_kv_connector_v1_contract_record",
     "validate_vllm_kv_connector_v1_methods",
     "vllm_runtime_import_error",
     "vllm_kv_connector_v1_contract_record_issues",
     "vllm_kv_connector_v1_contract_to_record",
     "vllm_kv_connector_v1_method_issues",
+    "write_document_kv_vllm_runtime_preflight_json",
 ]

@@ -109,6 +109,9 @@ new document modules depend on restaurant-owned implementations.
 - `vllm_runtime_contract_data.py` single-sources the vLLM V1 KV connector
   lifecycle contract shared by native-probe diagnostics and the vendored vLLM
   adapter package.
+- `vllm_runtime_preflight.py` exposes the Cachet-branded CLI wrapper for the
+  strict installed-vLLM contract plus layer-name mapping preflight required
+  before provider-backed native vLLM probes.
 - `workflow.py` coordinates optional training, cache generation, manifest
   registration, materialization, and serving preparation.
 
@@ -144,6 +147,7 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-engine-launch-config`
 - `document-kv-engine-probe-fixture`
 - `document-kv-engine-probe-databricks-job`
+- `document-kv-vllm-runtime-preflight`
 - `document-kv-vllm-smoke`
 - `document-kv-vllm-smoke-databricks-job`
 
@@ -168,6 +172,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-engine-launch-config`
 - `cachet-engine-probe-fixture`
 - `cachet-engine-probe-databricks-job`
+- `cachet-vllm-runtime-preflight`
 - `cachet-vllm-smoke`
 - `cachet-vllm-smoke-databricks-job`
 
