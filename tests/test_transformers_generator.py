@@ -18,6 +18,7 @@ from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
     CACHET_TRANSFORMERS_TORCH_DTYPE_ENV,
     CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV,
+    CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV,
     TransformersKVChunkGenerator,
     TransformersKVGeneratorConfig,
     build_transformers_kv_chunk_generator,
@@ -310,6 +311,7 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
         '{"attn_implementation":"eager"}',
     )
     monkeypatch.setenv(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV, '{"padding_side":"left"}')
+    monkeypatch.setenv(CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV, "false")
 
     generator = build_transformers_kv_chunk_generator()
 
@@ -326,7 +328,7 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     assert config.add_special_tokens is True
     assert config.cache_axis_order == "token_major"
     assert config.model_kwargs == {"attn_implementation": "eager"}
-    assert config.tokenizer_kwargs == {"padding_side": "left"}
+    assert config.tokenizer_kwargs == {"padding_side": "left", "use_fast": False}
 
 
 def test_transformers_generator_env_factory_accepts_databricks_escaped_json(monkeypatch):
@@ -343,6 +345,30 @@ def test_transformers_generator_env_factory_accepts_databricks_escaped_json(monk
         classmethod(fake_from_pretrained),
     )
     monkeypatch.setenv(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV, r"{\"use_fast\":false}")
+
+    generator = build_transformers_kv_chunk_generator()
+
+    assert generator is sentinel
+    _cls, config, layout = calls[0]
+    assert layout is None
+    assert config.tokenizer_kwargs == {"use_fast": False}
+
+
+def test_transformers_generator_env_factory_use_fast_env_overrides_json(monkeypatch):
+    calls = []
+    sentinel = object()
+
+    def fake_from_pretrained(cls, config, *, layout=None):
+        calls.append((cls, config, layout))
+        return sentinel
+
+    monkeypatch.setattr(
+        TransformersKVChunkGenerator,
+        "from_pretrained",
+        classmethod(fake_from_pretrained),
+    )
+    monkeypatch.setenv(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV, '{"use_fast":true}')
+    monkeypatch.setenv(CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV, "false")
 
     generator = build_transformers_kv_chunk_generator()
 
@@ -375,6 +401,7 @@ def test_transformers_generator_env_factory_treats_blank_values_as_unset(monkeyp
         CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
         CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
         CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
+        CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV,
     ):
         monkeypatch.setenv(name, " ")
 

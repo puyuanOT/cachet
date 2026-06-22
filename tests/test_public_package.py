@@ -2033,6 +2033,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
         "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV",
         "CACHET_TRANSFORMERS_TORCH_DTYPE_ENV",
         "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV",
+        "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV",
         "TransformersKVGeneratorConfig",
         "TransformersKVChunkGenerator",
         "build_transformers_kv_chunk_generator",
