@@ -47,6 +47,7 @@ __all__ = reexport_public(
         "SMOKE_DATASETS",
         "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
         "VLLMSmokeBenchmarkConfig",
+        "VLLMPreparedHandoffGenerationConfig",
         "build_metadata",
         "build_vllm_native_provider_probe_record",
         "cuda_wheel_env_paths",
@@ -64,6 +65,8 @@ __all__ = reexport_public(
         "write_prompt_token_budget_jsonl",
         "benchmark_dataset_paths",
         "write_smoke_datasets",
+        "prepare_generated_benchmark_handoffs",
+        "release_handoff_generation_resources",
         "smoke_dataset_records",
         "parse_dataset_specs",
         "dataset_args",
@@ -206,6 +209,17 @@ def benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]
 
 def write_smoke_datasets(local_dir: Path) -> dict[str, Path]:
     return _call_document_function("write_smoke_datasets", local_dir)
+
+
+def prepare_generated_benchmark_handoffs(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> dict[str, Path]:
+    return _call_document_function("prepare_generated_benchmark_handoffs", config, dataset_paths)
+
+
+def release_handoff_generation_resources() -> None:
+    return _call_document_function("release_handoff_generation_resources")
 
 
 def smoke_dataset_records() -> dict[str, dict[str, object]]:
@@ -358,6 +372,8 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "write_prompt_token_budget_jsonl": write_prompt_token_budget_jsonl,
     "benchmark_dataset_paths": benchmark_dataset_paths,
     "write_smoke_datasets": write_smoke_datasets,
+    "prepare_generated_benchmark_handoffs": prepare_generated_benchmark_handoffs,
+    "release_handoff_generation_resources": release_handoff_generation_resources,
     "smoke_dataset_records": smoke_dataset_records,
     "parse_dataset_specs": parse_dataset_specs,
     "dataset_args": dataset_args,

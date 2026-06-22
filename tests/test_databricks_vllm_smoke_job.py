@@ -128,6 +128,18 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
+        (
+            {"benchmark_handoff_generator_factory": "document_kv_cache.transformers_generator:build"},
+            "requires prepared dataset specs",
+        ),
+        (
+            {"benchmark_handoff_output_dir": "/Volumes/catalog/schema/volume/handoffs"},
+            "requires benchmark_handoff_generator_factory",
+        ),
+        ({"benchmark_handoff_dtype": ""}, "benchmark_handoff_dtype must be non-empty"),
+        ({"benchmark_handoff_align_bytes": 0}, "benchmark_handoff_align_bytes must be a positive integer"),
+        ({"spark_env_vars": {"BAD-NAME": "value"}}, "valid environment variable name"),
+        ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}}, "looks secret-bearing"),
     ]
 
     for overrides, message in invalid_cases:
@@ -144,6 +156,44 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
             assert message in str(exc)
         else:
             raise AssertionError(f"expected validation to fail for {overrides!r}")
+
+
+def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="v1-vllm-prepared-001",
+        output_dir="/Volumes/catalog/schema/volume/v1-vllm-prepared",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        dataset_specs=DATASET_SPECS,
+        benchmark_handoff_generator_factory=(
+            "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
+        ),
+        benchmark_handoff_output_dir="/Volumes/catalog/schema/volume/v1-vllm-prepared/handoffs",
+        benchmark_handoff_dtype="bfloat16",
+        benchmark_handoff_align_bytes=1,
+        spark_env_vars={
+            "CACHET_TRANSFORMERS_DEVICE": "cuda",
+            "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
+            "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "true",
+        },
+    )
+
+    task = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
+
+    assert parameters[parameters.index("--benchmark-handoff-generator-factory") + 1] == (
+        "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
+    )
+    assert parameters[parameters.index("--benchmark-handoff-output-dir") + 1] == (
+        "/Volumes/catalog/schema/volume/v1-vllm-prepared/handoffs"
+    )
+    assert parameters[parameters.index("--benchmark-handoff-dtype") + 1] == "bfloat16"
+    assert parameters[parameters.index("--benchmark-handoff-align-bytes") + 1] == "1"
+    assert task["new_cluster"]["spark_env_vars"] == {
+        "CACHET_TRANSFORMERS_DEVICE": "cuda",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
+        "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "true",
+    }
 
 
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
@@ -293,6 +343,8 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
             SINGLE_USER_NAME,
             "--wheel-uri",
             WHEEL_URI,
+            "--spark-env-var",
+            "CACHET_TRANSFORMERS_DEVICE=cuda",
             "--output-json",
             str(payload_path),
             "--runner-script-output",
@@ -304,6 +356,7 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
     task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
+    assert task["new_cluster"]["spark_env_vars"] == {"CACHET_TRANSFORMERS_DEVICE": "cuda"}
     assert "vllm_smoke" in runner_path.read_text(encoding="utf-8")
 
 

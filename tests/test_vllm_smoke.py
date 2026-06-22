@@ -1,10 +1,12 @@
 from pathlib import Path
+import gc
 import json
 import os
 import subprocess
 import sys
 from types import ModuleType
 import urllib.error
+import weakref
 
 import pytest
 
@@ -24,6 +26,7 @@ from document_kv_cache.vllm_smoke import (
     TRANSFORMERS_CONSTRAINT,
     VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT,
     VLLM_VERSION,
+    VLLMPreparedHandoffGenerationConfig,
     VLLMSmokeBenchmarkConfig,
     benchmark_dataset_paths,
     benchmark_failure_summary,
@@ -41,6 +44,7 @@ from document_kv_cache.vllm_smoke import (
     install_vllm,
     parse_args,
     parse_dataset_specs,
+    prepare_generated_benchmark_handoffs,
     prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
@@ -62,6 +66,9 @@ from document_kv_cache.engine_adapters import (
     vllm_adapter_spec,
 )
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
+from document_kv_cache.kvpack import PackChunk
+from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.models import KVCacheKey
 from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
@@ -124,6 +131,40 @@ def write_handoff_json(path: Path, *, request_id: str, payload_uri: str, backend
         json.dumps(handoff_record(request_id=request_id, payload_uri=payload_uri, backend=backend), sort_keys=True),
         encoding="utf-8",
     )
+
+
+class OneTokenBenchmarkKVGenerator:
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = layout_for_model(
+            config.model_id,
+            dtype=config.dtype,
+            lora_id=config.lora_id,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=b"\0" * layout.bytes_per_token,
+            token_count=1,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class TrackedOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
+    last_ref = None
+
+    def __init__(self) -> None:
+        type(self).last_ref = weakref.ref(self)
 
 
 def test_dependency_constraints_match_pinned_g5_vllm_stack():
@@ -531,6 +572,15 @@ def test_parse_dataset_specs_requires_complete_v1_dataset_set(tmp_path):
         parse_dataset_specs(("biography",))
 
 
+def test_parse_dataset_specs_maps_dbfs_uris_to_cluster_paths():
+    specs = tuple(f"{dataset}=dbfs:/benchmarks/v1/{dataset}.jsonl" for dataset in SMOKE_DATASETS)
+
+    paths = parse_dataset_specs(specs)
+
+    assert paths["biography"] == Path("/dbfs/benchmarks/v1/biography.jsonl")
+    assert paths["niah"] == Path("/dbfs/benchmarks/v1/niah.jsonl")
+
+
 def test_benchmark_dataset_paths_uses_prepared_specs_without_writing_smoke(monkeypatch, tmp_path):
     specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
     config = VLLMSmokeBenchmarkConfig(
@@ -546,6 +596,79 @@ def test_benchmark_dataset_paths_uses_prepared_specs_without_writing_smoke(monke
     monkeypatch.setattr(public_vllm_smoke, "write_smoke_datasets", fail_if_smoke_is_written)
 
     assert benchmark_dataset_paths(config) == parse_dataset_specs(specs)
+
+
+def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tmp_path, monkeypatch):
+    module = ModuleType("cachet_test_vllm_handoff_generator")
+    module.build_generator = OneTokenBenchmarkKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-generated-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory=f"{module.__name__}:build_generator",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="bfloat16",
+            align_bytes=1,
+        ),
+    )
+
+    generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
+    coverage = validate_prepared_benchmark_handoffs(config, generated_paths)
+
+    assert list(generated_paths) == list(SMOKE_DATASETS)
+    assert coverage is not None
+    assert coverage["ok"] is True
+    generation = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    assert generation["ok"] is True
+    assert generation["dtype"] == "bfloat16"
+    assert generation["datasets"]["biography"]["entries"] == 1
+    enriched = json.loads(generated_paths["biography"].read_text(encoding="utf-8"))
+    assert enriched["kv_transfer_params"][DOCUMENT_KV_REQUEST_ID_PARAM].startswith("cachet-biography-biography-1-")
+    handoff_json = Path(enriched["kv_transfer_params"][DOCUMENT_KV_HANDOFF_JSON_PARAM])
+    payload_uri = enriched["kv_transfer_params"][DOCUMENT_KV_PAYLOAD_URI_PARAM]
+    assert handoff_json.exists()
+    assert payload_uri.startswith(str(tmp_path / "generated-handoffs" / "biography"))
+
+
+def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(tmp_path, monkeypatch):
+    module = ModuleType("cachet_test_vllm_handoff_generator_cleanup")
+    module.build_generator = TrackedOneTokenBenchmarkKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    released_after_generator_collectable = []
+
+    def fake_release_handoff_generation_resources():
+        gc.collect()
+        generator_ref = TrackedOneTokenBenchmarkKVGenerator.last_ref
+        released_after_generator_collectable.append(generator_ref is not None and generator_ref() is None)
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "release_handoff_generation_resources",
+        fake_release_handoff_generation_resources,
+    )
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-generated-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory=f"{module.__name__}:build_generator",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="bfloat16",
+            align_bytes=1,
+        ),
+    )
+
+    prepare_generated_benchmark_handoffs(config, dataset_paths)
+
+    assert released_after_generator_collectable == [True]
 
 
 def test_prepared_benchmark_handoff_coverage_record_counts_enriched_rows(tmp_path):
@@ -890,6 +1013,8 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
     assert metadata["cache_runtime_prompt"] is False
     assert metadata["cache_prompt_text_mode"] == "logical"
     assert metadata["requires_kv_transfer_params"] is True
+    assert metadata["generates_prepared_handoffs"] is False
+    assert metadata["benchmark_handoff_generation"] is None
     assert metadata["max_model_len"] == 32768
     assert metadata["max_num_seqs"] == 8
     assert metadata["gpu_memory_utilization"] == 0.72
@@ -928,6 +1053,14 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "0.72",
             "--package-install-spec",
             str(tmp_path / "cachet.whl"),
+            "--benchmark-handoff-generator-factory",
+            "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator",
+            "--benchmark-handoff-output-dir",
+            "dbfs:/tmp/cachet/generated-handoffs",
+            "--benchmark-handoff-dtype",
+            "bfloat16",
+            "--benchmark-handoff-align-bytes",
+            "1",
             *sum((["--dataset", spec] for spec in specs), []),
         ]
     )
@@ -948,6 +1081,12 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         gpu_memory_utilization=0.72,
         dataset_specs=specs,
         package_install_spec=str(tmp_path / "cachet.whl"),
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory="document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator",
+            output_dir=Path("/dbfs/tmp/cachet/generated-handoffs"),
+            dtype="bfloat16",
+            align_bytes=1,
+        ),
     )
 
 
@@ -968,6 +1107,15 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         ({"package_install_spec": ""}, "package_install_spec must be non-empty"),
+        (
+            {
+                "handoff_generation": VLLMPreparedHandoffGenerationConfig(
+                    generator_factory="module:factory",
+                    output_dir=tmp_path / "generated-handoffs",
+                )
+            },
+            "requires prepared dataset specs",
+        ),
     ]
 
     for overrides, message in invalid_cases:
