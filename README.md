@@ -173,15 +173,16 @@ For managed Databricks execution on the target AWS g6/L4 hardware, generate a ti
 storage-benchmark runner and `runs/submit` payload:
 
 ```bash
+mkdir -p databricks-runs/storage-benchmark
 python -m document_kv_cache.databricks_storage_benchmark_job \
   --workspace-dir /local_disk0/document-kv-storage-benchmark \
   --benchmark-output-json /Volumes/catalog/schema/volume/storage/storage-benchmark.json \
   --uc-volume-root /Volumes/catalog/schema/volume/storage \
   --runner-python-file dbfs:/benchmarks/run_storage_benchmark.py \
-  --runner-script-output run_storage_benchmark.py \
+  --runner-script-output databricks-runs/storage-benchmark/run_storage_benchmark.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
-  --output-json databricks-storage-benchmark-submit.json
+  --output-json databricks-runs/storage-benchmark/databricks-storage-benchmark-submit.json
 ```
 
 ## Workflow API
@@ -441,6 +442,7 @@ For managed Databricks execution on the target AWS g6/L4 hardware, generate a ti
 engine-probe runner and `runs/submit` payload:
 
 ```bash
+mkdir -p databricks-runs/engine-probe-vllm
 python -m document_kv_cache.databricks_engine_probe_job \
   --provider-backed-vllm-native-probe \
   --fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture \
@@ -449,11 +451,11 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --vllm-runtime-preflight-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-runtime-preflight.json \
   --vllm-runtime-preflight-layer-names-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
-  --runner-script-output run_engine_probe.py \
+  --runner-script-output databricks-runs/engine-probe-vllm/run_engine_probe.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
-  --output-json databricks-engine-probe-submit.json
+  --output-json databricks-runs/engine-probe-vllm/databricks-engine-probe-submit.json
 ```
 
 `--provider-backed-vllm-native-probe` is the preferred single-backend QA probe
@@ -527,14 +529,15 @@ managed serving environment provide the actual backend-native block-manager
 adapter.
 
 ```bash
+mkdir -p databricks-runs/engine-probe-matrix
 python -m document_kv_cache.databricks_engine_probe_job \
   --backend-config-json engine-probe-targets.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
-  --runner-script-output run_engine_probe.py \
+  --runner-script-output databricks-runs/engine-probe-matrix/run_engine_probe.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
-  --output-json databricks-engine-probes-submit.json
+  --output-json databricks-runs/engine-probe-matrix/databricks-engine-probes-submit.json
 ```
 
 In `--release-safe` matrix mode, the submit payload must contain exactly one
@@ -1162,14 +1165,15 @@ payload. The runner installs the uploaded wheel into the Databricks driver
 process and forwards the same wheel path to the isolated vLLM environment:
 
 ```bash
+mkdir -p databricks-runs/vllm-smoke
 python -m document_kv_cache.databricks_vllm_smoke_job \
   --benchmark-id v1_vllm_smoke_001 \
   --output-dir /Volumes/catalog/schema/volume/document-kv-v1-smoke \
   --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
-  --runner-script-output run_vllm_smoke.py \
+  --runner-script-output databricks-runs/vllm-smoke/run_vllm_smoke.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
-  --output-json databricks-vllm-smoke-submit.json
+  --output-json databricks-runs/vllm-smoke/databricks-vllm-smoke-submit.json
 ```
 
 The Databricks submit helper accepts the same prepared dataset and sizing flags,
@@ -1180,11 +1184,12 @@ the default Databricks node family (`aws-g6-l4` -> `g6.8xlarge`,
 cluster policy requires a specific matching size:
 
 ```bash
+mkdir -p databricks-runs/vllm-prepared
 python -m document_kv_cache.databricks_vllm_smoke_job \
   --benchmark-id v1_vllm_prepared_001 \
   --output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared \
   --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
-  --runner-script-output run_vllm_smoke.py \
+  --runner-script-output databricks-runs/vllm-prepared/run_vllm_smoke.py \
   --wheel-uri dbfs:/benchmarks/cachet-v1/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
@@ -1196,7 +1201,7 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --dataset hotpotqa=dbfs:/benchmarks/v1/hotpotqa.jsonl \
   --dataset musique=dbfs:/benchmarks/v1/musique.jsonl \
   --dataset niah=dbfs:/benchmarks/v1/niah.jsonl \
-  --output-json databricks-vllm-prepared-submit.json
+  --output-json databricks-runs/vllm-prepared/databricks-vllm-prepared-submit.json
 ```
 
 This emits suite metadata, per-request measurements, per-dataset quality/latency
@@ -1409,12 +1414,16 @@ The sidecar records the required `.gitignore` patterns, tracked and untracked
 path counts, tracked generated or secret-like artifact paths, and untracked
 generated or secret-like paths that Git still exposes as non-ignored files,
 including notebook checkpoint folders produced by exploratory Databricks or
-Jupyter work. It also records dirty tracked paths and the directories that
-require `README.md` or package docstring documentation, so release handoffs
-prove they were produced from a clean, documented worktree. It returns non-zero
-until all required ignore patterns are present, no forbidden artifact paths are
-tracked or exposed as untracked, every non-generated tracked/untracked
-directory is documented, and no tracked files differ from `HEAD`.
+Jupyter work. Databricks `runs/submit` sidecars, task logs, and status JSONs
+belong under the ignored `databricks-runs/` directory or in explicit release
+bundles; repository hygiene rejects that directory if it becomes tracked or
+visible as untracked source. It also records dirty tracked paths and the
+directories that require `README.md` or package docstring documentation, so
+release handoffs prove they were produced from a clean, documented worktree. It
+returns non-zero until all required ignore patterns are present, no forbidden
+artifact paths are tracked or exposed as untracked, every non-generated
+tracked/untracked directory is documented, and no tracked files differ from
+`HEAD`.
 
 For Databricks-managed execution, upload the package wheel, the generated benchmark plan JSON, and a small runner script, then generate a single-node AWS g6/L4 `runs/submit` payload. New integrations should prefer the generic `DatabricksSingleNodeGPUClusterConfig`, `build_single_node_gpu_cluster`, and `validate_aws_single_node_gpu_type` helper names; the older `g5` names remain compatibility aliases for existing callers. The Databricks payload CLIs accept `--hardware-target aws-g6-l4` or `--hardware-target aws-g5-a10g` and derive the default node type from the shared V1 hardware profile unless `--node-type-id` is explicitly supplied.
 When generating `v1-plan.json` for the provider-backed native probe paths,
@@ -1426,10 +1435,11 @@ so the plan carries the strict connector-factory metadata before a Databricks
 GPU job is submitted.
 
 ```bash
+mkdir -p databricks-runs/managed-plan
 python -m document_kv_cache.databricks_job \
   --plan-json-uri dbfs:/benchmarks/v1-plan.json \
   --runner-python-file dbfs:/benchmarks/run_plan.py \
-  --runner-script-output run_plan.py \
+  --runner-script-output databricks-runs/managed-plan/run_plan.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
@@ -1438,7 +1448,7 @@ python -m document_kv_cache.databricks_job \
   --spark-env-var CACHET_TRANSFORMERS_TORCH_DTYPE=bfloat16 \
   --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
   --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
-  --output-json databricks-run-submit.json
+  --output-json databricks-runs/managed-plan/databricks-run-submit.json
 ```
 
 Use `--spark-env-var` only for non-secret runtime configuration, such as the
@@ -1458,18 +1468,18 @@ requests are involved:
 
 ```bash
 cachet-databricks-runs \
-  --output-json databricks-run-submit-summary.json \
+  --output-json databricks-runs/managed-plan/databricks-run-submit-summary.json \
   payload-summary \
-  --payload-json databricks-run-submit.json \
+  --payload-json databricks-runs/managed-plan/databricks-run-submit.json \
   --expected-hardware-target aws-g6-l4 \
   --expected-node-type-id g6.8xlarge
 
 cachet-databricks-runs \
-  --output-json databricks-stage-submit-plan.json \
+  --output-json databricks-runs/managed-plan/databricks-stage-submit-plan.json \
   stage-and-submit \
-  --payload-json databricks-run-submit.json \
+  --payload-json databricks-runs/managed-plan/databricks-run-submit.json \
   --artifact v1-plan.json=dbfs:/benchmarks/v1-plan.json \
-  --artifact run_plan.py=dbfs:/benchmarks/run_plan.py \
+  --artifact databricks-runs/managed-plan/run_plan.py=dbfs:/benchmarks/run_plan.py \
   --require-payload-dbfs-artifacts \
   --dry-run
 ```
@@ -1498,20 +1508,20 @@ export DATABRICKS_HOST=https://dbc-...cloud.databricks.com
 export DATABRICKS_TOKEN=...
 
 cachet-databricks-runs \
-  --output-json databricks-stage-submit-response.json \
+  --output-json databricks-runs/managed-plan/databricks-stage-submit-response.json \
   stage-and-submit \
-  --payload-json databricks-run-submit.json \
+  --payload-json databricks-runs/managed-plan/databricks-run-submit.json \
   --artifact v1-plan.json=dbfs:/benchmarks/v1-plan.json \
-  --artifact run_plan.py=dbfs:/benchmarks/run_plan.py \
+  --artifact databricks-runs/managed-plan/run_plan.py=dbfs:/benchmarks/run_plan.py \
   --overwrite \
   --require-payload-dbfs-artifacts
 
 cachet-databricks-runs \
-  --output-json databricks-run-status.json \
+  --output-json databricks-runs/managed-plan/databricks-run-status.json \
   get \
   --run-id 123456789 \
   --summary \
-  --submit-payload-json databricks-run-submit.json \
+  --submit-payload-json databricks-runs/managed-plan/databricks-run-submit.json \
   --expected-hardware-target aws-g6-l4 \
   --expected-node-type-id g6.8xlarge
 ```
@@ -1521,22 +1531,22 @@ Equivalent profile-based submit:
 ```bash
 cachet-databricks-runs \
   --profile QA \
-  --output-json databricks-auth-check.json \
+  --output-json databricks-runs/managed-plan/databricks-auth-check.json \
   auth-check
 
 cachet-databricks-runs \
   --profile QA_OAUTH \
   --profile-auth-mode sdk \
-  --output-json databricks-auth-check.json \
+  --output-json databricks-runs/managed-plan/databricks-auth-check.json \
   auth-check
 
 cachet-databricks-runs \
   --profile QA \
-  --output-json databricks-stage-submit-response.json \
+  --output-json databricks-runs/managed-plan/databricks-stage-submit-response.json \
   stage-and-submit \
-  --payload-json databricks-run-submit.json \
+  --payload-json databricks-runs/managed-plan/databricks-run-submit.json \
   --artifact v1-plan.json=dbfs:/benchmarks/v1-plan.json \
-  --artifact run_plan.py=dbfs:/benchmarks/run_plan.py \
+  --artifact databricks-runs/managed-plan/run_plan.py=dbfs:/benchmarks/run_plan.py \
   --overwrite \
   --require-payload-dbfs-artifacts \
   --preflight-auth-check
@@ -1602,7 +1612,7 @@ planned target file:
 python -m document_kv_cache.databricks_engine_probe_job \
   --backend-config-json /data/engine-probe-targets.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
-  --runner-script-output run_engine_probe.py \
+  --runner-script-output /data/run_engine_probe.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \

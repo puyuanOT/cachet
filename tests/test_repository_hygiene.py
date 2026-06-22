@@ -22,6 +22,7 @@ def test_gitignore_covers_local_build_cache_and_secret_artifacts():
     assert set(REQUIRED_GITIGNORE_PATTERNS).issubset(ignored_lines)
     assert ".ipynb_checkpoints/" in ignored_lines
     assert ".databricks/" in ignored_lines
+    assert "databricks-runs/" in ignored_lines
     assert ".terraform/" in ignored_lines
     assert "terraform.tfstate" in ignored_lines
 
@@ -99,6 +100,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
             "dist/document_kv_cache-0.2.0-py3-none-any.whl",
             ".databricks/bundle/dev/state.json",
             ".terraform/providers/registry.terraform.io/hashicorp/databricks/provider",
+            "databricks-runs/cachet_probe/run-status.json",
             "terraform.tfstate.backup",
             "notebooks/.ipynb_checkpoints/debug-checkpoint.ipynb",
             "src/document_kv_cache/__pycache__/cache.pyc",
@@ -106,6 +108,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         untracked_paths=(
             ".databricks/bundle/dev/state.json",
             ".terraform/providers/provider.bin",
+            "databricks-runs/cachet_probe/submit-response.json",
             ".env.local",
             "notes.txt",
             "tmp/output.tmp",
@@ -124,6 +127,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
     assert record["forbidden_tracked_paths"] == [
         ".databricks/bundle/dev/state.json",
         ".terraform/providers/registry.terraform.io/hashicorp/databricks/provider",
+        "databricks-runs/cachet_probe/run-status.json",
         "dist/document_kv_cache-0.2.0-py3-none-any.whl",
         "notebooks/.ipynb_checkpoints/debug-checkpoint.ipynb",
         "src/document_kv_cache/__pycache__/cache.pyc",
@@ -133,6 +137,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         ".databricks/bundle/dev/state.json",
         ".env.local",
         ".terraform/providers/provider.bin",
+        "databricks-runs/cachet_probe/submit-response.json",
         "terraform.tfstate",
         "tmp/output.tmp",
     ]
@@ -140,7 +145,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         "README.md",
         "src/document_kv_cache/repository_hygiene.py",
     ]
-    assert record["untracked_path_count"] == 6
+    assert record["untracked_path_count"] == 7
     assert any(issue.startswith("missing required .gitignore patterns:") for issue in record["issues"])
     assert any(issue.startswith("forbidden generated or secret-like tracked artifacts:") for issue in record["issues"])
     assert any(issue.startswith("forbidden generated or secret-like untracked artifacts:") for issue in record["issues"])
@@ -218,6 +223,28 @@ def test_repository_hygiene_rejects_checkpoint_artifacts_without_requiring_direc
 
     assert record["ok"] is False
     assert record["forbidden_untracked_paths"] == [checkpoint]
+    assert record["documentation_checked_directory_paths"] == ["."]
+    assert record["missing_directory_documentation_paths"] == []
+
+
+def test_repository_hygiene_rejects_databricks_runs_without_requiring_directory_docs(tmp_path):
+    (tmp_path / "README.md").write_text("documented root\n", encoding="utf-8")
+    run_output = "databricks-runs/cachet_probe/run-status.json"
+    path = tmp_path / run_output
+    path.parent.mkdir(parents=True)
+    path.write_text('{"state": "TERMINATED"}\n', encoding="utf-8")
+
+    evidence = evaluate_repository_hygiene_paths(
+        repository_root=tmp_path,
+        tracked_paths=(run_output,),
+        untracked_paths=(run_output,),
+        gitignore_lines=REQUIRED_GITIGNORE_PATTERNS,
+    )
+    record = repository_hygiene_to_record(evidence)
+
+    assert record["ok"] is False
+    assert record["forbidden_tracked_paths"] == [run_output]
+    assert record["forbidden_untracked_paths"] == [run_output]
     assert record["documentation_checked_directory_paths"] == ["."]
     assert record["missing_directory_documentation_paths"] == []
 
