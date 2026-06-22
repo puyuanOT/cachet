@@ -26,7 +26,11 @@ from document_kv_cache.benchmark_plan import (
     write_engine_probe_targets_json,
     write_benchmark_job_plan_shell,
 )
-from document_kv_cache.databricks_engine_probe_job import read_databricks_engine_probe_targets_json
+from document_kv_cache.databricks_engine_probe_job import (
+    VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+    VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+    read_databricks_engine_probe_targets_json,
+)
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import SGLANG_NATIVE_PROBE_FACTORY, VLLM_NATIVE_PROBE_FACTORY
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
@@ -1213,6 +1217,31 @@ def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_p
                     handoff_json=str(tmp_path / "sglang-handoff.json"),
                     probe_factory="sglang_probe:factory",
                     output_json=str(tmp_path / "sglang-probe.json"),
+                ),
+            ),
+            release_safe=True,
+        )
+
+
+def test_engine_probe_targets_release_safe_requires_provider_backed_vllm_preflight(tmp_path):
+    with pytest.raises(ValueError, match="provider-backed vLLM.*vllm_runtime_preflight_output_json"):
+        engine_probe_targets_to_record(
+            (
+                EngineProbePlanConfig(
+                    backend="vllm",
+                    handoff_json=str(tmp_path / "vllm-handoff.json"),
+                    probe_factory=VLLM_NATIVE_PROBE_FACTORY,
+                    output_json=str(tmp_path / "vllm-probe.json"),
+                    actions_output_json=str(tmp_path / "vllm-actions.json"),
+                    native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+                    metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+                ),
+                EngineProbePlanConfig(
+                    backend="sglang",
+                    handoff_json=str(tmp_path / "sglang-handoff.json"),
+                    probe_factory=SGLANG_NATIVE_PROBE_FACTORY,
+                    output_json=str(tmp_path / "sglang-probe.json"),
+                    actions_output_json=str(tmp_path / "sglang-actions.json"),
                 ),
             ),
             release_safe=True,

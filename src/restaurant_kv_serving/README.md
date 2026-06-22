@@ -168,6 +168,8 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
   --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json \
+  --vllm-runtime-preflight-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-runtime-preflight.json \
+  --vllm-runtime-preflight-layer-names-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
@@ -180,8 +182,11 @@ For Cachet's built-in provider-backed vLLM path,
 `--provider-backed-vllm-native-probe` fills in the Cachet probe factory, vLLM
 delegate factory, strict connector metadata, expected backend, and pinned
 `vllm==0.23.0` runtime package.
-It rejects debug fallback flags and extra wheels so the provider-backed adapter
-modules come only from the Cachet wheel.
+In release-safe mode it also requires the vLLM runtime preflight output path and
+layer-name JSON source so the Databricks runner can validate the installed vLLM
+contract and layer mapping before starting the native probe. It rejects debug
+fallback flags and extra wheels so the provider-backed adapter modules come only
+from the Cachet wheel.
 
 Use `--release-safe` for release-evidence jobs so debug-only non-native probes
 and caller-supplied engine versions are rejected before the Databricks payload is

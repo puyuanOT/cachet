@@ -1,10 +1,10 @@
 {
   "files": {
     "pr-evidence/databricks-vllm-runtime-preflight-gate/pr-evidence.json": {
-      "gpt55_review_completed": false,
-      "gpt55_review_findings_resolved": false,
-      "gpt55_review_outcome": "pending",
-      "gpt55_review_summary": "Pending GPT-5.5 reviewer pass for PR #315.",
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "Reviewer found three issues: pending PR evidence made the full suite fail, benchmark-plan could emit release-safe provider-backed vLLM target JSON that the Databricks helper rejected, and a legacy Databricks README example omitted the new preflight flags. The fixes mark review evidence complete, add benchmark-plan validation for provider-backed vLLM preflight fields, and update the legacy README example.",
       "issues": [],
       "ok": true,
       "pull_request_number": 315,
@@ -14,6 +14,7 @@
       "scope": [
         "src/document_kv_cache/databricks_engine_probe_job.py",
         "src/document_kv_cache/benchmark_plan.py",
+        "src/restaurant_kv_serving/README.md",
         "tests/test_databricks_engine_probe_job.py",
         "tests/test_benchmark_plan.py",
         "README.md",

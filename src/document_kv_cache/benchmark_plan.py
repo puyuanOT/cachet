@@ -13,6 +13,10 @@ from typing import Any
 
 from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, DEFAULT_V1_MODEL_ID, SUPPORTED_V1_DATASETS
 from document_kv_cache.benchmarks import validate_v1_dataset, validate_v1_hardware_target
+from document_kv_cache.databricks_engine_probe_job import (
+    VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+    VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY,
+)
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.native_probe_factories import builtin_native_probe_factory_path
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
@@ -1398,6 +1402,14 @@ def _is_metadata_item(item: str) -> bool:
     return bool(separator and key)
 
 
+def _metadata_item_map(items: Sequence[str]) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    for item in items:
+        key, _separator, value = item.partition("=")
+        metadata[key] = value
+    return metadata
+
+
 def _validate_engine_probe_targets(
     engine_probes: Sequence[EngineProbePlanConfig],
     *,
@@ -1420,6 +1432,35 @@ def _validate_engine_probe_targets(
             f"missing={missing_backends}, unexpected={unexpected_backends}"
         )
     _validate_release_planned_engine_probe_actions(engine_probes)
+    _validate_release_provider_backed_vllm_preflights(engine_probes)
+
+
+def _validate_release_provider_backed_vllm_preflights(
+    engine_probes: Sequence[EngineProbePlanConfig],
+) -> None:
+    missing = sorted(
+        probe.backend.value
+        for probe in engine_probes
+        if _is_provider_backed_vllm_engine_probe(probe)
+        and probe.vllm_runtime_preflight_output_json is None
+    )
+    if missing:
+        raise ValueError(
+            "release-safe provider-backed vLLM engine_probe_targets require "
+            "vllm_runtime_preflight_output_json and vllm_runtime_preflight_layer_names_json "
+            f"for {missing}"
+        )
+
+
+def _is_provider_backed_vllm_engine_probe(probe: EngineProbePlanConfig) -> bool:
+    if probe.backend != ServingBackend.VLLM:
+        return False
+    if probe.native_probe_delegate_factory != VLLM_NATIVE_PROBE_DELEGATE_FACTORY:
+        return False
+    return (
+        _metadata_item_map(probe.metadata).get("vllm_kv_injection.connector_factory")
+        == VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY
+    )
 
 
 def _engine_probe_target_to_record(probe: EngineProbePlanConfig) -> dict[str, Any]:
