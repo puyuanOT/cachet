@@ -558,10 +558,19 @@ def _env_json_object(name: str) -> dict[str, Any]:
     if value is None or not value.strip():
         return {}
     try:
-        parsed = json.loads(value)
+        parsed = _loads_env_json_object(value)
     except json.JSONDecodeError as exc:
         raise ValueError(f"{name} must contain a JSON object") from exc
     return _json_object_mapping(parsed, name)
+
+
+def _loads_env_json_object(value: str) -> Any:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        if r"\"" not in value:
+            raise
+        return json.loads(value.replace(r"\"", '"'))
 
 
 def _json_object_mapping(value: Mapping[str, Any], field_name: str) -> dict[str, Any]:
