@@ -18,6 +18,7 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
     DocumentKVConnector,
 )
+import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
@@ -32,6 +33,15 @@ from vllm_kv_injection.vllm_native_provider import (
     document_kv_vllm_layer_mapping_to_record,
     inspect_document_kv_vllm_layer_mapping,
     validate_document_kv_vllm_layer_mapping_record,
+)
+from vllm_kv_injection.vllm_runtime_contract import (
+    VLLMInstalledKVConnectorContract,
+    VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+    VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+    installed_vllm_kv_connector_v1_contract_to_record,
+)
+from vllm_kv_injection.vllm_runtime_preflight import (
+    validate_document_kv_vllm_runtime_preflight_record,
 )
 
 import pytest
@@ -102,6 +112,24 @@ def payload() -> bytes:
 
 def ready_request() -> EngineReadyRequest:
     return EngineReadyRequest(handle=handle(), payload=payload(), estimated_gpu_bytes=24)
+
+
+def matching_installed_contract() -> dict:
+    return installed_vllm_kv_connector_v1_contract_to_record(
+        VLLMInstalledKVConnectorContract(
+            package_version="0.23.0",
+            importable=True,
+            installed_methods=tuple(
+                sorted(
+                    (
+                        *VLLM_KV_CONNECTOR_V1_REQUIRED_METHODS,
+                        *VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
+                    )
+                )
+            ),
+            installed_properties=("prefer_cross_layer_blocks", "role"),
+        )
+    )
 
 
 def handoff_load() -> DocumentKVHandoffLoad:
@@ -393,6 +421,35 @@ def test_vllm_layer_mapping_diagnostic_is_exported_from_cachet_adapter_facade():
         cachet_vllm.document_kv_vllm_layer_mapping_to_record(["model.layers.0.self_attn.attn"])["ok"]
         is True
     )
+
+
+def test_native_provider_handshake_metadata_includes_runtime_preflight(monkeypatch):
+    monkeypatch.setattr(
+        vllm_runtime_preflight,
+        "installed_vllm_kv_connector_v1_contract_to_record",
+        matching_installed_contract,
+    )
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(None))
+    connector = DocumentKVConnector(provider=provider)
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+
+    connector.register_kv_caches(
+        {
+            "model.layers.0.self_attn.attn": layer_0,
+            "model.layers.1.self_attn.attn": layer_1,
+        }
+    )
+    record = connector.get_handshake_metadata()
+
+    assert record is not None
+    assert record["ok"] is True
+    assert record["layer_mapping"] == provider.vllm_layer_mapping_record()
+    assert record["layer_mapping"]["layer_indices"] == {
+        "model.layers.0.self_attn.attn": 0,
+        "model.layers.1.self_attn.attn": 1,
+    }
+    validate_document_kv_vllm_runtime_preflight_record(record)
 
 
 def test_kv_transfer_params_source_reads_cachet_handoff_bundle(tmp_path):

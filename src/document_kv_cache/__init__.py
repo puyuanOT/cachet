@@ -60,6 +60,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "storage_benchmark",
         "template_resources",
         "vllm_runtime_contract_data",
+        "vllm_runtime_preflight",
         "vllm_smoke",
         "databricks_vllm_smoke_job",
         "workflow",

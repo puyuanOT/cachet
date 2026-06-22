@@ -2144,6 +2144,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-engine-launch-config": "document_kv_cache.engine_launch_config:main",
         "document-kv-engine-probe-fixture": "document_kv_cache.probe_fixtures:main",
         "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
+        "document-kv-vllm-runtime-preflight": "document_kv_cache.vllm_runtime_preflight:main",
         "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
         "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
     }

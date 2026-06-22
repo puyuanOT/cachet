@@ -268,6 +268,7 @@ class DocumentKVNativeProvider:
         self._metadata = DocumentKVConnectorMetadata()
         self._kv_caches: dict[str, object] = {}
         self._layer_indices: dict[str, int] = {}
+        self._layer_mapping_inspection = DocumentKVVLLMLayerMappingInspection((), {})
         self._load_errors: set[int] = set()
         self._events: list[dict[str, object]] = []
         self._loads_started = 0
@@ -373,8 +374,11 @@ class DocumentKVNativeProvider:
         self._metadata = DocumentKVConnectorMetadata()
 
     def register_kv_caches(self, kv_caches: Mapping[str, object]) -> None:
+        inspection = inspect_document_kv_vllm_layer_mapping(kv_caches)
+        layer_indices = _vllm_layer_indices_from_inspection(inspection)
         self._kv_caches = dict(kv_caches)
-        self._layer_indices = _vllm_layer_indices(self._kv_caches)
+        self._layer_indices = layer_indices
+        self._layer_mapping_inspection = inspection
 
     def start_load_kv(self, forward_context: object, **kwargs: object) -> None:
         del forward_context, kwargs
@@ -422,6 +426,20 @@ class DocumentKVNativeProvider:
             "document_kv_layers_loaded": self._layers_loaded,
             "document_kv_load_error_blocks": len(self._load_errors),
         }
+
+    def vllm_layer_mapping_record(self) -> dict[str, Any]:
+        """Return the last vLLM layer-name mapping accepted by the provider."""
+
+        return document_kv_vllm_layer_mapping_to_record(self._layer_mapping_inspection)
+
+    def get_handshake_metadata(self) -> Mapping[str, Any]:
+        """Expose the strict runtime preflight record via vLLM handshake hooks."""
+
+        from vllm_kv_injection.vllm_runtime_preflight import (
+            document_kv_vllm_runtime_preflight_to_record,
+        )
+
+        return document_kv_vllm_runtime_preflight_to_record(self._layer_mapping_inspection)
 
     def take_events(self) -> list[Mapping[str, object]]:
         events = list(self._events)
@@ -548,6 +566,9 @@ class DocumentKVNativeProbeConnector(VLLMSupportsHMA):
 
     def get_kv_connector_stats(self) -> Mapping[str, int]:
         return self.provider.get_kv_connector_stats()
+
+    def get_handshake_metadata(self) -> Mapping[str, Any]:
+        return self.provider.get_handshake_metadata()
 
     def take_events(self) -> list[Mapping[str, object]]:
         return self.provider.take_events()
@@ -894,8 +915,9 @@ def document_kv_vllm_layer_mapping_record_issues(record: Mapping[str, Any]) -> t
     return tuple(issues)
 
 
-def _vllm_layer_indices(kv_caches: Mapping[str, object]) -> dict[str, int]:
-    inspection = inspect_document_kv_vllm_layer_mapping(kv_caches)
+def _vllm_layer_indices_from_inspection(
+    inspection: DocumentKVVLLMLayerMappingInspection,
+) -> dict[str, int]:
     if inspection.unresolved_layer_names:
         raise ValueError(
             "Cannot determine vLLM layer index for registered KV cache layer(s): "
