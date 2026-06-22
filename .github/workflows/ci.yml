@@ -74,12 +74,21 @@ jobs:
           from pathlib import Path
           from zipfile import ZipFile
 
+          def read_dist_info(archive, filename):
+              roots = {
+                  name.split("/", 1)[0]
+                  for name in archive.namelist()
+                  if ".dist-info/" in name
+              }
+              assert len(roots) == 1
+              return archive.read(f"{roots.pop()}/{filename}").decode("utf-8")
+
           wheel = next(Path("/tmp/cachet-pep517-wheelhouse").glob("document_kv_cache-*.whl"))
           assert wheel.name.endswith("-py3-none-any.whl")
           with ZipFile(wheel) as archive:
-              metadata = archive.read("document_kv_cache-0.2.0.dist-info/METADATA").decode("utf-8")
-              wheel_metadata = archive.read("document_kv_cache-0.2.0.dist-info/WHEEL").decode("utf-8")
-              entry_points = archive.read("document_kv_cache-0.2.0.dist-info/entry_points.txt").decode("utf-8")
+              metadata = read_dist_info(archive, "METADATA")
+              wheel_metadata = read_dist_info(archive, "WHEEL")
+              entry_points = read_dist_info(archive, "entry_points.txt")
 
           assert "Requires-Python: >=3.11,<4.0" in metadata
           assert "Requires-Dist: packaging (==23.2)" in metadata
@@ -98,12 +107,21 @@ jobs:
           from pathlib import Path
           from zipfile import ZipFile
 
+          def read_dist_info(archive, filename):
+              roots = {
+                  name.split("/", 1)[0]
+                  for name in archive.namelist()
+                  if ".dist-info/" in name
+              }
+              assert len(roots) == 1
+              return archive.read(f"{roots.pop()}/{filename}").decode("utf-8")
+
           wheel = next(Path("dist").glob("document_kv_cache-*.whl"))
           assert wheel.name.endswith("-py3-none-any.whl")
           with ZipFile(wheel) as archive:
-              metadata = archive.read("document_kv_cache-0.2.0.dist-info/METADATA").decode("utf-8")
-              wheel_metadata = archive.read("document_kv_cache-0.2.0.dist-info/WHEEL").decode("utf-8")
-              entry_points = archive.read("document_kv_cache-0.2.0.dist-info/entry_points.txt").decode("utf-8")
+              metadata = read_dist_info(archive, "METADATA")
+              wheel_metadata = read_dist_info(archive, "WHEEL")
+              entry_points = read_dist_info(archive, "entry_points.txt")
 
           assert "Requires-Python: >=3.11,<4.0" in metadata
           assert "Requires-Dist: packaging (==23.2)" in metadata
