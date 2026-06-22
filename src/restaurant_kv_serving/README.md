@@ -83,9 +83,10 @@ probe commands. Existing native probe and connector-action JSONs can still be
 supplied directly with repeatable `--release-engine-probe-json` and
 `--release-engine-actions-json`. When
 `--engine-probe-use-builtin-factories` is present, missing factories are filled
-with package-owned vLLM/SGLang factory paths that fail closed until real
-backend-native block-manager adapters are available. When release-evidence
-flags are present, the plan appends `document_kv_cache.release_evidence`
+with package-owned vLLM/SGLang factory paths. The vLLM path can use Cachet's
+provider-backed delegate from the wheel with strict connector metadata and
+runtime preflight, while SGLang still requires a backend-native delegate.
+When release-evidence flags are present, the plan appends `document_kv_cache.release_evidence`
 last so the V1 benchmark, storage benchmark, and native vLLM/SGLang engine probe
 JSON artifacts are validated together. Release evidence also checks each probe's
 runtime engine version and serving-engine package/version metadata against the

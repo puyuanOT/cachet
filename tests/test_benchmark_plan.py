@@ -106,6 +106,19 @@ def test_release_bundle_plan_config_keeps_existing_optional_field_positional_com
     assert field_names.index("requirements_matrix_md") > field_names.index("require_complete_v1")
 
 
+def test_main_help_describes_provider_backed_vllm_builtin_probe_path(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+
+    output = capsys.readouterr().out
+
+    assert exc_info.value.code == 0
+    assert "vLLM path can use Cachet's provider-backed delegate" in output
+    assert "SGLang" in output
+    assert "backend-native delegate" in output
+    assert "fail closed until a backend-native block-manager adapter is available" not in output
+
+
 def release_action_jsons(tmp_path):
     return (
         str(tmp_path / "vllm-actions.json"),
