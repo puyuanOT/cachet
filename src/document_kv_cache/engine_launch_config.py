@@ -16,7 +16,7 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.storage import local_path
 from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
-from vllm_kv_injection.vllm_native_provider import DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
+from vllm_kv_injection.vllm_native_provider_constants import DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
 
 ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE = "document_kv.engine_launch_config_evidence.v1"
 ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION = 1

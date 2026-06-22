@@ -43,7 +43,7 @@ from document_kv_cache.models import (
 from document_kv_cache.planner import CachePlanner
 from document_kv_cache.service import DocumentKVService
 from document_kv_cache.storage import DiskRangeReader, local_path
-from vllm_kv_injection.vllm_native_provider import (
+from vllm_kv_injection.vllm_layer_mapping import (
     document_kv_vllm_layer_mapping_to_record,
     document_kv_vllm_probe_layer_names,
     validate_document_kv_vllm_layer_mapping_record,

@@ -18,7 +18,7 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_CONNECTOR_MODULE_PATH,
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
 )
-from vllm_kv_injection.vllm_native_provider import (
+from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
 )
