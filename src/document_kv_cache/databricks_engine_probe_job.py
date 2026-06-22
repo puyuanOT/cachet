@@ -112,8 +112,11 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+
+DEFAULT_SERVING_VENV_DIR = "/local_disk0/cachet/engine-probe-venv"
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -122,21 +125,49 @@ def _cluster_file_path(uri: str) -> str:
     return uri
 
 
-def _install_runtime_packages(argv: list[str]) -> list[str]:
+def _venv_python(venv_dir: str) -> str:
+    bindir = "Scripts" if os.name == "nt" else "bin"
+    return os.path.join(venv_dir, bindir, "python")
+
+
+def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--pip-package", action="append")
     parser.add_argument("--package-wheel-uri", action="append")
+    parser.add_argument("--serving-venv-dir")
+    parser.add_argument("--skip-runtime-package-install", action="store_true")
     args, remaining = parser.parse_known_args(argv)
+    if args.skip_runtime_package_install or not (args.pip_package or args.package_wheel_uri):
+        return remaining, None
+    venv_dir = _cluster_file_path(
+        args.serving_venv_dir
+        or os.environ.get("CACHET_ENGINE_PROBE_VENV_DIR", DEFAULT_SERVING_VENV_DIR)
+    )
+    subprocess.check_call([sys.executable, "-m", "venv", "--clear", venv_dir])
+    venv_python = _venv_python(venv_dir)
+    subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
     if args.pip_package:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", *args.pip_package])
+        subprocess.check_call([venv_python, "-m", "pip", "install", *args.pip_package])
     for package_wheel_uri in args.package_wheel_uri or ():
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)]
+            [venv_python, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)]
         )
-    return remaining
+    return (
+        remaining,
+        subprocess.call(
+            [
+                venv_python,
+                __file__,
+                "--skip-runtime-package-install",
+                *remaining,
+            ]
+        ),
+    )
 
 if __name__ == "__main__":
-    remaining_args = _install_runtime_packages(sys.argv[1:])
+    remaining_args, reexec_exit_code = _install_runtime_packages(sys.argv[1:])
+    if reexec_exit_code is not None:
+        raise SystemExit(reexec_exit_code)
     from document_kv_cache.databricks_engine_probe_job import run_engine_probe_task
 
     exit_code = run_engine_probe_task(remaining_args)
