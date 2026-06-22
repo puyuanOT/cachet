@@ -275,6 +275,62 @@ def test_main_writes_storage_benchmark_payload_and_runner_script(tmp_path):
     assert "storage_benchmark" in runner_path.read_text(encoding="utf-8")
 
 
+def test_main_derives_storage_node_type_from_g5_hardware_target(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--workspace-dir",
+            "/local_disk0/document-kv-storage-benchmark",
+            "--benchmark-output-json",
+            "/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_storage_benchmark.py",
+            "--uc-volume-root",
+            "/Volumes/catalog/schema/volume/storage",
+            "--hardware-target",
+            "aws-g5-a10g",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+
+
+def test_main_preserves_legacy_storage_g5_node_type_without_hardware_target(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--workspace-dir",
+            "/local_disk0/document-kv-storage-benchmark",
+            "--benchmark-output-json",
+            "/Volumes/catalog/schema/volume/storage/storage-benchmark.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_storage_benchmark.py",
+            "--uc-volume-root",
+            "/Volumes/catalog/schema/volume/storage",
+            "--node-type-id",
+            "g5.8xlarge",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+
+
 def test_public_storage_benchmark_job_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):
     output_path = tmp_path / "payload.json"
     original_legacy_build = legacy_storage_benchmark_job.build_databricks_storage_benchmark_run_submit_payload

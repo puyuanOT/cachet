@@ -2090,6 +2090,84 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
     assert "--engine-version" not in parameters
 
 
+def test_main_matrix_derives_node_type_from_g5_hardware_target(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    backend_config_path = tmp_path / "targets.json"
+    backend_config_path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--backend-config-json",
+            str(backend_config_path),
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--hardware-target",
+            "aws-g5-a10g",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+
+
+def test_main_matrix_preserves_legacy_g5_node_type_without_hardware_target(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    backend_config_path = tmp_path / "targets.json"
+    backend_config_path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                    "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--backend-config-json",
+            str(backend_config_path),
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--node-type-id",
+            "g5.8xlarge",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g5.8xlarge"
+    assert cluster["driver_node_type_id"] == "g5.8xlarge"
+
+
 def test_main_provider_backed_vllm_preset_requires_runtime_preflight_in_release_safe_mode(
     capsys,
     tmp_path,
