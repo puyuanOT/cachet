@@ -136,6 +136,54 @@ def test_vllm_runtime_preflight_cli_writes_strict_record(tmp_path, monkeypatch):
     validate_document_kv_vllm_runtime_preflight_record(record)
 
 
+def test_vllm_runtime_preflight_cli_accepts_inline_layer_names_json(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        vllm_runtime_preflight,
+        "installed_vllm_kv_connector_v1_contract_to_record",
+        matching_installed_contract,
+    )
+    output_path = tmp_path / "vllm-preflight.json"
+
+    exit_code = vllm_runtime_preflight.main(
+        [
+            "--layer-names-json",
+            json.dumps({"layer_names": ["model.layers.0.self_attn.attn"]}),
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["layer_mapping"]["layer_names"] == ["model.layers.0.self_attn.attn"]
+    validate_document_kv_vllm_runtime_preflight_record(record)
+
+
+def test_vllm_runtime_preflight_cli_accepts_layer_names_json_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        vllm_runtime_preflight,
+        "installed_vllm_kv_connector_v1_contract_to_record",
+        matching_installed_contract,
+    )
+    layer_names_path = tmp_path / "layer-names.json"
+    layer_names_path.write_text(json.dumps(["model.layers.0.self_attn.attn"]), encoding="utf-8")
+    output_path = tmp_path / "vllm-preflight.json"
+
+    exit_code = vllm_runtime_preflight.main(
+        [
+            "--layer-names-json",
+            str(layer_names_path),
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["layer_mapping"]["layer_names"] == ["model.layers.0.self_attn.attn"]
+    validate_document_kv_vllm_runtime_preflight_record(record)
+
+
 def test_vllm_runtime_preflight_cli_fails_without_registered_layer_names(tmp_path, monkeypatch):
     monkeypatch.setattr(
         vllm_runtime_preflight,

@@ -394,6 +394,7 @@ def _provider_from_vllm_config(vllm_config: object | None) -> DocumentKVProvider
     if isinstance(provider, NoOpDocumentKVProvider):
         raise ValueError("configured document KV provider factory cannot return NoOpDocumentKVProvider")
     _validate_provider(provider)
+    _bind_provider_factory_path(provider, factory_path)
     return provider
 
 
@@ -443,3 +444,9 @@ def _validate_provider(provider: object) -> None:
     ]
     if missing:
         raise TypeError("document KV provider must provide callable methods: " + ", ".join(missing))
+
+
+def _bind_provider_factory_path(provider: object, factory_path: str) -> None:
+    binder = getattr(provider, "set_document_kv_provider_factory", None)
+    if callable(binder):
+        binder(factory_path)

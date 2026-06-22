@@ -261,8 +261,14 @@ class DocumentKVNativeProvider:
 
     document_kv_native_provider = True
 
-    def __init__(self, *, source: DocumentKVHandoffSource | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        source: DocumentKVHandoffSource | None = None,
+        provider_factory: str = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    ) -> None:
         self.source = source or KVTransferParamsDocumentKVSource()
+        self.provider_factory = _provider_factory_path(provider_factory)
         self._loads: dict[str, DocumentKVHandoffLoad] = {}
         self._allocated: dict[str, DocumentKVLoadRequest] = {}
         self._metadata = DocumentKVConnectorMetadata()
@@ -432,6 +438,9 @@ class DocumentKVNativeProvider:
 
         return document_kv_vllm_layer_mapping_to_record(self._layer_mapping_inspection)
 
+    def set_document_kv_provider_factory(self, provider_factory: str) -> None:
+        self.provider_factory = _provider_factory_path(provider_factory)
+
     def get_handshake_metadata(self) -> Mapping[str, Any]:
         """Expose the strict runtime preflight record via vLLM handshake hooks."""
 
@@ -439,7 +448,10 @@ class DocumentKVNativeProvider:
             document_kv_vllm_runtime_preflight_to_record,
         )
 
-        return document_kv_vllm_runtime_preflight_to_record(self._layer_mapping_inspection)
+        return document_kv_vllm_runtime_preflight_to_record(
+            self._layer_mapping_inspection,
+            provider_factory=self.provider_factory,
+        )
 
     def take_events(self) -> list[Mapping[str, object]]:
         events = list(self._events)
@@ -658,6 +670,14 @@ def _load_source_factory(factory_path: str) -> object:
     if not callable(factory):
         raise TypeError(f"document KV handoff source factory {factory_path!r} is not callable")
     return factory
+
+
+def _provider_factory_path(factory_path: str) -> str:
+    value = _required_string(factory_path, field_name="provider_factory")
+    module_name, separator, attribute_name = value.partition(":")
+    if not separator or not module_name or not attribute_name:
+        raise ValueError("provider_factory must use module:attribute syntax")
+    return value
 
 
 def _validate_source(source: object) -> None:

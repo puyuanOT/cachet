@@ -196,8 +196,8 @@ def _json_safe_mapping(value: Mapping[str, Any], *, field_name: str) -> dict[str
     return normalized
 
 
-def _read_layer_names_json(path: str | Path) -> tuple[str, ...]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+def _read_layer_names_json(value: str | Path) -> tuple[str, ...]:
+    payload = _json_argument_or_file(value)
     if isinstance(payload, Mapping):
         payload = payload.get("layer_names")
     if not isinstance(payload, Sequence) or isinstance(payload, (str, bytes, bytearray)):
@@ -206,6 +206,14 @@ def _read_layer_names_json(path: str | Path) -> tuple[str, ...]:
     if not all(isinstance(layer_name, str) and layer_name for layer_name in layer_names):
         raise ValueError("layer names JSON must contain non-empty strings")
     return layer_names
+
+
+def _json_argument_or_file(value: str | Path) -> object:
+    raw_value = str(value)
+    try:
+        return json.loads(raw_value)
+    except json.JSONDecodeError:
+        return json.loads(Path(raw_value).read_text(encoding="utf-8"))
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -223,7 +231,10 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--layer-names-json",
-        help="JSON string array, or object with layer_names, containing registered vLLM KV cache layer names.",
+        help=(
+            "JSON string array, object with layer_names, or path to either form, "
+            "containing registered vLLM KV cache layer names."
+        ),
     )
     parser.add_argument("--output-json", help="Write the preflight record to this JSON file.")
     return parser.parse_args(argv)

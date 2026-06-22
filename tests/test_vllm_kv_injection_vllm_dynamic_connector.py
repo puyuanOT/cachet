@@ -20,9 +20,16 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     load_document_kv_provider_factory,
     vllm_runtime_import_error,
 )
+from vllm_kv_injection.vllm_native_provider import (
+    DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DocumentKVNativeProvider,
+)
 from vllm_kv_injection.vllm_runtime_contract import (
     VLLM_KV_CONNECTOR_V1_OPTIONAL_METHODS,
     validate_vllm_kv_connector_v1_methods,
+)
+from vllm_kv_injection.vllm_runtime_preflight import (
+    document_kv_vllm_runtime_preflight_record_issues,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -261,6 +268,33 @@ def test_document_kv_connector_loads_provider_factory_from_transfer_config(monke
 
     assert connector.provider is provider
     assert connector.get_num_new_matched_tokens("request", 0) == (7, True)
+
+
+def test_document_kv_connector_stamps_actual_provider_factory_on_native_provider(monkeypatch):
+    module = ModuleType("document_kv_custom_native_provider_factory")
+    provider = DocumentKVNativeProvider()
+
+    def build_provider(*, vllm_config, extra_config):
+        return provider
+
+    module.build_provider = build_provider
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    factory_path = f"{module.__name__}:build_provider"
+    vllm_config = SimpleNamespace(
+        kv_transfer_config=SimpleNamespace(
+            kv_connector_extra_config={DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY: factory_path}
+        )
+    )
+
+    connector = DocumentKVConnector(vllm_config=vllm_config)
+    record = connector.get_handshake_metadata()
+
+    assert connector.provider is provider
+    assert provider.provider_factory == factory_path
+    assert record["provider_factory"] == factory_path
+    assert f"provider_factory must be {DOCUMENT_KV_NATIVE_PROVIDER_FACTORY!r}" in (
+        document_kv_vllm_runtime_preflight_record_issues(record)
+    )
 
 
 def test_document_kv_connector_reads_cache_config_transfer_config(monkeypatch):
