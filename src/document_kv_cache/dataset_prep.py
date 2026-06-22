@@ -94,6 +94,7 @@ def build_niah_record(
     query: str = DEFAULT_NIAH_QUERY,
     document_id: str = "haystack",
     metadata: Mapping[str, str] | None = None,
+    kv_transfer_params: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one synthetic Needle-in-a-Haystack benchmark row."""
 
@@ -117,6 +118,7 @@ def build_niah_record(
             },
         ),
         metadata={**_string_mapping(metadata or {}, field_name="metadata"), "needle_text": needle},
+        kv_transfer_params=kv_transfer_params,
     )
 
 
@@ -140,6 +142,7 @@ def _normalize_biography(record: Mapping[str, Any], *, line_number: int) -> dict
         expected_answer=expected_answer,
         documents=documents,
         metadata=_metadata_from_record(record),
+        kv_transfer_params=_kv_transfer_params_from_record(record),
     )
 
 
@@ -158,6 +161,7 @@ def _normalize_hotpotqa(record: Mapping[str, Any], *, line_number: int) -> dict[
         expected_answer=_optional_text(record, "expected_answer", fallback_fields=("answer", "target")),
         documents=documents,
         metadata=_metadata_from_record(record),
+        kv_transfer_params=_kv_transfer_params_from_record(record),
     )
 
 
@@ -176,6 +180,7 @@ def _normalize_musique(record: Mapping[str, Any], *, line_number: int) -> dict[s
         expected_answer=_optional_text(record, "expected_answer", fallback_fields=("answer", "target")),
         documents=documents,
         metadata=_metadata_from_record(record),
+        kv_transfer_params=_kv_transfer_params_from_record(record),
     )
 
 
@@ -193,6 +198,7 @@ def _normalize_niah(record: Mapping[str, Any], *, line_number: int) -> dict[str,
             needle_text=needle,
             query=query,
             metadata=_metadata_from_record(record),
+            kv_transfer_params=_kv_transfer_params_from_record(record),
         )
     documents = _documents_from_record(
         record,
@@ -207,6 +213,7 @@ def _normalize_niah(record: Mapping[str, Any], *, line_number: int) -> dict[str,
         expected_answer=answer,
         documents=documents,
         metadata=_metadata_from_record(record),
+        kv_transfer_params=_kv_transfer_params_from_record(record),
     )
 
 
@@ -218,6 +225,7 @@ def _canonical_record(
     expected_answer: str | None,
     documents: Sequence[Mapping[str, Any]],
     metadata: Mapping[str, str],
+    kv_transfer_params: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     validate_v1_dataset(dataset)
     if not documents:
@@ -232,6 +240,8 @@ def _canonical_record(
         record["expected_answer"] = _require_text(expected_answer, field_name="expected_answer")
     if metadata:
         record["metadata"] = dict(metadata)
+    if kv_transfer_params:
+        record["kv_transfer_params"] = dict(kv_transfer_params)
     return record
 
 
@@ -252,6 +262,7 @@ def _canonical_record_for_write(record: Mapping[str, Any], *, line_number: int) 
                 preferred_fields=("documents",),
             ),
             metadata=_metadata_from_record(record),
+            kv_transfer_params=_kv_transfer_params_from_record(record),
         )
         _validate_written_record_for_runner(normalized, dataset=dataset, line_number=line_number)
         return normalized
@@ -422,6 +433,15 @@ def _metadata_from_record(record: Mapping[str, Any]) -> Mapping[str, str]:
     if split is not None and "split" not in metadata:
         return {**metadata, "split": split}
     return metadata
+
+
+def _kv_transfer_params_from_record(record: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    value = record.get("kv_transfer_params")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("kv_transfer_params must be an object")
+    return dict(value)
 
 
 def _iter_jsonl(path: str | Path) -> Iterable[Mapping[str, Any]]:

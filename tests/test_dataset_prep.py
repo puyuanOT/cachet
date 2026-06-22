@@ -3,6 +3,7 @@ import json
 import pytest
 
 from document_kv_cache.benchmark_runner import load_benchmark_jsonl
+from document_kv_cache.benchmarks import DOCUMENT_KV_REQUEST_ID_PARAM
 from document_kv_cache.dataset_prep import (
     build_niah_record,
     convert_v1_jsonl,
@@ -120,6 +121,33 @@ def test_convert_v1_jsonl_writes_loadable_canonical_rows(tmp_path):
     assert loaded[0].documents[0].chunks[1].text == "She wrote notes."
 
 
+def test_convert_v1_jsonl_preserves_kv_transfer_params(tmp_path):
+    input_path = tmp_path / "raw_bio.jsonl"
+    output_path = tmp_path / "bio.jsonl"
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+    }
+    input_path.write_text(
+        json.dumps(
+            {
+                "name": "Ada Lovelace",
+                "text": "Ada Lovelace wrote notes.",
+                "kv_transfer_params": kv_transfer_params,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    count = convert_v1_jsonl(input_path, output_path, "biography")
+    loaded = load_benchmark_jsonl(output_path, dataset="biography", require_dataset=True)
+
+    assert count == 1
+    assert loaded[0].kv_transfer_params == kv_transfer_params
+
+
 def test_convert_v1_jsonl_accepts_file_uri_paths(tmp_path):
     input_path = tmp_path / "raw_bio.jsonl"
     output_path = tmp_path / "prepared" / "bio.jsonl"
@@ -162,6 +190,11 @@ def test_write_v1_jsonl_writes_loadable_canonical_rows(tmp_path):
                     }
                 ],
                 "metadata": {"split": "dev"},
+                "kv_transfer_params": {
+                    DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+                    "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+                    "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+                },
             }
         ],
         output_path,
@@ -170,6 +203,11 @@ def test_write_v1_jsonl_writes_loadable_canonical_rows(tmp_path):
 
     assert count == 1
     assert loaded[0].example_id == "bio-1"
+    assert loaded[0].kv_transfer_params == {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+    }
     assert loaded[0].documents[0].chunks[0].chunk_id == "static"
     assert loaded[0].documents[0].chunks[1].metadata == {"source": "1"}
 
@@ -190,6 +228,28 @@ def test_write_v1_jsonl_validates_all_rows_before_writing(tmp_path):
                     "dataset": "biography",
                     "example_id": "bio-2",
                     "documents": ["Grace worked on compilers."],
+                },
+            ],
+            output_path,
+        )
+
+    assert not output_path.exists()
+
+
+def test_write_v1_jsonl_rejects_invalid_kv_transfer_params_before_writing(tmp_path):
+    output_path = tmp_path / "bad" / "bio.jsonl"
+
+    with pytest.raises(ValueError, match="kv_transfer_params.document_kv.request_id"):
+        write_v1_jsonl(
+            [
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-1",
+                    "query": "Who wrote notes?",
+                    "documents": ["Ada wrote notes."],
+                    "kv_transfer_params": {
+                        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+                    },
                 },
             ],
             output_path,
