@@ -469,7 +469,11 @@ preflight output path and a layer-name JSON source from the runtime registration
 check; the Databricks runner writes that strict preflight record before starting
 the native probe and stops if validation fails. The preset rejects debug
 fallback flags and extra wheels so the provider-backed adapter modules come only
-from the Cachet wheel.
+from the Cachet wheel. When runtime packages or wheels are present, the
+generated runner installs them into a local driver venv
+(`/local_disk0/cachet/engine-probe-venv` by default) and re-execs the probe
+inside that venv so Databricks ML image packages do not leak into the serving
+runtime import path.
 `--provider-backed-sglang-native-probe` is the matching single-backend QA probe
 for Cachet's built-in provider-backed SGLang HiCache path. It sets the Cachet
 SGLang probe factory, the
