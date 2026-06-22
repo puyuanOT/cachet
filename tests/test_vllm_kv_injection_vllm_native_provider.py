@@ -338,7 +338,7 @@ def test_vllm_layer_mapping_diagnostic_accepts_runtime_layer_names():
     validate_document_kv_vllm_layer_mapping_record(record)
 
 
-def test_vllm_layer_mapping_diagnostic_reports_unresolved_and_duplicate_names():
+def test_vllm_layer_mapping_preflight_rejects_unresolved_and_duplicate_names():
     record = document_kv_vllm_layer_mapping_to_record(
         [
             "attention_without_index",
@@ -359,7 +359,11 @@ def test_vllm_layer_mapping_diagnostic_reports_unresolved_and_duplicate_names():
             "model.layers.0.self_attn.attn",
         ]
     }
-    validate_document_kv_vllm_layer_mapping_record(record)
+    assert "ok must be true for a safe vLLM layer mapping preflight" in (
+        document_kv_vllm_layer_mapping_record_issues(record)
+    )
+    with pytest.raises(ValueError, match="ok must be true"):
+        validate_document_kv_vllm_layer_mapping_record(record)
 
 
 def test_vllm_layer_mapping_record_rejects_inconsistent_derived_fields():

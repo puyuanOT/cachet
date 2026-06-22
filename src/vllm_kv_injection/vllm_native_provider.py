@@ -889,6 +889,8 @@ def document_kv_vllm_layer_mapping_record_issues(record: Mapping[str, Any]) -> t
         for field_name in ("layer_indices", "unresolved_layer_names", "duplicate_layer_indices", "ok"):
             if record.get(field_name) != expected[field_name]:
                 issues.append(f"{field_name} must match layer_names")
+        if ok is False:
+            issues.append("ok must be true for a safe vLLM layer mapping preflight")
     return tuple(issues)
 
 

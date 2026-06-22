@@ -1,0 +1,36 @@
+{
+  "files": {
+    "pr-evidence/vllm-layer-mapping-diagnostic/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "Reviewer found two blockers: the draft PR evidence sidecar was incomplete, and preflight validation accepted records with ok=false. This update completes PR #313 evidence and makes validate_document_kv_vllm_layer_mapping_record reject unsafe failed mappings.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 313,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/313",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/vllm_kv_injection/vllm_native_provider.py",
+        "src/vllm_kv_injection/__init__.py",
+        "src/vllm_kv_injection/README.md",
+        "tests/test_vllm_kv_injection_vllm_native_provider.py",
+        "pr-evidence/vllm-layer-mapping-diagnostic"
+      ],
+      "verification": [
+        "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py (16 passed)",
+        "python -m pytest -q tests/test_vllm_kv_injection_vllm_native_provider.py tests/test_vllm_kv_injection_probe.py tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_vllm_kv_injection_vllm_transfer_config.py tests/test_native_probe_factories.py tests/test_public_package.py",
+        "python -m pytest -q",
+        "git diff --check",
+        "changed/untracked credential-pattern scan returned 0 files"
+      ],
+      "what_changed": [
+        "Added a vLLM layer-name mapping diagnostic that serializes how Cachet maps registered vLLM KV cache tensors to document-KV payload layer indices, wired provider registration to use the same validator, and made validation fail when the diagnostic ok flag is false."
+      ],
+      "why": "Before launching provider-backed native probes on g5/g6, the target runtime needs a preflightable record proving real vLLM layer names can be mapped safely instead of relying on insertion order or silent best-effort behavior."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
