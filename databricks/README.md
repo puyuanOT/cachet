@@ -142,6 +142,8 @@ document-kv-engine-probe-databricks-job \
   --fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture \
   --probe-output-json /Volumes/catalog/schema/volume/probes/vllm-engine-probe.json \
   --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json \
+  --vllm-runtime-preflight-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-runtime-preflight.json \
+  --vllm-runtime-preflight-layer-names-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
@@ -156,7 +158,10 @@ factories should report the real engine version in their result.
 For the built-in vLLM provider-backed path, `--provider-backed-vllm-native-probe`
 also sets the Cachet probe factory, vLLM delegate factory, required connector
 metadata, expected backend, and pinned `vllm==0.23.0` runtime package.
-It rejects debug fallback flags and extra wheels so the provider-backed adapter
+In release-safe mode it also requires a vLLM runtime preflight output path and
+layer-name JSON source, writes the strict preflight record before the native
+probe starts, and stops without running the probe if validation fails. It
+rejects debug fallback flags and extra wheels so the provider-backed adapter
 modules come only from the Cachet wheel.
 `--actions-output-json` writes the validated reserve/copy/bind/release
 descriptor that the native block-manager probe consumed.

@@ -46,6 +46,10 @@ for the built-in provider-backed vLLM path, or
 `sglang_kv_injection.connector_factory=module:factory` for SGLang. The
 connector factory is the backend-native implementation that actually reserves,
 imports, binds, and releases engine KV blocks.
+For release-safe provider-backed vLLM jobs, prefer the Python helper below so
+the target JSON can include `vllm_runtime_preflight_output_json` and
+`vllm_runtime_preflight_layer_names_json`; the runner validates that preflight
+before starting the native probe.
 
 For non-bundle release operations, the package CLI can emit one `runs/submit`
 payload with both required native backend probes:
@@ -63,6 +67,11 @@ python -m document_kv_cache.databricks_engine_probe_job \
 The target JSON must contain exactly one `vllm` probe and one `sglang` probe in
 `--release-safe` mode, and release-safe targets must include
 `actions_output_json` for each backend.
+Provider-backed vLLM targets must also include
+`vllm_runtime_preflight_output_json` and
+`vllm_runtime_preflight_layer_names_json`; `document_kv_cache.benchmark_plan`
+accepts matching `--engine-probe-vllm-runtime-preflight-*` flags when generating
+the target file.
 `document_kv_cache.benchmark_plan --engine-probe-targets-output-json ...` can
 generate that target JSON from the same planned probe artifacts consumed by
 release evidence.
