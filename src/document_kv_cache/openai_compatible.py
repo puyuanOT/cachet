@@ -188,6 +188,10 @@ class OpenAICompatibleCompletionEngine:
         if self.config.stream and self.config.include_usage:
             payload["stream_options"] = {"include_usage": True}
         payload.update(self.config.extra_body)
+        if request.kv_transfer_params:
+            if request.request_id:
+                payload["request_id"] = request.request_id
+            payload["kv_transfer_params"] = dict(request.kv_transfer_params)
         return payload
 
     def _prompt_text(self, request: BenchmarkEngineRequest) -> str:

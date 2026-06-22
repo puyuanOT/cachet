@@ -6,6 +6,7 @@ import statistics
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from html import escape
+from typing import Any
 
 from document_kv_cache._hardware_targets import (
     DEFAULT_HARDWARE_TARGET,
@@ -19,6 +20,7 @@ SUPPORTED_V1_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_V1_MODEL_ID = "qwen3:4b-instruct"
 BASELINE_PREFILL_ARM = "baseline_prefill"
 CACHE_REUSE_ARM = "document_kv_cache"
+DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
 FINAL_ANSWER_CUE = "Answer:"
 
 __all__ = [
@@ -28,6 +30,7 @@ __all__ = [
     "DEFAULT_HARDWARE_TARGET",
     "BASELINE_PREFILL_ARM",
     "CACHE_REUSE_ARM",
+    "DOCUMENT_KV_REQUEST_ID_PARAM",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",
@@ -105,6 +108,7 @@ class BenchmarkExample:
     query: str
     expected_answer: str | None = None
     metadata: Mapping[str, str] = field(default_factory=dict)
+    kv_transfer_params: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.example_id, "example_id")
@@ -120,6 +124,9 @@ class BenchmarkExample:
                 raise TypeError(f"documents[{index}] must be a SourceDocument")
         object.__setattr__(self, "documents", documents)
         object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
+        kv_transfer_params = _dict_from_json_object_mapping(self.kv_transfer_params, "kv_transfer_params")
+        _validate_kv_transfer_request_id(kv_transfer_params)
+        object.__setattr__(self, "kv_transfer_params", kv_transfer_params)
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,6 +543,45 @@ def _dict_from_str_mapping(value: Mapping[str, str], field_name: str) -> dict[st
             raise ValueError(f"{field_name}.{key} must be a string")
         normalized[key] = item
     return normalized
+
+
+def _dict_from_json_object_mapping(value: Mapping[str, Any], field_name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    normalized: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{field_name} keys must be non-empty strings")
+        normalized[key] = _json_compatible_value(item, f"{field_name}.{key}")
+    return normalized
+
+
+def _json_compatible_value(value: Any, field_name: str) -> Any:
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if type(value) is int:
+        return value
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError(f"{field_name} must be JSON-compatible")
+        return value
+    if isinstance(value, Mapping):
+        return _dict_from_json_object_mapping(value, field_name)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
+        return [_json_compatible_value(item, f"{field_name}[{index}]") for index, item in enumerate(value)]
+    raise ValueError(f"{field_name} must be JSON-compatible")
+
+
+def _validate_kv_transfer_request_id(kv_transfer_params: Mapping[str, Any]) -> None:
+    if not kv_transfer_params:
+        return
+    request_id = kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+    if request_id is None:
+        raise ValueError(
+            f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} is required when kv_transfer_params are provided"
+        )
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} must be a non-empty string")
 
 
 def _validate_non_negative_int(value: int, field_name: str) -> None:

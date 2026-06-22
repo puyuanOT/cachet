@@ -20,6 +20,7 @@ from document_kv_cache.benchmark_runner import (
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
@@ -69,7 +70,12 @@ class InvalidGenerationEngine:
         return BenchmarkGeneration(**kwargs)
 
 
-def example(dataset: str = "biography", *, example_id: str | None = None) -> BenchmarkExample:
+def example(
+    dataset: str = "biography",
+    *,
+    example_id: str | None = None,
+    kv_transfer_params=None,
+) -> BenchmarkExample:
     return BenchmarkExample(
         example_id=example_id or f"{dataset}-1",
         dataset=dataset,
@@ -82,6 +88,7 @@ def example(dataset: str = "biography", *, example_id: str | None = None) -> Ben
         ),
         query="Who wrote notes on the Analytical Engine?",
         expected_answer="Ada Lovelace",
+        kv_transfer_params={} if kv_transfer_params is None else kv_transfer_params,
     )
 
 
@@ -110,6 +117,30 @@ def test_run_benchmark_suite_records_baseline_and_cache_measurements():
     assert cache.requests[0].cache_prefix_text + cache.requests[0].cache_suffix_text == baseline.requests[0].logical_prompt_text
     assert cache.requests[0].model_id == "qwen3:4b-instruct"
     assert cache.requests[0].hardware_target == "aws-g6-l4"
+
+
+def test_run_benchmark_suite_attaches_kv_transfer_params_to_cache_arm_only():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+    }
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(kv_transfer_params=kv_transfer_params),))
+    baseline = RecordingEngine()
+    cache = RecordingEngine()
+
+    run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: baseline,
+            CACHE_REUSE_ARM: cache,
+        },
+    )
+
+    assert baseline.requests[0].kv_transfer_params == {}
+    assert baseline.requests[0].request_id is None
+    assert cache.requests[0].request_id == "cachet-bio-1"
+    assert cache.requests[0].kv_transfer_params == kv_transfer_params
 
 
 def test_benchmark_generation_validates_output_timing_tokens_and_metadata():
@@ -148,6 +179,20 @@ def test_benchmark_generation_validates_output_timing_tokens_and_metadata():
         BenchmarkGeneration(**{**base_kwargs, "metadata": ()})
     with pytest.raises(ValueError, match="metadata.source must be a string"):
         BenchmarkGeneration(**{**base_kwargs, "metadata": {"source": 1}})
+
+
+def test_benchmark_example_validates_kv_transfer_params():
+    with pytest.raises(TypeError, match="kv_transfer_params must be a mapping"):
+        example(kv_transfer_params=[])
+
+    with pytest.raises(ValueError, match="kv_transfer_params.document_kv.handoff_json"):
+        example(kv_transfer_params={"document_kv.handoff_json": math.nan})
+
+    with pytest.raises(ValueError, match="kv_transfer_params.document_kv.request_id is required"):
+        example(kv_transfer_params={"document_kv.handoff_json": "/tmp/cachet.handoff.json"})
+
+    with pytest.raises(ValueError, match="kv_transfer_params.document_kv.request_id must be a non-empty string"):
+        example(kv_transfer_params={DOCUMENT_KV_REQUEST_ID_PARAM: ""})
 
 
 def test_run_benchmark_suite_records_engine_errors_without_aborting():
@@ -672,6 +717,11 @@ def test_load_benchmark_jsonl_accepts_canonical_schema(tmp_path):
                 "dataset": "biography",
                 "query": "Who wrote notes?",
                 "expected_answer": "Ada Lovelace",
+                "kv_transfer_params": {
+                    DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+                    "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+                    "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+                },
                 "documents": [
                     {
                         "document_id": "ada",
@@ -695,6 +745,11 @@ def test_load_benchmark_jsonl_accepts_canonical_schema(tmp_path):
     assert loaded[0].example_id == "bio-1"
     assert loaded[0].dataset == "biography"
     assert loaded[0].metadata == {"split": "dev"}
+    assert loaded[0].kv_transfer_params == {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+    }
     assert loaded[0].documents[0].metadata["title"] == "Ada"
     assert [chunk.chunk_id for chunk in loaded[0].documents[0].chunks] == ["static", "p1", "chunk-1"]
     assert loaded[0].documents[0].chunks[1].metadata == {"source": "1"}
@@ -840,6 +895,25 @@ def test_load_benchmark_jsonl_validates_records(tmp_path):
     path.write_text("\n" + json.dumps({"dataset": "unknown", "query": "Bad?", "documents": ["x"]}) + "\n", encoding="utf-8")
 
     with pytest.raises(ValueError, match="Benchmark JSONL line 2: Unsupported V1 dataset"):
+        load_benchmark_jsonl(path)
+
+
+def test_load_benchmark_jsonl_rejects_invalid_kv_transfer_params(tmp_path):
+    path = tmp_path / "bad-kv-transfer.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "dataset": "biography",
+                "query": "Bad?",
+                "documents": ["x"],
+                "kv_transfer_params": {"document_kv.handoff_json": "/tmp/cachet.handoff.json"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Benchmark JSONL line 1: kv_transfer_params.document_kv.request_id"):
         load_benchmark_jsonl(path)
 
 

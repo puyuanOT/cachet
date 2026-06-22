@@ -7,7 +7,12 @@ import pytest
 import document_kv_cache.openai_compatible as openai_module
 import restaurant_kv_serving.openai_compatible as legacy_openai_module
 from document_kv_cache.benchmark_runner import BenchmarkEngineRequest
-from document_kv_cache.benchmarks import BenchmarkExample, build_prompt_parts, document_kv_cache_arm
+from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_REQUEST_ID_PARAM,
+    BenchmarkExample,
+    build_prompt_parts,
+    document_kv_cache_arm,
+)
 from document_kv_cache.openai_compatible import (
     OpenAICompatibleCompletionEngine,
     OpenAICompatibleEngineConfig,
@@ -96,7 +101,7 @@ class FakeErrorBody:
         self.closed = True
 
 
-def benchmark_request() -> BenchmarkEngineRequest:
+def benchmark_request(kv_transfer_params=None) -> BenchmarkEngineRequest:
     example = BenchmarkExample(
         example_id="bio-1",
         dataset="biography",
@@ -109,6 +114,7 @@ def benchmark_request() -> BenchmarkEngineRequest:
         ),
         query="Who wrote notes?",
         expected_answer="Ada Lovelace",
+        kv_transfer_params=kv_transfer_params or {},
     )
     return BenchmarkEngineRequest(
         suite_id="suite",
@@ -117,6 +123,8 @@ def benchmark_request() -> BenchmarkEngineRequest:
         example=example,
         arm=document_kv_cache_arm(),
         prompt_parts=build_prompt_parts(example),
+        request_id=example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
+        kv_transfer_params=example.kv_transfer_params,
     )
 
 
@@ -152,6 +160,8 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert request_body["stream"] is True
     assert request_body["stream_options"] == {"include_usage": True}
     assert request_body["top_p"] == 0.9
+    assert "request_id" not in request_body
+    assert "kv_transfer_params" not in request_body
     assert engine.headers["Authorization"] == "Bearer token"
     assert engine.headers["X-Test"] == "yes"
     assert response.closed is True
@@ -176,6 +186,29 @@ def test_runtime_prompt_mode_uses_cache_suffix_for_kv_aware_proxy():
     assert generation.metadata["prompt_text_mode"] == "runtime"
     assert int(generation.metadata["logical_prompt_tokens"]) > int(generation.metadata["runtime_prompt_tokens"])
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
+
+
+def test_runtime_prompt_mode_sends_request_kv_transfer_params():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+    }
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            stream=False,
+            prompt_text_mode="runtime",
+        ),
+        response=FakeJSONResponse(),
+        clock=FakeClock([1.0, 2.0]),
+    )
+
+    engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
+
+    assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
+    assert engine.payloads[0]["request_id"] == "cachet-bio-1"
+    assert engine.payloads[0]["kv_transfer_params"] == kv_transfer_params
 
 
 def test_non_streaming_completion_engine_uses_usage_and_total_latency():
