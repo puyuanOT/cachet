@@ -684,11 +684,15 @@ def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_
             output_dir=tmp_path / "generated-handoffs",
             dtype="bfloat16",
             align_bytes=1,
+            timeout_seconds=1234.0,
         ),
     )
     config.venv_python.parent.mkdir(parents=True)
     config.venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
-    generated_biography = tmp_path / "generated-handoffs" / "biography.handoffs.jsonl"
+    generated_worker_paths = {
+        dataset: tmp_path / "generated-handoffs" / f"{dataset}.handoffs.jsonl"
+        for dataset in SMOKE_DATASETS
+    }
     calls = []
 
     def fake_run(argv, *, check, capture_output, text, timeout, env):
@@ -698,11 +702,18 @@ def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "prepared-generated-venv"
         assert input_payload["handoff_generation"]["generator_factory"] == "module:factory"
+        assert input_payload["handoff_generation"]["timeout_seconds"] == 1234.0
         Path(argv[4]).parent.mkdir(parents=True, exist_ok=True)
+        for path in generated_worker_paths.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}\n", encoding="utf-8")
         Path(argv[4]).write_text(
             json.dumps(
                 {
-                    "generated_paths": {"biography": str(generated_biography)},
+                    "generated_paths": {
+                        dataset: str(path)
+                        for dataset, path in generated_worker_paths.items()
+                    },
                     "record": {
                         "ok": True,
                         "dataset_source": "prepared",
@@ -718,12 +729,12 @@ def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_
 
     generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
 
-    assert generated_paths == {"biography": generated_biography}
+    assert generated_paths == generated_worker_paths
     generation = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
     assert generation["ok"] is True
     assert generation["generator_python"] == str(config.venv_python)
     assert len(calls) == 1
-    assert calls[0][4] == config.timeout_seconds
+    assert calls[0][4] == 1234.0
     assert calls[0][5]["HF_HOME"] == str(config.hf_cache_dir)
 
 
