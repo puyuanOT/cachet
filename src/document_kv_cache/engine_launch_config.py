@@ -15,6 +15,8 @@ from document_kv_cache.engine_adapters import (
     ServingBackend,
 )
 from document_kv_cache.storage import local_path
+from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
+from vllm_kv_injection.vllm_native_provider import DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
 
 ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE = "document_kv.engine_launch_config_evidence.v1"
 ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION = 1
@@ -56,12 +58,14 @@ DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION = 1
 DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD = "native-kv-import"
 DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_VLLM_RECORD_TYPE_PREFIX}launch_config.v1"
 DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE = f"{_SGLANG_RECORD_TYPE_PREFIX}launch_config.v1"
+DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
 
 __all__ = [
     "DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD",
     "DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION",
     "DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH",
     "DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
+    "DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY",
     "DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH",
     "DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE",
     "ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE",
@@ -129,20 +133,23 @@ def build_vllm_launch_config(
     schema_version: int = DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
     kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
     extra_config: Mapping[str, Any] | None = None,
+    provider_factory: str | None = DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
 ) -> dict[str, Any]:
     """Build a validated vLLM transfer config for the document KV connector."""
 
+    kv_connector_extra_config = _build_document_kv_extra_config(
+        ServingBackend.VLLM,
+        record_type=record_type,
+        schema_version=schema_version,
+        kv_injection_method=kv_injection_method,
+        extra_config=extra_config,
+        provider_factory=provider_factory,
+    )
     record = {
         "kv_connector": _VLLM_DOCUMENT_KV_CONNECTOR,
         "kv_connector_module_path": module_path,
         "kv_role": kv_role,
-        "kv_connector_extra_config": _build_document_kv_extra_config(
-            ServingBackend.VLLM,
-            record_type=record_type,
-            schema_version=schema_version,
-            kv_injection_method=kv_injection_method,
-            extra_config=extra_config,
-        ),
+        "kv_connector_extra_config": kv_connector_extra_config,
     }
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
     return record
@@ -321,6 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 schema_version=args.schema_version,
                 kv_injection_method=args.kv_injection_method,
                 extra_config=extra_config,
+                provider_factory=args.provider_factory,
             )
             expected_backend = ServingBackend.VLLM
         elif args.command == "build-sglang":
@@ -466,6 +474,12 @@ def _validate_document_kv_extra_config(
         )
     if extra_config.get("document_kv.requires_native_runtime") is not True:
         issues.append("document_kv.requires_native_runtime must be true")
+    if expected_backend == ServingBackend.VLLM:
+        provider_factory_issues = _module_attribute_issues(
+            extra_config.get(DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY),
+            field_name=DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
+        )
+        issues.extend(provider_factory_issues)
     return tuple(issues)
 
 
@@ -476,6 +490,7 @@ def _build_document_kv_extra_config(
     schema_version: int,
     kv_injection_method: str,
     extra_config: Mapping[str, Any] | None,
+    provider_factory: str | None = None,
     reserved_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     record = {
@@ -489,6 +504,9 @@ def _build_document_kv_extra_config(
         "document_kv.requires_native_runtime": True,
     }
     record.update(_validated_extra_config(extra_config, reserved_keys=reserved_keys))
+    if provider_factory is not None:
+        _validate_module_attribute(provider_factory, field_name=DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY)
+        record[DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY] = provider_factory
     record_type_prefix = (
         _VLLM_RECORD_TYPE_PREFIX if backend == ServingBackend.VLLM else _SGLANG_RECORD_TYPE_PREFIX
     )
@@ -572,6 +590,26 @@ def _is_positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _validate_module_attribute(value: Any, *, field_name: str) -> None:
+    issues = _module_attribute_issues(value, field_name=field_name)
+    if issues:
+        raise ValueError("; ".join(issues))
+
+
+def _module_attribute_issues(value: Any, *, field_name: str) -> tuple[str, ...]:
+    if not _is_non_empty_string(value):
+        return (f"{field_name} must be a non-empty module:attribute string",)
+    module_name, separator, attribute_name = str(value).strip().partition(":")
+    if not separator or not module_name or not attribute_name:
+        return (f"{field_name} must use module:attribute syntax",)
+    module_segments = module_name.split(".")
+    if any(not segment.isidentifier() for segment in module_segments):
+        return (f"{field_name} module path must be a dotted Python module path",)
+    if not attribute_name.isidentifier():
+        return (f"{field_name} attribute must be a Python identifier",)
+    return ()
+
+
 def _module_path_issues(value: Any, *, field_name: str, expected_leaves: Sequence[str]) -> tuple[str, ...]:
     if not _is_non_empty_string(value):
         return (f"{field_name} must be a non-empty string",)
@@ -597,6 +635,11 @@ def _add_vllm_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("build-vllm", help="Build a vLLM transfer config sidecar.")
     parser.add_argument("--module-path", default=DEFAULT_VLLM_DOCUMENT_KV_MODULE_PATH)
     parser.add_argument("--kv-role", default="kv_both", choices=sorted(_VLLM_ALLOWED_KV_ROLES))
+    parser.add_argument(
+        "--provider-factory",
+        default=DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
+        help="vLLM document KV provider factory module:attribute path.",
+    )
     _add_common_build_args(parser, default_record_type=DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
 
 

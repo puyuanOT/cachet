@@ -15,6 +15,6 @@ This package defines the vLLM-facing document KV-cache integration contract.
 - `vllm_runtime_preflight.py` combines the installed-vLLM contract diagnostic
   with the provider layer-name mapping record into the strict preflight that
   must pass before provider-backed native probe launches.
-- `vllm_transfer_config.py` builds the vLLM launch config shape for a patched connector while reserving `document_kv.*` handoff keys.
+- `vllm_transfer_config.py` builds the vLLM launch config shape for a patched connector while reserving `document_kv.*` handoff keys; Cachet's `engine_launch_config build-vllm` facade emits the same built-in native provider factory by default.
 
 Keep this package close to vLLM internals and free of document retrieval, cache storage, CPU assembly, scheduling, or LoRA routing logic.

@@ -69,7 +69,8 @@ new document modules depend on restaurant-owned implementations.
   native-probe descriptor contracts.
 - `engine_launch_config.py` builds and validates vLLM transfer-config and
   SGLang HiCache launch sidecars against the shared document-KV engine handoff
-  contract.
+  contract. Generated vLLM sidecars include Cachet's built-in native provider
+  factory so `DocumentKVConnector` is provider-backed by default.
 - `engine_probe.py` executes a serialized handoff through a backend-owned native
   probe factory.
 - `engine_protocol.py` defines validated KV layout, segment, and handle data

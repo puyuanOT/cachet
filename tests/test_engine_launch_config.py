@@ -9,6 +9,7 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.engine_launch_config import (
     DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+    DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
     DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
     ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE,
     ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION,
@@ -28,7 +29,7 @@ from document_kv_cache.engine_launch_config import (
 
 
 def _document_kv_extra(backend: str, *, requires_native_runtime: bool = True) -> dict[str, object]:
-    return {
+    extra = {
         "document_kv.record_type": f"{backend}_kv_injection.test_config.v1",
         "document_kv.schema_version": 1,
         "document_kv.backend": backend,
@@ -38,6 +39,9 @@ def _document_kv_extra(backend: str, *, requires_native_runtime: bool = True) ->
         "document_kv.engine_handoff_schema_version": ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
         "document_kv.requires_native_runtime": requires_native_runtime,
     }
+    if backend == "vllm":
+        extra["document_kv.provider_factory"] = DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY
+    return extra
 
 
 def _vllm_launch_config(**extra_overrides: object) -> dict[str, object]:
@@ -95,8 +99,19 @@ def test_build_vllm_launch_config_emits_valid_release_shape():
             "max_model_len": 32768,
             **_document_kv_extra("vllm"),
             "document_kv.record_type": DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
+            "document_kv.provider_factory": DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
         },
     }
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
+
+
+def test_build_vllm_launch_config_accepts_custom_provider_factory():
+    record = build_vllm_launch_config(provider_factory="company_vllm_patch.provider:build_provider")
+
+    assert (
+        record["kv_connector_extra_config"]["document_kv.provider_factory"]
+        == "company_vllm_patch.provider:build_provider"
+    )
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
 
 
@@ -195,6 +210,31 @@ def test_validate_engine_launch_config_record_rejects_non_native_or_mismatched_c
     assert "document_kv.requires_native_runtime must be true" in engine_launch_config_record_issues(record)
 
 
+def test_validate_engine_launch_config_record_rejects_missing_vllm_provider_factory():
+    record = _vllm_launch_config()
+    record["kv_connector_extra_config"].pop("document_kv.provider_factory")
+
+    issues = engine_launch_config_record_issues(record, expected_backend="vllm")
+
+    assert "document_kv.provider_factory must be a non-empty module:attribute string" in issues
+
+
+def test_validate_engine_launch_config_record_rejects_malformed_vllm_provider_factory():
+    record = _vllm_launch_config(**{"document_kv.provider_factory": "missing_attribute"})
+
+    issues = engine_launch_config_record_issues(record, expected_backend="vllm")
+
+    assert "document_kv.provider_factory must use module:attribute syntax" in issues
+
+
+def test_validate_engine_launch_config_record_rejects_dotted_vllm_provider_factory_attribute():
+    record = _vllm_launch_config(**{"document_kv.provider_factory": "json:loads.decoder"})
+
+    issues = engine_launch_config_record_issues(record, expected_backend="vllm")
+
+    assert "document_kv.provider_factory attribute must be a Python identifier" in issues
+
+
 def test_validate_engine_launch_config_record_rejects_invalid_sglang_extra_config():
     record = _sglang_launch_config()
     record["hicache_storage_backend_extra_config"] = "not-json"
@@ -277,6 +317,9 @@ def test_main_builds_launch_config_sidecars(tmp_path):
     assert read_engine_launch_config_json(vllm_path, expected_backend="vllm")[
         "kv_connector_extra_config"
     ]["max_model_len"] == 32768
+    assert read_engine_launch_config_json(vllm_path, expected_backend="vllm")[
+        "kv_connector_extra_config"
+    ]["document_kv.provider_factory"] == DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY
     sglang_extra = json.loads(
         read_engine_launch_config_json(sglang_path, expected_backend="sglang")[
             "hicache_storage_backend_extra_config"
