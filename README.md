@@ -1067,7 +1067,9 @@ python -m document_kv_cache.benchmark_runner \
 For a self-contained Databricks AWS g6/L4 smoke of the actual vLLM server path, use
 `document_kv_cache.vllm_smoke` from a GPU task. It creates an isolated vLLM
 environment on local NVMe, installs the pinned serving dependency stack,
-starts `Qwen/Qwen3-4B-Instruct-2507` as `qwen3:4b-instruct`, runs one tiny
+installs Cachet into that same vLLM environment, starts
+`Qwen/Qwen3-4B-Instruct-2507` as `qwen3:4b-instruct` with Cachet's
+`DocumentKVConnector` `KVTransferConfig`, runs one tiny
 Biography/HotpotQA/MusiQue/NIAH example through the OpenAI-compatible benchmark
 runner, and writes `metadata.json`, `vllm-import-probe.json`,
 `vllm-server.log`, and `v1-benchmark.json` to the chosen output directory:
@@ -1099,12 +1101,14 @@ python -m document_kv_cache.vllm_smoke \
 
 Prepared dataset mode requires exactly Biography, HotpotQA, MusiQue, and NIAH.
 The metadata records `dataset_source`, `dataset_specs`, `max_model_len`,
-`max_num_seqs`, and `gpu_memory_utilization` so release evidence can distinguish
-tiny smoke checks from full or long-context benchmark runs.
+`max_num_seqs`, `gpu_memory_utilization`, the Cachet package install spec, and
+the vLLM `KVTransferConfig` so release evidence can distinguish tiny smoke
+checks from full or long-context benchmark runs.
 
 To launch that same smoke through a Databricks managed task, upload the wheel
 and generated runner script, then emit a single-node AWS g6/L4 `runs/submit`
-payload:
+payload. The runner installs the uploaded wheel into the Databricks driver
+process and forwards the same wheel path to the isolated vLLM environment:
 
 ```bash
 python -m document_kv_cache.databricks_vllm_smoke_job \
