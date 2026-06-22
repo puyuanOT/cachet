@@ -467,6 +467,7 @@ def stage_and_submit_databricks_run(
     *,
     overwrite: bool = False,
     require_payload_dbfs_artifacts: bool = False,
+    preflight_auth_check: bool = False,
     opener: DatabricksURLOpener = urllib.request.urlopen,
 ) -> dict[str, Any]:
     prepared_artifacts = _prepare_databricks_stage_artifacts(
@@ -475,6 +476,7 @@ def stage_and_submit_databricks_run(
         overwrite=overwrite,
         require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
     )
+    auth_record = check_databricks_auth(config, opener=opener) if preflight_auth_check else None
     artifact_uploads = [
         _put_prepared_databricks_dbfs_file_record(
             config,
@@ -486,6 +488,8 @@ def stage_and_submit_databricks_run(
     ]
     response = submit_databricks_run(config, payload, opener=opener)
     result = _success_record("stage-and-submit", response)
+    if auth_record is not None:
+        result["auth"] = auth_record
     result["artifact_uploads"] = [
         _stage_and_submit_artifact_upload_record(record)
         for record in artifact_uploads
@@ -1446,6 +1450,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Validate artifacts and payload DBFS references without Databricks credentials or network requests.",
     )
+    stage_submit_parser.add_argument(
+        "--preflight-auth-check",
+        action="store_true",
+        help="Verify Databricks credentials before uploading artifacts or submitting the run.",
+    )
 
     args = parser.parse_args(argv)
     try:
@@ -1482,6 +1491,7 @@ def main(argv: list[str] | None = None) -> int:
                     tuple(_parse_dbfs_artifact_mapping(artifact) for artifact in args.artifact),
                     overwrite=args.overwrite,
                     require_payload_dbfs_artifacts=args.require_payload_dbfs_artifacts,
+                    preflight_auth_check=args.preflight_auth_check,
                 )
                 response = None
             else:  # pragma: no cover - argparse enforces this.

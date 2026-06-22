@@ -318,6 +318,7 @@ def stage_and_submit_databricks_run(
     *,
     overwrite: bool = False,
     require_payload_dbfs_artifacts: bool = False,
+    preflight_auth_check: bool = False,
     opener: DatabricksURLOpener = urllib.request.urlopen,
 ) -> dict[str, Any]:
     return _call_document_function(
@@ -327,6 +328,7 @@ def stage_and_submit_databricks_run(
         artifacts,
         overwrite=overwrite,
         require_payload_dbfs_artifacts=require_payload_dbfs_artifacts,
+        preflight_auth_check=preflight_auth_check,
         opener=opener,
     )
 

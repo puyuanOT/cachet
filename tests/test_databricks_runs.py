@@ -518,6 +518,86 @@ def test_stage_and_submit_databricks_run_uploads_artifacts_then_submits_payload(
     ]
 
 
+def test_stage_and_submit_databricks_run_can_preflight_auth_before_uploads(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    payload = _dbfs_artifact_submit_payload()
+    opener = _SequentialOpener(
+        (
+            {"userName": "person@example.com", "id": "abc"},
+            {},
+            {},
+            {"run_id": 123},
+        )
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token", timeout_seconds=9)
+
+    record = stage_and_submit_databricks_run(
+        config,
+        payload,
+        (
+            (runner_path, "dbfs:/cachet/run_engine_probe.py"),
+            (wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+        ),
+        overwrite=True,
+        require_payload_dbfs_artifacts=True,
+        preflight_auth_check=True,
+        opener=opener,
+    )
+
+    assert record["ok"] is True
+    assert record["auth"]["record_type"] == DATABRICKS_AUTH_CHECK_RECORD_TYPE
+    assert record["auth"]["response_keys"] == ["id", "userName"]
+    assert record["response"] == {"run_id": 123}
+    assert [request.full_url for request in opener.requests] == [
+        "https://dbc.example/api/2.0/preview/scim/v2/Me",
+        "https://dbc.example/api/2.0/dbfs/put",
+        "https://dbc.example/api/2.0/dbfs/put",
+        "https://dbc.example/api/2.1/jobs/runs/submit",
+    ]
+    assert [request.get_method() for request in opener.requests] == ["GET", "POST", "POST", "POST"]
+    serialized = json.dumps(record, sort_keys=True)
+    assert "person@example.com" not in serialized
+    assert "secret-token" not in serialized
+
+
+def test_stage_and_submit_databricks_run_stops_on_failed_preflight_auth(tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.0/preview/scim/v2/Me",
+        403,
+        "Forbidden",
+        {},
+        _BytesFile(b'{"message":"Authorization: Bearer secret-token"}'),
+    )
+    opener = _RecordingHTTPErrorOpener(error)
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        stage_and_submit_databricks_run(
+            config,
+            _dbfs_artifact_submit_payload(),
+            (
+                (runner_path, "dbfs:/cachet/run_engine_probe.py"),
+                (wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            ),
+            require_payload_dbfs_artifacts=True,
+            preflight_auth_check=True,
+            opener=opener,
+        )
+
+    assert "secret-token" not in str(exc_info.value)
+    assert "Bearer [REDACTED]" in str(exc_info.value)
+    assert [request.full_url for request in opener.requests] == [
+        "https://dbc.example/api/2.0/preview/scim/v2/Me"
+    ]
+
+
 def test_stage_and_submit_databricks_run_rejects_unstaged_payload_dbfs_uri_before_network(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
@@ -1293,6 +1373,78 @@ def test_main_stage_and_submit_writes_sanitized_artifact_and_submit_record(monke
     assert responses == {"/api/2.0/dbfs/put": [], "/api/2.1/jobs/runs/submit": []}
 
 
+def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_path):
+    runner_path = tmp_path / "run_engine_probe.py"
+    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    payload_path = tmp_path / "payload.json"
+    output_path = tmp_path / "stage-submit.json"
+    runner_path.write_text("print('cachet')\n", encoding="utf-8")
+    wheel_path.write_bytes(b"wheel-bytes")
+    payload = _dbfs_artifact_submit_payload()
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    seen = {}
+
+    def fake_stage_and_submit(
+        config,
+        received_payload,
+        artifacts,
+        *,
+        overwrite=False,
+        require_payload_dbfs_artifacts=False,
+        preflight_auth_check=False,
+    ):
+        seen["host"] = config.normalized_host
+        seen["payload"] = received_payload
+        seen["artifacts"] = tuple((str(local_path), dbfs_path) for local_path, dbfs_path in artifacts)
+        seen["overwrite"] = overwrite
+        seen["require_payload_dbfs_artifacts"] = require_payload_dbfs_artifacts
+        seen["preflight_auth_check"] = preflight_auth_check
+        return {
+            "ok": True,
+            "action": "stage-and-submit",
+            "auth": {"record_type": DATABRICKS_AUTH_CHECK_RECORD_TYPE},
+            "response": {"run_id": 123},
+            "artifact_uploads": [],
+        }
+
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(legacy_databricks_runs, "stage_and_submit_databricks_run", fake_stage_and_submit)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "stage-and-submit",
+            "--payload-json",
+            str(payload_path),
+            "--artifact",
+            f"{runner_path}=dbfs:/cachet/run_engine_probe.py",
+            "--artifact",
+            f"{wheel_path}=dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--overwrite",
+            "--require-payload-dbfs-artifacts",
+            "--preflight-auth-check",
+        ]
+    )
+
+    assert exit_code == 0
+    assert seen == {
+        "host": "https://dbc.example",
+        "payload": payload,
+        "artifacts": (
+            (str(runner_path), "dbfs:/cachet/run_engine_probe.py"),
+            (str(wheel_path), "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+        ),
+        "overwrite": True,
+        "require_payload_dbfs_artifacts": True,
+        "preflight_auth_check": True,
+    }
+    assert json.loads(output_path.read_text(encoding="utf-8"))["auth"] == {
+        "record_type": DATABRICKS_AUTH_CHECK_RECORD_TYPE
+    }
+
+
 def test_main_stage_and_submit_dry_run_writes_plan_without_databricks_env(monkeypatch, tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
     wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
@@ -1952,6 +2104,18 @@ class _HTTPErrorOpener:
         self._error = error
 
     def __call__(self, request, *, timeout):
+        raise self._error
+
+
+class _RecordingHTTPErrorOpener:
+    def __init__(self, error):
+        self._error = error
+        self.requests = []
+        self.timeouts = []
+
+    def __call__(self, request, *, timeout):
+        self.requests.append(request)
+        self.timeouts.append(timeout)
         raise self._error
 
 
