@@ -62,6 +62,7 @@ SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
+VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
 
 __all__ = [
     "VLLM_VERSION",
@@ -81,6 +82,7 @@ __all__ = [
     "build_metadata",
     "build_vllm_native_provider_probe_record",
     "dependency_constraints",
+    "dependency_override_constraints",
     "document_kv_package_install_spec",
     "install_document_kv_package",
     "build_vllm_server_args",
@@ -98,6 +100,7 @@ __all__ = [
     "dataset_args",
     "parse_args",
     "main",
+    "VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT",
 ]
 
 
@@ -275,6 +278,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
+        "dependency_override_constraints": dependency_override_constraints(),
         "vllm_kv_transfer_config": document_kv_transfer_config(),
     }
 
@@ -320,6 +324,10 @@ def dependency_constraints() -> list[str]:
     return list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
 
 
+def dependency_override_constraints() -> list[str]:
+    return [VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT]
+
+
 def _cluster_file_path(uri: str) -> str:
     if uri.startswith("dbfs:/"):
         return "/dbfs/" + uri.removeprefix("dbfs:/").lstrip("/")
@@ -358,6 +366,10 @@ def installed_versions(python_executable: Path) -> dict[str, str]:
         "document_kv_cache_version_installed": installed_package_version(python_executable, "document-kv-cache"),
         "transformers_version_installed": installed_package_version(python_executable, "transformers"),
         "torch_version_installed": installed_package_version(python_executable, "torch"),
+        "opencv_python_headless_version_installed": installed_package_version(
+            python_executable,
+            "opencv-python-headless",
+        ),
     }
 
 
@@ -712,6 +724,17 @@ def install_vllm(python_executable: Path) -> None:
             "pip",
             "install",
             *dependency_constraints(),
+        ]
+    )
+    run(
+        [
+            str(python_executable),
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            *dependency_override_constraints(),
         ]
     )
 
