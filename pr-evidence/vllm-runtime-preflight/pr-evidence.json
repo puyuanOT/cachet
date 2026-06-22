@@ -1,0 +1,37 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Reviewer found two P2 issues: handshake metadata falsely defaulted provider_factory to the Cachet native factory, and --layer-names-json only accepted a file path despite help promising a JSON value. The fixes stamp the actual configured provider factory onto native providers, make custom factory paths fail the strict preflight, and support both inline and file-backed layer-name JSON; the reviewer rechecked those fixes and approved PR #314.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 314,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/314",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/vllm_kv_injection/vllm_runtime_preflight.py",
+    "src/vllm_kv_injection/vllm_dynamic_connector.py",
+    "src/vllm_kv_injection/vllm_native_provider.py",
+    "src/vllm_kv_injection/__init__.py",
+    "src/document_kv_cache/vllm_runtime_preflight.py",
+    "src/cachet/vllm_runtime_preflight.py",
+    "pyproject.toml",
+    "tests/test_vllm_kv_injection_vllm_runtime_preflight.py",
+    "tests/test_vllm_kv_injection_vllm_dynamic_connector.py",
+    "tests/test_vllm_kv_injection_vllm_native_provider.py",
+    "pr-evidence/vllm-runtime-preflight"
+  ],
+  "verification": [
+    "python -m pytest -q tests/test_vllm_kv_injection_vllm_runtime_preflight.py tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_vllm_kv_injection_vllm_native_provider.py (37 passed)",
+    "python -m pytest -q tests/test_vllm_kv_injection_vllm_runtime_preflight.py tests/test_vllm_kv_injection_vllm_native_provider.py tests/test_vllm_kv_injection_vllm_runtime_contract.py tests/test_vllm_kv_injection_probe.py tests/test_vllm_kv_injection_vllm_dynamic_connector.py tests/test_native_probe_factories.py tests/test_public_package.py tests/test_project_governance.py (158 passed)",
+    "python -m pytest -q (1615 passed)",
+    "poetry check",
+    "git diff --check",
+    "changed-file credential-pattern scan returned 0 files"
+  ],
+  "what_changed": [
+    "Added a strict vLLM native-runtime preflight record and CLI that combines installed vLLM connector contract diagnostics, provider factory identity, and registered layer-name mapping validation; wired DocumentKVNativeProvider handshake metadata to emit the same preflight record."
+  ],
+  "why": "Before launching provider-backed native probes or g5/g6 benchmark runs, Cachet needs a package-owned target-runtime gate that fails closed when the installed vLLM API, provider factory wiring, or layer-name mapping is not release-safe."
+}
