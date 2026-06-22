@@ -1516,6 +1516,8 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--expected-hardware-target requires --summary")
             if not args.submit_payload_json:
                 raise ValueError("--expected-hardware-target requires --submit-payload-json")
+            if args.include_response:
+                raise ValueError("--expected-hardware-target cannot be combined with --include-response")
         if args.command == "stage-and-submit" and args.dry_run:
             result = plan_databricks_stage_and_submit(
                 read_databricks_run_submit_payload(args.payload_json),

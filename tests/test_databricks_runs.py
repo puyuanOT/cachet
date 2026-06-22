@@ -1739,6 +1739,47 @@ def test_main_get_expected_hardware_target_requires_summary(tmp_path):
     assert record["error"] == "--expected-hardware-target requires --summary"
 
 
+def test_main_get_expected_hardware_target_rejects_include_response(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(_single_node_g5_submit_payload()), encoding="utf-8")
+    raw_secret = "do-not-write-raw-response"
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "get_databricks_run",
+        lambda config, run_id: {
+            "run_id": int(run_id),
+            "raw_secret": raw_secret,
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+        },
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--summary",
+            "--submit-payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+            "--include-response",
+        ]
+    )
+
+    record_text = output_path.read_text(encoding="utf-8")
+    record = json.loads(record_text)
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error"] == "--expected-hardware-target cannot be combined with --include-response"
+    assert raw_secret not in record_text
+
+
 def test_main_get_summary_can_include_raw_response_when_requested(monkeypatch, tmp_path):
     output_path = tmp_path / "response.json"
     monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
