@@ -858,6 +858,8 @@ python -m document_kv_cache.benchmark_plan \
   --benchmark-handoff-manifest-json hotpotqa=/data/handoffs/hotpotqa-manifest.json \
   --benchmark-handoff-manifest-json musique=/data/handoffs/musique-manifest.json \
   --benchmark-handoff-manifest-json niah=/data/handoffs/niah-manifest.json \
+  --benchmark-handoff-generator-factory my_runtime.kv_generator:create_generator \
+  --benchmark-handoff-output-dir /data/handoffs/generated \
   --base-url http://localhost:8000 \
   --storage-benchmark-workspace-dir /local_disk0/document-kv-storage-benchmark \
   --storage-benchmark-uc-volume-root /Volumes/catalog/schema/volume/document-kv-storage-benchmark \
@@ -887,11 +889,15 @@ python -m document_kv_cache.benchmark_plan \
   --plan-output-sh /data/run-v1-benchmark.sh
 ```
 
-The generated shell script runs `dataset_prep` for each raw file, enriches any
-dataset configured with `--benchmark-handoff-manifest-json` by invoking
-`document_kv_cache.benchmark_handoffs`, then invokes `benchmark_runner` against
-the enriched JSONL. Unless `--benchmark-handoff-output-jsonl DATASET=PATH` is
-provided, enriched inputs are written as `<prepared-dir>/<dataset>.handoffs.jsonl`.
+The generated shell script runs `dataset_prep` for each raw file, optionally
+generates per-dataset handoff bundles when
+`--benchmark-handoff-generator-factory` is supplied, enriches any dataset
+configured with handoffs by invoking `document_kv_cache.benchmark_handoffs`,
+then invokes `benchmark_runner` against the enriched JSONL. Unless
+`--benchmark-handoff-output-jsonl DATASET=PATH` is provided, enriched inputs are
+written as `<prepared-dir>/<dataset>.handoffs.jsonl`. When manifests are not
+provided explicitly, generated handoff manifests default under
+`--benchmark-handoff-output-dir`.
 When `--storage-benchmark-workspace-dir` is provided, the plan also appends a
 `document_kv_cache.storage_benchmark` command. The storage command captures
 Memory and Disk reader latency/throughput on the same AWS g6/L4 node, and adds
