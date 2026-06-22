@@ -1196,7 +1196,9 @@ def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Emit a Databricks runs/submit payload for an AWS g6/L4 engine probe.")
+    parser = argparse.ArgumentParser(
+        description="Emit a Databricks runs/submit payload for a V1 AWS single-node GPU engine probe."
+    )
     parser.add_argument("--handoff-json", help="Cluster-visible engine handoff JSON path or URI.")
     parser.add_argument("--probe-factory", help="Dotted native probe factory, e.g. module:factory.")
     parser.add_argument("--probe-output-json", help="Cluster-visible native probe evidence output path.")

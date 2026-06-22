@@ -584,7 +584,7 @@ def test_legacy_vllm_smoke_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for the AWS g6/L4 vLLM smoke." in result.stdout
+    assert "Emit a Databricks runs/submit payload for a V1 AWS single-node GPU vLLM smoke." in result.stdout
 
 
 def test_legacy_vllm_smoke_job_reexports_document_owned_types():

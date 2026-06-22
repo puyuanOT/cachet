@@ -33,7 +33,7 @@ variables:
     description: KV pack byte alignment.
   node_type_id:
     default: g6.8xlarge
-    description: AWS g6/L4 node type for the single-node GPU storage benchmark.
+    description: AWS g5/g6 node type for the single-node GPU storage benchmark.
   spark_version:
     default: 15.4.x-gpu-ml-scala2.12
     description: Databricks GPU ML runtime version.

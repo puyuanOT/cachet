@@ -625,8 +625,9 @@ def test_legacy_storage_benchmark_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for an AWS g6/L4 storage-reader" in result.stdout
-    assert "benchmark." in result.stdout
+    help_text = " ".join(result.stdout.split()).replace("- ", "-")
+    assert "Emit a Databricks runs/submit payload for a V1 AWS single-node GPU storage-reader" in help_text
+    assert "benchmark." in help_text
 
 
 def test_legacy_storage_benchmark_job_reexports_document_owned_types():

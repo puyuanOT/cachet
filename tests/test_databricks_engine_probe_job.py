@@ -2915,7 +2915,8 @@ def test_legacy_engine_probe_job_module_execution_shows_help():
         text=True,
     )
 
-    assert "Emit a Databricks runs/submit payload for an AWS g6/L4 engine probe." in result.stdout
+    help_text = " ".join(result.stdout.split())
+    assert "Emit a Databricks runs/submit payload for a V1 AWS single-node GPU engine probe." in help_text
 
 
 def test_legacy_engine_probe_job_reexports_document_owned_types():
