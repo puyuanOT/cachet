@@ -761,6 +761,11 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["gpu_memory_utilization"] == 0.85
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
     assert metadata["dependency_override_constraints"] == dependency_override_constraints()
+    assert metadata["vllm_server_env_overrides"] == {
+        "PYTHONUNBUFFERED": "1",
+        "VLLM_USE_FLASHINFER_SAMPLER": "0",
+        "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
+    }
     assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config()
 
 
@@ -1018,6 +1023,7 @@ def test_server_env_forces_local_root_hf_cache(monkeypatch, tmp_path):
     monkeypatch.setenv("CPATH", "/existing/include")
     monkeypatch.setenv("LIBRARY_PATH", "/existing/lib")
     monkeypatch.setenv("LD_LIBRARY_PATH", "/existing/ld-lib")
+    monkeypatch.setenv("VLLM_USE_FLASHINFER_SAMPLER", "1")
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
@@ -1035,6 +1041,7 @@ def test_server_env_forces_local_root_hf_cache(monkeypatch, tmp_path):
 
     assert env["HF_HOME"] == str(tmp_path / "local" / "hf-cache")
     assert env["VLLM_WORKER_MULTIPROC_METHOD"] == "spawn"
+    assert env["VLLM_USE_FLASHINFER_SAMPLER"] == "0"
     assert env["PYTHONUNBUFFERED"] == "1"
     assert site_packages_dirs(config) == [site_packages]
     assert cuda_wheel_env_paths(config) == {
