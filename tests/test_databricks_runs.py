@@ -727,6 +727,7 @@ def test_summarize_databricks_run_extracts_run_and_task_state():
                 "cluster_id": "cluster-prepare",
                 "start_time": 1001,
                 "end_time": 1002,
+                "spark_env_keys": [],
             },
             {
                 "task_key": "benchmark",
@@ -737,6 +738,7 @@ def test_summarize_databricks_run_extracts_run_and_task_state():
                 "cluster_id": "cluster-benchmark",
                 "start_time": 1003,
                 "end_time": None,
+                "spark_env_keys": [],
             },
         ],
         "cluster_id": "cluster-main",
@@ -757,6 +759,12 @@ def test_summarize_databricks_run_marks_successful_terminal_run():
 
 
 def test_summarize_databricks_run_can_attach_submit_payload_provenance():
+    payload = _single_node_g5_submit_payload()
+    payload["tasks"][0]["new_cluster"]["spark_env_vars"] = {
+        "CACHET_TRANSFORMERS_DEVICE": "cuda",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
+    }
+
     summary = summarize_databricks_run(
         {
             "run_id": 123,
@@ -766,10 +774,11 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
                     "task_key": "run-benchmark",
                     "run_id": 124,
                     "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "new_cluster": payload["tasks"][0]["new_cluster"],
                 }
             ],
         },
-        submit_payload=_single_node_g5_submit_payload(),
+        submit_payload=payload,
         submit_payload_path="/Volumes/catalog/schema/volume/payload.json",
     )
 
@@ -784,6 +793,22 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert submit_payload["hardware_targets"] == ["aws-g6-l4"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
     assert submit_payload["task_keys"] == ["run-benchmark"]
+    assert submit_payload["spark_env_keys"] == [
+        "CACHET_TRANSFORMERS_DEVICE",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE",
+    ]
+    assert submit_payload["tasks"][0]["spark_env_keys"] == [
+        "CACHET_TRANSFORMERS_DEVICE",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE",
+    ]
+    assert summary["tasks"][0]["spark_env_keys"] == [
+        "CACHET_TRANSFORMERS_DEVICE",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE",
+    ]
+    serialized_summary = json.dumps(submit_payload, sort_keys=True)
+    assert "cuda" not in serialized_summary
+    assert "bfloat16" not in serialized_summary
+    assert databricks_run_status_sidecar_issues(summary) == ()
 
 
 def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
@@ -1034,6 +1059,7 @@ def test_databricks_run_status_sidecar_validation_matches_submit_payload_hardwar
         ("driver_node_type_ids", ["g6.12xlarge"]),
         ("hardware_targets", ["aws-g5-a10g"]),
         ("spark_versions", ["15.3.x-gpu-ml-scala2.12"]),
+        ("spark_env_keys", ["CACHET_TRANSFORMERS_DEVICE"]),
         ("data_security_modes", ["SINGLE_USER", "USER_ISOLATION"]),
     ],
 )
@@ -1050,6 +1076,85 @@ def test_databricks_run_status_sidecar_validation_matches_submit_payload_summary
 
     assert (
         f"Databricks run status sidecar submit_payload.{summary_field} must match submit_payload.tasks"
+        in issues
+    )
+
+
+def test_databricks_run_status_sidecar_validation_rejects_malformed_spark_env_keys():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["spark_env_keys"] = ["CACHET_TRANSFORMERS_DEVICE", "DATABRICKS_TOKEN"]
+    submit_payload["tasks"][0]["spark_env_keys"] = ["CACHET_TRANSFORMERS_DEVICE", "DATABRICKS_TOKEN"]
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert (
+        "Databricks run status sidecar submit_payload.spark_env_keys contains secret-looking "
+        "environment variable name 'DATABRICKS_TOKEN'"
+        in issues
+    )
+    assert (
+        "Databricks run status sidecar submit_payload.tasks[0].spark_env_keys contains "
+        "secret-looking environment variable name 'DATABRICKS_TOKEN'"
+        in issues
+    )
+
+
+def test_summarize_databricks_run_redacts_token_pattern_spark_env_keys_before_serializing():
+    token_like_key = "dapi" + ("0" * 32)
+    payload = _single_node_g5_submit_payload()
+    payload["tasks"][0]["new_cluster"]["spark_env_vars"] = {token_like_key: "not-serialized"}
+
+    summary = summarize_databricks_run(
+        {
+            "run_id": 123,
+            "run_name": "document-kv-v1",
+            "run_page_url": "https://dbc.example/#job/123/run/123",
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                    "new_cluster": payload["tasks"][0]["new_cluster"],
+                }
+            ],
+        },
+        submit_payload=payload,
+        submit_payload_path="/Volumes/catalog/schema/volume/payload.json",
+    )
+
+    serialized_summary = json.dumps(summary, sort_keys=True)
+    assert token_like_key not in serialized_summary
+    assert "not-serialized" not in serialized_summary
+    assert summary["tasks"][0]["spark_env_keys"] == ["[REDACTED_DATABRICKS_TOKEN_KEY]"]
+    assert summary["submit_payload"]["tasks"][0]["spark_env_keys"] == [
+        "[REDACTED_DATABRICKS_TOKEN_KEY]"
+    ]
+    assert (
+        "Databricks run status sidecar tasks[0].spark_env_keys contains redacted "
+        "Databricks token-pattern environment variable name"
+        in databricks_run_status_sidecar_issues(summary)
+    )
+
+
+def test_databricks_run_status_sidecar_validation_rejects_stale_spark_env_key_claims():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["spark_env_keys"] = ["CACHET_TRANSFORMERS_DEVICE"]
+    submit_payload["tasks"][0]["spark_env_keys"] = ["CACHET_TRANSFORMERS_DEVICE"]
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert (
+        "Databricks run status sidecar submit_payload.spark_env_keys must match submit_payload.tasks"
+        not in issues
+    )
+    assert (
+        "Databricks run status sidecar submit_payload.tasks spark_env_keys must match run task "
+        "'run-benchmark' spark_env_keys"
         in issues
     )
 

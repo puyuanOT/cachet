@@ -119,6 +119,7 @@ _DATABRICKS_RUN_STATUS_TASK_KEYS = frozenset(
         "cluster_id",
         "start_time",
         "end_time",
+        "spark_env_keys",
     }
 )
 _DATABRICKS_SUBMIT_PAYLOAD_KEYS = frozenset(
@@ -134,6 +135,7 @@ _DATABRICKS_SUBMIT_PAYLOAD_KEYS = frozenset(
         "driver_node_type_ids",
         "hardware_targets",
         "spark_versions",
+        "spark_env_keys",
         "data_security_modes",
         "single_node",
         *_DATABRICKS_GPU_TYPE_FIELDS,
@@ -145,12 +147,28 @@ _DATABRICKS_SUBMIT_PAYLOAD_TASK_KEYS = frozenset(
         "node_type_id",
         "driver_node_type_id",
         "spark_version",
+        "spark_env_keys",
         "data_security_mode",
         "num_workers",
         "single_node",
         "purpose",
     }
 )
+_SPARK_ENV_VAR_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_SECRET_LIKE_SPARK_ENV_KEY_PARTS = frozenset(
+    {
+        "CREDENTIAL",
+        "CREDENTIALS",
+        "KEY",
+        "PASS",
+        "PASSWORD",
+        "PAT",
+        "SECRET",
+        "TOKEN",
+    }
+)
+_ENV_KEY_PART_RE = re.compile(r"[A-Za-z0-9]+")
+_REDACTED_SPARK_ENV_TOKEN_KEY = "[REDACTED_DATABRICKS_TOKEN_KEY]"
 
 
 class DatabricksHTTPResponse(Protocol):
@@ -557,6 +575,7 @@ def summarize_databricks_run_submit_payload(
     driver_node_type_ids = _sorted_unique_texts(summary.get("driver_node_type_id") for summary in task_summaries)
     hardware_targets = _hardware_targets_for_task_summaries(task_summaries)
     spark_versions = _sorted_unique_texts(summary.get("spark_version") for summary in task_summaries)
+    spark_env_keys = _sorted_task_list_field_values(task_summaries, "spark_env_keys")
     data_security_modes = _sorted_unique_texts(summary.get("data_security_mode") for summary in task_summaries)
     canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     aws_single_node_gpu_type = (
@@ -580,6 +599,7 @@ def summarize_databricks_run_submit_payload(
         "driver_node_type_ids": driver_node_type_ids,
         "hardware_targets": hardware_targets,
         "spark_versions": spark_versions,
+        "spark_env_keys": spark_env_keys,
         "data_security_modes": data_security_modes,
         "single_node": bool(task_summaries) and all(summary["single_node"] for summary in task_summaries),
         _DATABRICKS_GPU_TYPE_FIELD: aws_single_node_gpu_type,
@@ -662,6 +682,7 @@ def databricks_run_status_sidecar_issues(
             )
         )
         issues.extend(_databricks_run_submit_payload_identity_issues(status_record, submit_payload))
+        issues.extend(_databricks_run_submit_payload_spark_env_identity_issues(tasks, submit_payload))
     return _dedupe_strings(issues)
 
 
@@ -736,17 +757,20 @@ def _task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
         "cluster_id": _cluster_id(task),
         "start_time": task.get("start_time"),
         "end_time": task.get("end_time"),
+        "spark_env_keys": _launch_cluster_spark_env_keys(task),
     }
 
 
 def _submit_payload_task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
     cluster = _mapping(task.get("new_cluster"))
     custom_tags = _mapping(cluster.get("custom_tags"))
+    spark_env_vars = _mapping(cluster.get("spark_env_vars"))
     return {
         "task_key": task.get("task_key"),
         "node_type_id": _optional_str(cluster.get("node_type_id")),
         "driver_node_type_id": _optional_str(cluster.get("driver_node_type_id")),
         "spark_version": _optional_str(cluster.get("spark_version")),
+        "spark_env_keys": _spark_env_key_names(spark_env_vars),
         "data_security_mode": _optional_str(cluster.get("data_security_mode")),
         "num_workers": cluster.get("num_workers"),
         "single_node": cluster.get("num_workers") == 0 and custom_tags.get("ResourceClass") == "SingleNode",
@@ -766,6 +790,18 @@ def _cluster_id(record: Mapping[str, Any]) -> str | None:
     cluster_instance = _mapping(record.get("cluster_instance"))
     cluster_id = cluster_instance.get("cluster_id")
     return cluster_id if isinstance(cluster_id, str) and cluster_id else None
+
+
+def _launch_cluster_spark_env_keys(record: Mapping[str, Any]) -> list[str]:
+    return _spark_env_key_names(_mapping(_launch_cluster(record).get("spark_env_vars")))
+
+
+def _launch_cluster(record: Mapping[str, Any]) -> Mapping[str, Any]:
+    direct = _mapping(record.get("new_cluster"))
+    if direct:
+        return direct
+    cluster_spec = _mapping(record.get("cluster_spec"))
+    return _mapping(cluster_spec.get("new_cluster"))
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -849,6 +885,10 @@ def _databricks_run_status_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
             _unexpected_keys(task, _DATABRICKS_RUN_STATUS_TASK_KEYS, f"Databricks run status sidecar tasks[{index}]")
         )
         issues.extend(_databricks_run_status_task_field_issues(task, index=index))
+        issues.extend(_list_of_strings_field(task, "spark_env_keys", f"Databricks run status sidecar tasks[{index}]"))
+        spark_env_keys = _valid_string_list(task.get("spark_env_keys"))
+        if spark_env_keys is not None:
+            issues.extend(_spark_env_key_issues(spark_env_keys, f"Databricks run status sidecar tasks[{index}]"))
         if not isinstance(task.get("task_key"), str) or not task["task_key"]:
             issues.append(f"Databricks run status sidecar tasks[{index}].task_key must be non-empty")
         if task.get("life_cycle_state") != "TERMINATED":
@@ -935,6 +975,42 @@ def _databricks_run_submit_payload_identity_issues(
     return ()
 
 
+def _databricks_run_submit_payload_spark_env_identity_issues(
+    status_tasks: Any,
+    submit_payload: Mapping[str, Any],
+) -> tuple[str, ...]:
+    payload_tasks = submit_payload.get("tasks")
+    if not isinstance(status_tasks, Sequence) or isinstance(status_tasks, (str, bytes, bytearray)):
+        return ()
+    if not isinstance(payload_tasks, Sequence) or isinstance(payload_tasks, (str, bytes, bytearray)):
+        return ()
+    status_by_task_key = {
+        task["task_key"]: task
+        for task in status_tasks
+        if isinstance(task, Mapping) and isinstance(task.get("task_key"), str) and task["task_key"]
+    }
+    issues: list[str] = []
+    for payload_task in payload_tasks:
+        if not isinstance(payload_task, Mapping):
+            continue
+        task_key = payload_task.get("task_key")
+        if not isinstance(task_key, str) or not task_key:
+            continue
+        status_task = status_by_task_key.get(task_key)
+        if status_task is None:
+            continue
+        payload_spark_env_keys = _valid_string_list(payload_task.get("spark_env_keys"))
+        status_spark_env_keys = _valid_string_list(status_task.get("spark_env_keys"))
+        if payload_spark_env_keys is None or status_spark_env_keys is None:
+            continue
+        if sorted(payload_spark_env_keys) != sorted(status_spark_env_keys):
+            issues.append(
+                "Databricks run status sidecar submit_payload.tasks "
+                f"spark_env_keys must match run task {task_key!r} spark_env_keys"
+            )
+    return tuple(issues)
+
+
 def _databricks_submit_payload_summary_field_issues(
     record: Mapping[str, Any],
     tasks: Sequence[Any],
@@ -954,6 +1030,16 @@ def _databricks_submit_payload_summary_field_issues(
             issues.append(
                 f"Databricks run status sidecar submit_payload.{summary_field} must match submit_payload.tasks"
             )
+    actual_spark_env_keys = _valid_string_list(record.get("spark_env_keys"))
+    if actual_spark_env_keys is None:
+        issues.append(
+            "Databricks run status sidecar submit_payload.spark_env_keys must be an array of non-empty strings"
+        )
+    else:
+        expected_spark_env_keys = _sorted_task_list_field_values(tasks, "spark_env_keys")
+        if actual_spark_env_keys != expected_spark_env_keys:
+            issues.append("Databricks run status sidecar submit_payload.spark_env_keys must match submit_payload.tasks")
+        issues.extend(_spark_env_key_issues(actual_spark_env_keys, "Databricks run status sidecar submit_payload"))
     if "hardware_targets" in record:
         actual_hardware_targets = _valid_string_list(record.get("hardware_targets"))
     else:
@@ -1083,6 +1169,10 @@ def _databricks_submit_payload_task_field_issues(task: Mapping[str, Any], *, ind
         "purpose",
     ):
         issues.extend(_required_str_field(task, field_name, label))
+    issues.extend(_list_of_strings_field(task, "spark_env_keys", label))
+    spark_env_keys = _valid_string_list(task.get("spark_env_keys"))
+    if spark_env_keys is not None:
+        issues.extend(_spark_env_key_issues(spark_env_keys, label))
     if type(task.get("num_workers")) is not int:
         issues.append(f"{label}.num_workers must be an integer")
     issues.extend(_bool_field(task, "single_node", label))
@@ -1174,6 +1264,50 @@ def _sorted_task_field_values(tasks: Sequence[Any], field_name: str) -> list[str
             if isinstance(task, Mapping) and isinstance(task.get(field_name), str) and task[field_name]
         }
     )
+
+
+def _sorted_task_list_field_values(tasks: Sequence[Any], field_name: str) -> list[str]:
+    return sorted(
+        {
+            item
+            for task in tasks
+            if isinstance(task, Mapping)
+            for values in (_valid_string_list(task.get(field_name)),)
+            if values is not None
+            for item in values
+        }
+    )
+
+
+def _spark_env_key_names(spark_env_vars: Mapping[str, Any]) -> list[str]:
+    return _sorted_unique_texts(_safe_spark_env_key_name(key) for key in spark_env_vars.keys())
+
+
+def _safe_spark_env_key_name(value: str) -> str:
+    if isinstance(value, str) and _DATABRICKS_PAT_TOKEN_RE.search(value):
+        return _REDACTED_SPARK_ENV_TOKEN_KEY
+    return value
+
+
+def _spark_env_key_issues(values: Sequence[str], label: str) -> tuple[str, ...]:
+    issues: list[str] = []
+    for value in values:
+        if value == _REDACTED_SPARK_ENV_TOKEN_KEY:
+            issues.append(f"{label}.spark_env_keys contains redacted Databricks token-pattern environment variable name")
+            continue
+        if _DATABRICKS_PAT_TOKEN_RE.search(value):
+            issues.append(f"{label}.spark_env_keys contains Databricks token-pattern environment variable name")
+            continue
+        if _SPARK_ENV_VAR_KEY_RE.fullmatch(value) is None:
+            issues.append(f"{label}.spark_env_keys contains invalid environment variable name {value!r}")
+        if _looks_secret_like_spark_env_key(value):
+            issues.append(f"{label}.spark_env_keys contains secret-looking environment variable name {value!r}")
+    return tuple(issues)
+
+
+def _looks_secret_like_spark_env_key(value: str) -> bool:
+    parts = {part.upper() for part in _ENV_KEY_PART_RE.findall(value)}
+    return bool(parts.intersection(_SECRET_LIKE_SPARK_ENV_KEY_PARTS))
 
 
 def _task_key_list(tasks: Any) -> list[str]:
