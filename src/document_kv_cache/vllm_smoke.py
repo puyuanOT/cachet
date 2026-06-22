@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import os
@@ -12,6 +13,8 @@ import signal
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
+from typing import Any
 import urllib.error
 import urllib.request
 
@@ -31,6 +34,11 @@ from document_kv_cache.serving_env import (
 from vllm_kv_injection.vllm_transfer_config import (
     document_kv_transfer_config,
     document_kv_transfer_config_json,
+)
+from vllm_kv_injection.vllm_dynamic_connector import (
+    DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
+    DocumentKVConnector,
+    NoOpDocumentKVProvider,
 )
 
 HF_MODEL_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
@@ -58,6 +66,7 @@ __all__ = [
     "VLLMSmokeBenchmarkConfig",
     "run_vllm_smoke_benchmark",
     "build_metadata",
+    "build_vllm_native_provider_probe_record",
     "dependency_constraints",
     "document_kv_package_install_spec",
     "install_document_kv_package",
@@ -238,6 +247,43 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "gpu_memory_utilization": config.gpu_memory_utilization,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "vllm_kv_transfer_config": document_kv_transfer_config(),
+    }
+
+
+def build_vllm_native_provider_probe_record(
+    transfer_config: Mapping[str, Any] | None = None,
+) -> dict[str, object]:
+    """Instantiate the configured vLLM connector and verify native provider wiring."""
+
+    config = document_kv_transfer_config() if transfer_config is None else transfer_config
+    if not isinstance(config, Mapping):
+        raise TypeError("vLLM KV transfer config must be a mapping")
+    extra_config = config.get("kv_connector_extra_config")
+    if not isinstance(extra_config, Mapping):
+        raise TypeError("vLLM KV transfer config kv_connector_extra_config must be a mapping")
+    provider_factory = extra_config.get(DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY)
+    if not isinstance(provider_factory, str) or not provider_factory.strip():
+        raise ValueError(
+            f"{DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY} must be a non-empty module:attribute string"
+        )
+    if extra_config.get("document_kv.requires_native_runtime") is not True:
+        raise ValueError("document_kv.requires_native_runtime must be true")
+
+    connector = DocumentKVConnector(vllm_config=SimpleNamespace(kv_transfer_config=config))
+    provider = connector.provider
+    if isinstance(provider, NoOpDocumentKVProvider):
+        raise ValueError("vLLM smoke cannot run with NoOpDocumentKVProvider")
+    if getattr(provider, "document_kv_native_provider", False) is not True:
+        raise TypeError("vLLM smoke requires a native document KV provider")
+
+    provider_type = f"{type(provider).__module__}.{type(provider).__qualname__}"
+    connector_type = f"{type(connector).__module__}.{type(connector).__qualname__}"
+    return {
+        "document_kv_native_provider_ok": True,
+        "document_kv_provider_factory": provider_factory,
+        "document_kv_provider_type": provider_type,
+        "document_kv_connector_type": connector_type,
+        "document_kv_requires_native_runtime": True,
     }
 
 
@@ -535,8 +581,10 @@ import vllm
 import vllm.entrypoints.openai.api_server
 import document_kv_cache
 import vllm_kv_injection.vllm_dynamic_connector as document_kv_vllm_connector
+from document_kv_cache.vllm_smoke import build_vllm_native_provider_probe_record
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
+transfer_config = document_kv_transfer_config()
 payload = {
     "ok": True,
     "torch_version": torch.__version__,
@@ -546,8 +594,9 @@ payload = {
     "document_kv_cache_version": md.version("document-kv-cache"),
     "document_kv_cache_module": document_kv_cache.__name__,
     "document_kv_connector_module": document_kv_vllm_connector.__name__,
-    "document_kv_connector": document_kv_transfer_config()["kv_connector"],
+    "document_kv_connector": transfer_config["kv_connector"],
 }
+payload.update(build_vllm_native_provider_probe_record(transfer_config))
 if torch.cuda.is_available():
     payload["cuda_device_name"] = torch.cuda.get_device_name(0)
 print(json.dumps(payload, sort_keys=True), flush=True)

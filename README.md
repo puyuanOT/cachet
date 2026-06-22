@@ -1084,7 +1084,10 @@ installs Cachet into that same vLLM environment, starts
 `DocumentKVConnector` `KVTransferConfig`, runs one tiny
 Biography/HotpotQA/MusiQue/NIAH example through the OpenAI-compatible benchmark
 runner, and writes `metadata.json`, `vllm-import-probe.json`,
-`vllm-server.log`, and `v1-benchmark.json` to the chosen output directory:
+`vllm-server.log`, and `v1-benchmark.json` to the chosen output directory.
+The import probe instantiates `DocumentKVConnector` from the same
+`KVTransferConfig` passed to vLLM and fails unless the configured provider
+factory resolves to native document-KV wiring.
 
 ```bash
 python -m document_kv_cache.vllm_smoke \

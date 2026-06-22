@@ -128,6 +128,9 @@ python -m document_kv_cache.vllm_smoke \
 The smoke writes the server import probe, server log, benchmark report, and
 metadata into `--output-dir`. It is a reproducibility check for the pinned
 vLLM/Qwen3 environment, not a replacement for the full release benchmark plan.
+The import probe also instantiates Cachet's `DocumentKVConnector` from the
+server `KVTransferConfig` and fails unless the configured provider factory
+resolves to native document-KV wiring.
 
 To emit a Databricks `runs/submit` payload for that same smoke task, use:
 

@@ -9,7 +9,9 @@ The generated runner installs the uploaded Cachet wheel into both the
 Databricks driver process and the isolated vLLM environment. vLLM starts with
 Cachet's `DocumentKVConnector` `KVTransferConfig`, so prepared inputs carrying
 `kv_transfer_params` exercise the provider-backed cache path instead of a stock
-prefill-only server.
+prefill-only server. The runner writes `vllm-import-probe.json` before model
+startup, and that probe fails unless the same `KVTransferConfig` resolves to a
+native document-KV provider factory.
 
 The same runner can be configured for prepared V1 benchmark JSONL files by
 supplying one `--dataset DATASET=PATH` flag for each required dataset plus the

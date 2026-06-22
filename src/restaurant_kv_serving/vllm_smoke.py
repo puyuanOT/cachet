@@ -48,6 +48,7 @@ __all__ = reexport_public(
         "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
         "VLLMSmokeBenchmarkConfig",
         "build_metadata",
+        "build_vllm_native_provider_probe_record",
         "dependency_constraints",
         "document_kv_package_install_spec",
         "install_document_kv_package",
@@ -114,6 +115,10 @@ DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = _document_module.DOCUMENT_KV_PACKAGE_INST
 
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
     return _call_document_function("build_metadata", config)
+
+
+def build_vllm_native_provider_probe_record(transfer_config=None) -> dict[str, object]:
+    return _call_document_function("build_vllm_native_provider_probe_record", transfer_config)
 
 
 def dependency_constraints() -> list[str]:
@@ -304,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
 
 _DEFAULT_COMPAT_FUNCTIONS = {
     "build_metadata": build_metadata,
+    "build_vllm_native_provider_probe_record": build_vllm_native_provider_probe_record,
     "dependency_constraints": dependency_constraints,
     "document_kv_package_install_spec": document_kv_package_install_spec,
     "install_document_kv_package": install_document_kv_package,
