@@ -43,6 +43,7 @@ from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
 )
 from document_kv_cache.databricks_job import (
+    DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_PURPOSE,
     DEFAULT_DATABRICKS_RUN_NAME,
     DEFAULT_DATABRICKS_TASK_KEY,
@@ -643,6 +644,7 @@ def _validate_release_bundle_inputs(
     )
     strict_v1_suite_id = _strict_v1_benchmark_suite_id(v1_record) if require_complete_v1 else None
     strict_v1_hardware_target = DEFAULT_HARDWARE_TARGET if require_complete_v1 else None
+    strict_v1_node_type_id = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE if require_complete_v1 else None
     evidence = evaluate_release_evidence(
         v1_record,
         storage_record,
@@ -707,6 +709,7 @@ def _validate_release_bundle_inputs(
                 databricks_run_status_sidecar_issues(
                     artifact.record,
                     expected_hardware_target=strict_v1_hardware_target,
+                    expected_node_type_id=strict_v1_node_type_id,
                 )
             )
         elif artifact.role == "package_wheel":

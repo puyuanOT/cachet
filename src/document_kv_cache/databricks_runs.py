@@ -119,6 +119,8 @@ _DATABRICKS_RUN_STATUS_TASK_KEYS = frozenset(
         "result_state",
         "state_message",
         "cluster_id",
+        "node_type_id",
+        "driver_node_type_id",
         "start_time",
         "end_time",
         "spark_env_keys",
@@ -645,6 +647,7 @@ def databricks_run_status_sidecar_issues(
     record: Mapping[str, Any],
     *,
     expected_hardware_target: str | None = None,
+    expected_node_type_id: str | None = None,
 ) -> tuple[str, ...]:
     """Return release-oriented issues for a Databricks run-status sidecar."""
 
@@ -687,7 +690,13 @@ def databricks_run_status_sidecar_issues(
     else:
         if type(task_count) is int and task_count > 0 and len(tasks) != task_count:
             issues.append("Databricks run status sidecar task_count must match tasks length")
-        issues.extend(_databricks_run_status_task_issues(tasks))
+        issues.extend(
+            _databricks_run_status_task_issues(
+                tasks,
+                expected_hardware_target=expected_hardware_target,
+                expected_node_type_id=expected_node_type_id,
+            )
+        )
     submit_payload = status_record.get("submit_payload")
     if not isinstance(submit_payload, Mapping):
         issues.append("Databricks run status sidecar submit_payload must be an object")
@@ -697,6 +706,7 @@ def databricks_run_status_sidecar_issues(
                 submit_payload,
                 tasks=tasks,
                 expected_hardware_target=expected_hardware_target,
+                expected_node_type_id=expected_node_type_id,
             )
         )
         issues.extend(_databricks_run_submit_payload_identity_issues(status_record, submit_payload))
@@ -708,12 +718,14 @@ def validate_databricks_run_status_sidecar(
     record: Mapping[str, Any],
     *,
     expected_hardware_target: str | None = None,
+    expected_node_type_id: str | None = None,
 ) -> None:
     """Validate a release-oriented Databricks run-status sidecar."""
 
     issues = databricks_run_status_sidecar_issues(
         record,
         expected_hardware_target=expected_hardware_target,
+        expected_node_type_id=expected_node_type_id,
     )
     if issues:
         raise ValueError("; ".join(issues))
@@ -766,7 +778,7 @@ def _databricks_api_response_json(
 def _task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
     state = _mapping(task.get("state"))
     life_cycle_state = _optional_str(state.get("life_cycle_state"))
-    return {
+    summary = {
         "task_key": task.get("task_key"),
         "run_id": task.get("run_id"),
         "life_cycle_state": life_cycle_state,
@@ -777,6 +789,12 @@ def _task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
         "end_time": task.get("end_time"),
         "spark_env_keys": _launch_cluster_spark_env_keys(task),
     }
+    launch_cluster = _launch_cluster(task)
+    for field_name in ("node_type_id", "driver_node_type_id"):
+        value = _optional_str(launch_cluster.get(field_name))
+        if value is not None:
+            summary[field_name] = value
+    return summary
 
 
 def _submit_payload_task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
@@ -893,7 +911,12 @@ def _sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _databricks_run_status_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
+def _databricks_run_status_task_issues(
+    tasks: Sequence[Any],
+    *,
+    expected_hardware_target: str | None,
+    expected_node_type_id: str | None,
+) -> tuple[str, ...]:
     issues: list[str] = []
     for index, task in enumerate(tasks):
         if not isinstance(task, Mapping):
@@ -909,10 +932,53 @@ def _databricks_run_status_task_issues(tasks: Sequence[Any]) -> tuple[str, ...]:
             issues.extend(_spark_env_key_issues(spark_env_keys, f"Databricks run status sidecar tasks[{index}]"))
         if not isinstance(task.get("task_key"), str) or not task["task_key"]:
             issues.append(f"Databricks run status sidecar tasks[{index}].task_key must be non-empty")
+        issues.extend(
+            _databricks_run_status_task_node_type_issues(
+                task,
+                index=index,
+                expected_hardware_target=expected_hardware_target,
+                expected_node_type_id=expected_node_type_id,
+            )
+        )
         if task.get("life_cycle_state") != "TERMINATED":
             issues.append(f"Databricks run status sidecar tasks[{index}].life_cycle_state must be 'TERMINATED'")
         if task.get("result_state") != "SUCCESS":
             issues.append(f"Databricks run status sidecar tasks[{index}].result_state must be 'SUCCESS'")
+    return tuple(issues)
+
+
+def _databricks_run_status_task_node_type_issues(
+    task: Mapping[str, Any],
+    *,
+    index: int,
+    expected_hardware_target: str | None,
+    expected_node_type_id: str | None,
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    for field_name in ("node_type_id", "driver_node_type_id"):
+        value = task.get(field_name)
+        if value is None:
+            if expected_node_type_id is not None:
+                issues.append(
+                    f"Databricks run status sidecar tasks[{index}].{field_name} must be present for "
+                    f"node_type_id {expected_node_type_id!r} validation"
+                )
+            continue
+        if not _is_supported_aws_single_node_gpu_type(value):
+            issues.append(
+                f"Databricks run status sidecar tasks[{index}].{field_name} "
+                "must be a supported V1 AWS GPU node type"
+            )
+        elif not _is_expected_aws_single_node_gpu_type(value, expected_hardware_target):
+            issues.append(
+                f"Databricks run status sidecar tasks[{index}].{field_name} must match "
+                f"hardware_target {expected_hardware_target!r}"
+            )
+        elif expected_node_type_id is not None and value != expected_node_type_id:
+            issues.append(
+                f"Databricks run status sidecar tasks[{index}].{field_name} must be "
+                f"node_type_id {expected_node_type_id!r}"
+            )
     return tuple(issues)
 
 
@@ -921,6 +987,7 @@ def _databricks_submit_payload_sidecar_issues(
     *,
     tasks: Any,
     expected_hardware_target: str | None,
+    expected_node_type_id: str | None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     issues.extend(_unexpected_keys(record, _DATABRICKS_SUBMIT_PAYLOAD_KEYS, "Databricks run status sidecar submit_payload"))
@@ -951,6 +1018,7 @@ def _databricks_submit_payload_sidecar_issues(
             _databricks_submit_payload_task_issues(
                 payload_tasks,
                 expected_hardware_target=expected_hardware_target,
+                expected_node_type_id=expected_node_type_id,
             )
         )
         issues.extend(_databricks_submit_payload_summary_field_issues(record, payload_tasks))
@@ -1075,6 +1143,7 @@ def _databricks_submit_payload_task_issues(
     tasks: Sequence[Any],
     *,
     expected_hardware_target: str | None,
+    expected_node_type_id: str | None,
 ) -> tuple[str, ...]:
     issues: list[str] = []
     for index, task in enumerate(tasks):
@@ -1102,6 +1171,11 @@ def _databricks_submit_payload_task_issues(
                 issues.append(
                     f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must match "
                     f"hardware_target {expected_hardware_target!r}"
+                )
+            elif expected_node_type_id is not None and value != expected_node_type_id:
+                issues.append(
+                    f"Databricks run status sidecar submit_payload.tasks[{index}].{field_name} must be "
+                    f"node_type_id {expected_node_type_id!r}"
                 )
         if task.get("single_node") is not True:
             issues.append(f"Databricks run status sidecar submit_payload.tasks[{index}].single_node must be true")
@@ -1134,7 +1208,7 @@ def _databricks_run_status_task_field_issues(task: Mapping[str, Any], *, index: 
     issues.extend(_run_id_field_issues(task, "run_id", label))
     for field_name in ("life_cycle_state", "result_state"):
         issues.extend(_required_str_field(task, field_name, label))
-    for field_name in ("state_message", "cluster_id"):
+    for field_name in ("state_message", "cluster_id", "node_type_id", "driver_node_type_id"):
         issues.extend(_optional_str_field(task, field_name, label))
     for field_name in ("start_time", "end_time"):
         issues.extend(_optional_int_field(task, field_name, label))
@@ -1638,6 +1712,13 @@ def main(argv: list[str] | None = None) -> int:
             "Requires --summary and --submit-payload-json."
         ),
     )
+    get_parser.add_argument(
+        "--expected-node-type-id",
+        help=(
+            "Validate the compact summary and attached submit payload against an exact Databricks "
+            "node_type_id. Requires --summary and --submit-payload-json."
+        ),
+    )
     payload_summary_parser = subparsers.add_parser(
         "payload-summary",
         help="Summarize and optionally validate a Databricks runs/submit payload without credentials.",
@@ -1647,6 +1728,10 @@ def main(argv: list[str] | None = None) -> int:
         "--expected-hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
         help="Validate the payload summary against a V1 hardware target.",
+    )
+    payload_summary_parser.add_argument(
+        "--expected-node-type-id",
+        help="Validate the payload summary against an exact Databricks node_type_id.",
     )
     put_parser = subparsers.add_parser("put-dbfs-file", help="Upload a small local artifact to DBFS.")
     put_parser.add_argument("--local-path", required=True, help="Local file to upload.")
@@ -1690,6 +1775,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("--expected-hardware-target requires --submit-payload-json")
             if args.include_response:
                 raise ValueError("--expected-hardware-target cannot be combined with --include-response")
+        if args.command == "get" and args.expected_node_type_id:
+            if not args.summary:
+                raise ValueError("--expected-node-type-id requires --summary")
+            if not args.submit_payload_json:
+                raise ValueError("--expected-node-type-id requires --submit-payload-json")
+            if args.include_response:
+                raise ValueError("--expected-node-type-id cannot be combined with --include-response")
         if args.command == "stage-and-submit" and args.dry_run:
             result = plan_databricks_stage_and_submit(
                 read_databricks_run_submit_payload(args.payload_json),
@@ -1709,6 +1801,12 @@ def main(argv: list[str] | None = None) -> int:
                 _validate_databricks_submit_payload_summary(
                     summary,
                     expected_hardware_target=args.expected_hardware_target,
+                    expected_node_type_id=args.expected_node_type_id,
+                )
+            elif args.expected_node_type_id:
+                _validate_databricks_submit_payload_summary(
+                    summary,
+                    expected_node_type_id=args.expected_node_type_id,
                 )
             result = _success_record(args.command)
             result["summary"] = summary
@@ -1758,6 +1856,12 @@ def main(argv: list[str] | None = None) -> int:
                 validate_databricks_run_status_sidecar(
                     summary,
                     expected_hardware_target=args.expected_hardware_target,
+                    expected_node_type_id=args.expected_node_type_id,
+                )
+            elif args.expected_node_type_id:
+                validate_databricks_run_status_sidecar(
+                    summary,
+                    expected_node_type_id=args.expected_node_type_id,
                 )
             result["summary"] = summary
         elif args.command == "auth-check":
@@ -1801,11 +1905,13 @@ def _validate_databricks_submit_payload_summary(
     summary: Mapping[str, Any],
     *,
     expected_hardware_target: str | None = None,
+    expected_node_type_id: str | None = None,
 ) -> None:
     issues = _databricks_submit_payload_sidecar_issues(
         summary,
         tasks=summary.get("tasks"),
         expected_hardware_target=expected_hardware_target,
+        expected_node_type_id=expected_node_type_id,
     )
     if issues:
         raise ValueError("; ".join(_dedupe_strings(issues)))

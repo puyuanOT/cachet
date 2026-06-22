@@ -1439,7 +1439,8 @@ cachet-databricks-runs \
   --output-json databricks-run-submit-summary.json \
   payload-summary \
   --payload-json databricks-run-submit.json \
-  --expected-hardware-target aws-g6-l4
+  --expected-hardware-target aws-g6-l4 \
+  --expected-node-type-id g6.8xlarge
 
 cachet-databricks-runs \
   --output-json databricks-stage-submit-plan.json \
@@ -1482,7 +1483,9 @@ cachet-databricks-runs \
   get \
   --run-id 123456789 \
   --summary \
-  --submit-payload-json databricks-run-submit.json
+  --submit-payload-json databricks-run-submit.json \
+  --expected-hardware-target aws-g6-l4 \
+  --expected-node-type-id g6.8xlarge
 ```
 
 Equivalent profile-based submit:
@@ -1533,8 +1536,10 @@ only when debugging requires the raw `runs/get` payload.
 Use `validate_databricks_run_status_sidecar` or
 `databricks_run_status_sidecar_issues` to preflight release-oriented run-status
 sidecars before assembling a release bundle. Pass
-`expected_hardware_target="aws-g6-l4"` for V1 release checks so stale non-g6
-status sidecars cannot be reused across target profiles.
+`expected_hardware_target="aws-g6-l4"` and
+`expected_node_type_id="g6.8xlarge"` for strict V1 release checks so stale
+non-g6 status sidecars, or sidecars from non-default g6 sizes, cannot be reused
+as release evidence.
 
 Workspace-specific automation can still POST the payload itself after applying
 the organization’s auth, cluster policy, and asset-upload conventions. Teams
