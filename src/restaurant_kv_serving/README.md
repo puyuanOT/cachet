@@ -85,7 +85,9 @@ supplied directly with repeatable `--release-engine-probe-json` and
 `--engine-probe-use-builtin-factories` is present, missing factories are filled
 with package-owned vLLM/SGLang factory paths. The vLLM path can use Cachet's
 provider-backed delegate from the wheel with strict connector metadata and
-runtime preflight, while SGLang still requires a backend-native delegate.
+runtime preflight, and the SGLang path can use Cachet's provider-backed HiCache
+delegate from the wheel with strict connector metadata and SGLang runtime
+preflight.
 When release-evidence flags are present, the plan appends `document_kv_cache.release_evidence`
 last so the V1 benchmark, storage benchmark, and native vLLM/SGLang engine probe
 JSON artifacts are validated together. Release evidence also checks each probe's
@@ -196,6 +198,12 @@ layer-name JSON source so the Databricks runner can validate the installed vLLM
 contract and layer mapping before starting the native probe. It rejects debug
 fallback flags and extra wheels so the provider-backed adapter modules come only
 from the Cachet wheel.
+For Cachet's built-in provider-backed SGLang HiCache path,
+`--provider-backed-sglang-native-probe` fills in the Cachet probe factory,
+SGLang delegate factory, strict connector metadata, expected backend, and pinned
+`sglang==0.5.10.post1` runtime package. In release-safe mode it requires both
+SGLang runtime preflight sidecars: `--sglang-runtime-preflight-output-json` and
+`--sglang-runtime-preflight-launch-config-json`.
 
 Use `--release-safe` for release-evidence jobs so debug-only non-native probes
 and caller-supplied engine versions are rejected before the Databricks payload is

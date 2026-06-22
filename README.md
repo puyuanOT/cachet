@@ -468,6 +468,15 @@ the Databricks runner writes that strict preflight record before starting the
 native probe and stops if validation fails. The preset rejects debug fallback
 flags and extra wheels so the provider-backed adapter modules come only from the
 Cachet wheel.
+`--provider-backed-sglang-native-probe` is the matching single-backend QA probe
+for Cachet's built-in provider-backed SGLang HiCache path. It sets the Cachet
+SGLang probe factory, the
+`sglang_kv_injection.probe:build_native_connector_probe` delegate, the
+provider-backed connector metadata, `--expected-backend sglang`, and the pinned
+`sglang==0.5.10.post1` runtime package. In release-safe mode, the preset
+requires both SGLang runtime preflight sidecars:
+`--sglang-runtime-preflight-output-json` and
+`--sglang-runtime-preflight-launch-config-json`.
 
 For release runs, prefer a two-backend probe target file and one release-safe
 Databricks payload so vLLM and SGLang exercise the same descriptor contract on
@@ -492,10 +501,16 @@ the same AWS g6/L4 policy:
     {
       "backend": "sglang",
       "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
-      "probe_factory": "my_sglang_adapter.probes:build_probe",
+      "probe_factory": "document_kv_cache.native_probe_factories:sglang_native_probe_factory",
       "output_json": "/Volumes/catalog/schema/volume/probes/sglang-engine-probe.json",
       "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-connector-actions.json",
       "payload_uri": "/Volumes/catalog/schema/volume/probes/sglang-payload.kv",
+      "native_probe_delegate_factory": "sglang_kv_injection.probe:build_native_connector_probe",
+      "metadata": [
+        "sglang_kv_injection.connector_factory=sglang_kv_injection.probe:build_document_kv_hicache_probe_connector"
+      ],
+      "sglang_runtime_preflight_output_json": "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json",
+      "sglang_runtime_preflight_launch_config_json": "/Volumes/catalog/schema/volume/probes/sglang-launch-config.json",
       "pip_packages": ["sglang==0.5.10.post1"]
     }
   ]
@@ -947,9 +962,10 @@ any command is run.
 `--engine-probe-use-builtin-factories` fills missing planned factories with
 package-owned vLLM/SGLang factory paths. Those factories are stable release-plan
 targets: the vLLM path can use Cachet's provider-backed delegate with strict
-connector-factory metadata and runtime preflight, while SGLang still requires a
-backend-native delegate plus a passing SGLang runtime preflight for its dynamic
-HiCache launch config and provider factory. Pass explicit
+connector-factory metadata and runtime preflight, and the SGLang path can use
+Cachet's provider-backed HiCache delegate with strict connector-factory metadata
+plus a passing SGLang runtime preflight for its dynamic HiCache launch config
+and provider factory. Pass explicit
 `--engine-probe-factory BACKEND=MODULE:CALLABLE` to use a downstream adapter
 module.
 Add `--github-governance-output-json` to the benchmark plan to emit the

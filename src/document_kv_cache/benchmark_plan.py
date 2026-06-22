@@ -1897,8 +1897,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Fill missing planned engine-probe factories with package-owned "
             "vLLM/SGLang native factory paths. The vLLM path can use Cachet's "
-            "provider-backed delegate with strict connector metadata; SGLang "
-            "still requires a backend-native delegate."
+            "provider-backed delegate with strict connector metadata; SGLang can "
+            "use Cachet's provider-backed HiCache delegate with strict connector "
+            "metadata and runtime preflight."
         ),
     )
     parser.add_argument(
