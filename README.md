@@ -461,22 +461,22 @@ python -m document_kv_cache.databricks_engine_probe_job \
 `--provider-backed-vllm-native-probe` is the preferred single-backend QA probe
 for the built-in vLLM path. It sets the Cachet vLLM probe factory, the
 `vllm_kv_injection.probe:build_native_connector_probe` delegate, the
-provider-backed connector metadata, `--expected-backend vllm`, and the pinned
-`vllm==0.23.0` runtime package. The fixture option writes deterministic Qwen3
-handoff/payload/action artifacts on the target node before the native probe
-runs. In release-safe mode, the preset also requires a vLLM runtime preflight
-output path and a layer-name JSON source from the runtime registration check;
-the Databricks runner writes that strict preflight record before starting the
-native probe and stops if validation fails. The preset rejects debug fallback
-flags and extra wheels so the provider-backed adapter modules come only from the
-Cachet wheel.
+provider-backed connector metadata, `--expected-backend vllm`, and Cachet's
+pinned vLLM serving dependency profile. The fixture option writes deterministic
+Qwen3 handoff/payload/action artifacts on the target node before the native
+probe runs. In release-safe mode, the preset also requires a vLLM runtime
+preflight output path and a layer-name JSON source from the runtime registration
+check; the Databricks runner writes that strict preflight record before starting
+the native probe and stops if validation fails. The preset rejects debug
+fallback flags and extra wheels so the provider-backed adapter modules come only
+from the Cachet wheel.
 `--provider-backed-sglang-native-probe` is the matching single-backend QA probe
 for Cachet's built-in provider-backed SGLang HiCache path. It sets the Cachet
 SGLang probe factory, the
 `sglang_kv_injection.probe:build_native_connector_probe` delegate, the
 provider-backed connector metadata, `--expected-backend sglang`, and the pinned
-`sglang==0.5.10.post1` runtime package. In release-safe mode, the preset
-requires both SGLang runtime preflight sidecars:
+SGLang serving dependency profile. In release-safe mode, the preset requires
+both SGLang runtime preflight sidecars:
 `--sglang-runtime-preflight-output-json` and
 `--sglang-runtime-preflight-launch-config-json`.
 
@@ -494,11 +494,21 @@ the same AWS g6/L4 policy:
       "output_json": "/Volumes/catalog/schema/volume/probes/vllm-engine-probe.json",
       "actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-connector-actions.json",
       "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+      "vllm_runtime_preflight_output_json": "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json",
+      "vllm_runtime_preflight_layer_names_json": "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json",
       "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
       "metadata": [
         "vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector"
       ],
-      "pip_packages": ["vllm==0.23.0"]
+      "pip_packages": [
+        "vllm==0.23.0",
+        "transformers==5.12.1",
+        "huggingface-hub==1.20.1",
+        "tokenizers==0.22.2",
+        "numpy==2.3.5",
+        "fastapi[standard]==0.136.0",
+        "prometheus-fastapi-instrumentator==8.0.0"
+      ]
     },
     {
       "backend": "sglang",

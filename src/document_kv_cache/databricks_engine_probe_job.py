@@ -39,7 +39,12 @@ from document_kv_cache._native_probe_metadata import (
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.release_evidence import REQUIRED_ENGINE_PROBE_BACKENDS
-from document_kv_cache.serving_env import SGLANG_VERSION, VLLM_VERSION
+from document_kv_cache.serving_env import (
+    SGLANG_DEPENDENCY_CONSTRAINTS,
+    SGLANG_VERSION,
+    VLLM_DEPENDENCY_CONSTRAINTS,
+    VLLM_VERSION,
+)
 from document_kv_cache.storage import local_path
 
 
@@ -68,8 +73,8 @@ _PROVIDER_BACKED_NATIVE_PROBE_METADATA = {
     ServingBackend.SGLANG: SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
 }
 _PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES = {
-    ServingBackend.VLLM: DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
-    ServingBackend.SGLANG: DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE,
+    ServingBackend.VLLM: VLLM_DEPENDENCY_CONSTRAINTS,
+    ServingBackend.SGLANG: SGLANG_DEPENDENCY_CONSTRAINTS,
 }
 _ENGINE_PROBE_TARGETS_ENVELOPE_KEYS = frozenset(
     {
@@ -122,8 +127,8 @@ def _install_runtime_packages(argv: list[str]) -> list[str]:
     parser.add_argument("--pip-package", action="append")
     parser.add_argument("--package-wheel-uri", action="append")
     args, remaining = parser.parse_known_args(argv)
-    for pip_package in args.pip_package or ():
-        subprocess.check_call([sys.executable, "-m", "pip", "install", pip_package])
+    if args.pip_package:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", *args.pip_package])
     for package_wheel_uri in args.package_wheel_uri or ():
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)]
@@ -398,7 +403,7 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
             "parameters": _runner_parameters(config),
         },
     }
-    task["spark_python_task"]["parameters"].extend(_pip_package_parameters(config.extra_pip_packages))
+    task["spark_python_task"]["parameters"].extend(_pip_package_parameters(_engine_probe_pip_packages(config)))
     task["spark_python_task"]["parameters"].extend(_package_wheel_parameters(config))
     return {
         "run_name": config.run_name,
@@ -726,6 +731,17 @@ def _pip_package_parameters(pip_packages: Sequence[str]) -> list[str]:
     return parameters
 
 
+def _engine_probe_pip_packages(config: DatabricksEngineProbeJobConfig) -> tuple[str, ...]:
+    packages = list(config.extra_pip_packages)
+    if config.release_safe and _is_provider_backed_native_probe(config):
+        _append_required_pip_packages(
+            packages,
+            required_packages=_PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES[config.expected_backend],
+            option_name=f"release-safe provider-backed {config.expected_backend.value} engine probe job",
+        )
+    return tuple(packages)
+
+
 def _package_wheel_uris(
     config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeMatrixJobConfig,
 ) -> tuple[str, ...]:
@@ -864,12 +880,23 @@ def _validate_release_safe_sglang_runtime_preflight(
 def _is_provider_backed_vllm_probe(
     config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
 ) -> bool:
-    if config.expected_backend != ServingBackend.VLLM:
+    return _is_provider_backed_native_probe(config) and config.expected_backend == ServingBackend.VLLM
+
+
+def _is_provider_backed_native_probe(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+) -> bool:
+    if config.expected_backend not in _PROVIDER_BACKED_NATIVE_PROBE_DELEGATE_FACTORIES:
         return False
-    if config.native_probe_delegate_factory != VLLM_NATIVE_PROBE_DELEGATE_FACTORY:
+    if (
+        config.native_probe_delegate_factory
+        != _PROVIDER_BACKED_NATIVE_PROBE_DELEGATE_FACTORIES[config.expected_backend]
+    ):
         return False
     metadata = _metadata_item_map(config.metadata)
-    return metadata.get("vllm_kv_injection.connector_factory") == VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY
+    required_metadata = _PROVIDER_BACKED_NATIVE_PROBE_METADATA[config.expected_backend]
+    required_key, _separator, required_value = required_metadata.partition("=")
+    return metadata.get(required_key) == required_value
 
 
 def _default_task_key_for_backend(backend: ServingBackend) -> str:
@@ -1257,9 +1284,9 @@ def _single_target_extra_pip_packages_from_cli(args: argparse.Namespace) -> tupl
     packages = list(args.extra_pip_package or ())
     preset = _provider_backed_native_probe_preset(args)
     if preset is not None:
-        _append_required_pip_package(
+        _append_required_pip_packages(
             packages,
-            required_package=_PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES[preset],
+            required_packages=_PROVIDER_BACKED_NATIVE_PROBE_RUNTIME_PACKAGES[preset],
             option_name=_provider_backed_native_probe_option_name(preset),
         )
     return tuple(packages)
@@ -1290,6 +1317,20 @@ def _single_target_allow_non_native_probe_from_cli(args: argparse.Namespace) -> 
         option_name = _provider_backed_native_probe_option_name(preset)
         raise ValueError(f"{option_name} cannot be combined with --allow-non-native-probe")
     return args.allow_non_native_probe
+
+
+def _append_required_pip_packages(
+    packages: list[str],
+    *,
+    required_packages: Sequence[str],
+    option_name: str,
+) -> None:
+    for required_package in required_packages:
+        _append_required_pip_package(
+            packages,
+            required_package=required_package,
+            option_name=option_name,
+        )
 
 
 def _append_required_pip_package(packages: list[str], *, required_package: str, option_name: str) -> None:
@@ -1380,7 +1421,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Single-target shortcut for Cachet's built-in provider-backed vLLM native probe. "
             "Sets the Cachet vLLM probe factory, vLLM delegate factory, required connector "
-            f"metadata, expected backend vllm, and {DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE}."
+            "metadata, expected backend vllm, and the pinned vLLM serving dependency profile."
         ),
     )
     parser.add_argument(
@@ -1389,7 +1430,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Single-target shortcut for Cachet's built-in provider-backed SGLang HiCache native probe. "
             "Sets the Cachet SGLang probe factory, SGLang delegate factory, required connector "
-            f"metadata, expected backend sglang, and {DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE}. "
+            "metadata, expected backend sglang, and the pinned SGLang serving dependency profile. "
             "Release-safe jobs still require the SGLang runtime preflight output and launch config sidecar."
         ),
     )

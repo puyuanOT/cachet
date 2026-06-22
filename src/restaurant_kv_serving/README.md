@@ -192,7 +192,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
 For Cachet's built-in provider-backed vLLM path,
 `--provider-backed-vllm-native-probe` fills in the Cachet probe factory, vLLM
 delegate factory, strict connector metadata, expected backend, and pinned
-`vllm==0.23.0` runtime package.
+vLLM serving dependency profile.
 In release-safe mode it also requires the vLLM runtime preflight output path and
 layer-name JSON source so the Databricks runner can validate the installed vLLM
 contract and layer mapping before starting the native probe. It rejects debug
@@ -201,7 +201,7 @@ from the Cachet wheel.
 For Cachet's built-in provider-backed SGLang HiCache path,
 `--provider-backed-sglang-native-probe` fills in the Cachet probe factory,
 SGLang delegate factory, strict connector metadata, expected backend, and pinned
-`sglang==0.5.10.post1` runtime package. In release-safe mode it requires both
+SGLang serving dependency profile. In release-safe mode it requires both
 SGLang runtime preflight sidecars: `--sglang-runtime-preflight-output-json` and
 `--sglang-runtime-preflight-launch-config-json`.
 
