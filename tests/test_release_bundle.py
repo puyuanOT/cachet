@@ -3245,12 +3245,15 @@ def _v1_measurement_metadata(arm: str):
         return {
             "prompt_text_mode": "logical",
             "prompt_token_source": "logical",
+            "kv_transfer_params_attached": "false",
             "logical_prompt_tokens": "1024",
             "runtime_prompt_tokens": "1024",
         }
     return {
         "prompt_text_mode": "runtime",
         "prompt_token_source": "server_usage",
+        "kv_transfer_params_attached": "true",
+        "request_id": "cachet-benchmark-request",
         "logical_prompt_tokens": "1024",
         "runtime_prompt_tokens": "128",
     }

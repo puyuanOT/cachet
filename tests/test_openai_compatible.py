@@ -154,6 +154,8 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert generation.metadata["prompt_text_mode"] == "logical"
     assert generation.metadata["logical_prompt_tokens"] == "99"
     assert generation.metadata["runtime_prompt_tokens"] == "99"
+    assert generation.metadata["kv_transfer_params_attached"] == "false"
+    assert "request_id" not in generation.metadata
     request_body = engine.payloads[0]
     assert request_body["prompt"] == benchmark_request().logical_prompt_text
     assert request_body["model"] == "qwen3:4b-instruct"
@@ -204,11 +206,13 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
         clock=FakeClock([1.0, 2.0]),
     )
 
-    engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
+    generation = engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
 
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
     assert engine.payloads[0]["request_id"] == "cachet-bio-1"
     assert engine.payloads[0]["kv_transfer_params"] == kv_transfer_params
+    assert generation.metadata["kv_transfer_params_attached"] == "true"
+    assert generation.metadata["request_id"] == "cachet-bio-1"
 
 
 def test_non_streaming_completion_engine_uses_usage_and_total_latency():
