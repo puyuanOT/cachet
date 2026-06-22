@@ -1116,6 +1116,8 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
             metadata=("probe.source=plan",),
             fixture_output_dir=str(vllm_fixture_dir),
             fixture_payload_mode="merged",
+            vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
+            vllm_runtime_preflight_layer_names_json=str(tmp_path / "vllm-layer-names.json"),
         ),
         EngineProbePlanConfig(
             backend="sglang",
@@ -1142,6 +1144,8 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
                 "probe_factory": "vllm_probe:factory",
                 "fixture_output_dir": str(vllm_fixture_dir),
                 "fixture_payload_mode": "merged",
+                "vllm_runtime_preflight_output_json": str(tmp_path / "vllm-runtime-preflight.json"),
+                "vllm_runtime_preflight_layer_names_json": str(tmp_path / "vllm-layer-names.json"),
             },
             {
                 "allow_non_native_probe": False,
@@ -1176,6 +1180,8 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
     assert targets[0].metadata == ("probe.source=plan",)
     assert targets[0].fixture_output_dir == str(vllm_fixture_dir)
     assert targets[0].fixture_payload_mode == "merged"
+    assert targets[0].vllm_runtime_preflight_output_json == str(tmp_path / "vllm-runtime-preflight.json")
+    assert targets[0].vllm_runtime_preflight_layer_names_json == str(tmp_path / "vllm-layer-names.json")
 
 
 def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_probes(tmp_path):
@@ -1210,6 +1216,29 @@ def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_p
                 ),
             ),
             release_safe=True,
+        )
+
+
+def test_engine_probe_plan_requires_vllm_runtime_preflight_paths_together(tmp_path):
+    with pytest.raises(ValueError, match="requires both"):
+        EngineProbePlanConfig(
+            backend="vllm",
+            handoff_json=str(tmp_path / "vllm-handoff.json"),
+            probe_factory="vllm_probe:factory",
+            output_json=str(tmp_path / "vllm-probe.json"),
+            vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
+        )
+
+
+def test_engine_probe_plan_rejects_vllm_runtime_preflight_for_sglang(tmp_path):
+    with pytest.raises(ValueError, match="only supported for backend vllm"):
+        EngineProbePlanConfig(
+            backend="sglang",
+            handoff_json=str(tmp_path / "sglang-handoff.json"),
+            probe_factory="sglang_probe:factory",
+            output_json=str(tmp_path / "sglang-probe.json"),
+            vllm_runtime_preflight_output_json=str(tmp_path / "sglang-runtime-preflight.json"),
+            vllm_runtime_preflight_layer_names_json=str(tmp_path / "sglang-layer-names.json"),
         )
 
 
@@ -2336,6 +2365,10 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             f"vllm=disk:{tmp_path / 'vllm.kv'}",
             "--engine-probe-metadata",
             "vllm=probe.source=cli",
+            "--engine-probe-vllm-runtime-preflight-output-json",
+            f"vllm={tmp_path / 'vllm-runtime-preflight.json'}",
+            "--engine-probe-vllm-runtime-preflight-layer-names-json",
+            f"vllm={tmp_path / 'vllm-layer-names.json'}",
             "--engine-probe-handoff-json",
             f"sglang={tmp_path / 'sglang-handoff.json'}",
             "--engine-probe-factory",
@@ -2381,6 +2414,12 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     assert record["planned_engine_probes"][1]["native_probe_delegate_factory"] == (
         "document_kv_vllm_native_adapter:build_probe"
     )
+    assert record["planned_engine_probes"][1]["vllm_runtime_preflight_output_json"] == (
+        str(tmp_path / "vllm-runtime-preflight.json")
+    )
+    assert record["planned_engine_probes"][1]["vllm_runtime_preflight_layer_names_json"] == (
+        str(tmp_path / "vllm-layer-names.json")
+    )
     assert vllm_argv[vllm_argv.index("--expected-backend") + 1] == "vllm"
     assert vllm_argv[vllm_argv.index("--payload-uri") + 1] == f"disk:{tmp_path / 'vllm.kv'}"
     assert vllm_argv[vllm_argv.index("--actions-output-json") + 1] == str(tmp_path / "vllm-actions.json")
@@ -2401,9 +2440,20 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     assert targets_record["probes"][1]["native_probe_delegate_factory"] == (
         "document_kv_vllm_native_adapter:build_probe"
     )
-    assert read_databricks_engine_probe_targets_json(targets_json)[1].metadata == ("probe.source=cli",)
-    assert read_databricks_engine_probe_targets_json(targets_json)[1].native_probe_delegate_factory == (
-        "document_kv_vllm_native_adapter:build_probe"
+    assert targets_record["probes"][1]["vllm_runtime_preflight_output_json"] == (
+        str(tmp_path / "vllm-runtime-preflight.json")
+    )
+    assert targets_record["probes"][1]["vllm_runtime_preflight_layer_names_json"] == (
+        str(tmp_path / "vllm-layer-names.json")
+    )
+    databricks_targets = read_databricks_engine_probe_targets_json(targets_json)
+    assert databricks_targets[1].metadata == ("probe.source=cli",)
+    assert databricks_targets[1].native_probe_delegate_factory == "document_kv_vllm_native_adapter:build_probe"
+    assert databricks_targets[1].vllm_runtime_preflight_output_json == str(
+        tmp_path / "vllm-runtime-preflight.json"
+    )
+    assert databricks_targets[1].vllm_runtime_preflight_layer_names_json == str(
+        tmp_path / "vllm-layer-names.json"
     )
 
 

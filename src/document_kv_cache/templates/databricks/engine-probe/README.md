@@ -20,7 +20,10 @@ wrapper `vllm_kv_injection.probe:build_native_connector_probe` or
 `vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector`
 for the built-in provider-backed vLLM path, or
 `sglang_kv_injection.connector_factory=module:factory` for SGLang. The Python
-Databricks helper remains the path for two-backend release-safe probe matrices.
+Databricks helper remains the path for two-backend release-safe probe matrices
+and for provider-backed vLLM jobs that require strict runtime preflight fields.
+Use the benchmark-plan `--engine-probe-vllm-runtime-preflight-*` flags when
+generating target JSON for that path.
 
 For fixture-based probes, `document_kv_cache.probe_fixtures` writes the
 deterministic payload, handoff JSON, manifest, and

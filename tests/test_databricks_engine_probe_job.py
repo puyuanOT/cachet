@@ -49,6 +49,8 @@ CUSTOM_SGLANG_EXTENSION_WHEEL_URI = (
 )
 VLLM_RUNTIME_PACKAGE = DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE
 SGLANG_RUNTIME_PACKAGE = "sglang==0.5.10.post1"
+VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json"
+VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON = "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json"
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -296,6 +298,8 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
         release_safe=True,
         native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
         metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+        vllm_runtime_preflight_output_json=VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+        vllm_runtime_preflight_layer_names_json=VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
@@ -309,7 +313,44 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
     package_wheel_uris = _parameter_values(parameters, "--package-wheel-uri")
     assert package_wheel_uris == [WHEEL_URI]
     assert not any("vllm_kv_injection" in wheel_uri for wheel_uri in package_wheel_uris)
+    assert parameters[:4] == [
+        "--vllm-runtime-preflight-output-json",
+        VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+        "--vllm-runtime-preflight-layer-names-json",
+        VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+    ]
     assert VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in _parameter_values(parameters, "--metadata")
+
+
+def test_release_safe_provider_backed_vllm_probe_requires_runtime_preflight():
+    with pytest.raises(ValueError, match="release-safe provider-backed vLLM"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            payload_uri="/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
+            wheel_uri=WHEEL_URI,
+            extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
+            single_user_name=SINGLE_USER_NAME,
+            release_safe=True,
+            native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+            metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+        )
+
+
+def test_vllm_runtime_preflight_paths_must_be_provided_together():
+    with pytest.raises(ValueError, match="requires both"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            single_user_name=SINGLE_USER_NAME,
+            vllm_runtime_preflight_output_json=VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+        )
 
 
 def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required_backends():
@@ -605,6 +646,38 @@ def test_build_databricks_engine_probe_matrix_payload_sets_backend_delegate_env_
     }
 
 
+def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_preflight():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(
+            _target(
+                "vllm",
+                probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+                metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+                pip_packages=(VLLM_RUNTIME_PACKAGE,),
+                vllm_runtime_preflight_output_json=VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                vllm_runtime_preflight_layer_names_json=VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+            ),
+            _target("sglang"),
+        ),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+    vllm_parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert vllm_parameters[:4] == [
+        "--vllm-runtime-preflight-output-json",
+        VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+        "--vllm-runtime-preflight-layer-names-json",
+        VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+    ]
+    assert _parameter_values(vllm_parameters, "--pip-package") == [VLLM_RUNTIME_PACKAGE]
+
+
 def test_databricks_engine_probe_matrix_release_safe_requires_exact_backend_set():
     with pytest.raises(ValueError, match="exactly required backends"):
         DatabricksEngineProbeMatrixJobConfig(
@@ -638,6 +711,25 @@ def test_databricks_engine_probe_matrix_release_safe_rejects_debug_target_option
         DatabricksEngineProbeMatrixJobConfig(
             probe_targets=(
                 _target("vllm", allow_non_native_probe=True),
+                _target("sglang"),
+            ),
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            single_user_name=SINGLE_USER_NAME,
+            release_safe=True,
+        )
+
+
+def test_databricks_engine_probe_matrix_release_safe_requires_provider_backed_vllm_preflight():
+    with pytest.raises(ValueError, match="release-safe provider-backed vLLM"):
+        DatabricksEngineProbeMatrixJobConfig(
+            probe_targets=(
+                _target(
+                    "vllm",
+                    probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                    native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+                    metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+                    pip_packages=(VLLM_RUNTIME_PACKAGE,),
+                ),
                 _target("sglang"),
             ),
             runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
@@ -729,6 +821,30 @@ def test_read_databricks_engine_probe_targets_json_accepts_pip_packages(tmp_path
     (target,) = read_databricks_engine_probe_targets_json(path)
 
     assert target.pip_packages == (VLLM_RUNTIME_PACKAGE,)
+
+
+def test_read_databricks_engine_probe_targets_json_accepts_vllm_runtime_preflight_fields(tmp_path):
+    path = tmp_path / "probe-targets.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "backend": "vllm",
+                    "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                    "probe_factory": "document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                    "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                    "vllm_runtime_preflight_output_json": VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                    "vllm_runtime_preflight_layer_names_json": VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    (target,) = read_databricks_engine_probe_targets_json(path)
+
+    assert target.vllm_runtime_preflight_output_json == VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON
+    assert target.vllm_runtime_preflight_layer_names_json == VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON
 
 
 def test_read_databricks_engine_probe_targets_json_rejects_string_pip_packages(tmp_path):
@@ -1077,6 +1193,99 @@ def test_run_engine_probe_task_stops_when_fixture_generation_fails(monkeypatch):
 
     assert exit_code == 7
     assert [name for name, _argv in calls] == ["fixture"]
+
+
+def test_run_engine_probe_task_runs_vllm_runtime_preflight_before_probe(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
+
+    calls = []
+
+    def fake_preflight_main(argv):
+        calls.append(("preflight", tuple(argv)))
+        return 0
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(vllm_runtime_preflight, "main", fake_preflight_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--vllm-runtime-preflight-output-json",
+            VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+            "--vllm-runtime-preflight-layer-names-json",
+            VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            "--probe-factory",
+            "document_kv_cache_vllm_probe:build_probe",
+            "--output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            "--expected-backend",
+            "vllm",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            "preflight",
+            (
+                "--layer-names-json",
+                VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+                "--output-json",
+                VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+            ),
+        ),
+        (
+            "probe",
+            (
+                "--handoff-json",
+                "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                "--probe-factory",
+                "document_kv_cache_vllm_probe:build_probe",
+                "--output-json",
+                "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                "--expected-backend",
+                "vllm",
+            ),
+        ),
+    ]
+
+
+def test_run_engine_probe_task_stops_when_vllm_runtime_preflight_fails(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
+
+    calls = []
+
+    def fake_preflight_main(argv):
+        calls.append(("preflight", tuple(argv)))
+        return 2
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(vllm_runtime_preflight, "main", fake_preflight_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--vllm-runtime-preflight-output-json",
+            VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+            "--vllm-runtime-preflight-layer-names-json",
+            VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        ]
+    )
+
+    assert exit_code == 2
+    assert [name for name, _argv in calls] == ["preflight"]
 
 
 def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_path):
@@ -1686,6 +1895,10 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
             "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-probe.json",
             "--actions-output-json",
             f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}",
+            "--vllm-runtime-preflight-output-json",
+            f"{fixture_dir}/vllm-runtime-preflight.json",
+            "--vllm-runtime-preflight-layer-names-json",
+            f"{fixture_dir}/vllm-layer-names.json",
             "--runner-python-file",
             "dbfs:/benchmarks/run_engine_probe.py",
             "--wheel-uri",
@@ -1713,6 +1926,18 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
     assert cluster["spark_env_vars"] == {
         VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
     }
+    assert parameters[:10] == [
+        "--fixture-output-dir",
+        fixture_dir,
+        "--fixture-backend",
+        "vllm",
+        "--fixture-payload-mode",
+        "segmented",
+        "--vllm-runtime-preflight-output-json",
+        f"{fixture_dir}/vllm-runtime-preflight.json",
+        "--vllm-runtime-preflight-layer-names-json",
+        f"{fixture_dir}/vllm-layer-names.json",
+    ]
     assert parameters[parameters.index("--probe-factory") + 1] == VLLM_NATIVE_PROBE_FACTORY
     assert parameters[parameters.index("--expected-backend") + 1] == "vllm"
     assert _parameter_values(parameters, "--metadata") == [
@@ -1723,6 +1948,38 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
     assert _parameter_values(parameters, "--package-wheel-uri") == [WHEEL_URI]
     assert "--allow-non-native-probe" not in parameters
     assert "--engine-version" not in parameters
+
+
+def test_main_provider_backed_vllm_preset_requires_runtime_preflight_in_release_safe_mode(
+    capsys,
+    tmp_path,
+):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--provider-backed-vllm-native-probe",
+            "--fixture-output-dir",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--wheel-uri",
+            WHEEL_URI,
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--release-safe",
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["error_type"] == "ValueError"
+    assert "release-safe provider-backed vLLM" in output["error"]
+    assert not payload_path.exists()
 
 
 @pytest.mark.parametrize(
@@ -1756,6 +2013,10 @@ def test_main_provider_backed_vllm_preset_rejects_conflicting_values(
             "/Volumes/catalog/schema/volume/probes/vllm-fixture",
             "--probe-output-json",
             "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-probe.json",
+            "--vllm-runtime-preflight-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-runtime-preflight.json",
+            "--vllm-runtime-preflight-layer-names-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json",
             "--runner-python-file",
             "dbfs:/benchmarks/run_engine_probe.py",
             "--single-user-name",
