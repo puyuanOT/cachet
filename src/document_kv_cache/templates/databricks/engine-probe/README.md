@@ -24,12 +24,16 @@ for a real SGLang backend-native connector. The standalone bundle forwards
 `native_probe_metadata` to the runner, so replace the example module path with
 the connector factory shipped in your SGLang runtime patch. The Python
 Databricks helper remains the path for two-backend release-safe probe matrices
-and for provider-backed vLLM jobs that require strict runtime preflight fields.
+and for provider-backed vLLM or SGLang jobs that require strict runtime
+preflight fields.
 Release-safe target JSON generated or read by that helper rejects
 placeholder connector factory metadata such as `module:factory` before writing or
 submitting a Databricks payload. Use the benchmark-plan
-`--engine-probe-vllm-runtime-preflight-*` flags when generating target JSON for
-that path.
+`--engine-probe-vllm-runtime-preflight-*` and
+`--engine-probe-sglang-runtime-preflight-*` flags when generating target JSON
+for that path. For SGLang, the launch-config preflight field must point at the
+provider-backed HiCache launch config used by the runtime patch; the helper
+executes the strict SGLang preflight before the native probe starts.
 
 For fixture-based probes, `document_kv_cache.probe_fixtures` writes the
 deterministic payload, handoff JSON, manifest, and

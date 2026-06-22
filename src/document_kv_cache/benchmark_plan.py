@@ -260,6 +260,8 @@ class EngineProbePlanConfig:
     fixture_payload_mode: PayloadMode | str = PayloadMode.SEGMENTED
     vllm_runtime_preflight_output_json: str | None = None
     vllm_runtime_preflight_layer_names_json: str | None = None
+    sglang_runtime_preflight_output_json: str | None = None
+    sglang_runtime_preflight_launch_config_json: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", ServingBackend(self.backend))
@@ -310,6 +312,24 @@ class EngineProbePlanConfig:
             )
         if self.vllm_runtime_preflight_output_json is not None and self.backend != ServingBackend.VLLM:
             raise ValueError("engine probe vLLM runtime preflight is only supported for backend vllm")
+        if self.sglang_runtime_preflight_output_json is not None and not self.sglang_runtime_preflight_output_json:
+            raise ValueError("engine probe sglang_runtime_preflight_output_json must be non-empty when provided")
+        if (
+            self.sglang_runtime_preflight_launch_config_json is not None
+            and not self.sglang_runtime_preflight_launch_config_json
+        ):
+            raise ValueError(
+                "engine probe sglang_runtime_preflight_launch_config_json must be non-empty when provided"
+            )
+        if (self.sglang_runtime_preflight_output_json is None) != (
+            self.sglang_runtime_preflight_launch_config_json is None
+        ):
+            raise ValueError(
+                "engine probe SGLang runtime preflight requires both "
+                "sglang_runtime_preflight_output_json and sglang_runtime_preflight_launch_config_json"
+            )
+        if self.sglang_runtime_preflight_output_json is not None and self.backend != ServingBackend.SGLANG:
+            raise ValueError("engine probe SGLang runtime preflight is only supported for backend sglang")
         if self.fixture_output_dir is not None:
             if self.actions_output_json is None:
                 object.__setattr__(
@@ -694,6 +714,9 @@ def _planned_engine_probe_to_record(probe: EngineProbePlanConfig) -> dict[str, A
     if probe.vllm_runtime_preflight_output_json is not None:
         record["vllm_runtime_preflight_output_json"] = probe.vllm_runtime_preflight_output_json
         record["vllm_runtime_preflight_layer_names_json"] = probe.vllm_runtime_preflight_layer_names_json
+    if probe.sglang_runtime_preflight_output_json is not None:
+        record["sglang_runtime_preflight_output_json"] = probe.sglang_runtime_preflight_output_json
+        record["sglang_runtime_preflight_launch_config_json"] = probe.sglang_runtime_preflight_launch_config_json
     return record
 
 
@@ -1493,6 +1516,14 @@ def _generated_artifact_output_paths(config: BenchmarkPlanConfig) -> tuple[tuple
         if probe.vllm_runtime_preflight_output_json is not None
     )
     output_paths.extend(
+        (
+            f"engine_probes[{probe.backend.value}].sglang_runtime_preflight_output_json",
+            probe.sglang_runtime_preflight_output_json,
+        )
+        for probe in config.engine_probes
+        if probe.sglang_runtime_preflight_output_json is not None
+    )
+    output_paths.extend(
         (f"engine_probes[{probe.backend.value}].fixture_output_dir", probe.fixture_output_dir)
         for probe in config.engine_probes
         if probe.fixture_output_dir is not None
@@ -1588,6 +1619,7 @@ def _validate_engine_probe_targets(
     _validate_release_planned_engine_probe_actions(engine_probes)
     _validate_release_known_native_delegate_metadata(engine_probes)
     _validate_release_provider_backed_vllm_preflights(engine_probes)
+    _validate_release_sglang_runtime_preflights(engine_probes)
 
 
 def _validate_release_known_native_delegate_metadata(
@@ -1616,6 +1648,23 @@ def _validate_release_provider_backed_vllm_preflights(
         raise ValueError(
             "release-safe provider-backed vLLM engine_probe_targets require "
             "vllm_runtime_preflight_output_json and vllm_runtime_preflight_layer_names_json "
+            f"for {missing}"
+        )
+
+
+def _validate_release_sglang_runtime_preflights(
+    engine_probes: Sequence[EngineProbePlanConfig],
+) -> None:
+    missing = sorted(
+        probe.backend.value
+        for probe in engine_probes
+        if probe.backend == ServingBackend.SGLANG
+        and probe.sglang_runtime_preflight_output_json is None
+    )
+    if missing:
+        raise ValueError(
+            "release-safe SGLang engine_probe_targets require "
+            "sglang_runtime_preflight_output_json and sglang_runtime_preflight_launch_config_json "
             f"for {missing}"
         )
 
@@ -1654,6 +1703,9 @@ def _engine_probe_target_to_record(probe: EngineProbePlanConfig) -> dict[str, An
     if probe.vllm_runtime_preflight_output_json is not None:
         record["vllm_runtime_preflight_output_json"] = probe.vllm_runtime_preflight_output_json
         record["vllm_runtime_preflight_layer_names_json"] = probe.vllm_runtime_preflight_layer_names_json
+    if probe.sglang_runtime_preflight_output_json is not None:
+        record["sglang_runtime_preflight_output_json"] = probe.sglang_runtime_preflight_output_json
+        record["sglang_runtime_preflight_launch_config_json"] = probe.sglang_runtime_preflight_launch_config_json
     return record
 
 
@@ -1805,6 +1857,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         metavar="BACKEND=PATH_OR_JSON",
         help="vLLM layer-name JSON path or value for a planned Databricks engine probe backend.",
+    )
+    parser.add_argument(
+        "--engine-probe-sglang-runtime-preflight-output-json",
+        action="append",
+        metavar="BACKEND=PATH",
+        help="SGLang runtime preflight JSON output path for a planned Databricks engine probe backend.",
+    )
+    parser.add_argument(
+        "--engine-probe-sglang-runtime-preflight-launch-config-json",
+        action="append",
+        metavar="BACKEND=PATH_OR_JSON",
+        help="SGLang HiCache launch-config JSON path or value for a planned Databricks engine probe backend.",
     )
     parser.add_argument(
         "--engine-probe-native-delegate-factory",
@@ -2113,6 +2177,14 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
         args.engine_probe_vllm_runtime_preflight_layer_names_json or (),
         "--engine-probe-vllm-runtime-preflight-layer-names-json",
     )
+    sglang_runtime_preflight_output_jsons = _named_value_map(
+        args.engine_probe_sglang_runtime_preflight_output_json or (),
+        "--engine-probe-sglang-runtime-preflight-output-json",
+    )
+    sglang_runtime_preflight_launch_config_jsons = _named_value_map(
+        args.engine_probe_sglang_runtime_preflight_launch_config_json or (),
+        "--engine-probe-sglang-runtime-preflight-launch-config-json",
+    )
     native_probe_delegate_factories = _named_value_map(
         args.engine_probe_native_delegate_factory or (),
         "--engine-probe-native-delegate-factory",
@@ -2140,6 +2212,8 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             or actions_output_jsons
             or vllm_runtime_preflight_output_jsons
             or vllm_runtime_preflight_layer_names_jsons
+            or sglang_runtime_preflight_output_jsons
+            or sglang_runtime_preflight_launch_config_jsons
             or native_probe_delegate_factories
             or payload_uris
             or engine_versions
@@ -2166,10 +2240,25 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
         vllm_runtime_preflight_layer_names_jsons,
         "--engine-probe-vllm-runtime-preflight-layer-names-json",
     )
+    _require_subset_backend_keys(
+        backends,
+        sglang_runtime_preflight_output_jsons,
+        "--engine-probe-sglang-runtime-preflight-output-json",
+    )
+    _require_subset_backend_keys(
+        backends,
+        sglang_runtime_preflight_launch_config_jsons,
+        "--engine-probe-sglang-runtime-preflight-launch-config-json",
+    )
     _require_matching_backend_keys(
         set(vllm_runtime_preflight_output_jsons),
         vllm_runtime_preflight_layer_names_jsons,
         "--engine-probe-vllm-runtime-preflight-layer-names-json",
+    )
+    _require_matching_backend_keys(
+        set(sglang_runtime_preflight_output_jsons),
+        sglang_runtime_preflight_launch_config_jsons,
+        "--engine-probe-sglang-runtime-preflight-launch-config-json",
     )
     _require_subset_backend_keys(backends, native_probe_delegate_factories, "--engine-probe-native-delegate-factory")
     _require_subset_backend_keys(backends, payload_uris, "--engine-probe-payload-uri")
@@ -2196,6 +2285,8 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             fixture_payload_mode=fixture_payload_modes.get(backend, PayloadMode.SEGMENTED),
             vllm_runtime_preflight_output_json=vllm_runtime_preflight_output_jsons.get(backend),
             vllm_runtime_preflight_layer_names_json=vllm_runtime_preflight_layer_names_jsons.get(backend),
+            sglang_runtime_preflight_output_json=sglang_runtime_preflight_output_jsons.get(backend),
+            sglang_runtime_preflight_launch_config_json=sglang_runtime_preflight_launch_config_jsons.get(backend),
         )
         for backend in sorted(backends)
     )
