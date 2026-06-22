@@ -117,6 +117,7 @@ import subprocess
 import sys
 
 DEFAULT_SERVING_VENV_DIR = "/local_disk0/cachet/engine-probe-venv"
+DEFAULT_VIRTUALENV_PACKAGE = "virtualenv==20.39.1"
 
 
 def _cluster_file_path(uri: str) -> str:
@@ -128,6 +129,23 @@ def _cluster_file_path(uri: str) -> str:
 def _venv_python(venv_dir: str) -> str:
     bindir = "Scripts" if os.name == "nt" else "bin"
     return os.path.join(venv_dir, bindir, "python")
+
+
+def _create_serving_venv(venv_dir: str) -> None:
+    try:
+        subprocess.check_call([sys.executable, "-m", "venv", "--clear", venv_dir])
+    except subprocess.CalledProcessError:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", DEFAULT_VIRTUALENV_PACKAGE])
+        subprocess.check_call([sys.executable, "-m", "virtualenv", "--clear", venv_dir])
+
+
+def _venv_subprocess_env(venv_dir: str) -> dict[str, str]:
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    env["VIRTUAL_ENV"] = venv_dir
+    env["PATH"] = os.path.dirname(_venv_python(venv_dir)) + os.pathsep + env.get("PATH", "")
+    return env
 
 
 def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
@@ -143,14 +161,16 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
         args.serving_venv_dir
         or os.environ.get("CACHET_ENGINE_PROBE_VENV_DIR", DEFAULT_SERVING_VENV_DIR)
     )
-    subprocess.check_call([sys.executable, "-m", "venv", "--clear", venv_dir])
+    _create_serving_venv(venv_dir)
     venv_python = _venv_python(venv_dir)
-    subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"])
+    venv_env = _venv_subprocess_env(venv_dir)
+    subprocess.check_call([venv_python, "-m", "pip", "install", "--upgrade", "pip"], env=venv_env)
     if args.pip_package:
-        subprocess.check_call([venv_python, "-m", "pip", "install", *args.pip_package])
+        subprocess.check_call([venv_python, "-m", "pip", "install", *args.pip_package], env=venv_env)
     for package_wheel_uri in args.package_wheel_uri or ():
         subprocess.check_call(
-            [venv_python, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)]
+            [venv_python, "-m", "pip", "install", _cluster_file_path(package_wheel_uri)],
+            env=venv_env,
         )
     return (
         remaining,
@@ -160,7 +180,8 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
                 __file__,
                 "--skip-runtime-package-install",
                 *remaining,
-            ]
+            ],
+            env=venv_env,
         ),
     )
 

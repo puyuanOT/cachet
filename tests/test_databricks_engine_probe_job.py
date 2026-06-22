@@ -1700,7 +1700,10 @@ def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_p
     assert "--pip-package" in script
     assert "_install_runtime_packages" in script
     assert "venv\", \"--clear\"" in script
+    assert "virtualenv==20.39.1" in script
     assert "--skip-runtime-package-install" in script
+    assert "PYTHONPATH" in script
+    assert "PYTHONNOUSERSITE" in script
     assert "pip\", \"install\", *args.pip_package" in script
 
 
@@ -1710,14 +1713,18 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
     venv_dir = tmp_path / "serving-venv"
     venv_python = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
     install_calls = []
+    install_envs = []
     reexec_calls = []
+    reexec_envs = []
     probe_calls = []
 
-    def fake_check_call(argv):
+    def fake_check_call(argv, **kwargs):
         install_calls.append(tuple(argv))
+        install_envs.append(kwargs.get("env"))
 
-    def fake_call(argv):
+    def fake_call(argv, **kwargs):
         reexec_calls.append(tuple(argv))
+        reexec_envs.append(kwargs.get("env"))
         return 0
 
     def fake_run_engine_probe_task(argv):
@@ -1759,6 +1766,9 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
         (str(venv_python), "-m", "pip", "install", VLLM_RUNTIME_PACKAGE, "transformers==5.12.1"),
         (str(venv_python), "-m", "pip", "install", "/dbfs/wheels/document_kv_cache-0.2.0-py3-none-any.whl"),
     ]
+    assert install_envs[0] is None
+    assert all(env is not None and "PYTHONPATH" not in env for env in install_envs[1:])
+    assert all(env is not None and env["PYTHONNOUSERSITE"] == "1" for env in install_envs[1:])
     assert reexec_calls == [
         (
             str(venv_python),
@@ -1768,7 +1778,55 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_venv_reexec(tm
             "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
         )
     ]
+    assert reexec_envs[0] is not None
+    assert "PYTHONPATH" not in reexec_envs[0]
+    assert reexec_envs[0]["PYTHONNOUSERSITE"] == "1"
     assert probe_calls == []
+
+
+def test_generated_runner_falls_back_to_virtualenv_when_stdlib_venv_lacks_ensurepip(tmp_path, monkeypatch):
+    path = tmp_path / "run_engine_probe.py"
+    write_databricks_engine_probe_runner_script(path)
+    venv_dir = tmp_path / "serving-venv"
+    venv_python = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
+    install_calls = []
+
+    def fake_check_call(argv, **kwargs):
+        call = tuple(argv)
+        install_calls.append(call)
+        if call == (sys.executable, "-m", "venv", "--clear", str(venv_dir)):
+            raise subprocess.CalledProcessError(1, argv)
+
+    monkeypatch.setattr(subprocess, "check_call", fake_check_call)
+    monkeypatch.setattr(subprocess, "call", lambda argv, **kwargs: 0)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(path),
+            "--serving-venv-dir",
+            str(venv_dir),
+            "--package-wheel-uri",
+            "dbfs:/wheels/document_kv_cache-0.2.0-py3-none-any.whl",
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        exec(
+            compile(path.read_text(encoding="utf-8"), str(path), "exec"),
+            {"__name__": "__main__", "__file__": str(path)},
+        )
+
+    assert exc_info.value.code == 0
+    assert install_calls[:5] == [
+        (sys.executable, "-m", "venv", "--clear", str(venv_dir)),
+        (sys.executable, "-m", "pip", "install", "virtualenv==20.39.1"),
+        (sys.executable, "-m", "virtualenv", "--clear", str(venv_dir)),
+        (str(venv_python), "-m", "pip", "install", "--upgrade", "pip"),
+        (str(venv_python), "-m", "pip", "install", "/dbfs/wheels/document_kv_cache-0.2.0-py3-none-any.whl"),
+    ]
 
 
 def test_generated_runner_skip_runtime_package_install_forwards_args(tmp_path, monkeypatch):
@@ -1782,8 +1840,8 @@ def test_generated_runner_skip_runtime_package_install_forwards_args(tmp_path, m
         probe_calls.append(tuple(argv))
         return 0
 
-    monkeypatch.setattr(subprocess, "check_call", lambda argv: install_calls.append(tuple(argv)))
-    monkeypatch.setattr(subprocess, "call", lambda argv: reexec_calls.append(tuple(argv)) or 0)
+    monkeypatch.setattr(subprocess, "check_call", lambda argv, **kwargs: install_calls.append(tuple(argv)))
+    monkeypatch.setattr(subprocess, "call", lambda argv, **kwargs: reexec_calls.append(tuple(argv)) or 0)
     monkeypatch.setattr(public_engine_probe_job, "run_engine_probe_task", fake_run_engine_probe_task)
     monkeypatch.setattr(
         sys,
@@ -2289,18 +2347,18 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
                 "import os",
                 "import subprocess",
                 "",
-                "def _capture_check_call(argv):",
+                "def _capture_check_call(argv, **kwargs):",
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
                 "        handle.write(json.dumps({'event': 'subprocess_check_call'}) + '\\n')",
                 "    with open(os.environ['PIP_CALLS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "        handle.write(json.dumps(argv) + '\\n')",
+                "        handle.write(json.dumps({'argv': argv, 'has_env': kwargs.get('env') is not None}) + '\\n')",
                 "    return 0",
                 "",
-                "def _capture_call(argv):",
+                "def _capture_call(argv, **kwargs):",
                 "    with open(os.environ['RUNNER_EVENTS_JSONL'], 'a', encoding='utf-8') as handle:",
                 "        handle.write(json.dumps({'event': 'subprocess_call'}) + '\\n')",
                 "    with open(os.environ['REEXEC_CALLS_JSONL'], 'a', encoding='utf-8') as handle:",
-                "        handle.write(json.dumps(argv) + '\\n')",
+                "        handle.write(json.dumps({'argv': argv, 'has_env': kwargs.get('env') is not None}) + '\\n')",
                 "    return 0",
                 "",
                 "subprocess.check_call = _capture_check_call",
@@ -2342,7 +2400,8 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
         text=True,
     )
 
-    pip_calls = [json.loads(line) for line in pip_calls_path.read_text(encoding="utf-8").splitlines()]
+    pip_records = [json.loads(line) for line in pip_calls_path.read_text(encoding="utf-8").splitlines()]
+    pip_calls = [record["argv"] for record in pip_records]
     assert Path(pip_calls[0][0]).resolve() == Path(sys.executable).resolve()
     assert pip_calls[0][1:] == ["-m", "venv", "--clear", str(venv_dir)]
     assert pip_calls[1:] == [
@@ -2350,9 +2409,12 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
         [str(venv_python), "-m", "pip", "install", "/dbfs/tmp/cachet/document_kv_cache-0.2.0-py3-none-any.whl"],
         [str(venv_python), "-m", "pip", "install", "/dbfs/tmp/cachet/custom_vllm_probe_extension-0.1.0-py3-none-any.whl"],
     ]
+    assert pip_records[0]["has_env"] is False
+    assert all(record["has_env"] is True for record in pip_records[1:])
     assert pip_calls[2][0] == str(venv_python)
     assert pip_calls[3][0] == str(venv_python)
-    reexec_calls = [json.loads(line) for line in reexec_calls_path.read_text(encoding="utf-8").splitlines()]
+    reexec_records = [json.loads(line) for line in reexec_calls_path.read_text(encoding="utf-8").splitlines()]
+    reexec_calls = [record["argv"] for record in reexec_records]
     assert reexec_calls == [
         [
             str(venv_python),
@@ -2364,6 +2426,7 @@ def test_generated_engine_probe_runner_installs_wheel_before_forwarding_args(tmp
             "vllm",
         ]
     ]
+    assert reexec_records == [{"argv": reexec_calls[0], "has_env": True}]
     assert not task_args_path.exists()
 
     subprocess.run(
