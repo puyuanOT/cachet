@@ -42,6 +42,10 @@ from document_kv_cache.native_probe_factories import (
     VLLM_NATIVE_PROBE_FACTORY,
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
+from document_kv_cache.serving_env import (
+    SGLANG_DEPENDENCY_CONSTRAINTS,
+    VLLM_DEPENDENCY_CONSTRAINTS,
+)
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl"
@@ -53,6 +57,8 @@ CUSTOM_SGLANG_EXTENSION_WHEEL_URI = (
 )
 VLLM_RUNTIME_PACKAGE = DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE
 SGLANG_RUNTIME_PACKAGE = DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE
+VLLM_RUNTIME_PACKAGES = VLLM_DEPENDENCY_CONSTRAINTS
+SGLANG_RUNTIME_PACKAGES = SGLANG_DEPENDENCY_CONSTRAINTS
 VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json"
 VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON = "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json"
 SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json"
@@ -322,7 +328,7 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
     assert task["new_cluster"]["spark_env_vars"] == {
         VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
     }
-    assert _parameter_values(parameters, "--pip-package") == [VLLM_RUNTIME_PACKAGE]
+    assert _parameter_values(parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
     package_wheel_uris = _parameter_values(parameters, "--package-wheel-uri")
     assert package_wheel_uris == [WHEEL_URI]
     assert not any("vllm_kv_injection" in wheel_uri for wheel_uri in package_wheel_uris)
@@ -768,7 +774,31 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_pref
         "--vllm-runtime-preflight-layer-names-json",
         VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
     ]
-    assert _parameter_values(vllm_parameters, "--pip-package") == [VLLM_RUNTIME_PACKAGE]
+    assert _parameter_values(vllm_parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
+
+
+def test_build_databricks_engine_probe_matrix_payload_rejects_conflicting_provider_backed_profile():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(
+            _target(
+                "vllm",
+                probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+                native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
+                metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+                pip_packages=("transformers==5.11.0",),
+                vllm_runtime_preflight_output_json=VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                vllm_runtime_preflight_layer_names_json=VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+            ),
+            _target("sglang"),
+        ),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+    )
+
+    with pytest.raises(ValueError, match="transformers==5.12.1"):
+        build_databricks_engine_probe_matrix_run_submit_payload(config)
 
 
 def test_build_databricks_engine_probe_matrix_payload_forwards_sglang_runtime_preflight():
@@ -1669,7 +1699,7 @@ def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_p
     script = path.read_text(encoding="utf-8")
     assert "--pip-package" in script
     assert "_install_runtime_packages" in script
-    assert "pip\", \"install\", pip_package" in script
+    assert "pip\", \"install\", *args.pip_package" in script
 
 
 def test_generated_runner_installs_pip_packages_and_wheels_before_probe(tmp_path, monkeypatch):
@@ -1694,6 +1724,8 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_probe(tmp_path
             str(path),
             "--pip-package",
             VLLM_RUNTIME_PACKAGE,
+            "--pip-package",
+            "transformers==5.12.1",
             "--package-wheel-uri",
             "dbfs:/wheels/document_kv_cache-0.2.0-py3-none-any.whl",
             "--handoff-json",
@@ -1704,7 +1736,7 @@ def test_generated_runner_installs_pip_packages_and_wheels_before_probe(tmp_path
     exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), {"__name__": "__main__", "__file__": str(path)})
 
     assert install_calls == [
-        (sys.executable, "-m", "pip", "install", VLLM_RUNTIME_PACKAGE),
+        (sys.executable, "-m", "pip", "install", VLLM_RUNTIME_PACKAGE, "transformers==5.12.1"),
         (sys.executable, "-m", "pip", "install", "/dbfs/wheels/document_kv_cache-0.2.0-py3-none-any.whl"),
     ]
     assert probe_calls == [
@@ -2416,7 +2448,7 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
         "probe.source=qa-g6",
         VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     ]
-    assert _parameter_values(parameters, "--pip-package") == [VLLM_RUNTIME_PACKAGE]
+    assert _parameter_values(parameters, "--pip-package") == list(VLLM_RUNTIME_PACKAGES)
     assert _parameter_values(parameters, "--package-wheel-uri") == [WHEEL_URI]
     assert "--allow-non-native-probe" not in parameters
     assert "--engine-version" not in parameters
@@ -2484,7 +2516,7 @@ def test_main_provider_backed_sglang_preset_writes_g6_payload(tmp_path):
         "probe.source=qa-g6",
         SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     ]
-    assert _parameter_values(parameters, "--pip-package") == [SGLANG_RUNTIME_PACKAGE]
+    assert _parameter_values(parameters, "--pip-package") == list(SGLANG_RUNTIME_PACKAGES)
     assert _parameter_values(parameters, "--package-wheel-uri") == [WHEEL_URI]
     assert "--actions-output-json" not in parameters
     assert "--allow-non-native-probe" not in parameters
@@ -2644,6 +2676,7 @@ def test_main_provider_backed_sglang_preset_requires_runtime_preflight_in_releas
             VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
         ),
         (("--extra-pip-package", "vllm==0.22.0"), VLLM_RUNTIME_PACKAGE),
+        (("--extra-pip-package", "transformers==5.11.0"), "transformers==5.12.1"),
         (("--extra-wheel-uri", CUSTOM_VLLM_EXTENSION_WHEEL_URI), "--extra-wheel-uri"),
         (("--engine-version", "debug-vllm"), "--engine-version"),
         (("--allow-non-native-probe",), "--allow-non-native-probe"),
