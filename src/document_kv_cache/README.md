@@ -38,8 +38,8 @@ new document modules depend on restaurant-owned implementations.
   job runners and records source-plan SHA-256 provenance.
 - `benchmark_runner.py` owns baseline and cache-arm execution against
   caller-provided or OpenAI-compatible engines.
-- `benchmarks.py` owns V1 dataset specs, prompt partitioning, measurements,
-  summaries, and baseline comparisons.
+- `benchmarks.py` owns V1 dataset specs, prompt partitioning, cache-prefix
+  request helpers, measurements, summaries, and baseline comparisons.
 - `cache.py` exposes CPU and local-disk cache tiers.
 - `databricks_engine_probe_job.py` emits a Databricks run payload for native
   vLLM/SGLang engine-probe evidence, including backend-specific delegate
