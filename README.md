@@ -992,6 +992,14 @@ vLLM contract and layer mapping before the native probe starts. Use
 `--engine-probe-vllm-runtime-preflight-output-json` and
 `--engine-probe-vllm-runtime-preflight-layer-names-json` when generating target
 JSON from `document_kv_cache.benchmark_plan`.
+Release-safe SGLang Databricks targets must carry
+`sglang_runtime_preflight_output_json` and
+`sglang_runtime_preflight_launch_config_json` so the runner validates the
+installed dynamic HiCache surface and provider-backed launch config before the
+native probe starts. Use
+`--engine-probe-sglang-runtime-preflight-output-json` and
+`--engine-probe-sglang-runtime-preflight-launch-config-json` when generating
+target JSON.
 When release-evidence flags are supplied, the plan appends
 `document_kv_cache.release_evidence` last so the V1 benchmark, storage
 benchmark, and vLLM/SGLang probe artifacts are validated together. Release
@@ -1536,10 +1544,12 @@ Provider-backed vLLM release targets must include
 `vllm_runtime_preflight_layer_names_json`; the Databricks runner executes the
 strict vLLM runtime preflight before the native engine probe and returns its
 nonzero exit code without starting the probe if validation fails.
-SGLang native-probe operators should run
-`cachet-sglang-runtime-preflight --launch-config-json PATH` against the same
-HiCache launch config before submission; it validates the installed dynamic
-HiCache surface and rejects missing or known no-op provider factories.
+Release-safe SGLang targets must include
+`sglang_runtime_preflight_output_json` and
+`sglang_runtime_preflight_launch_config_json`; the Databricks runner executes
+`cachet-sglang-runtime-preflight` against that provider-backed HiCache launch
+config before the native engine probe and returns its nonzero exit code without
+starting the probe if validation fails.
 
 To verify a live endpoint without adding custom serving code, run the OpenAI-compatible smoke check against a vLLM or SGLang server:
 

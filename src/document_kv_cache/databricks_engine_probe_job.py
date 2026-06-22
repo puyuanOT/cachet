@@ -75,6 +75,8 @@ _ENGINE_PROBE_TARGET_KEYS = frozenset(
         "pip_packages",
         "vllm_runtime_preflight_output_json",
         "vllm_runtime_preflight_layer_names_json",
+        "sglang_runtime_preflight_output_json",
+        "sglang_runtime_preflight_launch_config_json",
     }
 )
 ENGINE_PROBE_RUNNER_SCRIPT = """from __future__ import annotations
@@ -173,6 +175,8 @@ class DatabricksEngineProbeTargetConfig:
     pip_packages: tuple[str, ...] = ()
     vllm_runtime_preflight_output_json: str | None = None
     vllm_runtime_preflight_layer_names_json: str | None = None
+    sglang_runtime_preflight_output_json: str | None = None
+    sglang_runtime_preflight_launch_config_json: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
@@ -197,6 +201,7 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("fixture_output_dir must be non-empty when provided")
         _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES(self, label="engine probe target")
         _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe target")
+        _DEFAULT_VALIDATE_SGLANG_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe target")
         if self.fixture_output_dir is not None:
             _DEFAULT_VALIDATE_FIXTURE_OUTPUT_DIR(self.fixture_output_dir)
             _DEFAULT_VALIDATE_FIXTURE_HANDOFF_JSON(
@@ -296,6 +301,8 @@ class DatabricksEngineProbeJobConfig:
     extra_pip_packages: tuple[str, ...] = ()
     vllm_runtime_preflight_output_json: str | None = None
     vllm_runtime_preflight_layer_names_json: str | None = None
+    sglang_runtime_preflight_output_json: str | None = None
+    sglang_runtime_preflight_launch_config_json: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
@@ -330,6 +337,7 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("fixture_output_dir must be non-empty when provided")
         _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES(self, label="engine probe job")
         _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe job")
+        _DEFAULT_VALIDATE_SGLANG_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe job")
         if self.fixture_output_dir is not None:
             _DEFAULT_VALIDATE_FIXTURE_OUTPUT_DIR(self.fixture_output_dir)
             _DEFAULT_VALIDATE_FIXTURE_HANDOFF_JSON(
@@ -440,6 +448,10 @@ def run_engine_probe_task(argv: Sequence[str] | None = None) -> int:
         preflight_exit_code = _run_vllm_runtime_preflight(runner_args)
         if preflight_exit_code:
             return preflight_exit_code
+    if runner_args.sglang_runtime_preflight_output_json is not None:
+        preflight_exit_code = _run_sglang_runtime_preflight(runner_args)
+        if preflight_exit_code:
+            return preflight_exit_code
     from document_kv_cache import engine_probe
 
     return engine_probe.main(engine_probe_argv)
@@ -456,6 +468,8 @@ def _split_fixture_runner_args(argv: Sequence[str]) -> tuple[argparse.Namespace,
     )
     parser.add_argument("--vllm-runtime-preflight-output-json")
     parser.add_argument("--vllm-runtime-preflight-layer-names-json")
+    parser.add_argument("--sglang-runtime-preflight-output-json")
+    parser.add_argument("--sglang-runtime-preflight-launch-config-json")
     fixture_args, engine_probe_argv = parser.parse_known_args(argv)
     if fixture_args.fixture_output_dir is not None and fixture_args.fixture_backend is None:
         raise ValueError("--fixture-backend is required when --fixture-output-dir is provided")
@@ -475,6 +489,20 @@ def _split_fixture_runner_args(argv: Sequence[str]) -> tuple[argparse.Namespace,
         raise ValueError(
             "--vllm-runtime-preflight-output-json requires --vllm-runtime-preflight-layer-names-json"
         )
+    if (
+        fixture_args.sglang_runtime_preflight_output_json is None
+        and fixture_args.sglang_runtime_preflight_launch_config_json is not None
+    ):
+        raise ValueError(
+            "--sglang-runtime-preflight-launch-config-json requires --sglang-runtime-preflight-output-json"
+        )
+    if (
+        fixture_args.sglang_runtime_preflight_output_json is not None
+        and fixture_args.sglang_runtime_preflight_launch_config_json is None
+    ):
+        raise ValueError(
+            "--sglang-runtime-preflight-output-json requires --sglang-runtime-preflight-launch-config-json"
+        )
     return fixture_args, engine_probe_argv
 
 
@@ -487,6 +515,19 @@ def _run_vllm_runtime_preflight(runner_args: argparse.Namespace) -> int:
             runner_args.vllm_runtime_preflight_layer_names_json,
             "--output-json",
             runner_args.vllm_runtime_preflight_output_json,
+        ]
+    )
+
+
+def _run_sglang_runtime_preflight(runner_args: argparse.Namespace) -> int:
+    from sglang_kv_injection import sglang_runtime_preflight
+
+    return sglang_runtime_preflight.main(
+        [
+            "--launch-config-json",
+            runner_args.sglang_runtime_preflight_launch_config_json,
+            "--output-json",
+            runner_args.sglang_runtime_preflight_output_json,
         ]
     )
 
@@ -554,6 +595,8 @@ def _engine_probe_task_from_target(
         fixture_payload_mode=target.fixture_payload_mode,
         vllm_runtime_preflight_output_json=target.vllm_runtime_preflight_output_json,
         vllm_runtime_preflight_layer_names_json=target.vllm_runtime_preflight_layer_names_json,
+        sglang_runtime_preflight_output_json=target.sglang_runtime_preflight_output_json,
+        sglang_runtime_preflight_launch_config_json=target.sglang_runtime_preflight_launch_config_json,
     )
     return build_databricks_engine_probe_run_submit_payload(single_config)["tasks"][0]
 
@@ -590,6 +633,19 @@ def _runner_parameters(config: DatabricksEngineProbeJobConfig) -> list[str]:
             config.vllm_runtime_preflight_output_json,
             "--vllm-runtime-preflight-layer-names-json",
             config.vllm_runtime_preflight_layer_names_json,
+            *parameters,
+        ]
+    if config.sglang_runtime_preflight_output_json is not None:
+        if config.sglang_runtime_preflight_launch_config_json is None:
+            raise ValueError(
+                "sglang_runtime_preflight_launch_config_json must be set when "
+                "sglang_runtime_preflight_output_json is set"
+            )
+        parameters = [
+            "--sglang-runtime-preflight-output-json",
+            config.sglang_runtime_preflight_output_json,
+            "--sglang-runtime-preflight-launch-config-json",
+            config.sglang_runtime_preflight_launch_config_json,
             *parameters,
         ]
     if config.fixture_output_dir is not None:
@@ -682,6 +738,7 @@ def _validate_release_safe_probe_targets(
         if target.allow_non_native_probe:
             raise ValueError("release-safe probe matrix targets must not allow non-native probes")
         _DEFAULT_VALIDATE_RELEASE_SAFE_PROVIDER_BACKED_VLLM_PREFLIGHT(target, label="engine probe matrix target")
+        _DEFAULT_VALIDATE_RELEASE_SAFE_SGLANG_RUNTIME_PREFLIGHT(target, label="engine probe matrix target")
 
 
 def _validate_release_safe_probe_job(config: DatabricksEngineProbeJobConfig) -> None:
@@ -694,6 +751,7 @@ def _validate_release_safe_probe_job(config: DatabricksEngineProbeJobConfig) -> 
     if config.allow_non_native_probe:
         raise ValueError("release-safe engine probe jobs must not allow non-native probes")
     _DEFAULT_VALIDATE_RELEASE_SAFE_PROVIDER_BACKED_VLLM_PREFLIGHT(config, label="engine probe job")
+    _DEFAULT_VALIDATE_RELEASE_SAFE_SGLANG_RUNTIME_PREFLIGHT(config, label="engine probe job")
 
 
 def _validate_vllm_runtime_preflight_config(
@@ -716,6 +774,26 @@ def _validate_vllm_runtime_preflight_config(
         raise ValueError(f"{label} vLLM runtime preflight is only supported for expected_backend vllm")
 
 
+def _validate_sglang_runtime_preflight_config(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+    *,
+    label: str,
+) -> None:
+    output_json = config.sglang_runtime_preflight_output_json
+    launch_config_json = config.sglang_runtime_preflight_launch_config_json
+    if output_json is not None and not output_json:
+        raise ValueError(f"{label} sglang_runtime_preflight_output_json must be non-empty when provided")
+    if launch_config_json is not None and not launch_config_json:
+        raise ValueError(f"{label} sglang_runtime_preflight_launch_config_json must be non-empty when provided")
+    if (output_json is None) != (launch_config_json is None):
+        raise ValueError(
+            f"{label} SGLang runtime preflight requires both "
+            "sglang_runtime_preflight_output_json and sglang_runtime_preflight_launch_config_json"
+        )
+    if output_json is not None and config.expected_backend != ServingBackend.SGLANG:
+        raise ValueError(f"{label} SGLang runtime preflight is only supported for expected_backend sglang")
+
+
 def _validate_release_safe_provider_backed_vllm_preflight(
     config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
     *,
@@ -727,6 +805,20 @@ def _validate_release_safe_provider_backed_vllm_preflight(
         raise ValueError(
             f"release-safe provider-backed vLLM {label} must set "
             "vllm_runtime_preflight_output_json and vllm_runtime_preflight_layer_names_json"
+        )
+
+
+def _validate_release_safe_sglang_runtime_preflight(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+    *,
+    label: str,
+) -> None:
+    if config.expected_backend != ServingBackend.SGLANG:
+        return
+    if config.sglang_runtime_preflight_output_json is None:
+        raise ValueError(
+            f"release-safe SGLang {label} must set "
+            "sglang_runtime_preflight_output_json and sglang_runtime_preflight_launch_config_json"
         )
 
 
@@ -943,6 +1035,8 @@ _DEFAULT_VALIDATE_WHEEL_URIS = _validate_wheel_uris
 _DEFAULT_VALIDATE_PIP_PACKAGES = _validate_pip_packages
 _DEFAULT_SERVING_BACKEND = _serving_backend
 _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES = _derive_vllm_fixture_runtime_preflight_layer_names
+_DEFAULT_VALIDATE_SGLANG_RUNTIME_PREFLIGHT_CONFIG = _validate_sglang_runtime_preflight_config
+_DEFAULT_VALIDATE_RELEASE_SAFE_SGLANG_RUNTIME_PREFLIGHT = _validate_release_safe_sglang_runtime_preflight
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_JOB = _cluster_config_from_engine_probe_job
 _DEFAULT_CLUSTER_CONFIG_FROM_ENGINE_PROBE_MATRIX_JOB = _cluster_config_from_engine_probe_matrix_job
 _DEFAULT_PAYLOAD_MODE = _payload_mode
@@ -1022,6 +1116,8 @@ def _probe_target_from_record(record: Any, *, index: int) -> DatabricksEnginePro
         pip_packages=tuple(pip_packages),
         vllm_runtime_preflight_output_json=record.get("vllm_runtime_preflight_output_json"),
         vllm_runtime_preflight_layer_names_json=record.get("vllm_runtime_preflight_layer_names_json"),
+        sglang_runtime_preflight_output_json=record.get("sglang_runtime_preflight_output_json"),
+        sglang_runtime_preflight_launch_config_json=record.get("sglang_runtime_preflight_launch_config_json"),
     )
 
 
@@ -1177,6 +1273,8 @@ def _reject_single_target_args_for_matrix(args: argparse.Namespace) -> None:
         "fixture-payload-mode": args.fixture_payload_mode,
         "vllm-runtime-preflight-output-json": args.vllm_runtime_preflight_output_json,
         "vllm-runtime-preflight-layer-names-json": args.vllm_runtime_preflight_layer_names_json,
+        "sglang-runtime-preflight-output-json": args.sglang_runtime_preflight_output_json,
+        "sglang-runtime-preflight-launch-config-json": args.sglang_runtime_preflight_launch_config_json,
         "task-key": args.task_key,
     }
     provided = [f"--{name}" for name, value in incompatible_values.items() if value]
@@ -1248,6 +1346,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Cluster-visible path, or inline JSON, containing registered vLLM KV cache layer names "
             "for --vllm-runtime-preflight-output-json. When --fixture-output-dir is set for a vLLM "
             "probe, this defaults to the fixture-generated vllm-layer-names.json sidecar."
+        ),
+    )
+    parser.add_argument(
+        "--sglang-runtime-preflight-output-json",
+        help=(
+            "Cluster-visible JSON output path for Cachet's strict SGLang runtime preflight. "
+            "Required for release-safe SGLang native probes."
+        ),
+    )
+    parser.add_argument(
+        "--sglang-runtime-preflight-launch-config-json",
+        help=(
+            "Cluster-visible path, or inline JSON, containing the provider-backed SGLang HiCache "
+            "launch config for --sglang-runtime-preflight-output-json."
         ),
     )
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME)
@@ -1378,6 +1490,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 fixture_payload_mode=args.fixture_payload_mode or PayloadMode.SEGMENTED,
                 vllm_runtime_preflight_output_json=args.vllm_runtime_preflight_output_json,
                 vllm_runtime_preflight_layer_names_json=args.vllm_runtime_preflight_layer_names_json,
+                sglang_runtime_preflight_output_json=args.sglang_runtime_preflight_output_json,
+                sglang_runtime_preflight_launch_config_json=args.sglang_runtime_preflight_launch_config_json,
             )
             payload = build_databricks_engine_probe_run_submit_payload(config)
         if args.runner_script_output:

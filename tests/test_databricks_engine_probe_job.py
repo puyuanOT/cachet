@@ -51,6 +51,8 @@ VLLM_RUNTIME_PACKAGE = DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE
 SGLANG_RUNTIME_PACKAGE = "sglang==0.5.10.post1"
 VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json"
 VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON = "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json"
+SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json"
+SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON = "/Volumes/catalog/schema/volume/probes/sglang-launch-config.json"
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,6 +65,13 @@ def _target(backend: str, **overrides):
         "output_json": f"/Volumes/catalog/schema/volume/probes/{backend}-probe.json",
         "payload_uri": f"/Volumes/catalog/schema/volume/probes/{backend}-payload.kv",
     }
+    if backend == "sglang":
+        values.update(
+            {
+                "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+            }
+        )
     values.update(overrides)
     return DatabricksEngineProbeTargetConfig(**values)
 
@@ -399,6 +408,33 @@ def test_vllm_runtime_preflight_paths_must_be_provided_together():
         )
 
 
+def test_sglang_runtime_preflight_paths_must_be_provided_together():
+    with pytest.raises(ValueError, match="requires both"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+            probe_factory="document_kv_cache_sglang_probe:build_probe",
+            output_json="/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.SGLANG,
+            single_user_name=SINGLE_USER_NAME,
+            sglang_runtime_preflight_output_json=SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+        )
+
+
+def test_sglang_runtime_preflight_rejects_vllm_backend():
+    with pytest.raises(ValueError, match="only supported for expected_backend sglang"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            single_user_name=SINGLE_USER_NAME,
+            sglang_runtime_preflight_output_json=SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+            sglang_runtime_preflight_launch_config_json=SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+        )
+
+
 def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required_backends():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
@@ -454,6 +490,13 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
             ]
         if backend == "vllm":
             expected_parameters.extend(["--metadata", "probe.source=matrix"])
+        if backend == "sglang":
+            expected_parameters[0:0] = [
+                "--sglang-runtime-preflight-output-json",
+                SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                "--sglang-runtime-preflight-launch-config-json",
+                SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+            ]
         expected_parameters.extend(["--package-wheel-uri", WHEEL_URI])
         assert parameters == expected_parameters
         assert "--engine-version" not in parameters
@@ -724,6 +767,26 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_pref
     assert _parameter_values(vllm_parameters, "--pip-package") == [VLLM_RUNTIME_PACKAGE]
 
 
+def test_build_databricks_engine_probe_matrix_payload_forwards_sglang_runtime_preflight():
+    config = DatabricksEngineProbeMatrixJobConfig(
+        probe_targets=(_target("vllm"), _target("sglang")),
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+    )
+
+    payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
+    sglang_parameters = payload["tasks"][1]["spark_python_task"]["parameters"]
+
+    assert sglang_parameters[:4] == [
+        "--sglang-runtime-preflight-output-json",
+        SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+        "--sglang-runtime-preflight-launch-config-json",
+        SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+    ]
+
+
 def test_databricks_engine_probe_target_derives_fixture_preflight_layer_names():
     fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
     target = _target(
@@ -806,6 +869,23 @@ def test_databricks_engine_probe_matrix_release_safe_requires_provider_backed_vl
                     pip_packages=(VLLM_RUNTIME_PACKAGE,),
                 ),
                 _target("sglang"),
+            ),
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            single_user_name=SINGLE_USER_NAME,
+            release_safe=True,
+        )
+
+
+def test_databricks_engine_probe_matrix_release_safe_requires_sglang_runtime_preflight():
+    with pytest.raises(ValueError, match="release-safe SGLang.*sglang_runtime_preflight_output_json"):
+        DatabricksEngineProbeMatrixJobConfig(
+            probe_targets=(
+                _target("vllm"),
+                _target(
+                    "sglang",
+                    sglang_runtime_preflight_output_json=None,
+                    sglang_runtime_preflight_launch_config_json=None,
+                ),
             ),
             runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
             single_user_name=SINGLE_USER_NAME,
@@ -1363,6 +1443,99 @@ def test_run_engine_probe_task_stops_when_vllm_runtime_preflight_fails(monkeypat
     assert [name for name, _argv in calls] == ["preflight"]
 
 
+def test_run_engine_probe_task_runs_sglang_runtime_preflight_before_probe(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
+
+    calls = []
+
+    def fake_preflight_main(argv):
+        calls.append(("preflight", tuple(argv)))
+        return 0
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(sglang_runtime_preflight, "main", fake_preflight_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--sglang-runtime-preflight-output-json",
+            SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+            "--sglang-runtime-preflight-launch-config-json",
+            SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+            "--probe-factory",
+            "document_kv_cache_sglang_probe:build_probe",
+            "--output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+            "--expected-backend",
+            "sglang",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            "preflight",
+            (
+                "--launch-config-json",
+                SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+                "--output-json",
+                SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+            ),
+        ),
+        (
+            "probe",
+            (
+                "--handoff-json",
+                "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+                "--probe-factory",
+                "document_kv_cache_sglang_probe:build_probe",
+                "--output-json",
+                "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                "--expected-backend",
+                "sglang",
+            ),
+        ),
+    ]
+
+
+def test_run_engine_probe_task_stops_when_sglang_runtime_preflight_fails(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
+
+    calls = []
+
+    def fake_preflight_main(argv):
+        calls.append(("preflight", tuple(argv)))
+        return 3
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(sglang_runtime_preflight, "main", fake_preflight_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--sglang-runtime-preflight-output-json",
+            SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+            "--sglang-runtime-preflight-launch-config-json",
+            SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+        ]
+    )
+
+    assert exit_code == 3
+    assert [name for name, _argv in calls] == ["preflight"]
+
+
 def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_path):
     path = tmp_path / "run_engine_probe.py"
 
@@ -1437,6 +1610,8 @@ def test_read_databricks_engine_probe_targets_json_honors_release_safe_envelope(
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                        "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
                     },
                 ],
             }
@@ -1651,6 +1826,8 @@ def test_main_honors_release_safe_engine_probe_targets_envelope_without_cli_flag
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                        "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
                     },
                 ],
             }
@@ -1700,6 +1877,8 @@ def test_main_rejects_debug_targets_when_release_safe_envelope_is_true(tmp_path,
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                        "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
                     },
                 ],
             }
@@ -2302,6 +2481,8 @@ def test_main_writes_engine_probe_matrix_payload_from_backend_config_json(tmp_pa
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                        "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
                     },
                 ]
             }
