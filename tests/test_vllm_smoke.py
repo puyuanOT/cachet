@@ -22,6 +22,7 @@ from document_kv_cache.vllm_smoke import (
     SMOKE_DATASETS,
     TOKENIZERS_CONSTRAINT,
     TRANSFORMERS_CONSTRAINT,
+    VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT,
     VLLM_VERSION,
     VLLMSmokeBenchmarkConfig,
     benchmark_dataset_paths,
@@ -33,8 +34,10 @@ from document_kv_cache.vllm_smoke import (
     build_vllm_server_args,
     dataset_args,
     dependency_constraints,
+    dependency_override_constraints,
     document_kv_package_install_spec,
     install_document_kv_package,
+    install_vllm,
     parse_args,
     parse_dataset_specs,
     prepared_benchmark_handoff_coverage_record,
@@ -124,6 +127,8 @@ def write_handoff_json(path: Path, *, request_id: str, payload_uri: str, backend
 def test_dependency_constraints_match_pinned_g5_vllm_stack():
     assert dependency_constraints() == list(VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints)
     assert all("==" in constraint for constraint in dependency_constraints())
+    assert dependency_override_constraints() == [VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT]
+    assert VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT == "opencv-python-headless==4.12.0.88"
     assert VLLM_VERSION == "0.23.0"
     assert TRANSFORMERS_CONSTRAINT == "transformers==5.12.1"
     assert HUGGINGFACE_HUB_CONSTRAINT == "huggingface-hub==1.20.1"
@@ -196,6 +201,28 @@ def test_install_document_kv_package_uses_no_deps(monkeypatch, tmp_path):
             "--no-deps",
             "/tmp/cachet.whl",
         ]
+    ]
+
+
+def test_install_vllm_applies_fips_opencv_override_after_vllm_stack(monkeypatch, tmp_path):
+    calls = []
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(public_vllm_smoke, "run", lambda argv: calls.append(argv))
+
+    install_vllm(python)
+
+    assert calls == [
+        [str(python), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
+        [str(python), "-m", "pip", "install", *dependency_constraints()],
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--force-reinstall",
+            "--no-deps",
+            *dependency_override_constraints(),
+        ],
     ]
 
 
@@ -731,6 +758,7 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["max_num_seqs"] == 2
     assert metadata["gpu_memory_utilization"] == 0.85
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
+    assert metadata["dependency_override_constraints"] == dependency_override_constraints()
     assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config()
 
 

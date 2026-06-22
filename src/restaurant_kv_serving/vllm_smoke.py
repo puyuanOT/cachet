@@ -50,6 +50,7 @@ __all__ = reexport_public(
         "build_metadata",
         "build_vllm_native_provider_probe_record",
         "dependency_constraints",
+        "dependency_override_constraints",
         "document_kv_package_install_spec",
         "install_document_kv_package",
         "build_vllm_server_args",
@@ -66,6 +67,7 @@ __all__ = reexport_public(
         "parse_dataset_specs",
         "dataset_args",
         "parse_args",
+        "VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT",
     ),
     globals(),
 )
@@ -113,6 +115,7 @@ DEFAULT_LOCAL_ROOT = _document_module.DEFAULT_LOCAL_ROOT
 SERVER_HOST = _document_module.SERVER_HOST
 SERVER_PORT = _document_module.SERVER_PORT
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = _document_module.DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV
+VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = _document_module.VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT
 
 
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
@@ -125,6 +128,10 @@ def build_vllm_native_provider_probe_record(transfer_config=None) -> dict[str, o
 
 def dependency_constraints() -> list[str]:
     return _call_document_function("dependency_constraints")
+
+
+def dependency_override_constraints() -> list[str]:
+    return _call_document_function("dependency_override_constraints")
 
 
 def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
@@ -327,6 +334,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "build_metadata": build_metadata,
     "build_vllm_native_provider_probe_record": build_vllm_native_provider_probe_record,
     "dependency_constraints": dependency_constraints,
+    "dependency_override_constraints": dependency_override_constraints,
     "document_kv_package_install_spec": document_kv_package_install_spec,
     "install_document_kv_package": install_document_kv_package,
     "build_vllm_server_args": build_vllm_server_args,
