@@ -255,13 +255,12 @@ class OpenAICompatibleCompletionEngine:
             completion_tokens=_usage_count(usage, "completion_tokens", self.token_counter.count(output_text)),
             ttft_seconds=ttft,
             time_to_completion_seconds=completed - started,
-            metadata={
-                "server": "openai-compatible",
-                "stream": "true",
-                "prompt_text_mode": self.config.prompt_text_mode,
-                "prompt_token_source": prompt_token_source,
-                **token_metadata,
-            },
+            metadata=self._generation_metadata(
+                request,
+                stream=True,
+                prompt_token_source=prompt_token_source,
+                token_metadata=token_metadata,
+            ),
         )
 
     def _completion_generation(
@@ -282,14 +281,33 @@ class OpenAICompatibleCompletionEngine:
             completion_tokens=_usage_count(usage, "completion_tokens", self.token_counter.count(output_text)),
             ttft_seconds=completed - started,
             time_to_completion_seconds=completed - started,
-            metadata={
-                "server": "openai-compatible",
-                "stream": "false",
-                "prompt_text_mode": self.config.prompt_text_mode,
-                "prompt_token_source": prompt_token_source,
-                **token_metadata,
-            },
+            metadata=self._generation_metadata(
+                request,
+                stream=False,
+                prompt_token_source=prompt_token_source,
+                token_metadata=token_metadata,
+            ),
         )
+
+    def _generation_metadata(
+        self,
+        request: BenchmarkEngineRequest,
+        *,
+        stream: bool,
+        prompt_token_source: str,
+        token_metadata: Mapping[str, str],
+    ) -> dict[str, str]:
+        metadata = {
+            "server": "openai-compatible",
+            "stream": "true" if stream else "false",
+            "prompt_text_mode": self.config.prompt_text_mode,
+            "prompt_token_source": prompt_token_source,
+            "kv_transfer_params_attached": "true" if request.kv_transfer_params else "false",
+            **token_metadata,
+        }
+        if request.request_id:
+            metadata["request_id"] = request.request_id
+        return metadata
 
     def _prompt_token_count(
         self,

@@ -1513,6 +1513,15 @@ def _validate_v1_measurement_token_context(
         issues.append(f"{label} cache metadata.prompt_text_mode must be 'runtime'")
     if not isinstance(metadata.get("prompt_token_source"), str) or not metadata["prompt_token_source"]:
         issues.append(f"{label} metadata.prompt_token_source must be non-empty")
+    if arm_id == BASELINE_PREFILL_ARM:
+        if metadata.get("kv_transfer_params_attached") != "false":
+            issues.append(f"{label} baseline metadata.kv_transfer_params_attached must be 'false'")
+    elif arm_id == CACHE_REUSE_ARM:
+        if metadata.get("kv_transfer_params_attached") != "true":
+            issues.append(f"{label} cache metadata.kv_transfer_params_attached must be 'true'")
+        request_id = metadata.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            issues.append(f"{label} cache metadata.request_id must be non-empty")
     logical_prompt_tokens = _positive_int_metadata(metadata.get("logical_prompt_tokens"))
     runtime_prompt_tokens = _positive_int_metadata(metadata.get("runtime_prompt_tokens"))
     if logical_prompt_tokens is None:

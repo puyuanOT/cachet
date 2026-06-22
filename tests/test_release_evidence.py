@@ -1072,7 +1072,52 @@ def test_evaluate_release_evidence_requires_prompt_token_context_metadata():
     assert any("metadata.prompt_token_source" in issue for issue in evidence.issues)
     assert any("metadata.logical_prompt_tokens" in issue for issue in evidence.issues)
     assert any("metadata.runtime_prompt_tokens" in issue for issue in evidence.issues)
+    assert any("metadata.kv_transfer_params_attached" in issue for issue in evidence.issues)
+    assert any("metadata.request_id" in issue for issue in evidence.issues)
     assert any("cache runtime_prompt_tokens must be smaller than logical_prompt_tokens" in issue for issue in evidence.issues)
+
+
+def test_evaluate_release_evidence_requires_cache_kv_transfer_metadata():
+    v1_record = _v1_record(ok=True)
+    v1_record["measurements"][0] = {
+        **v1_record["measurements"][0],
+        "metadata": {
+            **v1_record["measurements"][0]["metadata"],
+            "kv_transfer_params_attached": "true",
+        },
+    }
+    cache_metadata = {
+        **v1_record["measurements"][1]["metadata"],
+        "kv_transfer_params_attached": "false",
+    }
+    cache_metadata.pop("request_id")
+    v1_record["measurements"][1] = {
+        **v1_record["measurements"][1],
+        "metadata": cache_metadata,
+    }
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert not evidence.ok
+    assert any(
+        "biography:baseline_prefill baseline metadata.kv_transfer_params_attached must be 'false'" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:document_kv_cache cache metadata.kv_transfer_params_attached must be 'true'" in issue
+        for issue in evidence.issues
+    )
+    assert any(
+        "biography:document_kv_cache cache metadata.request_id must be non-empty" in issue
+        for issue in evidence.issues
+    )
 
 
 def test_evaluate_release_evidence_rejects_wrong_prompt_text_mode_for_arm():
@@ -2425,12 +2470,15 @@ def _v1_measurement_metadata(arm: str):
         return {
             "prompt_text_mode": "logical",
             "prompt_token_source": "logical",
+            "kv_transfer_params_attached": "false",
             "logical_prompt_tokens": "1024",
             "runtime_prompt_tokens": "1024",
         }
     return {
         "prompt_text_mode": "runtime",
         "prompt_token_source": "server_usage",
+        "kv_transfer_params_attached": "true",
+        "request_id": "cachet-benchmark-request",
         "logical_prompt_tokens": "1024",
         "runtime_prompt_tokens": "128",
     }
