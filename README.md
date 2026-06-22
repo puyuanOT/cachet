@@ -1448,13 +1448,16 @@ cachet-databricks-runs \
   --artifact v1-plan.json=dbfs:/benchmarks/v1-plan.json \
   --artifact run_plan.py=dbfs:/benchmarks/run_plan.py \
   --overwrite \
-  --require-payload-dbfs-artifacts
+  --require-payload-dbfs-artifacts \
+  --preflight-auth-check
 ```
 
 `auth-check` performs a non-mutating current-user request before staging or
 submitting. Its output records only the endpoint, HTTP status, response key
 names, and a SHA-256 hash of the workspace host, so it can be attached to launch
-handoffs without writing tokens or user details.
+handoffs without writing tokens or user details. The `stage-and-submit`
+`--preflight-auth-check` flag runs the same check after local artifact
+validation and before any DBFS upload or run submission.
 
 When the managed runner is configured with `--execution-result-json-uri`, the
 result record includes a `plan_source` block with the original plan path, driver
