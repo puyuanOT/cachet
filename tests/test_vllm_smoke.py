@@ -37,14 +37,45 @@ from document_kv_cache.vllm_smoke import (
     install_document_kv_package,
     parse_args,
     parse_dataset_specs,
+    prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
     smoke_dataset_records,
+    validate_prepared_benchmark_handoffs,
+)
+from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
 )
 from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def prepared_dataset_paths(tmp_path, *, include_handoffs=True):
+    paths = {}
+    for dataset in SMOKE_DATASETS:
+        record = {
+            "dataset": dataset,
+            "example_id": f"{dataset}-1",
+            "query": "Who is described?",
+            "expected_answer": "Ada Lovelace",
+            "documents": [{"document_id": "ada", "text": "Ada Lovelace biography"}],
+        }
+        if include_handoffs:
+            record["kv_transfer_params"] = {
+                DOCUMENT_KV_REQUEST_ID_PARAM: f"cachet-{dataset}-1",
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: (
+                    f"/Volumes/catalog/schema/volume/cachet/{dataset}-1.handoff.json"
+                ),
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: f"uc-volume:/catalog/schema/volume/cachet/{dataset}-1.kv",
+            }
+        path = tmp_path / f"{dataset}.jsonl"
+        path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+        paths[dataset] = path
+    return paths
 
 
 def test_dependency_constraints_match_pinned_g5_vllm_stack():
@@ -186,6 +217,8 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     assert args[args.index("--hardware-target") + 1] == "aws-g6-l4"
     assert args[args.index("--output-json") + 1] == str(tmp_path / "out" / "v1-benchmark.json")
     assert "--server-usage" in args
+    assert "--cache-base-url" not in args
+    assert "--cache-runtime-prompt" not in args
     assert dataset_args(dataset_paths) == [
         "--dataset",
         f"biography={tmp_path / 'biography.jsonl'}",
@@ -196,6 +229,22 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
         "--dataset",
         f"niah={tmp_path / 'niah.jsonl'}",
     ]
+
+
+def test_benchmark_runner_args_use_runtime_cache_prompt_for_prepared_datasets(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+        dataset_specs=specs,
+    )
+
+    args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
+
+    assert args[args.index("--cache-base-url") + 1] == "http://127.0.0.1:8123"
+    assert "--cache-runtime-prompt" in args
 
 
 def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
@@ -427,6 +476,73 @@ def test_benchmark_dataset_paths_uses_prepared_specs_without_writing_smoke(monke
     assert benchmark_dataset_paths(config) == parse_dataset_specs(specs)
 
 
+def test_prepared_benchmark_handoff_coverage_record_counts_enriched_rows(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+    )
+
+    record = prepared_benchmark_handoff_coverage_record(config, dataset_paths)
+
+    assert record["ok"] is True
+    assert record["required"] is True
+    assert record["examples"] == len(SMOKE_DATASETS)
+    assert record["examples_with_kv_transfer_params"] == len(SMOKE_DATASETS)
+    assert record["missing_kv_transfer_params"] == []
+    assert record["datasets"] == {dataset: 1 for dataset in SMOKE_DATASETS}
+
+
+def test_validate_prepared_benchmark_handoffs_writes_artifact_and_rejects_missing_params(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+    )
+
+    with pytest.raises(ValueError, match="must be enriched with Cachet kv_transfer_params"):
+        validate_prepared_benchmark_handoffs(config, dataset_paths)
+
+    record = json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["examples_with_kv_transfer_params"] == 0
+    assert record["missing_kv_transfer_params"] == [f"{dataset}/{dataset}-1" for dataset in SMOKE_DATASETS]
+
+
+def test_validate_prepared_benchmark_handoffs_skips_builtin_smoke(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+
+    assert validate_prepared_benchmark_handoffs(config, {}) is None
+    assert not config.prepared_handoff_coverage_path.exists()
+
+
+def test_validate_prepared_benchmark_handoffs_writes_ok_artifact(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+    )
+
+    record = validate_prepared_benchmark_handoffs(config, dataset_paths)
+
+    assert record is not None
+    assert record["ok"] is True
+    assert json.loads(config.prepared_handoff_coverage_path.read_text(encoding="utf-8")) == record
+
+
 def test_metadata_records_reproducible_smoke_context(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -447,6 +563,8 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["dependency_constraints"] == dependency_constraints()
     assert metadata["dataset_source"] == "smoke"
     assert metadata["dataset_specs"] == []
+    assert metadata["cache_runtime_prompt"] is False
+    assert metadata["requires_kv_transfer_params"] is False
     assert metadata["max_model_len"] == 4096
     assert metadata["max_num_seqs"] == 2
     assert metadata["gpu_memory_utilization"] == 0.85
@@ -572,6 +690,8 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
 
     assert metadata["dataset_source"] == "prepared"
     assert metadata["dataset_specs"] == list(specs)
+    assert metadata["cache_runtime_prompt"] is True
+    assert metadata["requires_kv_transfer_params"] is True
     assert metadata["max_model_len"] == 32768
     assert metadata["max_num_seqs"] == 8
     assert metadata["gpu_memory_utilization"] == 0.72

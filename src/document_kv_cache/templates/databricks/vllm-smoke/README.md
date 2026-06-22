@@ -14,9 +14,11 @@ startup, and that probe fails unless the same `KVTransferConfig` resolves to a
 native document-KV provider factory.
 
 The same runner can be configured for prepared V1 benchmark JSONL files by
-supplying one `--dataset DATASET=PATH` flag for each required dataset plus the
-server sizing flags (`--max-model-len`, `--max-num-seqs`, and
-`--gpu-memory-utilization`). In prepared mode the generated metadata records the
-dataset paths, sizing values, Cachet package install spec, and vLLM
-`KVTransferConfig`, which separates long-context benchmark evidence from the
-built-in smoke examples.
+supplying one enriched `--dataset DATASET=PATH` flag for each required dataset
+plus the server sizing flags (`--max-model-len`, `--max-num-seqs`, and
+`--gpu-memory-utilization`). In prepared mode every row must carry Cachet
+`kv_transfer_params`; the runner writes `prepared-handoff-coverage.json` before
+model startup and sends only the runtime suffix for the cache arm. The generated
+metadata records the dataset paths, sizing values, Cachet package install spec,
+and vLLM `KVTransferConfig`, which separates long-context benchmark evidence
+from the built-in smoke examples.

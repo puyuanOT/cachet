@@ -131,6 +131,10 @@ vLLM/Qwen3 environment, not a replacement for the full release benchmark plan.
 The import probe also instantiates Cachet's `DocumentKVConnector` from the
 server `KVTransferConfig` and fails unless the configured provider factory
 resolves to native document-KV wiring.
+When all four prepared dataset paths are supplied, the smoke requires every row
+to carry Cachet `kv_transfer_params`, writes `prepared-handoff-coverage.json`,
+and runs the cache arm from the runtime suffix so the native provider path is
+exercised.
 
 To emit a Databricks `runs/submit` payload for that same smoke task, use:
 
