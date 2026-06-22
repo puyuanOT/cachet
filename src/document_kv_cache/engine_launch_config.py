@@ -162,6 +162,7 @@ def build_sglang_launch_config(
     schema_version: int = DEFAULT_ENGINE_LAUNCH_CONFIG_SCHEMA_VERSION,
     kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
     extra_config: Mapping[str, Any] | None = None,
+    provider_factory: str | None = None,
     encode_extra_config_as_json: bool = True,
 ) -> dict[str, Any]:
     """Build a validated SGLang HiCache config for the document KV backend."""
@@ -176,6 +177,7 @@ def build_sglang_launch_config(
             schema_version=schema_version,
             kv_injection_method=kv_injection_method,
             extra_config=extra_config,
+            provider_factory=provider_factory,
             reserved_keys={"backend_name", "module_path", "class_name"},
         ),
     }
@@ -338,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 schema_version=args.schema_version,
                 kv_injection_method=args.kv_injection_method,
                 extra_config=extra_config,
+                provider_factory=args.provider_factory,
             )
             expected_backend = ServingBackend.SGLANG
         else:  # pragma: no cover - argparse restricts this.
@@ -474,9 +477,10 @@ def _validate_document_kv_extra_config(
         )
     if extra_config.get("document_kv.requires_native_runtime") is not True:
         issues.append("document_kv.requires_native_runtime must be true")
-    if expected_backend == ServingBackend.VLLM:
+    provider_factory = extra_config.get(DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY)
+    if expected_backend == ServingBackend.VLLM or provider_factory is not None:
         provider_factory_issues = _module_attribute_issues(
-            extra_config.get(DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY),
+            provider_factory,
             field_name=DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
         )
         issues.extend(provider_factory_issues)
@@ -646,6 +650,13 @@ def _add_vllm_parser(subparsers: Any) -> None:
 def _add_sglang_parser(subparsers: Any) -> None:
     parser = subparsers.add_parser("build-sglang", help="Build an SGLang HiCache config sidecar.")
     parser.add_argument("--module-path", default=DEFAULT_SGLANG_DOCUMENT_KV_MODULE_PATH)
+    parser.add_argument(
+        "--provider-factory",
+        help=(
+            "SGLang document KV provider factory module:attribute path. Required by strict "
+            "runtime preflight records."
+        ),
+    )
     _add_common_build_args(parser, default_record_type=DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
 
 

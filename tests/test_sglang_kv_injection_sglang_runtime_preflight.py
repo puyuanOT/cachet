@@ -8,14 +8,15 @@ from types import ModuleType
 
 import pytest
 
-import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
 import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
+import sglang_kv_injection.sglang_runtime_preflight as sglang_runtime_preflight
 from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY
 from sglang_kv_injection.sglang_hicache_config import sglang_hicache_launch_config
 from sglang_kv_injection.sglang_runtime_preflight import (
     DOCUMENT_KV_SGLANG_INSTALLED_HICACHE_CONTRACT_RECORD_TYPE,
     DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE,
     DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION,
+    SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE,
     SGLANG_HICACHE_DYNAMIC_RUNTIME,
     SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
     SGLANG_HICACHE_REQUIRED_CLI_OPTIONS,
@@ -102,6 +103,90 @@ def install_provider_module(monkeypatch: pytest.MonkeyPatch, module_name: str = 
     return f"{module_name}:build_provider"
 
 
+def install_document_kv_backend_class(monkeypatch: pytest.MonkeyPatch, hicache_storage_cls: type) -> type:
+    class DocumentKVHiCacheBackend(hicache_storage_cls):
+        def __init__(self, storage_config=None, *args, **kwargs):
+            self.provider = None
+            extra_config = getattr(storage_config, "extra_config", None)
+            if not isinstance(extra_config, dict):
+                return
+            factory_path = extra_config.get(DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY)
+            if not isinstance(factory_path, str):
+                return
+            module_name, _, attribute_name = factory_path.partition(":")
+            provider_factory = getattr(importlib.import_module(module_name), attribute_name)
+            self.provider = provider_factory(extra_config=extra_config)
+
+    for method_name in SGLANG_HICACHE_REQUIRED_BACKEND_METHODS:
+        setattr(DocumentKVHiCacheBackend, method_name, lambda self, *args, **kwargs: None)
+
+    monkeypatch.setattr(
+        sglang_dynamic_backend,
+        "DocumentKVHiCacheBackend",
+        DocumentKVHiCacheBackend,
+    )
+    return DocumentKVHiCacheBackend
+
+
+def install_storage_backend_factory_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    sglang_module = ModuleType("sglang")
+    srt_module = ModuleType("sglang.srt")
+    mem_cache_module = ModuleType("sglang.srt.mem_cache")
+    hicache_storage_module = ModuleType("sglang.srt.mem_cache.hicache_storage")
+    storage_module = ModuleType("sglang.srt.mem_cache.storage")
+    backend_factory_module = ModuleType("sglang.srt.mem_cache.storage.backend_factory")
+
+    class HiCacheStorage:
+        pass
+
+    install_document_kv_backend_class(monkeypatch, HiCacheStorage)
+
+    class StorageBackendFactory:
+        loader_calls = []
+
+        @staticmethod
+        def _load_backend_class(module_path, class_name, backend_name):
+            StorageBackendFactory.loader_calls.append((module_path, class_name, backend_name))
+            module = importlib.import_module(module_path)
+            backend_cls = getattr(module, class_name)
+            if not issubclass(backend_cls, HiCacheStorage):
+                raise TypeError(f"{module_path}:{class_name} must subclass HiCacheStorage")
+            return backend_cls
+
+        @classmethod
+        def _create_dynamic_backend(cls, backend_config, storage_config, mem_pool_host, **kwargs):
+            backend_cls = cls._load_backend_class(
+                backend_config["module_path"],
+                backend_config["class_name"],
+                backend_config["backend_name"],
+            )
+            return backend_cls(storage_config, mem_pool_host, **kwargs)
+
+        @classmethod
+        def create_backend(cls, backend_name, storage_config, mem_pool_host, **kwargs):
+            assert backend_name == "dynamic"
+            return cls._create_dynamic_backend(storage_config.extra_config, storage_config, mem_pool_host, **kwargs)
+
+    hicache_storage_module.HiCacheStorage = HiCacheStorage
+    backend_factory_module.StorageBackendFactory = StorageBackendFactory
+    for module in (
+        sglang_module,
+        srt_module,
+        mem_cache_module,
+        hicache_storage_module,
+        storage_module,
+        backend_factory_module,
+    ):
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+
+
+def ok_must_match_issue() -> str:
+    return (
+        "ok must match installed contract, launch config, provider factory, "
+        "and dynamic backend factory safety"
+    )
+
+
 def test_installed_sglang_hicache_contract_accepts_dynamic_runtime_surface():
     record = matching_installed_contract()
 
@@ -161,62 +246,25 @@ def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(mo
     class StorageBackendFactory:
         @staticmethod
         def _load_backend_class(module_path, class_name, backend_name):
-            return object
+            module = importlib.import_module(module_path)
+            return getattr(module, class_name)
 
         @classmethod
         def _create_dynamic_backend(cls, backend_config, storage_config, mem_pool_host, **kwargs):
-            return object()
+            return cls._load_backend_class(
+                backend_config["module_path"],
+                backend_config["class_name"],
+                backend_config["backend_name"],
+            )(storage_config)
 
         @classmethod
         def create_backend(cls, backend_name, storage_config, mem_pool_host, **kwargs):
-            return object()
+            return cls._create_dynamic_backend(storage_config.extra_config, storage_config, mem_pool_host, **kwargs)
 
     class HiCacheStorage:
-        def register_mem_pool_host(self, mem_pool_host):
-            pass
+        pass
 
-        def register_mem_host_pool_v2(self, host_pool, host_pool_name):
-            pass
-
-        def batch_exists(self, keys, extra_info=None):
-            pass
-
-        def batch_exists_v2(self, keys, pool_transfers=None, extra_info=None):
-            pass
-
-        def batch_get(self, keys, target_locations=None, target_sizes=None):
-            pass
-
-        def batch_get_v1(self, keys, host_indices, extra_info=None):
-            pass
-
-        def batch_get_v2(self, transfers, extra_info=None):
-            pass
-
-        def batch_set(self, keys, values=None, target_locations=None, target_sizes=None):
-            pass
-
-        def batch_set_v1(self, keys, host_indices, extra_info=None):
-            pass
-
-        def batch_set_v2(self, transfers, extra_info=None):
-            pass
-
-        def get(self, key, target_location=None, target_sizes=None):
-            pass
-
-        def set(self, key, value=None, target_location=None, target_sizes=None):
-            pass
-
-        def exists(self, key):
-            pass
-
-        def clear(self):
-            pass
-
-        def get_stats(self):
-            pass
-
+    install_document_kv_backend_class(monkeypatch, HiCacheStorage)
     server_args_module.ServerArgs = ServerArgs
     backend_factory_module.StorageBackendFactory = StorageBackendFactory
     hicache_storage_module.HiCacheStorage = HiCacheStorage
@@ -231,37 +279,13 @@ def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(mo
     ):
         monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setattr(sglang_runtime_preflight.importlib_metadata, "version", lambda name: "0.5.10.post1")
-    try:
-        importlib.reload(sglang_dynamic_backend)
-        importlib.reload(sglang_runtime_preflight)
 
-        record = sglang_runtime_preflight.installed_sglang_hicache_contract_to_record()
+    record = sglang_runtime_preflight.installed_sglang_hicache_contract_to_record()
 
-        assert record["ok"] is True
-        assert record["package_version"] == "0.5.10.post1"
-        assert record["document_kv_backend_subclasses_hicache_storage"] is True
-        sglang_runtime_preflight.validate_installed_sglang_hicache_contract_record(record)
-    finally:
-        for module_name in (
-            "sglang",
-            "sglang.srt",
-            "sglang.srt.server_args",
-            "sglang.srt.mem_cache",
-            "sglang.srt.mem_cache.storage",
-            "sglang.srt.mem_cache.storage.backend_factory",
-            "sglang.srt.mem_cache.hicache_storage",
-        ):
-            sys.modules.pop(module_name, None)
-        importlib.reload(sglang_dynamic_backend)
-        importlib.reload(sglang_runtime_preflight)
-        importlib.reload(sys.modules["sglang_kv_injection"])
-        for facade_module_name in (
-            "document_kv_cache.sglang_runtime_preflight",
-            "cachet.sglang_runtime_preflight",
-        ):
-            facade_module = sys.modules.get(facade_module_name)
-            if facade_module is not None:
-                importlib.reload(facade_module)
+    assert record["ok"] is True
+    assert record["package_version"] == "0.5.10.post1"
+    assert record["document_kv_backend_subclasses_hicache_storage"] is True
+    sglang_runtime_preflight.validate_installed_sglang_hicache_contract_record(record)
 
 
 def test_installed_sglang_hicache_contract_rejects_document_backend_that_is_not_hicache_storage():
@@ -290,6 +314,7 @@ def test_installed_sglang_hicache_contract_rejects_missing_document_backend_meth
 
 def test_sglang_runtime_preflight_accepts_dynamic_hicache_config_and_provider(monkeypatch):
     provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
     record = document_kv_sglang_runtime_preflight_to_record(
         sglang_hicache_launch_config(provider_factory=provider_factory),
         installed_contract=matching_installed_contract(),
@@ -304,6 +329,20 @@ def test_sglang_runtime_preflight_accepts_dynamic_hicache_config_and_provider(mo
     assert record["provider_factory"]["provider_constructed"] is True
     assert record["provider_factory"]["provider_methods"] == ["get", "set", "exists"]
     assert record["provider_factory"]["ok"] is True
+    assert record["dynamic_backend_factory"]["record_type"] == SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE
+    assert record["dynamic_backend_factory"]["provider_factory"] == provider_factory
+    assert record["dynamic_backend_factory"]["backend_constructed"] is True
+    assert record["dynamic_backend_factory"]["backend_class"] == "DocumentKVHiCacheBackend"
+    assert record["dynamic_backend_factory"]["backend_provider_class"] == "Provider"
+    assert record["dynamic_backend_factory"]["ok"] is True
+    factory_cls = sys.modules["sglang.srt.mem_cache.storage.backend_factory"].StorageBackendFactory
+    assert factory_cls.loader_calls == [
+        (
+            "sglang_kv_injection.sglang_dynamic_backend",
+            "DocumentKVHiCacheBackend",
+            "document_kv",
+        )
+    ]
     assert record["ok"] is True
     validate_document_kv_sglang_runtime_preflight_record(record)
 
@@ -328,6 +367,7 @@ def test_sglang_runtime_preflight_rejects_mutated_launch_subrecord(
     expected_issue,
 ):
     provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
     record = document_kv_sglang_runtime_preflight_to_record(
         sglang_hicache_launch_config(provider_factory=provider_factory),
         installed_contract=matching_installed_contract(),
@@ -337,11 +377,12 @@ def test_sglang_runtime_preflight_rejects_mutated_launch_subrecord(
     issues = document_kv_sglang_runtime_preflight_record_issues(record)
 
     assert any(expected_issue in issue for issue in issues)
-    assert "ok must match installed contract, launch config, and provider factory safety" in issues
+    assert ok_must_match_issue() in issues
 
 
 def test_sglang_runtime_preflight_rejects_launch_provider_mismatch(monkeypatch):
     provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
     record = document_kv_sglang_runtime_preflight_to_record(
         sglang_hicache_launch_config(provider_factory=provider_factory),
         installed_contract=matching_installed_contract(),
@@ -353,7 +394,26 @@ def test_sglang_runtime_preflight_rejects_launch_provider_mismatch(monkeypatch):
     issues = document_kv_sglang_runtime_preflight_record_issues(record)
 
     assert "provider_factory.path must match launch_config.provider_factory" in issues
-    assert "ok must match installed contract, launch config, and provider factory safety" in issues
+    assert "dynamic_backend_factory.provider_factory must match launch_config.provider_factory" in issues
+    assert ok_must_match_issue() in issues
+
+
+def test_sglang_runtime_preflight_rejects_mutated_dynamic_backend_factory_subrecord(monkeypatch):
+    provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
+    record = document_kv_sglang_runtime_preflight_to_record(
+        sglang_hicache_launch_config(provider_factory=provider_factory),
+        installed_contract=matching_installed_contract(),
+    )
+    record["dynamic_backend_factory"]["backend_constructed"] = False
+
+    issues = document_kv_sglang_runtime_preflight_record_issues(record)
+
+    assert (
+        "dynamic_backend_factory.SGLang dynamic backend factory must construct the backend through create_backend"
+        in issues
+    )
+    assert ok_must_match_issue() in issues
 
 
 def test_sglang_runtime_preflight_rejects_missing_provider_factory_and_runtime_drift():
@@ -438,6 +498,7 @@ def test_sglang_runtime_preflight_rejects_provider_factory_returning_incomplete_
 
 def test_sglang_runtime_preflight_rejects_mismatched_ok_flag(monkeypatch):
     provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
     record = document_kv_sglang_runtime_preflight_to_record(
         sglang_hicache_launch_config(provider_factory=provider_factory),
         installed_contract=matching_installed_contract(),
@@ -447,11 +508,12 @@ def test_sglang_runtime_preflight_rejects_mismatched_ok_flag(monkeypatch):
     issues = document_kv_sglang_runtime_preflight_record_issues(record)
 
     assert "provider_factory.SGLang provider factory importable must be true" in issues
-    assert "ok must match installed contract, launch config, and provider factory safety" in issues
+    assert ok_must_match_issue() in issues
 
 
 def test_sglang_runtime_preflight_cli_writes_strict_record(tmp_path, monkeypatch):
     provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
     monkeypatch.setattr(
         sglang_runtime_preflight,
         "installed_sglang_hicache_contract_to_record",
@@ -476,6 +538,7 @@ def test_sglang_runtime_preflight_cli_writes_strict_record(tmp_path, monkeypatch
 
 def test_sglang_runtime_preflight_cli_accepts_launch_config_json_file(tmp_path, monkeypatch):
     provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
     monkeypatch.setattr(
         sglang_runtime_preflight,
         "installed_sglang_hicache_contract_to_record",

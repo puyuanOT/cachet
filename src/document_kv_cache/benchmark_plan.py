@@ -395,6 +395,7 @@ class BenchmarkPlanConfig:
     github_governance_output_json: str | None = None
     release_preflight_output_json: str | None = None
     engine_launch_config_output_dir: str | None = None
+    engine_launch_config_sglang_provider_factory: str | None = None
 
     def __post_init__(self) -> None:
         if not self.suite_id:
@@ -440,6 +441,19 @@ class BenchmarkPlanConfig:
             raise ValueError("release_preflight_output_json must be non-empty when provided")
         if self.engine_launch_config_output_dir is not None and not self.engine_launch_config_output_dir:
             raise ValueError("engine_launch_config_output_dir must be non-empty when provided")
+        if self.engine_launch_config_sglang_provider_factory is not None:
+            if not _is_module_attribute_path(self.engine_launch_config_sglang_provider_factory):
+                raise ValueError(
+                    "engine_launch_config_sglang_provider_factory must be a non-empty module:attribute string"
+                )
+        if (
+            self.engine_launch_config_output_dir is not None
+            and self.engine_launch_config_sglang_provider_factory is None
+        ):
+            raise ValueError(
+                "engine_launch_config_output_dir requires "
+                "engine_launch_config_sglang_provider_factory for SGLang runtime preflight sidecars"
+            )
         object.__setattr__(self, "benchmark_handoff_backend", ServingBackend(self.benchmark_handoff_backend))
         if self.benchmark_handoff_generator_factory is not None and not self.benchmark_handoff_generator_factory:
             raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
@@ -697,6 +711,9 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         "native_probe_factories_output_json": plan.config.native_probe_factories_output_json,
         "release_preflight_output_json": plan.config.release_preflight_output_json,
         "engine_launch_config_output_dir": plan.config.engine_launch_config_output_dir,
+        "engine_launch_config_sglang_provider_factory": (
+            plan.config.engine_launch_config_sglang_provider_factory
+        ),
         "benchmark_handoff_generator_factory": plan.config.benchmark_handoff_generator_factory,
         "benchmark_handoff_output_dir": plan.config.benchmark_handoff_output_dir,
         "benchmark_handoff_dtype": plan.config.benchmark_handoff_dtype,
@@ -1043,16 +1060,27 @@ def _native_probe_factories_command(config: BenchmarkPlanConfig) -> BenchmarkCom
 def _engine_launch_config_command(config: BenchmarkPlanConfig, backend: ServingBackend) -> BenchmarkCommand:
     if config.engine_launch_config_output_dir is None:
         raise ValueError("engine_launch_config_output_dir must be configured")
+    argv = (
+        config.python_executable,
+        "-m",
+        "document_kv_cache.engine_launch_config",
+        f"build-{backend.value}",
+        "--output-json",
+        _engine_launch_config_json(config.engine_launch_config_output_dir, backend),
+    )
+    if backend == ServingBackend.SGLANG:
+        if config.engine_launch_config_sglang_provider_factory is None:
+            raise ValueError(
+                "engine_launch_config_sglang_provider_factory must be configured for SGLang launch configs"
+            )
+        argv = (
+            *argv,
+            "--provider-factory",
+            config.engine_launch_config_sglang_provider_factory,
+        )
     return BenchmarkCommand(
         name=f"write-{backend.value}-engine-launch-config",
-        argv=(
-            config.python_executable,
-            "-m",
-            "document_kv_cache.engine_launch_config",
-            f"build-{backend.value}",
-            "--output-json",
-            _engine_launch_config_json(config.engine_launch_config_output_dir, backend),
-        ),
+        argv=argv,
     )
 
 
@@ -1602,6 +1630,18 @@ def _is_metadata_item(item: str) -> bool:
     return bool(separator and key)
 
 
+def _is_module_attribute_path(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    module_name, separator, attribute_name = value.partition(":")
+    if not separator or not module_name or not attribute_name:
+        return False
+    if any(character.isspace() for character in value):
+        return False
+    module_segments = module_name.split(".")
+    return all(segment.isidentifier() for segment in module_segments) and attribute_name.isidentifier()
+
+
 def _metadata_item_map(items: Sequence[str]) -> dict[str, str]:
     metadata: dict[str, str] = {}
     for item in items:
@@ -2027,6 +2067,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             "and include them in release bundles."
         ),
     )
+    parser.add_argument(
+        "--engine-launch-config-sglang-provider-factory",
+        help=(
+            "SGLang provider factory module:attribute path to stamp into generated "
+            "launch-config sidecars for strict runtime preflight."
+        ),
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -2081,6 +2128,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             native_probe_factories_output_json=args.native_probe_factories_output_json,
             release_preflight_output_json=args.release_preflight_output_json,
             engine_launch_config_output_dir=args.engine_launch_config_output_dir,
+            engine_launch_config_sglang_provider_factory=(
+                args.engine_launch_config_sglang_provider_factory
+            ),
         )
         _validate_plan_output_paths(
             config,

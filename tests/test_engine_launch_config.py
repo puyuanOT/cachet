@@ -26,9 +26,18 @@ from document_kv_cache.engine_launch_config import (
     write_engine_launch_config_json,
     write_engine_launch_config_evidence_json,
 )
+from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY
 
 
-def _document_kv_extra(backend: str, *, requires_native_runtime: bool = True) -> dict[str, object]:
+SGLANG_TEST_PROVIDER_FACTORY = "company_sglang_patch.providers:build_provider"
+
+
+def _document_kv_extra(
+    backend: str,
+    *,
+    provider_factory: str | None = None,
+    requires_native_runtime: bool = True,
+) -> dict[str, object]:
     extra = {
         "document_kv.record_type": f"{backend}_kv_injection.test_config.v1",
         "document_kv.schema_version": 1,
@@ -41,6 +50,8 @@ def _document_kv_extra(backend: str, *, requires_native_runtime: bool = True) ->
     }
     if backend == "vllm":
         extra["document_kv.provider_factory"] = DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY
+    elif provider_factory is not None:
+        extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] = provider_factory
     return extra
 
 
@@ -61,12 +72,16 @@ def _vllm_package_launch_config(**extra_overrides: object) -> dict[str, object]:
     return record
 
 
-def _sglang_launch_config(**extra_overrides: object) -> dict[str, object]:
+def _sglang_launch_config(
+    *,
+    provider_factory: str | None = SGLANG_TEST_PROVIDER_FACTORY,
+    **extra_overrides: object,
+) -> dict[str, object]:
     extra = {
         "backend_name": "document_kv",
         "module_path": "company_sglang_patch.document_kv_backend",
         "class_name": "DocumentKVHiCacheBackend",
-        **_document_kv_extra("sglang"),
+        **_document_kv_extra("sglang", provider_factory=provider_factory),
     }
     extra.update(extra_overrides)
     return {
@@ -116,7 +131,10 @@ def test_build_vllm_launch_config_accepts_custom_provider_factory():
 
 
 def test_build_sglang_launch_config_emits_valid_release_shape():
-    record = build_sglang_launch_config(extra_config={"deployment": "qa"})
+    record = build_sglang_launch_config(
+        extra_config={"deployment": "qa"},
+        provider_factory=SGLANG_TEST_PROVIDER_FACTORY,
+    )
     extra = json.loads(record["hicache_storage_backend_extra_config"])
 
     assert record["enable_hierarchical_cache"] is True
@@ -126,7 +144,7 @@ def test_build_sglang_launch_config_emits_valid_release_shape():
         "module_path": "sglang_kv_injection.sglang_dynamic_backend",
         "class_name": "DocumentKVHiCacheBackend",
         "deployment": "qa",
-        **_document_kv_extra("sglang"),
+        **_document_kv_extra("sglang", provider_factory=SGLANG_TEST_PROVIDER_FACTORY),
         "document_kv.record_type": DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,
     }
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.SGLANG)
@@ -235,6 +253,14 @@ def test_validate_engine_launch_config_record_rejects_dotted_vllm_provider_facto
     assert "document_kv.provider_factory attribute must be a Python identifier" in issues
 
 
+def test_validate_engine_launch_config_record_rejects_malformed_sglang_provider_factory():
+    record = _sglang_launch_config(provider_factory="missing_attribute")
+
+    issues = engine_launch_config_record_issues(record, expected_backend="sglang")
+
+    assert "document_kv.provider_factory must use module:attribute syntax" in issues
+
+
 def test_validate_engine_launch_config_record_rejects_invalid_sglang_extra_config():
     record = _sglang_launch_config()
     record["hicache_storage_backend_extra_config"] = "not-json"
@@ -312,7 +338,20 @@ def test_main_builds_launch_config_sidecars(tmp_path):
     sglang_path = tmp_path / "sglang.json"
 
     assert main(["build-vllm", "--output-json", str(vllm_path), "--extra-config", "max_model_len=32768"]) == 0
-    assert main(["build-sglang", "--output-json", str(sglang_path), "--extra-config", "deployment=\"qa\""]) == 0
+    assert (
+        main(
+            [
+                "build-sglang",
+                "--output-json",
+                str(sglang_path),
+                "--provider-factory",
+                SGLANG_TEST_PROVIDER_FACTORY,
+                "--extra-config",
+                "deployment=\"qa\"",
+            ]
+        )
+        == 0
+    )
 
     assert read_engine_launch_config_json(vllm_path, expected_backend="vllm")[
         "kv_connector_extra_config"
@@ -326,6 +365,7 @@ def test_main_builds_launch_config_sidecars(tmp_path):
         ]
     )
     assert sglang_extra["deployment"] == "qa"
+    assert sglang_extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == SGLANG_TEST_PROVIDER_FACTORY
 
 
 def test_main_reports_invalid_cli_input_without_traceback(capsys):

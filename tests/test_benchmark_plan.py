@@ -38,6 +38,7 @@ from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENA
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+SGLANG_TEST_PROVIDER_FACTORY = "sglang_runtime_provider:build_provider"
 
 
 def test_benchmark_plan_preserves_sglang_native_delegate_factory_alias():
@@ -3532,6 +3533,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "native-probe-factories.json"),
             "--engine-launch-config-output-dir",
             str(tmp_path / "engine-launch-configs"),
+            "--engine-launch-config-sglang-provider-factory",
+            SGLANG_TEST_PROVIDER_FACTORY,
             "--release-bundle-require-complete-v1",
             "--release-bundle-overwrite",
             "--plan-output-json",
@@ -3577,6 +3580,7 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["native_probe_factories_output_json"] == str(tmp_path / "native-probe-factories.json")
     assert record["release_preflight_output_json"] == str(tmp_path / "release-inputs.json")
     assert record["engine_launch_config_output_dir"] == str(tmp_path / "engine-launch-configs")
+    assert record["engine_launch_config_sglang_provider_factory"] == SGLANG_TEST_PROVIDER_FACTORY
     assert record["release_bundle"]["release_evidence_json"] == str(tmp_path / "release-evidence.json")
     assert record["release_bundle"]["preflight_json"] == str(tmp_path / "release-inputs.json")
     assert record["release_bundle"]["engine_actions_jsons"] == [
@@ -3623,6 +3627,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
     ]
     assert sglang_launch_argv[sglang_launch_argv.index("--output-json") + 1] == str(
         tmp_path / "engine-launch-configs" / "sglang-launch-config.json"
+    )
+    assert sglang_launch_argv[sglang_launch_argv.index("--provider-factory") + 1] == (
+        SGLANG_TEST_PROVIDER_FACTORY
     )
     assert preflight_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_evidence"]
     assert "--preflight-only" in preflight_argv
@@ -3729,6 +3736,8 @@ def test_main_rejects_mismatched_generated_and_explicit_engine_launch_configs(ca
             str(tmp_path / "release-bundle"),
             "--engine-launch-config-output-dir",
             str(tmp_path / "generated-launch-configs"),
+            "--engine-launch-config-sglang-provider-factory",
+            SGLANG_TEST_PROVIDER_FACTORY,
             "--release-bundle-engine-launch-config-json",
             str(tmp_path / "other-vllm-launch-config.json"),
         ]
@@ -3739,6 +3748,30 @@ def test_main_rejects_mismatched_generated_and_explicit_engine_launch_configs(ca
     assert exit_code == 1
     assert record["ok"] is False
     assert "engine_launch_config_jsons must match engine_launch_config_output_dir" in record["error"]
+
+
+def test_main_rejects_generated_sglang_launch_config_without_provider_factory(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--engine-launch-config-output-dir",
+            str(tmp_path / "engine-launch-configs"),
+            "--plan-output-json",
+            str(tmp_path / "plan.json"),
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "engine_launch_config_sglang_provider_factory" in record["error"]
 
 
 def test_main_rejects_plan_output_json_colliding_with_generated_artifact(capsys, tmp_path):
