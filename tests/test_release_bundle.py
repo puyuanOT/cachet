@@ -40,6 +40,7 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
+from document_kv_cache.engine_launch_config import DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.native_probe_factories import (
@@ -3387,6 +3388,7 @@ def _launch_config_record(backend: ServingBackend):
         "document_kv.requires_native_runtime": True,
     }
     if backend is ServingBackend.VLLM:
+        extra["document_kv.provider_factory"] = DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY
         return {
             "kv_connector": "DocumentKVConnector",
             "kv_connector_module_path": "document_kv_vllm.document_kv_connector",
