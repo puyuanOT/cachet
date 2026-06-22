@@ -473,7 +473,8 @@ from the Cachet wheel. When runtime packages or wheels are present, the
 generated runner installs them into a local driver venv
 (`/local_disk0/cachet/engine-probe-venv` by default) and re-execs the probe
 inside that venv so Databricks ML image packages do not leak into the serving
-runtime import path.
+runtime import path. If the task Python lacks stdlib `venv`/`ensurepip`
+support, the runner falls back to the pinned `virtualenv` bootstrap package.
 `--provider-backed-sglang-native-probe` is the matching single-backend QA probe
 for Cachet's built-in provider-backed SGLang HiCache path. It sets the Cachet
 SGLang probe factory, the
