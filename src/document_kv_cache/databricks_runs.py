@@ -20,6 +20,7 @@ import urllib.request
 from document_kv_cache._hardware_targets import (
     HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES,
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
+    SUPPORTED_V1_HARDWARE_TARGETS,
     V1_HARDWARE_TARGET_PROFILES,
 )
 
@@ -1467,6 +1468,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also include the raw Jobs API response when using --summary.",
     )
+    get_parser.add_argument(
+        "--expected-hardware-target",
+        choices=SUPPORTED_V1_HARDWARE_TARGETS,
+        help=(
+            "Validate the compact summary and attached submit payload against a V1 hardware target. "
+            "Requires --summary and --submit-payload-json."
+        ),
+    )
     put_parser = subparsers.add_parser("put-dbfs-file", help="Upload a small local artifact to DBFS.")
     put_parser.add_argument("--local-path", required=True, help="Local file to upload.")
     put_parser.add_argument("--dbfs-path", required=True, help="Destination path such as dbfs:/FileStore/cachet/file.whl.")
@@ -1502,6 +1511,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     try:
+        if args.command == "get" and args.expected_hardware_target:
+            if not args.summary:
+                raise ValueError("--expected-hardware-target requires --summary")
+            if not args.submit_payload_json:
+                raise ValueError("--expected-hardware-target requires --submit-payload-json")
         if args.command == "stage-and-submit" and args.dry_run:
             result = plan_databricks_stage_and_submit(
                 read_databricks_run_submit_payload(args.payload_json),
@@ -1547,11 +1561,17 @@ def main(argv: list[str] | None = None) -> int:
                 else None
             )
             result = _success_record(args.command, response if args.include_response else None)
-            result["summary"] = summarize_databricks_run(
+            summary = summarize_databricks_run(
                 response,
                 submit_payload=submit_payload,
                 submit_payload_path=args.submit_payload_json,
             )
+            if args.expected_hardware_target:
+                validate_databricks_run_status_sidecar(
+                    summary,
+                    expected_hardware_target=args.expected_hardware_target,
+                )
+            result["summary"] = summary
         elif args.command == "auth-check":
             pass
         elif args.command == "put-dbfs-file":
