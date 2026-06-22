@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import pickle
+from pathlib import Path
 import subprocess
 import sys
 import types
@@ -19,6 +20,7 @@ from document_kv_cache.databricks_runs import (
     DEFAULT_DATABRICKS_CONFIG_FILE,
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
+    DATABRICKS_PROFILE_AUTH_MODES,
     DATABRICKS_AUTH_CHECK_RECORD_TYPE,
     DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
@@ -53,6 +55,8 @@ def test_databricks_run_status_uses_shared_hardware_target_prefixes():
         public_databricks_runs._HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
         == HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
     )
+    assert DATABRICKS_PROFILE_AUTH_MODES == ("auto", "static", "sdk")
+    assert public_databricks_runs.DATABRICKS_PROFILE_AUTH_MODES == DATABRICKS_PROFILE_AUTH_MODES
 
 
 def test_workspace_config_from_env_normalizes_host_and_hides_token_in_repr():
@@ -192,6 +196,81 @@ def test_workspace_config_from_profile_uses_sdk_for_oauth_profile(tmp_path, monk
     assert config.timeout_seconds == 11
     assert config.token == "oauth-secret-token"
     assert "oauth-secret-token" not in repr(config)
+
+
+def test_workspace_config_from_profile_can_force_sdk_when_profile_has_token(tmp_path, monkeypatch):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://profile.example.cloud.databricks.com\n"
+        "token = stale-static-token\n"
+        "auth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    class FakeSdkConfig:
+        host = "https://refreshed.example.cloud.databricks.com/"
+
+        def authenticate(self):
+            return {"Authorization": "Bearer refreshed-oauth-token"}
+
+    def fake_sdk_config(profile, *, config_file, timeout_seconds):
+        calls.append((profile, config_file, timeout_seconds))
+        return FakeSdkConfig()
+
+    monkeypatch.setattr(public_databricks_runs, "_databricks_sdk_config", fake_sdk_config)
+
+    config = databricks_workspace_config_from_profile(
+        "QA_OAUTH",
+        config_file=config_path,
+        timeout_seconds=23,
+        profile_auth_mode="sdk",
+    )
+
+    assert calls == [("QA_OAUTH", config_path, 23)]
+    assert config.normalized_host == "https://refreshed.example.cloud.databricks.com"
+    assert config.timeout_seconds == 23
+    assert config.token == "refreshed-oauth-token"
+
+
+def test_workspace_config_from_profile_static_mode_does_not_fall_back_to_sdk(tmp_path, monkeypatch):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://profile.example.cloud.databricks.com\n"
+        "auth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+
+    def sdk_should_not_run(*args, **kwargs):
+        raise AssertionError("SDK auth should not run in static profile auth mode")
+
+    monkeypatch.setattr(public_databricks_runs, "_databricks_sdk_config", sdk_should_not_run)
+
+    with pytest.raises(ValueError, match="missing token"):
+        databricks_workspace_config_from_profile(
+            "QA_OAUTH",
+            config_file=config_path,
+            profile_auth_mode="static",
+        )
+
+
+def test_workspace_config_from_profile_rejects_unknown_profile_auth_mode(tmp_path):
+    config_path = tmp_path / ".databrickscfg"
+    config_path.write_text(
+        "[QA]\n"
+        "host = https://dbc.example.cloud.databricks.com\n"
+        "token = profile-secret-token\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="profile_auth_mode"):
+        databricks_workspace_config_from_profile(
+            "QA",
+            config_file=config_path,
+            profile_auth_mode="refresh",
+        )
 
 
 def test_workspace_config_from_sdk_profile_requires_bearer_authorization(tmp_path, monkeypatch):
@@ -1315,6 +1394,70 @@ def test_main_submit_can_use_databricks_profile_without_env(monkeypatch, tmp_pat
     }
 
 
+def test_main_submit_can_force_sdk_profile_auth(monkeypatch, tmp_path):
+    payload_path = tmp_path / "payload.json"
+    output_path = tmp_path / "response.json"
+    config_path = tmp_path / ".databrickscfg"
+    payload_path.write_text('{"run_name":"cachet-profile-smoke"}', encoding="utf-8")
+    config_path.write_text(
+        "[QA_OAUTH]\n"
+        "host = https://dbc.example.cloud.databricks.com/\n"
+        "token = stale-static-token\n"
+        "auth_type = databricks-cli\n",
+        encoding="utf-8",
+    )
+
+    def fake_sdk_profile(profile, *, config_file, timeout_seconds):
+        assert profile == "QA_OAUTH"
+        assert Path(config_file) == config_path
+        assert timeout_seconds == 60.0
+        return DatabricksWorkspaceConfig(
+            "https://sdk-resolved.example.cloud.databricks.com",
+            "refreshed-oauth-token",
+            timeout_seconds=timeout_seconds,
+        )
+
+    def fake_submit(config, payload):
+        assert config.normalized_host == "https://sdk-resolved.example.cloud.databricks.com"
+        assert config.token == "refreshed-oauth-token"
+        return {"run_id": 789, "host": config.normalized_host, "payload": payload}
+
+    monkeypatch.delenv(DEFAULT_DATABRICKS_HOST_ENV, raising=False)
+    monkeypatch.delenv(DEFAULT_DATABRICKS_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(legacy_databricks_runs, "databricks_workspace_config_from_sdk_profile", fake_sdk_profile)
+    monkeypatch.setattr(legacy_databricks_runs, "submit_databricks_run", fake_submit)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--profile",
+            "QA_OAUTH",
+            "--profile-auth-mode",
+            "sdk",
+            "--config-file",
+            str(config_path),
+            "--output-json",
+            str(output_path),
+            "submit",
+            "--payload-json",
+            str(payload_path),
+        ]
+    )
+
+    output = output_path.read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert "stale-static-token" not in output
+    assert "refreshed-oauth-token" not in output
+    assert json.loads(output) == {
+        "ok": True,
+        "action": "submit",
+        "response": {
+            "run_id": 789,
+            "host": "https://sdk-resolved.example.cloud.databricks.com",
+            "payload": {"run_name": "cachet-profile-smoke"},
+        },
+    }
+
+
 def test_main_auth_check_writes_sanitized_record(monkeypatch, tmp_path):
     output_path = tmp_path / "auth-check.json"
     raw_secret = "secret-token"
@@ -1381,6 +1524,25 @@ def test_main_config_file_requires_profile(tmp_path):
     assert exit_code == 1
     assert record["error_type"] == "ValueError"
     assert "--config-file requires --profile" in record["error"]
+
+
+def test_main_profile_auth_mode_requires_profile(tmp_path):
+    output_path = tmp_path / "response.json"
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--profile-auth-mode",
+            "sdk",
+            "--output-json",
+            str(output_path),
+            "auth-check",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["error_type"] == "ValueError"
+    assert "--profile-auth-mode requires --profile" in record["error"]
 
 
 def test_main_put_dbfs_file_writes_sanitized_artifact_record(monkeypatch, tmp_path):
@@ -2413,6 +2575,7 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
         "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
+        "DATABRICKS_PROFILE_AUTH_MODES",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
         "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",

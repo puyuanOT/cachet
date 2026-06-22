@@ -175,6 +175,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
     ),
+    "DATABRICKS_PROFILE_AUTH_MODES": (
+        "document_kv_cache.databricks_runs",
+        "DATABRICKS_PROFILE_AUTH_MODES",
+    ),
     "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES": (
         "document_kv_cache.databricks_runs",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",

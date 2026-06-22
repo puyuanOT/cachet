@@ -30,6 +30,7 @@ __all__ = [
     "DEFAULT_DATABRICKS_CONFIG_FILE",
     "DEFAULT_DATABRICKS_TOKEN_ENV",
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+    "DATABRICKS_PROFILE_AUTH_MODES",
     "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
     "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
@@ -57,6 +58,7 @@ DEFAULT_DATABRICKS_HOST_ENV = "DATABRICKS_HOST"
 DEFAULT_DATABRICKS_TOKEN_ENV = "DATABRICKS_TOKEN"
 DEFAULT_DATABRICKS_CONFIG_FILE = "~/.databrickscfg"
 DEFAULT_DATABRICKS_TIMEOUT_SECONDS = 60.0
+DATABRICKS_PROFILE_AUTH_MODES = ("auto", "static", "sdk")
 DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 1_000_000
 DATABRICKS_AUTH_CHECK_RECORD_TYPE = "document_kv.databricks_auth_check.v1"
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
@@ -226,14 +228,22 @@ def databricks_workspace_config_from_profile(
     *,
     config_file: str | Path = DEFAULT_DATABRICKS_CONFIG_FILE,
     timeout_seconds: float = DEFAULT_DATABRICKS_TIMEOUT_SECONDS,
+    profile_auth_mode: str = "auto",
 ) -> DatabricksWorkspaceConfig:
+    auth_mode = _databricks_profile_auth_mode(profile_auth_mode)
     profile_name = _required_profile_name(profile)
     values = _databricks_profile_values(profile_name, config_file=config_file)
     host = values.get("host", "").strip()
     token = values.get("token", "").strip()
+    if auth_mode == "sdk":
+        return databricks_workspace_config_from_sdk_profile(
+            profile_name,
+            config_file=config_file,
+            timeout_seconds=timeout_seconds,
+        )
     if host and token:
         return DatabricksWorkspaceConfig(host=host, token=token, timeout_seconds=timeout_seconds)
-    if values.get("auth_type", "").strip():
+    if auth_mode == "auto" and values.get("auth_type", "").strip():
         return databricks_workspace_config_from_sdk_profile(
             profile_name,
             config_file=config_file,
@@ -362,6 +372,14 @@ def _required_profile_name(profile: str) -> str:
     if not isinstance(profile, str) or not profile.strip():
         raise ValueError("profile must be a non-empty string")
     return profile.strip()
+
+
+def _databricks_profile_auth_mode(value: str) -> str:
+    if value not in DATABRICKS_PROFILE_AUTH_MODES:
+        raise ValueError(
+            f"profile_auth_mode must be one of {DATABRICKS_PROFILE_AUTH_MODES!r}, got {value!r}"
+        )
+    return value
 
 
 def submit_databricks_run(
@@ -1574,6 +1592,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--token-env", default=DEFAULT_DATABRICKS_TOKEN_ENV)
     parser.add_argument("--profile", help="Databricks profile name from ~/.databrickscfg.")
     parser.add_argument(
+        "--profile-auth-mode",
+        choices=DATABRICKS_PROFILE_AUTH_MODES,
+        default="auto",
+        help=(
+            "How --profile resolves credentials: auto keeps static token behavior and uses SDK "
+            "only for auth_type profiles without a token; static requires a profile token; "
+            "sdk forces Databricks SDK profile auth such as OAuth/CLI refresh."
+        ),
+    )
+    parser.add_argument(
         "--config-file",
         default=DEFAULT_DATABRICKS_CONFIG_FILE,
         help="Databricks CLI config file used with --profile.",
@@ -1789,7 +1817,10 @@ def _databricks_workspace_config_from_args(args: argparse.Namespace) -> Databric
             args.profile,
             config_file=args.config_file,
             timeout_seconds=args.timeout_seconds,
+            profile_auth_mode=args.profile_auth_mode,
         )
+    if args.profile_auth_mode != "auto":
+        raise ValueError("--profile-auth-mode requires --profile")
     if args.config_file != DEFAULT_DATABRICKS_CONFIG_FILE:
         raise ValueError("--config-file requires --profile")
     return databricks_workspace_config_from_env(
