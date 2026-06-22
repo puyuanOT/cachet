@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+from types import ModuleType
 import urllib.error
 
 import pytest
@@ -28,6 +29,7 @@ from document_kv_cache.vllm_smoke import (
     build_benchmark_runner_args,
     build_metadata,
     build_prompt_token_budget_rows,
+    build_vllm_native_provider_probe_record,
     build_vllm_server_args,
     dataset_args,
     dependency_constraints,
@@ -39,6 +41,7 @@ from document_kv_cache.vllm_smoke import (
     run_vllm_smoke_benchmark,
     smoke_dataset_records,
 )
+from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -449,6 +452,108 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["gpu_memory_utilization"] == 0.85
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
     assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config()
+
+
+def test_vllm_native_provider_probe_record_instantiates_default_provider():
+    record = build_vllm_native_provider_probe_record()
+
+    assert record["document_kv_native_provider_ok"] is True
+    assert (
+        record["document_kv_provider_factory"]
+        == document_kv_transfer_config()["kv_connector_extra_config"][DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY]
+    )
+    assert (
+        record["document_kv_provider_type"]
+        == "vllm_kv_injection.vllm_native_provider.DocumentKVNativeProvider"
+    )
+    assert record["document_kv_connector_type"] == "vllm_kv_injection.vllm_dynamic_connector.DocumentKVConnector"
+    assert record["document_kv_requires_native_runtime"] is True
+
+
+def test_vllm_native_provider_probe_record_rejects_missing_provider_factory():
+    config = document_kv_transfer_config(provider_factory=None)
+
+    with pytest.raises(ValueError, match=DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY):
+        build_vllm_native_provider_probe_record(config)
+
+
+def test_vllm_native_provider_probe_record_rejects_non_native_provider(monkeypatch):
+    class NonNativeProvider:
+        def get_num_new_matched_tokens(self, request, num_computed_tokens):
+            return 0, False
+
+        def update_state_after_alloc(self, request, blocks, num_external_tokens):
+            return None
+
+        def build_connector_meta(self, scheduler_output):
+            return {}
+
+        def register_kv_caches(self, kv_caches):
+            return None
+
+        def start_load_kv(self, forward_context, **kwargs):
+            return None
+
+        def wait_for_layer_load(self, layer_name):
+            return None
+
+        def save_kv_layer(self, layer_name, kv_layer, attn_metadata, **kwargs):
+            return None
+
+        def wait_for_save(self):
+            return None
+
+        def request_finished(self, request, block_ids):
+            return False, None
+
+        def request_finished_all_groups(self, request, block_ids):
+            return False, None
+
+    module = ModuleType("document_kv_smoke_non_native_provider")
+    module.build_provider = lambda *, vllm_config, extra_config: NonNativeProvider()
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    with pytest.raises(TypeError, match="native document KV provider"):
+        build_vllm_native_provider_probe_record(
+            document_kv_transfer_config(provider_factory=f"{module.__name__}:build_provider")
+        )
+
+
+def test_probe_vllm_import_records_native_provider_evidence(monkeypatch, tmp_path):
+    completed = subprocess.CompletedProcess(
+        args=["python"],
+        returncode=0,
+        stdout=(
+            "probe warmup\n"
+            '{"ok": true, "document_kv_native_provider_ok": true, '
+            '"document_kv_provider_factory": "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"}\n'
+        ),
+        stderr="",
+    )
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert "build_vllm_native_provider_probe_record" in argv[2]
+        return completed
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
+
+    public_vllm_smoke.probe_vllm_import(
+        tmp_path / "venv" / "bin" / "python",
+        tmp_path / "probe.json",
+        timeout_seconds=3,
+        env={"HF_HOME": str(tmp_path / "hf-cache")},
+    )
+
+    record = json.loads((tmp_path / "probe.json").read_text(encoding="utf-8"))
+    assert record["ok"] is True
+    assert record["document_kv_native_provider_ok"] is True
+    assert (
+        record["document_kv_provider_factory"]
+        == "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
+    )
+    assert calls[0][1]["env"]["HF_HOME"] == str(tmp_path / "hf-cache")
 
 
 def test_metadata_records_prepared_dataset_context(tmp_path):
