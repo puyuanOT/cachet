@@ -87,6 +87,28 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
     }
 
 
+def test_evaluate_release_evidence_accepts_native_logical_cache_prompt_mode():
+    v1_record = _v1_record(ok=True)
+    _use_logical_cache_prompt_mode(v1_record)
+
+    evidence = evaluate_release_evidence(
+        v1_record,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert evidence.ok
+    assert not any("prompt_text_mode" in issue for issue in evidence.issues)
+    assert not any("runtime_prompt_tokens" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_accepts_explicit_g5_a10g_hardware_target():
     evidence = evaluate_release_evidence(
         _v1_record(ok=True, hardware_target="aws-g5-a10g"),
@@ -1051,7 +1073,7 @@ def test_evaluate_release_evidence_requires_prompt_token_context_metadata():
     v1_record["measurements"][1] = {
         **v1_record["measurements"][1],
         "metadata": {
-            "prompt_text_mode": "logical",
+            "prompt_text_mode": "runtime",
             "prompt_token_source": "logical",
             "logical_prompt_tokens": "1024",
             "runtime_prompt_tokens": "1024",
@@ -1074,7 +1096,10 @@ def test_evaluate_release_evidence_requires_prompt_token_context_metadata():
     assert any("metadata.runtime_prompt_tokens" in issue for issue in evidence.issues)
     assert any("metadata.kv_transfer_params_attached" in issue for issue in evidence.issues)
     assert any("metadata.request_id" in issue for issue in evidence.issues)
-    assert any("cache runtime_prompt_tokens must be smaller than logical_prompt_tokens" in issue for issue in evidence.issues)
+    assert any(
+        "runtime cache runtime_prompt_tokens must be smaller than logical_prompt_tokens" in issue
+        for issue in evidence.issues
+    )
 
 
 def test_evaluate_release_evidence_requires_cache_kv_transfer_metadata():
@@ -1120,7 +1145,7 @@ def test_evaluate_release_evidence_requires_cache_kv_transfer_metadata():
     )
 
 
-def test_evaluate_release_evidence_rejects_wrong_prompt_text_mode_for_arm():
+def test_evaluate_release_evidence_rejects_wrong_baseline_prompt_text_mode():
     v1_record = _v1_record(ok=True)
     v1_record["measurements"][0] = {
         **v1_record["measurements"][0],
@@ -1129,14 +1154,6 @@ def test_evaluate_release_evidence_rejects_wrong_prompt_text_mode_for_arm():
             "prompt_text_mode": "runtime",
         },
     }
-    v1_record["measurements"][1] = {
-        **v1_record["measurements"][1],
-        "metadata": {
-            **v1_record["measurements"][1]["metadata"],
-            "prompt_text_mode": "logical",
-        },
-    }
-
     evidence = evaluate_release_evidence(
         v1_record,
         _storage_record(ok=True),
@@ -1149,10 +1166,6 @@ def test_evaluate_release_evidence_rejects_wrong_prompt_text_mode_for_arm():
     assert not evidence.ok
     assert any(
         "biography:baseline_prefill baseline metadata.prompt_text_mode must be 'logical'" in issue
-        for issue in evidence.issues
-    )
-    assert any(
-        "biography:document_kv_cache cache metadata.prompt_text_mode must be 'runtime'" in issue
         for issue in evidence.issues
     )
 
@@ -1192,7 +1205,7 @@ def test_evaluate_release_evidence_rejects_prompt_tokens_that_do_not_match_arm_c
         for issue in evidence.issues
     )
     assert any(
-        "biography:document_kv_cache cache prompt_tokens must equal metadata.runtime_prompt_tokens"
+        "biography:document_kv_cache cache prompt_tokens must match metadata.runtime_prompt_tokens"
         in issue
         for issue in evidence.issues
     )
@@ -2482,6 +2495,21 @@ def _v1_measurement_metadata(arm: str):
         "logical_prompt_tokens": "1024",
         "runtime_prompt_tokens": "128",
     }
+
+
+def _use_logical_cache_prompt_mode(v1_record: dict):
+    for measurement in v1_record["measurements"]:
+        if measurement["arm_id"] != "document_kv_cache":
+            continue
+        measurement["prompt_tokens"] = 1024
+        measurement["metadata"] = {
+            **measurement["metadata"],
+            "prompt_text_mode": "logical",
+            "runtime_prompt_tokens": "1024",
+        }
+    for row in v1_record["report_rows"]:
+        if row["arm_id"] == "document_kv_cache":
+            row["prompt_tokens_mean"] = 1024.0
 
 
 def _storage_record(*, ok: bool, uc_volume_is_real: bool = True):

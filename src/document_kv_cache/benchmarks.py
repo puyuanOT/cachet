@@ -30,6 +30,7 @@ DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
 DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
+DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
 FINAL_ANSWER_CUE = "Answer:"
 
 __all__ = [
@@ -47,6 +48,7 @@ __all__ = [
     "DOCUMENT_KV_HANDOFF_JSON_PARAM",
     "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
+    "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",

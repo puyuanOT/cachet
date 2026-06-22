@@ -1509,8 +1509,6 @@ def _validate_v1_measurement_token_context(
         issues.append(f"{label} metadata.prompt_text_mode must be 'logical' or 'runtime'")
     elif arm_id == BASELINE_PREFILL_ARM and prompt_text_mode != "logical":
         issues.append(f"{label} baseline metadata.prompt_text_mode must be 'logical'")
-    elif arm_id == CACHE_REUSE_ARM and prompt_text_mode != "runtime":
-        issues.append(f"{label} cache metadata.prompt_text_mode must be 'runtime'")
     if not isinstance(metadata.get("prompt_token_source"), str) or not metadata["prompt_token_source"]:
         issues.append(f"{label} metadata.prompt_token_source must be non-empty")
     if arm_id == BASELINE_PREFILL_ARM:
@@ -1532,14 +1530,19 @@ def _validate_v1_measurement_token_context(
         return
     if arm_id == BASELINE_PREFILL_ARM and runtime_prompt_tokens != logical_prompt_tokens:
         issues.append(f"{label} baseline runtime_prompt_tokens must equal logical_prompt_tokens")
-    if arm_id == CACHE_REUSE_ARM and runtime_prompt_tokens >= logical_prompt_tokens:
-        issues.append(f"{label} cache runtime_prompt_tokens must be smaller than logical_prompt_tokens")
+    if arm_id == CACHE_REUSE_ARM:
+        if prompt_text_mode == "runtime" and runtime_prompt_tokens >= logical_prompt_tokens:
+            issues.append(f"{label} runtime cache runtime_prompt_tokens must be smaller than logical_prompt_tokens")
+        if prompt_text_mode == "logical" and runtime_prompt_tokens != logical_prompt_tokens:
+            issues.append(f"{label} logical cache runtime_prompt_tokens must equal logical_prompt_tokens")
     prompt_tokens = measurement.get("prompt_tokens")
     if _is_positive_int(prompt_tokens):
         if arm_id == BASELINE_PREFILL_ARM and prompt_tokens != logical_prompt_tokens:
             issues.append(f"{label} baseline prompt_tokens must equal metadata.logical_prompt_tokens")
-        elif arm_id == CACHE_REUSE_ARM and prompt_tokens != runtime_prompt_tokens:
-            issues.append(f"{label} cache prompt_tokens must equal metadata.runtime_prompt_tokens")
+        elif arm_id == CACHE_REUSE_ARM:
+            expected_prompt_tokens = runtime_prompt_tokens if prompt_text_mode == "runtime" else logical_prompt_tokens
+            if prompt_tokens != expected_prompt_tokens:
+                issues.append(f"{label} cache prompt_tokens must match metadata.{prompt_text_mode}_prompt_tokens")
 
 
 def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> None:

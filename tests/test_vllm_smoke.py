@@ -274,7 +274,7 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     ]
 
 
-def test_benchmark_runner_args_use_runtime_cache_prompt_for_prepared_datasets(tmp_path):
+def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tmp_path):
     specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-1",
@@ -287,7 +287,7 @@ def test_benchmark_runner_args_use_runtime_cache_prompt_for_prepared_datasets(tm
     args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
 
     assert args[args.index("--cache-base-url") + 1] == "http://127.0.0.1:8123"
-    assert "--cache-runtime-prompt" in args
+    assert "--cache-runtime-prompt" not in args
 
 
 def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
@@ -725,6 +725,7 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["dataset_source"] == "smoke"
     assert metadata["dataset_specs"] == []
     assert metadata["cache_runtime_prompt"] is False
+    assert metadata["cache_prompt_text_mode"] == "logical"
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["max_model_len"] == 4096
     assert metadata["max_num_seqs"] == 2
@@ -851,7 +852,8 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
 
     assert metadata["dataset_source"] == "prepared"
     assert metadata["dataset_specs"] == list(specs)
-    assert metadata["cache_runtime_prompt"] is True
+    assert metadata["cache_runtime_prompt"] is False
+    assert metadata["cache_prompt_text_mode"] == "logical"
     assert metadata["requires_kv_transfer_params"] is True
     assert metadata["max_model_len"] == 32768
     assert metadata["max_num_seqs"] == 8
