@@ -775,6 +775,10 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
   rows fail with the physical JSONL line number so managed AWS g6/L4 runs can
   trace dataset issues back to source files.
 - `normalize_v1_record`, `convert_v1_jsonl`, and `build_niah_record` prepare raw Biography, HotpotQA, MusiQue, and synthetic/source NIAH rows into that normalized JSONL contract.
+- `benchmark_handoffs` enriches prepared JSONL rows with generated Cachet
+  handoff metadata from a closed `(dataset, example_id)` manifest, so
+  Databricks benchmark inputs can reference real adapter handoff and payload
+  artifacts without hand-editing JSONL.
 - `build_v1_benchmark_plan` and the `benchmark_plan` CLI emit a portable command plan that prepares all four V1 datasets, runs the OpenAI-compatible benchmark on AWS g6/L4/Qwen3, and can append storage-reader benchmarking on the same node.
 - `benchmark_plan_executor` and `databricks_job` let managed job runners execute that plan on single-node AWS g6/L4 Databricks clusters; `databricks_runs` can submit/check those payloads using credentials supplied only through environment variables.
 - `run_benchmark_suite` executes caller-provided baseline and KV-cache engines against the same logical prompt parts and emits `InferenceMeasurement` rows. Cache engines receive the runtime suffix as `prompt_text`; the full logical prompt remains available as `logical_prompt_text`.
@@ -848,7 +852,11 @@ appends a `document_kv_cache.storage_benchmark` command. The storage command
 captures Memory and Disk reader latency/throughput on the same AWS g6/L4 node, and
 adds the Unity Catalog reader only when `--storage-benchmark-uc-volume-root`
 points at a real UC Volume. It writes `<suite-id>-storage-benchmark.json` under
-`--prepared-dir` unless `--storage-benchmark-output-json` is set. Backend-keyed
+`--prepared-dir` unless `--storage-benchmark-output-json` is set.
+Use `python -m document_kv_cache.benchmark_handoffs --input-jsonl ... --manifest-json ... --output-jsonl ...`
+between dataset preparation and benchmark execution when a prior Cachet cache
+generation step has emitted per-example handoff JSON/payload artifacts.
+Backend-keyed
 `--engine-probe-*` options append native `document_kv_cache.engine_probe`
 commands for vLLM and SGLang handoffs; release evidence automatically consumes
 those planned probe and connector-action outputs. Planned probes consumed by

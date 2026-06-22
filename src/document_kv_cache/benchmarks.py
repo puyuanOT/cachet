@@ -23,6 +23,7 @@ CACHE_REUSE_ARM = "document_kv_cache"
 DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
 DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
+DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 FINAL_ANSWER_CUE = "Answer:"
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "DOCUMENT_KV_REQUEST_ID_PARAM",
     "DOCUMENT_KV_HANDOFF_JSON_PARAM",
     "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
+    "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",
@@ -600,22 +602,63 @@ def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
         )
     if handoff_json is not None and (not isinstance(handoff_json, str) or not handoff_json):
         raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_JSON_PARAM} must be a non-empty string")
+    payload_uri = kv_transfer_params.get(DOCUMENT_KV_PAYLOAD_URI_PARAM)
+    if payload_uri is not None:
+        _validate_runtime_payload_uri(
+            payload_uri,
+            field_name=f"kv_transfer_params.{DOCUMENT_KV_PAYLOAD_URI_PARAM}",
+        )
     if handoff_record is not None:
         if not isinstance(handoff_record, Mapping):
             raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")
-        _validate_inline_handoff_record(handoff_record, request_id=request_id)
+        _validate_inline_handoff_record(
+            handoff_record,
+            request_id=request_id,
+            payload_uri_override=payload_uri,
+        )
 
 
-def _validate_inline_handoff_record(handoff_record: Mapping[str, Any], *, request_id: str) -> None:
+def _validate_runtime_payload_uri(value: object, *, field_name: str) -> None:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty string")
+    from document_kv_cache.engine_probe import _validate_local_payload_uri
+
+    try:
+        _validate_local_payload_uri(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name}: {exc}") from exc
+
+
+def _validate_inline_handoff_record(
+    handoff_record: Mapping[str, Any],
+    *,
+    request_id: str,
+    payload_uri_override: object,
+) -> None:
     from document_kv_cache.engine_adapters import validate_engine_adapter_request_record
 
-    validate_engine_adapter_request_record(handoff_record, require_external_payload_uri=False)
+    validate_engine_adapter_request_record(
+        handoff_record,
+        require_external_payload_uri=payload_uri_override is None,
+    )
     handoff_request_id = handoff_record.get("request_id")
     if handoff_request_id != request_id:
         raise ValueError(
             f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM}.request_id must match "
             f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM}"
         )
+    if payload_uri_override is None:
+        _validate_inline_handoff_payload_uri(handoff_record)
+
+
+def _validate_inline_handoff_payload_uri(handoff_record: Mapping[str, Any]) -> None:
+    payload_source = handoff_record.get("payload_source")
+    if not isinstance(payload_source, Mapping):
+        raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM}.payload_source must be an object")
+    _validate_runtime_payload_uri(
+        payload_source.get("uri"),
+        field_name=f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM}.payload_source.uri",
+    )
 
 
 def _validate_non_negative_int(value: int, field_name: str) -> None:

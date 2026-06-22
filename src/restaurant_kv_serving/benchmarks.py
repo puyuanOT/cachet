@@ -16,6 +16,7 @@ __all__ = reexport_public(
         "DOCUMENT_KV_REQUEST_ID_PARAM",
         "DOCUMENT_KV_HANDOFF_JSON_PARAM",
         "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
+        "DOCUMENT_KV_PAYLOAD_URI_PARAM",
         "FINAL_ANSWER_CUE",
         "BenchmarkDatasetSpec",
         "BenchmarkPromptParts",

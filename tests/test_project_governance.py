@@ -111,6 +111,9 @@ ALLOWED_LEGACY_TEST_REFERENCES = {
         "restaurant_kv_serving.benchmark_runner",
         "restaurant_kv_serving.benchmark_runner.run_openai_compatible_v1_benchmark",
     },
+    "tests/test_benchmark_handoffs.py": {
+        "restaurant_kv_serving.benchmark_handoffs",
+    },
     "tests/test_cache.py": {
         "restaurant_kv_serving.cache",
     },
