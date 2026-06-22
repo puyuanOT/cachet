@@ -115,6 +115,26 @@ def ready_request() -> EngineReadyRequest:
     return EngineReadyRequest(handle=handle(), payload=payload(), estimated_gpu_bytes=24)
 
 
+def extended_ready_request() -> EngineReadyRequest:
+    extended_handle = KVCacheHandle(
+        request_id="req-1",
+        handle_uri="document-kv://req-1",
+        layout=layout(),
+        segments=(
+            KVSegment("doc-a", "document_static", "static", 0, 2, 0, 16),
+            KVSegment("doc-a", "document_chunk", "chunk-a", 2, 1, 16, 8),
+            KVSegment("doc-a", "document_chunk", "chunk-b", 3, 2, 24, 16),
+        ),
+        total_tokens=5,
+        total_bytes=40,
+    )
+    return EngineReadyRequest(
+        handle=extended_handle,
+        payload=bytes(range(1, 41)),
+        estimated_gpu_bytes=40,
+    )
+
+
 def matching_installed_contract() -> dict:
     return installed_vllm_kv_connector_v1_contract_to_record(
         VLLMInstalledKVConnectorContract(
@@ -134,12 +154,20 @@ def matching_installed_contract() -> dict:
 
 
 def handoff_load() -> DocumentKVHandoffLoad:
-    adapter_request = build_engine_adapter_request(ready_request(), spec=vllm_adapter_spec())
+    return _handoff_load_from_ready_request(ready_request())
+
+
+def extended_handoff_load() -> DocumentKVHandoffLoad:
+    return _handoff_load_from_ready_request(extended_ready_request())
+
+
+def _handoff_load_from_ready_request(request: EngineReadyRequest) -> DocumentKVHandoffLoad:
+    adapter_request = build_engine_adapter_request(request, spec=vllm_adapter_spec())
     record = engine_adapter_request_to_record(adapter_request, payload_uri="disk:/tmp/cachet-req-1.kv")
     plan = build_engine_kv_injection_plan(record, expected_backend="vllm")
-    payload_view = view_engine_adapter_payload(record, payload())
+    payload_view = view_engine_adapter_payload(record, request.payload)
     actions = build_engine_kv_connector_actions(plan, payload_view)
-    return DocumentKVHandoffLoad(actions=actions, payload=payload())
+    return DocumentKVHandoffLoad(actions=actions, payload=request.payload)
 
 
 class StaticHandoffSource:
@@ -168,6 +196,17 @@ def scheduler_output(block_ids: list[int]):
 
 
 def cached_scheduler_output(block_ids: list[int]):
+    return SimpleNamespace(
+        scheduled_new_reqs=[],
+        scheduled_cached_reqs=SimpleNamespace(
+            req_ids=["req-1"],
+            resumed_req_ids=set(),
+            new_block_ids=[(block_ids,)],
+        ),
+    )
+
+
+def resumed_cached_scheduler_output(block_ids: list[int]):
     return SimpleNamespace(
         scheduled_new_reqs=[],
         scheduled_cached_reqs=SimpleNamespace(
@@ -212,6 +251,42 @@ def test_native_provider_records_cached_request_allocation_metadata():
     load = meta.loads[0]
     assert [(block.block_id, block.token_start, block.token_count, block.block_offset) for block in load.blocks] == [
         (11, 0, 2, 0),
+    ]
+
+
+def test_native_provider_treats_cached_request_new_blocks_as_relative_metadata():
+    source = StaticHandoffSource(extended_handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert provider.get_num_new_matched_tokens(request, 2) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([3, 5, 7]), 2)
+    meta = provider.build_connector_meta(cached_scheduler_output([101]))
+
+    assert len(meta.loads) == 1
+    load = meta.loads[0]
+    assert load.source_token_start == 2
+    assert load.token_count == 2
+    assert [(block.block_id, block.token_start, block.token_count, block.block_offset) for block in load.blocks] == [
+        (101, 0, 2, 0),
+    ]
+
+
+def test_native_provider_treats_resumed_cached_request_blocks_as_full_metadata():
+    source = StaticHandoffSource(extended_handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert provider.get_num_new_matched_tokens(request, 2) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([3, 5, 7]), 2)
+    meta = provider.build_connector_meta(resumed_cached_scheduler_output([101, 103, 105]))
+
+    assert len(meta.loads) == 1
+    load = meta.loads[0]
+    assert load.source_token_start == 2
+    assert load.token_count == 2
+    assert [(block.block_id, block.token_start, block.token_count, block.block_offset) for block in load.blocks] == [
+        (103, 0, 2, 0),
     ]
 
 

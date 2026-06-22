@@ -148,6 +148,14 @@ class DocumentKVLoadRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class _ScheduledRequestBlocks:
+    """vLLM scheduler block ids for one request in the current step."""
+
+    block_ids: object
+    relative_to_new_tokens: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentKVConnectorMetadata(_KVConnectorMetadata):
     """Scheduler-to-worker metadata consumed by :class:`DocumentKVNativeProvider`."""
 
@@ -342,14 +350,15 @@ class DocumentKVNativeProvider:
         scheduled_block_ids = _scheduled_request_block_ids(scheduler_output)
         missing_request_ids: list[str] = []
         for request_id, allocated in self._allocated.items():
-            block_ids = scheduled_block_ids.get(request_id)
-            if block_ids is None:
+            scheduled_blocks = scheduled_block_ids.get(request_id)
+            if scheduled_blocks is None:
                 missing_request_ids.append(request_id)
                 continue
+            source_token_start = 0 if scheduled_blocks.relative_to_new_tokens else allocated.source_token_start
             blocks = _block_spans_for_token_range(
-                block_ids,
+                scheduled_blocks.block_ids,
                 block_size=allocated.actions.reservation.layout.block_size,
-                source_token_start=allocated.source_token_start,
+                source_token_start=source_token_start,
                 token_count=allocated.token_count,
             )
             loads.append(
@@ -794,27 +803,46 @@ def _first_group_block_ids(blocks: object) -> tuple[int, ...]:
     raise TypeError("allocated vLLM blocks must be KVCacheBlocks, tuple[list[int]], or list[int]")
 
 
-def _scheduled_request_block_ids(scheduler_output: object) -> dict[str, object]:
-    scheduled: dict[str, object] = {}
+def _scheduled_request_block_ids(scheduler_output: object) -> dict[str, _ScheduledRequestBlocks]:
+    scheduled: dict[str, _ScheduledRequestBlocks] = {}
     for new_req in getattr(scheduler_output, "scheduled_new_reqs", ()) or ():
         req_id = getattr(new_req, "req_id", None)
         block_ids = getattr(new_req, "block_ids", None)
         if isinstance(req_id, str) and block_ids is not None:
-            _add_scheduled_request_blocks(scheduled, req_id, block_ids)
+            _add_scheduled_request_blocks(
+                scheduled,
+                req_id,
+                _ScheduledRequestBlocks(block_ids=block_ids),
+            )
     cached = getattr(scheduler_output, "scheduled_cached_reqs", None)
     if cached is not None:
         req_ids = getattr(cached, "req_ids", ()) or ()
         new_block_ids = getattr(cached, "new_block_ids", ()) or ()
+        resumed_req_ids = set(getattr(cached, "resumed_req_ids", ()) or ())
         for req_id, block_ids in zip(req_ids, new_block_ids, strict=False):
             if isinstance(req_id, str) and block_ids is not None:
-                _add_scheduled_request_blocks(scheduled, req_id, block_ids)
+                # cached_reqs.new_block_ids contains only the blocks allocated
+                # in this scheduler step, except when a preempted request
+                # resumes and vLLM sends the full block list again.
+                _add_scheduled_request_blocks(
+                    scheduled,
+                    req_id,
+                    _ScheduledRequestBlocks(
+                        block_ids=block_ids,
+                        relative_to_new_tokens=req_id not in resumed_req_ids,
+                    ),
+                )
     return scheduled
 
 
-def _add_scheduled_request_blocks(scheduled: dict[str, object], request_id: str, block_ids: object) -> None:
+def _add_scheduled_request_blocks(
+    scheduled: dict[str, _ScheduledRequestBlocks],
+    request_id: str,
+    blocks: _ScheduledRequestBlocks,
+) -> None:
     if request_id in scheduled:
         raise ValueError(f"duplicate scheduled vLLM block ids for request {request_id!r}")
-    scheduled[request_id] = block_ids
+    scheduled[request_id] = blocks
 
 
 def document_kv_vllm_layer_index_from_name(layer_name: object) -> int | None:
