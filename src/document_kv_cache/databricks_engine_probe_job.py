@@ -148,6 +148,13 @@ def _venv_subprocess_env(venv_dir: str) -> dict[str, str]:
     return env
 
 
+def _runner_script_path() -> str:
+    script_path = globals().get("__file__") or sys.argv[0]
+    if not script_path:
+        raise RuntimeError("Cannot determine generated engine-probe runner script path")
+    return script_path
+
+
 def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--pip-package", action="append")
@@ -177,7 +184,7 @@ def _install_runtime_packages(argv: list[str]) -> tuple[list[str], int | None]:
         subprocess.call(
             [
                 venv_python,
-                __file__,
+                _runner_script_path(),
                 "--skip-runtime-package-install",
                 *remaining,
             ],
