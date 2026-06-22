@@ -1630,6 +1630,98 @@ def test_main_stage_and_submit_dry_run_writes_plan_without_databricks_env(monkey
     ]
 
 
+def test_main_payload_summary_requires_no_credentials(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload-summary.json"
+    payload_path = tmp_path / "payload.json"
+    payload = _single_node_g5_submit_payload()
+    payload["tasks"][0]["new_cluster"]["spark_env_vars"] = {
+        "DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY": "vllm_kv_injection.probe:build_native_connector_probe"
+    }
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.delenv(DEFAULT_DATABRICKS_HOST_ENV, raising=False)
+    monkeypatch.delenv(DEFAULT_DATABRICKS_TOKEN_ENV, raising=False)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "payload-summary",
+            "--payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["action"] == "payload-summary"
+    assert "response" not in record
+    assert record["summary"]["record_type"] == DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
+    assert record["summary"]["source_path"] == str(payload_path)
+    assert record["summary"]["hardware_targets"] == ["aws-g6-l4"]
+    assert record["summary"]["spark_env_keys"] == ["DOCUMENT_KV_VLLM_NATIVE_PROBE_FACTORY"]
+
+
+def test_main_payload_summary_rejects_unexpected_hardware_target_before_auth(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload-summary.json"
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(_single_node_g5_submit_payload()), encoding="utf-8")
+    monkeypatch.delenv(DEFAULT_DATABRICKS_HOST_ENV, raising=False)
+    monkeypatch.delenv(DEFAULT_DATABRICKS_TOKEN_ENV, raising=False)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "payload-summary",
+            "--payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g5-a10g",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error_type"] == "ValueError"
+    assert "hardware_target 'aws-g5-a10g'" in record["error"]
+    assert DEFAULT_DATABRICKS_HOST_ENV not in record["error"]
+    assert DEFAULT_DATABRICKS_TOKEN_ENV not in record["error"]
+
+
+def test_main_payload_summary_rejects_malformed_raw_task_array_before_auth(monkeypatch, tmp_path):
+    output_path = tmp_path / "payload-summary.json"
+    payload_path = tmp_path / "payload.json"
+    payload = _single_node_g5_submit_payload()
+    payload["tasks"].append(42)
+    payload_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.delenv(DEFAULT_DATABRICKS_HOST_ENV, raising=False)
+    monkeypatch.delenv(DEFAULT_DATABRICKS_TOKEN_ENV, raising=False)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "payload-summary",
+            "--payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error_type"] == "ValueError"
+    assert "tasks must contain only objects" in record["error"]
+    assert "invalid task indices: 1" in record["error"]
+    assert DEFAULT_DATABRICKS_HOST_ENV not in record["error"]
+    assert DEFAULT_DATABRICKS_TOKEN_ENV not in record["error"]
+
+
 def test_main_get_can_write_summary(monkeypatch, tmp_path):
     output_path = tmp_path / "response.json"
     raw_secret = "do-not-write-me"
