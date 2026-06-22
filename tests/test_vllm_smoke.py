@@ -879,7 +879,7 @@ def test_legacy_vllm_smoke_module_execution_shows_help():
         text=True,
     )
 
-    assert "Run a Qwen3/vLLM V1 benchmark smoke on Databricks g6/L4." in completed.stdout
+    assert "Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5/g6." in completed.stdout
 
 
 def test_public_vllm_smoke_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):

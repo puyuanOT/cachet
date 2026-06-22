@@ -862,7 +862,7 @@ def tail(path: Path, *, lines: int = 120) -> str:
 
 
 def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
-    parser = argparse.ArgumentParser(description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g6/L4.")
+    parser = argparse.ArgumentParser(description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5/g6.")
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--max-tokens", type=int, default=32)

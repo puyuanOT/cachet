@@ -1461,7 +1461,7 @@ def main(argv: list[str] | None = None) -> int:
     get_parser.add_argument("--summary", action="store_true", help="Write only a compact run/task status summary.")
     get_parser.add_argument(
         "--submit-payload-json",
-        help="Attach a sanitized hash and AWS g6/L4 cluster summary for the runs/submit payload that launched this run.",
+        help="Attach a sanitized hash and V1 AWS single-node GPU cluster summary for the runs/submit payload that launched this run.",
     )
     get_parser.add_argument(
         "--include-response",
