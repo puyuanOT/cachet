@@ -46,6 +46,9 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
         "repository_hygiene_output_json",
         "native_probe_factories_output_json",
         "release_preflight_output_json",
+        "benchmark_handoff_generator_factory",
+        "benchmark_handoff_output_dir",
+        "benchmark_handoff_backend",
         "planned_engine_probes",
         "notes",
     }

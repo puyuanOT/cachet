@@ -260,6 +260,61 @@ def test_build_v1_benchmark_plan_enriches_configured_handoff_datasets(tmp_path):
     assert record["datasets"][1]["benchmark_jsonl"] == str(tmp_path / "prepared" / "hotpotqa.jsonl")
 
 
+def test_build_v1_benchmark_plan_generates_handoff_bundles_before_enrichment(tmp_path):
+    biography_handoff_jsonl = tmp_path / "prepared" / "biography.handoffs.jsonl"
+    paths = (
+        BenchmarkDatasetPath(
+            dataset="biography",
+            raw_jsonl=str(tmp_path / "raw" / "biography.jsonl"),
+            prepared_jsonl=str(tmp_path / "prepared" / "biography.jsonl"),
+            handoff_manifest_json=str(tmp_path / "handoffs" / "biography-manifest.json"),
+            handoff_jsonl=str(biography_handoff_jsonl),
+        ),
+    )
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=paths,
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        require_all_v1_datasets=False,
+        benchmark_handoff_generator_factory="my_runtime.kv_generator:create_generator",
+        benchmark_handoff_output_dir=str(tmp_path / "handoff-bundles"),
+        benchmark_handoff_backend="sglang",
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    bundle_command = plan.preparation_commands[1]
+    enrich_command = plan.preparation_commands[2]
+
+    assert [command.name for command in plan.preparation_commands[:3]] == [
+        "prepare-biography",
+        "generate-biography-handoff-bundles",
+        "enrich-biography-handoffs",
+    ]
+    assert bundle_command.argv == (
+        "python",
+        "-m",
+        "document_kv_cache.benchmark_handoff_bundles",
+        "--dataset",
+        "biography",
+        "--input-jsonl",
+        str(tmp_path / "prepared" / "biography.jsonl"),
+        "--output-dir",
+        str(tmp_path / "handoff-bundles"),
+        "--shard-uri",
+        str(tmp_path / "handoff-bundles" / "biography" / "cachet-benchmark.kvpack"),
+        "--output-manifest-json",
+        str(tmp_path / "handoffs" / "biography-manifest.json"),
+        "--generator-factory",
+        "my_runtime.kv_generator:create_generator",
+        "--backend",
+        "sglang",
+        "--model-id",
+        "qwen3:4b-instruct",
+    )
+    assert enrich_command.name == "enrich-biography-handoffs"
+
+
 def test_benchmark_dataset_path_rejects_incomplete_handoff_configuration(tmp_path):
     with pytest.raises(ValueError, match="configured together"):
         BenchmarkDatasetPath(
@@ -2479,6 +2534,55 @@ def test_main_can_plan_benchmark_handoff_enrichment(tmp_path):
     assert record["datasets"][0]["benchmark_jsonl"] == str(expected_handoff_jsonl)
 
 
+def test_main_can_plan_generated_benchmark_handoff_bundles(tmp_path):
+    plan_json = tmp_path / "plan.json"
+
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-generator-factory",
+            "my_runtime.kv_generator:create_generator",
+            "--benchmark-handoff-output-dir",
+            str(tmp_path / "cachet-handoffs"),
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    command_names = [command["name"] for command in record["commands"]]
+    bundle_argv = record["commands"][command_names.index("generate-biography-handoff-bundles")]["argv"]
+    enrich_argv = record["commands"][command_names.index("enrich-biography-handoffs")]["argv"]
+    expected_manifest_json = tmp_path / "cachet-handoffs" / "biography-manifest.json"
+    expected_handoff_jsonl = tmp_path / "prepared" / "biography.handoffs.jsonl"
+
+    assert exit_code == 0
+    assert command_names == [
+        "prepare-biography",
+        "generate-biography-handoff-bundles",
+        "enrich-biography-handoffs",
+        "run-benchmark",
+    ]
+    assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "cachet-handoffs")
+    assert bundle_argv[bundle_argv.index("--shard-uri") + 1] == str(
+        tmp_path / "cachet-handoffs" / "biography" / "cachet-benchmark.kvpack"
+    )
+    assert bundle_argv[bundle_argv.index("--output-manifest-json") + 1] == str(expected_manifest_json)
+    assert bundle_argv[bundle_argv.index("--generator-factory") + 1] == "my_runtime.kv_generator:create_generator"
+    assert enrich_argv[enrich_argv.index("--manifest-json") + 1] == str(expected_manifest_json)
+    assert record["benchmark_handoff_generator_factory"] == "my_runtime.kv_generator:create_generator"
+    assert record["benchmark_handoff_output_dir"] == str(tmp_path / "cachet-handoffs")
+    assert record["benchmark_handoff_backend"] == "vllm"
+    assert record["datasets"][0]["handoff_manifest_json"] == str(expected_manifest_json)
+    assert record["datasets"][0]["handoff_jsonl"] == str(expected_handoff_jsonl)
+
+
 def test_main_can_use_explicit_benchmark_handoff_output_jsonl(tmp_path):
     plan_json = tmp_path / "plan.json"
     handoff_jsonl = tmp_path / "benchmarks" / "biography.enriched.jsonl"
@@ -3553,6 +3657,28 @@ def test_main_rejects_benchmark_handoff_output_without_manifest(capsys, tmp_path
     assert exit_code == 1
     assert record["ok"] is False
     assert "--benchmark-handoff-output-jsonl requires --benchmark-handoff-manifest-json" in record["error"]
+
+
+def test_main_rejects_benchmark_handoff_generation_options_without_factory(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-output-dir",
+            str(tmp_path / "handoffs"),
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "--benchmark-handoff-generator-factory" in record["error"]
 
 
 def test_main_rejects_benchmark_handoff_output_overwriting_prepared_jsonl(capsys, tmp_path):

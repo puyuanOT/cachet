@@ -26,6 +26,7 @@ _PUBLIC_SUBMODULES = frozenset(
         "adapter_scaffold",
         "benchmark_plan",
         "benchmark_plan_executor",
+        "benchmark_handoff_bundles",
         "benchmark_handoffs",
         "benchmark_runner",
         "benchmarks",
