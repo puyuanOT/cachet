@@ -29,6 +29,7 @@ CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV = "CACHET_TRANSFORMERS_ADD_SPECIAL_TO
 CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV = "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER"
 CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON"
 CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON"
+CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV = "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER"
 _CACHE_AXIS_ORDER_HEAD_MAJOR = "head_major"
 _CACHE_AXIS_ORDER_TOKEN_MAJOR = "token_major"
 _CACHE_AXIS_ORDERS = frozenset(
@@ -55,6 +56,7 @@ __all__ = [
     "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV",
     "CACHET_TRANSFORMERS_TORCH_DTYPE_ENV",
     "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV",
+    "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV",
     "TransformersKVGeneratorConfig",
     "TransformersKVChunkGenerator",
     "build_transformers_kv_chunk_generator",
@@ -268,9 +270,17 @@ def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
             default=_CACHE_AXIS_ORDER_HEAD_MAJOR,
         ),
         model_kwargs=_env_json_object(CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV),
-        tokenizer_kwargs=_env_json_object(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV),
+        tokenizer_kwargs=_tokenizer_kwargs_from_env(),
     )
     return TransformersKVChunkGenerator.from_pretrained(config)
+
+
+def _tokenizer_kwargs_from_env() -> dict[str, Any]:
+    kwargs = _env_json_object(CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV)
+    use_fast = _env_optional_bool(CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV)
+    if use_fast is not None:
+        kwargs["use_fast"] = use_fast
+    return kwargs
 
 
 def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | None) -> KVLayout:
@@ -545,6 +555,17 @@ def _env_bool(name: str, *, default: bool) -> bool:
     value = _env_string(name)
     if value is None:
         return default
+    return _bool_from_env_string(name, value)
+
+
+def _env_optional_bool(name: str) -> bool | None:
+    value = _env_string(name)
+    if value is None:
+        return None
+    return _bool_from_env_string(name, value)
+
+
+def _bool_from_env_string(name: str, value: str) -> bool:
     normalized = value.strip().lower()
     if normalized in {"1", "true", "yes", "y", "on"}:
         return True
