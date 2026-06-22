@@ -18,6 +18,8 @@ from document_kv_cache.databricks_job import (
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_SPARK_VERSION,
     DatabricksSingleNodeGPUClusterConfig,
+    _spark_env_vars_from_cli,
+    _validated_spark_env_vars,
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.vllm_smoke import (
@@ -111,6 +113,7 @@ class DatabricksVLLMSmokeJobConfig:
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
+    spark_env_vars: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -163,13 +166,17 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("benchmark_handoff_dtype must be non-empty")
         if type(self.benchmark_handoff_align_bytes) is not int or self.benchmark_handoff_align_bytes <= 0:
             raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
+        object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
 
 
 def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJobConfig) -> dict[str, Any]:
+    cluster = build_single_node_gpu_cluster(_cluster_config_from_vllm_smoke_job(config))
+    if config.spark_env_vars:
+        cluster["spark_env_vars"] = dict(config.spark_env_vars)
     task: dict[str, Any] = {
         "task_key": config.task_key,
-        "new_cluster": build_single_node_gpu_cluster(_cluster_config_from_vllm_smoke_job(config)),
+        "new_cluster": cluster,
         "spark_python_task": {
             "python_file": config.runner_python_file,
             "parameters": _runner_parameters(config),
@@ -312,6 +319,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument(
+        "--spark-env-var",
+        action="append",
+        default=None,
+        help=(
+            "Non-secret Databricks cluster spark_env_vars entry for runtime configuration, "
+            "in KEY=VALUE form. Repeat for values such as CACHET_TRANSFORMERS_DEVICE=cuda."
+        ),
+    )
     parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
     parser.add_argument("--runner-script-output", help="Write the tiny vLLM smoke runner script to this path.")
     args = parser.parse_args(argv)
@@ -344,6 +360,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_handoff_output_dir=args.benchmark_handoff_output_dir,
             benchmark_handoff_dtype=args.benchmark_handoff_dtype,
             benchmark_handoff_align_bytes=args.benchmark_handoff_align_bytes,
+            spark_env_vars=_spark_env_vars_from_cli(args.spark_env_var or ()),
         )
         if args.runner_script_output:
             write_databricks_vllm_smoke_runner_script(args.runner_script_output)

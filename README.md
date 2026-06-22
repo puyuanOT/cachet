@@ -1224,6 +1224,8 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --benchmark-handoff-generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
   --benchmark-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared/handoffs \
   --benchmark-handoff-dtype bfloat16 \
+  --spark-env-var CACHET_TRANSFORMERS_DEVICE=cuda \
+  --spark-env-var CACHET_TRANSFORMERS_TORCH_DTYPE=bfloat16 \
   --dataset biography=dbfs:/benchmarks/v1/biography.jsonl \
   --dataset hotpotqa=dbfs:/benchmarks/v1/hotpotqa.jsonl \
   --dataset musique=dbfs:/benchmarks/v1/musique.jsonl \

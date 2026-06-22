@@ -639,46 +639,56 @@ def prepare_generated_benchmark_handoffs(
     if generation is None:
         return dataset_paths
     generation.output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        generated_paths, record = _generate_prepared_benchmark_handoff_inputs(config, dataset_paths, generation)
+    finally:
+        release_handoff_generation_resources()
+    write_json(config.prepared_handoff_generation_path, record)
+    return generated_paths
+
+
+def _generate_prepared_benchmark_handoff_inputs(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    generation: VLLMPreparedHandoffGenerationConfig,
+) -> tuple[dict[str, Path], dict[str, object]]:
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
     layout = layout_for_model(SERVED_MODEL_NAME, dtype=generation.dtype)
     generated_paths: dict[str, Path] = {}
     dataset_records: dict[str, dict[str, object]] = {}
-    try:
-        for dataset in SMOKE_DATASETS:
-            input_jsonl = dataset_paths[dataset]
-            dataset_output_dir = generation.output_dir / dataset
-            manifest_json = generation.output_dir / f"{dataset}-manifest.json"
-            output_jsonl = generation.output_dir / f"{dataset}.handoffs.jsonl"
-            result = generate_benchmark_handoff_bundles(
-                input_jsonl,
-                output_dir=dataset_output_dir,
-                generator=generator,
-                layout=layout,
-                dataset=dataset,
-                backend="vllm",
-                manifest_json=manifest_json,
-                align_bytes=generation.align_bytes,
-            )
-            enriched_rows = enrich_benchmark_jsonl_with_handoffs(
-                input_jsonl,
-                manifest_json,
-                output_jsonl,
-                dataset=dataset,
-                overwrite=True,
-            )
-            generated_paths[dataset] = output_jsonl
-            dataset_records[dataset] = {
-                "input_jsonl": str(input_jsonl),
-                "output_jsonl": str(output_jsonl),
-                "manifest_json": str(manifest_json),
-                "bundle_output_dir": str(dataset_output_dir),
-                "entries": len(result.manifest.entries),
-                "enriched_rows": enriched_rows,
-                "cache_refs": len(result.cache_refs),
-                "shard_uri": result.shard_uri,
-            }
-    finally:
-        release_handoff_generation_resources()
+    for dataset in SMOKE_DATASETS:
+        input_jsonl = dataset_paths[dataset]
+        dataset_output_dir = generation.output_dir / dataset
+        manifest_json = generation.output_dir / f"{dataset}-manifest.json"
+        output_jsonl = generation.output_dir / f"{dataset}.handoffs.jsonl"
+        result = generate_benchmark_handoff_bundles(
+            input_jsonl,
+            output_dir=dataset_output_dir,
+            generator=generator,
+            layout=layout,
+            dataset=dataset,
+            backend="vllm",
+            manifest_json=manifest_json,
+            align_bytes=generation.align_bytes,
+        )
+        enriched_rows = enrich_benchmark_jsonl_with_handoffs(
+            input_jsonl,
+            manifest_json,
+            output_jsonl,
+            dataset=dataset,
+            overwrite=True,
+        )
+        generated_paths[dataset] = output_jsonl
+        dataset_records[dataset] = {
+            "input_jsonl": str(input_jsonl),
+            "output_jsonl": str(output_jsonl),
+            "manifest_json": str(manifest_json),
+            "bundle_output_dir": str(dataset_output_dir),
+            "entries": len(result.manifest.entries),
+            "enriched_rows": enriched_rows,
+            "cache_refs": len(result.cache_refs),
+            "shard_uri": result.shard_uri,
+        }
 
     record = {
         "ok": True,
@@ -690,8 +700,7 @@ def prepare_generated_benchmark_handoffs(
         "align_bytes": generation.align_bytes,
         "datasets": dataset_records,
     }
-    write_json(config.prepared_handoff_generation_path, record)
-    return generated_paths
+    return generated_paths, record
 
 
 def release_handoff_generation_resources() -> None:

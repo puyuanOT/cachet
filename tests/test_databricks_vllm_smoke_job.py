@@ -138,6 +138,8 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ),
         ({"benchmark_handoff_dtype": ""}, "benchmark_handoff_dtype must be non-empty"),
         ({"benchmark_handoff_align_bytes": 0}, "benchmark_handoff_align_bytes must be a positive integer"),
+        ({"spark_env_vars": {"BAD-NAME": "value"}}, "valid environment variable name"),
+        ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}}, "looks secret-bearing"),
     ]
 
     for overrides, message in invalid_cases:
@@ -169,11 +171,15 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
         benchmark_handoff_output_dir="/Volumes/catalog/schema/volume/v1-vllm-prepared/handoffs",
         benchmark_handoff_dtype="bfloat16",
         benchmark_handoff_align_bytes=1,
+        spark_env_vars={
+            "CACHET_TRANSFORMERS_DEVICE": "cuda",
+            "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
+            "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "true",
+        },
     )
 
-    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0]["spark_python_task"][
-        "parameters"
-    ]
+    task = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
 
     assert parameters[parameters.index("--benchmark-handoff-generator-factory") + 1] == (
         "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
@@ -183,6 +189,11 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
     )
     assert parameters[parameters.index("--benchmark-handoff-dtype") + 1] == "bfloat16"
     assert parameters[parameters.index("--benchmark-handoff-align-bytes") + 1] == "1"
+    assert task["new_cluster"]["spark_env_vars"] == {
+        "CACHET_TRANSFORMERS_DEVICE": "cuda",
+        "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
+        "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE": "true",
+    }
 
 
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
@@ -332,6 +343,8 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
             SINGLE_USER_NAME,
             "--wheel-uri",
             WHEEL_URI,
+            "--spark-env-var",
+            "CACHET_TRANSFORMERS_DEVICE=cuda",
             "--output-json",
             str(payload_path),
             "--runner-script-output",
@@ -343,6 +356,7 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
     task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
+    assert task["new_cluster"]["spark_env_vars"] == {"CACHET_TRANSFORMERS_DEVICE": "cuda"}
     assert "vllm_smoke" in runner_path.read_text(encoding="utf-8")
 
 

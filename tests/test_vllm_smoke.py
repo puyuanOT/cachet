@@ -1,10 +1,12 @@
 from pathlib import Path
+import gc
 import json
 import os
 import subprocess
 import sys
 from types import ModuleType
 import urllib.error
+import weakref
 
 import pytest
 
@@ -156,6 +158,13 @@ class OneTokenBenchmarkKVGenerator:
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
+
+
+class TrackedOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
+    last_ref = None
+
+    def __init__(self) -> None:
+        type(self).last_ref = weakref.ref(self)
 
 
 def test_dependency_constraints_match_pinned_g5_vllm_stack():
@@ -624,6 +633,42 @@ def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tm
     payload_uri = enriched["kv_transfer_params"][DOCUMENT_KV_PAYLOAD_URI_PARAM]
     assert handoff_json.exists()
     assert payload_uri.startswith(str(tmp_path / "generated-handoffs" / "biography"))
+
+
+def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(tmp_path, monkeypatch):
+    module = ModuleType("cachet_test_vllm_handoff_generator_cleanup")
+    module.build_generator = TrackedOneTokenBenchmarkKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    released_after_generator_collectable = []
+
+    def fake_release_handoff_generation_resources():
+        gc.collect()
+        generator_ref = TrackedOneTokenBenchmarkKVGenerator.last_ref
+        released_after_generator_collectable.append(generator_ref is not None and generator_ref() is None)
+
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "release_handoff_generation_resources",
+        fake_release_handoff_generation_resources,
+    )
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-generated-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory=f"{module.__name__}:build_generator",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="bfloat16",
+            align_bytes=1,
+        ),
+    )
+
+    prepare_generated_benchmark_handoffs(config, dataset_paths)
+
+    assert released_after_generator_collectable == [True]
 
 
 def test_prepared_benchmark_handoff_coverage_record_counts_enriched_rows(tmp_path):
