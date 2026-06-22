@@ -130,12 +130,12 @@ def test_main_help_describes_provider_backed_vllm_builtin_probe_path(capsys):
         main(["--help"])
 
     output = capsys.readouterr().out
+    normalized_output = " ".join(output.split())
 
     assert exc_info.value.code == 0
-    assert "vLLM path can use Cachet's provider-backed delegate" in output
-    assert "SGLang" in output
-    assert "backend-native delegate" in output
-    assert "fail closed until a backend-native block-manager adapter is available" not in output
+    assert "vLLM path can use Cachet's provider-backed delegate" in normalized_output
+    assert "SGLang can use Cachet's provider-backed HiCache delegate" in normalized_output
+    assert "fail closed until a backend-native block-manager adapter is available" not in normalized_output
 
 
 def release_action_jsons(tmp_path):

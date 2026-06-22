@@ -1534,6 +1534,20 @@ def test_databricks_engine_probe_asset_bundle_template_is_independent_and_releas
     assert "--provider-backed-vllm-native-probe" in readme_text
     assert "--provider-backed-vllm-native-probe" in root_readme_text
     assert "--provider-backed-vllm-native-probe" in module_readme_text
+    assert "--provider-backed-sglang-native-probe" in readme_text
+    assert "--provider-backed-sglang-native-probe" in root_readme_text
+    assert "--provider-backed-sglang-native-probe" in module_readme_text
+    assert (
+        '"probe_factory": "document_kv_cache.native_probe_factories:sglang_native_probe_factory"'
+        in root_readme_text
+    )
+    assert (
+        '"native_probe_delegate_factory": "sglang_kv_injection.probe:build_native_connector_probe"'
+        in root_readme_text
+    )
+    assert SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA in root_readme_text
+    assert '"sglang_runtime_preflight_output_json":' in root_readme_text
+    assert '"sglang_runtime_preflight_launch_config_json":' in root_readme_text
     assert "--fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture" in readme_text
     assert "--fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture" in root_readme_text
     assert "--fixture-output-dir /Volumes/catalog/schema/volume/probes/vllm-fixture" in module_readme_text

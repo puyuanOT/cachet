@@ -14,7 +14,9 @@ from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
     DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+    DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE,
     DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE,
+    SGLANG_NATIVE_PROBE_DELEGATE_FACTORY,
     SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
@@ -35,6 +37,7 @@ from document_kv_cache.databricks_engine_probe_job import (
 from document_kv_cache.engine_adapters import ServingBackend
 from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+    SGLANG_NATIVE_PROBE_FACTORY,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_FACTORY,
 )
@@ -49,7 +52,7 @@ CUSTOM_SGLANG_EXTENSION_WHEEL_URI = (
     "/Volumes/catalog/schema/volume/wheels/custom_sglang_probe_extension-0.1.0-py3-none-any.whl"
 )
 VLLM_RUNTIME_PACKAGE = DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE
-SGLANG_RUNTIME_PACKAGE = "sglang==0.5.10.post1"
+SGLANG_RUNTIME_PACKAGE = DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE
 VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json"
 VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON = "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json"
 SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json"
@@ -2298,6 +2301,75 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
     assert "--engine-version" not in parameters
 
 
+def test_main_provider_backed_sglang_preset_writes_g6_payload(tmp_path):
+    payload_path = tmp_path / "payload.json"
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/sglang-fixture"
+
+    exit_code = main(
+        [
+            "--provider-backed-sglang-native-probe",
+            "--fixture-output-dir",
+            fixture_dir,
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-probe.json",
+            "--actions-output-json",
+            f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}",
+            "--sglang-runtime-preflight-output-json",
+            f"{fixture_dir}/sglang-runtime-preflight.json",
+            "--sglang-runtime-preflight-launch-config-json",
+            f"{fixture_dir}/sglang-launch-config.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--wheel-uri",
+            WHEEL_URI,
+            "--node-type-id",
+            "g6.8xlarge",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--metadata",
+            "probe.source=qa-g6",
+            "--release-safe",
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    task = payload["tasks"][0]
+    cluster = task["new_cluster"]
+    parameters = task["spark_python_task"]["parameters"]
+
+    assert exit_code == 0
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["driver_node_type_id"] == "g6.8xlarge"
+    assert cluster["spark_env_vars"] == {
+        SGLANG_NATIVE_PROBE_DELEGATE_ENV: SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
+    }
+    assert parameters[:10] == [
+        "--fixture-output-dir",
+        fixture_dir,
+        "--fixture-backend",
+        "sglang",
+        "--fixture-payload-mode",
+        "segmented",
+        "--sglang-runtime-preflight-output-json",
+        f"{fixture_dir}/sglang-runtime-preflight.json",
+        "--sglang-runtime-preflight-launch-config-json",
+        f"{fixture_dir}/sglang-launch-config.json",
+    ]
+    assert parameters[parameters.index("--probe-factory") + 1] == SGLANG_NATIVE_PROBE_FACTORY
+    assert parameters[parameters.index("--expected-backend") + 1] == "sglang"
+    assert _parameter_values(parameters, "--metadata") == [
+        "probe.source=qa-g6",
+        SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+    ]
+    assert _parameter_values(parameters, "--pip-package") == [SGLANG_RUNTIME_PACKAGE]
+    assert _parameter_values(parameters, "--package-wheel-uri") == [WHEEL_URI]
+    assert "--actions-output-json" not in parameters
+    assert "--allow-non-native-probe" not in parameters
+    assert "--engine-version" not in parameters
+
+
 def test_main_matrix_derives_node_type_from_g5_hardware_target(tmp_path):
     payload_path = tmp_path / "payload.json"
     backend_config_path = tmp_path / "targets.json"
@@ -2408,6 +2480,38 @@ def test_main_provider_backed_vllm_preset_requires_runtime_preflight_in_release_
     assert not payload_path.exists()
 
 
+def test_main_provider_backed_sglang_preset_requires_runtime_preflight_in_release_safe_mode(
+    capsys,
+    tmp_path,
+):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--provider-backed-sglang-native-probe",
+            "--fixture-output-dir",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-probe.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--wheel-uri",
+            WHEEL_URI,
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--release-safe",
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["error_type"] == "ValueError"
+    assert "release-safe SGLang" in output["error"]
+    assert not payload_path.exists()
+
+
 @pytest.mark.parametrize(
     ("extra_args", "expected_error"),
     [
@@ -2443,6 +2547,62 @@ def test_main_provider_backed_vllm_preset_rejects_conflicting_values(
             "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-runtime-preflight.json",
             "--vllm-runtime-preflight-layer-names-json",
             "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+            *extra_args,
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["error_type"] == "ValueError"
+    assert expected_error in output["error"]
+    assert not payload_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_error"),
+    [
+        (("--expected-backend", "vllm"), "--expected-backend"),
+        (("--probe-factory", "custom_sglang_probe:build_probe"), "--probe-factory"),
+        (
+            ("--native-probe-delegate-factory", "custom_sglang_probe:build_delegate"),
+            "--native-probe-delegate-factory",
+        ),
+        (
+            ("--metadata", "sglang_kv_injection.connector_factory=custom_sglang_probe:build_connector"),
+            SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
+        ),
+        (("--extra-pip-package", "sglang==0.5.9"), SGLANG_RUNTIME_PACKAGE),
+        (("--extra-wheel-uri", CUSTOM_SGLANG_EXTENSION_WHEEL_URI), "--extra-wheel-uri"),
+        (("--engine-version", "debug-sglang"), "--engine-version"),
+        (("--allow-non-native-probe",), "--allow-non-native-probe"),
+        (("--provider-backed-vllm-native-probe",), "mutually exclusive"),
+    ],
+)
+def test_main_provider_backed_sglang_preset_rejects_conflicting_values(
+    capsys,
+    tmp_path,
+    extra_args,
+    expected_error,
+):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--provider-backed-sglang-native-probe",
+            "--fixture-output-dir",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture",
+            "--probe-output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-probe.json",
+            "--sglang-runtime-preflight-output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-runtime-preflight.json",
+            "--sglang-runtime-preflight-launch-config-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-launch-config.json",
             "--runner-python-file",
             "dbfs:/benchmarks/run_engine_probe.py",
             "--single-user-name",
@@ -3209,6 +3369,7 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME",
         "DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY",
         "DEFAULT_DATABRICKS_SPARK_VERSION",
+        "DEFAULT_SGLANG_ENGINE_PROBE_RUNTIME_PACKAGE",
         "DEFAULT_VLLM_ENGINE_PROBE_RUNTIME_PACKAGE",
         "DatabricksEngineProbeJobConfig",
         "DatabricksEngineProbeMatrixJobConfig",
@@ -3225,6 +3386,7 @@ def test_legacy_engine_probe_job_keeps_previous_star_import_surface():
         "REQUIRED_ENGINE_PROBE_BACKENDS",
         "Sequence",
         "ServingBackend",
+        "SGLANG_NATIVE_PROBE_DELEGATE_FACTORY",
         "SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY",
         "SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA",
         "VLLM_NATIVE_PROBE_DELEGATE_FACTORY",

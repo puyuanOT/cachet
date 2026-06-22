@@ -170,6 +170,12 @@ layer-name JSON source, writes the strict preflight record before the native
 probe starts, and stops without running the probe if validation fails. It
 rejects debug fallback flags and extra wheels so the provider-backed adapter
 modules come only from the Cachet wheel.
+For the built-in SGLang provider-backed HiCache path,
+`--provider-backed-sglang-native-probe` sets the Cachet probe factory, SGLang
+delegate factory, required connector metadata, expected backend, and pinned
+`sglang==0.5.10.post1` runtime package. In release-safe mode it requires both
+SGLang runtime preflight sidecars: `--sglang-runtime-preflight-output-json` and
+`--sglang-runtime-preflight-launch-config-json`.
 `--actions-output-json` writes the validated reserve/copy/bind/release
 descriptor that the native block-manager probe consumed.
 
