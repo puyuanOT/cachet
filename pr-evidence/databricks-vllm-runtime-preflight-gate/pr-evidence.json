@@ -24,7 +24,7 @@
   "verification": [
     "python -m pytest -q tests/test_databricks_engine_probe_job.py tests/test_benchmark_plan.py (210 passed)",
     "poetry check",
-    "python -m pytest -q (1625 passed)",
+    "python -m pytest -q (1626 passed)",
     "git diff --check",
     "changed-file credential-pattern scan found only existing redacted placeholders; no literal Databricks tokens or concrete workspace URLs"
   ],
