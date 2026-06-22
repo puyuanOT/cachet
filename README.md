@@ -935,7 +935,8 @@ any command is run.
 package-owned vLLM/SGLang factory paths. Those factories are stable release-plan
 targets: the vLLM path can use Cachet's provider-backed delegate with strict
 connector-factory metadata and runtime preflight, while SGLang still requires a
-backend-native delegate. Pass explicit
+backend-native delegate plus a passing SGLang runtime preflight for its dynamic
+HiCache launch config and provider factory. Pass explicit
 `--engine-probe-factory BACKEND=MODULE:CALLABLE` to use a downstream adapter
 module.
 Add `--github-governance-output-json` to the benchmark plan to emit the
@@ -1535,6 +1536,10 @@ Provider-backed vLLM release targets must include
 `vllm_runtime_preflight_layer_names_json`; the Databricks runner executes the
 strict vLLM runtime preflight before the native engine probe and returns its
 nonzero exit code without starting the probe if validation fails.
+SGLang native-probe operators should run
+`cachet-sglang-runtime-preflight --launch-config-json PATH` against the same
+HiCache launch config before submission; it validates the installed dynamic
+HiCache surface and rejects missing or known no-op provider factories.
 
 To verify a live endpoint without adding custom serving code, run the OpenAI-compatible smoke check against a vLLM or SGLang server:
 
