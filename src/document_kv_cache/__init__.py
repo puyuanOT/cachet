@@ -177,6 +177,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
     ),
+    "DATABRICKS_AUTH_CHECK_RECORD_TYPE": (
+        "document_kv_cache.databricks_runs",
+        "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
+    ),
     "DATABRICKS_RUN_STATUS_RECORD_TYPE": (
         "document_kv_cache.databricks_runs",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
@@ -198,6 +202,7 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "databricks_workspace_config_from_sdk_profile",
     ),
+    "check_databricks_auth": ("document_kv_cache.databricks_runs", "check_databricks_auth"),
     "submit_databricks_run": ("document_kv_cache.databricks_runs", "submit_databricks_run"),
     "get_databricks_run": ("document_kv_cache.databricks_runs", "get_databricks_run"),
     "put_databricks_dbfs_file": ("document_kv_cache.databricks_runs", "put_databricks_dbfs_file"),

@@ -38,6 +38,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     ),
+    "DATABRICKS_AUTH_CHECK_RECORD_TYPE": (
+        "restaurant_kv_serving.databricks_runs",
+        "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
+    ),
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE": (
         "restaurant_kv_serving.databricks_runs",
         "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
@@ -604,6 +608,7 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "databricks_workspace_config_from_sdk_profile",
     ),
+    "check_databricks_auth": ("restaurant_kv_serving.databricks_runs", "check_databricks_auth"),
     "document_kv_cache_arm": ("restaurant_kv_serving.benchmarks", "document_kv_cache_arm"),
     "dtype_byte_width": ("restaurant_kv_serving.model_profiles", "dtype_byte_width"),
     "kv_storage_layout_from_value": (
@@ -980,6 +985,7 @@ __all__ = [
     "DEFAULT_DATABRICKS_CONFIG_FILE",
     "DEFAULT_DATABRICKS_TOKEN_ENV",
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+    "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
     "DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME",
@@ -1227,6 +1233,7 @@ __all__ = [
     "default_benchmark_arms",
     "databricks_run_status_record",
     "databricks_run_status_sidecar_issues",
+    "check_databricks_auth",
     "databricks_workspace_config_from_env",
     "databricks_workspace_config_from_profile",
     "databricks_workspace_config_from_sdk_profile",

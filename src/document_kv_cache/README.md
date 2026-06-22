@@ -54,7 +54,8 @@ new document modules depend on restaurant-owned implementations.
   stage-and-submit for a generated payload with one provenance sidecar, and
   checks/summarizes Databricks runs using environment variables, static
   `.databrickscfg` token profiles, or optional Databricks SDK-backed OAuth
-  profiles.
+  profiles. It also provides a non-mutating auth-check command for launch
+  readiness without recording tokens or user details.
 - `databricks_storage_benchmark_job.py` owns standalone storage-reader
   benchmark run payloads.
 - `databricks_vllm_smoke_job.py` owns standalone Qwen3/vLLM smoke run payloads.

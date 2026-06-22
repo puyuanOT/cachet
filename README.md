@@ -1437,6 +1437,11 @@ Equivalent profile-based submit:
 ```bash
 cachet-databricks-runs \
   --profile QA \
+  --output-json databricks-auth-check.json \
+  auth-check
+
+cachet-databricks-runs \
+  --profile QA \
   --output-json databricks-stage-submit-response.json \
   stage-and-submit \
   --payload-json databricks-run-submit.json \
@@ -1445,6 +1450,11 @@ cachet-databricks-runs \
   --overwrite \
   --require-payload-dbfs-artifacts
 ```
+
+`auth-check` performs a non-mutating current-user request before staging or
+submitting. Its output records only the endpoint, HTTP status, response key
+names, and a SHA-256 hash of the workspace host, so it can be attached to launch
+handoffs without writing tokens or user details.
 
 When the managed runner is configured with `--execution-result-json-uri`, the
 result record includes a `plan_source` block with the original plan path, driver

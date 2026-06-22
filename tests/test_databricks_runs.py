@@ -19,10 +19,12 @@ from document_kv_cache.databricks_runs import (
     DEFAULT_DATABRICKS_CONFIG_FILE,
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
+    DATABRICKS_AUTH_CHECK_RECORD_TYPE,
     DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
     DatabricksWorkspaceConfig,
+    check_databricks_auth,
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
     databricks_workspace_config_from_env,
@@ -349,6 +351,38 @@ def test_sdk_profile_config_ignores_ambient_databricks_auth_env(monkeypatch, tmp
     assert os.environ["DATABRICKS_CONFIG_PROFILE"] == "AMBIENT"
     assert os.environ["DATABRICKS_HOST"] == "https://ambient.example.cloud.databricks.com"
     assert os.environ["DATABRICKS_TOKEN"] == "ambient-secret-token"
+
+
+def test_check_databricks_auth_calls_identity_endpoint_without_user_pii():
+    opener = _FakeOpener(
+        {
+            "id": "123",
+            "userName": "person@example.com",
+            "displayName": "Person Example",
+        }
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token", timeout_seconds=9)
+
+    record = check_databricks_auth(config, opener=opener)
+
+    assert record == {
+        "record_type": DATABRICKS_AUTH_CHECK_RECORD_TYPE,
+        "authenticated": True,
+        "endpoint": "/api/2.0/preview/scim/v2/Me",
+        "http_status": 200,
+        "workspace_host_sha256": hashlib.sha256(b"https://dbc.example").hexdigest(),
+        "response_keys": ["displayName", "id", "userName"],
+    }
+    request = opener.requests[0]
+    assert request.full_url == "https://dbc.example/api/2.0/preview/scim/v2/Me"
+    assert request.get_method() == "GET"
+    assert request.data is None
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert opener.timeouts == [9]
+    serialized = json.dumps(record, sort_keys=True)
+    assert "person@example.com" not in serialized
+    assert "Person Example" not in serialized
+    assert "secret-token" not in serialized
 
 
 def test_submit_databricks_run_posts_payload_with_bearer_token():
@@ -1050,6 +1084,51 @@ def test_main_submit_can_use_databricks_profile_without_env(monkeypatch, tmp_pat
             "run_id": 456,
             "host": "https://dbc.example.cloud.databricks.com",
             "payload": {"run_name": "cachet-profile-smoke"},
+        },
+    }
+
+
+def test_main_auth_check_writes_sanitized_record(monkeypatch, tmp_path):
+    output_path = tmp_path / "auth-check.json"
+    raw_secret = "secret-token"
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example/")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, raw_secret)
+
+    def fake_auth_check(config):
+        assert config.normalized_host == "https://dbc.example"
+        assert config.token == raw_secret
+        return {
+            "record_type": DATABRICKS_AUTH_CHECK_RECORD_TYPE,
+            "authenticated": True,
+            "endpoint": "/api/2.0/preview/scim/v2/Me",
+            "http_status": 200,
+            "workspace_host_sha256": hashlib.sha256(b"https://dbc.example").hexdigest(),
+            "response_keys": ["id", "userName"],
+        }
+
+    monkeypatch.setattr(legacy_databricks_runs, "check_databricks_auth", fake_auth_check)
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "auth-check",
+        ]
+    )
+
+    output = output_path.read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert raw_secret not in output
+    assert json.loads(output) == {
+        "ok": True,
+        "action": "auth-check",
+        "auth": {
+            "record_type": DATABRICKS_AUTH_CHECK_RECORD_TYPE,
+            "authenticated": True,
+            "endpoint": "/api/2.0/preview/scim/v2/Me",
+            "http_status": 200,
+            "workspace_host_sha256": hashlib.sha256(b"https://dbc.example").hexdigest(),
+            "response_keys": ["id", "userName"],
         },
     }
 
@@ -1764,6 +1843,7 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "DEFAULT_DATABRICKS_HOST_ENV",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+        "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
         "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
@@ -1774,6 +1854,7 @@ def test_databricks_runs_star_import_surfaces_are_stable():
         "databricks_workspace_config_from_env",
         "databricks_workspace_config_from_profile",
         "databricks_workspace_config_from_sdk_profile",
+        "check_databricks_auth",
         "submit_databricks_run",
         "get_databricks_run",
         "put_databricks_dbfs_file",

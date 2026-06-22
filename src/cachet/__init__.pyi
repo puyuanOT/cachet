@@ -138,6 +138,7 @@ from document_kv_cache.databricks_job import (
 )
 
 from document_kv_cache.databricks_runs import (
+    DATABRICKS_AUTH_CHECK_RECORD_TYPE as DATABRICKS_AUTH_CHECK_RECORD_TYPE,
     DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES as DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
     DATABRICKS_RUN_STATUS_RECORD_TYPE as DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE as DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
@@ -148,6 +149,7 @@ from document_kv_cache.databricks_runs import (
     DatabricksWorkspaceConfig as DatabricksWorkspaceConfig,
     databricks_run_status_record as databricks_run_status_record,
     databricks_run_status_sidecar_issues as databricks_run_status_sidecar_issues,
+    check_databricks_auth as check_databricks_auth,
     databricks_workspace_config_from_env as databricks_workspace_config_from_env,
     databricks_workspace_config_from_profile as databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile as databricks_workspace_config_from_sdk_profile,
