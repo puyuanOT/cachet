@@ -1610,6 +1610,16 @@ def main(argv: list[str] | None = None) -> int:
             "Requires --summary and --submit-payload-json."
         ),
     )
+    payload_summary_parser = subparsers.add_parser(
+        "payload-summary",
+        help="Summarize and optionally validate a Databricks runs/submit payload without credentials.",
+    )
+    payload_summary_parser.add_argument("--payload-json", required=True)
+    payload_summary_parser.add_argument(
+        "--expected-hardware-target",
+        choices=SUPPORTED_V1_HARDWARE_TARGETS,
+        help="Validate the payload summary against a V1 hardware target.",
+    )
     put_parser = subparsers.add_parser("put-dbfs-file", help="Upload a small local artifact to DBFS.")
     put_parser.add_argument("--local-path", required=True, help="Local file to upload.")
     put_parser.add_argument("--dbfs-path", required=True, help="Destination path such as dbfs:/FileStore/cachet/file.whl.")
@@ -1660,6 +1670,20 @@ def main(argv: list[str] | None = None) -> int:
                 require_payload_dbfs_artifacts=args.require_payload_dbfs_artifacts,
                 submit_payload_path=args.payload_json,
             )
+        elif args.command == "payload-summary":
+            payload = read_databricks_run_submit_payload(args.payload_json)
+            _validate_databricks_run_submit_payload_tasks(payload)
+            summary = summarize_databricks_run_submit_payload(
+                payload,
+                source_path=args.payload_json,
+            )
+            if args.expected_hardware_target:
+                _validate_databricks_submit_payload_summary(
+                    summary,
+                    expected_hardware_target=args.expected_hardware_target,
+                )
+            result = _success_record(args.command)
+            result["summary"] = summary
         else:
             config = _databricks_workspace_config_from_args(args)
             if args.command == "submit":
@@ -1712,6 +1736,8 @@ def main(argv: list[str] | None = None) -> int:
             pass
         elif args.command == "put-dbfs-file":
             pass
+        elif args.command == "payload-summary":
+            pass
         elif args.command == "stage-and-submit":
             pass
         else:
@@ -1725,6 +1751,36 @@ def main(argv: list[str] | None = None) -> int:
         _write_error_record_or_stdout(result, args.output_json)
         return 1
     return 0
+
+
+def _validate_databricks_run_submit_payload_tasks(payload: Mapping[str, Any]) -> None:
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, Sequence) or isinstance(tasks, (str, bytes, bytearray)) or not tasks:
+        raise ValueError("Databricks run-submit payload tasks must be a non-empty array")
+    invalid_indices = [
+        str(index)
+        for index, task in enumerate(tasks)
+        if not isinstance(task, Mapping)
+    ]
+    if invalid_indices:
+        raise ValueError(
+            "Databricks run-submit payload tasks must contain only objects; "
+            f"invalid task indices: {', '.join(invalid_indices)}"
+        )
+
+
+def _validate_databricks_submit_payload_summary(
+    summary: Mapping[str, Any],
+    *,
+    expected_hardware_target: str | None = None,
+) -> None:
+    issues = _databricks_submit_payload_sidecar_issues(
+        summary,
+        tasks=summary.get("tasks"),
+        expected_hardware_target=expected_hardware_target,
+    )
+    if issues:
+        raise ValueError("; ".join(_dedupe_strings(issues)))
 
 
 def _databricks_workspace_config_from_args(args: argparse.Namespace) -> DatabricksWorkspaceConfig:

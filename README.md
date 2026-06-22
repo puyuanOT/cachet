@@ -1436,6 +1436,12 @@ requests are involved:
 
 ```bash
 cachet-databricks-runs \
+  --output-json databricks-run-submit-summary.json \
+  payload-summary \
+  --payload-json databricks-run-submit.json \
+  --expected-hardware-target aws-g6-l4
+
+cachet-databricks-runs \
   --output-json databricks-stage-submit-plan.json \
   stage-and-submit \
   --payload-json databricks-run-submit.json \
