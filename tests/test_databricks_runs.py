@@ -1573,6 +1573,7 @@ def test_main_get_summary_can_include_submit_payload_provenance(monkeypatch, tmp
             "tasks": [
                 {
                     "task_key": "run-benchmark",
+                    "run_id": 124,
                     "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
                 }
             ],
@@ -1600,6 +1601,183 @@ def test_main_get_summary_can_include_submit_payload_provenance(monkeypatch, tmp
     assert record["summary"]["submit_payload"]["single_node"] is True
     assert record["summary"]["submit_payload"]["aws_g5_node_type"] is True
     assert record["summary"]["submit_payload"]["aws_single_node_gpu_type"] is True
+
+
+def test_main_get_summary_can_validate_expected_hardware_target(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(_single_node_g5_submit_payload()), encoding="utf-8")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "get_databricks_run",
+        lambda config, run_id: {
+            "run_id": int(run_id),
+            "run_name": "document-kv-v1",
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                }
+            ],
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+        },
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--summary",
+            "--submit-payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert record["summary"]["submit_payload"]["hardware_targets"] == ["aws-g6-l4"]
+
+
+def test_main_get_summary_rejects_unexpected_hardware_target(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(_single_node_g5_submit_payload()), encoding="utf-8")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "get_databricks_run",
+        lambda config, run_id: {
+            "run_id": int(run_id),
+            "run_name": "document-kv-v1",
+            "tasks": [
+                {
+                    "task_key": "run-benchmark",
+                    "run_id": 124,
+                    "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+                }
+            ],
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+        },
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--summary",
+            "--submit-payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g5-a10g",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error_type"] == "ValueError"
+    assert "hardware_target 'aws-g5-a10g'" in record["error"]
+    assert "response" not in record
+
+
+def test_main_get_expected_hardware_target_requires_submit_payload(tmp_path):
+    output_path = tmp_path / "response.json"
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--summary",
+            "--expected-hardware-target",
+            "aws-g6-l4",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error"] == "--expected-hardware-target requires --submit-payload-json"
+
+
+def test_main_get_expected_hardware_target_requires_summary(tmp_path):
+    output_path = tmp_path / "response.json"
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(_single_node_g5_submit_payload()), encoding="utf-8")
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--submit-payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+        ]
+    )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error"] == "--expected-hardware-target requires --summary"
+
+
+def test_main_get_expected_hardware_target_rejects_include_response(monkeypatch, tmp_path):
+    output_path = tmp_path / "response.json"
+    payload_path = tmp_path / "payload.json"
+    payload_path.write_text(json.dumps(_single_node_g5_submit_payload()), encoding="utf-8")
+    raw_secret = "do-not-write-raw-response"
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(
+        legacy_databricks_runs,
+        "get_databricks_run",
+        lambda config, run_id: {
+            "run_id": int(run_id),
+            "raw_secret": raw_secret,
+            "state": {"life_cycle_state": "TERMINATED", "result_state": "SUCCESS"},
+        },
+    )
+
+    exit_code = legacy_databricks_runs.main(
+        [
+            "--output-json",
+            str(output_path),
+            "get",
+            "--run-id",
+            "123",
+            "--summary",
+            "--submit-payload-json",
+            str(payload_path),
+            "--expected-hardware-target",
+            "aws-g6-l4",
+            "--include-response",
+        ]
+    )
+
+    record_text = output_path.read_text(encoding="utf-8")
+    record = json.loads(record_text)
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert record["error"] == "--expected-hardware-target cannot be combined with --include-response"
+    assert raw_secret not in record_text
 
 
 def test_main_get_summary_can_include_raw_response_when_requested(monkeypatch, tmp_path):
