@@ -49,6 +49,7 @@ __all__ = reexport_public(
         "DEFAULT_DATABRICKS_CONFIG_FILE",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
         "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+        "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
         "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
         "DATABRICKS_RUN_STATUS_RECORD_TYPE",
         "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
@@ -64,6 +65,7 @@ __all__ += [
     "databricks_workspace_config_from_env",
     "databricks_workspace_config_from_profile",
     "databricks_workspace_config_from_sdk_profile",
+    "check_databricks_auth",
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
@@ -245,6 +247,14 @@ def databricks_workspace_config_from_sdk_profile(
         config_file=config_file,
         timeout_seconds=timeout_seconds,
     )
+
+
+def check_databricks_auth(
+    config: DatabricksWorkspaceConfig,
+    *,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    return _call_document_function("check_databricks_auth", config, opener=opener)
 
 
 def submit_databricks_run(
@@ -479,6 +489,7 @@ _DEFAULT_COMPAT_FUNCTIONS = {
     "databricks_workspace_config_from_env": databricks_workspace_config_from_env,
     "databricks_workspace_config_from_profile": databricks_workspace_config_from_profile,
     "databricks_workspace_config_from_sdk_profile": databricks_workspace_config_from_sdk_profile,
+    "check_databricks_auth": check_databricks_auth,
     "submit_databricks_run": submit_databricks_run,
     "get_databricks_run": get_databricks_run,
     "put_databricks_dbfs_file": put_databricks_dbfs_file,

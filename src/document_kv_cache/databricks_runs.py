@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_DATABRICKS_CONFIG_FILE",
     "DEFAULT_DATABRICKS_TOKEN_ENV",
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
+    "DATABRICKS_AUTH_CHECK_RECORD_TYPE",
     "DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
     "DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE",
@@ -35,6 +36,7 @@ __all__ = [
     "databricks_workspace_config_from_env",
     "databricks_workspace_config_from_profile",
     "databricks_workspace_config_from_sdk_profile",
+    "check_databricks_auth",
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
@@ -54,8 +56,10 @@ DEFAULT_DATABRICKS_TOKEN_ENV = "DATABRICKS_TOKEN"
 DEFAULT_DATABRICKS_CONFIG_FILE = "~/.databrickscfg"
 DEFAULT_DATABRICKS_TIMEOUT_SECONDS = 60.0
 DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES = 1_000_000
+DATABRICKS_AUTH_CHECK_RECORD_TYPE = "document_kv.databricks_auth_check.v1"
 DATABRICKS_RUN_STATUS_RECORD_TYPE = "document_kv.databricks_run_status.v1"
 DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE = "document_kv.databricks_run_submit_payload.v1"
+_DATABRICKS_AUTH_CHECK_ENDPOINT = "/api/2.0/preview/scim/v2/Me"
 _DATABRICKS_GPU_TYPE_FIELD = "aws_single_node_gpu_type"
 _LEGACY_DATABRICKS_GPU_TYPE_FIELD = "aws_g5_node_type"
 _DATABRICKS_GPU_TYPE_FIELDS = (
@@ -352,6 +356,27 @@ def submit_databricks_run(
         payload=payload,
         opener=opener,
     )
+
+
+def check_databricks_auth(
+    config: DatabricksWorkspaceConfig,
+    *,
+    opener: DatabricksURLOpener = urllib.request.urlopen,
+) -> dict[str, Any]:
+    response, status = _databricks_api_response_json(
+        config,
+        "GET",
+        _DATABRICKS_AUTH_CHECK_ENDPOINT,
+        opener=opener,
+    )
+    return {
+        "record_type": DATABRICKS_AUTH_CHECK_RECORD_TYPE,
+        "authenticated": True,
+        "endpoint": _DATABRICKS_AUTH_CHECK_ENDPOINT,
+        "http_status": status,
+        "workspace_host_sha256": _sha256_hex(config.normalized_host.encode("utf-8")),
+        "response_keys": sorted(str(key) for key in response),
+    }
 
 
 def get_databricks_run(
@@ -654,10 +679,29 @@ def _databricks_api_json(
     opener: DatabricksURLOpener,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    parsed, _status = _databricks_api_response_json(
+        config,
+        method,
+        path_and_query,
+        opener=opener,
+        payload=payload,
+    )
+    return parsed
+
+
+def _databricks_api_response_json(
+    config: DatabricksWorkspaceConfig,
+    method: str,
+    path_and_query: str,
+    *,
+    opener: DatabricksURLOpener,
+    payload: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int | None]:
     request = _databricks_request(config, method, path_and_query, payload=payload)
     try:
         with opener(request, timeout=config.timeout_seconds) as response:
             body = response.read().decode("utf-8")
+            status = getattr(response, "status", None)
             parsed = json.loads(body) if body else {}
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -668,7 +712,7 @@ def _databricks_api_json(
         raise RuntimeError("Databricks response was not valid JSON") from exc
     if not isinstance(parsed, dict):
         raise RuntimeError("Databricks response JSON must be an object")
-    return parsed
+    return parsed, status
 
 
 def _task_summary(task: Mapping[str, Any]) -> dict[str, Any]:
@@ -1358,6 +1402,11 @@ def main(argv: list[str] | None = None) -> int:
     submit_parser = subparsers.add_parser("submit", help="POST a Jobs runs/submit payload JSON.")
     submit_parser.add_argument("--payload-json", required=True)
 
+    subparsers.add_parser(
+        "auth-check",
+        help="GET the current Databricks workspace user endpoint to verify credentials without launching a run.",
+    )
+
     get_parser = subparsers.add_parser("get", help="GET a Databricks run by run id.")
     get_parser.add_argument("--run-id", required=True)
     get_parser.add_argument("--summary", action="store_true", help="Write only a compact run/task status summary.")
@@ -1412,6 +1461,10 @@ def main(argv: list[str] | None = None) -> int:
             config = _databricks_workspace_config_from_args(args)
             if args.command == "submit":
                 response = submit_databricks_run(config, read_databricks_run_submit_payload(args.payload_json))
+            elif args.command == "auth-check":
+                result = _success_record(args.command)
+                result["auth"] = check_databricks_auth(config)
+                response = None
             elif args.command == "get":
                 response = get_databricks_run(config, args.run_id)
             elif args.command == "put-dbfs-file":
@@ -1445,6 +1498,8 @@ def main(argv: list[str] | None = None) -> int:
                 submit_payload=submit_payload,
                 submit_payload_path=args.submit_payload_json,
             )
+        elif args.command == "auth-check":
+            pass
         elif args.command == "put-dbfs-file":
             pass
         elif args.command == "stage-and-submit":

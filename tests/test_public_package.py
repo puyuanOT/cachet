@@ -49,6 +49,7 @@ def test_public_document_package_reexports_core_api():
         ChunkCache,
         ChunkCacheResult,
         ChunkCacheStats,
+        DATABRICKS_AUTH_CHECK_RECORD_TYPE,
         DATABRICKS_RUN_STATUS_RECORD_TYPE,
         DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
         DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
@@ -190,6 +191,7 @@ def test_public_document_package_reexports_core_api():
         build_release_bundle,
         build_v1_benchmark_plan,
         benchmark_job_plan_to_record,
+        check_databricks_auth,
         chunk_type_role,
         chunk_type_sort_order,
         databricks_workspace_config_from_env,
@@ -302,6 +304,7 @@ def test_public_document_package_reexports_core_api():
     assert ChunkCacheStats is restaurant_kv_serving.ChunkCacheStats
     assert DATABRICKS_RUN_STATUS_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_STATUS_RECORD_TYPE
     assert DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
+    assert DATABRICKS_AUTH_CHECK_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_AUTH_CHECK_RECORD_TYPE
     assert DEDICATED_DATABRICKS_DATA_SECURITY_MODE is restaurant_kv_serving.DEDICATED_DATABRICKS_DATA_SECURITY_MODE
     assert DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME is restaurant_kv_serving.DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
     assert DEFAULT_DATABRICKS_CONFIG_FILE is restaurant_kv_serving.DEFAULT_DATABRICKS_CONFIG_FILE
@@ -607,6 +610,7 @@ def test_public_document_package_reexports_core_api():
         databricks_workspace_config_from_sdk_profile
         is databricks_runs.databricks_workspace_config_from_sdk_profile
     )
+    assert check_databricks_auth is databricks_runs.check_databricks_auth
     assert plan_databricks_stage_and_submit is databricks_runs.plan_databricks_stage_and_submit
     assert (
         restaurant_kv_serving.plan_databricks_stage_and_submit.__module__
@@ -1017,6 +1021,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "from document_kv_cache.cache import" in stub_text
     assert "import document_kv_cache.storage as storage" not in stub_text
     assert "CacheTier as CacheTier" in stub_text
+    assert "DATABRICKS_AUTH_CHECK_RECORD_TYPE as DATABRICKS_AUTH_CHECK_RECORD_TYPE" in stub_text
+    assert "check_databricks_auth as check_databricks_auth" in stub_text
     assert "DEFAULT_DATABRICKS_CONFIG_FILE as DEFAULT_DATABRICKS_CONFIG_FILE" in stub_text
     assert "databricks_workspace_config_from_profile as databricks_workspace_config_from_profile" in stub_text
     assert (
