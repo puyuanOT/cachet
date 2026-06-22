@@ -194,6 +194,7 @@ def test_public_document_package_reexports_core_api():
         chunk_type_sort_order,
         databricks_workspace_config_from_env,
         databricks_workspace_config_from_profile,
+        databricks_workspace_config_from_sdk_profile,
         evaluate_release_storage_benchmark_evidence,
         evaluate_storage_benchmark_evidence,
         evaluate_engine_launch_config_evidence,
@@ -602,6 +603,10 @@ def test_public_document_package_reexports_core_api():
     assert build_handle_from_materialized.__module__ == "document_kv_cache.engine"
     assert databricks_workspace_config_from_env is databricks_runs.databricks_workspace_config_from_env
     assert databricks_workspace_config_from_profile is databricks_runs.databricks_workspace_config_from_profile
+    assert (
+        databricks_workspace_config_from_sdk_profile
+        is databricks_runs.databricks_workspace_config_from_sdk_profile
+    )
     assert plan_databricks_stage_and_submit is databricks_runs.plan_databricks_stage_and_submit
     assert (
         restaurant_kv_serving.plan_databricks_stage_and_submit.__module__
@@ -1014,6 +1019,10 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "CacheTier as CacheTier" in stub_text
     assert "DEFAULT_DATABRICKS_CONFIG_FILE as DEFAULT_DATABRICKS_CONFIG_FILE" in stub_text
     assert "databricks_workspace_config_from_profile as databricks_workspace_config_from_profile" in stub_text
+    assert (
+        "databricks_workspace_config_from_sdk_profile as databricks_workspace_config_from_sdk_profile"
+        in stub_text
+    )
     assert "NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT" in stub_text
     assert "NATIVE_PROBE_FACTORIES_RECORD_TYPE as NATIVE_PROBE_FACTORIES_RECORD_TYPE" in stub_text
     assert (

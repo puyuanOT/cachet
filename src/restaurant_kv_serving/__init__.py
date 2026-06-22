@@ -600,6 +600,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "databricks_workspace_config_from_profile",
     ),
+    "databricks_workspace_config_from_sdk_profile": (
+        "restaurant_kv_serving.databricks_runs",
+        "databricks_workspace_config_from_sdk_profile",
+    ),
     "document_kv_cache_arm": ("restaurant_kv_serving.benchmarks", "document_kv_cache_arm"),
     "dtype_byte_width": ("restaurant_kv_serving.model_profiles", "dtype_byte_width"),
     "kv_storage_layout_from_value": (
@@ -1225,6 +1229,7 @@ __all__ = [
     "databricks_run_status_sidecar_issues",
     "databricks_workspace_config_from_env",
     "databricks_workspace_config_from_profile",
+    "databricks_workspace_config_from_sdk_profile",
     "document_kv_cache_arm",
     "dtype_byte_width",
     "kv_storage_layout_from_value",

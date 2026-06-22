@@ -34,6 +34,7 @@ __all__ = [
     "DatabricksWorkspaceConfig",
     "databricks_workspace_config_from_env",
     "databricks_workspace_config_from_profile",
+    "databricks_workspace_config_from_sdk_profile",
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
@@ -62,8 +63,25 @@ _DATABRICKS_GPU_TYPE_FIELDS = (
     _LEGACY_DATABRICKS_GPU_TYPE_FIELD,
 )
 _DATABRICKS_CONFIG_DEFAULT_SECTION = "__cachet_no_inherited_databricks_defaults__"
+_DATABRICKS_SDK_PROFILE_ISOLATION_ATTRIBUTES = frozenset(
+    {
+        "account_id",
+        "auth_type",
+        "azure_workspace_resource_id",
+        "cloud",
+        "config_file",
+        "discovery_url",
+        "host",
+        "oidc_token_env",
+        "oidc_token_filepath",
+        "profile",
+        "token_audience",
+        "workspace_id",
+    }
+)
 DATABRICKS_TERMINAL_LIFE_CYCLE_STATES = frozenset({"TERMINATED", "SKIPPED", "INTERNAL_ERROR"})
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_DATABRICKS_PAT_TOKEN_RE = re.compile(r"dapi[0-9a-fA-F]{32}")
 _DATABRICKS_RUN_STATUS_WRAPPER_KEYS = frozenset({"ok", "action", "summary"})
 _DATABRICKS_RUN_STATUS_KEYS = frozenset(
     {
@@ -185,6 +203,65 @@ def databricks_workspace_config_from_profile(
     timeout_seconds: float = DEFAULT_DATABRICKS_TIMEOUT_SECONDS,
 ) -> DatabricksWorkspaceConfig:
     profile_name = _required_profile_name(profile)
+    values = _databricks_profile_values(profile_name, config_file=config_file)
+    host = values.get("host", "").strip()
+    token = values.get("token", "").strip()
+    if host and token:
+        return DatabricksWorkspaceConfig(host=host, token=token, timeout_seconds=timeout_seconds)
+    if values.get("auth_type", "").strip():
+        return databricks_workspace_config_from_sdk_profile(
+            profile_name,
+            config_file=config_file,
+            timeout_seconds=timeout_seconds,
+        )
+    if not host:
+        raise ValueError(f"Databricks profile {profile_name!r} is missing host")
+    raise ValueError(f"Databricks profile {profile_name!r} is missing token")
+
+
+def databricks_workspace_config_from_sdk_profile(
+    profile: str,
+    *,
+    config_file: str | Path = DEFAULT_DATABRICKS_CONFIG_FILE,
+    timeout_seconds: float = DEFAULT_DATABRICKS_TIMEOUT_SECONDS,
+) -> DatabricksWorkspaceConfig:
+    profile_name = _required_profile_name(profile)
+    values = _databricks_profile_values(profile_name, config_file=config_file)
+    host = values.get("host", "").strip()
+    if not host:
+        raise ValueError(f"Databricks profile {profile_name!r} is missing host")
+    try:
+        sdk_config = _databricks_sdk_config(
+            profile_name,
+            config_file=config_file,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        message = _redact_databricks_secret_text(str(exc))
+        raise ValueError(f"Databricks SDK profile {profile_name!r} could not be loaded: {message}") from exc
+    resolved_host = str(getattr(sdk_config, "host", "") or host).strip()
+    try:
+        auth_headers = sdk_config.authenticate()
+    except Exception as exc:
+        message = _redact_databricks_secret_text(str(exc))
+        raise ValueError(f"Databricks SDK profile {profile_name!r} could not authenticate: {message}") from exc
+    token = _databricks_bearer_token(auth_headers)
+    if not token:
+        raise ValueError(
+            f"Databricks SDK profile {profile_name!r} did not return a Bearer Authorization header"
+        )
+    return DatabricksWorkspaceConfig(
+        host=resolved_host,
+        token=token,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _databricks_profile_values(
+    profile_name: str,
+    *,
+    config_file: str | Path,
+) -> Mapping[str, str]:
     path = Path(config_file).expanduser()
     parser = ConfigParser(default_section=_DATABRICKS_CONFIG_DEFAULT_SECTION)
     read_files = parser.read(path)
@@ -192,14 +269,68 @@ def databricks_workspace_config_from_profile(
         raise ValueError(f"Databricks config file was not found: {path}")
     if profile_name not in parser:
         raise ValueError(f"Databricks profile {profile_name!r} was not found in {path}")
-    section = parser[profile_name]
-    host = section.get("host", "").strip()
-    token = section.get("token", "").strip()
-    if not host:
-        raise ValueError(f"Databricks profile {profile_name!r} is missing host")
-    if not token:
-        raise ValueError(f"Databricks profile {profile_name!r} is missing token")
-    return DatabricksWorkspaceConfig(host=host, token=token, timeout_seconds=timeout_seconds)
+    return {key: value for key, value in parser[profile_name].items()}
+
+
+def _databricks_sdk_config(
+    profile_name: str,
+    *,
+    config_file: str | Path,
+    timeout_seconds: float,
+) -> Any:
+    try:
+        from databricks.sdk.core import Config
+    except ModuleNotFoundError as exc:
+        raise ValueError(
+            "Databricks SDK profile auth requires installing the databricks extra "
+            "with document-kv-cache[databricks]"
+        ) from exc
+    env_snapshot = _unset_environment(_databricks_sdk_profile_env_names(Config))
+    try:
+        return Config(
+            profile=profile_name,
+            config_file=str(Path(config_file).expanduser()),
+            http_timeout_seconds=timeout_seconds,
+            disable_async_token_refresh=True,
+        )
+    except Exception as exc:
+        message = _redact_databricks_secret_text(str(exc))
+        raise ValueError(f"Databricks SDK profile {profile_name!r} could not be loaded: {message}") from exc
+    finally:
+        _restore_environment(env_snapshot)
+
+
+def _databricks_sdk_profile_env_names(config_type: Any) -> tuple[str, ...]:
+    env_names: set[str] = set()
+    for attribute in config_type.attributes():
+        if not getattr(attribute, "auth", None) and (
+            getattr(attribute, "name", None) not in _DATABRICKS_SDK_PROFILE_ISOLATION_ATTRIBUTES
+        ):
+            continue
+        env_name = getattr(attribute, "env", None)
+        if env_name:
+            env_names.add(env_name)
+        env_names.update(getattr(attribute, "env_aliases", ()) or ())
+    return tuple(sorted(env_names))
+
+
+def _unset_environment(env_names: Sequence[str]) -> dict[str, str]:
+    snapshot = {name: os.environ[name] for name in env_names if name in os.environ}
+    for name in snapshot:
+        del os.environ[name]
+    return snapshot
+
+
+def _restore_environment(snapshot: Mapping[str, str]) -> None:
+    os.environ.update(snapshot)
+
+
+def _databricks_bearer_token(headers: Mapping[str, str]) -> str:
+    if not isinstance(headers, Mapping):
+        return ""
+    authorization = headers.get("Authorization") or headers.get("authorization") or ""
+    match = re.fullmatch(r"(?i)Bearer\s+(.+)", authorization.strip())
+    return match.group(1).strip() if match else ""
 
 
 def _required_profile_name(profile: str) -> str:
@@ -1181,6 +1312,7 @@ def _format_databricks_http_error(status_code: int, body: str, *, token: str | N
 
 def _redact_databricks_secret_text(text: str, *, token: str | None = None) -> str:
     redacted = text.replace(token, "[REDACTED]") if token else text
+    redacted = _DATABRICKS_PAT_TOKEN_RE.sub("[REDACTED]", redacted)
     return re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/\-=]+", r"\1[REDACTED]", redacted)
 
 

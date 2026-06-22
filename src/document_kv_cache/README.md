@@ -52,7 +52,9 @@ new document modules depend on restaurant-owned implementations.
   plans that use Cachet's built-in vLLM/SGLang probe factories.
 - `databricks_runs.py` stages small DBFS artifacts, dry-runs or performs
   stage-and-submit for a generated payload with one provenance sidecar, and
-  checks/summarizes Databricks runs using environment-provided credentials.
+  checks/summarizes Databricks runs using environment variables, static
+  `.databrickscfg` token profiles, or optional Databricks SDK-backed OAuth
+  profiles.
 - `databricks_storage_benchmark_job.py` owns standalone storage-reader
   benchmark run payloads.
 - `databricks_vllm_smoke_job.py` owns standalone Qwen3/vLLM smoke run payloads.

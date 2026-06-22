@@ -63,6 +63,7 @@ __all__ += [
     "DatabricksWorkspaceConfig",
     "databricks_workspace_config_from_env",
     "databricks_workspace_config_from_profile",
+    "databricks_workspace_config_from_sdk_profile",
     "submit_databricks_run",
     "get_databricks_run",
     "put_databricks_dbfs_file",
@@ -226,6 +227,20 @@ def databricks_workspace_config_from_profile(
 ) -> DatabricksWorkspaceConfig:
     return _call_document_function(
         "databricks_workspace_config_from_profile",
+        profile,
+        config_file=config_file,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def databricks_workspace_config_from_sdk_profile(
+    profile: str,
+    *,
+    config_file: str | Path = DEFAULT_DATABRICKS_CONFIG_FILE,
+    timeout_seconds: float = DEFAULT_DATABRICKS_TIMEOUT_SECONDS,
+) -> DatabricksWorkspaceConfig:
+    return _call_document_function(
+        "databricks_workspace_config_from_sdk_profile",
         profile,
         config_file=config_file,
         timeout_seconds=timeout_seconds,
@@ -463,6 +478,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 _DEFAULT_COMPAT_FUNCTIONS = {
     "databricks_workspace_config_from_env": databricks_workspace_config_from_env,
     "databricks_workspace_config_from_profile": databricks_workspace_config_from_profile,
+    "databricks_workspace_config_from_sdk_profile": databricks_workspace_config_from_sdk_profile,
     "submit_databricks_run": submit_databricks_run,
     "get_databricks_run": get_databricks_run,
     "put_databricks_dbfs_file": put_databricks_dbfs_file,

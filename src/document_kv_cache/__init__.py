@@ -194,6 +194,10 @@ _DOCUMENT_ROOT_EXPORTS = {
         "document_kv_cache.databricks_runs",
         "databricks_workspace_config_from_profile",
     ),
+    "databricks_workspace_config_from_sdk_profile": (
+        "document_kv_cache.databricks_runs",
+        "databricks_workspace_config_from_sdk_profile",
+    ),
     "submit_databricks_run": ("document_kv_cache.databricks_runs", "submit_databricks_run"),
     "get_databricks_run": ("document_kv_cache.databricks_runs", "get_databricks_run"),
     "put_databricks_dbfs_file": ("document_kv_cache.databricks_runs", "put_databricks_dbfs_file"),
