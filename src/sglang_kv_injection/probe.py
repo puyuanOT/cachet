@@ -165,8 +165,13 @@ def build_native_connector_probe(context: EngineKVProbeFactoryContext) -> Engine
 
 def load_native_connector_factory(factory_path: str) -> NativeSGLangConnectorFactory:
     module_name, separator, attribute_name = factory_path.partition(":")
-    if not separator or not module_name or not attribute_name:
-        raise ValueError("Native SGLang connector factory must use module:attribute syntax")
+    if (
+        not separator
+        or not module_name
+        or not attribute_name
+        or any(character.isspace() for character in factory_path)
+    ):
+        raise ValueError("Native SGLang connector factory must use module:attribute syntax without whitespace")
     module = importlib.import_module(module_name)
     factory = getattr(module, attribute_name)
     if not callable(factory):
