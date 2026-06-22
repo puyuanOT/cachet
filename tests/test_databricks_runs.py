@@ -781,6 +781,7 @@ def test_summarize_databricks_run_can_attach_submit_payload_provenance():
     assert submit_payload["aws_single_node_gpu_type"] is True
     assert submit_payload["aws_g5_node_type"] is True
     assert submit_payload["node_type_ids"] == ["g6.4xlarge"]
+    assert submit_payload["hardware_targets"] == ["aws-g6-l4"]
     assert submit_payload["data_security_modes"] == ["SINGLE_USER"]
     assert submit_payload["task_keys"] == ["run-benchmark"]
 
@@ -812,6 +813,7 @@ def test_summarize_databricks_run_accepts_g6_l4_submit_payload_provenance():
     assert summary["submit_payload"]["aws_single_node_gpu_type"] is True
     assert summary["submit_payload"]["aws_g5_node_type"] is True
     assert summary["submit_payload"]["node_type_ids"] == ["g6.8xlarge"]
+    assert summary["submit_payload"]["hardware_targets"] == ["aws-g6-l4"]
     assert databricks_run_status_sidecar_issues(summary) == ()
     assert databricks_run_status_sidecar_issues(summary, expected_hardware_target="aws-g6-l4") == ()
 
@@ -950,6 +952,7 @@ def test_databricks_run_status_sidecar_validation_accepts_g5_hardware_target():
     submit_payload["tasks"][0]["driver_node_type_id"] = "g5.8xlarge"
     submit_payload["node_type_ids"] = ["g5.8xlarge"]
     submit_payload["driver_node_type_ids"] = ["g5.8xlarge"]
+    submit_payload["hardware_targets"] = ["aws-g5-a10g"]
     g5_record = {**status_record, "submit_payload": submit_payload}
 
     assert databricks_run_status_sidecar_issues(g5_record, expected_hardware_target="aws-g5-a10g") == ()
@@ -986,11 +989,26 @@ def test_databricks_run_status_sidecar_validation_requires_submit_payload_task_p
     )
 
 
+def test_databricks_run_status_sidecar_validation_matches_submit_payload_hardware_targets():
+    status_record = _valid_databricks_run_status_record()
+    submit_payload = json.loads(json.dumps(status_record["submit_payload"]))
+    submit_payload["hardware_targets"] = ["aws-g5-a10g"]
+    bad_record = {**status_record, "submit_payload": submit_payload}
+
+    issues = databricks_run_status_sidecar_issues(bad_record)
+
+    assert (
+        "Databricks run status sidecar submit_payload.hardware_targets must match submit_payload.tasks"
+        in issues
+    )
+
+
 @pytest.mark.parametrize(
     ("summary_field", "bad_values"),
     [
         ("node_type_ids", ["g6.12xlarge"]),
         ("driver_node_type_ids", ["g6.12xlarge"]),
+        ("hardware_targets", ["aws-g5-a10g"]),
         ("spark_versions", ["15.3.x-gpu-ml-scala2.12"]),
         ("data_security_modes", ["SINGLE_USER", "USER_ISOLATION"]),
     ],
