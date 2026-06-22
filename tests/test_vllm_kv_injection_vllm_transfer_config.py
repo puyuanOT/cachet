@@ -219,3 +219,31 @@ def test_advertised_python_module_cli_writes_sidecar_without_runtime_warning(tmp
     assert completed.stdout == ""
     assert completed.stderr == ""
     assert json.loads(output_json.read_text(encoding="utf-8"))["kv_connector"] == "DocumentKVConnector"
+
+
+def test_transfer_config_module_cli_runs_without_runpy_warning(tmp_path):
+    output_json = tmp_path / "vllm-launch-config.json"
+    python_paths = (
+        str(REPO_ROOT / "src"),
+        str(WORKSPACE_ROOT / "restaurant-kv-serving" / "src"),
+        os.environ.get("PYTHONPATH", ""),
+    )
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in python_paths if path)}
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "vllm_kv_injection.vllm_transfer_config",
+            "--output-json",
+            str(output_json),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert completed.stdout == ""
+    assert completed.stderr == ""
+    assert json.loads(output_json.read_text(encoding="utf-8"))["kv_connector"] == "DocumentKVConnector"

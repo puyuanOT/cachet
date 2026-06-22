@@ -1,5 +1,8 @@
 """Thin KV-injection primitives for a vLLM fork/extension."""
 
+import importlib
+from typing import TYPE_CHECKING
+
 from vllm_kv_injection.block_mapping import (
     BlockSpan,
     SegmentKey,
@@ -99,14 +102,25 @@ from vllm_kv_injection.vllm_runtime_preflight import (
     validate_document_kv_vllm_runtime_preflight_record,
     write_document_kv_vllm_runtime_preflight_json,
 )
-from vllm_kv_injection.vllm_transfer_config import (
-    DOCUMENT_KV_DEFAULT_ROLE,
-    DOCUMENT_KV_TRANSFER_CONFIG_PREFIX,
-    DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,
-    DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION,
-    document_kv_transfer_config,
-    document_kv_transfer_config_json,
+_VLLM_TRANSFER_CONFIG_EXPORTS = frozenset(
+    {
+        "DOCUMENT_KV_DEFAULT_ROLE",
+        "DOCUMENT_KV_TRANSFER_CONFIG_PREFIX",
+        "DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE",
+        "DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION",
+        "document_kv_transfer_config",
+        "document_kv_transfer_config_json",
+    }
 )
+if TYPE_CHECKING:
+    from vllm_kv_injection.vllm_transfer_config import (
+        DOCUMENT_KV_DEFAULT_ROLE,
+        DOCUMENT_KV_TRANSFER_CONFIG_PREFIX,
+        DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,
+        DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION,
+        document_kv_transfer_config,
+        document_kv_transfer_config_json,
+    )
 
 __all__ = [
     "BlockSpan",
@@ -206,3 +220,16 @@ __all__ = [
     "vllm_kv_connector_v1_method_issues",
     "write_document_kv_vllm_runtime_preflight_json",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name in _VLLM_TRANSFER_CONFIG_EXPORTS:
+        module = importlib.import_module("vllm_kv_injection.vllm_transfer_config")
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__() -> list[str]:
+    return sorted((*globals(), *_VLLM_TRANSFER_CONFIG_EXPORTS))
