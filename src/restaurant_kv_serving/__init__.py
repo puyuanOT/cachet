@@ -22,6 +22,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "DEFAULT_DATABRICKS_HOST_ENV",
     ),
+    "DEFAULT_DATABRICKS_CONFIG_FILE": (
+        "restaurant_kv_serving.databricks_runs",
+        "DEFAULT_DATABRICKS_CONFIG_FILE",
+    ),
     "DEFAULT_DATABRICKS_TOKEN_ENV": (
         "restaurant_kv_serving.databricks_runs",
         "DEFAULT_DATABRICKS_TOKEN_ENV",
@@ -592,6 +596,10 @@ _EXPORTS = {
         "restaurant_kv_serving.databricks_runs",
         "databricks_workspace_config_from_env",
     ),
+    "databricks_workspace_config_from_profile": (
+        "restaurant_kv_serving.databricks_runs",
+        "databricks_workspace_config_from_profile",
+    ),
     "document_kv_cache_arm": ("restaurant_kv_serving.benchmarks", "document_kv_cache_arm"),
     "dtype_byte_width": ("restaurant_kv_serving.model_profiles", "dtype_byte_width"),
     "kv_storage_layout_from_value": (
@@ -965,6 +973,7 @@ __all__ = [
     "DEFAULT_DATABRICKS_TASK_KEY",
     "DEFAULT_DATABRICKS_PURPOSE",
     "DEFAULT_DATABRICKS_HOST_ENV",
+    "DEFAULT_DATABRICKS_CONFIG_FILE",
     "DEFAULT_DATABRICKS_TOKEN_ENV",
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS",
     "DATABRICKS_RUN_STATUS_RECORD_TYPE",
@@ -1215,6 +1224,7 @@ __all__ = [
     "databricks_run_status_record",
     "databricks_run_status_sidecar_issues",
     "databricks_workspace_config_from_env",
+    "databricks_workspace_config_from_profile",
     "document_kv_cache_arm",
     "dtype_byte_width",
     "kv_storage_layout_from_value",

@@ -54,6 +54,7 @@ def test_public_document_package_reexports_core_api():
         DATABRICKS_DBFS_PUT_MAX_CONTENT_BYTES,
         DEDICATED_DATABRICKS_DATA_SECURITY_MODE,
         DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
+        DEFAULT_DATABRICKS_CONFIG_FILE,
         DEFAULT_DATABRICKS_HOST_ENV,
         DEFAULT_DATABRICKS_PURPOSE,
         DEFAULT_STATIC_CHUNK_ID,
@@ -192,6 +193,7 @@ def test_public_document_package_reexports_core_api():
         chunk_type_role,
         chunk_type_sort_order,
         databricks_workspace_config_from_env,
+        databricks_workspace_config_from_profile,
         evaluate_release_storage_benchmark_evidence,
         evaluate_storage_benchmark_evidence,
         evaluate_engine_launch_config_evidence,
@@ -301,6 +303,7 @@ def test_public_document_package_reexports_core_api():
     assert DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE is restaurant_kv_serving.DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE
     assert DEDICATED_DATABRICKS_DATA_SECURITY_MODE is restaurant_kv_serving.DEDICATED_DATABRICKS_DATA_SECURITY_MODE
     assert DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME is restaurant_kv_serving.DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
+    assert DEFAULT_DATABRICKS_CONFIG_FILE is restaurant_kv_serving.DEFAULT_DATABRICKS_CONFIG_FILE
     assert DEFAULT_DATABRICKS_HOST_ENV is restaurant_kv_serving.DEFAULT_DATABRICKS_HOST_ENV
     assert DEFAULT_DATABRICKS_PURPOSE is restaurant_kv_serving.DEFAULT_DATABRICKS_PURPOSE
     assert DEFAULT_DATABRICKS_TOKEN_ENV is restaurant_kv_serving.DEFAULT_DATABRICKS_TOKEN_ENV
@@ -598,6 +601,7 @@ def test_public_document_package_reexports_core_api():
     assert build_handle_from_materialized is restaurant_kv_serving.build_handle_from_materialized
     assert build_handle_from_materialized.__module__ == "document_kv_cache.engine"
     assert databricks_workspace_config_from_env is databricks_runs.databricks_workspace_config_from_env
+    assert databricks_workspace_config_from_profile is databricks_runs.databricks_workspace_config_from_profile
     assert plan_databricks_stage_and_submit is databricks_runs.plan_databricks_stage_and_submit
     assert (
         restaurant_kv_serving.plan_databricks_stage_and_submit.__module__
@@ -1008,6 +1012,8 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "from document_kv_cache.cache import" in stub_text
     assert "import document_kv_cache.storage as storage" not in stub_text
     assert "CacheTier as CacheTier" in stub_text
+    assert "DEFAULT_DATABRICKS_CONFIG_FILE as DEFAULT_DATABRICKS_CONFIG_FILE" in stub_text
+    assert "databricks_workspace_config_from_profile as databricks_workspace_config_from_profile" in stub_text
     assert "NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT" in stub_text
     assert "NATIVE_PROBE_FACTORIES_RECORD_TYPE as NATIVE_PROBE_FACTORIES_RECORD_TYPE" in stub_text
     assert (

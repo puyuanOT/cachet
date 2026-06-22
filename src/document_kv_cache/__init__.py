@@ -167,6 +167,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     ),
     "write_databricks_runner_script": ("document_kv_cache.databricks_job", "write_databricks_runner_script"),
     "DEFAULT_DATABRICKS_HOST_ENV": ("document_kv_cache.databricks_runs", "DEFAULT_DATABRICKS_HOST_ENV"),
+    "DEFAULT_DATABRICKS_CONFIG_FILE": ("document_kv_cache.databricks_runs", "DEFAULT_DATABRICKS_CONFIG_FILE"),
     "DEFAULT_DATABRICKS_TOKEN_ENV": ("document_kv_cache.databricks_runs", "DEFAULT_DATABRICKS_TOKEN_ENV"),
     "DEFAULT_DATABRICKS_TIMEOUT_SECONDS": (
         "document_kv_cache.databricks_runs",
@@ -188,6 +189,10 @@ _DOCUMENT_ROOT_EXPORTS = {
     "databricks_workspace_config_from_env": (
         "document_kv_cache.databricks_runs",
         "databricks_workspace_config_from_env",
+    ),
+    "databricks_workspace_config_from_profile": (
+        "document_kv_cache.databricks_runs",
+        "databricks_workspace_config_from_profile",
     ),
     "submit_databricks_run": ("document_kv_cache.databricks_runs", "submit_databricks_run"),
     "get_databricks_run": ("document_kv_cache.databricks_runs", "get_databricks_run"),
