@@ -778,10 +778,11 @@ The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g
   rows fail with the physical JSONL line number so managed AWS g6/L4 runs can
   trace dataset issues back to source files.
 - `normalize_v1_record`, `convert_v1_jsonl`, and `build_niah_record` prepare raw Biography, HotpotQA, MusiQue, and synthetic/source NIAH rows into that normalized JSONL contract.
-- `benchmark_handoffs` enriches prepared JSONL rows with generated Cachet
-  handoff metadata from a closed `(dataset, example_id)` manifest, so
-  Databricks benchmark inputs can reference real adapter handoff and payload
-  artifacts without hand-editing JSONL.
+- `benchmark_handoffs` generates per-row Cachet handoff bundles from prepared
+  JSONL via a caller-supplied `KVChunkGenerator`, and enriches benchmark rows
+  from a closed `(dataset, example_id)` manifest, so Databricks inputs can
+  reference real adapter handoff and payload artifacts without hand-editing
+  JSONL.
 - `build_v1_benchmark_plan` and the `benchmark_plan` CLI emit a portable command plan that prepares all four V1 datasets, runs the OpenAI-compatible benchmark on AWS g6/L4/Qwen3, and can append storage-reader benchmarking on the same node.
 - `benchmark_plan_executor` and `databricks_job` let managed job runners execute that plan on single-node AWS g6/L4 Databricks clusters; `databricks_runs` can submit/check those payloads using credentials supplied only through environment variables.
 - `run_benchmark_suite` executes caller-provided baseline and KV-cache engines against the same logical prompt parts and emits `InferenceMeasurement` rows. Cache engines receive the runtime suffix as `prompt_text`; the full logical prompt remains available as `logical_prompt_text`.
@@ -811,10 +812,34 @@ Streaming responses provide TTFT; non-streaming responses report TTFT equal to t
 
 By default this engine posts the full logical prompt, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers and for platform-managed prefix caching. Set `prompt_text_mode="runtime"` only when the server endpoint is a KV-aware adapter or proxy that binds the cached prefix out of band and expects only the runtime suffix in the `prompt` field. The engine records both logical and runtime prompt-token counts in measurement metadata; strict V1 release evidence rejects cache measurements whose runtime prompt is not smaller than the logical prompt.
 
-After cache generation writes per-example handoff JSON files, build the closed
-manifest that the benchmark plan consumes. The template supports `{dataset}` and
-`{example_id}`, and each referenced handoff JSON is validated before the
-manifest is written:
+Generate per-example handoff JSON and payload files from prepared benchmark rows
+by supplying the runtime KV generator factory. Cachet does not ship a fake
+benchmark generator; the factory must return a `KVChunkGenerator` whose payload
+geometry matches the supplied model layout. Default bundle filenames use a
+stable path-safe `{artifact_stem}` derived from `(dataset, example_id)`:
+
+```bash
+cachet-benchmark-handoff-bundles \
+  --input-jsonl /data/v1-prepared/biography.jsonl \
+  --output-dir /Volumes/catalog/schema/volume/cachet/handoffs \
+  --output-manifest-json /data/handoffs/biography-manifest.json \
+  --generator-factory my_runtime.kv_generator:create_generator \
+  --layout-version qwen3-v1 \
+  --dtype int8 \
+  --num-layers 36 \
+  --block-size 16 \
+  --bytes-per-token 73728 \
+  --num-query-heads 32 \
+  --num-kv-heads 8 \
+  --head-size 128 \
+  --kv-stride-bytes 128 \
+  --shares-kv-storage \
+  --storage-layout shared_key_value
+```
+
+If handoff JSON files already exist, build the closed manifest that the
+benchmark plan consumes. The template supports `{dataset}` and `{example_id}`,
+and each referenced handoff JSON is validated before the manifest is written:
 
 ```bash
 cachet-benchmark-handoff-manifest \
