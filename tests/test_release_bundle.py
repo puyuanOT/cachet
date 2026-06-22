@@ -725,8 +725,30 @@ def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_misma
         )
 
     error = str(exc_info.value)
-    assert "AWS g6/L4 node type" in error
+    assert "hardware_target 'aws-g6-l4'" in error
     assert "g5.4xlarge" not in error
+
+
+def test_build_release_bundle_strict_v1_requires_default_g6_release_target(tmp_path):
+    source_dir = tmp_path / "sources"
+    run_statuses = _strict_v1_databricks_run_status_paths(source_dir, node_type_id="g5.8xlarge")
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=run_statuses,
+        hardware_target="aws-g5-a10g",
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            **release_kwargs,
+            output_dir=tmp_path / "strict-g5-release-target",
+            require_complete_v1=True,
+        )
+
+    error = str(exc_info.value)
+    assert "v1 benchmark hardware_target must be the strict V1 release target 'aws-g6-l4'" in error
+    assert "benchmark plan execution sidecar plan_source.hardware_target must match strict V1 release target 'aws-g6-l4'" in error
+    assert "g5.8xlarge" not in error
 
 
 def test_build_release_bundle_strict_v1_accepts_matching_non_default_plan_source_suite_id(tmp_path):
@@ -795,7 +817,7 @@ def test_build_release_bundle_strict_v1_rejects_wrong_plan_source_target(tmp_pat
     assert "benchmark plan execution sidecar plan_source.plan_version must be 'v1'" in error
     assert "benchmark plan execution sidecar plan_source.model_id must be 'qwen3:4b-instruct'" in error
     assert "benchmark plan execution sidecar plan_source.hardware_target must be one of" in error
-    assert "benchmark plan execution sidecar plan_source.hardware_target must match V1 benchmark hardware_target" in error
+    assert "benchmark plan execution sidecar plan_source.hardware_target must match strict V1 release target" in error
     assert "benchmark plan execution sidecar plan_source.suite_id must be a non-empty string" in error
     assert "benchmark plan execution sidecar plan_source.command_count must be a positive integer" in error
 
@@ -3068,10 +3090,18 @@ def _write_record(path: Path, record_type: str, *, backend: str | None = None) -
     return path
 
 
-def _write_release_ready_artifacts(source_dir: Path, *, suite_id: str = "v1-suite") -> dict[str, Path]:
+def _write_release_ready_artifacts(
+    source_dir: Path,
+    *,
+    suite_id: str = "v1-suite",
+    hardware_target: str = "aws-g6-l4",
+) -> dict[str, Path]:
     source_dir.mkdir(parents=True, exist_ok=True)
     paths = {
-        "v1": _write_json(source_dir / "v1.json", _v1_record(ok=True, suite_id=suite_id)),
+        "v1": _write_json(
+            source_dir / "v1.json",
+            _v1_record(ok=True, suite_id=suite_id, hardware_target=hardware_target),
+        ),
         "storage": _write_json(source_dir / "storage.json", _storage_record(ok=True)),
         "vllm": _write_json(source_dir / "vllm-probe.json", _probe_record(ServingBackend.VLLM)),
         "sglang": _write_json(source_dir / "sglang-probe.json", _probe_record(ServingBackend.SGLANG)),
@@ -3102,14 +3132,14 @@ def _write_release_ready_artifacts(source_dir: Path, *, suite_id: str = "v1-suit
     return paths
 
 
-def _v1_record(*, ok: bool, suite_id: str = "v1-suite"):
+def _v1_record(*, ok: bool, suite_id: str = "v1-suite", hardware_target: str = "aws-g6-l4"):
     datasets = ("biography", "hotpotqa", "musique", "niah")
     arms = ("baseline_prefill", "document_kv_cache")
     return {
         "record_type": BENCHMARK_RUN_RECORD_TYPE,
         "suite": {
             "suite_id": suite_id,
-            "hardware_target": "aws-g6-l4",
+            "hardware_target": hardware_target,
             "model_id": "qwen3:4b-instruct",
             "datasets": list(datasets),
             "examples": len(datasets),
@@ -3379,10 +3409,18 @@ def _strict_v1_release_bundle_kwargs(
     *,
     databricks_run_status_jsons: tuple[Path, ...],
     suite_id: str = "v1-suite",
+    hardware_target: str = "aws-g6-l4",
 ):
-    artifacts = _write_release_ready_artifacts(source_dir, suite_id=suite_id)
+    artifacts = _write_release_ready_artifacts(
+        source_dir,
+        suite_id=suite_id,
+        hardware_target=hardware_target,
+    )
     package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
-    plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True, suite_id=suite_id))
+    plan_execution = _write_json(
+        source_dir / "plan-execution.json",
+        _plan_execution_record(ok=True, suite_id=suite_id, hardware_target=hardware_target),
+    )
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
     requirements_matrix = _write_requirements_matrix(source_dir / "v1-requirements-matrix.md")
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
@@ -3674,7 +3712,12 @@ def _native_probe_factory_record(backend: str, factory_path: str, *, supported: 
     }
 
 
-def _plan_execution_record(*, ok: bool, suite_id: str = "v1-suite"):
+def _plan_execution_record(
+    *,
+    ok: bool,
+    suite_id: str = "v1-suite",
+    hardware_target: str = "aws-g6-l4",
+):
     return {
         "record_type": BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
         "ok": ok,
@@ -3687,7 +3730,7 @@ def _plan_execution_record(*, ok: bool, suite_id: str = "v1-suite"):
             "plan_version": "v1",
             "suite_id": suite_id,
             "model_id": "qwen3:4b-instruct",
-            "hardware_target": "aws-g6-l4",
+            "hardware_target": hardware_target,
             "command_count": 1,
         },
         "commands": [

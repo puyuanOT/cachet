@@ -87,6 +87,24 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
     }
 
 
+def test_evaluate_release_evidence_accepts_explicit_g5_a10g_hardware_target():
+    evidence = evaluate_release_evidence(
+        _v1_record(ok=True, hardware_target="aws-g5-a10g"),
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+
+    assert evidence.ok
+    assert not any("hardware_target" in issue for issue in evidence.issues)
+
+
 def test_evaluate_release_evidence_rejects_unsupported_g5_hardware_target():
     evidence = evaluate_release_evidence(
         _v1_record(ok=True, hardware_target="aws-g5"),

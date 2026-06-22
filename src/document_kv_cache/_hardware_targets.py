@@ -7,6 +7,9 @@ from dataclasses import dataclass
 __all__ = [
     "HardwareTargetProfile",
     "V1_HARDWARE_TARGET_PROFILE",
+    "V1_AWS_G6_L4_HARDWARE_TARGET_PROFILE",
+    "V1_AWS_G5_A10G_HARDWARE_TARGET_PROFILE",
+    "V1_HARDWARE_TARGET_PROFILES",
     "SUPPORTED_V1_HARDWARE_TARGETS",
     "DEFAULT_HARDWARE_TARGET",
     "DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE",
@@ -39,18 +42,36 @@ class HardwareTargetProfile:
             raise ValueError("databricks_node_type_prefixes entries must be non-empty")
 
 
-V1_HARDWARE_TARGET_PROFILE = HardwareTargetProfile(
+V1_AWS_G6_L4_HARDWARE_TARGET_PROFILE = HardwareTargetProfile(
     hardware_target="aws-g6-l4",
     display_name="AWS g6/L4",
     default_databricks_node_type_id="g6.8xlarge",
     databricks_node_type_prefixes=("g6.",),
 )
-SUPPORTED_V1_HARDWARE_TARGETS = (V1_HARDWARE_TARGET_PROFILE.hardware_target,)
+V1_AWS_G5_A10G_HARDWARE_TARGET_PROFILE = HardwareTargetProfile(
+    hardware_target="aws-g5-a10g",
+    display_name="AWS g5/A10G",
+    default_databricks_node_type_id="g5.8xlarge",
+    databricks_node_type_prefixes=("g5.",),
+)
+V1_HARDWARE_TARGET_PROFILE = V1_AWS_G6_L4_HARDWARE_TARGET_PROFILE
+V1_HARDWARE_TARGET_PROFILES = (
+    V1_AWS_G6_L4_HARDWARE_TARGET_PROFILE,
+    V1_AWS_G5_A10G_HARDWARE_TARGET_PROFILE,
+)
+SUPPORTED_V1_HARDWARE_TARGETS = tuple(
+    profile.hardware_target for profile in V1_HARDWARE_TARGET_PROFILES
+)
 DEFAULT_HARDWARE_TARGET = V1_HARDWARE_TARGET_PROFILE.hardware_target
 DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE = V1_HARDWARE_TARGET_PROFILE.default_databricks_node_type_id
-SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = V1_HARDWARE_TARGET_PROFILE.databricks_node_type_prefixes
+SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES = tuple(
+    prefix
+    for profile in V1_HARDWARE_TARGET_PROFILES
+    for prefix in profile.databricks_node_type_prefixes
+)
 HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES = {
-    V1_HARDWARE_TARGET_PROFILE.hardware_target: V1_HARDWARE_TARGET_PROFILE.databricks_node_type_prefixes,
+    profile.hardware_target: profile.databricks_node_type_prefixes
+    for profile in V1_HARDWARE_TARGET_PROFILES
 }
 
 
@@ -65,7 +86,8 @@ def validate_aws_single_node_gpu_type(node_type_id: str) -> None:
     if not node_type_id:
         raise ValueError("node_type_id must be non-empty")
     if not node_type_id.lower().startswith(SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES):
+        supported = ", ".join(profile.display_name for profile in V1_HARDWARE_TARGET_PROFILES)
         raise ValueError(
-            f"node_type_id must be an {V1_HARDWARE_TARGET_PROFILE.display_name} Databricks node type, "
+            f"node_type_id must be a supported V1 Databricks node type ({supported}), "
             f"got {node_type_id!r}"
         )
