@@ -808,6 +808,19 @@ Streaming responses provide TTFT; non-streaming responses report TTFT equal to t
 
 By default this engine posts the full logical prompt, which is the correct behavior for ordinary OpenAI-compatible vLLM/SGLang servers and for platform-managed prefix caching. Set `prompt_text_mode="runtime"` only when the server endpoint is a KV-aware adapter or proxy that binds the cached prefix out of band and expects only the runtime suffix in the `prompt` field. The engine records both logical and runtime prompt-token counts in measurement metadata; strict V1 release evidence rejects cache measurements whose runtime prompt is not smaller than the logical prompt.
 
+After cache generation writes per-example handoff JSON files, build the closed
+manifest that the benchmark plan consumes. The template supports `{dataset}` and
+`{example_id}`, and each referenced handoff JSON is validated before the
+manifest is written:
+
+```bash
+cachet-benchmark-handoff-manifest \
+  --input-jsonl /data/v1-prepared/biography.jsonl \
+  --handoff-json-template '/Volumes/catalog/schema/volume/cachet/handoffs/{dataset}/{example_id}.handoff.json' \
+  --expected-backend vllm \
+  --output-json /data/handoffs/biography-manifest.json
+```
+
 To run the V1 benchmark contract against existing OpenAI-compatible vLLM or SGLang servers, generate a reproducible command plan for all four datasets:
 
 ```bash

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import string
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,13 +20,18 @@ from document_kv_cache.benchmarks import (
     validate_v1_dataset,
 )
 from document_kv_cache.dataset_prep import write_v1_jsonl
-from document_kv_cache.engine_adapters import validate_engine_adapter_request_record
+from document_kv_cache.engine_adapters import (
+    ServingBackend,
+    read_engine_adapter_request_json,
+    validate_engine_adapter_request_record,
+)
 from document_kv_cache.engine_probe import _validate_local_payload_uri
 from document_kv_cache.storage import local_path
 
 
 BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE = "document_kv.benchmark_handoffs.v1"
 BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION = 1
+_TEMPLATE_FIELDS = frozenset({"dataset", "example_id"})
 _MANIFEST_KEYS = frozenset({"record_type", "schema_version", "entries"})
 _ENTRY_KEYS = frozenset(
     {
@@ -43,12 +49,14 @@ __all__ = [
     "BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION",
     "BenchmarkHandoffEntry",
     "BenchmarkHandoffManifest",
+    "build_benchmark_handoff_manifest_from_jsonl",
     "benchmark_handoff_manifest_from_record",
     "benchmark_handoff_manifest_to_record",
     "enrich_benchmark_jsonl_with_handoffs",
     "enrich_benchmark_records_with_handoffs",
     "read_benchmark_handoff_manifest_json",
     "write_benchmark_handoff_manifest_json",
+    "manifest_main",
     "main",
 ]
 
@@ -194,6 +202,68 @@ def write_benchmark_handoff_manifest_json(
     )
 
 
+def build_benchmark_handoff_manifest_from_jsonl(
+    input_jsonl: str | Path,
+    *,
+    handoff_json_template: str,
+    dataset: str | None = None,
+    payload_uri_template: str | None = None,
+    expected_backend: ServingBackend | str | None = None,
+    allow_missing: bool = False,
+) -> BenchmarkHandoffManifest:
+    """Build a strict handoff manifest by joining benchmark rows to handoff JSON files."""
+
+    default_dataset = _default_dataset(dataset)
+    entries: list[BenchmarkHandoffEntry] = []
+    seen_record_keys: set[tuple[str, str]] = set()
+    missing_keys: list[tuple[str, str]] = []
+    for line_number, record in _iter_jsonl(input_jsonl):
+        key = _record_key(record, default_dataset=default_dataset, line_number=line_number)
+        if key in seen_record_keys:
+            raise ValueError(f"Duplicate benchmark input rows for {_format_keys((key,))}")
+        seen_record_keys.add(key)
+        row_dataset, example_id = key
+        handoff_json = _format_benchmark_handoff_template(
+            handoff_json_template,
+            dataset=row_dataset,
+            example_id=example_id,
+            field_name="handoff_json_template",
+        )
+        try:
+            handoff_record = read_engine_adapter_request_json(
+                handoff_json,
+                expected_backend=expected_backend,
+                require_external_payload_uri=payload_uri_template is None,
+            )
+        except FileNotFoundError as exc:
+            if allow_missing:
+                missing_keys.append(key)
+                continue
+            raise ValueError(f"Missing handoff JSON for {_format_keys((key,))}: {handoff_json}") from exc
+        payload_uri = (
+            _format_benchmark_handoff_template(
+                payload_uri_template,
+                dataset=row_dataset,
+                example_id=example_id,
+                field_name="payload_uri_template",
+            )
+            if payload_uri_template is not None
+            else _payload_uri_from_handoff_record(handoff_record)
+        )
+        entries.append(
+            BenchmarkHandoffEntry(
+                dataset=row_dataset,
+                example_id=example_id,
+                request_id=_required_string(handoff_record.get("request_id"), field_name="handoff_record.request_id"),
+                handoff_json=handoff_json,
+                payload_uri=payload_uri,
+            )
+        )
+    if missing_keys and not allow_missing:
+        raise ValueError("Missing handoff JSON for " + _format_keys(missing_keys))
+    return BenchmarkHandoffManifest(entries=tuple(entries))
+
+
 def enrich_benchmark_jsonl_with_handoffs(
     input_jsonl: str | Path,
     manifest_json: str | Path,
@@ -274,6 +344,46 @@ def enrich_benchmark_records_with_handoffs(
     return tuple(enriched_records)
 
 
+def manifest_main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Build a Cachet benchmark handoff manifest from handoff JSON files.")
+    parser.add_argument("--input-jsonl", required=True, help="Prepared benchmark JSONL whose rows need handoffs.")
+    parser.add_argument(
+        "--handoff-json-template",
+        required=True,
+        help="Format template for handoff JSON paths. Supports {dataset} and {example_id}.",
+    )
+    parser.add_argument(
+        "--output-json",
+        "--output-manifest-json",
+        dest="output_json",
+        required=True,
+        help="Benchmark handoff manifest JSON output path.",
+    )
+    parser.add_argument("--dataset", help="Default dataset for JSONL rows without a dataset field.")
+    parser.add_argument(
+        "--payload-uri-template",
+        help="Optional payload URI override template. Supports {dataset} and {example_id}.",
+    )
+    parser.add_argument("--expected-backend", choices=[backend.value for backend in ServingBackend])
+    parser.add_argument("--allow-missing", action="store_true", help="Skip rows whose handoff JSON is absent.")
+    try:
+        args = parser.parse_args(argv)
+        manifest = build_benchmark_handoff_manifest_from_jsonl(
+            args.input_jsonl,
+            handoff_json_template=args.handoff_json_template,
+            dataset=args.dataset,
+            payload_uri_template=args.payload_uri_template,
+            expected_backend=args.expected_backend,
+            allow_missing=args.allow_missing,
+        )
+        write_benchmark_handoff_manifest_json(manifest, args.output_json)
+        print(json.dumps({"ok": True, "entries": len(manifest.entries)}, sort_keys=True))
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
+        return 1
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Attach Cachet handoff metadata to V1 benchmark JSONL.")
     parser.add_argument("--input-jsonl", required=True, help="Prepared benchmark JSONL to enrich.")
@@ -349,6 +459,49 @@ def _entries_by_key(entries: Iterable[BenchmarkHandoffEntry]) -> dict[tuple[str,
     if duplicates:
         raise ValueError("Duplicate handoff manifest entries for " + _format_keys(duplicates))
     return by_key
+
+
+def _payload_uri_from_handoff_record(record: Mapping[str, Any]) -> str:
+    payload_source = record.get("payload_source")
+    if not isinstance(payload_source, Mapping):
+        raise ValueError("handoff_record.payload_source must be an object")
+    return _runtime_payload_uri(payload_source.get("uri"), field_name="handoff_record.payload_source.uri")
+
+
+def _format_benchmark_handoff_template(
+    template: str,
+    *,
+    dataset: str,
+    example_id: str,
+    field_name: str,
+) -> str:
+    _validate_benchmark_handoff_template(template, field_name=field_name)
+    try:
+        value = template.format(dataset=dataset, example_id=example_id)
+    except KeyError as exc:
+        raise ValueError(f"{field_name} has unsupported placeholder {exc.args[0]!r}") from exc
+    except (IndexError, ValueError) as exc:
+        raise ValueError(f"{field_name} is not a valid format template: {exc}") from exc
+    return _required_string(value, field_name=field_name)
+
+
+def _validate_benchmark_handoff_template(template: str, *, field_name: str) -> None:
+    try:
+        parts = tuple(string.Formatter().parse(template))
+    except ValueError as exc:
+        raise ValueError(f"{field_name} is not a valid format template: {exc}") from exc
+    for _literal_text, placeholder, format_spec, conversion in parts:
+        if placeholder is None:
+            continue
+        if placeholder not in _TEMPLATE_FIELDS:
+            raise ValueError(
+                f"{field_name} supports only {{dataset}} and {{example_id}} placeholders; "
+                f"got {{{placeholder}}}"
+            )
+        if format_spec or conversion is not None:
+            raise ValueError(
+                f"{field_name} supports only plain {{dataset}} and {{example_id}} placeholders"
+            )
 
 
 def _iter_jsonl(path: str | Path) -> Iterable[tuple[int, Mapping[str, Any]]]:

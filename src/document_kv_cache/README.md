@@ -31,9 +31,9 @@ new document modules depend on restaurant-owned implementations.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
   native engine-probe, release-readiness sidecar, and release-evidence command
   plans.
-- `benchmark_handoffs.py` attaches generated Cachet handoff JSON or inline
-  handoff records to prepared benchmark JSONL rows through a fail-closed
-  `(dataset, example_id)` manifest join.
+- `benchmark_handoffs.py` builds fail-closed `(dataset, example_id)` handoff
+  manifests from generated handoff JSON files and attaches those handoffs to
+  prepared benchmark JSONL rows.
 - `benchmark_plan_executor.py` runs command-plan JSON files for local or managed
   job runners and records source-plan SHA-256 provenance.
 - `benchmark_runner.py` owns baseline and cache-arm execution against
@@ -133,6 +133,7 @@ The implementation package owns these document-branded CLI entry points:
 
 - `document-kv-benchmark-plan`
 - `document-kv-benchmark-handoffs`
+- `document-kv-benchmark-handoff-manifest`
 - `document-kv-native-probe-scaffold`
 - `document-kv-run-benchmark-plan`
 - `document-kv-databricks-job`
@@ -159,6 +160,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 
 - `cachet-benchmark-plan`
 - `cachet-benchmark-handoffs`
+- `cachet-benchmark-handoff-manifest`
 - `cachet-native-probe-scaffold`
 - `cachet-run-benchmark-plan`
 - `cachet-databricks-job`

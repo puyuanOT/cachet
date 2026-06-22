@@ -2128,6 +2128,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "document-kv-native-probe-scaffold": "document_kv_cache.adapter_scaffold:main",
         "document-kv-benchmark-plan": "document_kv_cache.benchmark_plan:main",
         "document-kv-benchmark-handoffs": "document_kv_cache.benchmark_handoffs:main",
+        "document-kv-benchmark-handoff-manifest": "document_kv_cache.benchmark_handoffs:manifest_main",
         "document-kv-run-benchmark-plan": "document_kv_cache.benchmark_plan_executor:main",
         "document-kv-databricks-job": "document_kv_cache.databricks_job:main",
         "document-kv-databricks-runs": "document_kv_cache.databricks_runs:main",
@@ -2156,6 +2157,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     expected_legacy_scripts = {
         "restaurant-kv-benchmark-plan": "restaurant_kv_serving.benchmark_plan:main",
         "restaurant-kv-benchmark-handoffs": "restaurant_kv_serving.benchmark_handoffs:main",
+        "restaurant-kv-benchmark-handoff-manifest": "restaurant_kv_serving.benchmark_handoffs:manifest_main",
         "restaurant-kv-run-benchmark-plan": "restaurant_kv_serving.benchmark_plan_executor:main",
         "restaurant-kv-databricks-job": "restaurant_kv_serving.databricks_job:main",
         "restaurant-kv-databricks-runs": "restaurant_kv_serving.databricks_runs:main",
