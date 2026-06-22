@@ -823,19 +823,15 @@ cachet-benchmark-handoff-bundles \
   --input-jsonl /data/v1-prepared/biography.jsonl \
   --output-dir /Volumes/catalog/schema/volume/cachet/handoffs \
   --output-manifest-json /data/handoffs/biography-manifest.json \
-  --generator-factory my_runtime.kv_generator:create_generator \
-  --layout-version qwen3-v1 \
-  --dtype int8 \
-  --num-layers 36 \
-  --block-size 16 \
-  --bytes-per-token 73728 \
-  --num-query-heads 32 \
-  --num-kv-heads 8 \
-  --head-size 128 \
-  --kv-stride-bytes 128 \
-  --shares-kv-storage \
-  --storage-layout shared_key_value
+  --generator-factory my_runtime.kv_generator:create_generator
 ```
+
+The bundle CLI derives the default `qwen3:4b-instruct` layout from the built-in
+model profile. For custom models, pass the complete manual layout flags:
+`--layout-version`, `--dtype`, `--num-layers`, `--block-size`, and
+`--bytes-per-token`; add `--num-query-heads`, `--num-kv-heads`, `--head-size`,
+`--kv-stride-bytes`, `--shares-kv-storage`, and `--storage-layout` when the
+serving adapter needs attention geometry.
 
 If handoff JSON files already exist, build the closed manifest that the
 benchmark plan consumes. The template supports `{dataset}` and `{example_id}`,
