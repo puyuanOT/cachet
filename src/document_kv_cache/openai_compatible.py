@@ -308,6 +308,9 @@ class OpenAICompatibleCompletionEngine:
             "kv_transfer_params_attached": "true" if request.kv_transfer_params else "false",
             **token_metadata,
         }
+        cache_salt = self.config.extra_body.get("cache_salt")
+        if isinstance(cache_salt, str) and cache_salt:
+            metadata["prefix_cache_salt_attached"] = "true"
         if request.request_id:
             metadata["request_id"] = request.request_id
         return metadata

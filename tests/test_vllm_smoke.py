@@ -14,6 +14,8 @@ import document_kv_cache.vllm_smoke as public_vllm_smoke
 import restaurant_kv_serving.vllm_smoke as legacy_vllm_smoke
 from document_kv_cache.serving_env import VLLM_SERVING_ENVIRONMENT_PROFILE
 from document_kv_cache.vllm_smoke import (
+    BASELINE_PREFIX_CACHE_SALT,
+    CACHE_PREFIX_CACHE_SALT,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
@@ -358,6 +360,12 @@ def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tm
 
     assert args[args.index("--cache-base-url") + 1] == "http://127.0.0.1:8123"
     assert "--cache-runtime-prompt" not in args
+    assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {
+        "cache_salt": BASELINE_PREFIX_CACHE_SALT
+    }
+    assert json.loads(args[args.index("--cache-extra-body-json") + 1]) == {
+        "cache_salt": CACHE_PREFIX_CACHE_SALT
+    }
 
 
 def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
@@ -945,6 +953,7 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["dataset_specs"] == []
     assert metadata["cache_runtime_prompt"] is False
     assert metadata["cache_prompt_text_mode"] == "logical"
+    assert metadata["prefix_cache_isolation"] is None
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["max_model_len"] == 4096
     assert metadata["max_num_seqs"] == 2
@@ -1079,6 +1088,10 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
     assert metadata["dataset_specs"] == list(specs)
     assert metadata["cache_runtime_prompt"] is False
     assert metadata["cache_prompt_text_mode"] == "logical"
+    assert metadata["prefix_cache_isolation"] == {
+        "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
+        "cache_cache_salt": CACHE_PREFIX_CACHE_SALT,
+    }
     assert metadata["requires_kv_transfer_params"] is True
     assert metadata["generates_prepared_handoffs"] is False
     assert metadata["benchmark_handoff_generation"] is None
