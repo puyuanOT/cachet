@@ -39,14 +39,10 @@ from document_kv_cache.benchmark_plan_executor import (
 )
 from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE,
-    DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
     DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
 )
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
-    DEFAULT_DATABRICKS_PURPOSE,
-    DEFAULT_DATABRICKS_RUN_NAME,
-    DEFAULT_DATABRICKS_TASK_KEY,
 )
 from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
@@ -55,8 +51,11 @@ from document_kv_cache.databricks_runs import (
 )
 from document_kv_cache.databricks_storage_benchmark_job import (
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE,
-    DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,
+)
+from document_kv_cache.databricks_vllm_smoke_job import (
+    DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
+    DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
 )
 from document_kv_cache.engine_launch_config import (
     REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS,
@@ -140,7 +139,7 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     (
         "databricks_run_status",
         3,
-        "exactly three Databricks run-status sidecars for benchmark, storage, and engine-probe runs",
+        "Databricks run-status sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs",
     ),
     ("package_wheel", 1, "tested package wheel"),
     ("pr_evidence", 1, "PR evidence sidecar"),
@@ -150,23 +149,32 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("native_probe_factories", 1, "native probe factory diagnostics sidecar"),
 )
 STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES = (
-    (DEFAULT_DATABRICKS_PURPOSE, "V1 benchmark Databricks run-status evidence"),
+    (DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE, "V1 benchmark Databricks run-status evidence"),
     (DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE, "storage-reader benchmark Databricks run-status evidence"),
     (DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE, "native engine probe Databricks run-status evidence"),
 )
-STRICT_V1_RELEASE_DATABRICKS_PURPOSE_IDENTITIES = {
-    DEFAULT_DATABRICKS_PURPOSE: (DEFAULT_DATABRICKS_RUN_NAME, DEFAULT_DATABRICKS_TASK_KEY),
+STRICT_V1_RELEASE_DATABRICKS_PURPOSE_TASK_KEYS = {
+    DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE: (DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,),
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE: (
-        DEFAULT_DATABRICKS_STORAGE_BENCHMARK_RUN_NAME,
         DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,
-    ),
-    DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE: (
-        DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
-        DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
     ),
 }
 STRICT_V1_RELEASE_DATABRICKS_PURPOSE_LABELS = {
     purpose: label for purpose, label in STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES
+}
+STRICT_V1_RELEASE_ENGINE_PROBE_TASK_KEYS = {
+    "vllm": (
+        f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm",
+        "document_kv_vllm_engine_probe",
+    ),
+    "sglang": (
+        f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang",
+        "document_kv_sglang_engine_probe",
+    ),
+}
+STRICT_V1_RELEASE_ENGINE_PROBE_BACKEND_LABELS = {
+    "vllm": "vLLM",
+    "sglang": "SGLang",
 }
 STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT = (
     ("vllm", "vLLM native probe factory support"),
@@ -375,6 +383,7 @@ class _DatabricksPurposeOccurrence:
     label: str
     run_name: str | None
     task_key: str | None
+    backend: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -809,6 +818,7 @@ def _strict_v1_databricks_purpose_occurrences(
                         label=_databricks_purpose_occurrence_label(artifact, task),
                         run_name=run_name if isinstance(run_name, str) and run_name else None,
                         task_key=task_key if isinstance(task_key, str) and task_key else None,
+                        backend=_databricks_task_backend(purpose, task),
                     )
                 )
     return tuple(occurrences)
@@ -818,22 +828,30 @@ def _strict_v1_databricks_status_artifact_issues(
     artifacts: Sequence[_PreparedReleaseBundleArtifact],
     purpose_occurrences: Sequence[_DatabricksPurposeOccurrence],
 ) -> list[str]:
-    required_count = len(STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES)
     issues: list[str] = []
-    if len(artifacts) != required_count:
-        issues.append(
-            "Databricks run-status sidecars must include exactly one artifact per required purpose "
-            f"(expected {required_count}, found {len(artifacts)})"
-        )
     for artifact in artifacts:
         artifact_occurrences = tuple(
             occurrence for occurrence in purpose_occurrences if occurrence.source_path == artifact.source_path
         )
-        if len(artifact_occurrences) != 1:
+        if not artifact_occurrences:
             labels = ", ".join(occurrence.label for occurrence in artifact_occurrences) or "none"
             issues.append(
-                f"Databricks run-status sidecar {artifact.source_path} must contain exactly one "
+                f"Databricks run-status sidecar {artifact.source_path} must contain at least one "
                 f"strict V1 purpose ({len(artifact_occurrences)} occurrences: {labels})"
+            )
+            continue
+        purposes = {occurrence.purpose for occurrence in artifact_occurrences}
+        if len(purposes) > 1:
+            labels = ", ".join(occurrence.label for occurrence in artifact_occurrences)
+            issues.append(
+                f"Databricks run-status sidecar {artifact.source_path} must not mix strict V1 purposes "
+                f"({len(artifact_occurrences)} occurrences: {labels})"
+            )
+        elif next(iter(purposes)) != DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE and len(artifact_occurrences) != 1:
+            labels = ", ".join(occurrence.label for occurrence in artifact_occurrences)
+            issues.append(
+                f"Databricks run-status sidecar {artifact.source_path} must contain exactly one "
+                f"strict V1 benchmark or storage purpose ({len(artifact_occurrences)} occurrences: {labels})"
             )
     return issues
 
@@ -843,16 +861,16 @@ def _strict_v1_databricks_purpose_identity_issues(
 ) -> list[str]:
     issues: list[str] = []
     for occurrence in purpose_occurrences:
-        expected_identity = STRICT_V1_RELEASE_DATABRICKS_PURPOSE_IDENTITIES.get(occurrence.purpose)
-        if expected_identity is None:
+        if occurrence.purpose == DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE:
+            issues.extend(_strict_v1_engine_probe_task_identity_issues(occurrence))
             continue
-        expected_run_name, expected_task_key = expected_identity
-        if occurrence.run_name == expected_run_name and occurrence.task_key == expected_task_key:
+        expected_task_keys = STRICT_V1_RELEASE_DATABRICKS_PURPOSE_TASK_KEYS.get(occurrence.purpose)
+        if expected_task_keys is None or occurrence.task_key in expected_task_keys:
             continue
         purpose_label = STRICT_V1_RELEASE_DATABRICKS_PURPOSE_LABELS[occurrence.purpose]
         issues.append(
-            f"{purpose_label} must use run_name {expected_run_name!r} and task_key {expected_task_key!r} "
-            f"({occurrence.label} has run_name {occurrence.run_name!r}, task_key {occurrence.task_key!r})"
+            f"{purpose_label} must use task_key {_quoted_join(expected_task_keys)} "
+            f"({occurrence.label} has task_key {occurrence.task_key!r})"
         )
     return issues
 
@@ -865,10 +883,55 @@ def _strict_v1_databricks_purpose_coverage_issues(
         occurrences = tuple(occurrence.label for occurrence in purpose_occurrences if occurrence.purpose == purpose)
         if not occurrences:
             issues.append(label)
-        elif len(occurrences) > 1:
+        elif purpose != DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE and len(occurrences) > 1:
             issues.append(
                 f"{label} must appear exactly once "
                 f"({len(occurrences)} occurrences: {', '.join(occurrences)})"
+            )
+    issues.extend(_strict_v1_engine_probe_backend_coverage_issues(purpose_occurrences))
+    return issues
+
+
+def _strict_v1_engine_probe_task_identity_issues(
+    occurrence: _DatabricksPurposeOccurrence,
+) -> list[str]:
+    backend = occurrence.backend
+    if backend is None:
+        return [
+            "native engine probe Databricks run-status evidence must use backend-specific "
+            f"task keys for {_required_engine_probe_backend_label()} "
+            f"({occurrence.label} has task_key {occurrence.task_key!r})"
+        ]
+    expected_task_keys = STRICT_V1_RELEASE_ENGINE_PROBE_TASK_KEYS.get(backend)
+    if expected_task_keys is None or occurrence.task_key in expected_task_keys:
+        return []
+    backend_label = STRICT_V1_RELEASE_ENGINE_PROBE_BACKEND_LABELS.get(backend, backend)
+    return [
+        f"{backend_label} native engine probe Databricks run-status evidence must use task_key "
+        f"{_quoted_join(expected_task_keys)} ({occurrence.label} has task_key {occurrence.task_key!r})"
+    ]
+
+
+def _strict_v1_engine_probe_backend_coverage_issues(
+    purpose_occurrences: Sequence[_DatabricksPurposeOccurrence],
+) -> list[str]:
+    issues: list[str] = []
+    engine_occurrences = tuple(
+        occurrence
+        for occurrence in purpose_occurrences
+        if occurrence.purpose == DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE
+    )
+    for backend in REQUIRED_ENGINE_PROBE_BACKENDS:
+        labels = tuple(
+            occurrence.label for occurrence in engine_occurrences if occurrence.backend == backend
+        )
+        backend_label = STRICT_V1_RELEASE_ENGINE_PROBE_BACKEND_LABELS.get(backend, backend)
+        if not labels:
+            issues.append(f"{backend_label} native engine probe Databricks run-status evidence")
+        elif len(labels) > 1:
+            issues.append(
+                f"{backend_label} native engine probe Databricks run-status evidence must appear exactly once "
+                f"({len(labels)} occurrences: {', '.join(labels)})"
             )
     return issues
 
@@ -881,6 +944,34 @@ def _databricks_purpose_occurrence_label(
     if isinstance(task_key, str) and task_key:
         return f"{artifact.source_path}#{task_key}"
     return artifact.source_path
+
+
+def _databricks_task_backend(purpose: str, task: Mapping[str, Any]) -> str | None:
+    if purpose != DEFAULT_DATABRICKS_ENGINE_PROBE_PURPOSE:
+        return None
+    backend = task.get("backend")
+    if isinstance(backend, str) and backend in REQUIRED_ENGINE_PROBE_BACKENDS:
+        return backend
+    task_key = task.get("task_key")
+    if not isinstance(task_key, str):
+        return None
+    for candidate, task_keys in STRICT_V1_RELEASE_ENGINE_PROBE_TASK_KEYS.items():
+        if task_key in task_keys:
+            return candidate
+    return None
+
+
+def _required_engine_probe_backend_label() -> str:
+    return "/".join(
+        STRICT_V1_RELEASE_ENGINE_PROBE_BACKEND_LABELS.get(backend, backend)
+        for backend in REQUIRED_ENGINE_PROBE_BACKENDS
+    )
+
+
+def _quoted_join(values: Sequence[str] | None) -> str:
+    if not values:
+        return "[]"
+    return " or ".join(repr(value) for value in values)
 
 
 def _validate_strict_v1_native_probe_factory_support(
@@ -913,16 +1004,16 @@ def _validate_strict_v1_engine_launch_config_coverage(
 def _missing_strict_v1_native_probe_factory_support_labels(
     artifacts: Sequence[_PreparedReleaseBundleArtifact],
 ) -> list[str]:
-    missing: list[str] = []
+    supported_backends: set[str] = set()
     for artifact in artifacts:
         if artifact.role != "native_probe_factories" or artifact.record is None:
             continue
-        supported_backends = _supported_native_probe_factory_backends(artifact.record)
-        missing.extend(
-            f"{artifact.source_path}: {label}"
-            for backend, label in STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT
-            if backend not in supported_backends
-        )
+        supported_backends.update(_supported_native_probe_factory_backends(artifact.record))
+    missing = [
+        label
+        for backend, label in STRICT_V1_RELEASE_REQUIRED_NATIVE_PROBE_FACTORY_SUPPORT
+        if backend not in supported_backends
+    ]
     return _dedupe_strings(missing)
 
 
