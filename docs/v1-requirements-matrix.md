@@ -130,8 +130,9 @@ mean:
   boundary.
 - The built `cachet-kv` wheel no longer includes the legacy restaurant facade
   or `restaurant-kv-*` scripts. Delete the remaining source-only
-  `restaurant_kv_serving` compatibility directory only after downstream jobs
-  and local compatibility tests satisfy the gate in
-  `docs/legacy-compatibility-removal.md`, including a validated
-  `document_kv.legacy_compatibility_migration.v1` evidence sidecar that can be
-  bundled through the optional `legacy_migration_evidence` role.
+  `restaurant_kv_serving` compatibility directory after local compatibility
+  tests are migrated or removed. Current downstream migration evidence is
+  tracked under `evidence/legacy-migration/current/` as validated
+  `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
+  through the optional `legacy_migration_evidence` role; see
+  `docs/legacy-compatibility-removal.md` for the deletion checklist.

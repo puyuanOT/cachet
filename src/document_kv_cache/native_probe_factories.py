@@ -129,16 +129,15 @@ _BUILTIN_NATIVE_PROBE_FACTORY_TARGETS = frozenset(
     {
         ("cachet", "sglang_native_probe_factory"),
         ("cachet", "vllm_native_probe_factory"),
+        ("cachet.native_probe_factories", "sglang_native_probe_factory"),
+        ("cachet.native_probe_factories", "vllm_native_probe_factory"),
         ("document_kv_cache", "sglang_native_probe_factory"),
         ("document_kv_cache", "vllm_native_probe_factory"),
         ("document_kv_cache.native_probe_factories", "vllm_native_probe_factory"),
         ("document_kv_cache.native_probe_factories", "sglang_native_probe_factory"),
-        ("restaurant_kv_serving", "sglang_native_probe_factory"),
-        ("restaurant_kv_serving", "vllm_native_probe_factory"),
-        ("restaurant_kv_serving.native_probe_factories", "sglang_native_probe_factory"),
-        ("restaurant_kv_serving.native_probe_factories", "vllm_native_probe_factory"),
     }
 )
+_FORBIDDEN_DELEGATE_FACTORY_MODULE_PREFIXES = ("restaurant" "_kv_serving",)
 
 
 class NativeProbeFactoryUnavailable(RuntimeError):
@@ -242,6 +241,12 @@ def inspect_builtin_native_probe_factory(backend: ServingBackend | str) -> Nativ
             f"{package_name} {version} is installed; set "
             f"{_delegate_factory_env_name(backend)} to a backend-native "
             "Document KV probe factory"
+        )
+        supported = False
+    elif _is_forbidden_delegate_factory_path(delegate_factory_path):
+        reason = (
+            f"delegate native probe factory {delegate_factory_path!r} points at the source-only "
+            "legacy compatibility module; set the delegate to a backend-native block-manager adapter"
         )
         supported = False
     elif _is_builtin_native_probe_factory_path(delegate_factory_path):
@@ -564,6 +569,17 @@ def _is_builtin_native_probe_factory_path(factory_path: str) -> bool:
     return _factory_path_target(factory_path) in _BUILTIN_NATIVE_PROBE_FACTORY_TARGETS
 
 
+def _is_forbidden_delegate_factory_path(factory_path: str) -> bool:
+    target = _factory_path_target(factory_path)
+    if target is None:
+        return False
+    module_name, _attribute_name = target
+    return any(
+        module_name == prefix or module_name.startswith(f"{prefix}.")
+        for prefix in _FORBIDDEN_DELEGATE_FACTORY_MODULE_PREFIXES
+    )
+
+
 def _is_builtin_native_probe_factory(factory: Any) -> bool:
     return factory is vllm_native_probe_factory or factory is sglang_native_probe_factory
 
@@ -663,6 +679,10 @@ def _native_probe_factory_issues(factory: Mapping[str, Any], *, index: int) -> t
             issues.append(f"{label}.package_version must be non-empty when supported is true")
         if not isinstance(factory.get("delegate_factory_path"), str) or not factory["delegate_factory_path"]:
             issues.append(f"{label}.delegate_factory_path must be non-empty when supported is true")
+        elif _is_forbidden_delegate_factory_path(factory["delegate_factory_path"]):
+            issues.append(
+                f"{label}.delegate_factory_path must not point at the source-only legacy compatibility module"
+            )
         elif _is_builtin_native_probe_factory_path(factory["delegate_factory_path"]):
             issues.append(
                 f"{label}.delegate_factory_path must not point at a built-in native probe factory "
