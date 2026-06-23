@@ -176,6 +176,16 @@ from document_kv_cache.databricks_storage_benchmark_job import (
     write_databricks_storage_benchmark_runner_script as write_databricks_storage_benchmark_runner_script,
 )
 
+from document_kv_cache.databricks_sglang_smoke_job import (
+    DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE as DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE,
+    DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME as DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME,
+    DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY as DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY,
+    DatabricksSGLangSmokeJobConfig as DatabricksSGLangSmokeJobConfig,
+    build_databricks_sglang_smoke_run_submit_payload as build_databricks_sglang_smoke_run_submit_payload,
+    write_databricks_sglang_smoke_run_submit_json as write_databricks_sglang_smoke_run_submit_json,
+    write_databricks_sglang_smoke_runner_script as write_databricks_sglang_smoke_runner_script,
+)
+
 from document_kv_cache.databricks_vllm_smoke_job import (
     DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE as DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
     DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME as DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME,
@@ -303,6 +313,15 @@ from document_kv_cache.live_server import (
     run_openai_compatible_live_check as run_openai_compatible_live_check,
 )
 
+from document_kv_cache.sglang_smoke import (
+    SGLangSmokeBenchmarkConfig as SGLangSmokeBenchmarkConfig,
+    build_sglang_hicache_provider_probe_record as build_sglang_hicache_provider_probe_record,
+    build_sglang_server_args as build_sglang_server_args,
+    run_sglang_live_smoke as run_sglang_live_smoke,
+    sglang_hicache_config_for_smoke as sglang_hicache_config_for_smoke,
+    sglang_live_kv_transfer_params as sglang_live_kv_transfer_params,
+)
+
 from document_kv_cache.manifest import (
     InMemoryManifestStore as InMemoryManifestStore,
     ManifestStore as ManifestStore,
@@ -380,6 +399,7 @@ from document_kv_cache.native_probe_factories import (
 )
 
 from document_kv_cache.openai_compatible import (
+    KVTransferParamsTransport as KVTransferParamsTransport,
     OpenAICompatibleCompletionEngine as OpenAICompatibleCompletionEngine,
     OpenAICompatibleEngineConfig as OpenAICompatibleEngineConfig,
     PromptTextMode as PromptTextMode,

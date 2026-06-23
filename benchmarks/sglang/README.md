@@ -11,6 +11,22 @@ benchmark result.
 | Pending latency and quality benchmark | Not available yet | Not available yet | A live SGLang endpoint still needs to validate decode-time prefix binding with Cachet handoffs before Cachet can publish SGLang latency, throughput, or quality numbers. |
 | Native HiCache integration evidence | `934698284395881` | [`../databricks/2026-06-23-g6-l4-native-engine-probes/`](../databricks/2026-06-23-g6-l4-native-engine-probes/) | Provider-backed native probe and connector-action records succeeded on AWS g6/L4, but these records are integration evidence, not benchmark measurements. |
 
+## Live Smoke Helper
+
+`document_kv_cache.sglang_smoke` and
+`document_kv_cache.databricks_sglang_smoke_job` provide the current live SGLang
+readiness path. The smoke launches pinned SGLang with Cachet's dynamic HiCache
+provider config, validates the provider factory, and runs a full-prompt
+baseline. Handoff-backed cache-arm execution is intentionally blocked before
+server launch because the pinned SGLang OpenAI path carries `custom_params` on
+sampling params but does not yet pass Cachet `kv_transfer_params` into the
+dynamic HiCache storage backend.
+
+Those helpers are a provider/server bring-up path, not a benchmark result. Use
+`--baseline-only` until request-to-HiCache handoff binding is implemented. This
+report remains pending until a Databricks g6/L4 or g5/A10G run writes
+`sglang-live-smoke.json` with a passing handoff-backed cache arm.
+
 ## Benchmark Gate
 
 Treat SGLang benchmark publication as pending until all of these are true:
