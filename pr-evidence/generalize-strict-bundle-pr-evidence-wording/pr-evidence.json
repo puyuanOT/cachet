@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review approved the docs/governance-only PR with no findings. The reviewer confirmed that replacing PR #427-specific bundle wording with current release-gate PR evidence wording preserves release provenance because release-bundle validation still enforces PR identity, GPT-5.5 review, Refactor evidence, closed schema, and repository alignment.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 429,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/429",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/v1-requirements-matrix.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/generalize-strict-bundle-pr-evidence-wording/README.md",
+    "pr-evidence/generalize-strict-bundle-pr-evidence-wording/pr-evidence.json"
+  ],
+  "verification": [
+    "git diff --check",
+    "poetry run pytest tests/test_project_governance.py -q -> 43 passed",
+    "poetry run pytest -q -> 2009 passed",
+    "poetry check && poetry check --lock -> existing Poetry metadata warnings only",
+    "ignored post-428 strict bundle rebuild -> ok=true, artifact_count=23, pr_evidence source pr-evidence/compatibility-databricks-run-status/pr-evidence.json, bundled matrix contains current release-gate PR evidence sidecar wording and no PR #427 wording",
+    "GPT-5.5 focused review approved with no findings"
+  ],
+  "what_changed": [
+    "Replaced PR #427-specific strict bundle wording in README and the V1 requirements matrix with stable current release-gate PR evidence wording.",
+    "Added governance assertions that reject the known stale PR #427 bundle-evidence phrases.",
+    "Recorded PR evidence for the docs/governance cleanup."
+  ],
+  "why": "Strict release-bundle docs should stay auditable after each release-gate PR without becoming stale every time a new reviewed PR evidence sidecar replaces the previous one in local bundle evidence."
+}
