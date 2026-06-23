@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer found a same-version schema compatibility issue; the PR was updated so old v1 migration sidecars remain valid while scanner-generated evidence carries optional provenance. Re-review found no findings; GitHub rejected formal self-approval because owners cannot approve their own PR.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 437,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/437",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/legacy_compatibility.py",
+    "tests/test_legacy_compatibility.py",
+    "docs/legacy-compatibility-removal.md"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_legacy_compatibility.py tests/test_release_bundle.py::test_build_release_bundle_can_include_legacy_migration_evidence tests/test_release_bundle.py::test_build_release_bundle_rejects_invalid_legacy_migration_evidence -q",
+    "poetry run pytest tests/test_legacy_compatibility.py tests/test_release_bundle.py tests/test_project_governance.py -q",
+    "poetry run pytest tests/test_public_package.py tests/test_legacy_compatibility.py -q",
+    "poetry check && poetry check --lock",
+    "python -m compileall -q src/document_kv_cache/legacy_compatibility.py && git diff --check",
+    "poetry run pytest -q"
+  ],
+  "what_changed": [
+    "Added scan-config driven legacy migration evidence generation for downstream runner files.",
+    "Kept existing document_kv.legacy_compatibility_migration.v1 sidecars compatible while allowing optional scan provenance.",
+    "Documented the scan-config workflow for the eventual restaurant_kv_serving removal gate."
+  ],
+  "why": "Removing the legacy restaurant compatibility facade needs evidence generated from actual release, benchmark, storage, native-probe, and smoke runner files rather than hand-authored assertions."
+}
