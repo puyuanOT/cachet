@@ -39,6 +39,20 @@ class InMemoryManifestStore:
         try:
             return self._refs[key]
         except KeyError as exc:
+            if key.content_hash:
+                raise KeyError(f"Missing manifest entry for {key.storage_key()}") from exc
+            matches = tuple(
+                ref
+                for ref_key, ref in self._refs.items()
+                if _same_cache_identity_ignoring_content_hash(ref_key, key)
+            )
+            if len(matches) == 1:
+                return matches[0]
+            if matches:
+                raise KeyError(
+                    "Ambiguous manifest entries for "
+                    f"{key.storage_key()}; include content_hash to select a content version"
+                ) from exc
             raise KeyError(f"Missing manifest entry for {key.storage_key()}") from exc
 
     def put_many(self, refs: Iterable[ChunkRef]) -> None:
@@ -88,6 +102,17 @@ def _duplicate_manifest_keys(refs: tuple[ChunkRef, ...]) -> tuple[str, ...]:
             duplicates.append(storage_key)
             duplicate_storage_keys.add(storage_key)
     return tuple(duplicates)
+
+
+def _same_cache_identity_ignoring_content_hash(left: KVCacheKey, right: KVCacheKey) -> bool:
+    return (
+        left.model_id == right.model_id
+        and left.lora_id == right.lora_id
+        and left.prompt_template_version == right.prompt_template_version
+        and left.document_id == right.document_id
+        and left.chunk_type == right.chunk_type
+        and left.chunk_id == right.chunk_id
+    )
 
 
 def _validate_document_id(document_id: object) -> None:
