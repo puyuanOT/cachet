@@ -8,10 +8,9 @@ notes under `src/`.
 
 - `v1-requirements-matrix.md` maps the generalized document KV-cache goal to
   current repository evidence and remaining V1 release gaps.
-- `legacy-compatibility-removal.md` records the machine-checkable gate for
-  deleting the remaining source-only `restaurant_kv_serving` compatibility
-  directory after local compatibility tests migrate; the current downstream
-  migration evidence lives under
+- `legacy-compatibility-removal.md` records the machine-checkable proof that
+  the source-only `restaurant_kv_serving` compatibility directory was removed;
+  the current downstream migration evidence lives under
   `../evidence/legacy-migration/current/`.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.

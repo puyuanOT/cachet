@@ -108,111 +108,7 @@ DEPRECATED_TOOL_POETRY_METADATA_KEYS = {
     "scripts",
     "version",
 }
-ALLOWED_LEGACY_TEST_REFERENCES = {
-    "tests/test_benchmark_plan_executor.py": {
-        "restaurant_kv_serving.benchmark_plan_executor",
-    },
-    "tests/test_benchmark_plan.py": {
-        "restaurant_kv_serving.benchmark_plan",
-    },
-    "tests/test_benchmark_runner.py": {
-        "restaurant_kv_serving.benchmark_runner",
-        "restaurant_kv_serving.benchmark_runner.run_openai_compatible_v1_benchmark",
-    },
-    "tests/test_benchmark_handoffs.py": {
-        "restaurant_kv_serving.benchmark_handoffs",
-    },
-    "tests/test_cache.py": {
-        "restaurant_kv_serving.cache",
-    },
-    "tests/test_databricks_job.py": {
-        "restaurant_kv_serving.databricks_job",
-    },
-    "tests/test_databricks_runs.py": {
-        "restaurant_kv_serving.databricks_runs",
-    },
-    "tests/test_databricks_storage_benchmark_job.py": {
-        "restaurant_kv_serving.databricks_storage_benchmark_job",
-    },
-    "tests/test_databricks_engine_probe_job.py": {
-        "restaurant_kv_serving.databricks_engine_probe_job",
-    },
-    "tests/test_databricks_vllm_smoke_job.py": {
-        "restaurant_kv_serving.databricks_vllm_smoke_job",
-    },
-    "tests/test_engine_adapters.py": {
-        "restaurant_kv_serving.engine_adapters",
-    },
-    "tests/test_engine_probe.py": {
-        "restaurant_kv_serving.engine_probe",
-    },
-    "tests/test_kvpack.py": {
-        "restaurant_kv_serving.kvpack",
-    },
-    "tests/test_live_server.py": {
-        "restaurant_kv_serving.live_server",
-    },
-    "tests/test_openai_compatible.py": {
-        "restaurant_kv_serving.openai_compatible",
-    },
-    "tests/test_pr_evidence.py": {
-        "restaurant_kv_serving.pr_evidence",
-    },
-    "tests/test_planner_materializer.py": {
-        "restaurant_kv_serving.manifest",
-        "restaurant_kv_serving.materializer",
-        "restaurant_kv_serving.models",
-        "restaurant_kv_serving.planner",
-    },
-    "tests/test_public_package.py": {
-        "restaurant_kv_serving",
-        "restaurant_kv_serving.benchmark_plan",
-        "restaurant_kv_serving.benchmark_plan_executor",
-        "restaurant_kv_serving.benchmark_runner",
-        "restaurant_kv_serving.benchmarks",
-        "restaurant_kv_serving.dataset_prep",
-        "restaurant_kv_serving.engine",
-        "restaurant_kv_serving.engine_adapters",
-        "restaurant_kv_serving.engine_launch_config",
-        "restaurant_kv_serving.engine_protocol",
-        "restaurant_kv_serving.kvpack",
-        "restaurant_kv_serving.live_server",
-        "restaurant_kv_serving.native_probe_factories",
-        "restaurant_kv_serving.openai_compatible",
-        "restaurant_kv_serving.probe_fixtures",
-        "restaurant_kv_serving.pr_evidence",
-        "restaurant_kv_serving.release_bundle",
-        "restaurant_kv_serving.release_evidence",
-        "restaurant_kv_serving.serving_env",
-        "restaurant_kv_serving.storage_benchmark",
-        "restaurant_kv_serving.vllm_smoke",
-        "restaurant_kv_serving.workflow",
-    },
-    "tests/test_probe_fixtures.py": {
-        "restaurant_kv_serving.probe_fixtures",
-    },
-    "tests/test_storage.py": {
-        "restaurant_kv_serving.storage",
-    },
-    "tests/test_storage_benchmark.py": {
-        "restaurant_kv_serving.storage_benchmark",
-    },
-    "tests/test_release_evidence.py": {
-        "restaurant_kv_serving.release_evidence",
-    },
-    "tests/test_release_bundle.py": {
-        "restaurant_kv_serving.release_bundle",
-    },
-    "tests/test_scheduler.py": {
-        "restaurant_kv_serving.scheduler",
-    },
-    "tests/test_serving_env.py": {
-        "restaurant_kv_serving.serving_env",
-    },
-    "tests/test_vllm_smoke.py": {
-        "restaurant_kv_serving.vllm_smoke",
-    },
-}
+ALLOWED_LEGACY_TEST_REFERENCES = {}
 ALLOWED_LEGACY_SOURCE_REFERENCES = {}
 
 
@@ -432,7 +328,7 @@ def test_source_layout_readme_reflects_document_owned_implementation():
     assert "public product import namespace is the branded `cachet` facade" in compact_text
     assert "`cachet/` is the branded import facade" in text
     assert "`document_kv_cache/` is the canonical implementation and compatibility" in text
-    assert "`restaurant_kv_serving/` remains in source only for migration-history tests" in compact_text
+    assert "`restaurant_kv_serving/`" not in text
     assert "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter" in compact_text
     assert "contains the current implementation" not in text
 
@@ -504,17 +400,10 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "real wrapper modules" not in text
 
 
-def test_legacy_package_readme_describes_migration_shims_not_new_implementation_owner():
-    text = (REPO_ROOT / "src" / "restaurant_kv_serving" / "README.md").read_text(encoding="utf-8")
-    compact_text = " ".join(text.split())
+def test_legacy_source_package_directory_is_removed():
+    legacy_source_dir = REPO_ROOT / "src" / ("restaurant" "_kv_serving")
 
-    assert "migration shims for callers that have not yet moved to" in text
-    assert "modules in this package forward to document-owned implementations" in compact_text
-    assert "engine_adapters.py` is a compatibility facade over" in text
-    assert "databricks_runs.py` is a compatibility wrapper over" in text
-    assert "release_evidence.py` is a compatibility wrapper over" in text
-    assert "implementation modules that have not" not in text
-    assert "this package owns" not in compact_text
+    assert not legacy_source_dir.exists()
 
 
 def test_legacy_compatibility_removal_gate_is_documented():
@@ -534,12 +423,14 @@ def test_legacy_compatibility_removal_gate_is_documented():
     assert "`document_kv_cache` remains the canonical implementation namespace" in compact_gate
     assert "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts" in compact_gate
     assert "New code must not add production dependencies on the legacy package" in compact_gate
+    assert "from `src/`" in compact_gate
+    assert "Completed Compatibility Contract" in gate
     assert "`pyproject.toml` no longer packages `restaurant_kv_serving`" in compact_gate
     assert "`src/document_kv_cache/release_bundle.py` rejects" in compact_gate
     assert "`restaurant_kv_serving/__init__.py`" in gate
     assert "`restaurant_kv_serving/py.typed`" in gate
-    assert "`tests/test_public_package.py` keeps source-only compatibility checks" in compact_gate
-    assert "`tests/test_project_governance.py` keeps legacy references scoped" in compact_gate
+    assert "`tests/test_public_package.py` proves the public package surface" in compact_gate
+    assert "`tests/test_project_governance.py` prevents new accidental" in compact_gate
     assert "PR evidence sidecars with Refactor-skill evidence" in compact_gate
     assert "completed GPT-5.5 review" in compact_gate
     assert "Downstream Databricks benchmark runners and QA jobs have migrated" in compact_gate
@@ -553,8 +444,7 @@ def test_legacy_compatibility_removal_gate_is_documented():
     assert "optional AWS g5/A10G compatibility evidence" in compact_gate
     assert "strict release-bundle package-wheel gates are updated" in compact_gate
     assert "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata" in compact_gate
-    assert "Delete `src/restaurant_kv_serving` after the downstream migration evidence is attached" in compact_gate
-    assert "Update `README.md`, `docs/v1-requirements-matrix.md`, `src/README.md`" in compact_gate
+    assert "Keep `src/restaurant_kv_serving` absent" in compact_gate
     assert "Run the focused governance, public-package, and release-bundle tests" in compact_gate
     assert "Refresh the tested wheel and strict release bundle before publication" in compact_gate
 
@@ -842,26 +732,19 @@ def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
 
 def test_readme_benchmark_plan_examples_include_release_actions_sidecars():
     root_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    legacy_text = (REPO_ROOT / "src" / "restaurant_kv_serving" / "README.md").read_text(encoding="utf-8")
     compact_root_text = " ".join(root_text.split())
-    compact_legacy_text = " ".join(legacy_text.split())
     root_example = _first_bash_fence_after(root_text, "To run the V1 benchmark contract")
-    legacy_example = _first_bash_fence_after(legacy_text, "`benchmark_plan.py` emits")
 
-    for example in (root_example, legacy_example):
-        assert "--engine-probe-output-json vllm=/data/vllm-engine-probe.json" in example
-        assert "--engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json" in example
-        assert "--engine-probe-output-json sglang=/data/sglang-engine-probe.json" in example
-        assert "--engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json" in example
-        assert "--release-evidence-output-json /data/release-evidence.json" in example
+    assert "--engine-probe-output-json vllm=/data/vllm-engine-probe.json" in root_example
+    assert "--engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json" in root_example
+    assert "--engine-probe-output-json sglang=/data/sglang-engine-probe.json" in root_example
+    assert "--engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json" in root_example
+    assert "--release-evidence-output-json /data/release-evidence.json" in root_example
 
     assert "release evidence must include `--engine-probe-actions-output-json`" in compact_root_text
     assert "actions_output_json" in root_text
-    assert "release evidence must include `--engine-probe-actions-output-json`" in compact_legacy_text
     assert "native probe and connector-action records already exist" in compact_root_text
-    assert "Existing native probe and connector-action JSONs" in compact_legacy_text
     assert "--release-engine-actions-json" in compact_root_text
-    assert "--release-engine-actions-json" in compact_legacy_text
 
 
 def test_readme_model_profile_example_uses_portable_definition_artifact():
@@ -1031,7 +914,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main",
         "real vLLM and SGLang native block managers",
         "docs/native-engine-integration.md",
-        "`restaurant_kv_serving` compatibility directory",
+        "legacy restaurant facade",
     ):
         assert required in matrix_text
 
@@ -1859,5 +1742,5 @@ def test_public_and_adapter_packages_publish_pep561_markers():
     for marker_path in marker_paths:
         assert (REPO_ROOT / marker_path).is_file()
         assert marker_path in includes
-    assert (REPO_ROOT / "src" / "restaurant_kv_serving" / "py.typed").is_file()
+    assert not (REPO_ROOT / "src" / ("restaurant" "_kv_serving") / "py.typed").exists()
     assert "src/restaurant_kv_serving/py.typed" not in includes

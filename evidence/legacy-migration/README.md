@@ -1,8 +1,8 @@
 # Legacy Migration Evidence
 
-This directory tracks evidence for removing the source-only
+This directory tracks the evidence used to remove the source-only
 `restaurant_kv_serving` compatibility facade from the repository after local
-tests and downstream runners no longer require it.
+tests and downstream runners no longer required it.
 
 The `current/` folder contains the latest generated
 `document_kv.legacy_compatibility_migration.v1` record, its scan config, and a

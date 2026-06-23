@@ -5,7 +5,6 @@ from urllib.error import HTTPError
 import pytest
 
 import document_kv_cache.openai_compatible as openai_module
-import restaurant_kv_serving.openai_compatible as legacy_openai_module
 from document_kv_cache.benchmark_runner import BenchmarkEngineRequest
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
@@ -349,23 +348,6 @@ def test_non_streaming_error_payload_raises_and_closes_response():
     assert response.closed is True
 
 
-def test_http_error_body_is_closed_after_wrapping(monkeypatch):
-    body = FakeErrorBody()
-
-    def raise_http_error(*args, **kwargs):
-        raise HTTPError("http://localhost:8000/v1/completions", 400, "bad request", {}, body)
-
-    monkeypatch.setattr(legacy_openai_module, "urlopen", raise_http_error)
-    engine = OpenAICompatibleCompletionEngine(
-        OpenAICompatibleEngineConfig(base_url="http://localhost:8000", stream=False),
-        clock=FakeClock([0.0]),
-    )
-
-    with pytest.raises(RuntimeError, match="HTTP 400: bad request body"):
-        engine.generate(benchmark_request())
-    assert body.closed is True
-
-
 def test_document_urlopen_hook_still_wraps_http_errors(monkeypatch):
     body = FakeErrorBody()
 
@@ -436,11 +418,3 @@ def test_openai_compatible_engine_config_normalizes_json_body_tuples():
     )
 
     assert config.extra_body == {"guided_choice": ["yes", "no"]}
-
-
-def test_legacy_module_reexports_document_owned_engine():
-    assert OpenAICompatibleCompletionEngine.__module__ == "document_kv_cache.openai_compatible"
-    assert legacy_openai_module.OpenAICompatibleCompletionEngine is OpenAICompatibleCompletionEngine
-    assert legacy_openai_module.OpenAICompatibleEngineConfig is OpenAICompatibleEngineConfig
-    assert set(openai_module.__all__) < set(legacy_openai_module.__all__)
-    assert "urlopen" in legacy_openai_module.__all__

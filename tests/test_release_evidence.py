@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 import document_kv_cache.release_evidence as public_release_evidence
-import restaurant_kv_serving.release_evidence as legacy_release_evidence
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
     EngineKVConnectorActions,
@@ -2274,90 +2273,6 @@ def test_public_release_evidence_cli_can_preflight_without_strict_validation(tmp
     assert record["ok"] is False
     assert str(v1_path) in record["missing_paths"]
     assert record["missing_engine_probe_backends"] == ["vllm", "sglang"]
-
-
-def test_public_release_evidence_cli_main_respects_public_stdout_serializers(monkeypatch, capsys, tmp_path):
-    v1_path = tmp_path / "v1.json"
-    storage_path = tmp_path / "storage.json"
-    _write_json(v1_path, _v1_record(ok=True))
-    _write_json(storage_path, _storage_record(ok=True))
-    original_status_serializer = legacy_release_evidence.release_evidence_input_status_to_record
-    original_evidence_serializer = legacy_release_evidence.release_evidence_to_record
-
-    def fake_status_serializer(status):
-        assert status.missing_engine_probe_backends == ("vllm", "sglang")
-        return {"ok": "public-status-serializer"}
-
-    monkeypatch.setattr(public_release_evidence, "release_evidence_input_status_to_record", fake_status_serializer)
-    assert public_release_evidence.main(
-        [
-            "--v1-benchmark-json",
-            str(v1_path),
-            "--storage-benchmark-json",
-            str(storage_path),
-            "--preflight-only",
-        ]
-    ) == 2
-    assert json.loads(capsys.readouterr().out) == {"ok": "public-status-serializer"}
-
-    def fake_evidence_serializer(evidence):
-        assert evidence.missing_engine_probe_backends == ("vllm", "sglang")
-        return {"ok": "public-evidence-serializer"}
-
-    monkeypatch.setattr(public_release_evidence, "release_evidence_to_record", fake_evidence_serializer)
-    assert public_release_evidence.main(
-        [
-            "--v1-benchmark-json",
-            str(v1_path),
-            "--storage-benchmark-json",
-            str(storage_path),
-        ]
-    ) == 2
-    assert json.loads(capsys.readouterr().out) == {"ok": "public-evidence-serializer"}
-    assert legacy_release_evidence.release_evidence_input_status_to_record is original_status_serializer
-    assert legacy_release_evidence.release_evidence_to_record is original_evidence_serializer
-
-
-def test_legacy_release_evidence_cli_main_respects_legacy_stdout_serializers(monkeypatch, capsys, tmp_path):
-    v1_path = tmp_path / "v1.json"
-    storage_path = tmp_path / "storage.json"
-    _write_json(v1_path, _v1_record(ok=True))
-    _write_json(storage_path, _storage_record(ok=True))
-    original_status_serializer = public_release_evidence.release_evidence_input_status_to_record
-    original_evidence_serializer = public_release_evidence.release_evidence_to_record
-
-    def fake_status_serializer(status):
-        assert status.missing_engine_probe_backends == ("vllm", "sglang")
-        return {"ok": "legacy-status-serializer"}
-
-    monkeypatch.setattr(legacy_release_evidence, "release_evidence_input_status_to_record", fake_status_serializer)
-    assert legacy_release_evidence.main(
-        [
-            "--v1-benchmark-json",
-            str(v1_path),
-            "--storage-benchmark-json",
-            str(storage_path),
-            "--preflight-only",
-        ]
-    ) == 2
-    assert json.loads(capsys.readouterr().out) == {"ok": "legacy-status-serializer"}
-
-    def fake_evidence_serializer(evidence):
-        assert evidence.missing_engine_probe_backends == ("vllm", "sglang")
-        return {"ok": "legacy-evidence-serializer"}
-
-    monkeypatch.setattr(legacy_release_evidence, "release_evidence_to_record", fake_evidence_serializer)
-    assert legacy_release_evidence.main(
-        [
-            "--v1-benchmark-json",
-            str(v1_path),
-            "--storage-benchmark-json",
-            str(storage_path),
-        ]
-    ) == 2
-    assert json.loads(capsys.readouterr().out) == {"ok": "legacy-evidence-serializer"}
-    assert public_release_evidence.release_evidence_input_status_to_record is original_status_serializer
-    assert public_release_evidence.release_evidence_to_record is original_evidence_serializer
 
 
 def test_public_release_evidence_cli_rejects_wrong_v1_record_type(tmp_path):

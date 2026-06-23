@@ -8,8 +8,6 @@ product import namespace is the branded `cachet` facade.
   `cachet.<module>` aliases.
 - `document_kv_cache/` is the canonical implementation and compatibility
   namespace used by existing runners, evidence files, and CLI entry points.
-- `restaurant_kv_serving/` remains in source only for migration-history tests
-  and is no longer included in built `cachet-kv` wheels.
 - `vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter
   compatibility packages. They stay importable under their existing names
   because native probe metadata references those dotted paths.

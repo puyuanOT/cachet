@@ -57,15 +57,3 @@ def test_prepared_request_rejects_invalid_gpu_byte_estimates(value):
 def test_prepared_request_requires_string_request_id(request_id):
     with pytest.raises(ValueError, match="request_id"):
         PreparedRequest(request_id, empty_kv(str(request_id)), estimated_gpu_bytes=0)  # type: ignore[arg-type]
-
-
-def test_scheduler_namespace_remains_compatible():
-    from document_kv_cache.scheduler import AdmissionQueue as LegacyAdmissionQueue
-    from document_kv_cache.scheduler import PreparedRequest as LegacyPreparedRequest
-    from restaurant_kv_serving.scheduler import AdmissionQueue as RestaurantLegacyAdmissionQueue
-    from restaurant_kv_serving.scheduler import PreparedRequest as RestaurantLegacyPreparedRequest
-
-    assert LegacyAdmissionQueue is AdmissionQueue
-    assert LegacyPreparedRequest is PreparedRequest
-    assert RestaurantLegacyAdmissionQueue is AdmissionQueue
-    assert RestaurantLegacyPreparedRequest is PreparedRequest

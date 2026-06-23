@@ -6,7 +6,6 @@ import sys
 
 import pytest
 
-import restaurant_kv_serving.probe_fixtures as legacy_probe_fixtures
 from document_kv_cache.engine_adapters import (
     PayloadMode,
     ServingBackend,
@@ -220,17 +219,6 @@ def test_qwen3_v1_engine_probe_fixture_rejects_reserved_metadata(tmp_path):
             output_dir=tmp_path,
             metadata={"document_kv.bad": "reserved"},
         )
-
-
-def test_legacy_probe_fixtures_reexports_document_fixture_api():
-    import document_kv_cache.probe_fixtures as public_probe_fixtures
-
-    assert legacy_probe_fixtures.__all__ == public_probe_fixtures.__all__
-    assert legacy_probe_fixtures.EngineProbeFixtureConfig is public_probe_fixtures.EngineProbeFixtureConfig
-    assert (
-        legacy_probe_fixtures.write_qwen3_v1_engine_probe_fixture
-        is public_probe_fixtures.write_qwen3_v1_engine_probe_fixture
-    )
 
 
 def _matching_installed_vllm_contract_record() -> dict:

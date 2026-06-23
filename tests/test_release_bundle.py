@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 import document_kv_cache.release_bundle as public_release_bundle
-import restaurant_kv_serving.release_bundle as legacy_release_bundle
 from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
 from document_kv_cache.benchmark_plan_executor import (
     BENCHMARK_PLAN_EXECUTION_RECORD_TYPE,
@@ -3491,51 +3490,9 @@ def test_public_release_bundle_cli_rejects_pr_evidence_without_pull_request_iden
     assert "PR evidence sidecar pull_request_url must be non-empty" in completed.stderr
 
 
-def test_public_release_bundle_cli_main_respects_public_hooks(monkeypatch, capsys, tmp_path):
-    original_builder = legacy_release_bundle.build_release_bundle
-    original_serializer = legacy_release_bundle.release_bundle_to_record
-    original_writer = legacy_release_bundle.write_release_bundle_manifest_json
-    fake_bundle = ReleaseBundle(
-        output_dir=str(tmp_path / "bundle"),
-        manifest_path=str(tmp_path / "bundle" / "manifest.json"),
-        artifacts=(),
-    )
-
-    def fake_builder(**kwargs):
-        assert kwargs["output_dir"] == str(tmp_path / "bundle")
-        assert kwargs["require_complete_v1"] is True
-        assert kwargs["requirements_matrix_md"] == "docs/v1-requirements-matrix.md"
-        return fake_bundle
-
-    def fake_serializer(bundle):
-        assert bundle is fake_bundle
-        return {"record_type": "fake-bundle"}
-
-    monkeypatch.setattr(public_release_bundle, "build_release_bundle", fake_builder)
-    monkeypatch.setattr(public_release_bundle, "release_bundle_to_record", fake_serializer)
-
-    assert public_release_bundle.main(
-        [
-            "--v1-benchmark-json",
-            "v1.json",
-            "--storage-benchmark-json",
-            "storage.json",
-            "--requirements-matrix-md",
-            "docs/v1-requirements-matrix.md",
-            "--require-complete-v1",
-            "--output-dir",
-            str(tmp_path / "bundle"),
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == {"record_type": "fake-bundle"}
-    assert legacy_release_bundle.build_release_bundle is original_builder
-    assert legacy_release_bundle.release_bundle_to_record is original_serializer
-    assert legacy_release_bundle.write_release_bundle_manifest_json is original_writer
-
-
 @pytest.mark.parametrize(
     "module_name",
-    ("document_kv_cache.release_bundle", "restaurant_kv_serving.release_bundle"),
+    ("document_kv_cache.release_bundle", "cachet.release_bundle"),
 )
 def test_release_bundle_cli_help_documents_strict_release_requirements(module_name):
     env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
@@ -3557,71 +3514,6 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
     assert "vLLM/SGLang native engine probes, connector actions, and launch configs" in help_text
     assert "supported native probe factory diagnostics" in help_text
     assert "V1 requirements matrix" in help_text
-
-
-def test_release_bundle_strict_release_help_stays_shared_between_public_and_legacy_clis():
-    public_action = _parser_action(public_release_bundle._build_parser(), "--require-complete-v1")
-    legacy_action = _parser_action(legacy_release_bundle._build_parser(), "--require-complete-v1")
-
-    assert public_action.help == public_release_bundle.STRICT_V1_RELEASE_HELP
-    assert legacy_action.help == public_release_bundle.STRICT_V1_RELEASE_HELP
-    assert not hasattr(legacy_release_bundle, "STRICT_V1_RELEASE_HELP")
-
-
-def test_legacy_release_bundle_cli_main_respects_legacy_hooks(monkeypatch, capsys, tmp_path):
-    output_json = tmp_path / "bundle-record.json"
-    original_builder = public_release_bundle.build_release_bundle
-    original_serializer = public_release_bundle.release_bundle_to_record
-    original_writer = public_release_bundle.write_release_bundle_manifest_json
-    fake_bundle = ReleaseBundle(
-        output_dir=str(tmp_path / "bundle"),
-        manifest_path=str(tmp_path / "bundle" / "manifest.json"),
-        artifacts=(),
-    )
-
-    def fake_builder(**kwargs):
-        assert kwargs["output_dir"] == str(tmp_path / "bundle")
-        assert kwargs["requirements_matrix_md"] == "docs/v1-requirements-matrix.md"
-        return fake_bundle
-
-    def fake_serializer(bundle):
-        assert bundle is fake_bundle
-        return {"record_type": "legacy-fake-bundle"}
-
-    monkeypatch.setattr(legacy_release_bundle, "build_release_bundle", fake_builder)
-    monkeypatch.setattr(legacy_release_bundle, "release_bundle_to_record", fake_serializer)
-
-    assert legacy_release_bundle.main(
-        [
-            "--v1-benchmark-json",
-            "v1.json",
-            "--storage-benchmark-json",
-            "storage.json",
-            "--requirements-matrix-md",
-            "docs/v1-requirements-matrix.md",
-            "--output-dir",
-            str(tmp_path / "bundle"),
-        ]
-    ) == 0
-    assert json.loads(capsys.readouterr().out) == {"record_type": "legacy-fake-bundle"}
-    assert legacy_release_bundle.main(
-        [
-            "--v1-benchmark-json",
-            "v1.json",
-            "--storage-benchmark-json",
-            "storage.json",
-            "--requirements-matrix-md",
-            "docs/v1-requirements-matrix.md",
-            "--output-dir",
-            str(tmp_path / "bundle"),
-            "--output-json",
-            str(output_json),
-        ]
-    ) == 0
-    assert json.loads(output_json.read_text(encoding="utf-8")) == {"record_type": "legacy-fake-bundle"}
-    assert public_release_bundle.build_release_bundle is original_builder
-    assert public_release_bundle.release_bundle_to_record is original_serializer
-    assert public_release_bundle.write_release_bundle_manifest_json is original_writer
 
 
 def _write_record(path: Path, record_type: str, *, backend: str | None = None) -> Path:

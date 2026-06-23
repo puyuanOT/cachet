@@ -263,37 +263,3 @@ def test_main_reports_invalid_extra_config(capsys):
     assert record["ok"] is False
     assert record["error_type"] == "ValueError"
     assert "valid JSON" in record["error"]
-
-
-def test_advertised_python_module_cli_writes_sidecar_without_runtime_warning(tmp_path):
-    output_json = tmp_path / "sglang-launch-config.json"
-    python_paths = (
-        str(REPO_ROOT / "src"),
-        str(WORKSPACE_ROOT / "restaurant-kv-serving" / "src"),
-        os.environ.get("PYTHONPATH", ""),
-    )
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(path for path in python_paths if path)}
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "sglang_kv_injection.hicache_config_cli",
-            "--output-json",
-            str(output_json),
-        ],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-    assert completed.stdout == ""
-    assert completed.stderr == ""
-    config = json.loads(output_json.read_text(encoding="utf-8"))
-    extra = json.loads(config["hicache_storage_backend_extra_config"])
-
-    assert config["hicache_storage_backend"] == SGLANG_HICACHE_DYNAMIC_BACKEND
-    assert extra["module_path"] == DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH
-    assert extra["class_name"] == DOCUMENT_KV_HICACHE_BACKEND_CLASS
-    assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY

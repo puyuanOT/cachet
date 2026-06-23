@@ -4,7 +4,6 @@ import pytest
 
 import cachet.benchmark_handoffs as cachet_benchmark_handoffs
 import document_kv_cache.benchmark_handoffs as public_benchmark_handoffs
-import restaurant_kv_serving.benchmark_handoffs as legacy_benchmark_handoffs
 from document_kv_cache.benchmark_handoffs import (
     BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE,
     BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION,
@@ -910,15 +909,3 @@ def test_manifest_main_writes_manifest_json(tmp_path, capsys):
     assert exit_code == 0
     assert json.loads(capsys.readouterr().out) == {"ok": True, "entries": 1}
     assert handoffs.entries[0].handoff_json == str(handoff_path)
-
-
-def test_cachet_and_legacy_facades_share_public_module():
-    assert cachet_benchmark_handoffs is public_benchmark_handoffs
-    assert legacy_benchmark_handoffs.build_benchmark_handoff_manifest_from_jsonl is (
-        build_benchmark_handoff_manifest_from_jsonl
-    )
-    assert legacy_benchmark_handoffs.BenchmarkHandoffManifest is BenchmarkHandoffManifest
-    assert legacy_benchmark_handoffs.enrich_benchmark_jsonl_with_handoffs is enrich_benchmark_jsonl_with_handoffs
-    assert legacy_benchmark_handoffs.generate_benchmark_handoff_bundles is generate_benchmark_handoff_bundles
-    assert legacy_benchmark_handoffs.bundle_main is public_benchmark_handoffs.bundle_main
-    assert legacy_benchmark_handoffs.manifest_main is public_benchmark_handoffs.manifest_main

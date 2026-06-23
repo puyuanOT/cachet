@@ -10,20 +10,17 @@ Public submodules such as `document_kv_cache.benchmark_plan`,
 `document_kv_cache.workflow` are the canonical implementation modules with
 `document_kv_cache.*` module identity. New documentation and examples should
 prefer the Cachet aliases, while this namespace remains importable for existing
-benchmark evidence, Databricks runners, and downstream jobs. The legacy
-restaurant package can be removed after downstream jobs finish migrating.
+benchmark evidence, Databricks runners, and downstream jobs.
 
 The package root keeps `__all__` document-first for `from document_kv_cache
-import *`; restaurant-specific compatibility aliases such as
-`RestaurantKVRequest` remain available as direct attributes during migration,
-but are not advertised by root star imports.
+import *`; restaurant-specific compatibility aliases are no longer exported
+from the package surface.
 
 ## Public Module Map
 
 Public files in this package define the document-owned classes, functions,
-records, and CLI targets. Legacy restaurant import paths are maintained in the
-separate `restaurant_kv_serving` compatibility package rather than by making
-new document modules depend on restaurant-owned implementations.
+records, and CLI targets. The removed restaurant compatibility package must not
+return as a production dependency.
 
 - `admission.py` exposes pending GPU-memory admission controls.
 - `adapter_scaffold.py` generates fail-closed native-probe delegate modules for
@@ -82,8 +79,8 @@ new document modules depend on restaurant-owned implementations.
   protection, merge-settings, auto-merge, and merged-branch cleanup status
   records for release-readiness evidence.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
-- `legacy_compatibility.py` validates downstream migration evidence before the
-  legacy `restaurant_kv_serving` compatibility facade can be removed.
+- `legacy_compatibility.py` validates downstream migration evidence proving the
+  legacy `restaurant_kv_serving` compatibility facade was removed safely.
 - `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.

@@ -3,7 +3,6 @@ import json
 import pytest
 
 import document_kv_cache.serving_env as public_serving_env
-import restaurant_kv_serving.serving_env as legacy_serving_env
 from document_kv_cache import ServingBackend
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
@@ -94,13 +93,6 @@ def test_serving_environment_profiles_writer_and_cli_emit_stable_records(tmp_pat
     stdout_record = json.loads(capsys.readouterr().out)
 
     assert stdout_record == serving_environment_profiles_to_record()
-
-
-def test_legacy_serving_environment_cli_emits_compatible_record(tmp_path):
-    output_path = tmp_path / "legacy-serving-env.json"
-
-    assert legacy_serving_env.main(["--output-json", str(output_path)]) == 0
-    assert json.loads(output_path.read_text(encoding="utf-8")) == serving_environment_profiles_to_record()
 
 
 def test_serving_environment_profile_rejects_ambiguous_or_combined_runtime_pins():
