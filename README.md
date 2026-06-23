@@ -1353,9 +1353,10 @@ HiCache provider config, and writes `metadata.json`, `sglang-launch-config.json`
 The current helper is a baseline/provider bring-up gate only. Handoff-backed
 cache-arm execution fails before server launch because pinned SGLang carries
 OpenAI `custom_params` on sampling params but does not yet pass Cachet
-`kv_transfer_params` into the dynamic HiCache storage backend. Keep
-`--baseline-only` on these runs until request-to-HiCache binding is
-implemented.
+`kv_transfer_params` into `HiCacheStorageExtraInfo.extra_info` for the dynamic
+HiCache storage backend. The SGLang runtime preflight records this as
+`live_request_metadata_bridge_ok=false`. Keep `--baseline-only` on these runs
+until request-to-HiCache binding is implemented and that field becomes true.
 
 ```bash
 python -m document_kv_cache.sglang_smoke \

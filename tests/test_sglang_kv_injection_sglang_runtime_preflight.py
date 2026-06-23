@@ -46,10 +46,14 @@ def matching_installed_contract() -> dict:
             server_arg_fields=SGLANG_HICACHE_REQUIRED_SERVER_ARG_FIELDS,
             cli_options=SGLANG_HICACHE_REQUIRED_CLI_OPTIONS,
             hicache_storage_backend_choices=("file", "dynamic"),
+            hicache_storage_extra_info_fields=("prefix_keys", "extra_info"),
             storage_backend_factory_methods=SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
             document_kv_backend_importable=True,
             document_kv_backend_subclasses_hicache_storage=True,
             document_kv_backend_methods=SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
+            request_custom_params_available=True,
+            request_metadata_extra_info_bridge=False,
+            request_metadata_bridge_sources=(),
         )
     )
 
@@ -73,6 +77,7 @@ def drifting_installed_contract() -> dict:
                 if option != "--hicache-storage-backend-extra-config"
             ),
             hicache_storage_backend_choices=("file",),
+            hicache_storage_extra_info_fields=("prefix_keys",),
             storage_backend_factory_methods=SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
             document_kv_backend_importable=True,
             document_kv_backend_subclasses_hicache_storage=True,
@@ -81,6 +86,9 @@ def drifting_installed_contract() -> dict:
                 for method_name in SGLANG_HICACHE_REQUIRED_BACKEND_METHODS
                 if method_name != "batch_exists_v2"
             ),
+            request_custom_params_available=False,
+            request_metadata_extra_info_bridge=False,
+            request_metadata_bridge_sources=(),
         )
     )
 
@@ -210,9 +218,14 @@ def test_installed_sglang_hicache_contract_accepts_dynamic_runtime_surface():
     assert record["runtime"] == SGLANG_HICACHE_DYNAMIC_RUNTIME
     assert record["package_version"] == "0.5.10.post1"
     assert "dynamic" in record["hicache_storage_backend_choices"]
+    assert record["hicache_storage_extra_info_fields"] == ["extra_info", "prefix_keys"]
     assert record["document_kv_backend_importable"] is True
     assert record["document_kv_backend_subclasses_hicache_storage"] is True
     assert "batch_exists_v2" in record["document_kv_backend_methods"]
+    assert record["request_custom_params_available"] is True
+    assert record["request_metadata_extra_info_bridge"] is False
+    assert record["request_metadata_bridge_sources"] == []
+    assert record["live_request_metadata_bridge_ok"] is False
     assert record["ok"] is True
     validate_installed_sglang_hicache_contract_record(record)
 
@@ -225,9 +238,47 @@ def test_installed_sglang_hicache_contract_rejects_runtime_drift():
 
     assert any("hicache_storage_backend_extra_config" in issue for issue in issues)
     assert any("dynamic" in issue for issue in issues)
+    assert any("hicache_storage_extra_info_fields" in issue and "extra_info" in issue for issue in issues)
+    assert any("request_custom_params_available" in issue for issue in issues)
     assert any("batch_exists_v2" in issue for issue in issues)
     with pytest.raises(ValueError, match="hicache_storage_backend_extra_config"):
         validate_installed_sglang_hicache_contract_record(record)
+
+
+def test_sglang_request_metadata_bridge_source_detection():
+    assert (
+        sglang_runtime_preflight._source_contains_request_metadata_bridge(
+            "extra_info = HiCacheStorageExtraInfo(prefix_keys=prefix_keys)"
+        )
+        is False
+    )
+    assert (
+        sglang_runtime_preflight._source_contains_request_metadata_bridge(
+            "custom_params = request.sampling_params.custom_params\n"
+            "extra_info = HiCacheStorageExtraInfo(prefix_keys=prefix_keys, extra_info={})"
+        )
+        is False
+    )
+    assert (
+        sglang_runtime_preflight._source_contains_request_metadata_bridge(
+            "extra_info = hicache_storage.HiCacheStorageExtraInfo("
+            "prefix_keys=prefix_keys, extra_info=extra_info)"
+        )
+        is False
+    )
+    assert (
+        sglang_runtime_preflight._source_contains_request_metadata_bridge(
+            "extra_info = HiCacheStorageExtraInfo(prefix_keys=prefix_keys, "
+            "extra_info=operation.extra_info)"
+        )
+        is True
+    )
+    assert (
+        sglang_runtime_preflight._source_contains_request_metadata_bridge(
+            "extra_info = HiCacheStorageExtraInfo(extra_info={'custom_params': custom_params})"
+        )
+        is True
+    )
 
 
 def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(monkeypatch):
@@ -279,10 +330,14 @@ def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(mo
     class HiCacheStorage:
         pass
 
+    class HiCacheStorageExtraInfo:
+        __annotations__ = {"prefix_keys": list, "extra_info": dict}
+
     install_document_kv_backend_class(monkeypatch, HiCacheStorage)
     server_args_module.ServerArgs = ServerArgs
     backend_factory_module.StorageBackendFactory = StorageBackendFactory
     hicache_storage_module.HiCacheStorage = HiCacheStorage
+    hicache_storage_module.HiCacheStorageExtraInfo = HiCacheStorageExtraInfo
     for module in (
         sglang_module,
         srt_module,
@@ -294,12 +349,16 @@ def test_installed_sglang_hicache_contract_can_inspect_fake_installed_modules(mo
     ):
         monkeypatch.setitem(sys.modules, module.__name__, module)
     monkeypatch.setattr(sglang_runtime_preflight.importlib_metadata, "version", lambda name: "0.5.10.post1")
+    monkeypatch.setattr(sglang_runtime_preflight, "_request_custom_params_available", lambda: True)
+    monkeypatch.setattr(sglang_runtime_preflight, "_request_metadata_bridge_sources", lambda: ())
 
     record = sglang_runtime_preflight.installed_sglang_hicache_contract_to_record()
 
     assert record["ok"] is True
     assert record["package_version"] == "0.5.10.post1"
+    assert record["hicache_storage_extra_info_fields"] == ["extra_info", "prefix_keys"]
     assert record["document_kv_backend_subclasses_hicache_storage"] is True
+    assert record["live_request_metadata_bridge_ok"] is False
     sglang_runtime_preflight.validate_installed_sglang_hicache_contract_record(record)
 
 
@@ -350,6 +409,7 @@ def test_sglang_runtime_preflight_accepts_dynamic_hicache_config_and_provider(mo
     assert record["dynamic_backend_factory"]["backend_class"] == "DocumentKVHiCacheBackend"
     assert record["dynamic_backend_factory"]["backend_provider_class"] == "Provider"
     assert record["dynamic_backend_factory"]["ok"] is True
+    assert record["live_request_metadata_bridge_ok"] is False
     factory_cls = sys.modules["sglang.srt.mem_cache.storage.backend_factory"].StorageBackendFactory
     assert factory_cls.loader_calls == [
         (

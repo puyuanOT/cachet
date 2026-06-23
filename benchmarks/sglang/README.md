@@ -19,8 +19,10 @@ readiness path. The smoke launches pinned SGLang with Cachet's dynamic HiCache
 provider config, validates the provider factory, and runs a full-prompt
 baseline. Handoff-backed cache-arm execution is intentionally blocked before
 server launch because the pinned SGLang OpenAI path carries `custom_params` on
-sampling params but does not yet pass Cachet `kv_transfer_params` into the
-dynamic HiCache storage backend.
+sampling params but does not yet pass Cachet `kv_transfer_params` into
+`HiCacheStorageExtraInfo.extra_info` for the dynamic HiCache storage backend.
+The runtime preflight now exposes this directly as
+`live_request_metadata_bridge_ok=false`.
 
 Those helpers are a provider/server bring-up path, not a benchmark result. Use
 `--baseline-only` until request-to-HiCache handoff binding is implemented. This
@@ -33,6 +35,7 @@ Treat SGLang benchmark publication as pending until all of these are true:
 
 - A real SGLang serving endpoint is launched on the target Databricks hardware.
 - The endpoint receives Cachet `kv_transfer_params` from a generated handoff.
+- The SGLang runtime preflight reports `live_request_metadata_bridge_ok=true`.
 - Decode-time prefix binding is validated against the live endpoint.
 - Latency, throughput, and quality measurements are recorded with the same
   benchmark schema used by the vLLM report.
