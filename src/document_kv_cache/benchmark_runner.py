@@ -983,7 +983,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--server-usage",
         action="store_true",
-        help="Prefer server usage.prompt_tokens; metadata still reports whether usage was present.",
+        help=(
+            "Record server usage.prompt_tokens in metadata when present; "
+            "reported prompt_tokens still follow the logical/runtime prompt context."
+        ),
     )
     parser.add_argument("--baseline-extra-body-json", default="{}", help="JSON object merged into baseline requests.")
     parser.add_argument("--cache-extra-body-json", default="{}", help="JSON object merged into cache-arm requests.")

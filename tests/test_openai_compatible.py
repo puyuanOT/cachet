@@ -185,9 +185,11 @@ def test_runtime_prompt_mode_uses_cache_suffix_for_kv_aware_proxy():
 
     generation = engine.generate(benchmark_request())
 
-    assert generation.prompt_tokens == 12
-    assert generation.metadata["prompt_token_source"] == "server_usage"
+    assert generation.prompt_tokens == int(generation.metadata["runtime_prompt_tokens"])
+    assert generation.metadata["prompt_token_source"] == "runtime"
     assert generation.metadata["prompt_text_mode"] == "runtime"
+    assert generation.metadata["server_usage_prompt_tokens"] == "12"
+    assert generation.metadata["server_usage_prompt_tokens_present"] == "true"
     assert int(generation.metadata["logical_prompt_tokens"]) > int(generation.metadata["runtime_prompt_tokens"])
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
 
@@ -263,9 +265,11 @@ def test_non_streaming_completion_engine_uses_usage_and_total_latency():
     generation = engine.generate(benchmark_request())
 
     assert generation.output_text == "Ada Lovelace"
-    assert generation.prompt_tokens == 12
+    assert generation.prompt_tokens == int(generation.metadata["logical_prompt_tokens"])
     assert generation.completion_tokens == 2
-    assert generation.metadata["prompt_token_source"] == "server_usage"
+    assert generation.metadata["prompt_token_source"] == "logical"
+    assert generation.metadata["server_usage_prompt_tokens"] == "12"
+    assert generation.metadata["server_usage_prompt_tokens_present"] == "true"
     assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
     assert generation.ttft_seconds == pytest.approx(2.5)
     assert generation.time_to_completion_seconds == pytest.approx(2.5)
@@ -293,7 +297,7 @@ def test_missing_usage_uses_logical_prompt_and_output_fallback_counts():
     assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
 
 
-def test_server_usage_accounting_labels_missing_usage_fallback():
+def test_server_usage_accounting_records_missing_usage_fallback():
     request = benchmark_request()
     engine = CapturingEngine(
         OpenAICompatibleEngineConfig(
@@ -308,7 +312,9 @@ def test_server_usage_accounting_labels_missing_usage_fallback():
     generation = engine.generate(request)
 
     assert generation.prompt_tokens == WhitespaceTokenCounter().count(request.logical_prompt_text)
-    assert generation.metadata["prompt_token_source"] == "logical_fallback"
+    assert generation.metadata["prompt_token_source"] == "logical"
+    assert generation.metadata["server_usage_prompt_tokens_present"] == "false"
+    assert "server_usage_prompt_tokens" not in generation.metadata
     assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
 
 

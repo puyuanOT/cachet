@@ -337,6 +337,8 @@ class OpenAICompatibleCompletionEngine:
     ) -> tuple[int, str, dict[str, str]]:
         logical_count = self.token_counter.count(request.logical_prompt_text)
         runtime_count = self.token_counter.count(self._prompt_text(request))
+        context_count = runtime_count if self.config.prompt_text_mode == "runtime" else logical_count
+        context_source = self.config.prompt_text_mode
         metadata = {
             "logical_prompt_tokens": str(logical_count),
             "runtime_prompt_tokens": str(runtime_count),
@@ -344,9 +346,12 @@ class OpenAICompatibleCompletionEngine:
         if self.config.prompt_token_accounting == "server_usage":
             value = usage.get("prompt_tokens")
             if isinstance(value, int) and value >= 0:
-                return value, "server_usage", metadata
-            return logical_count, "logical_fallback", metadata
-        return logical_count, "logical", metadata
+                metadata["server_usage_prompt_tokens"] = str(value)
+                metadata["server_usage_prompt_tokens_present"] = "true"
+            else:
+                metadata["server_usage_prompt_tokens_present"] = "false"
+            return context_count, context_source, metadata
+        return context_count, context_source, metadata
 
 
 def _iter_sse_events(response: Any) -> Iterator[str]:

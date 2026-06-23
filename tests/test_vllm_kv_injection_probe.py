@@ -1,3 +1,4 @@
+import importlib.metadata as package_metadata
 import json
 from textwrap import dedent
 
@@ -25,6 +26,7 @@ from document_kv_cache.native_probe_factories import (
     _inspect_delegate_adapter_contract,
     native_probe_adapter_contract_to_record,
 )
+from document_kv_cache.serving_env import VLLM_VERSION
 from vllm_kv_injection.probe import (
     NativeVLLMConnectorFactoryResult,
     VLLM_CONNECTOR_FACTORY_METADATA_EXAMPLE,
@@ -45,6 +47,11 @@ from vllm_kv_injection.vllm_native_provider import DOCUMENT_KV_NATIVE_PROVIDER_F
 from vllm_kv_injection.protocol import KVCacheHandle, KVLayout, KVSegment
 from vllm_kv_injection.vllm_runtime_contract import VLLM_KV_CONNECTOR_V1_RUNTIME
 from vllm_kv_injection.vllm_runtime_contract import vllm_kv_connector_v1_contract_to_record
+
+
+def _installed_vllm_version(package_name: str) -> str:
+    assert package_name == "vllm"
+    return VLLM_VERSION
 
 
 def handle() -> KVCacheHandle:
@@ -391,8 +398,9 @@ def test_build_in_memory_debug_probe_accepts_qwen3_gqa_release_layout(tmp_path):
         validate_engine_kv_connector_probe_record(record)
 
 
-def test_build_native_connector_probe_for_engine_probe_runner(tmp_path):
+def test_build_native_connector_probe_for_engine_probe_runner(tmp_path, monkeypatch):
     pytest.importorskip("torch")
+    monkeypatch.setattr("vllm_kv_injection.probe.package_metadata.version", _installed_vllm_version)
     ready = EngineReadyRequest(
         handle=handle(),
         payload=(b"s" * 8, b"c" * 12),
@@ -412,7 +420,7 @@ def test_build_native_connector_probe_for_engine_probe_runner(tmp_path):
     record = engine_kv_connector_probe_result_to_record(result)
     assert record["backend"] == "vllm"
     assert record["native_probe"] is True
-    assert record["engine_version"].startswith("vllm-")
+    assert record["engine_version"] == VLLM_VERSION
     assert record["metadata"][VLLM_PROBE_METADATA_CONNECTOR_CLASS] == "DocumentKVNativeProbeConnector"
     assert record["metadata"][VLLM_PROBE_METADATA_CONNECTOR_FACTORY] == VLLM_DOCUMENT_KV_NATIVE_PROBE_CONNECTOR_FACTORY
     assert record["metadata"][VLLM_PROBE_METADATA_NATIVE_RUNTIME] == "true"
@@ -423,6 +431,31 @@ def test_build_native_connector_probe_for_engine_probe_runner(tmp_path):
     assert record["metadata"][VLLM_PROBE_METADATA_RUNTIME_CONTRACT] == VLLM_KV_CONNECTOR_V1_RUNTIME
     assert record["metadata"]["runtime.owner"] == "vllm"
     validate_engine_kv_connector_probe_record(record)
+
+
+def test_build_native_connector_probe_requires_installed_vllm_metadata(tmp_path, monkeypatch):
+    pytest.importorskip("torch")
+
+    def missing_version(package_name: str) -> str:
+        raise package_metadata.PackageNotFoundError(package_name)
+
+    monkeypatch.setattr("vllm_kv_injection.probe.package_metadata.version", missing_version)
+    ready = EngineReadyRequest(
+        handle=handle(),
+        payload=(b"s" * 8, b"c" * 12),
+        estimated_gpu_bytes=40,
+    )
+    handoff_path = write_debug_handoff(tmp_path, ready)
+
+    with pytest.raises(RuntimeError, match="requires installed vLLM package metadata"):
+        run_engine_kv_connector_probe(
+            EngineKVProbeConfig(
+                handoff_json=handoff_path,
+                probe_factory="vllm_kv_injection.probe:build_native_connector_probe",
+                expected_backend=ServingBackend.VLLM,
+                metadata={VLLM_PROBE_METADATA_CONNECTOR_FACTORY: VLLM_DOCUMENT_KV_NATIVE_PROBE_CONNECTOR_FACTORY},
+            )
+        )
 
 
 def test_build_native_connector_probe_requires_connector_factory_metadata(tmp_path):
