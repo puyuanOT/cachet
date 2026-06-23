@@ -1,19 +1,31 @@
-# Benchmark Evidence
+# Benchmark Reports
 
-This directory contains curated Cachet benchmark evidence. It is separate from
-`pr-evidence/`, which records PR review and validation history, and from
-`databricks-runs/`, which remains ignored local scratch output.
+This directory contains curated, human-readable Cachet benchmark reports and
+the sanitized artifacts that back them. It is separate from `pr-evidence/`,
+which records PR review and validation history, and from `databricks-runs/`,
+which remains ignored local scratch output.
 
-Start with the current Databricks snapshot:
+Start with the standalone report folders:
+
+| Folder | Purpose | Current status |
+| --- | --- | --- |
+| [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
+| [`sglang/`](sglang/) | SGLang benchmark status | Pending live latency and quality benchmark |
+| [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
+| [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
+
+The Databricks artifact index remains available at
 [`databricks/CURRENT.md`](databricks/CURRENT.md). Each benchmark run gets a
-standalone dated folder under `databricks/` with a human-readable `README.md`
-plus the sanitized JSON artifacts needed to reproduce the claim.
+dated folder under `databricks/` with a human-readable `README.md` plus the
+sanitized JSON artifacts needed to audit the claim.
 
 Use this boundary when adding or reviewing benchmark output:
 
+- `benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
+  `benchmarks/native-engine/` are standalone human-readable report folders.
 - `benchmarks/databricks/CURRENT.md` is the current human-readable summary.
 - `benchmarks/databricks/<date>-<target>-<purpose>/README.md` is the
-  run-specific human-readable report.
+  run-specific human-readable source-artifact report.
 - Folders with `v1_benchmark.json` are latency and quality benchmark reports.
 - The native-engine probe folder is integration evidence only; it is not a
   vLLM or SGLang latency/quality benchmark report.

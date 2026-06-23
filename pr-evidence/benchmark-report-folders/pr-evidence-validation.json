@@ -1,0 +1,45 @@
+{
+  "files": {
+    "pr-evidence/benchmark-report-folders/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 review found no blocking issues. The reviewer confirmed the new standalone benchmark folders are human-readable, vLLM remains the only published latency/quality benchmark surface, SGLang is explicitly pending live latency/quality validation, native SGLang evidence remains integration evidence only, pr-evidence is not treated as benchmark output, and no secrets were introduced. GitHub would not allow formal approval because it authenticated as the PR author, so the clean result was posted as a review comment.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 446,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/446",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "benchmarks/README.md",
+        "benchmarks/vllm/README.md",
+        "benchmarks/sglang/README.md",
+        "benchmarks/storage/README.md",
+        "benchmarks/native-engine/README.md",
+        "benchmarks/databricks/README.md",
+        "benchmarks/databricks/CURRENT.md",
+        "README.md",
+        "docs/README.md",
+        "docs/v1-requirements-matrix.md",
+        "tests/test_project_governance.py"
+      ],
+      "verification": [
+        "Refactor skill applied as a behavior-preserving scope review for this docs/governance slice; no runtime behavior or data formats changed.",
+        "poetry run pytest tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs -q -> 1 passed",
+        "poetry run pytest tests/test_project_governance.py -q -> 50 passed",
+        "poetry run pytest -q -> 1794 passed",
+        "poetry check && poetry check --lock -> All set! / All set!",
+        "GPT-5.5 reviewer found no blocking issues and posted a COMMENT review because GitHub rejected self-approval by the PR author identity"
+      ],
+      "what_changed": [
+        "Added standalone human-readable benchmark report folders for vLLM, SGLang status, storage, and native-engine integration evidence.",
+        "Clarified that Databricks dated folders carry sanitized source artifacts while pr-evidence remains PR validation bookkeeping, not benchmark output.",
+        "Extended project governance tests to enforce the standalone report-folder layout and SGLang benchmark boundary."
+      ],
+      "why": "The existing pr-evidence tree is machine-readable release bookkeeping, and the Databricks artifact folders alone were not a clear human benchmark report surface. Standalone benchmark report folders give readers a durable place to review and cite benchmark status without mistaking PR evidence or native SGLang probes for latency/quality benchmarks."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
