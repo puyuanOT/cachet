@@ -456,6 +456,50 @@ def test_native_provider_copies_materialized_payload_into_registered_paged_kv_la
     assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
 
 
+def test_native_provider_reports_phase_timing_metrics(monkeypatch):
+    ticks = iter(
+        [
+            100,
+            110,
+            200,
+            220,
+            300,
+            330,
+            400,
+            440,
+            500,
+            550,
+        ]
+    )
+
+    monkeypatch.setattr(vllm_native_provider.time, "perf_counter_ns", lambda: next(ticks))
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert stats["document_kv_loads_started"] == 1
+    assert stats["document_kv_layers_loaded"] == 2
+    assert stats["document_kv_load_error_blocks"] == 0
+    assert stats["document_kv_payload_materialize_ns"] == 10
+    assert stats["document_kv_payload_merge_ns"] == 20
+    assert stats["document_kv_payload_view_ns"] == 30
+    assert stats["document_kv_layer_load_ns"] == 90
+    assert connector.get_kv_connector_stats() is None
+
+
 def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
     calls = []
     original_frombuffer = torch.frombuffer

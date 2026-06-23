@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import time
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -264,6 +265,10 @@ class DocumentKVNativeProvider:
         self._stats_loads_started = 0
         self._stats_layers_loaded = 0
         self._stats_load_error_blocks = 0
+        self._stats_payload_materialize_ns = 0
+        self._stats_payload_merge_ns = 0
+        self._stats_payload_view_ns = 0
+        self._stats_layer_load_ns = 0
 
     def get_num_new_matched_tokens(
         self,
@@ -431,6 +436,10 @@ class DocumentKVNativeProvider:
             self._stats_loads_started == 0
             and self._stats_layers_loaded == 0
             and self._stats_load_error_blocks == 0
+            and self._stats_payload_materialize_ns == 0
+            and self._stats_payload_merge_ns == 0
+            and self._stats_payload_view_ns == 0
+            and self._stats_layer_load_ns == 0
         ):
             return None
         stats = DocumentKVConnectorStats.from_mapping(
@@ -438,11 +447,19 @@ class DocumentKVNativeProvider:
                 "document_kv_loads_started": self._stats_loads_started,
                 "document_kv_layers_loaded": self._stats_layers_loaded,
                 "document_kv_load_error_blocks": self._stats_load_error_blocks,
+                "document_kv_payload_materialize_ns": self._stats_payload_materialize_ns,
+                "document_kv_payload_merge_ns": self._stats_payload_merge_ns,
+                "document_kv_payload_view_ns": self._stats_payload_view_ns,
+                "document_kv_layer_load_ns": self._stats_layer_load_ns,
             }
         )
         self._stats_loads_started = 0
         self._stats_layers_loaded = 0
         self._stats_load_error_blocks = 0
+        self._stats_payload_materialize_ns = 0
+        self._stats_payload_merge_ns = 0
+        self._stats_payload_view_ns = 0
+        self._stats_layer_load_ns = 0
         return stats
 
     def vllm_layer_mapping_record(self) -> dict[str, Any]:
@@ -477,34 +494,53 @@ class DocumentKVNativeProvider:
 
     def _load_request(self, load: DocumentKVLoadRequest) -> None:
         try:
-            payload = _materialized_payload(load)
-            merged_payload = _merged_payload(load.actions, payload)
-            payload_view = _payload_tensor_view(merged_payload, load)
+            started_ns = time.perf_counter_ns()
+            try:
+                payload = _materialized_payload(load)
+            finally:
+                self._stats_payload_materialize_ns += time.perf_counter_ns() - started_ns
+
+            started_ns = time.perf_counter_ns()
+            try:
+                merged_payload = _merged_payload(load.actions, payload)
+            finally:
+                self._stats_payload_merge_ns += time.perf_counter_ns() - started_ns
+
+            started_ns = time.perf_counter_ns()
+            try:
+                payload_view = _payload_tensor_view(merged_payload, load)
+            finally:
+                self._stats_payload_view_ns += time.perf_counter_ns() - started_ns
+
             block_size = load.actions.reservation.layout.block_size
             slot_mappings: dict[object | None, object] = {}
             for layer_name, dst_layer in self._kv_caches.items():
                 layer_index = self._layer_indices[layer_name]
                 if layer_index >= load.actions.reservation.layout.num_layers:
                     continue
-                src_layer = _payload_layer_tensor(
-                    payload_view,
-                    load,
-                    layer_index=layer_index,
-                    dst_kv_cache_layer=dst_layer,
-                )
-                device = getattr(dst_layer, "device", None)
-                if device not in slot_mappings:
-                    slot_mappings[device] = slot_mapping_from_blocks(
-                        load.blocks,
-                        block_size=block_size,
-                        device=device,
+                started_ns = time.perf_counter_ns()
+                try:
+                    src_layer = _payload_layer_tensor(
+                        payload_view,
+                        load,
+                        layer_index=layer_index,
+                        dst_kv_cache_layer=dst_layer,
                     )
-                inject_kv_cache_layer(
-                    dst_layer,
-                    src_layer,
-                    slot_mappings[device],
-                    block_size=block_size,
-                )
+                    device = getattr(dst_layer, "device", None)
+                    if device not in slot_mappings:
+                        slot_mappings[device] = slot_mapping_from_blocks(
+                            load.blocks,
+                            block_size=block_size,
+                            device=device,
+                        )
+                    inject_kv_cache_layer(
+                        dst_layer,
+                        src_layer,
+                        slot_mappings[device],
+                        block_size=block_size,
+                    )
+                finally:
+                    self._stats_layer_load_ns += time.perf_counter_ns() - started_ns
                 self._stats_layers_loaded += 1
         except Exception:
             error_block_ids = {block.block_id for block in load.blocks}
