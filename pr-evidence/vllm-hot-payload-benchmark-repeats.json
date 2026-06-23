@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Herschel the 2nd found the benchmark_repeats path complete and clean; residual risk is only the intended Databricks/vLLM end-to-end confirmation after merge.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 408,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/408",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/vllm_smoke.py",
+    "src/document_kv_cache/databricks_vllm_smoke_job.py",
+    "tests/test_vllm_smoke.py",
+    "tests/test_databricks_vllm_smoke_job.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_vllm_smoke.py tests/test_databricks_vllm_smoke_job.py tests/test_benchmark_runner.py tests/test_public_package.py tests/test_project_governance.py -q -> 197 passed",
+    "poetry run pytest -q -> 1889 passed, 4 skipped",
+    "git diff --check -> passed",
+    "poetry run python -m compileall -q src tests -> passed",
+    "poetry check -> passed with existing duplicated project/tool.poetry metadata warnings",
+    "changed-file path-only secret scan for Databricks token/profile strings -> no matches"
+  ],
+  "what_changed": [
+    "Added benchmark_repeats to the vLLM smoke runner and metadata, and passed it through to document_kv_cache.benchmark_runner --repeats.",
+    "Exposed benchmark_repeats in Databricks vLLM smoke job configuration and run-submit CLI parameters."
+  ],
+  "why": "The vLLM payload URI cache from PR #407 needs repeated cache-arm calls against the same prepared handoff in one server process before a Databricks QA run can show payload-cache hits."
+}

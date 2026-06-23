@@ -170,6 +170,7 @@ class VLLMSmokeBenchmarkConfig:
     max_model_len: int = 4096
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
+    benchmark_repeats: int = 1
     dataset_specs: tuple[str, ...] = ()
     package_install_spec: str | None = None
     handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
@@ -202,6 +203,10 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("max_num_seqs must be positive")
         if not 0 < self.gpu_memory_utilization <= 1:
             raise ValueError("gpu_memory_utilization must be in (0, 1]")
+        if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
+            raise TypeError("benchmark_repeats must be a positive integer")
+        if self.benchmark_repeats <= 0:
+            raise ValueError("benchmark_repeats must be a positive integer")
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -357,6 +362,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
+        "benchmark_repeats": config.benchmark_repeats,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "dependency_override_constraints": dependency_override_constraints(),
         "vllm_server_env_overrides": vllm_server_env_overrides(),
@@ -1346,6 +1352,8 @@ def build_benchmark_runner_args(
         str(config.max_tokens),
         "--timeout-seconds",
         str(config.timeout_seconds),
+        "--repeats",
+        str(config.benchmark_repeats),
         "--server-usage",
         "--output-json",
         str(config.benchmark_output_path),
@@ -1488,6 +1496,15 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument(
+        "--benchmark-repeats",
+        type=int,
+        default=1,
+        help=(
+            "Number of baseline/cache arm repeats per benchmark example. "
+            "Use values greater than 1 for hot-document cache measurements."
+        ),
+    )
+    parser.add_argument(
         "--payload-cache-max-bytes",
         type=int,
         default=0,
@@ -1539,6 +1556,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        benchmark_repeats=args.benchmark_repeats,
         payload_cache_max_bytes=args.payload_cache_max_bytes,
         dataset_specs=tuple(args.dataset or ()),
         package_install_spec=args.package_install_spec,

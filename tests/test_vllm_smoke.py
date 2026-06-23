@@ -346,6 +346,7 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     assert args[args.index("--model-id") + 1] == SERVED_MODEL_NAME
     assert args[args.index("--hardware-target") + 1] == "aws-g6-l4"
     assert args[args.index("--output-json") + 1] == str(tmp_path / "out" / "v1-benchmark.json")
+    assert args[args.index("--repeats") + 1] == "1"
     assert "--server-usage" in args
     assert "--cache-base-url" not in args
     assert "--cache-runtime-prompt" not in args
@@ -368,12 +369,14 @@ def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tm
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
         server_port=8123,
+        benchmark_repeats=3,
         dataset_specs=specs,
     )
 
     args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
 
     assert args[args.index("--cache-base-url") + 1] == "http://127.0.0.1:8123"
+    assert args[args.index("--repeats") + 1] == "3"
     assert "--cache-runtime-prompt" not in args
     assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {
         "cache_salt": BASELINE_PREFIX_CACHE_SALT
@@ -973,6 +976,7 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["max_model_len"] == 4096
     assert metadata["max_num_seqs"] == 2
     assert metadata["gpu_memory_utilization"] == 0.85
+    assert metadata["benchmark_repeats"] == 1
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
     assert metadata["dependency_override_constraints"] == dependency_override_constraints()
     assert metadata["vllm_server_env_overrides"] == {
@@ -1160,6 +1164,8 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "8",
             "--gpu-memory-utilization",
             "0.72",
+            "--benchmark-repeats",
+            "3",
             "--package-install-spec",
             str(tmp_path / "cachet.whl"),
             "--benchmark-handoff-generator-factory",
@@ -1188,6 +1194,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         max_model_len=32768,
         max_num_seqs=8,
         gpu_memory_utilization=0.72,
+        benchmark_repeats=3,
         dataset_specs=specs,
         package_install_spec=str(tmp_path / "cachet.whl"),
         handoff_generation=VLLMPreparedHandoffGenerationConfig(
@@ -1214,6 +1221,7 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"max_num_seqs": 0}, "max_num_seqs must be positive"),
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
+        ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         ({"package_install_spec": ""}, "package_install_spec must be non-empty"),

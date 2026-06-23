@@ -94,6 +94,8 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
             "8",
             "--gpu-memory-utilization",
             "0.72",
+            "--benchmark-repeats",
+            "1",
             "--dataset",
             DATASET_SPECS[0],
             "--dataset",
@@ -115,6 +117,7 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
         runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
         node_type_id="g6.8xlarge",
         single_user_name=SINGLE_USER_NAME,
+        benchmark_repeats=3,
         payload_cache_max_bytes=4096,
         dataset_specs=DATASET_SPECS,
     )
@@ -122,7 +125,9 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
     payload = build_databricks_vllm_smoke_run_submit_payload(config)
     parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
 
+    assert parameters[parameters.index("--benchmark-repeats") + 1] == "3"
     assert parameters[parameters.index("--payload-cache-max-bytes") + 1] == "4096"
+    assert parameters.index("--benchmark-repeats") < parameters.index("--dataset")
     assert parameters.index("--payload-cache-max-bytes") < parameters.index("--dataset")
 
 
@@ -145,6 +150,7 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ({"max_num_seqs": 0}, "max_num_seqs must be positive"),
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
+        ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         (
