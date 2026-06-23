@@ -1,0 +1,44 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer Aquinas the 2nd initially found .data purelib/platlib legacy package path and extra console-script target bypasses in the release-bundle wheel gate; both were fixed with regression tests, and final re-review reported no findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 438,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/438",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "pyproject.toml",
+    "src/document_kv_cache/__init__.py",
+    "src/document_kv_cache/release_bundle.py",
+    ".github/workflows/ci.yml",
+    "README.md",
+    "benchmarks/README.md",
+    "docs/README.md",
+    "docs/legacy-compatibility-removal.md",
+    "docs/v1-requirements-matrix.md",
+    "src/README.md",
+    "src/document_kv_cache/README.md",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_public_package.py tests/test_project_governance.py tests/test_release_bundle.py -q -> 142 passed",
+    "poetry check && poetry check --lock -> passed",
+    "python -m compileall -q src/document_kv_cache/__init__.py src/document_kv_cache/release_bundle.py && git diff --check -> passed",
+    "built cachet_kv-0.2.0-py3-none-any.whl, inspected contents: has_legacy_package=false and legacy_scripts=[]",
+    "installed built wheel into /tmp/cachet-wheel-surface-smoke: cachet/document_kv_cache import smoke passed and legacy package was absent",
+    "poetry run pytest -q -> 2028 passed",
+    "GPT-5.5 reviewer Aquinas the 2nd found two release-bundle wheel-gate bypasses; fixes were pushed and final re-review returned no findings"
+  ],
+  "what_changed": [
+    "Removed the legacy restaurant compatibility package and restaurant-kv console aliases from the built cachet-kv wheel surface while keeping source-only compatibility tests.",
+    "Made document_kv_cache import cleanly when the source-only legacy facade is absent from installed wheels.",
+    "Hardened release-bundle wheel validation to reject legacy package files at wheel root or .data purelib/platlib install paths and reject any console script targeting the legacy module.",
+    "Clarified benchmarks/ as the standalone, human-readable Databricks benchmark report tree separate from pr-evidence/ and ignored databricks-runs/."
+  ],
+  "why": "Finish the Cachet single-repo package-surface migration by ensuring release wheels expose Cachet/document namespaces only, while keeping local migration-history tests until downstream legacy usage is fully retired."
+}
