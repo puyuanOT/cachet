@@ -31,6 +31,50 @@ the document-generic names:
 legacy `restaurant_id` and `selected_restaurants` accessors remain aliases for
 old callers.
 
+## Cachet-First Quickstart
+
+Use the Cachet-branded imports and CLI entry points for new integrations:
+
+```python
+from cachet import DocumentKVRequest, SourceDocument, layout_for_model
+from cachet.engine_launch_config import (
+    build_vllm_launch_config,
+    validate_engine_launch_config_record,
+)
+
+layout = layout_for_model("qwen3:4b-instruct")
+document = SourceDocument.from_text(
+    document_id="policy-handbook",
+    text="Long source document text...",
+)
+request = DocumentKVRequest.for_text_document(
+    request_id="req-1",
+    task_id="qa",
+    model_id="qwen3:4b-instruct",
+    lora_id="base",
+    prompt_template_version="v1",
+    document_id=document.document_id,
+)
+
+vllm_launch_config = build_vllm_launch_config(
+    payload_cache_max_bytes=8 * 1024**3,
+)
+validate_engine_launch_config_record(vllm_launch_config, expected_backend="vllm")
+```
+
+The same Cachet-first naming is available from installed wheels:
+
+```bash
+cachet-benchmark-handoff-bundles --help
+cachet-benchmark-plan --help
+cachet-engine-launch-config build-vllm --output-json /data/engine-launch/vllm.json
+cachet-databricks-runs payload-summary --help
+```
+
+Compatibility import paths and legacy command aliases remain packaged for
+existing evidence and downstream migrations, but new user-facing code should
+start with `cachet` and `cachet-*`.
+
 ## Purpose And Scope
 
 Cachet targets applications that repeatedly serve long, mostly stable document

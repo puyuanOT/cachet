@@ -736,6 +736,38 @@ def test_readme_documents_cachet_brand_and_scope():
     assert "vLLM, SGLang, or another established serving engine owns scheduling" in compact_purpose
 
 
+def test_readme_cachet_first_quickstart_uses_branded_imports_and_cli():
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    quickstart = _markdown_section(text, "Cachet-First Quickstart")
+
+    assert "from cachet import" in quickstart
+    assert "from cachet.engine_launch_config import" in quickstart
+    assert "cachet-benchmark-handoff-bundles --help" in quickstart
+    assert "cachet-benchmark-plan --help" in quickstart
+    assert "cachet-engine-launch-config build-vllm" in quickstart
+    assert "cachet-databricks-runs payload-summary --help" in quickstart
+    assert "Compatibility import paths and legacy command aliases" in quickstart
+    assert "document_kv_cache" not in quickstart
+    assert "document-kv-" not in quickstart
+    assert "restaurant_kv_serving" not in quickstart
+    assert "restaurant-kv-" not in quickstart
+
+    example = _first_python_fence_after(text, "Use the Cachet-branded imports")
+    namespace: dict[str, object] = {}
+    exec(compile(example, "README.md", "exec"), namespace)
+
+    document = namespace["document"]
+    request = namespace["request"]
+    layout = namespace["layout"]
+    launch_config = namespace["vllm_launch_config"]
+
+    assert document.document_id == "policy-handbook"
+    assert request.selected_document_ids == (document.document_id,)
+    assert layout.layout_version == "qwen3-v1"
+    assert launch_config["kv_connector"] == "DocumentKVConnector"
+    assert launch_config["kv_connector_extra_config"]["document_kv.backend"] == "vllm"
+
+
 def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
     import document_kv_cache
 
