@@ -46,6 +46,23 @@ Do not remove `restaurant_kv_serving` until all of these blockers are closed:
   artifact must cover `release`, `benchmark`, `storage`, `native_probe`, and
   `smoke` downstream job categories, and it must confirm no checked runner uses
   `restaurant_kv_serving` imports or `restaurant-kv-*` commands.
+- Prefer generating the migration evidence from a scan config instead of
+  hand-authoring it:
+
+  ```bash
+  python -m document_kv_cache.legacy_compatibility \
+    --scan-config-json path/to/legacy-migration-scan-config.json \
+    --output-json path/to/legacy-migration-evidence.json
+  ```
+
+  Scan configs use record type
+  `document_kv.legacy_compatibility_scan_config.v1`, list
+  `checked_downstream_jobs` with `checked_paths`, and reuse the same
+  `release_evidence` entries that will be bundled for removal. The generated
+  migration evidence keeps the existing
+  `document_kv.legacy_compatibility_migration.v1` record type and adds optional
+  per-job scan provenance through `checked_paths` and empty
+  `legacy_reference_hits`.
 - Current AWS g6/L4 release evidence and optional AWS g5/A10G compatibility
   evidence were generated from migrated runners or otherwise prove that the
   bundled Cachet wheel no longer needs the legacy facade for those paths.
