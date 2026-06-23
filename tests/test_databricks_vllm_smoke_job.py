@@ -94,6 +94,8 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
             "8",
             "--gpu-memory-utilization",
             "0.72",
+            "--hardware-target",
+            "aws-g6-l4",
             "--benchmark-repeats",
             "1",
             "--dataset",
@@ -405,10 +407,13 @@ def test_main_derives_vllm_smoke_node_type_from_g5_hardware_target(tmp_path):
         ]
     )
 
-    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
+    cluster = task["new_cluster"]
+    parameters = task["spark_python_task"]["parameters"]
     assert exit_code == 0
     assert cluster["node_type_id"] == "g5.8xlarge"
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
+    assert parameters[parameters.index("--hardware-target") + 1] == "aws-g5-a10g"
 
 
 def test_main_preserves_legacy_vllm_smoke_g5_node_type_without_hardware_target(tmp_path):
@@ -431,10 +436,13 @@ def test_main_preserves_legacy_vllm_smoke_g5_node_type_without_hardware_target(t
         ]
     )
 
-    cluster = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]["new_cluster"]
+    task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
+    cluster = task["new_cluster"]
+    parameters = task["spark_python_task"]["parameters"]
     assert exit_code == 0
     assert cluster["node_type_id"] == "g5.8xlarge"
     assert cluster["driver_node_type_id"] == "g5.8xlarge"
+    assert parameters[parameters.index("--hardware-target") + 1] == "aws-g5-a10g"
 
 
 def test_public_vllm_smoke_job_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):
@@ -795,6 +803,53 @@ print(json.dumps({{"ok": True}}, sort_keys=True))
     )
 
     assert json.loads(result.stdout) == {"ok": True}
+
+
+def test_legacy_vllm_smoke_job_fallback_derives_g5_hardware_target():
+    script = f"""
+import json
+import sys
+
+sys.path.insert(0, {str(REPO_ROOT / "src")!r})
+
+import document_kv_cache.databricks_vllm_smoke_job as public_smoke_job
+
+
+def broken_resolver(*args, **kwargs):
+    raise AssertionError("legacy reused patched public hardware resolver")
+
+
+public_smoke_job._resolve_hardware_target = broken_resolver
+
+import restaurant_kv_serving.databricks_vllm_smoke_job as legacy_smoke_job
+
+assert legacy_smoke_job.DatabricksVLLMSmokeJobConfig is not public_smoke_job.DatabricksVLLMSmokeJobConfig
+
+config = legacy_smoke_job.DatabricksVLLMSmokeJobConfig(
+    benchmark_id="v1-vllm-smoke-001",
+    output_dir="/Volumes/catalog/schema/volume/v1-vllm-smoke",
+    runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+    node_type_id="g5.8xlarge",
+    single_user_name={SINGLE_USER_NAME!r},
+)
+payload = legacy_smoke_job.build_databricks_vllm_smoke_run_submit_payload(config)
+parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+hardware_arg = parameters[parameters.index("--hardware-target") + 1]
+
+print(json.dumps({{"hardware_target": config.hardware_target, "hardware_arg": hardware_arg}}, sort_keys=True))
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {
+        "hardware_arg": "aws-g5-a10g",
+        "hardware_target": "aws-g5-a10g",
+    }
 
 
 def test_legacy_vllm_smoke_job_import_order_ignores_in_place_public_class_mutation():

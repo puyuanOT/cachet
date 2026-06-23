@@ -100,6 +100,7 @@ _PUBLIC_CONSTANT_NAMES = frozenset(
 _PUBLIC_CONFIG_CLASS_DEPENDENCY_NAMES = frozenset(
     {
         "_DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB",
+        "_resolve_hardware_target",
     }
 )
 
@@ -200,6 +201,11 @@ class DatabricksVLLMSmokeJobConfig(_DOCUMENT_DEFAULTS["DatabricksVLLMSmokeJobCon
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        object.__setattr__(
+            self,
+            "hardware_target",
+            _DOCUMENT_DEFAULTS["_resolve_hardware_target"](self.hardware_target, self.node_type_id),
+        )
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
         if self.max_tokens <= 0:

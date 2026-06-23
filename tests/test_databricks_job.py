@@ -1402,10 +1402,12 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
         "output_dir",
         "wheel_uri",
         "node_type_id",
+        "hardware_target",
         "spark_version",
         "single_user_name",
     }
     assert variables["node_type_id"]["default"] == "g6.8xlarge"
+    assert variables["hardware_target"]["default"] == "aws-g6-l4"
     assert variables["spark_version"]["default"] == "15.4.x-gpu-ml-scala2.12"
     assert variables["single_user_name"]["default"] == "${workspace.current_user.userName}"
     assert jobs["document_kv_vllm_smoke"]["name"] == "document-kv-vllm-smoke"
@@ -1431,6 +1433,8 @@ def test_databricks_vllm_smoke_asset_bundle_template_is_independent():
             "${var.benchmark_id}",
             "--output-dir",
             "${var.output_dir}",
+            "--hardware-target",
+            "${var.hardware_target}",
             "--package-wheel-uri",
             "${var.wheel_uri}",
         ],

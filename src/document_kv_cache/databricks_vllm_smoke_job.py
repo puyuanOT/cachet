@@ -10,8 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from document_kv_cache._hardware_targets import (
+    HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES,
     SUPPORTED_V1_HARDWARE_TARGETS,
     databricks_node_type_for_hardware_target,
+    validate_aws_single_node_gpu_type,
+    validate_aws_single_node_gpu_type_for_hardware_target,
+    validate_v1_hardware_target,
 )
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
@@ -89,6 +93,7 @@ class DatabricksVLLMSmokeJobConfig:
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
+    hardware_target: str | None = None
     node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
@@ -128,6 +133,11 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        object.__setattr__(
+            self,
+            "hardware_target",
+            _resolve_hardware_target(self.hardware_target, self.node_type_id),
+        )
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
         if self.max_tokens <= 0:
@@ -230,6 +240,19 @@ def _cluster_config_from_vllm_smoke_job(config: DatabricksVLLMSmokeJobConfig) ->
 _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB = _cluster_config_from_vllm_smoke_job
 
 
+def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> str:
+    if hardware_target is not None:
+        validate_v1_hardware_target(hardware_target)
+        validate_aws_single_node_gpu_type_for_hardware_target(node_type_id, hardware_target)
+        return hardware_target
+    validate_aws_single_node_gpu_type(node_type_id)
+    lowered = node_type_id.lower()
+    for target, prefixes in HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.items():
+        if lowered.startswith(prefixes):
+            return target
+    raise ValueError(f"Unable to derive V1 hardware target from node_type_id {node_type_id!r}")
+
+
 def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
     parameters = [
         "--benchmark-id",
@@ -258,6 +281,8 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         str(config.max_num_seqs),
         "--gpu-memory-utilization",
         str(config.gpu_memory_utilization),
+        "--hardware-target",
+        str(config.hardware_target),
         "--benchmark-repeats",
         str(config.benchmark_repeats),
     ]
@@ -372,6 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_name=args.run_name,
             task_key=args.task_key,
             node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
+            hardware_target=args.hardware_target,
             spark_version=args.spark_version,
             data_security_mode=args.data_security_mode,
             single_user_name=args.single_user_name,
