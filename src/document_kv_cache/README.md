@@ -82,7 +82,8 @@ return as a production dependency.
 - `legacy_compatibility.py` validates downstream migration evidence proving the
   legacy `restaurant_kv_serving` compatibility facade was removed safely.
 - `live_server.py` owns the one-request live smoke check against an existing
-  OpenAI-compatible serving endpoint.
+  OpenAI-compatible serving endpoint, including validated Cachet handoff params
+  for native vLLM/SGLang cache-arm requests.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.
 - `materializer.py` loads planned chunks into merged or segmented payloads.
 - `model_profiles.py` defines model attention geometry, portable JSON profile

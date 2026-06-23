@@ -299,6 +299,7 @@ from document_kv_cache.live_server import (
     LiveServerCheckConfig as LiveServerCheckConfig,
     LiveServerCheckResult as LiveServerCheckResult,
     build_live_server_check_request as build_live_server_check_request,
+    live_check_kv_transfer_params as live_check_kv_transfer_params,
     run_openai_compatible_live_check as run_openai_compatible_live_check,
 )
 
