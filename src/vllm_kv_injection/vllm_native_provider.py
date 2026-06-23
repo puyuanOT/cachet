@@ -370,14 +370,16 @@ class DocumentKVNativeProvider:
 
     def start_load_kv(self, forward_context: object, **kwargs: object) -> None:
         del forward_context, kwargs
-        if not self._metadata.loads:
+        loads = self._metadata.loads
+        if not loads:
             return
         if not self._kv_caches:
             raise ValueError("document KV provider has no registered vLLM KV caches")
-        for load in self._metadata.loads:
+        for index, load in enumerate(loads):
             self._load_request(load)
             self._loads_started += 1
             self._events.append({"event": "document_kv_loaded", "request_id": load.request_id})
+            self._metadata = DocumentKVConnectorMetadata(loads=loads[index + 1 :])
 
     def wait_for_layer_load(self, layer_name: str) -> None:
         if layer_name in self._kv_caches:

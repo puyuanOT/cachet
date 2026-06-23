@@ -482,6 +482,30 @@ def test_native_provider_reuses_slot_mapping_for_layers_on_same_device(monkeypat
     assert calls[0][1]["block_size"] == layout().block_size
 
 
+def test_native_provider_consumes_bound_load_metadata_after_successful_load():
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+    connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert stats["document_kv_loads_started"] == 1
+    assert stats["document_kv_layers_loaded"] == 2
+    assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
+
+
 def test_native_provider_records_load_error_blocks_for_payload_view_failures(monkeypatch):
     def fail_payload_tensor_view(*args, **kwargs):
         del args, kwargs
