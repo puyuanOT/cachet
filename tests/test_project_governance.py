@@ -949,6 +949,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main",
         "cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main",
         "real vLLM and SGLang native block managers",
+        "docs/native-engine-integration.md",
         "`restaurant_kv_serving` compatibility package",
     ):
         assert required in matrix_text
@@ -965,10 +966,59 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     assert "compatibility Databricks run-status sidecar" in compact_matrix
     assert "GitHub governance is release-ready" in compact_matrix
     assert "auto-merge is enabled" in compact_matrix
+    assert "Add native engine integration examples after connector probes land" not in matrix_text
     for stale_blocker in stale_release_blockers:
         assert stale_blocker not in matrix_text
     for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         assert label in compact_remaining_release_gates
+
+
+def test_native_engine_integration_doc_examples_are_validated():
+    text = (REPO_ROOT / "docs" / "native-engine-integration.md").read_text(encoding="utf-8")
+    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "`native-engine-integration.md`" in docs_readme
+    assert "docs/native-engine-integration.md" in readme_text
+    for required in (
+        "# Native Engine Integration",
+        "cachet-engine-launch-config build-vllm",
+        "cachet-engine-launch-config build-sglang",
+        "--payload-cache-max-bytes 8589934592",
+        "DocumentKVConnector",
+        "DocumentKVHiCacheBackend",
+        "vllm_kv_injection.vllm_native_provider:build_document_kv_provider",
+        "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider",
+        "kv_transfer_params",
+        "full logical prompt",
+        "For SGLang, the current evidence covers",
+        "Validate live decode-time prefix binding",
+        "hardware target",
+        "no-op providers",
+        "in-memory test connectors",
+        "aws-g6-l4",
+        "g6.8xlarge",
+        "aws-g5-a10g",
+        "g5.8xlarge",
+        "payload-summary",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/",
+        "commit tokens",
+    ):
+        assert required in text
+
+    example = _first_python_fence_after(text, "Validate launch configs in Python")
+    namespace: dict[str, object] = {}
+    exec(compile(example, "docs/native-engine-integration.md", "exec"), namespace)
+
+    vllm_launch_config = namespace["vllm_launch_config"]
+    sglang_launch_config = namespace["sglang_launch_config"]
+    assert isinstance(vllm_launch_config, dict)
+    assert isinstance(sglang_launch_config, dict)
+    assert vllm_launch_config["kv_connector"] == "DocumentKVConnector"
+    assert vllm_launch_config["kv_connector_extra_config"]["document_kv.backend"] == "vllm"
+    assert json.loads(sglang_launch_config["hicache_storage_backend_extra_config"])[
+        "document_kv.backend"
+    ] == "sglang"
 
 
 def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():

@@ -11,5 +11,7 @@ notes under `src/`.
 - `legacy-compatibility-removal.md` records the machine-checkable gate for
   removing the migration-only `restaurant_kv_serving` package and
   `restaurant-kv-*` console scripts after downstream jobs migrate.
+- `native-engine-integration.md` shows how Cachet handoff artifacts and
+  launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
 - `../benchmarks/README.md` indexes the standalone, human-readable Databricks
   benchmark evidence folders.

@@ -309,6 +309,9 @@ adapters separately.
 
 ## Serving Engine Handoff
 
+For a deployment-oriented walkthrough of the provider-backed native vLLM and
+SGLang paths, see [`docs/native-engine-integration.md`](docs/native-engine-integration.md).
+
 `DocumentKVService.prepare_for_engine` turns a document request into an `EngineReadyRequest`:
 
 ```python
