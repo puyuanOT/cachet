@@ -318,9 +318,11 @@ def _validate_document_kv_native_provider_wiring(connector: object) -> None:
 
 def _vllm_engine_version() -> str:
     try:
-        return f"vllm-{package_metadata.version('vllm')}"
-    except package_metadata.PackageNotFoundError:
-        return "vllm-document-kv-native-provider"
+        return package_metadata.version("vllm")
+    except package_metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Native vLLM probe requires installed vLLM package metadata to report engine_version"
+        ) from exc
 
 
 build_native_connector_probe.document_kv_native_probe_contract = VLLM_NATIVE_PROBE_CONTRACT

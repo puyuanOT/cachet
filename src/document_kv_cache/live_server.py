@@ -185,7 +185,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--server-usage",
         action="store_true",
-        help="Prefer server usage.prompt_tokens; prompt_token_source reports whether usage was present.",
+        help=(
+            "Record server usage.prompt_tokens in metadata when present; "
+            "reported prompt_tokens still follow the logical/runtime prompt context."
+        ),
     )
     parser.add_argument("--extra-body-json", default="{}", help="Additional JSON fields merged into the request body.")
     args = parser.parse_args(argv)
