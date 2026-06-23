@@ -455,6 +455,33 @@ def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
     assert isinstance(calls[0][0][0], bytes)
 
 
+def test_native_provider_reuses_slot_mapping_for_layers_on_same_device(monkeypatch):
+    calls = []
+    original_slot_mapping_from_blocks = vllm_native_provider.slot_mapping_from_blocks
+
+    def counting_slot_mapping_from_blocks(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_slot_mapping_from_blocks(*args, **kwargs)
+
+    monkeypatch.setattr(vllm_native_provider, "slot_mapping_from_blocks", counting_slot_mapping_from_blocks)
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert len(calls) == 1
+    assert calls[0][1]["device"] == layer_0.device
+    assert calls[0][1]["block_size"] == layout().block_size
+
+
 def test_native_provider_records_load_error_blocks_for_payload_view_failures(monkeypatch):
     def fail_payload_tensor_view(*args, **kwargs):
         del args, kwargs
