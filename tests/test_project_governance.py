@@ -102,12 +102,6 @@ DEPRECATED_TOOL_POETRY_METADATA_KEYS = {
     "scripts",
     "version",
 }
-POETRY_BACKEND_IDENTITY_MIRROR_KEYS = {
-    "authors",
-    "description",
-    "name",
-    "version",
-}
 ALLOWED_LEGACY_TEST_REFERENCES = {
     "tests/test_benchmark_plan_executor.py": {
         "restaurant_kv_serving.benchmark_plan_executor",
@@ -1585,25 +1579,6 @@ def _requirement_version(requirement: str) -> str:
     return f"=={match.group(1)}"
 
 
-def _project_author_to_poetry_author(author: dict[str, str]) -> str:
-    name = author["name"]
-    email = author.get("email")
-    return f"{name} <{email}>" if email else name
-
-
-def _assert_poetry_backend_identity_mirrors_project(project_config: dict, poetry_config: dict) -> None:
-    assert POETRY_BACKEND_IDENTITY_MIRROR_KEYS <= set(poetry_config), (
-        "[tool.poetry] must mirror the backend-required project identity fields"
-    )
-    mirror = {key: poetry_config.get(key) for key in POETRY_BACKEND_IDENTITY_MIRROR_KEYS}
-    assert mirror["name"] == project_config["name"]
-    assert mirror["version"] == project_config["version"]
-    assert mirror["description"] == project_config["description"]
-    assert mirror["authors"] == [
-        _project_author_to_poetry_author(author) for author in project_config["authors"]
-    ]
-
-
 def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
     dependency_versions = {}
     assert "dependency-groups" not in pyproject, "Use [tool.poetry.group.*.dependencies] for dependency groups"
@@ -1618,10 +1593,8 @@ def _collect_poetry_dependency_versions(pyproject: dict) -> dict[str, str]:
 
     poetry_config = pyproject["tool"]["poetry"]
     project_config = pyproject["project"]
-    _assert_poetry_backend_identity_mirrors_project(project_config, poetry_config)
-    deprecated_keys = (DEPRECATED_TOOL_POETRY_METADATA_KEYS - POETRY_BACKEND_IDENTITY_MIRROR_KEYS) & set(
-        poetry_config
-    )
+    assert {"name", "version", "description", "authors"} <= set(project_config)
+    deprecated_keys = DEPRECATED_TOOL_POETRY_METADATA_KEYS & set(poetry_config)
     assert deprecated_keys == set(), (
         f"Move deprecated [tool.poetry] keys to [project]: {sorted(deprecated_keys)}"
     )
@@ -1675,10 +1648,6 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
         },
         "tool": {
             "poetry": {
-                "name": "example-package",
-                "version": "1.2.3",
-                "description": "Example package.",
-                "authors": ["Example Team"],
                 "packages": [],
                 "group": {
                     "dev": {
@@ -1733,7 +1702,7 @@ def test_poetry_dependency_collection_requires_build_backend_and_groups():
     with pytest.raises(AssertionError):
         _collect_poetry_dependency_versions(pyproject)
 
-    pyproject["tool"]["poetry"]["version"] = "1.2.3"
+    del pyproject["tool"]["poetry"]["version"]
     pyproject["dependency-groups"] = {"dev": ["ruff>=0.8"]}
 
     with pytest.raises(AssertionError):

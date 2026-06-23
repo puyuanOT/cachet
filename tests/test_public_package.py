@@ -2326,10 +2326,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         "Repository": "https://github.com/puyuanOT/cachet",
         "Issues": "https://github.com/puyuanOT/cachet/issues",
     }
-    assert poetry["name"] == project["name"]
-    assert poetry["version"] == project["version"]
-    assert poetry["description"] == project["description"]
-    assert poetry["authors"] == ["OpenTable Data Science"]
+    assert {"name", "version", "description", "authors"}.isdisjoint(poetry)
     assert {
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
