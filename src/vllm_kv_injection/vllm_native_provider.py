@@ -156,6 +156,15 @@ class _ScheduledRequestBlocks:
 
 
 @dataclass(frozen=True, slots=True)
+class _PayloadTensorView:
+    """Token-major CPU view over one materialized Cachet payload."""
+
+    token_major: object
+    scalars_per_layer: int
+    buffer: bytearray
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentKVConnectorMetadata(_KVConnectorMetadata):
     """Scheduler-to-worker metadata consumed by :class:`DocumentKVNativeProvider`."""
 
@@ -433,14 +442,15 @@ class DocumentKVNativeProvider:
         return events
 
     def _load_request(self, load: DocumentKVLoadRequest) -> None:
-        merged_payload = _merged_payload(load.actions, load.payload)
-        for layer_name, dst_layer in self._kv_caches.items():
-            layer_index = self._layer_indices[layer_name]
-            if layer_index >= load.actions.reservation.layout.num_layers:
-                continue
-            try:
+        try:
+            merged_payload = _merged_payload(load.actions, load.payload)
+            payload_view = _payload_tensor_view(merged_payload, load)
+            for layer_name, dst_layer in self._kv_caches.items():
+                layer_index = self._layer_indices[layer_name]
+                if layer_index >= load.actions.reservation.layout.num_layers:
+                    continue
                 src_layer = _payload_layer_tensor(
-                    merged_payload,
+                    payload_view,
                     load,
                     layer_index=layer_index,
                     dst_kv_cache_layer=dst_layer,
@@ -457,9 +467,9 @@ class DocumentKVNativeProvider:
                     block_size=load.actions.reservation.layout.block_size,
                 )
                 self._layers_loaded += 1
-            except Exception:
-                self._load_errors.update(block.block_id for block in load.blocks)
-                raise
+        except Exception:
+            self._load_errors.update(block.block_id for block in load.blocks)
+            raise
 
     def _release_request(self, request_id: str) -> None:
         self._loads.pop(request_id, None)
@@ -886,16 +896,11 @@ def _document_kv_prompt_text_mode(request: object) -> str | None:
     return value
 
 
-def _payload_layer_tensor(
+def _payload_tensor_view(
     payload: bytes,
     load: DocumentKVLoadRequest,
-    *,
-    layer_index: int,
-    dst_kv_cache_layer: object,
-) -> object:
+) -> _PayloadTensorView:
     torch = _torch()
-    if not torch.is_tensor(dst_kv_cache_layer):
-        raise TypeError("registered vLLM KV cache layer must be a torch.Tensor")
     layout = load.actions.reservation.layout
     dtype = _torch_dtype(layout.dtype)
     dtype_width = _dtype_width(layout.dtype)
@@ -908,11 +913,32 @@ def _payload_layer_tensor(
     if scalars_per_token % layout.num_layers != 0:
         raise ValueError("layout bytes_per_token is not divisible by num_layers")
     scalars_per_layer = scalars_per_token // layout.num_layers
-    tensor = torch.frombuffer(bytearray(payload), dtype=dtype, count=total_scalars)
+    buffer = bytearray(payload)
+    tensor = torch.frombuffer(buffer, dtype=dtype, count=total_scalars)
     token_major = tensor.reshape(load.actions.reservation.total_tokens, scalars_per_token)
-    token_slice = token_major[load.source_token_start : load.source_token_start + load.token_count]
-    start = layer_index * scalars_per_layer
-    end = start + scalars_per_layer
+    return _PayloadTensorView(
+        token_major=token_major,
+        scalars_per_layer=scalars_per_layer,
+        buffer=buffer,
+    )
+
+
+def _payload_layer_tensor(
+    payload_view: _PayloadTensorView,
+    load: DocumentKVLoadRequest,
+    *,
+    layer_index: int,
+    dst_kv_cache_layer: object,
+) -> object:
+    torch = _torch()
+    if not torch.is_tensor(dst_kv_cache_layer):
+        raise TypeError("registered vLLM KV cache layer must be a torch.Tensor")
+    layout = load.actions.reservation.layout
+    token_slice = payload_view.token_major[
+        load.source_token_start : load.source_token_start + load.token_count
+    ]
+    start = layer_index * payload_view.scalars_per_layer
+    end = start + payload_view.scalars_per_layer
     layer_values = token_slice[:, start:end]
     return _reshape_layer_values(layer_values, dst_kv_cache_layer, layout)
 

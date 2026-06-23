@@ -22,6 +22,7 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
     DocumentKVConnector,
 )
+import vllm_kv_injection.vllm_native_provider as vllm_native_provider
 import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
@@ -421,6 +422,58 @@ def test_native_provider_copies_materialized_payload_into_registered_paged_kv_la
     assert torch.equal(layer_1[7, :, 0], torch.zeros((2, 1, 2), dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
     assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
+
+
+def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
+    calls = []
+    original_frombuffer = torch.frombuffer
+
+    def counting_frombuffer(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_frombuffer(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "frombuffer", counting_frombuffer)
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert len(calls) == 1
+    assert isinstance(calls[0][0][0], bytearray)
+
+
+def test_native_provider_records_load_error_blocks_for_payload_view_failures(monkeypatch):
+    def fail_payload_tensor_view(*args, **kwargs):
+        del args, kwargs
+        raise ValueError("payload view failed")
+
+    monkeypatch.setattr(vllm_native_provider, "_payload_tensor_view", fail_payload_tensor_view)
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    connector.bind_connector_metadata(meta)
+
+    with pytest.raises(ValueError, match="payload view failed"):
+        connector.start_load_kv(SimpleNamespace())
+
+    assert connector.get_block_ids_with_load_errors() == {5}
+    assert connector.get_kv_connector_stats()["document_kv_load_error_blocks"] == 1
 
 
 def test_native_provider_maps_vllm_layer_names_independently_of_registration_order():
