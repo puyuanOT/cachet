@@ -1,0 +1,37 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 review found that the matrix status label overclaimed the refreshed benchmark bundle state and that stale benchmark IDs were not explicitly blocked. The PR now marks the refreshed benchmark rows as bundle-refresh pending and blacklists the superseded run IDs and slugs in governance tests.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 427,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/427",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/v1-requirements-matrix.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/refresh-current-benchmark-evidence/README.md",
+    "pr-evidence/refresh-current-benchmark-evidence/pr-evidence.json"
+  ],
+  "verification": [
+    "git diff --check",
+    "poetry run pytest tests/test_project_governance.py -q -> 43 passed",
+    "poetry run pytest tests/test_release_evidence.py tests/test_release_bundle.py -q -> 157 passed",
+    "poetry check",
+    "poetry check --lock",
+    "poetry run pytest -q -> 2003 passed",
+    "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence -> ok=true, file_count=274",
+    "release evidence validation over g6 run 872615985402004 plus current storage/native sidecars -> ok=true, issues=[]",
+    "release evidence validation over g5 run 566743786103032 plus current storage/native sidecars -> ok=true, issues=[]",
+    "GPT-5.5 focused review with findings resolved"
+  ],
+  "what_changed": [
+    "Updated README and the V1 requirements matrix to reference the current cachet-kv g6/L4 and g5/A10G Databricks benchmark evidence.",
+    "Distinguished generated, release-validated benchmark evidence from a complete strict bundle refresh in the matrix status labels.",
+    "Updated governance assertions to require the fresh benchmark run IDs and slugs and to reject the superseded ones."
+  ],
+  "why": "The package identity moved to cachet-kv, so the release-readiness docs and governance tests need to point at benchmark evidence generated from the current wheel while preserving an explicit bundle-refresh gate before V1 publication."
+}

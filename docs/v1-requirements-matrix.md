@@ -4,6 +4,9 @@ This matrix keeps the generalized Cachet package goal auditable. Status values
 mean:
 
 - **Implemented:** source, tests, and documentation exist in the repository.
+- **Bundle-refresh pending:** source/tests exist and current target evidence has
+  been generated and release-validated, but the complete strict bundle still
+  needs to be refreshed before publication.
 - **Release-gated:** source/tests exist and current target evidence is bundled,
   but V1 publication depends on keeping the target AWS g6/L4 or Unity Catalog
   evidence fresh. Non-default g5/A10G compatibility evidence is tracked
@@ -23,10 +26,10 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `315109189523858` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. A complete strict bundle now validates with the target g6/L4 evidence plus the g5 report carried as a `compatibility_benchmark` artifact, without letting it substitute for the strict release target. | Keep g6/L4 and g5/A10G evidence refreshed when benchmark, model, or native connector contracts change. |
+| Target AWS g6/L4 cluster instances | Bundle-refresh pending | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the current `cachet-kv` benchmark run `872615985402004`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `566743786103032` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. The previous complete strict bundle still carries the older benchmark/status sidecars; the next strict bundle refresh should swap in these current benchmark sidecars and this PR's PR-evidence sidecar while keeping the g5 report in the `compatibility_benchmark` artifact role so it cannot substitute for the strict release target. | Rebuild the strict release bundle with the current g6/L4 benchmark sidecars, g5 compatibility sidecar, and this PR's evidence sidecar before V1 publication; keep g6/L4 and g5/A10G evidence refreshed when benchmark, model, native connector contracts, or package wheel identity change. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
-| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. QA benchmark run `426398182137665` produced `document_kv.benchmark_run.v1` evidence with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.18x to 6.78x, and time-to-completion speedups from 1.74x to 2.22x. The complete strict release bundle includes the refreshed benchmark report and Databricks run-status sidecar. | Re-run and re-bundle benchmark evidence whenever benchmark code, runtime pins, or connector behavior changes. |
-| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. QA benchmark run `426398182137665` completed Biography, HotpotQA, MusiQue, and NIAH with release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, or native connector behavior changes. |
+| Document quality and latency metrics | Bundle-refresh pending | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. Current QA benchmark run `872615985402004` produced `document_kv.benchmark_run.v1` evidence from the tested `cachet_kv-0.2.0-py3-none-any.whl` with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.27x to 6.97x, and time-to-completion speedups from 1.74x to 2.25x. Release evidence over that benchmark plus the current storage and native vLLM/SGLang probe/action sidecars is `ok=true`. | Re-run and re-bundle benchmark evidence whenever benchmark code, runtime pins, connector behavior, or package wheel identity changes. |
+| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Bundle-refresh pending | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. Current QA benchmark run `872615985402004` completed Biography, HotpotQA, MusiQue, and NIAH with release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, native connector behavior, or package wheel identity changes. |
 | Compare against standard no-cache prefill | Implemented | Benchmark summaries require a `baseline_prefill` arm and cache-arm comparisons with logical/runtime prompt accounting. | Target release evidence must include finite baseline and cache measurements. |
 
 ## Architecture And Extensibility
@@ -60,28 +63,30 @@ mean:
 ## Remaining V1 Release Gates
 
 - Target g6/L4 benchmark evidence exists for
-  `cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main`
-  from QA Databricks run `426398182137665` on a single-node `g6.8xlarge`: all
+  `cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main`
+  from QA Databricks run `872615985402004` on a single-node `g6.8xlarge`: all
   four datasets completed with no benchmark errors, 24 measurements, 4
   cache-vs-baseline comparisons, answer-found and exact-match deltas of zero,
-  TTFT speedups of 5.18x-6.78x, and time-to-completion speedups of 1.74x-2.22x.
-  The vLLM server log recorded external prefix-cache hits and successful
-  Cachet layer loads (`document_kv_layers_loaded=36`,
-  `document_kv_load_error_blocks=0`).
+  TTFT speedups of 5.27x-6.97x, and time-to-completion speedups of 1.74x-2.25x.
+  The installed package was `cachet_kv-0.2.0-py3-none-any.whl`, the vLLM import
+  probe reported `DocumentKVNativeProvider`, and the vLLM server log recorded
+  external prefix-cache hits plus successful Cachet layer loads
+  (`document_kv_layers_loaded=36`, `document_kv_load_error_blocks=0`).
 - Current g5/A10G compatibility benchmark evidence exists for
-  `cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main`
-  from QA Databricks run `315109189523858` on a single-node `g5.8xlarge`: all
+  `cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main`
+  from QA Databricks run `566743786103032` on a single-node `g5.8xlarge`: all
   four datasets completed with no benchmark errors, 24 measurements, 4
   cache-vs-baseline comparisons, `v1_evidence.ok=true`, TTFT speedups of
-  4.55x-6.07x, and time-to-completion speedups of 2.03x-2.68x. Release
+  4.66x-6.04x, and time-to-completion speedups of 2.04x-2.67x. Release
   evidence over that g5 benchmark plus the current storage and native
-  vLLM/SGLang probe/action artifacts is `ok=true` with no issues. The vLLM
-  server log recorded native `DocumentKVConnector` startup, payload-cache hits,
-  successful Cachet layer loads (`document_kv_layers_loaded=36`), and zero load
-  error blocks (`document_kv_load_error_blocks=0`). This compatibility evidence
-  can be bundled through the optional `compatibility_benchmark` artifact role
-  and does not replace the strict V1 publication target, which remains the
-  default AWS g6/L4 release bundle.
+  vLLM/SGLang probe/action artifacts is `ok=true` with no issues. The installed
+  package was `cachet_kv-0.2.0-py3-none-any.whl`, and the vLLM server log
+  recorded native `DocumentKVConnector` startup, payload-cache hits, successful
+  Cachet layer loads (`document_kv_layers_loaded=36`), and zero load error
+  blocks (`document_kv_load_error_blocks=0`). This compatibility evidence can
+  be bundled through the optional `compatibility_benchmark` artifact role and
+  does not replace the strict V1 publication target, which remains the default
+  AWS g6/L4 release bundle.
 - Target g6/L4 UC storage-reader evidence exists for
   `cachet_readiness_20260621_095026` from QA Databricks run
   `948365719597221`: Memory, Disk, and Unity Catalog readers all completed with
@@ -95,13 +100,15 @@ mean:
   native probe factory diagnostics from inside the installed runtime
   environments. Run connector action descriptor validation remains the required
   regression step whenever connector contracts change.
-- Release-evidence validation over the target benchmark, storage, and fresh
-  vLLM/SGLang native probe/action artifacts is `ok=true` with no issues. A
-  complete g5-enriched strict bundle now validates with 22 artifacts after
-  adding the release-ready GitHub governance sidecar to the target g6/L4
-  evidence set and the current `aws-g5-a10g` compatibility benchmark via the
-  `compatibility_benchmark` role. The bundled artifacts include the release
-  evidence sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
+- Release-evidence validation over the current target benchmark, storage, and
+  vLLM/SGLang native probe/action artifacts is `ok=true` with no issues, and
+  the same validation is green for the current `aws-g5-a10g` compatibility
+  benchmark via the `compatibility_benchmark` role. The previous complete
+  g5-enriched strict bundle validates with 22 artifacts; the next complete
+  strict bundle refresh should replace its benchmark/status sidecars with the
+  current `872615985402004`/`566743786103032` evidence and include this PR's
+  PR-evidence sidecar. The bundled artifacts include the release evidence
+  sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, benchmark plan execution sidecar, Databricks run-status sidecars
   for benchmark, storage, and vLLM/SGLang engine-probe runs, tested package
