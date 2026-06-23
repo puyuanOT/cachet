@@ -27,10 +27,13 @@ def test_cachet_pyproject_packages_vllm_adapter_without_raw_engine_extra():
 def test_vllm_adapter_readme_keeps_engine_boundary_in_cachet_monorepo():
     package_readme = (REPO_ROOT / "src" / "vllm_kv_injection" / "README.md").read_text(encoding="utf-8").lower()
     cachet_adapters_readme = (REPO_ROOT / "src" / "cachet" / "adapters" / "README.md").read_text(encoding="utf-8")
+    compact_cachet_adapters_readme = " ".join(cachet_adapters_readme.split())
 
     assert "patched vllm runtime" in package_readme
     assert "keep this package close to vllm internals" in package_readme
     assert "vllm.py` aliases the compatibility package `vllm_kv_injection`" in cachet_adapters_readme
+    assert "`cachet.adapters.vllm.probe`" in cachet_adapters_readme
+    assert "same module objects as the vendored compatibility paths" in compact_cachet_adapters_readme
     for out_of_scope_term in (
         "document retrieval",
         "cache storage",

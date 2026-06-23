@@ -1464,6 +1464,46 @@ def test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages():
     assert cachet_sglang.DocumentKVHiCacheBackend is sglang_adapter.DocumentKVHiCacheBackend
 
 
+def test_cachet_adapter_submodules_delegate_to_vendored_compatibility_submodules():
+    for cachet_module_name, adapter_module_name in (
+        ("cachet.adapters.vllm.probe", "vllm_kv_injection.probe"),
+        ("cachet.adapters.vllm.protocol", "vllm_kv_injection.protocol"),
+        ("cachet.adapters.sglang.probe", "sglang_kv_injection.probe"),
+        ("cachet.adapters.sglang.protocol", "sglang_kv_injection.protocol"),
+    ):
+        cachet_module = importlib.import_module(cachet_module_name)
+        adapter_module = importlib.import_module(adapter_module_name)
+
+        assert cachet_module is adapter_module
+
+
+def test_cachet_adapter_submodules_reuse_preloaded_vendored_submodules():
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import importlib, json; "
+                "vllm_target = importlib.import_module('vllm_kv_injection.probe'); "
+                "sglang_target = importlib.import_module('sglang_kv_injection.probe'); "
+                "vllm_alias = importlib.import_module('cachet.adapters.vllm.probe'); "
+                "sglang_alias = importlib.import_module('cachet.adapters.sglang.probe'); "
+                "print(json.dumps({"
+                "'vllm': vllm_alias is vllm_target, "
+                "'sglang': sglang_alias is sglang_target"
+                "}, sort_keys=True))"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert json.loads(result.stdout) == {"sglang": True, "vllm": True}
+
+
 def test_public_document_submodules_have_curated_star_import_surfaces():
     admission = importlib.import_module("document_kv_cache.admission")
     cache = importlib.import_module("document_kv_cache.cache")
