@@ -1,0 +1,35 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer Kuhn the 2nd found a stale README release-bundle command that reproduced the 23-artifact bundle instead of the documented 24-artifact bundle. The branch added --legacy-migration-evidence-json to the command, documented when to include it, added tests for the strict+compatibility+legacy 24-artifact bundle shape, reran verification, and the same reviewer approved PR #441 with no remaining findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 441,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/441",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/v1-requirements-matrix.md",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py",
+    "pr-evidence/refresh-post440-release-bundle-docs"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py tests/test_release_bundle.py::test_build_release_bundle_strict_v1_requires_compatibility_status_for_compatibility_benchmark -q --maxfail=1 --tb=short -> 50 passed",
+    "poetry run pytest tests/test_release_bundle.py::test_build_release_bundle_can_include_legacy_migration_evidence tests/test_release_bundle.py::test_build_release_bundle_rejects_invalid_legacy_migration_evidence -q --tb=short -> 2 passed",
+    "poetry run pytest -q -> 1786 passed",
+    "poetry check -> All set",
+    "poetry check --lock -> All set",
+    "git diff --check -> clean",
+    "Local strict release bundle databricks-runs/current-governance/complete-strict-release-bundle-with-g5-post-440-current-wheel.json -> ok=true, artifact_count=24, includes legacy_migration_evidence",
+    "GPT-5.5 reviewer Kuhn the 2nd found one stale README command; fixed by adding --legacy-migration-evidence-json and a 24-artifact release-bundle regression, then re-review approved with no findings"
+  ],
+  "what_changed": [
+    "Updated README and the V1 requirements matrix to reflect the refreshed post-#440 strict release bundle with 24 artifacts, including legacy_migration_evidence for the removed restaurant facade.",
+    "Updated release-bundle documentation so the canonical command includes --legacy-migration-evidence-json and explains when to carry package-surface cleanup evidence.",
+    "Pinned governance and release-bundle tests to both the compatibility-only 23-artifact shape and the compatibility-plus-legacy 24-artifact shape."
+  ],
+  "why": "Keep the human-facing Cachet release status aligned with the refreshed strict release bundle after the legacy restaurant facade was removed, without treating pr-evidence or ignored scratch directories as benchmark archives."
+}

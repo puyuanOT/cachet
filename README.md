@@ -1424,6 +1424,7 @@ python -m document_kv_cache.release_bundle \
   --compatibility-databricks-run-status-json databricks-run-status-g5-benchmark.json \
   --package-wheel dist/cachet_kv-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
+  --legacy-migration-evidence-json evidence/legacy-migration/current/legacy-migration-evidence.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
   --github-governance-json github-governance.json \
   --repository-hygiene-json repository-hygiene.json \
@@ -1439,10 +1440,12 @@ backend where applicable, package name/version for wheel artifacts, size, and
 SHA-256 for every artifact. Add
 `--plan-execution-json` to include the command execution summary that identifies
 the exact benchmark plan JSON, `--package-wheel` to include the exact wheel
-tested on the target AWS g6/L4 runtime, and repeat `--pr-evidence-json` to carry PR
-traceability records alongside the benchmark, storage, engine-probe,
-connector-action, engine-launch-config, release-evidence, and preflight
-artifacts. Add
+tested on the target AWS g6/L4 runtime, repeat `--pr-evidence-json` to carry PR
+traceability records, and add `--legacy-migration-evidence-json` when the
+release includes package-surface cleanup evidence such as the removed
+restaurant facade. Those sidecars travel alongside the benchmark, storage,
+engine-probe, connector-action, engine-launch-config, release-evidence, and
+preflight artifacts. Add
 `--compatibility-benchmark-json` to carry non-default supported V1 benchmark
 evidence such as AWS g5/A10G compatibility runs; the bundle validates each
 compatibility benchmark against the same storage/native probe/action sidecars
@@ -1850,18 +1853,20 @@ users keep inline type annotations after installation.
   benchmark, storage, connector action descriptors, and native engine block managers
   is green for the current `cachet-kv` wheel. The native engine block managers
   remain owned by vLLM and SGLang rather than Cachet. The current
-  g5-enriched strict bundle validates with 23 artifacts after adding the current
+  g5-enriched strict bundle validates with 24 artifacts after adding the current
   g6 benchmark status sidecar, current `aws-g5-a10g` compatibility benchmark,
-  matching `aws-g5-a10g` Databricks run-status sidecar, and a current
-  release-gate PR evidence sidecar. The required artifact set remains: release
-  evidence sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
+  matching `aws-g5-a10g` Databricks run-status sidecar, a current release-gate
+  PR evidence sidecar, and `legacy_migration_evidence` for the removed
+  restaurant facade. The required artifact set remains: release evidence
+  sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, benchmark plan execution sidecar, Databricks run-status
   sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs, tested
-  package wheel, PR evidence sidecar, V1 requirements matrix, GitHub governance
-  sidecar, repository hygiene sidecar, native probe factory diagnostics sidecar
-  entries from both runtime environments, and the current `aws-g5-a10g`
-  benchmark/status evidence carried through the `compatibility_benchmark` and
+  package wheel, PR evidence sidecar, legacy migration evidence sidecar, V1
+  requirements matrix, GitHub governance sidecar, repository hygiene sidecar,
+  native probe factory diagnostics sidecar entries from both runtime
+  environments, and the current `aws-g5-a10g` benchmark/status evidence carried
+  through the `compatibility_benchmark` and
   `compatibility_databricks_run_status` roles.
 - Keep the current AWS g5/A10G compatibility benchmark evidence with the
   release handoff: QA Databricks run `566743786103032` on `g5.8xlarge`
