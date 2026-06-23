@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -31,6 +32,14 @@ DOCUMENT_KV_HICACHE_PROVIDER_FACTORY = (
 )
 DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY = "document_kv.provider_factory"
 DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY = "cachet.hicache_page_store_uri"
+DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG = "document_kv_request_context"
+_SGLANG_CUSTOM_PARAMS_KEY = "custom_params"
+_SGLANG_KV_TRANSFER_PARAMS_KEY = "kv_transfer_params"
+_DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
+_DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
+_DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
+_DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
+_DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
 DOCUMENT_KV_HICACHE_RUNTIME_METHODS = (
     "register_mem_pool_host",
     "register_mem_host_pool_v2",
@@ -56,12 +65,15 @@ __all__ = [
     "DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY",
     "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY",
     "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY",
+    "DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG",
     "DOCUMENT_KV_HICACHE_RUNTIME_METHODS",
     "DocumentKVHiCacheBackend",
     "DocumentKVHiCachePageProvider",
     "DocumentKVHiCacheProvider",
+    "DocumentKVHiCacheRequestContext",
     "NoOpDocumentKVHiCacheProvider",
     "build_document_kv_hicache_provider",
+    "document_kv_request_context_from_extra_info",
     "load_document_kv_hicache_provider_factory",
 ]
 
@@ -101,6 +113,20 @@ class NoOpDocumentKVHiCacheProvider:
 
     def set(self, key: object, value: object) -> None:
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentKVHiCacheRequestContext:
+    """Cachet request metadata forwarded from SGLang HiCache extra_info."""
+
+    kv_transfer_params: Mapping[str, Any]
+    request_id: str | None = None
+    handoff_json: str | None = None
+    payload_uri: str | None = None
+    handoff_record: Mapping[str, Any] | None = None
+    prompt_text_mode: str | None = None
+    prefix_keys: tuple[str, ...] = ()
+    raw_extra_info: Mapping[str, Any] | None = None
 
 
 class DocumentKVHiCachePageProvider:
@@ -288,13 +314,17 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
 
     def batch_exists(self, keys: Iterable[object], extra_info: object | None = None) -> int:
         key_list = list(keys)
+        request_context = document_kv_request_context_from_extra_info(extra_info)
         handler = getattr(self.provider, "batch_exists", None)
         if callable(handler):
             return int(
                 _call_provider_method(
                     handler,
                     key_list,
-                    optional_kwargs={"extra_info": extra_info},
+                    optional_kwargs={
+                        "extra_info": extra_info,
+                        DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG: request_context,
+                    },
                 )
             )
         for index, key in enumerate(key_list):
@@ -310,6 +340,7 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
     ) -> object:
         key_list = list(keys)
         transfer_list = list(pool_transfers or ())
+        request_context = document_kv_request_context_from_extra_info(extra_info)
         handler = getattr(self.provider, "batch_exists_v2", None)
         if callable(handler):
             return _call_provider_method(
@@ -318,6 +349,7 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
                 optional_kwargs={
                     "pool_transfers": transfer_list,
                     "extra_info": extra_info,
+                    DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG: request_context,
                 },
             )
         kv_hit_pages = self.batch_exists(key_list, extra_info=extra_info)
@@ -357,6 +389,7 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
         extra_info: object | None = None,
     ) -> list[object | None] | list[bool]:
         key_list = list(keys)
+        request_context = document_kv_request_context_from_extra_info(extra_info)
         handler = getattr(self.provider, "batch_get_v1", None)
         if callable(handler):
             return list(
@@ -366,6 +399,7 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
                     optional_kwargs={
                         "host_indices": host_indices,
                         "extra_info": extra_info,
+                        DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG: request_context,
                     },
                 )
             )
@@ -387,9 +421,19 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
         extra_info: object | None = None,
     ) -> dict[str, list[bool]]:
         transfer_list = list(transfers)
+        request_context = document_kv_request_context_from_extra_info(extra_info)
         handler = getattr(self.provider, "batch_get_v2", None)
         if callable(handler):
-            return dict(_call_provider_method(handler, transfer_list, optional_kwargs={"extra_info": extra_info}))
+            return dict(
+                _call_provider_method(
+                    handler,
+                    transfer_list,
+                    optional_kwargs={
+                        "extra_info": extra_info,
+                        DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG: request_context,
+                    },
+                )
+            )
         return _batch_pool_transfer(self, transfer_list, operation="get")
 
     def batch_set(
@@ -428,6 +472,7 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
         extra_info: object | None = None,
     ) -> object | None:
         key_list = list(keys)
+        request_context = document_kv_request_context_from_extra_info(extra_info)
         handler = getattr(self.provider, "batch_set_v1", None)
         if callable(handler):
             return _call_provider_method(
@@ -436,6 +481,7 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
                 optional_kwargs={
                     "host_indices": host_indices,
                     "extra_info": extra_info,
+                    DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG: request_context,
                 },
             )
         if host_indices is None:
@@ -460,9 +506,19 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
         extra_info: object | None = None,
     ) -> dict[str, list[bool]]:
         transfer_list = list(transfers)
+        request_context = document_kv_request_context_from_extra_info(extra_info)
         handler = getattr(self.provider, "batch_set_v2", None)
         if callable(handler):
-            return dict(_call_provider_method(handler, transfer_list, optional_kwargs={"extra_info": extra_info}))
+            return dict(
+                _call_provider_method(
+                    handler,
+                    transfer_list,
+                    optional_kwargs={
+                        "extra_info": extra_info,
+                        DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG: request_context,
+                    },
+                )
+            )
         return _batch_pool_transfer(self, transfer_list, operation="set")
 
     def clear(self) -> object | None:
@@ -505,6 +561,27 @@ def build_document_kv_hicache_provider(
         field_name=DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
     )
     return DocumentKVHiCachePageProvider(store_uri=store_uri, storage_identity=storage_identity)
+
+
+def document_kv_request_context_from_extra_info(extra_info: object | None) -> DocumentKVHiCacheRequestContext | None:
+    """Extract Cachet request metadata from SGLang HiCache extra_info when present."""
+
+    raw_extra_info = _request_extra_info_mapping(extra_info)
+    if raw_extra_info is None:
+        return None
+    kv_transfer_params = _kv_transfer_params_from_extra_info(raw_extra_info)
+    if kv_transfer_params is None:
+        return None
+    return DocumentKVHiCacheRequestContext(
+        kv_transfer_params=kv_transfer_params,
+        request_id=_optional_string(kv_transfer_params.get(_DOCUMENT_KV_REQUEST_ID_PARAM)),
+        handoff_json=_optional_string(kv_transfer_params.get(_DOCUMENT_KV_HANDOFF_JSON_PARAM)),
+        payload_uri=_optional_string(kv_transfer_params.get(_DOCUMENT_KV_PAYLOAD_URI_PARAM)),
+        handoff_record=_optional_mapping(kv_transfer_params.get(_DOCUMENT_KV_HANDOFF_RECORD_PARAM)),
+        prompt_text_mode=_optional_string(kv_transfer_params.get(_DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM)),
+        prefix_keys=_prefix_keys_from_extra_info(extra_info),
+        raw_extra_info=raw_extra_info,
+    )
 
 
 def _provider_from_extra_config(
@@ -674,6 +751,74 @@ def _optional_config_string(value: object, *, field_name: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string when provided")
     return value
+
+
+def _request_extra_info_mapping(extra_info: object | None) -> Mapping[str, Any] | None:
+    if extra_info is None:
+        return None
+    raw_extra_info = getattr(extra_info, "extra_info", None)
+    if raw_extra_info is None and isinstance(extra_info, Mapping):
+        raw_extra_info = extra_info.get("extra_info")
+        if raw_extra_info is None and (
+            _SGLANG_CUSTOM_PARAMS_KEY in extra_info or _SGLANG_KV_TRANSFER_PARAMS_KEY in extra_info
+        ):
+            raw_extra_info = extra_info
+    if raw_extra_info is None:
+        return None
+    if not isinstance(raw_extra_info, Mapping):
+        raise ValueError("SGLang HiCache extra_info.extra_info must be a mapping when provided")
+    return dict(raw_extra_info)
+
+
+def _kv_transfer_params_from_extra_info(extra_info: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    params = None
+    custom_params = extra_info.get(_SGLANG_CUSTOM_PARAMS_KEY)
+    if custom_params is not None:
+        if not isinstance(custom_params, Mapping):
+            raise ValueError("SGLang custom_params must be a mapping when provided")
+        params = custom_params.get(_SGLANG_KV_TRANSFER_PARAMS_KEY)
+    if params is None:
+        params = extra_info.get(_SGLANG_KV_TRANSFER_PARAMS_KEY)
+    if params is None:
+        return None
+    if not isinstance(params, Mapping):
+        raise ValueError("SGLang custom_params.kv_transfer_params must be a mapping")
+    return dict(params)
+
+
+def _prefix_keys_from_extra_info(extra_info: object | None) -> tuple[str, ...]:
+    if extra_info is None:
+        return ()
+    prefix_keys = getattr(extra_info, "prefix_keys", None)
+    if prefix_keys is None and isinstance(extra_info, Mapping):
+        prefix_keys = extra_info.get("prefix_keys")
+    if prefix_keys is None:
+        return ()
+    if isinstance(prefix_keys, (str, bytes, bytearray)):
+        return ()
+    try:
+        items = list(prefix_keys)
+    except TypeError:
+        return ()
+    if not items or not all(isinstance(item, str) and item for item in items):
+        return ()
+    return tuple(items)
+
+
+def _optional_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip():
+        return value
+    raise ValueError("document KV request context string fields must be non-empty strings when provided")
+
+
+def _optional_mapping(value: object) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise ValueError("document KV request context handoff_record must be a mapping when provided")
 
 
 def _page_bytes(value: object | None) -> bytes:

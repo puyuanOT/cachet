@@ -9,6 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
+from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
+)
 import sglang_kv_injection
 import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
 from sglang_kv_injection.sglang_dynamic_backend import (
@@ -20,8 +26,10 @@ from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_RUNTIME_METHODS,
     DocumentKVHiCacheBackend,
     DocumentKVHiCachePageProvider,
+    DocumentKVHiCacheRequestContext,
     NoOpDocumentKVHiCacheProvider,
     build_document_kv_hicache_provider,
+    document_kv_request_context_from_extra_info,
     load_document_kv_hicache_provider_factory,
 )
 
@@ -59,6 +67,44 @@ class FakeHostPool:
 
     def set_from_flat_data_page(self, index: int, data_page: object) -> None:
         self.loaded.append((index, data_page))
+
+
+class RequestContextProvider(RecordingProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.context_calls: list[tuple[str, DocumentKVHiCacheRequestContext | None, object | None]] = []
+
+    def batch_exists(
+        self,
+        keys,
+        *,
+        extra_info=None,
+        document_kv_request_context=None,
+    ):
+        self.context_calls.append(("batch_exists", document_kv_request_context, extra_info))
+        return len(keys)
+
+    def batch_get_v1(
+        self,
+        keys,
+        *,
+        host_indices=None,
+        extra_info=None,
+        document_kv_request_context=None,
+    ):
+        self.context_calls.append(("batch_get_v1", document_kv_request_context, extra_info))
+        return [True] * len(keys)
+
+    def batch_set_v1(
+        self,
+        keys,
+        *,
+        host_indices=None,
+        extra_info=None,
+        document_kv_request_context=None,
+    ):
+        self.context_calls.append(("batch_set_v1", document_kv_request_context, extra_info))
+        return [True] * len(keys)
 
 
 def test_document_kv_hicache_backend_defaults_to_safe_miss_provider():
@@ -475,6 +521,115 @@ def test_document_kv_hicache_backend_rejects_malformed_host_indices_without_rais
     assert host_pool.loaded == []
     assert provider.values["doc"] == b"kv-page"
     assert provider.values["doc.aux"] == b"aux-page"
+
+
+def test_document_kv_hicache_request_context_parses_sglang_custom_params():
+    extra_info_payload = {
+        "custom_params": {
+            "kv_transfer_params": {
+                DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-1",
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/cachet/live/sglang.handoff.json",
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: "uc-volume:/catalog/schema/volume/live/sglang.kv",
+                DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
+            },
+        },
+    }
+    sglang_extra_info = SimpleNamespace(
+        prefix_keys=["prefix-a", "prefix-b"],
+        extra_info=extra_info_payload,
+    )
+
+    context = document_kv_request_context_from_extra_info(sglang_extra_info)
+
+    assert context == DocumentKVHiCacheRequestContext(
+        kv_transfer_params=extra_info_payload["custom_params"]["kv_transfer_params"],
+        request_id="cachet-live-sglang-1",
+        handoff_json="/Volumes/cachet/live/sglang.handoff.json",
+        payload_uri="uc-volume:/catalog/schema/volume/live/sglang.kv",
+        prompt_text_mode="runtime",
+        prefix_keys=("prefix-a", "prefix-b"),
+        raw_extra_info=extra_info_payload,
+    )
+
+
+def test_document_kv_hicache_request_context_accepts_direct_kv_transfer_params():
+    context = document_kv_request_context_from_extra_info(
+        {
+            "prefix_keys": ["prefix-a"],
+            "extra_info": {
+                "kv_transfer_params": {
+                    DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-2",
+                },
+            },
+        }
+    )
+
+    assert context is not None
+    assert context.request_id == "cachet-live-sglang-2"
+    assert context.prefix_keys == ("prefix-a",)
+
+
+def test_document_kv_hicache_request_context_rejects_malformed_kv_transfer_params():
+    with pytest.raises(ValueError, match="kv_transfer_params must be a mapping"):
+        document_kv_request_context_from_extra_info(
+            {
+                "custom_params": {
+                    "kv_transfer_params": ["not", "a", "mapping"],
+                },
+            }
+        )
+
+
+def test_document_kv_hicache_backend_forwards_request_context_to_batch_provider_methods():
+    provider = RequestContextProvider()
+    backend = DocumentKVHiCacheBackend(provider=provider)
+    sglang_extra_info = SimpleNamespace(
+        prefix_keys=["prefix-a"],
+        extra_info={
+            "custom_params": {
+                "kv_transfer_params": {
+                    DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-3",
+                    DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/cachet/live/sglang.handoff.json",
+                },
+            },
+        },
+    )
+
+    assert backend.batch_exists(["page-a", "page-b"], extra_info=sglang_extra_info) == 2
+    assert backend.batch_get_v1(["page-a"], [0], extra_info=sglang_extra_info) == [True]
+    assert backend.batch_set_v1(["page-a"], [0], extra_info=sglang_extra_info) == [True]
+
+    assert [name for name, _context, _extra_info in provider.context_calls] == [
+        "batch_exists",
+        "batch_get_v1",
+        "batch_set_v1",
+    ]
+    for _name, context, observed_extra_info in provider.context_calls:
+        assert observed_extra_info is sglang_extra_info
+        assert context is not None
+        assert context.request_id == "cachet-live-sglang-3"
+        assert context.handoff_json == "/Volumes/cachet/live/sglang.handoff.json"
+        assert context.prefix_keys == ("prefix-a",)
+
+
+def test_document_kv_hicache_backend_omits_context_for_legacy_batch_provider_signatures():
+    class LegacyBatchProvider(RecordingProvider):
+        def batch_exists(self, keys, *, extra_info=None):
+            self.calls.append(("batch_exists", (tuple(keys), extra_info)))
+            return len(keys)
+
+    provider = LegacyBatchProvider()
+    backend = DocumentKVHiCacheBackend(provider=provider)
+    sglang_extra_info = {
+        "custom_params": {
+            "kv_transfer_params": {
+                DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-4",
+            },
+        },
+    }
+
+    assert backend.batch_exists(["page-a"], extra_info=sglang_extra_info) == 1
+    assert provider.calls == [("batch_exists", (("page-a",), sglang_extra_info))]
 
 
 def test_load_document_kv_hicache_provider_factory_requires_module_attribute(monkeypatch):
