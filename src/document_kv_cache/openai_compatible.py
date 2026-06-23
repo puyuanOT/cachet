@@ -158,10 +158,12 @@ class OpenAICompatibleCompletionEngine:
         self,
         config: OpenAICompatibleEngineConfig,
         *,
+        extra_body_factory: Callable[[BenchmarkEngineRequest], Mapping[str, Any]] | None = None,
         token_counter: TokenCounter | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
+        self.extra_body_factory = extra_body_factory
         self.token_counter = token_counter or WhitespaceTokenCounter()
         self.clock = clock
 
@@ -171,8 +173,8 @@ class OpenAICompatibleCompletionEngine:
         response = self._post_json(payload)
         try:
             if payload["stream"]:
-                return self._stream_generation(request, response, started)
-            return self._completion_generation(request, response, started)
+                return self._stream_generation(request, response, started, cache_salt=payload.get("cache_salt"))
+            return self._completion_generation(request, response, started, cache_salt=payload.get("cache_salt"))
         finally:
             close = getattr(response, "close", None)
             if callable(close):
@@ -188,7 +190,7 @@ class OpenAICompatibleCompletionEngine:
         }
         if self.config.stream and self.config.include_usage:
             payload["stream_options"] = {"include_usage": True}
-        payload.update(self.config.extra_body)
+        payload.update(self._extra_body(request))
         if request.kv_transfer_params:
             if request.request_id:
                 payload["request_id"] = request.request_id
@@ -196,6 +198,12 @@ class OpenAICompatibleCompletionEngine:
             kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = self.config.prompt_text_mode
             payload["kv_transfer_params"] = kv_transfer_params
         return payload
+
+    def _extra_body(self, request: BenchmarkEngineRequest) -> dict[str, Any]:
+        extra_body = dict(self.config.extra_body)
+        if self.extra_body_factory is not None:
+            extra_body.update(_json_object_mapping(self.extra_body_factory(request), "extra_body_factory"))
+        return extra_body
 
     def _prompt_text(self, request: BenchmarkEngineRequest) -> str:
         if self.config.prompt_text_mode == "runtime":
@@ -233,6 +241,8 @@ class OpenAICompatibleCompletionEngine:
         request: BenchmarkEngineRequest,
         response: Any,
         started: float,
+        *,
+        cache_salt: Any,
     ) -> BenchmarkGeneration:
         first_token_at: float | None = None
         output_parts: list[str] = []
@@ -263,6 +273,7 @@ class OpenAICompatibleCompletionEngine:
                 stream=True,
                 prompt_token_source=prompt_token_source,
                 token_metadata=token_metadata,
+                cache_salt=cache_salt,
             ),
         )
 
@@ -271,6 +282,8 @@ class OpenAICompatibleCompletionEngine:
         request: BenchmarkEngineRequest,
         response: Any,
         started: float,
+        *,
+        cache_salt: Any,
     ) -> BenchmarkGeneration:
         data = json.loads(response.read().decode("utf-8"))
         _raise_for_api_error(data)
@@ -289,6 +302,7 @@ class OpenAICompatibleCompletionEngine:
                 stream=False,
                 prompt_token_source=prompt_token_source,
                 token_metadata=token_metadata,
+                cache_salt=cache_salt,
             ),
         )
 
@@ -299,6 +313,7 @@ class OpenAICompatibleCompletionEngine:
         stream: bool,
         prompt_token_source: str,
         token_metadata: Mapping[str, str],
+        cache_salt: Any,
     ) -> dict[str, str]:
         metadata = {
             "server": "openai-compatible",
@@ -308,9 +323,9 @@ class OpenAICompatibleCompletionEngine:
             "kv_transfer_params_attached": "true" if request.kv_transfer_params else "false",
             **token_metadata,
         }
-        cache_salt = self.config.extra_body.get("cache_salt")
         if isinstance(cache_salt, str) and cache_salt:
             metadata["prefix_cache_salt_attached"] = "true"
+            metadata["prefix_cache_salt"] = cache_salt
         if request.request_id:
             metadata["request_id"] = request.request_id
         return metadata

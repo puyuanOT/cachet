@@ -1,0 +1,35 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "Curie the 2nd found no correctness, compatibility, or metadata issues. The review confirmed that salts are deterministic per suite/dataset/example/arm/repeat, static mode remains the default, and Cachet handoff payload references remain unchanged while vLLM prefix-cache salts vary.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 410,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/410",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/benchmark_runner.py",
+    "src/document_kv_cache/openai_compatible.py",
+    "src/document_kv_cache/vllm_smoke.py",
+    "tests/test_benchmark_runner.py",
+    "tests/test_openai_compatible.py",
+    "tests/test_vllm_smoke.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_benchmark_runner.py tests/test_openai_compatible.py tests/test_vllm_smoke.py -q -> 152 passed",
+    "poetry run pytest tests/test_public_package.py tests/test_project_governance.py -q -> 54 passed",
+    "poetry run pytest -q -> 1895 passed, 4 skipped",
+    "poetry run python -m compileall -q src tests -> passed",
+    "poetry check -> passed with existing duplicated project/tool.poetry metadata warnings",
+    "git diff --check -> passed",
+    "changed-file Databricks credential pattern scan -> no matches"
+  ],
+  "what_changed": [
+    "Benchmark requests now carry a per-arm repeat_index so repeated measurements can be identified by request consumers.",
+    "OpenAI-compatible benchmarks support an opt-in prefix_cache_salt_mode=per_request that derives cache_salt per suite, dataset, example, arm, and repeat while preserving static mode by default.",
+    "Prepared vLLM smoke benchmarks now pass per_request salt mode so repeated Databricks runs avoid vLLM prefix-cache reuse while keeping the same Cachet handoff payload URI."
+  ],
+  "why": "The successful Databricks g6.8xlarge/L4 run proved native vLLM loading but repeats 2 and 3 were dominated by vLLM prefix-cache hits for both baseline and Cachet arms, hiding payload URI cache behavior. Per-request salts make the next hot-payload run interpretable."
+}

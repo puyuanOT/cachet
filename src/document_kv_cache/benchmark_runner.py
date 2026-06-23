@@ -39,6 +39,7 @@ from document_kv_cache.workflow import SourceChunk, SourceDocument
 
 DEFAULT_OPENAI_COMPLETIONS_ENDPOINT = "/v1/completions"
 BENCHMARK_RUN_RECORD_TYPE = "document_kv.benchmark_run.v1"
+PREFIX_CACHE_SALT_MODES = ("static", "per_request")
 
 __all__ = [
     "BENCHMARK_RUN_RECORD_TYPE",
@@ -93,10 +94,12 @@ class BenchmarkEngineRequest:
     prompt_parts: BenchmarkPromptParts
     request_id: str | None = None
     kv_transfer_params: Mapping[str, Any] = field(default_factory=dict)
+    repeat_index: int = 1
 
     def __post_init__(self) -> None:
         if self.request_id is not None:
             _validate_non_empty_string(self.request_id, "request_id")
+        _validate_positive_int(self.repeat_index, "repeat_index")
         object.__setattr__(
             self,
             "kv_transfer_params",
@@ -163,6 +166,7 @@ class OpenAICompatibleBenchmarkConfig:
     prompt_token_accounting: Literal["logical", "server_usage"] = "logical"
     baseline_extra_body: Mapping[str, Any] = field(default_factory=dict)
     cache_extra_body: Mapping[str, Any] = field(default_factory=dict)
+    prefix_cache_salt_mode: Literal["static", "per_request"] = "static"
 
     def __post_init__(self) -> None:
         _validate_non_empty_string(self.suite_id, "suite_id")
@@ -200,6 +204,8 @@ class OpenAICompatibleBenchmarkConfig:
             raise ValueError("api_key must be a string when provided")
         if self.prompt_token_accounting not in {"logical", "server_usage"}:
             raise ValueError("prompt_token_accounting must be 'logical' or 'server_usage'")
+        if self.prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
+            raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
         if self.cache_runtime_prompt and self.cache_base_url is None:
             raise ValueError("cache_runtime_prompt requires cache_base_url; pass the cache proxy URL explicitly")
         object.__setattr__(self, "dataset_paths", dataset_paths)
@@ -309,7 +315,9 @@ def run_benchmark_suite(
         arm_sequence = list(arms) * repeats
         if shuffle:
             random.Random(_example_seed(seed, example.dataset, example.example_id)).shuffle(arm_sequence)
+        repeat_indices_by_arm = {arm.arm_id: 0 for arm in arms}
         for arm in arm_sequence:
+            repeat_indices_by_arm[arm.arm_id] += 1
             request = BenchmarkEngineRequest(
                 suite_id=suite.suite_id,
                 model_id=suite.model_id,
@@ -319,6 +327,7 @@ def run_benchmark_suite(
                 prompt_parts=prompt_parts,
                 request_id=_request_id_for_arm(example, arm),
                 kv_transfer_params=_kv_transfer_params_for_arm(example, arm),
+                repeat_index=repeat_indices_by_arm[arm.arm_id],
             )
             measurements.append(_run_engine(request, engines[arm.arm_id]))
     report_rows = summarize_measurements(measurements)
@@ -528,6 +537,11 @@ def _openai_compatible_engine(arm: BenchmarkArm, config: OpenAICompatibleBenchma
     endpoint = config.cache_endpoint if arm.uses_cache and config.cache_endpoint is not None else config.endpoint
     prompt_text_mode = "runtime" if arm.uses_cache and config.cache_runtime_prompt else "logical"
     extra_body = config.cache_extra_body if arm.uses_cache else config.baseline_extra_body
+    extra_body_factory = (
+        _prefix_cache_salt_extra_body_factory(extra_body)
+        if config.prefix_cache_salt_mode == "per_request"
+        else None
+    )
     return OpenAICompatibleCompletionEngine(
         OpenAICompatibleEngineConfig(
             base_url=_normalize_openai_base_url(base_url, endpoint=endpoint),
@@ -541,8 +555,31 @@ def _openai_compatible_engine(arm: BenchmarkArm, config: OpenAICompatibleBenchma
             prompt_text_mode=prompt_text_mode,
             prompt_token_accounting=config.prompt_token_accounting,
             extra_body=extra_body,
-        )
+        ),
+        extra_body_factory=extra_body_factory,
     )
+
+
+def _prefix_cache_salt_extra_body_factory(
+    base_extra_body: Mapping[str, Any],
+) -> Callable[[BenchmarkEngineRequest], Mapping[str, Any]]:
+    base_cache_salt = base_extra_body.get("cache_salt")
+    if not isinstance(base_cache_salt, str) or not base_cache_salt:
+        return lambda request: {}
+
+    def extra_body(request: BenchmarkEngineRequest) -> Mapping[str, Any]:
+        return {
+            "cache_salt": (
+                f"{base_cache_salt}:"
+                f"{request.suite_id}:"
+                f"{request.example.dataset}:"
+                f"{request.example.example_id}:"
+                f"{request.arm.arm_id}:"
+                f"repeat-{request.repeat_index}"
+            )
+        }
+
+    return extra_body
 
 
 def _measurement_to_record(measurement: InferenceMeasurement) -> dict[str, Any]:
@@ -950,6 +987,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--baseline-extra-body-json", default="{}", help="JSON object merged into baseline requests.")
     parser.add_argument("--cache-extra-body-json", default="{}", help="JSON object merged into cache-arm requests.")
+    parser.add_argument(
+        "--prefix-cache-salt-mode",
+        choices=PREFIX_CACHE_SALT_MODES,
+        default="static",
+        help=(
+            "How to apply cache_salt from extra-body JSON. 'static' sends it unchanged; "
+            "'per_request' derives a deterministic salt per dataset/example/arm/repeat."
+        ),
+    )
     parser.add_argument("--output-json", help="Write the full benchmark result JSON to this path instead of stdout.")
     args = parser.parse_args(argv)
 
@@ -976,6 +1022,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prompt_token_accounting="server_usage" if args.server_usage else "logical",
             baseline_extra_body=_json_object_option(args.baseline_extra_body_json, "--baseline-extra-body-json"),
             cache_extra_body=_json_object_option(args.cache_extra_body_json, "--cache-extra-body-json"),
+            prefix_cache_salt_mode=args.prefix_cache_salt_mode,
         )
         result = run_openai_compatible_v1_benchmark(config)
         if args.output_json:
