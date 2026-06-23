@@ -12,19 +12,19 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Integrate with established serving platforms instead of custom solvers | Implemented | `engine_adapters.py`, `engine_probe.py`, `native_probe_factories.py`, `openai_compatible.py`, and `CONTRIBUTING.md` keep engine-specific work at the vLLM/SGLang handoff boundary. | Run native connector action probes against real vLLM and SGLang block managers. |
+| Integrate with established serving platforms instead of custom solvers | Implemented | `engine_adapters.py`, `engine_probe.py`, `native_probe_factories.py`, `openai_compatible.py`, and `CONTRIBUTING.md` keep engine-specific work at the vLLM/SGLang handoff boundary. QA run `934698284395881` completed vLLM and SGLang provider-backed native probes plus connector action descriptors against real vLLM and SGLang native block managers on `g6.8xlarge`. | Run connector action descriptor validation whenever connector contracts change, then keep the refreshed native probe/action records in the strict release bundle. |
 | Use Poetry with pinned dependencies | Implemented | `pyproject.toml` pins package, test, Databricks, and helper environment dependencies; CI runs `poetry check`. | Keep pins current before each release. |
-| Load KV ranges from Memory, Disk, and Unity Catalog | Implemented | `storage.py`, `materializer.py`, `service.py`, and `storage_benchmark.py` cover Memory, Disk, UC Volume, and routed readers. | Publish UC-backed storage benchmark evidence from the target workspace. |
+| Load KV ranges from Memory, Disk, and Unity Catalog | Implemented | `storage.py`, `materializer.py`, `service.py`, and `storage_benchmark.py` cover Memory, Disk, UC Volume, and routed readers. QA run `948365719597221` produced Memory, Disk, and real Unity Catalog storage-reader evidence; its run-status sidecar has been regenerated with current strict bundle schema. | Include the refreshed storage benchmark JSON and Databricks run-status sidecar in the strict release bundle after GitHub governance is release-ready. |
 | Keep the repository clean | Implemented | `.gitignore`, `repository_hygiene.py`, directory README/docstring tests, credential scanning tests, and PR evidence validation guard generated files and secrets. | Include repository hygiene sidecar in the strict release bundle. |
 
 ## V1 Scope And Benchmarking
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Strict V1 release sidecars validate both the default hardware target and the exact default node type. | Run and attach terminal successful Databricks status sidecars for benchmark, storage, and engine-probe jobs on the default AWS g6/L4 target. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target. | Publish the complete strict release bundle once GitHub governance is release-ready. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
-| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. | Publish complete V1 benchmark reports from target AWS g6/L4 runs. |
-| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. | Run the full dataset plan and bundle the resulting release evidence. |
+| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. QA benchmark run `426398182137665` produced `document_kv.benchmark_run.v1` evidence with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.18x to 6.78x, and time-to-completion speedups from 1.74x to 2.22x. | Bundle the refreshed benchmark report and run-status sidecar in the strict release bundle after GitHub governance is release-ready. |
+| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. QA benchmark run `426398182137665` completed Biography, HotpotQA, MusiQue, and NIAH with release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, or native connector behavior changes. |
 | Compare against standard no-cache prefill | Implemented | Benchmark summaries require a `baseline_prefill` arm and cache-arm comparisons with logical/runtime prompt accounting. | Target release evidence must include finite baseline and cache measurements. |
 
 ## Architecture And Extensibility
@@ -49,50 +49,60 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| PR-driven development, no direct pushes to main | Implemented | `CONTRIBUTING.md`, `.github/main-branch-protection.json`, GitHub governance sidecars, and CI docs encode the protected-main workflow. | Maintainers must keep branch protection applied in GitHub. |
+| PR-driven development, no direct pushes to main | Release-gated | `CONTRIBUTING.md`, `.github/main-branch-protection.json`, GitHub governance sidecars, and CI docs encode the protected-main workflow. | GitHub currently reports the repository as private and main branch protection disabled; make the repository public or upgrade the GitHub plan, then apply the branch-protection policy before public release. |
 | GPT-5.5 review for each PR | Implemented | PR evidence sidecars require completed GPT-5.5 review and resolved findings. | Continue attaching PR evidence to release bundles. |
-| Auto-merge approved PRs to avoid open PR buildup | Implemented | GitHub governance evidence records merge settings, auto-merge, branch deletion, and unexpected open PR counts. | Keep operational merge discipline: one PR open, merge after review and green CI. |
+| Auto-merge approved PRs to avoid open PR buildup | Release-gated | GitHub governance evidence records merge settings, auto-merge, branch deletion, and unexpected open PR counts. Current operations still follow the one-PR-at-a-time merge discipline after review and green CI. | GitHub currently reports `allow_auto_merge=false`; enable auto-merge before public release, keep exactly one PR open during active release work, and merge after review plus green CI. |
 | Apply Refactor skill to every PR | Implemented | PR evidence validation requires Refactor-skill evidence, and the pull request template asks reviewers to check it. | Continue recording the evidence per PR. |
 | Explain what changed and why | Implemented | PR evidence schema and pull request template require `what_changed`, `why`, scope, and verification. | Continue validating PR evidence sidecars in CI and release bundles. |
 
 ## Remaining V1 Release Gates
 
-- Candidate target g6/L4 prepared-context vLLM smoke evidence now exists for
-  `cachet_vllm_prepared_long_20260621_121543_vllm_prepared_long` on a
-  single-node `g6.8xlarge`: all four datasets completed with no errors,
-  prompt-token preflight stayed under `max_model_len=32768`, and the V1
-  benchmark evidence block was `ok=true`. This run proves the plain vLLM
-  OpenAI-compatible serving path, Qwen3 4B Instruct prompt budget, latency
-  accounting, and answer-found quality checks at roughly 19k-29k prompt tokens.
-  Artifact locations and SHA-256 fingerprints are recorded in
-  `pr-evidence/document-vllm-prepared-evidence/README.md`.
-  It is not yet publishable as strict cache-release evidence because the cache
-  arm still used `prompt_text_mode=logical`; strict release evidence requires a
-  KV-aware adapter path where the cache arm sends only the runtime suffix and
-  reports `runtime_prompt_tokens < logical_prompt_tokens`. It also does not
-  satisfy the strict benchmark Databricks run-status identity or the native
-  vLLM/SGLang connector probe, connector action, and launch-config gates.
-- Candidate target g6/L4 UC storage-reader evidence exists for
-  `cachet_readiness_20260621_095026`: Memory, Disk, and Unity Catalog readers
-  all completed with zero errors against a real UC Volume. Its artifact
-  locations and SHA-256 fingerprints are recorded in
-  `pr-evidence/document-vllm-prepared-evidence/README.md`; the remaining gate is
-  to bundle that storage benchmark JSON and Databricks status sidecar with the
-  full strict release artifact set.
-- Run and publish the complete strict release bundle from target AWS g6/L4/Unity
-  Catalog runs with the full strict artifact set: release evidence sidecar,
-  preflight sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
-  connector action sidecars, vLLM/SGLang engine launch config sidecars,
-  benchmark plan execution sidecar, Databricks run-status sidecars for
-  benchmark, storage, and vLLM/SGLang engine-probe runs, tested package wheel,
-  PR evidence sidecar, V1 requirements matrix, GitHub governance sidecar,
-  repository hygiene sidecar, and native probe factory diagnostics sidecars
-  emitted from the split vLLM/SGLang runtime probe environments.
+- Target g6/L4 benchmark evidence exists for
+  `cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main`
+  from QA Databricks run `426398182137665` on a single-node `g6.8xlarge`: all
+  four datasets completed with no benchmark errors, 24 measurements, 4
+  cache-vs-baseline comparisons, answer-found and exact-match deltas of zero,
+  TTFT speedups of 5.18x-6.78x, and time-to-completion speedups of 1.74x-2.22x.
+  The vLLM server log recorded external prefix-cache hits and successful
+  Cachet layer loads (`document_kv_layers_loaded=36`,
+  `document_kv_load_error_blocks=0`).
+- Target g6/L4 UC storage-reader evidence exists for
+  `cachet_readiness_20260621_095026` from QA Databricks run
+  `948365719597221`: Memory, Disk, and Unity Catalog readers all completed with
+  zero errors against a real UC Volume. Its Databricks run-status sidecar was
+  regenerated with the current strict bundle schema, including explicit
+  `spark_env_keys` arrays.
+- Target g6/L4 native engine evidence exists for QA Databricks run
+  `934698284395881`: vLLM and SGLang provider-backed native probe tasks both
+  terminated `SUCCESS` on `g6.8xlarge`, emitted `payload_mode=merged` engine
+  probe sidecars, connector action sidecars, runtime preflight sidecars, and
+  native probe factory diagnostics from inside the installed runtime
+  environments. Run connector action descriptor validation remains the required
+  regression step whenever connector contracts change.
+- Release-evidence validation over the target benchmark, storage, and fresh
+  vLLM/SGLang native probe/action artifacts is `ok=true` with no issues. An
+  enriched release bundle without GitHub governance built successfully with 20
+  artifacts, including the release evidence sidecar, preflight sidecar,
+  vLLM/SGLang native engine probe sidecars, vLLM/SGLang connector action
+  sidecars, vLLM/SGLang engine launch config sidecars, benchmark plan execution
+  sidecar, Databricks run-status sidecars for benchmark, storage, and
+  vLLM/SGLang engine-probe runs, tested package wheel, PR evidence sidecar, V1
+  requirements matrix, repository hygiene sidecar, and native probe factory
+  diagnostics sidecars emitted from the split vLLM/SGLang runtime probe
+  environments.
+- The complete strict release bundle still requires the GitHub governance
+  sidecar to be release-ready. Current GitHub governance reports the repository
+  as private, repository visibility as private, `allow_auto_merge=false`, and
+  main branch protection disabled; the branch-protection API returns a 403 that
+  says to upgrade GitHub Pro or make the repository public. Make the repository
+  public or move it to a plan that supports required branch protection, enable
+  auto-merge, apply the main branch-protection policy, regenerate the GitHub
+  governance sidecar, and then rebuild the complete strict release bundle with
+  the full strict artifact set.
 - `benchmark_plan.py` can now emit the vLLM/SGLang engine launch config sidecars
   through `--engine-launch-config-output-dir`; those generated paths satisfy the
   strict bundle launch-config gate when paired with the native probe/action
   evidence.
-- Run connector action descriptor validation against real vLLM and SGLang native block managers.
 - Keep runtime serving inside established engines and outside Cachet's package
   boundary.
 - Remove the `restaurant_kv_serving` compatibility package only after downstream
