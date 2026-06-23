@@ -120,8 +120,15 @@ RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
 RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES = (
     "restaurant" "_kv_serving/",
 )
+RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES = (
+    "purelib",
+    "platlib",
+)
 RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_PREFIXES = (
     "restaurant" "-kv-",
+)
+RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES = (
+    "restaurant" "_kv_serving",
 )
 RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-benchmark-handoff-bundles": "cachet.benchmark_handoffs:bundle_main",
@@ -2370,17 +2377,26 @@ def _wheel_typed_marker_issues(names: Sequence[str]) -> tuple[str, ...]:
 
 
 def _wheel_forbidden_path_issues(names: Sequence[str]) -> tuple[str, ...]:
-    forbidden_paths = tuple(
-        name
-        for name in names
-        if any(name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES)
-    )
+    forbidden_paths = tuple(name for name in names if _is_forbidden_package_wheel_path(name))
     if not forbidden_paths:
         return ()
     return (
         "package wheel artifact must not contain legacy compatibility package files: "
         + ", ".join(repr(path) for path in forbidden_paths),
     )
+
+
+def _is_forbidden_package_wheel_path(name: str) -> bool:
+    if any(name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
+        return True
+    path_parts = tuple(part for part in name.split("/") if part)
+    for index, part in enumerate(path_parts[:-1]):
+        if part not in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES:
+            continue
+        installed_path = "/".join(path_parts[index + 1 :])
+        if any(installed_path.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
+            return True
+    return False
 
 
 def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
@@ -2395,6 +2411,12 @@ def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
                 "package wheel artifact entry_points.txt must not include "
                 f"legacy compatibility console script {script_name!r}"
             )
+        target = scripts[script_name]
+        if _is_forbidden_console_script_target(target):
+            issues.append(
+                "package wheel artifact entry_points.txt console script "
+                f"{script_name!r} must not target legacy compatibility module {target!r}"
+            )
     for script_name, expected_target in RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS.items():
         actual_target = scripts.get(script_name)
         if actual_target is None:
@@ -2405,6 +2427,13 @@ def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
                 f"{script_name!r} must target {expected_target!r}"
             )
     return tuple(issues)
+
+
+def _is_forbidden_console_script_target(target: str) -> bool:
+    return any(
+        target == prefix or target.startswith(f"{prefix}.") or target.startswith(f"{prefix}:")
+        for prefix in RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES
+    )
 
 
 def _console_scripts_from_entry_points(text: str) -> dict[str, str]:
