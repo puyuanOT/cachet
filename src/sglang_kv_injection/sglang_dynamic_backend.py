@@ -21,6 +21,10 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
 from document_kv_cache.benchmarks import DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM
+from sglang_kv_injection.sglang_request_metadata_bridge import (
+    SGLangRequestMetadataBridgeStatus,
+    install_sglang_request_metadata_bridge,
+)
 
 
 def _load_sglang_hicache_storage_base() -> type:
@@ -82,6 +86,7 @@ __all__ = [
     "DocumentKVHiCacheProvider",
     "DocumentKVHiCacheRequestContext",
     "NoOpDocumentKVHiCacheProvider",
+    "SGLangRequestMetadataBridgeStatus",
     "build_document_kv_hicache_provider",
     "document_kv_request_context_from_extra_info",
     "load_document_kv_hicache_provider_factory",
@@ -390,6 +395,7 @@ class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
     ) -> None:
         self.storage_identity = _storage_identity_from_runtime_args(args=args, kwargs=kwargs)
         self.extra_config = _backend_extra_config(args=args, kwargs=kwargs)
+        self.request_metadata_bridge_status = install_sglang_request_metadata_bridge()
         self.provider = provider or _provider_from_extra_config(
             self.extra_config,
             storage_identity=self.storage_identity,

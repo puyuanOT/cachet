@@ -44,6 +44,9 @@ from sglang_kv_injection.sglang_hicache_config import (
     sglang_hicache_cli_args,
     sglang_hicache_launch_config,
 )
+from sglang_kv_injection.sglang_request_metadata_bridge import (
+    sglang_request_metadata_bridge_status_to_record,
+)
 
 HF_MODEL_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
 SERVED_MODEL_NAME = "qwen3:4b-instruct"
@@ -53,13 +56,11 @@ SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
-    "SGLang handoff-backed live smoke is not supported yet: the pinned SGLang "
-    "OpenAI path carries custom_params on sampling params but does not pass "
-    "Cachet kv_transfer_params into HiCacheStorageExtraInfo.extra_info. "
-    "Cachet's provider can hydrate validated handoff payload pages once that "
-    "runtime bridge and SGLang page-key metadata are present. Use "
-    "--baseline-only for provider/server bring-up until "
-    "live_request_metadata_bridge_ok=true."
+    "SGLang handoff-backed live smoke is not enabled yet: Cachet now provides "
+    "a runtime request-metadata bridge and page-key handoff metadata path, but "
+    "the smoke runner still needs to promote a cache-arm request that records "
+    "live_request_metadata_bridge_ok=true and validates decode-time prefix "
+    "binding end to end. Use --baseline-only for provider/server bring-up."
 )
 SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE = (
     "baseline-only SGLang smoke must not include handoff_json, handoff_record, handoff_record_json, "
@@ -355,12 +356,17 @@ def build_sglang_hicache_provider_probe_record(
         raise ValueError("SGLang smoke cannot run with NoOpDocumentKVHiCacheProvider")
     if getattr(provider, "document_kv_hicache_provider", False) is not True:
         raise TypeError("SGLang smoke requires a runtime-facing document KV HiCache provider")
+    request_metadata_bridge = sglang_request_metadata_bridge_status_to_record(
+        getattr(backend, "request_metadata_bridge_status", None)
+    )
 
     return {
         "document_kv_hicache_provider_ok": True,
         "document_kv_provider_factory": provider_factory,
         "document_kv_provider_type": f"{type(provider).__module__}.{type(provider).__qualname__}",
         "document_kv_backend_type": f"{type(backend).__module__}.{type(backend).__qualname__}",
+        "document_kv_request_metadata_bridge": request_metadata_bridge,
+        "document_kv_request_metadata_bridge_ok": request_metadata_bridge.get("ok") is True,
         "document_kv_requires_native_runtime": True,
         "document_kv_hicache_backend_module": DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
         "document_kv_hicache_backend_class": DOCUMENT_KV_HICACHE_BACKEND_CLASS,
