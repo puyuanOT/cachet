@@ -405,7 +405,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
                     "number": 129,
                     "title": "Require Cachet repository branding evidence",
                     "draft": False,
-                    "html_url": "https://github.com/owner/document-kv-cache/pull/129",
+                    "html_url": "https://github.com/owner/cachet/pull/129",
                     "head_ref": "require-cachet-branding",
                     "base_ref": "main",
                 }
@@ -508,7 +508,7 @@ def test_build_release_bundle_rejects_inconsistent_allowed_open_pull_request_sum
                     "number": 129,
                     "title": "Require Cachet repository branding evidence",
                     "draft": False,
-                    "html_url": "https://github.com/owner/document-kv-cache/pull/129",
+                    "html_url": "https://github.com/owner/cachet/pull/129",
                     "head_ref": "require-cachet-branding",
                     "base_ref": "main",
                 }
@@ -567,7 +567,7 @@ def test_build_release_bundle_rejects_mismatched_allowed_open_pull_request_summa
                     "number": 999,
                     "title": "Different pull request",
                     "draft": False,
-                    "html_url": "https://github.com/owner/document-kv-cache/pull/999",
+                    "html_url": "https://github.com/owner/cachet/pull/999",
                     "head_ref": "different-pr",
                     "base_ref": "main",
                 }
@@ -602,7 +602,7 @@ def test_build_release_bundle_rejects_malformed_allowed_open_pull_request_number
                     "number": 129,
                     "title": "Require Cachet repository branding evidence",
                     "draft": False,
-                    "html_url": "https://github.com/owner/document-kv-cache/pull/129",
+                    "html_url": "https://github.com/owner/cachet/pull/129",
                     "head_ref": "require-cachet-branding",
                     "base_ref": "main",
                 }
@@ -1553,6 +1553,20 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "missing-topic-github-governance.json",
         missing_topic_github_governance_record,
     )
+    stale_repository_github_governance_record = _github_governance_cli_record(ok=True)
+    stale_repository_github_governance_record["summary"]["repository"] = "owner/document-kv-cache"
+    stale_repository_github_governance = _write_json(
+        tmp_path / "stale-repository-github-governance.json",
+        stale_repository_github_governance_record,
+    )
+    stale_homepage_github_governance_record = _github_governance_cli_record(ok=True)
+    stale_homepage_github_governance_record["summary"]["homepage"] = (
+        "https://github.com/owner/document-kv-cache"
+    )
+    stale_homepage_github_governance = _write_json(
+        tmp_path / "stale-homepage-github-governance.json",
+        stale_homepage_github_governance_record,
+    )
     raw_branch_protection_github_governance_record = _github_governance_cli_record(ok=True)
     raw_branch_protection_github_governance_record["summary"]["branch_protection"]["raw"] = {
         "headers": {"authorization": "do-not-bundle-me"}
@@ -1631,7 +1645,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             "number": 72,
             "title": "Stale experiment branch",
             "draft": True,
-            "html_url": "https://github.com/owner/document-kv-cache/pull/72",
+            "html_url": "https://github.com/owner/cachet/pull/72",
             "head_ref": "experiment",
             "base_ref": "main",
         }
@@ -2499,6 +2513,24 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             github_governance_json=missing_topic_github_governance,
             output_dir=tmp_path / "missing-topic-github-governance-bundle",
+        )
+    with pytest.raises(ValueError, match=r"summary\.repository must end with '/cachet'"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=stale_repository_github_governance,
+            output_dir=tmp_path / "stale-repository-github-governance-bundle",
+        )
+    with pytest.raises(ValueError, match=r"summary\.homepage must mention Cachet"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            github_governance_json=stale_homepage_github_governance,
+            output_dir=tmp_path / "stale-homepage-github-governance-bundle",
         )
 
     with pytest.raises(ValueError, match="contexts must be an array of strings"):
@@ -3773,7 +3805,7 @@ def _pr_evidence_record(*, ok: bool):
         "record_type": "document_kv.pr_evidence.v1",
         "ok": ok,
         "pull_request_number": 123,
-        "pull_request_url": "https://github.com/owner/document-kv-cache/pull/123",
+        "pull_request_url": "https://github.com/owner/cachet/pull/123",
         "what_changed": ["release provenance"],
         "why": "release bundles should be auditable",
         "scope": ["release_bundle.py"],
@@ -3791,7 +3823,7 @@ def _github_governance_cli_record(*, ok: bool):
     summary = {
         "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
         "ok": ok,
-        "repository": "owner/document-kv-cache",
+        "repository": "owner/cachet",
         "default_branch": "main",
         "branch": "main",
         "private": False,
@@ -3799,7 +3831,7 @@ def _github_governance_cli_record(*, ok: bool):
         "archived": False,
         "disabled": False,
         "description": "Cachet document KV cache.",
-        "homepage": "https://github.com/owner/document-kv-cache",
+        "homepage": "https://github.com/owner/cachet",
         "topics": ["cachet", "kv-cache"],
         "branch_protection": {
             "enabled": ok,
