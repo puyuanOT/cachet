@@ -393,6 +393,7 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "compatibility-preserving implementation package" in text
     assert "canonical implementation modules" in text
     assert "Public files in this package define the document-owned classes" in text
+    assert "core runtime model layer" in text
     assert "merge-settings" in text
     assert "auto-merge" in text
     assert "merged-branch cleanup" in text
@@ -520,6 +521,32 @@ def test_production_source_does_not_depend_on_legacy_restaurant_package():
     actual = {path: imports for path, imports in actual.items() if imports}
 
     assert actual == ALLOWED_LEGACY_SOURCE_REFERENCES
+
+
+def test_core_runtime_modules_are_document_only_after_legacy_alias_removal():
+    core_paths = (
+        REPO_ROOT / "src" / "document_kv_cache" / "models.py",
+        REPO_ROOT / "src" / "document_kv_cache" / "manifest.py",
+        REPO_ROOT / "src" / "document_kv_cache" / "planner.py",
+        REPO_ROOT / "src" / "document_kv_cache" / "service.py",
+    )
+    forbidden_tokens = (
+        "RestaurantKVRequest",
+        "RestaurantKVService",
+        "ChunkType",
+        "LEGACY_RESTAURANT_CHUNK_TYPES",
+        "restaurant_id",
+        "restaurant_reviews",
+        "selected_restaurants",
+        "keys_for_restaurant",
+    )
+
+    for path in core_paths:
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden_tokens:
+            assert not re.search(rf"\b{re.escape(token)}\b", text), (
+                f"{token} leaked into {path.relative_to(REPO_ROOT)}"
+            )
 
 
 def test_legacy_reference_scanner_detects_import_edges_and_string_targets(tmp_path):
@@ -915,6 +942,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "real vLLM and SGLang native block managers",
         "docs/native-engine-integration.md",
         "legacy restaurant facade",
+        "core runtime model layer no longer retains restaurant request",
     ):
         assert required in matrix_text
 

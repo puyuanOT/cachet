@@ -341,7 +341,6 @@ _DOCUMENT_ROOT_EXPORTS = {
     'DocumentKVRequest': ('document_kv_cache.models', 'DocumentKVRequest'),
     'FrozenDocumentChunkMap': ('document_kv_cache.models', 'FrozenDocumentChunkMap'),
     'KVCacheKey': ('document_kv_cache.models', 'KVCacheKey'),
-    'LEGACY_RESTAURANT_CHUNK_TYPES': ('document_kv_cache.models', 'LEGACY_RESTAURANT_CHUNK_TYPES'),
     'MaterializationPlan': ('document_kv_cache.models', 'MaterializationPlan'),
     'PlanSegment': ('document_kv_cache.models', 'PlanSegment'),
     'chunk_type_role': ('document_kv_cache.models', 'chunk_type_role'),

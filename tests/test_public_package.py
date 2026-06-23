@@ -291,7 +291,6 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'DocumentKVRequest',
     'FrozenDocumentChunkMap',
     'KVCacheKey',
-    'LEGACY_RESTAURANT_CHUNK_TYPES',
     'MaterializationPlan',
     'PlanSegment',
     'chunk_type_role',

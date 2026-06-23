@@ -344,7 +344,6 @@ from document_kv_cache.models import (
     DocumentKVRequest as DocumentKVRequest,
     FrozenDocumentChunkMap as FrozenDocumentChunkMap,
     KVCacheKey as KVCacheKey,
-    LEGACY_RESTAURANT_CHUNK_TYPES as LEGACY_RESTAURANT_CHUNK_TYPES,
     MaterializationPlan as MaterializationPlan,
     PlanSegment as PlanSegment,
     chunk_type_role as chunk_type_role,

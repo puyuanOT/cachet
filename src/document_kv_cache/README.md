@@ -14,7 +14,7 @@ benchmark evidence, Databricks runners, and downstream jobs.
 
 The package root keeps `__all__` document-first for `from document_kv_cache
 import *`; restaurant-specific compatibility aliases are no longer exported
-from the package surface.
+from the package surface or retained in the core runtime model layer.
 
 ## Public Module Map
 
