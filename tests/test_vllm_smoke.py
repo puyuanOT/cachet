@@ -362,6 +362,21 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     ]
 
 
+def test_benchmark_runner_args_preserve_configured_hardware_target(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-g5",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+        hardware_target="aws-g5-a10g",
+    )
+    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+
+    args = build_benchmark_runner_args(config, dataset_paths)
+
+    assert args[args.index("--hardware-target") + 1] == "aws-g5-a10g"
+
+
 def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tmp_path):
     specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
     config = VLLMSmokeBenchmarkConfig(
@@ -1166,6 +1181,8 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "8",
             "--gpu-memory-utilization",
             "0.72",
+            "--hardware-target",
+            "aws-g5-a10g",
             "--benchmark-repeats",
             "3",
             "--package-install-spec",
@@ -1197,6 +1214,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         max_num_seqs=8,
         gpu_memory_utilization=0.72,
         benchmark_repeats=3,
+        hardware_target="aws-g5-a10g",
         dataset_specs=specs,
         package_install_spec=str(tmp_path / "cachet.whl"),
         handoff_generation=VLLMPreparedHandoffGenerationConfig(

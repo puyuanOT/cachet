@@ -17,3 +17,7 @@ Prepared mode writes `dataset_source=prepared`, the sizing values, the Cachet
 package install spec, and the vLLM `KVTransferConfig` into `metadata.json`,
 making long-context benchmark artifacts distinguishable from the tiny runtime
 smoke.
+
+When using a g5 node type, set the bundle `hardware_target` variable to
+`aws-g5-a10g` so the emitted benchmark metadata matches the Databricks cluster
+provenance.

@@ -5,6 +5,10 @@ repository. It defines only the self-contained vLLM smoke job, so users can
 validate the target AWS g6/L4 Databricks runtime before preparing full V1 benchmark
 datasets or plan artifacts.
 
+When using a g5 node type, set the bundle `hardware_target` variable to
+`aws-g5-a10g` so the emitted benchmark metadata matches the Databricks cluster
+provenance.
+
 The generated runner installs the uploaded Cachet wheel into both the
 Databricks driver process and the isolated vLLM environment. vLLM starts with
 Cachet's `DocumentKVConnector` `KVTransferConfig`, so prepared inputs carrying

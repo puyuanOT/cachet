@@ -13,6 +13,9 @@ variables:
   node_type_id:
     default: g6.8xlarge
     description: AWS g5/g6 node type for the single-node GPU smoke.
+  hardware_target:
+    default: aws-g6-l4
+    description: V1 hardware target recorded in benchmark metadata; use aws-g5-a10g with g5 node types.
   spark_version:
     default: 15.4.x-gpu-ml-scala2.12
     description: Databricks GPU ML runtime version.
@@ -49,5 +52,7 @@ resources:
               - ${var.benchmark_id}
               - --output-dir
               - ${var.output_dir}
+              - --hardware-target
+              - ${var.hardware_target}
               - --package-wheel-uri
               - ${var.wheel_uri}

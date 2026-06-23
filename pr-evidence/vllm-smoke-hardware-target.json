@@ -1,0 +1,22 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Fermat the 2nd found bundle-launched g5 metadata and legacy wrapper fallback gaps; both were fixed and covered by tests.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 411,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/411",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "document_kv_cache.vllm_smoke, document_kv_cache.databricks_vllm_smoke_job, restaurant_kv_serving.databricks_vllm_smoke_job, Databricks vLLM smoke bundle templates, and focused tests."
+  ],
+  "verification": [
+    "PYTHONPATH=src pytest -q tests/test_vllm_smoke.py tests/test_databricks_vllm_smoke_job.py tests/test_databricks_job.py tests/test_template_resources.py -> 139 passed; PYTHONPATH=src pytest -q -> 1968 passed"
+  ],
+  "what_changed": [
+    "Threaded V1 hardware_target through vLLM smoke config, metadata, benchmark-runner args, Databricks run-submit payloads, bundle templates, and legacy compatibility fallback."
+  ],
+  "why": "A real g5.8xlarge Databricks run emitted aws-g6-l4 benchmark suite metadata because the inner vLLM smoke runner always used the default hardware target."
+}

@@ -31,7 +31,9 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    SUPPORTED_V1_HARDWARE_TARGETS,
     build_prompt_parts,
+    validate_v1_hardware_target,
 )
 from document_kv_cache.engine_adapters import (
     ServingBackend,
@@ -172,6 +174,7 @@ class VLLMSmokeBenchmarkConfig:
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
     benchmark_repeats: int = 1
+    hardware_target: str = DEFAULT_HARDWARE_TARGET
     dataset_specs: tuple[str, ...] = ()
     package_install_spec: str | None = None
     handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
@@ -208,6 +211,9 @@ class VLLMSmokeBenchmarkConfig:
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
             raise ValueError("benchmark_repeats must be a positive integer")
+        if not isinstance(self.hardware_target, str) or not self.hardware_target.strip():
+            raise ValueError("hardware_target must be non-empty")
+        validate_v1_hardware_target(self.hardware_target)
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -365,6 +371,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
         "benchmark_repeats": config.benchmark_repeats,
+        "hardware_target": config.hardware_target,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "dependency_override_constraints": dependency_override_constraints(),
         "vllm_server_env_overrides": vllm_server_env_overrides(),
@@ -509,7 +516,7 @@ def build_prompt_token_budget_rows(
         suite_id=config.benchmark_id,
         paths=dataset_paths,
         model_id=SERVED_MODEL_NAME,
-        hardware_target=DEFAULT_HARDWARE_TARGET,
+        hardware_target=config.hardware_target,
     )
     rows = []
     for example in suite.examples:
@@ -548,7 +555,7 @@ def prepared_benchmark_handoff_coverage_record(
         suite_id=config.benchmark_id,
         paths=dataset_paths,
         model_id=SERVED_MODEL_NAME,
-        hardware_target=DEFAULT_HARDWARE_TARGET,
+        hardware_target=config.hardware_target,
     )
     missing = tuple(
         f"{example.dataset}/{example.example_id}"
@@ -1349,7 +1356,7 @@ def build_benchmark_runner_args(
         "--model-id",
         SERVED_MODEL_NAME,
         "--hardware-target",
-        DEFAULT_HARDWARE_TARGET,
+        config.hardware_target,
         "--max-tokens",
         str(config.max_tokens),
         "--timeout-seconds",
@@ -1500,6 +1507,12 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument(
+        "--hardware-target",
+        choices=SUPPORTED_V1_HARDWARE_TARGETS,
+        default=DEFAULT_HARDWARE_TARGET,
+        help="V1 hardware target recorded in benchmark metadata.",
+    )
+    parser.add_argument(
         "--benchmark-repeats",
         type=int,
         default=1,
@@ -1561,6 +1574,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
         benchmark_repeats=args.benchmark_repeats,
+        hardware_target=args.hardware_target,
         payload_cache_max_bytes=args.payload_cache_max_bytes,
         dataset_specs=tuple(args.dataset or ()),
         package_install_spec=args.package_install_spec,
