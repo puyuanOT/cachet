@@ -283,6 +283,32 @@ def test_native_provider_records_matched_token_allocation_metadata():
     pickle.loads(pickle.dumps(meta))
 
 
+def test_native_provider_does_not_rematch_request_with_pending_allocation():
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+
+    assert provider.get_num_new_matched_tokens(request, 0) == (0, False)
+    assert source.requests == ["req-1"]
+
+
+def test_native_provider_does_not_rematch_active_external_request_until_release():
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    provider.build_connector_meta(scheduler_output([5, 7]))
+
+    assert provider.get_num_new_matched_tokens(request, 0) == (0, False)
+    provider.request_finished(request, [5, 7])
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+
+
 def test_native_provider_records_cached_request_allocation_metadata():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)

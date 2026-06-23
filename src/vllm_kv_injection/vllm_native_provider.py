@@ -251,6 +251,7 @@ class DocumentKVNativeProvider:
         self.provider_factory = _provider_factory_path(provider_factory)
         self._loads: dict[str, DocumentKVHandoffLoad] = {}
         self._allocated: dict[str, DocumentKVLoadRequest] = {}
+        self._active_external_request_ids: set[str] = set()
         self._metadata = DocumentKVConnectorMetadata()
         self._kv_caches: dict[str, object] = {}
         self._layer_indices: dict[str, int] = {}
@@ -268,6 +269,8 @@ class DocumentKVNativeProvider:
         if num_computed_tokens < 0:
             raise ValueError("num_computed_tokens must be non-negative")
         request_id = _request_id(request)
+        if request_id in self._allocated or request_id in self._active_external_request_ids:
+            return 0, False
         load = self._load_for_request(request)
         if load is None:
             self._loads.pop(request_id, None)
@@ -351,6 +354,7 @@ class DocumentKVNativeProvider:
         for load in loads:
             self._allocated.pop(load.request_id, None)
             self._loads.pop(load.request_id, None)
+            self._active_external_request_ids.add(load.request_id)
         return DocumentKVConnectorMetadata(loads=tuple(loads))
 
     def bind_connector_metadata(self, connector_metadata: object) -> None:
@@ -481,6 +485,7 @@ class DocumentKVNativeProvider:
     def _release_request(self, request_id: str) -> None:
         self._loads.pop(request_id, None)
         self._allocated.pop(request_id, None)
+        self._active_external_request_ids.discard(request_id)
 
     def _load_for_request(self, request: object) -> DocumentKVHandoffLoad | None:
         request_id = _request_id(request)
