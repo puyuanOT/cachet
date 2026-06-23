@@ -947,6 +947,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-vllm-engine-probe.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-sglang-engine-probe.json \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
+  --release-bundle-compatibility-benchmark-json /data/g5-v1-results.json \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
   --github-governance-output-json /data/github-governance.json \
   --repository-hygiene-output-json /data/repository-hygiene.json \
@@ -1343,6 +1344,7 @@ with checksums:
 ```bash
 python -m document_kv_cache.release_bundle \
   --v1-benchmark-json v1-results.json \
+  --compatibility-benchmark-json g5-v1-results.json \
   --storage-benchmark-json storage-benchmark.json \
   --engine-probe-json vllm-probe.json \
   --engine-probe-json sglang-probe.json \
@@ -1378,6 +1380,10 @@ tested on the target AWS g6/L4 runtime, and repeat `--pr-evidence-json` to carry
 traceability records alongside the benchmark, storage, engine-probe,
 connector-action, engine-launch-config, release-evidence, and preflight
 artifacts. Add
+`--compatibility-benchmark-json` to carry non-default supported V1 benchmark
+evidence such as AWS g5/A10G compatibility runs; the bundle validates each
+compatibility benchmark against the same storage/native probe/action sidecars
+and rejects the strict AWS g6/L4 release target in that compatibility role. Add
 `--require-complete-v1` for release publishing; this strict mode refuses to
 build a V1 bundle unless the release evidence, preflight, vLLM/SGLang native
 engine-probe, connector-action, and engine-launch-config sidecars,
@@ -1773,14 +1779,17 @@ type annotations after installation.
   benchmark, storage, and vLLM/SGLang engine-probe runs, tested package wheel,
   PR evidence sidecar, V1 requirements matrix, repository hygiene sidecar, and
   native probe factory diagnostics sidecar entries from both runtime
-  environments.
+  environments. A g5-enriched no-governance bundle also validates with 21
+  artifacts when the current `aws-g5-a10g` benchmark is added through the
+  `compatibility_benchmark` role.
 - Keep the current AWS g5/A10G compatibility benchmark evidence with the
   release handoff: QA Databricks run `315109189523858` on `g5.8xlarge`
   completed Biography, HotpotQA, MusiQue, and NIAH with no benchmark errors,
   current `v1_evidence.ok=true`, TTFT speedups of 4.55x-6.07x, and release
   evidence `ok=true` when validated with the current storage and native
-  vLLM/SGLang probe/action artifacts. This compatibility evidence does not
-  change the strict V1 publication target from AWS g6/L4.
+  vLLM/SGLang probe/action artifacts. Carry it in release handoffs with
+  `--compatibility-benchmark-json`; this compatibility evidence does not change
+  the strict V1 publication target from AWS g6/L4.
 - Make GitHub governance release-ready, then rebuild the complete strict bundle
   with the GitHub governance sidecar included. The repository must be public,
   required `main` branch protection must be configured, GitHub auto-merge must

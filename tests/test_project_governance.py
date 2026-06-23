@@ -864,6 +864,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "one PR open",
         "complete strict release bundle",
         "strict V1 publication target",
+        "compatibility_benchmark",
+        "21 artifacts",
         "315109189523858",
         "cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main",
         "real vLLM and SGLang native block managers",
@@ -878,6 +880,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         in matrix_text
     )
     assert "does not replace the strict V1 publication target" in matrix_text
+    assert "`compatibility_benchmark` artifact role" in matrix_text
+    assert "g5-enriched no-governance bundle also validates with 21 artifacts" in compact_matrix
     for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         assert label in compact_remaining_release_gates
 
@@ -896,6 +900,8 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
+    assert "--compatibility-benchmark-json" in compact_remaining_v1_work
+    assert "g5-enriched no-governance bundle also validates with 21 artifacts" in compact_remaining_v1_work
     assert "315109189523858" in compact_remaining_v1_work
     assert "release evidence `ok=true`" in compact_remaining_v1_work
     assert (

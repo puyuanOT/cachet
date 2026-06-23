@@ -51,6 +51,7 @@ def write_release_bundle_manifest_json(bundle: ReleaseBundle, path: str | Path) 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build a checksummed Document KV release evidence bundle.")
     parser.add_argument("--v1-benchmark-json", required=True)
+    parser.add_argument("--compatibility-benchmark-json", action="append", default=[])
     parser.add_argument("--storage-benchmark-json", required=True)
     parser.add_argument("--engine-probe-json", action="append", default=[])
     parser.add_argument("--engine-actions-json", action="append", default=[])
@@ -80,6 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle = build_release_bundle(
         v1_benchmark_json=args.v1_benchmark_json,
         storage_benchmark_json=args.storage_benchmark_json,
+        compatibility_benchmark_jsons=args.compatibility_benchmark_json,
         engine_probe_jsons=args.engine_probe_json,
         engine_actions_jsons=args.engine_actions_json,
         release_evidence_json=args.release_evidence_json,
