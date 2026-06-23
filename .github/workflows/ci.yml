@@ -32,6 +32,9 @@ jobs:
       - name: Check package metadata
         run: poetry check
 
+      - name: Check Poetry lockfile
+        run: poetry check --lock
+
       - name: Resolve base dependency set
         run: poetry install --dry-run
 

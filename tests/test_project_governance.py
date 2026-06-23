@@ -788,6 +788,7 @@ def test_readme_development_commands_use_public_package_branding():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     development_section = _markdown_section(text, "Development")
 
+    assert "poetry check --lock" in development_section
     assert "poetry install -E test" in development_section
     assert "poetry run pytest -q" in development_section
     assert "python -m pip install -e '.[test]'" in development_section
@@ -1033,6 +1034,7 @@ def test_github_ci_workflow_runs_pr_quality_gate():
     assert run_commands == [
         "python -m pip install poetry==2.4.1",
         "poetry check",
+        "poetry check --lock",
         "poetry install --dry-run",
         "poetry install --dry-run --extras databricks --extras test",
         "poetry install -E test",
@@ -1371,6 +1373,31 @@ def test_poetry_dependencies_use_exact_direct_pins():
     assert dependency_versions
     for name, version in dependency_versions.items():
         assert _is_exact_stable_version_pin(version), f"{name} is not exactly pinned to a stable version: {version}"
+
+
+def test_poetry_lockfile_tracks_direct_runtime_pins():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    lock_path = REPO_ROOT / "poetry.lock"
+
+    assert lock_path.is_file()
+    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
+    assert lock["metadata"]["lock-version"] == "2.1"
+    assert lock["metadata"]["python-versions"] == pyproject["project"]["requires-python"]
+
+    locked_versions = {package["name"]: f"=={package['version']}" for package in lock["package"]}
+    direct_requirements = list(pyproject["project"].get("dependencies", ()))
+    for requirements in pyproject["project"].get("optional-dependencies", {}).values():
+        direct_requirements.extend(requirements)
+
+    assert direct_requirements
+    for requirement in direct_requirements:
+        requirement_name = _requirement_name(requirement)
+        assert locked_versions[requirement_name] == _requirement_version(requirement)
+
+    assert lock["extras"] == {
+        "databricks": ["databricks-sdk", "pyspark"],
+        "test": ["pytest"],
+    }
 
 
 def test_runtime_packaging_pin_stays_databricks_ml_compatible():
