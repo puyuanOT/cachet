@@ -1373,9 +1373,10 @@ HiCache keys when `DocumentKVHiCacheRequestContext` includes explicit
 backend so pinned SGLang request `custom_params` reach
 `HiCacheStorageExtraInfo.extra_info`; the SGLang runtime preflight records that
 Cachet bridge separately from upstream SGLang source detection and can report
-`live_request_metadata_bridge_ok=true`. Keep `--baseline-only` on these smoke
-runs until the runner promotes a handoff-backed cache arm and validates
-decode-time prefix binding end to end.
+`live_request_metadata_bridge_ok=true`. Use `--baseline-only` for provider and
+server bring-up. Omit it only when passing a validated SGLang handoff plus
+`--sglang-hicache-page-keys-json`; the smoke then runs both baseline and
+handoff-backed cache arms and records decode-time prefix binding.
 
 ```bash
 python -m document_kv_cache.sglang_smoke \
@@ -1386,10 +1387,10 @@ python -m document_kv_cache.sglang_smoke \
 ```
 
 To submit that same smoke as a Databricks task, generate the runner script and
-single-node g5/g6 runs/submit payload. The helper rejects every handoff-backed
-SGLang cache-arm job until the smoke runner records a passing handoff-backed
-cache arm; baseline-only output must not be treated as Cachet benchmark
-evidence:
+single-node g5/g6 runs/submit payload. Baseline-only output is provider/server
+bring-up evidence, not Cachet benchmark evidence. A handoff-backed smoke job
+must include `--handoff-json` or `--handoff-record-json` plus
+`--sglang-hicache-page-keys-json`:
 
 ```bash
 mkdir -p databricks-runs/sglang-smoke

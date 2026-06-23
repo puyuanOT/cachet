@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 import json
 import os
@@ -56,15 +56,13 @@ SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
-    "SGLang handoff-backed live smoke is not enabled yet: Cachet now provides "
-    "a runtime request-metadata bridge and page-key handoff metadata path, but "
-    "the smoke runner still needs to promote a cache-arm request that records "
-    "live_request_metadata_bridge_ok=true and validates decode-time prefix "
-    "binding end to end. Use --baseline-only for provider/server bring-up."
+    "SGLang handoff-backed live smoke requires handoff_json or handoff_record "
+    "plus explicit sglang_hicache_page_keys metadata so Cachet can bind the "
+    "handoff to SGLang runtime HiCache page keys."
 )
 SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE = (
     "baseline-only SGLang smoke must not include handoff_json, handoff_record, handoff_record_json, "
-    "payload_uri, or request_id"
+    "payload_uri, request_id, or sglang_hicache_page_keys"
 )
 
 __all__ = [
@@ -118,6 +116,7 @@ class SGLangSmokeBenchmarkConfig:
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
     request_id: str | None = None
+    sglang_hicache_page_keys: Sequence[str] | None = None
     hicache_page_store_uri: str | None = None
     hicache_ratio: float | None = None
     hicache_size_gb: int | None = None
@@ -166,17 +165,23 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record")
         if self.handoff_record is not None and not isinstance(self.handoff_record, Mapping):
             raise ValueError("handoff_record must be a JSON object")
+        page_keys_provided = self.sglang_hicache_page_keys is not None
+        page_keys = _string_tuple(self.sglang_hicache_page_keys or (), field_name="sglang_hicache_page_keys")
         has_handoff_fields = any(
             value is not None
             for value in (self.handoff_json, self.handoff_record, self.payload_uri, self.request_id)
-        )
+        ) or page_keys_provided
         if self.baseline_only:
             if has_handoff_fields:
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
-            raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+            if self.handoff_json is None and self.handoff_record is None:
+                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+            if not page_keys:
+                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         object.__setattr__(self, "local_root", Path(self.local_root))
+        object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
         if self.handoff_record is not None:
             object.__setattr__(self, "handoff_record", dict(self.handoff_record))
 
@@ -242,13 +247,14 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
     metadata.update(installed_versions(config.venv_python))
     write_json(config.metadata_path, metadata)
-    probe_sglang_import(
+    import_probe_record = probe_sglang_import(
         config.venv_python,
         config.import_probe_path,
         launch_config_path=config.launch_config_path,
         timeout_seconds=config.import_probe_timeout_seconds,
         env=server_env(config),
     )
+    metadata.update(_metadata_from_import_probe(import_probe_record))
 
     metadata["sglang_server_local_log"] = str(config.server_log_path)
     metadata["sglang_server_log"] = str(config.server_log_copy_path)
@@ -264,7 +270,7 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
             timeout_seconds=config.server_start_timeout_seconds,
         )
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
-        run_live_checks(config)
+        run_live_checks(config, import_probe_record=import_probe_record)
     finally:
         terminate_process(server)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
@@ -274,8 +280,9 @@ def build_metadata(
     config: SGLangSmokeBenchmarkConfig,
     *,
     launch_config: Mapping[str, Any] | None = None,
+    import_probe_record: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
-    return {
+    metadata: dict[str, object] = {
         "benchmark_id": config.benchmark_id,
         "hf_model_id": HF_MODEL_ID,
         "served_model_name": SERVED_MODEL_NAME,
@@ -291,15 +298,17 @@ def build_metadata(
         "hardware_target": config.hardware_target,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "baseline_only": config.baseline_only,
-        "cache_arm_supported": False,
-        "cache_arm_blocker": SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        "cache_arm_supported": not config.baseline_only,
+        "cache_arm_blocker": None if not config.baseline_only else SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
         "live_request_metadata_bridge_required": True,
         "live_request_metadata_bridge_ok": False,
-        "requires_kv_transfer_params": False,
+        "requires_kv_transfer_params": not config.baseline_only,
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
         "kv_transfer_params_transport": "custom_params",
         "sglang_hicache_launch_config": dict(launch_config or sglang_hicache_config_for_smoke(config)),
     }
+    metadata.update(_metadata_from_import_probe(import_probe_record))
+    return metadata
 
 
 def sglang_hicache_config_for_smoke(config: SGLangSmokeBenchmarkConfig) -> dict[str, Any]:
@@ -374,13 +383,14 @@ def build_sglang_hicache_provider_probe_record(
 
 
 def sglang_live_kv_transfer_params(config: SGLangSmokeBenchmarkConfig) -> dict[str, Any]:
-    if not config.baseline_only:
-        raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+    if config.baseline_only:
+        return {}
     params = live_check_kv_transfer_params(
         handoff_json=config.handoff_json,
         handoff_record=config.handoff_record,
         request_id=config.request_id,
         payload_uri=config.payload_uri,
+        sglang_hicache_page_keys=config.sglang_hicache_page_keys,
         expected_backend=ServingBackend.SGLANG,
     )
     return params
@@ -407,9 +417,11 @@ def document_kv_package_install_spec(config: SGLangSmokeBenchmarkConfig) -> str:
     )
 
 
-def run_live_checks(config: SGLangSmokeBenchmarkConfig) -> dict[str, object]:
-    if not config.baseline_only:
-        raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+def run_live_checks(
+    config: SGLangSmokeBenchmarkConfig,
+    *,
+    import_probe_record: Mapping[str, Any] | None = None,
+) -> dict[str, object]:
     baseline = run_openai_compatible_live_check(
         LiveServerCheckConfig(
             base_url=config.server_base_url,
@@ -424,10 +436,33 @@ def run_live_checks(config: SGLangSmokeBenchmarkConfig) -> dict[str, object]:
     baseline_record = baseline.to_record()
     baseline_record["label"] = "baseline_prefill"
     cache_record: dict[str, object] | None = None
+    if not config.baseline_only:
+        cache = run_openai_compatible_live_check(
+            LiveServerCheckConfig(
+                base_url=config.server_base_url,
+                model_id=SERVED_MODEL_NAME,
+                hardware_target=config.hardware_target,
+                use_cache_arm=True,
+                prompt_text_mode=config.cache_prompt_text_mode,
+                prompt_token_accounting="server_usage",
+                kv_transfer_params_transport="custom_params",
+                kv_transfer_params=sglang_live_kv_transfer_params(config),
+                max_tokens=config.max_tokens,
+                timeout_seconds=config.timeout_seconds,
+                stream=config.stream,
+            )
+        )
+        cache_record = cache.to_record()
+        cache_record["label"] = "document_kv_cache"
 
     issues = []
     if baseline_record.get("ok") is not True:
         issues.append("baseline live check failed")
+    if not config.baseline_only and (cache_record is None or cache_record.get("ok") is not True):
+        issues.append("cache-arm live check failed")
+    import_probe_metadata = _metadata_from_import_probe(import_probe_record)
+    if not config.baseline_only and import_probe_metadata["live_request_metadata_bridge_ok"] is not True:
+        issues.append("request metadata bridge not verified")
     record = {
         "ok": not issues,
         "benchmark_id": config.benchmark_id,
@@ -435,11 +470,13 @@ def run_live_checks(config: SGLangSmokeBenchmarkConfig) -> dict[str, object]:
         "model_id": SERVED_MODEL_NAME,
         "hardware_target": config.hardware_target,
         "baseline_only": config.baseline_only,
-        "cache_arm_supported": False,
-        "cache_arm_blocker": SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        "cache_arm_supported": not config.baseline_only,
+        "cache_arm_blocker": None if not config.baseline_only else SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
         "live_request_metadata_bridge_required": True,
-        "live_request_metadata_bridge_ok": False,
-        "requires_kv_transfer_params": False,
+        "live_request_metadata_bridge_ok": import_probe_metadata["live_request_metadata_bridge_ok"],
+        "sglang_import_probe_ok": import_probe_metadata["sglang_import_probe_ok"],
+        "document_kv_request_metadata_bridge": import_probe_metadata["document_kv_request_metadata_bridge"],
+        "requires_kv_transfer_params": not config.baseline_only,
         "kv_transfer_params_transport": "custom_params",
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
         "baseline": baseline_record,
@@ -557,7 +594,7 @@ def probe_sglang_import(
     launch_config_path: Path,
     timeout_seconds: float,
     env: dict[str, str] | None = None,
-) -> None:
+) -> dict[str, object]:
     code = """
 import importlib.metadata as md
 import json
@@ -621,9 +658,16 @@ print(json.dumps(payload, sort_keys=True), flush=True)
     }
     if completed.returncode == 0:
         record.update(last_json_object(completed.stdout))
+        if record.get("document_kv_request_metadata_bridge_ok") is not True:
+            record["ok"] = False
+            record["error_type"] = "SGLangRequestMetadataBridgeUnavailable"
+            record["error"] = "SGLang request metadata bridge did not report ok=true"
     write_json(output_path, record)
     if completed.returncode != 0:
         raise RuntimeError(f"SGLang import probe failed with return code {completed.returncode}")
+    if record.get("ok") is not True:
+        raise RuntimeError(str(record.get("error", "SGLang import probe failed release checks")))
+    return record
 
 
 def create_venv(venv_dir: Path) -> None:
@@ -745,6 +789,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
     parser.add_argument("--request-id")
+    parser.add_argument("--sglang-hicache-page-keys-json")
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -776,6 +821,10 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         handoff_record=_json_object_option(args.handoff_record_json, "--handoff-record-json"),
         payload_uri=args.payload_uri,
         request_id=args.request_id,
+        sglang_hicache_page_keys=_json_string_array_option(
+            args.sglang_hicache_page_keys_json,
+            "--sglang-hicache-page-keys-json",
+        ),
         hicache_page_store_uri=args.hicache_page_store_uri,
         hicache_ratio=args.hicache_ratio,
         hicache_size_gb=args.hicache_size_gb,
@@ -813,6 +862,39 @@ def _json_object_option(value: str | None, option_name: str) -> Mapping[str, Any
     if not isinstance(decoded, Mapping):
         raise ValueError(f"{option_name} must decode to a JSON object")
     return decoded
+
+
+def _metadata_from_import_probe(import_probe_record: Mapping[str, Any] | None) -> dict[str, object]:
+    bridge_record = None
+    if import_probe_record is not None:
+        bridge_record = import_probe_record.get("document_kv_request_metadata_bridge")
+    return {
+        "sglang_import_probe_ok": import_probe_record is not None and import_probe_record.get("ok") is True,
+        "live_request_metadata_bridge_ok": (
+            import_probe_record is not None
+            and import_probe_record.get("document_kv_request_metadata_bridge_ok") is True
+        ),
+        "document_kv_request_metadata_bridge": bridge_record if isinstance(bridge_record, Mapping) else None,
+    }
+
+
+def _json_string_array_option(value: str | None, option_name: str) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    decoded = json.loads(value)
+    return _string_tuple(decoded, field_name=option_name)
+
+
+def _string_tuple(values: object, *, field_name: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise ValueError(f"{field_name} must be a sequence of strings")
+    if not isinstance(values, Sequence):
+        raise ValueError(f"{field_name} must be a sequence of strings")
+    items = tuple(values)
+    for index, item in enumerate(items):
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{field_name}[{index}] must be a non-empty string")
+    return items
 
 
 def _cluster_file_path(uri: str) -> str:

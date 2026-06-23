@@ -23,6 +23,7 @@ from document_kv_cache.sglang_smoke import (
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl"
 SINGLE_USER_NAME = "user@example.com"
 HANDOFF_JSON = "/Volumes/catalog/schema/volume/live/sglang-live.handoff.json"
+PAGE_KEYS_JSON = '["page-a","page-b"]'
 
 
 def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
@@ -108,7 +109,7 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
     }
 
 
-def test_databricks_sglang_smoke_config_rejects_cache_arm_until_binding_exists():
+def test_databricks_sglang_smoke_config_requires_handoff_and_page_keys_for_cache_arm():
     try:
         DatabricksSGLangSmokeJobConfig(
             benchmark_id="v1-sglang-smoke-001",
@@ -119,7 +120,7 @@ def test_databricks_sglang_smoke_config_rejects_cache_arm_until_binding_exists()
     except ValueError as exc:
         assert str(exc) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
     else:
-        raise AssertionError("expected unsupported cache-arm validation to fail")
+        raise AssertionError("expected missing handoff validation to fail")
 
     try:
         DatabricksSGLangSmokeJobConfig(
@@ -132,7 +133,25 @@ def test_databricks_sglang_smoke_config_rejects_cache_arm_until_binding_exists()
     except ValueError as exc:
         assert str(exc) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
     else:
-        raise AssertionError("expected unsupported handoff validation to fail")
+        raise AssertionError("expected missing page-key validation to fail")
+
+    config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="v1-sglang-smoke-001",
+        output_dir="/Volumes/catalog/schema/volume/v1-sglang-smoke",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        handoff_json=HANDOFF_JSON,
+        payload_uri="/Volumes/catalog/schema/volume/live/sglang-live.kv",
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys_json=PAGE_KEYS_JSON,
+    )
+
+    parameters = build_databricks_sglang_smoke_run_submit_payload(config)["tasks"][0]["spark_python_task"][
+        "parameters"
+    ]
+    assert "--baseline-only" not in parameters
+    assert parameters[parameters.index("--handoff-json") + 1] == HANDOFF_JSON
+    assert parameters[parameters.index("--sglang-hicache-page-keys-json") + 1] == PAGE_KEYS_JSON
 
     config = DatabricksSGLangSmokeJobConfig(
         benchmark_id="v1-sglang-baseline-001",
@@ -159,6 +178,26 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
             "only one of handoff_json",
         ),
         ({"handoff_record_json": "[]", "baseline_only": True}, "handoff_record_json must decode"),
+        (
+            {"sglang_hicache_page_keys_json": PAGE_KEYS_JSON, "baseline_only": True},
+            SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+        ),
+        (
+            {"sglang_hicache_page_keys_json": "[]", "baseline_only": True},
+            SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+        ),
+        (
+            {"sglang_hicache_page_keys_json": '"page-a"', "baseline_only": False},
+            "sglang_hicache_page_keys_json must decode",
+        ),
+        (
+            {"sglang_hicache_page_keys_json": PAGE_KEYS_JSON, "baseline_only": False},
+            SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        ),
+        (
+            {"handoff_json": HANDOFF_JSON, "sglang_hicache_page_keys_json": "[]", "baseline_only": False},
+            SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        ),
         (
             {"handoff_json": HANDOFF_JSON, "baseline_only": True},
             SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,

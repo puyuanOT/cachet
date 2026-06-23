@@ -117,6 +117,7 @@ class DatabricksSGLangSmokeJobConfig:
     handoff_record_json: str | None = None
     payload_uri: str | None = None
     request_id: str | None = None
+    sglang_hicache_page_keys_json: str | None = None
     hicache_page_store_uri: str | None = None
     hicache_ratio: float | None = None
     hicache_size_gb: int | None = None
@@ -177,15 +178,30 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record_json")
         if self.handoff_record_json is not None:
             _json_object_from_text(self.handoff_record_json, "handoff_record_json")
+        sglang_hicache_page_keys: tuple[str, ...] | None = None
+        if self.sglang_hicache_page_keys_json is not None:
+            sglang_hicache_page_keys = _json_string_array_from_text(
+                self.sglang_hicache_page_keys_json,
+                "sglang_hicache_page_keys_json",
+            )
         has_handoff_fields = any(
             value is not None
-            for value in (self.handoff_json, self.handoff_record_json, self.payload_uri, self.request_id)
+            for value in (
+                self.handoff_json,
+                self.handoff_record_json,
+                self.payload_uri,
+                self.request_id,
+                self.sglang_hicache_page_keys_json,
+            )
         )
         if self.baseline_only:
             if has_handoff_fields:
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
-            raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+            if self.handoff_json is None and self.handoff_record_json is None:
+                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+            if not sglang_hicache_page_keys:
+                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         if self.hicache_size_gb is not None and self.hicache_size_gb < 0:
             raise ValueError("hicache_size_gb must be non-negative")
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
@@ -300,6 +316,8 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         parameters.extend(["--payload-uri", config.payload_uri])
     if config.request_id is not None:
         parameters.extend(["--request-id", config.request_id])
+    if config.sglang_hicache_page_keys_json is not None:
+        parameters.extend(["--sglang-hicache-page-keys-json", config.sglang_hicache_page_keys_json])
     if config.hicache_page_store_uri is not None:
         parameters.extend(["--hicache-page-store-uri", config.hicache_page_store_uri])
     if config.hicache_ratio is not None:
@@ -356,6 +374,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
     parser.add_argument("--request-id")
+    parser.add_argument("--sglang-hicache-page-keys-json")
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -403,6 +422,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             handoff_record_json=args.handoff_record_json,
             payload_uri=args.payload_uri,
             request_id=args.request_id,
+            sglang_hicache_page_keys_json=args.sglang_hicache_page_keys_json,
             hicache_page_store_uri=args.hicache_page_store_uri,
             hicache_ratio=args.hicache_ratio,
             hicache_size_gb=args.hicache_size_gb,
@@ -433,6 +453,20 @@ def _json_object_from_text(value: str, field_name: str) -> Mapping[str, Any]:
     if not isinstance(decoded, Mapping):
         raise ValueError(f"{field_name} must decode to a JSON object")
     return decoded
+
+
+def _json_string_array_from_text(value: str, field_name: str) -> tuple[str, ...]:
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{field_name} must be valid JSON") from exc
+    if isinstance(decoded, (str, bytes, bytearray)) or not isinstance(decoded, Sequence):
+        raise ValueError(f"{field_name} must decode to a JSON string array")
+    items = tuple(decoded)
+    for index, item in enumerate(items):
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{field_name}[{index}] must be a non-empty string")
+    return items
 
 
 if __name__ == "__main__":  # pragma: no cover
