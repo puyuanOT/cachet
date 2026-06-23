@@ -19,12 +19,17 @@ This package defines the SGLang-facing document KV-cache integration contract.
   built-in page provider uses that context to validate SGLang handoffs, read the
   external payload, and hydrate full HiCache pages only when
   `document_kv.sglang_hicache_page_keys` matches SGLang's runtime hash keys.
+- `sglang_request_metadata_bridge.py` installs the version-sensitive runtime
+  bridge that copies Cachet request `custom_params` from SGLang scheduler
+  requests onto HiCache prefetch operations, then injects them into
+  `HiCacheStorageExtraInfo.extra_info` for storage hit queries and page
+  transfers.
 - `probe.py` exposes strict debug and native probe wrappers, including the provider-backed `DocumentKVHiCacheProbeConnector` used to exercise Cachet's HiCache page provider without falling back to in-memory test doubles.
 - `sglang_hicache_config.py` builds launch metadata for a patched SGLang HiCache dynamic storage backend.
 - `sglang_runtime_preflight.py` validates provider-backed dynamic HiCache
-  launch wiring and records whether the installed SGLang runtime bridges
-  request `custom_params` into `HiCacheStorageExtraInfo.extra_info`; live
-  SGLang cache-arm benchmarks require that bridge to be true.
+  launch wiring and records both upstream SGLang request-metadata bridge
+  detection and Cachet's runtime bridge installation status; live SGLang
+  cache-arm benchmarks require runtime bridge readiness to be true.
 - `sglang_runtime_contract.py` documents the runtime-cache bridge this package validates around the shared document handoff.
 
 Keep this package close to SGLang internals and free of document retrieval, cache storage, CPU assembly, scheduling, or LoRA routing logic.

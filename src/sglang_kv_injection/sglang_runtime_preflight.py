@@ -32,12 +32,18 @@ from sglang_kv_injection.sglang_hicache_config import (
     DOCUMENT_KV_HICACHE_CONFIG_SCHEMA_VERSION,
     sglang_hicache_launch_config,
 )
+from sglang_kv_injection.sglang_request_metadata_bridge import (
+    DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE,
+    DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION,
+    DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE,
+    sglang_request_metadata_bridge_status_to_record,
+)
 
 DOCUMENT_KV_SGLANG_INSTALLED_HICACHE_CONTRACT_RECORD_TYPE = (
     "sglang_kv_injection.installed_hicache_contract.v1"
 )
 DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE = "sglang_kv_injection.runtime_preflight.v1"
-DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION = 3
+DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION = 4
 SGLANG_HICACHE_DYNAMIC_RUNTIME = "sglang-hicache-dynamic-storage"
 SGLANG_HICACHE_DYNAMIC_BACKEND = "dynamic"
 SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME = "document_kv"
@@ -168,6 +174,23 @@ _DYNAMIC_BACKEND_FACTORY_RECORD_KEYS = frozenset(
         "backend_methods",
         "backend_provider_class",
         "backend_provider_known_noop",
+        "request_metadata_bridge",
+        "error",
+        "ok",
+    }
+)
+_REQUEST_METADATA_BRIDGE_RECORD_KEYS = frozenset(
+    {
+        "record_type",
+        "schema_version",
+        "source",
+        "installed",
+        "scheduler_prefetch_patched",
+        "controller_prefetch_patched",
+        "hicache_storage_extra_info_factory_patched",
+        "storage_hit_query_patched",
+        "page_transfer_patched",
+        "patched_modules",
         "error",
         "ok",
     }
@@ -181,6 +204,7 @@ _RUNTIME_PREFLIGHT_KEYS = frozenset(
         "launch_config",
         "provider_factory",
         "dynamic_backend_factory",
+        "request_metadata_bridge",
         "live_request_metadata_bridge_ok",
         "ok",
     }
@@ -188,6 +212,9 @@ _RUNTIME_PREFLIGHT_KEYS = frozenset(
 
 __all__ = [
     "DOCUMENT_KV_SGLANG_INSTALLED_HICACHE_CONTRACT_RECORD_TYPE",
+    "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE",
+    "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION",
+    "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE",
     "DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE",
     "DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION",
     "SGLANG_HICACHE_DYNAMIC_RUNTIME",
@@ -420,15 +447,22 @@ def document_kv_sglang_runtime_preflight_to_record(
         launch_config_record,
         extra_config=extra_config,
     )
+    request_metadata_bridge_record = _request_metadata_bridge_to_record(dynamic_backend_factory_record)
+    live_request_metadata_bridge_ok = _runtime_live_request_metadata_bridge_ok(
+        installed_contract_record,
+        request_metadata_bridge_record,
+    )
     ok = (
         installed_contract_record.get("ok") is True
         and launch_config_record.get("ok") is True
         and provider_factory_record.get("ok") is True
         and dynamic_backend_factory_record.get("ok") is True
+        and live_request_metadata_bridge_ok
         and not installed_sglang_hicache_contract_record_issues(installed_contract_record)
         and not _sglang_launch_config_record_issues(launch_config_record)
         and not _provider_factory_record_issues(provider_factory_record)
         and not _dynamic_backend_factory_record_issues(dynamic_backend_factory_record)
+        and not _request_metadata_bridge_record_issues(request_metadata_bridge_record, require_ok=False)
     )
     return {
         "record_type": DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE,
@@ -438,7 +472,8 @@ def document_kv_sglang_runtime_preflight_to_record(
         "launch_config": launch_config_record,
         "provider_factory": provider_factory_record,
         "dynamic_backend_factory": dynamic_backend_factory_record,
-        "live_request_metadata_bridge_ok": installed_contract_record.get("live_request_metadata_bridge_ok") is True,
+        "request_metadata_bridge": request_metadata_bridge_record,
+        "live_request_metadata_bridge_ok": live_request_metadata_bridge_ok,
         "ok": ok,
     }
 
@@ -503,6 +538,18 @@ def document_kv_sglang_runtime_preflight_record_issues(record: object) -> tuple[
         issues.extend(f"dynamic_backend_factory.{issue}" for issue in dynamic_backend_issues)
         dynamic_backend_safe = not dynamic_backend_issues and dynamic_backend_factory.get("ok") is True
 
+    request_metadata_bridge = record.get("request_metadata_bridge")
+    request_metadata_bridge_safe = False
+    if not isinstance(request_metadata_bridge, Mapping):
+        issues.append("request_metadata_bridge must be an object")
+    else:
+        request_metadata_bridge_issues = _request_metadata_bridge_record_issues(
+            request_metadata_bridge,
+            require_ok=False,
+        )
+        issues.extend(f"request_metadata_bridge.{issue}" for issue in request_metadata_bridge_issues)
+        request_metadata_bridge_safe = not request_metadata_bridge_issues
+
     provider_matches_launch = False
     if isinstance(launch_config, Mapping) and isinstance(provider_factory, Mapping):
         provider_matches_launch = launch_config.get("provider_factory") == provider_factory.get("path")
@@ -520,10 +567,13 @@ def document_kv_sglang_runtime_preflight_record_issues(record: object) -> tuple[
     live_request_metadata_bridge_ok = record.get("live_request_metadata_bridge_ok")
     if type(live_request_metadata_bridge_ok) is not bool:
         issues.append("live_request_metadata_bridge_ok must be boolean")
-    elif isinstance(installed_contract, Mapping) and (
-        live_request_metadata_bridge_ok != (installed_contract.get("live_request_metadata_bridge_ok") is True)
+    elif isinstance(installed_contract, Mapping) and isinstance(request_metadata_bridge, Mapping) and (
+        live_request_metadata_bridge_ok
+        != _runtime_live_request_metadata_bridge_ok(installed_contract, request_metadata_bridge)
     ):
-        issues.append("live_request_metadata_bridge_ok must match installed_contract.live_request_metadata_bridge_ok")
+        issues.append(
+            "live_request_metadata_bridge_ok must match installed_contract and request_metadata_bridge readiness"
+        )
 
     ok = record.get("ok")
     if type(ok) is not bool:
@@ -534,13 +584,15 @@ def document_kv_sglang_runtime_preflight_record_issues(record: object) -> tuple[
             and launch_safe
             and provider_safe
             and dynamic_backend_safe
+            and request_metadata_bridge_safe
             and provider_matches_launch
             and dynamic_backend_matches_launch
+            and live_request_metadata_bridge_ok is True
         )
         if ok != expected_ok:
             issues.append(
                 "ok must match installed contract, launch config, provider factory, "
-                "and dynamic backend factory safety"
+                "dynamic backend factory safety, and live metadata bridge readiness"
             )
         if ok is False:
             issues.append("ok must be true for a safe SGLang runtime preflight")
@@ -955,8 +1007,13 @@ def _dynamic_backend_factory_to_record(
             if provider is not None:
                 record["backend_provider_class"] = provider.__class__.__name__
                 record["backend_provider_known_noop"] = isinstance(provider, NoOpDocumentKVHiCacheProvider)
+            record["request_metadata_bridge"] = sglang_request_metadata_bridge_status_to_record(
+                getattr(backend, "request_metadata_bridge_status", None)
+            )
     except Exception as exc:
         record["error"] = f"{type(exc).__name__}: {exc}"
+    if "request_metadata_bridge" not in record:
+        record["request_metadata_bridge"] = sglang_request_metadata_bridge_status_to_record()
     record["ok"] = (
         record["storage_backend"] == SGLANG_HICACHE_DYNAMIC_BACKEND
         and record["backend_name"] == SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME
@@ -1036,6 +1093,15 @@ def _dynamic_backend_factory_record_issues(record: Mapping[str, Any]) -> tuple[s
         issues.append("SGLang dynamic backend factory backend_provider_class must be a non-empty string")
     if record.get("backend_provider_known_noop") is not False:
         issues.append("SGLang dynamic backend factory backend provider cannot be NoOpDocumentKVHiCacheProvider")
+    request_metadata_bridge = record.get("request_metadata_bridge")
+    if not isinstance(request_metadata_bridge, Mapping):
+        issues.append("SGLang dynamic backend factory request_metadata_bridge must be an object")
+    else:
+        issues.extend(
+            "SGLang dynamic backend factory "
+            f"request_metadata_bridge.{issue}"
+            for issue in _request_metadata_bridge_record_issues(request_metadata_bridge, require_ok=False)
+        )
     if "error" in record and not isinstance(record.get("error"), str):
         issues.append("SGLang dynamic backend factory error must be a string when present")
     ok = record.get("ok")
@@ -1062,6 +1128,80 @@ def _dynamic_backend_factory_record_issues(record: Mapping[str, Any]) -> tuple[s
         if ok is False:
             issues.append("SGLang dynamic backend factory ok must be true for a safe runtime preflight")
     return tuple(issues)
+
+
+def _request_metadata_bridge_to_record(
+    dynamic_backend_factory_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    return sglang_request_metadata_bridge_status_to_record(
+        dynamic_backend_factory_record.get("request_metadata_bridge")
+    )
+
+
+def _request_metadata_bridge_record_issues(
+    record: object,
+    *,
+    require_ok: bool,
+) -> tuple[str, ...]:
+    if not isinstance(record, Mapping):
+        return ("SGLang request metadata bridge must be an object",)
+    issues: list[str] = []
+    unexpected = sorted(str(key) for key in record if key not in _REQUEST_METADATA_BRIDGE_RECORD_KEYS)
+    if unexpected:
+        issues.append(f"SGLang request metadata bridge has unsupported keys: {unexpected}")
+    if record.get("record_type") != DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE:
+        issues.append("SGLang request metadata bridge record_type is invalid")
+    if record.get("schema_version") != DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION:
+        issues.append(
+            "SGLang request metadata bridge schema_version must be "
+            f"{DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION}"
+        )
+    if record.get("source") != DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE:
+        issues.append(
+            "SGLang request metadata bridge source must be "
+            f"{DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE!r}"
+        )
+    for field_name in (
+        "installed",
+        "scheduler_prefetch_patched",
+        "controller_prefetch_patched",
+        "hicache_storage_extra_info_factory_patched",
+        "storage_hit_query_patched",
+        "page_transfer_patched",
+    ):
+        if type(record.get(field_name)) is not bool:
+            issues.append(f"SGLang request metadata bridge {field_name} must be boolean")
+    patched_modules = _string_tuple(record.get("patched_modules"))
+    if patched_modules is None:
+        issues.append("SGLang request metadata bridge patched_modules must be a string array")
+        patched_modules = ()
+    if record.get("installed") is True and not patched_modules:
+        issues.append("SGLang request metadata bridge patched_modules must identify installed patch modules")
+    if "error" in record and not isinstance(record.get("error"), str):
+        issues.append("SGLang request metadata bridge error must be a string when present")
+    ok = record.get("ok")
+    if type(ok) is not bool:
+        issues.append("SGLang request metadata bridge ok must be boolean")
+    else:
+        expected_ok = _request_metadata_bridge_ok(record) and "error" not in record
+        if ok != expected_ok:
+            issues.append("SGLang request metadata bridge ok must match installed patch points")
+        if require_ok and ok is False:
+            issues.append("SGLang request metadata bridge ok must be true for live handoff metadata")
+    return tuple(issues)
+
+
+def _request_metadata_bridge_ok(record: object) -> bool:
+    if not isinstance(record, Mapping):
+        return False
+    return (
+        record.get("installed") is True
+        and record.get("scheduler_prefetch_patched") is True
+        and record.get("controller_prefetch_patched") is True
+        and record.get("hicache_storage_extra_info_factory_patched") is True
+        and record.get("storage_hit_query_patched") is True
+        and record.get("page_transfer_patched") is True
+    )
 
 
 def _installed_sglang_hicache_contract_ok(record: Mapping[str, Any]) -> bool:
@@ -1094,6 +1234,23 @@ def _live_request_metadata_bridge_ok(record: Mapping[str, Any]) -> bool:
         _contains_required_strings(record.get("hicache_storage_extra_info_fields"), ("extra_info",))
         and record.get("request_custom_params_available") is True
         and record.get("request_metadata_extra_info_bridge") is True
+    )
+
+
+def _runtime_live_request_metadata_bridge_ok(
+    installed_contract_record: Mapping[str, Any],
+    request_metadata_bridge_record: Mapping[str, Any],
+) -> bool:
+    return (
+        _contains_required_strings(
+            installed_contract_record.get("hicache_storage_extra_info_fields"),
+            ("extra_info",),
+        )
+        and installed_contract_record.get("request_custom_params_available") is True
+        and (
+            installed_contract_record.get("request_metadata_extra_info_bridge") is True
+            or _request_metadata_bridge_ok(request_metadata_bridge_record)
+        )
     )
 
 

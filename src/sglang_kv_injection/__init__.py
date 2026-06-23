@@ -59,6 +59,14 @@ from sglang_kv_injection.sglang_hicache_config import (
     sglang_hicache_cli_args,
     sglang_hicache_launch_config,
 )
+from sglang_kv_injection.sglang_request_metadata_bridge import (
+    DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE,
+    DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION,
+    DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE,
+    SGLangRequestMetadataBridgeStatus,
+    install_sglang_request_metadata_bridge,
+    sglang_request_metadata_bridge_status_to_record,
+)
 from sglang_kv_injection.sglang_runtime_contract import (
     SGLANG_RUNTIME_CACHE_CONTRACT,
     SGLANG_RUNTIME_CACHE_CONTRACT_RECORD_TYPE,
@@ -110,6 +118,9 @@ __all__ = [
     "DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG",
     "DOCUMENT_KV_HICACHE_RUNTIME_METHODS",
     "DOCUMENT_KV_SGLANG_INSTALLED_HICACHE_CONTRACT_RECORD_TYPE",
+    "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE",
+    "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION",
+    "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE",
     "DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE",
     "DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION",
     "DocumentKVHiCacheBackend",
@@ -160,6 +171,7 @@ __all__ = [
     "SGLangPrefixKey",
     "SGLangTokenId",
     "SGLangInstalledHiCacheContract",
+    "SGLangRequestMetadataBridgeStatus",
     "build_in_memory_debug_probe",
     "build_document_kv_hicache_probe_connector",
     "build_document_kv_hicache_provider",
@@ -168,6 +180,7 @@ __all__ = [
     "document_kv_sglang_runtime_preflight_record_issues",
     "document_kv_sglang_runtime_preflight_to_record",
     "import_sglang",
+    "install_sglang_request_metadata_bridge",
     "installed_sglang_hicache_contract_record_issues",
     "installed_sglang_hicache_contract_to_record",
     "load_document_kv_hicache_provider_factory",
@@ -177,6 +190,7 @@ __all__ = [
     "sglang_hicache_cli_args",
     "sglang_hicache_launch_config",
     "sglang_hicache_page_keys",
+    "sglang_request_metadata_bridge_status_to_record",
     "sglang_runtime_cache_contract_record_issues",
     "sglang_runtime_cache_contract_to_record",
     "sglang_runtime_cache_method_issues",

@@ -15,6 +15,9 @@ from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
 )
 from sglang_kv_injection.sglang_hicache_config import sglang_hicache_launch_config
+from sglang_kv_injection.sglang_request_metadata_bridge import (
+    sglang_request_metadata_bridge_status_to_record,
+)
 from sglang_kv_injection.sglang_runtime_preflight import (
     DOCUMENT_KV_SGLANG_INSTALLED_HICACHE_CONTRACT_RECORD_TYPE,
     DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE,
@@ -54,6 +57,29 @@ def matching_installed_contract() -> dict:
             request_custom_params_available=True,
             request_metadata_extra_info_bridge=False,
             request_metadata_bridge_sources=(),
+        )
+    )
+
+
+def upstream_bridge_installed_contract() -> dict:
+    return installed_sglang_hicache_contract_to_record(
+        SGLangInstalledHiCacheContract(
+            package_version="0.5.10.post1",
+            importable=True,
+            server_args_importable=True,
+            storage_backend_factory_importable=True,
+            hicache_storage_base_importable=True,
+            server_arg_fields=SGLANG_HICACHE_REQUIRED_SERVER_ARG_FIELDS,
+            cli_options=SGLANG_HICACHE_REQUIRED_CLI_OPTIONS,
+            hicache_storage_backend_choices=("file", "dynamic"),
+            hicache_storage_extra_info_fields=("prefix_keys", "extra_info"),
+            storage_backend_factory_methods=SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
+            document_kv_backend_importable=True,
+            document_kv_backend_subclasses_hicache_storage=True,
+            document_kv_backend_methods=SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
+            request_custom_params_available=True,
+            request_metadata_extra_info_bridge=True,
+            request_metadata_bridge_sources=("sglang.srt.managers.cache_controller",),
         )
     )
 
@@ -117,6 +143,11 @@ def install_provider_module(monkeypatch: pytest.MonkeyPatch, module_name: str = 
 def install_document_kv_backend_class(monkeypatch: pytest.MonkeyPatch, hicache_storage_cls: type) -> type:
     class DocumentKVHiCacheBackend(hicache_storage_cls):
         def __init__(self, storage_config=None, *args, **kwargs):
+            from sglang_kv_injection.sglang_request_metadata_bridge import (
+                install_sglang_request_metadata_bridge,
+            )
+
+            self.request_metadata_bridge_status = install_sglang_request_metadata_bridge()
             self.provider = None
             extra_config = getattr(storage_config, "extra_config", None)
             if not isinstance(extra_config, dict):
@@ -141,14 +172,74 @@ def install_document_kv_backend_class(monkeypatch: pytest.MonkeyPatch, hicache_s
 
 def install_storage_backend_factory_module(monkeypatch: pytest.MonkeyPatch) -> None:
     sglang_module = ModuleType("sglang")
+    sglang_module.__path__ = []
     srt_module = ModuleType("sglang.srt")
+    srt_module.__path__ = []
+    managers_module = ModuleType("sglang.srt.managers")
+    managers_module.__path__ = []
+    scheduler_module = ModuleType("sglang.srt.managers.scheduler")
+    cache_controller_module = ModuleType("sglang.srt.managers.cache_controller")
     mem_cache_module = ModuleType("sglang.srt.mem_cache")
+    mem_cache_module.__path__ = []
     hicache_storage_module = ModuleType("sglang.srt.mem_cache.hicache_storage")
     storage_module = ModuleType("sglang.srt.mem_cache.storage")
+    storage_module.__path__ = []
     backend_factory_module = ModuleType("sglang.srt.mem_cache.storage.backend_factory")
 
     class HiCacheStorage:
         pass
+
+    class Scheduler:
+        def _prefetch_kvcache(self, req):
+            return None
+
+    class HiCacheStorageExtraInfo:
+        def __init__(self, prefix_keys=None, extra_info=None):
+            self.prefix_keys = prefix_keys
+            self.extra_info = extra_info
+
+    class PrefetchOperation:
+        def __init__(
+            self,
+            request_id,
+            host_indices,
+            token_ids,
+            last_hash=None,
+            prefix_keys=None,
+        ):
+            self.request_id = request_id
+            self.host_indices = host_indices
+            self.token_ids = token_ids
+            self.last_hash = last_hash
+            self.prefix_keys = prefix_keys
+
+    class HiCacheController:
+        def prefetch(
+            self,
+            request_id,
+            host_indices,
+            new_input_tokens,
+            last_hash=None,
+            prefix_keys=None,
+        ):
+            operation = PrefetchOperation(
+                request_id,
+                host_indices,
+                new_input_tokens,
+                last_hash,
+                prefix_keys,
+            )
+            self.prefetch_queue.put(operation)
+            return operation
+
+        def _storage_hit_query(self, operation):
+            return [], 0
+
+        def _page_transfer(self, operation):
+            return None
+
+        def _page_backup(self, operation):
+            return None
 
     install_document_kv_backend_class(monkeypatch, HiCacheStorage)
 
@@ -179,10 +270,17 @@ def install_storage_backend_factory_module(monkeypatch: pytest.MonkeyPatch) -> N
             return cls._create_dynamic_backend(storage_config.extra_config, storage_config, mem_pool_host, **kwargs)
 
     hicache_storage_module.HiCacheStorage = HiCacheStorage
+    scheduler_module.Scheduler = Scheduler
+    cache_controller_module.HiCacheStorageExtraInfo = HiCacheStorageExtraInfo
+    cache_controller_module.PrefetchOperation = PrefetchOperation
+    cache_controller_module.HiCacheController = HiCacheController
     backend_factory_module.StorageBackendFactory = StorageBackendFactory
     for module in (
         sglang_module,
         srt_module,
+        managers_module,
+        scheduler_module,
+        cache_controller_module,
         mem_cache_module,
         hicache_storage_module,
         storage_module,
@@ -194,7 +292,7 @@ def install_storage_backend_factory_module(monkeypatch: pytest.MonkeyPatch) -> N
 def ok_must_match_issue() -> str:
     return (
         "ok must match installed contract, launch config, provider factory, "
-        "and dynamic backend factory safety"
+        "dynamic backend factory safety, and live metadata bridge readiness"
     )
 
 
@@ -409,7 +507,9 @@ def test_sglang_runtime_preflight_accepts_dynamic_hicache_config_and_provider(mo
     assert record["dynamic_backend_factory"]["backend_class"] == "DocumentKVHiCacheBackend"
     assert record["dynamic_backend_factory"]["backend_provider_class"] == "Provider"
     assert record["dynamic_backend_factory"]["ok"] is True
-    assert record["live_request_metadata_bridge_ok"] is False
+    assert record["dynamic_backend_factory"]["request_metadata_bridge"]["ok"] is True
+    assert record["request_metadata_bridge"]["ok"] is True
+    assert record["live_request_metadata_bridge_ok"] is True
     factory_cls = sys.modules["sglang.srt.mem_cache.storage.backend_factory"].StorageBackendFactory
     assert factory_cls.loader_calls == [
         (
@@ -419,6 +519,25 @@ def test_sglang_runtime_preflight_accepts_dynamic_hicache_config_and_provider(mo
         )
     ]
     assert record["ok"] is True
+    validate_document_kv_sglang_runtime_preflight_record(record)
+
+
+def test_sglang_runtime_preflight_accepts_upstream_bridge_without_cachet_patch(monkeypatch):
+    provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
+    record = document_kv_sglang_runtime_preflight_to_record(
+        sglang_hicache_launch_config(provider_factory=provider_factory),
+        installed_contract=upstream_bridge_installed_contract(),
+    )
+    failed_cachet_bridge = sglang_request_metadata_bridge_status_to_record()
+    record["dynamic_backend_factory"]["request_metadata_bridge"] = failed_cachet_bridge
+    record["request_metadata_bridge"] = failed_cachet_bridge
+    record["live_request_metadata_bridge_ok"] = True
+    record["ok"] = True
+
+    assert record["installed_contract"]["live_request_metadata_bridge_ok"] is True
+    assert record["request_metadata_bridge"]["ok"] is False
+    assert document_kv_sglang_runtime_preflight_record_issues(record) == ()
     validate_document_kv_sglang_runtime_preflight_record(record)
 
 
