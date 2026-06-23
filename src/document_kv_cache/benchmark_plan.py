@@ -2091,7 +2091,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="Compact successful Databricks run-status sidecar to include in the release bundle. Repeat as needed.",
     )
-    parser.add_argument("--release-bundle-package-wheel", help="Tested document-kv-cache wheel to include.")
+    parser.add_argument("--release-bundle-package-wheel", help="Tested cachet-kv wheel to include.")
     parser.add_argument(
         "--release-bundle-compatibility-benchmark-json",
         action="append",

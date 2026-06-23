@@ -44,7 +44,7 @@ mean:
 | --- | --- | --- | --- |
 | Primary implementation language is Python | Implemented | Source packages live under `src/cachet`, `src/document_kv_cache`, vendored `src/vllm_kv_injection`/`src/sglang_kv_injection`, and the legacy compatibility facade. | None for V1. |
 | Provide an end-to-end API | Implemented | `workflow.py`, `service.py`, README workflow examples, and tests cover optional training, cache generation, materialization, and engine handoff. | Add native engine integration examples after connector probes land. |
-| Use premium package branding | Implemented | The repository is `puyuanOT/cachet`; the distribution remains the transitional `document-kv-cache`; the product/import brand is Cachet with `cachet.<module>` imports plus `cachet-*` and `document-kv-*` CLI aliases. | Complete the package-index migration before public publication. |
+| Use premium package branding | Implemented | The repository is `puyuanOT/cachet`; the distribution is the Cachet-branded `cachet-kv`; the product/import brand is Cachet with `cachet.<module>` imports plus `cachet-*` and `document-kv-*` CLI aliases. The exact `cachet` PyPI name is occupied by an unrelated Cachet API client, so `cachet-kv` is the V1 package-index identity. | Keep package metadata, README examples, and release-bundle wheel gates aligned with the Cachet brand. |
 | Document every folder | Implemented | Repository governance tests require every tracked directory to have a README or package docstring. | Continue applying the directory documentation gate to every PR. |
 
 ## Workflow And Quality Gates

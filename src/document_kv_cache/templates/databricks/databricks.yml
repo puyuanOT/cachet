@@ -1,5 +1,5 @@
 bundle:
-  name: document-kv-cache-v1
+  name: cachet-v1
 
 variables:
   plan_json_uri:
@@ -7,7 +7,7 @@ variables:
   runner_python_file:
     description: Cluster-visible Python runner script URI.
   wheel_uri:
-    description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
+    description: Cluster-supported cachet-kv wheel URI, such as a UC Volume or workspace file path.
   execution_result_json_uri:
     description: Cluster-visible path for the benchmark execution result JSON.
   vllm_native_probe_delegate_factory:

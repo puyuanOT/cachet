@@ -37,7 +37,7 @@ document-kv-databricks-job \
   --plan-json-uri dbfs:/benchmarks/v1-plan.json \
   --runner-python-file dbfs:/benchmarks/run_plan.py \
   --runner-script-output run_plan.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --execution-result-json-uri dbfs:/benchmarks/result.json \
   --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
@@ -48,7 +48,7 @@ cd databricks
 databricks bundle validate \
   --var plan_json_uri=dbfs:/benchmarks/v1-plan.json \
   --var runner_python_file=dbfs:/benchmarks/run_plan.py \
-  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com \
   --var execution_result_json_uri=dbfs:/benchmarks/result.json \
   --var transformers_model_id=Qwen/Qwen3-4B-Instruct-2507 \
@@ -86,7 +86,7 @@ databricks bundle validate \
   --var runner_python_file=dbfs:/benchmarks/run_vllm_smoke.py \
   --var benchmark_id=v1_vllm_smoke_001 \
   --var output_dir=/Volumes/catalog/schema/volume/document-kv-v1-smoke \
-  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
 
@@ -106,7 +106,7 @@ document-kv-storage-benchmark-databricks-job \
   --uc-volume-root /Volumes/catalog/schema/volume/storage \
   --runner-python-file dbfs:/benchmarks/run_storage_benchmark.py \
   --runner-script-output run_storage_benchmark.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --output-json storage-benchmark-runs-submit-reference.json
 ```
@@ -121,7 +121,7 @@ databricks bundle validate \
   --var workspace_dir=/local_disk0/document-kv-storage-benchmark \
   --var benchmark_output_json=/Volumes/catalog/schema/volume/storage/storage-benchmark.json \
   --var uc_volume_root=/Volumes/catalog/schema/volume/storage \
-  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
 
@@ -134,7 +134,7 @@ document-kv-vllm-smoke-databricks-job \
   --output-dir /Volumes/catalog/schema/volume/document-kv-v1-smoke \
   --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
   --runner-script-output run_vllm_smoke.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --output-json vllm-smoke-runs-submit-reference.json
 ```
@@ -153,7 +153,7 @@ document-kv-engine-probe-databricks-job \
   --vllm-runtime-preflight-layer-names-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json engine-probe-runs-submit-reference.json
@@ -194,7 +194,7 @@ databricks bundle validate \
   --var expected_backend=vllm \
   --var vllm_native_probe_delegate_factory=vllm_kv_injection.probe:build_native_connector_probe \
   --var native_probe_metadata=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector \
-  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
 
@@ -233,7 +233,7 @@ cachet-databricks-runs \
 
 If the payload also reads a wheel or SGLang launch config from DBFS, add matching
 artifact mappings such as
-`--artifact document_kv_cache-0.2.0-py3-none-any.whl=dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl`
+`--artifact cachet_kv-0.2.0-py3-none-any.whl=dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl`
 and
 `--artifact sglang-launch-config.json=dbfs:/benchmarks/sglang-launch-config.json`.
 

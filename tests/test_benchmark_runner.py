@@ -574,7 +574,7 @@ def test_openai_compatible_engine_derives_per_request_prefix_cache_salts():
         dataset_paths={"biography": "biography.jsonl"},
         base_url="http://server",
         cache_base_url="http://cache",
-        cache_extra_body={"cache_salt": "cachet-document-kv-cache"},
+        cache_extra_body={"cache_salt": "cachet-kv-cache"},
         prefix_cache_salt_mode="per_request",
     )
     engine = legacy_benchmark_runner._openai_compatible_engine(default_benchmark_arms()[1], config)
@@ -590,7 +590,7 @@ def test_openai_compatible_engine_derives_per_request_prefix_cache_salts():
 
     assert engine.extra_body_factory is not None
     assert engine.extra_body_factory(request) == {
-        "cache_salt": "cachet-document-kv-cache:v1:biography:bio-1:document_kv_cache:repeat-2"
+        "cache_salt": "cachet-kv-cache:v1:biography:bio-1:document_kv_cache:repeat-2"
     }
 
 

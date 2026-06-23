@@ -2,7 +2,7 @@
 
 This package defines the vLLM-facing document KV-cache integration contract.
 
-- `protocol.py` re-exports `KVLayout`, `KVSegment`, and `KVCacheHandle` from `document-kv-cache`.
+- `protocol.py` re-exports `KVLayout`, `KVSegment`, and `KVCacheHandle` from `cachet-kv`.
 - `block_mapping.py` maps token spans and occurrence-aware document segment keys onto planned or already-reserved vLLM-style KV blocks.
 - `connector.py` defines the payload-aware connector protocol and an in-memory test double.
 - `paged_kv_copy.py` converts allocated vLLM physical blocks into slot mappings and copies materialized per-layer KV tensors into vLLM paged KV buffers.

@@ -557,7 +557,7 @@ def test_put_databricks_dbfs_file_rejects_large_base64_put_payload(tmp_path):
 
 def test_stage_and_submit_databricks_run_uploads_artifacts_then_submits_payload(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
     payload = _dbfs_artifact_submit_payload()
@@ -569,7 +569,7 @@ def test_stage_and_submit_databricks_run_uploads_artifacts_then_submits_payload(
         payload,
         (
             (runner_path, "dbfs:/cachet/run_engine_probe.py"),
-            (wheel_path, "/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (wheel_path, "/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
         ),
         overwrite=True,
         require_payload_dbfs_artifacts=True,
@@ -587,19 +587,19 @@ def test_stage_and_submit_databricks_run_uploads_artifacts_then_submits_payload(
     assert [request.get_method() for request in opener.requests] == ["POST", "POST", "POST"]
     assert json.loads(opener.requests[0].data.decode("utf-8"))["path"] == "/cachet/run_engine_probe.py"
     assert json.loads(opener.requests[1].data.decode("utf-8"))["path"] == (
-        "/cachet/document_kv_cache-0.2.0-py3-none-any.whl"
+        "/cachet/cachet_kv-0.2.0-py3-none-any.whl"
     )
     assert json.loads(opener.requests[2].data.decode("utf-8")) == payload
     assert opener.timeouts == [9, 9, 9]
     assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
         "dbfs:/cachet/run_engine_probe.py",
-        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
     ]
 
 
 def test_stage_and_submit_databricks_run_can_preflight_auth_before_uploads(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
     payload = _dbfs_artifact_submit_payload()
@@ -618,7 +618,7 @@ def test_stage_and_submit_databricks_run_can_preflight_auth_before_uploads(tmp_p
         payload,
         (
             (runner_path, "dbfs:/cachet/run_engine_probe.py"),
-            (wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (wheel_path, "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
         ),
         overwrite=True,
         require_payload_dbfs_artifacts=True,
@@ -644,7 +644,7 @@ def test_stage_and_submit_databricks_run_can_preflight_auth_before_uploads(tmp_p
 
 def test_stage_and_submit_databricks_run_stops_on_failed_preflight_auth(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
     error = urllib.error.HTTPError(
@@ -663,7 +663,7 @@ def test_stage_and_submit_databricks_run_stops_on_failed_preflight_auth(tmp_path
             _dbfs_artifact_submit_payload(),
             (
                 (runner_path, "dbfs:/cachet/run_engine_probe.py"),
-                (wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+                (wheel_path, "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
             ),
             require_payload_dbfs_artifacts=True,
             preflight_auth_check=True,
@@ -697,7 +697,7 @@ def test_stage_and_submit_databricks_run_rejects_unstaged_payload_dbfs_uri_befor
 
 def test_plan_stage_and_submit_can_require_only_staged_payload_artifacts(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     launch_config_path = tmp_path / "sglang-launch-config.json"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
@@ -707,7 +707,7 @@ def test_plan_stage_and_submit_can_require_only_staged_payload_artifacts(tmp_pat
         _generated_native_probe_submit_payload(),
         (
             (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
-            (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (wheel_path, "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
             (launch_config_path, "dbfs:/benchmarks/cachet/sglang-launch-config.json"),
         ),
         require_payload_staged_dbfs_artifacts=True,
@@ -716,14 +716,14 @@ def test_plan_stage_and_submit_can_require_only_staged_payload_artifacts(tmp_pat
     assert record["ok"] is True
     assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
         "dbfs:/benchmarks/cachet/run_engine_probe.py",
-        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl",
         "dbfs:/benchmarks/cachet/sglang-launch-config.json",
     ]
 
 
 def test_strict_payload_dbfs_artifact_check_still_rejects_generated_probe_outputs(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     launch_config_path = tmp_path / "sglang-launch-config.json"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
@@ -734,7 +734,7 @@ def test_strict_payload_dbfs_artifact_check_still_rejects_generated_probe_output
             _generated_native_probe_submit_payload(),
             (
                 (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
-                (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+                (wheel_path, "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
                 (launch_config_path, "dbfs:/benchmarks/cachet/sglang-launch-config.json"),
             ),
             require_payload_dbfs_artifacts=True,
@@ -743,7 +743,7 @@ def test_strict_payload_dbfs_artifact_check_still_rejects_generated_probe_output
 
 def test_stage_and_submit_rejects_missing_staged_payload_artifact_before_network(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
     opener = _FakeOpener({})
@@ -755,7 +755,7 @@ def test_stage_and_submit_rejects_missing_staged_payload_artifact_before_network
             _generated_native_probe_submit_payload(),
             (
                 (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
-                (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+                (wheel_path, "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
             ),
             require_payload_staged_dbfs_artifacts=True,
             opener=opener,
@@ -766,7 +766,7 @@ def test_stage_and_submit_rejects_missing_staged_payload_artifact_before_network
 
 def test_stage_and_submit_requires_non_fixture_engine_probe_inputs(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     handoff_path = tmp_path / "request.handoff.json"
     payload_path = tmp_path / "request.payload.kv"
     layer_names_path = tmp_path / "vllm-layer-names.json"
@@ -780,7 +780,7 @@ def test_stage_and_submit_requires_non_fixture_engine_probe_inputs(tmp_path):
         _non_fixture_engine_probe_submit_payload(),
         (
             (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
-            (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (wheel_path, "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
             (handoff_path, "dbfs:/benchmarks/cachet/request.handoff.json"),
             (payload_path, "dbfs:/benchmarks/cachet/request.payload.kv"),
             (layer_names_path, "dbfs:/benchmarks/cachet/vllm-layer-names.json"),
@@ -791,7 +791,7 @@ def test_stage_and_submit_requires_non_fixture_engine_probe_inputs(tmp_path):
     assert record["ok"] is True
     assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
         "dbfs:/benchmarks/cachet/run_engine_probe.py",
-        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl",
         "dbfs:/benchmarks/cachet/request.handoff.json",
         "dbfs:/benchmarks/cachet/request.payload.kv",
         "dbfs:/benchmarks/cachet/vllm-layer-names.json",
@@ -800,7 +800,7 @@ def test_stage_and_submit_requires_non_fixture_engine_probe_inputs(tmp_path):
 
 def test_stage_and_submit_rejects_missing_non_fixture_engine_probe_inputs(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
 
@@ -809,7 +809,7 @@ def test_stage_and_submit_rejects_missing_non_fixture_engine_probe_inputs(tmp_pa
             _non_fixture_engine_probe_submit_payload(),
             (
                 (runner_path, "dbfs:/benchmarks/cachet/run_engine_probe.py"),
-                (wheel_path, "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+                (wheel_path, "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
             ),
             require_payload_staged_dbfs_artifacts=True,
         )
@@ -828,7 +828,7 @@ def test_stage_and_submit_databricks_run_validates_all_artifacts_before_upload(t
             _dbfs_artifact_submit_payload(),
             (
                 (runner_path, "dbfs:/cachet/run_engine_probe.py"),
-                (missing_wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+                (missing_wheel_path, "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
             ),
             require_payload_dbfs_artifacts=True,
             opener=opener,
@@ -839,7 +839,7 @@ def test_stage_and_submit_databricks_run_validates_all_artifacts_before_upload(t
 
 def test_plan_databricks_stage_and_submit_validates_artifacts_without_network(tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
     wheel_path.write_bytes(b"wheel-bytes")
 
@@ -847,7 +847,7 @@ def test_plan_databricks_stage_and_submit_validates_artifacts_without_network(tm
         _dbfs_artifact_submit_payload(),
         (
             (runner_path, "dbfs:/cachet/run_engine_probe.py"),
-            (wheel_path, "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (wheel_path, "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
         ),
         overwrite=True,
         require_payload_dbfs_artifacts=True,
@@ -861,7 +861,7 @@ def test_plan_databricks_stage_and_submit_validates_artifacts_without_network(tm
     assert record["submit_payload"]["task_keys"] == ["document_kv_engine_probe"]
     assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
         "dbfs:/cachet/run_engine_probe.py",
-        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
     ]
     assert record["artifact_uploads"][0]["upload_request"] == {
         "path": "/cachet/run_engine_probe.py",
@@ -1889,7 +1889,7 @@ def test_main_put_dbfs_file_artifact_record_uses_uploaded_bytes(monkeypatch, tmp
 
 def test_main_stage_and_submit_writes_sanitized_artifact_and_submit_record(monkeypatch, tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     payload_path = tmp_path / "payload.json"
     output_path = tmp_path / "stage-submit.json"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
@@ -1921,7 +1921,7 @@ def test_main_stage_and_submit_writes_sanitized_artifact_and_submit_record(monke
             "--artifact",
             f"{runner_path}=dbfs:/cachet/run_engine_probe.py",
             "--artifact",
-            f"{wheel_path}=dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            f"{wheel_path}=dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
             "--overwrite",
             "--require-payload-dbfs-artifacts",
         ]
@@ -1935,14 +1935,14 @@ def test_main_stage_and_submit_writes_sanitized_artifact_and_submit_record(monke
     assert record["response"] == {"run_id": 123}
     assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
         "dbfs:/cachet/run_engine_probe.py",
-        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
     ]
     assert responses == {"/api/2.0/dbfs/put": [], "/api/2.1/jobs/runs/submit": []}
 
 
 def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     payload_path = tmp_path / "payload.json"
     output_path = tmp_path / "stage-submit.json"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
@@ -1990,7 +1990,7 @@ def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_pa
             "--artifact",
             f"{runner_path}=dbfs:/cachet/run_engine_probe.py",
             "--artifact",
-            f"{wheel_path}=dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            f"{wheel_path}=dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
             "--overwrite",
             "--require-payload-dbfs-artifacts",
             "--require-payload-staged-dbfs-artifacts",
@@ -2004,7 +2004,7 @@ def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_pa
         "payload": payload,
         "artifacts": (
             (str(runner_path), "dbfs:/cachet/run_engine_probe.py"),
-            (str(wheel_path), "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl"),
+            (str(wheel_path), "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl"),
         ),
         "overwrite": True,
         "require_payload_dbfs_artifacts": True,
@@ -2018,7 +2018,7 @@ def test_main_stage_and_submit_forwards_preflight_auth_check(monkeypatch, tmp_pa
 
 def test_main_stage_and_submit_dry_run_writes_plan_without_databricks_env(monkeypatch, tmp_path):
     runner_path = tmp_path / "run_engine_probe.py"
-    wheel_path = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     payload_path = tmp_path / "payload.json"
     output_path = tmp_path / "stage-submit-plan.json"
     runner_path.write_text("print('cachet')\n", encoding="utf-8")
@@ -2037,7 +2037,7 @@ def test_main_stage_and_submit_dry_run_writes_plan_without_databricks_env(monkey
             "--artifact",
             f"{runner_path}=dbfs:/cachet/run_engine_probe.py",
             "--artifact",
-            f"{wheel_path}=dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+            f"{wheel_path}=dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
             "--require-payload-dbfs-artifacts",
             "--dry-run",
         ]
@@ -2050,7 +2050,7 @@ def test_main_stage_and_submit_dry_run_writes_plan_without_databricks_env(monkey
     assert record["submit_payload"]["source_path"] == str(payload_path)
     assert [upload["artifact"]["dbfs_path"] for upload in record["artifact_uploads"]] == [
         "dbfs:/cachet/run_engine_probe.py",
-        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
     ]
 
 
@@ -3141,7 +3141,7 @@ def _dbfs_artifact_submit_payload():
                     "python_file": "dbfs:/cachet/run_engine_probe.py",
                     "parameters": [
                         "--package-wheel-uri",
-                        "dbfs:/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+                        "dbfs:/cachet/cachet_kv-0.2.0-py3-none-any.whl",
                     ],
                 },
             }
@@ -3175,7 +3175,7 @@ def _generated_native_probe_submit_payload():
                         "--expected-backend",
                         "sglang",
                         "--package-wheel-uri",
-                        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+                        "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl",
                     ],
                 },
             }
@@ -3207,7 +3207,7 @@ def _non_fixture_engine_probe_submit_payload():
                         "--payload-uri",
                         "dbfs:/benchmarks/cachet/request.payload.kv",
                         "--package-wheel-uri",
-                        "dbfs:/benchmarks/cachet/document_kv_cache-0.2.0-py3-none-any.whl",
+                        "dbfs:/benchmarks/cachet/cachet_kv-0.2.0-py3-none-any.whl",
                     ],
                 },
             }

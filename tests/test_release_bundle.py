@@ -391,7 +391,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
     artifacts = _write_release_ready_artifacts(source_dir)
-    package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
+    package_wheel = _write_wheel(source_dir / "cachet_kv-0.2.0-py3-none-any.whl")
     plan_execution = _write_json(source_dir / "plan-execution.json", _plan_execution_record(ok=True))
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
     github_governance_record = _github_governance_cli_record(ok=True)
@@ -455,7 +455,7 @@ def test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_g
     assert json.loads((bundle_dir / execution_artifact["bundled_path"]).read_text(encoding="utf-8"))["ok"] is True
     assert wheel_artifact["bundled_path"] == package_wheel.name
     assert "record_type" not in wheel_artifact
-    assert wheel_artifact["package_name"] == "document-kv-cache"
+    assert wheel_artifact["package_name"] == "cachet-kv"
     assert wheel_artifact["package_version"] == "0.2.0"
     assert (bundle_dir / wheel_artifact["bundled_path"]).read_bytes() == package_wheel.read_bytes()
     assert pr_artifact["record_type"] == "document_kv.pr_evidence.v1"
@@ -479,7 +479,7 @@ def test_build_release_bundle_rejects_pr_evidence_for_different_github_repositor
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)
     foreign_pr_evidence_record = _pr_evidence_record(ok=True)
-    foreign_pr_evidence_record["pull_request_url"] = "https://github.com/other/document-kv-cache/pull/123"
+    foreign_pr_evidence_record["pull_request_url"] = "https://github.com/other/cachet-kv/pull/123"
     foreign_pr_evidence = _write_json(source_dir / "foreign-pr-evidence.json", foreign_pr_evidence_record)
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
 
@@ -645,9 +645,9 @@ def test_build_release_bundle_accepts_pep440_equivalent_wheel_version_spellings(
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)
     package_wheel = _write_wheel(
-        source_dir / "document_kv_cache-1.0_post1-py3-none-any.whl",
+        source_dir / "cachet_kv-1.0_post1-py3-none-any.whl",
         metadata_version="1.0.post1",
-        dist_info_prefix="document_kv_cache-1.0_post1.dist-info",
+        dist_info_prefix="cachet_kv-1.0_post1.dist-info",
     )
 
     bundle = build_release_bundle(
@@ -662,7 +662,7 @@ def test_build_release_bundle_accepts_pep440_equivalent_wheel_version_spellings(
 
     wheel_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "package_wheel")
     assert wheel_artifact["bundled_path"] == package_wheel.name
-    assert wheel_artifact["package_name"] == "document-kv-cache"
+    assert wheel_artifact["package_name"] == "cachet-kv"
     assert wheel_artifact["package_version"] == "1.0.post1"
 
 
@@ -670,8 +670,8 @@ def test_build_release_bundle_accepts_normalized_wheel_metadata_name(tmp_path):
     source_dir = tmp_path / "sources"
     artifacts = _write_release_ready_artifacts(source_dir)
     package_wheel = _write_wheel(
-        source_dir / "document_kv_cache-0.2.0-py3-none-any.whl",
-        metadata_name="Document_KV.Cache",
+        source_dir / "cachet_kv-0.2.0-py3-none-any.whl",
+        metadata_name="Cachet_KV",
     )
 
     bundle = build_release_bundle(
@@ -686,7 +686,7 @@ def test_build_release_bundle_accepts_normalized_wheel_metadata_name(tmp_path):
 
     wheel_artifact = next(artifact for artifact in record["artifacts"] if artifact["role"] == "package_wheel")
     assert wheel_artifact["bundled_path"] == package_wheel.name
-    assert wheel_artifact["package_name"] == "document-kv-cache"
+    assert wheel_artifact["package_name"] == "cachet-kv"
     assert wheel_artifact["package_version"] == "0.2.0"
 
 
@@ -728,9 +728,9 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         )
 
     wrong_version_wheel = _write_wheel(
-        source_dir / "wrong-version-wheel" / "document_kv_cache-999.0.0-py3-none-any.whl",
+        source_dir / "wrong-version-wheel" / "cachet_kv-999.0.0-py3-none-any.whl",
         metadata_version="999.0.0",
-        dist_info_prefix="document_kv_cache-999.0.0.dist-info",
+        dist_info_prefix="cachet_kv-999.0.0.dist-info",
     )
     with pytest.raises(ValueError, match="current project version"):
         build_release_bundle(
@@ -1554,14 +1554,14 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         missing_topic_github_governance_record,
     )
     stale_repository_github_governance_record = _github_governance_cli_record(ok=True)
-    stale_repository_github_governance_record["summary"]["repository"] = "owner/document-kv-cache"
+    stale_repository_github_governance_record["summary"]["repository"] = "owner/cachet-kv"
     stale_repository_github_governance = _write_json(
         tmp_path / "stale-repository-github-governance.json",
         stale_repository_github_governance_record,
     )
     stale_homepage_github_governance_record = _github_governance_cli_record(ok=True)
     stale_homepage_github_governance_record["summary"]["homepage"] = (
-        "https://github.com/owner/document-kv-cache"
+        "https://github.com/owner/document-kv"
     )
     stale_homepage_github_governance = _write_json(
         tmp_path / "stale-homepage-github-governance.json",
@@ -1846,7 +1846,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-name-bundle",
         )
 
-    invalid_build_tag_wheel = _write_wheel(tmp_path / "document_kv_cache-0.2.0-build-py3-none-any.whl")
+    invalid_build_tag_wheel = _write_wheel(tmp_path / "cachet_kv-0.2.0-build-py3-none-any.whl")
     with pytest.raises(ValueError, match="valid wheel filename"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
@@ -1872,7 +1872,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     non_universal_filename_wheel = _write_wheel(
-        tmp_path / "document_kv_cache-0.2.0-cp311-cp311-macosx_11_0_arm64.whl"
+        tmp_path / "cachet_kv-0.2.0-cp311-cp311-macosx_11_0_arm64.whl"
     )
     with pytest.raises(ValueError, match="filename tags must be py3-none-any"):
         build_release_bundle(
@@ -1884,7 +1884,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-filename-tags-bundle",
         )
 
-    valid_named_bad_payload = tmp_path / "document_kv_cache-0.2.0-py3-none-any.whl"
+    valid_named_bad_payload = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
     valid_named_bad_payload.write_bytes(b"PK\x03\x04not a valid zip")
     with pytest.raises(ValueError, match="valid wheel zip payload"):
         build_release_bundle(
@@ -1897,7 +1897,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     empty_wheel_version = _write_wheel(
-        tmp_path / "empty-wheel-version" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "empty-wheel-version" / "cachet_kv-0.2.0-py3-none-any.whl",
         wheel_metadata_lines=(
             "Wheel-Version:",
             "Root-Is-Purelib: true",
@@ -1916,7 +1916,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     non_purelib_wheel = _write_wheel(
-        tmp_path / "non-purelib-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "non-purelib-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         wheel_metadata_lines=(
             "Wheel-Version: 1.0",
             "Root-Is-Purelib: false",
@@ -1935,7 +1935,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_universal_tag_wheel = _write_wheel(
-        tmp_path / "missing-universal-tag-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-universal-tag-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         wheel_metadata_lines=(
             "Wheel-Version: 1.0",
             "Root-Is-Purelib: true",
@@ -1954,7 +1954,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_record_wheel = _write_wheel(
-        tmp_path / "missing-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-record-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_record=False,
     )
     with pytest.raises(ValueError, match="exactly one .dist-info/RECORD"):
@@ -1968,7 +1968,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     empty_record_wheel = _write_wheel(
-        tmp_path / "empty-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "empty-record-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         record_lines=(),
     )
     with pytest.raises(ValueError, match="RECORD must be non-empty"):
@@ -1982,11 +1982,11 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     incomplete_record_wheel = _write_wheel(
-        tmp_path / "incomplete-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "incomplete-record-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         record_lines=(
             "document_kv_cache/__init__.py,,",
-            "document_kv_cache-0.2.0.dist-info/METADATA,,",
-            "document_kv_cache-0.2.0.dist-info/RECORD,,",
+            "cachet_kv-0.2.0.dist-info/METADATA,,",
+            "cachet_kv-0.2.0.dist-info/RECORD,,",
         ),
     )
     with pytest.raises(ValueError, match="RECORD must list required wheel files"):
@@ -2000,12 +2000,12 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     tampered_record_wheel = _write_wheel(
-        tmp_path / "tampered-record-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "tampered-record-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         record_lines=(
             "document_kv_cache/__init__.py,sha256=not-the-real-digest,0",
-            "document_kv_cache-0.2.0.dist-info/WHEEL,sha256=not-the-real-digest,85",
-            "document_kv_cache-0.2.0.dist-info/METADATA,sha256=not-the-real-digest,37",
-            "document_kv_cache-0.2.0.dist-info/RECORD,,",
+            "cachet_kv-0.2.0.dist-info/WHEEL,sha256=not-the-real-digest,85",
+            "cachet_kv-0.2.0.dist-info/METADATA,sha256=not-the-real-digest,37",
+            "cachet_kv-0.2.0.dist-info/RECORD,,",
         ),
     )
     with pytest.raises(ValueError, match="hash must match the wheel payload"):
@@ -2019,7 +2019,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     unrecorded_document_file_wheel = _write_wheel(
-        tmp_path / "unrecorded-document-file-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "unrecorded-document-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         extra_entries=(("document_kv_cache/extra_runtime.py", b"UNRECORDED = True\n"),),
     )
     with pytest.raises(ValueError, match="RECORD must list every wheel file"):
@@ -2033,7 +2033,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     unrecorded_legacy_file_wheel = _write_wheel(
-        tmp_path / "unrecorded-legacy-file-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "unrecorded-legacy-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         extra_entries=(("restaurant_kv_serving/compat_runtime.py", b"UNRECORDED = True\n"),),
     )
     with pytest.raises(ValueError, match="RECORD must list every wheel file"):
@@ -2048,7 +2048,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
 
     with pytest.warns(UserWarning, match="Duplicate name"):
         duplicate_document_member_wheel = _write_wheel(
-            tmp_path / "duplicate-document-member-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+            tmp_path / "duplicate-document-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
             duplicate_entries=(("document_kv_cache/__init__.py", b"DUPLICATE = True\n"),),
         )
     with pytest.raises(ValueError, match="duplicate file paths"):
@@ -2063,7 +2063,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
 
     with pytest.warns(UserWarning, match="Duplicate name"):
         duplicate_legacy_member_wheel = _write_wheel(
-            tmp_path / "duplicate-legacy-member-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+            tmp_path / "duplicate-legacy-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
             extra_entries=(("restaurant_kv_serving/__init__.py", b""),),
             duplicate_entries=(("restaurant_kv_serving/__init__.py", b"DUPLICATE = True\n"),),
         )
@@ -2079,8 +2079,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
 
     with pytest.warns(UserWarning, match="Duplicate name"):
         duplicate_dist_info_member_wheel = _write_wheel(
-            tmp_path / "duplicate-dist-info-member-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
-            duplicate_entries=(("document_kv_cache-0.2.0.dist-info/WHEEL", b"Wheel-Version: 1.0\n"),),
+            tmp_path / "duplicate-dist-info-member-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+            duplicate_entries=(("cachet_kv-0.2.0.dist-info/WHEEL", b"Wheel-Version: 1.0\n"),),
         )
     with pytest.raises(ValueError, match="duplicate file paths"):
         build_release_bundle(
@@ -2093,8 +2093,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     nested_dist_info_wheel = _write_wheel(
-        tmp_path / "nested-dist-info-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
-        dist_info_prefix="nested/document_kv_cache-0.2.0.dist-info",
+        tmp_path / "nested-dist-info-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        dist_info_prefix="nested/cachet_kv-0.2.0.dist-info",
     )
     with pytest.raises(ValueError, match="root-level .dist-info"):
         build_release_bundle(
@@ -2107,8 +2107,8 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     mismatched_dist_info_wheel = _write_wheel(
-        tmp_path / "mismatched-dist-info-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
-        dist_info_prefix="document_kv_cache-0.2.1.dist-info",
+        tmp_path / "mismatched-dist-info-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        dist_info_prefix="cachet_kv-0.2.1.dist-info",
     )
     with pytest.raises(ValueError, match="match wheel filename"):
         build_release_bundle(
@@ -2121,7 +2121,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     wrong_name_wheel = _write_wheel(
-        tmp_path / "wrong-name-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "wrong-name-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         metadata_name="other-package",
     )
     with pytest.raises(ValueError, match="METADATA Name"):
@@ -2135,9 +2135,9 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     mismatched_metadata_version_wheel = _write_wheel(
-        tmp_path / "mismatched-metadata-version-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "mismatched-metadata-version-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         metadata_version="0.2.1",
-        dist_info_prefix="document_kv_cache-0.2.0.dist-info",
+        dist_info_prefix="cachet_kv-0.2.0.dist-info",
     )
     with pytest.raises(ValueError, match="METADATA Version must match wheel filename"):
         build_release_bundle(
@@ -2150,9 +2150,9 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_version_wheel = _write_wheel(
-        tmp_path / "missing-version-wheel" / "document_kv_cache-0.2.1-py3-none-any.whl",
+        tmp_path / "missing-version-wheel" / "cachet_kv-0.2.1-py3-none-any.whl",
         metadata_version=None,
-        dist_info_prefix="document_kv_cache-0.2.1.dist-info",
+        dist_info_prefix="cachet_kv-0.2.1.dist-info",
     )
     with pytest.raises(ValueError, match="METADATA Version"):
         build_release_bundle(
@@ -2165,7 +2165,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_license_expression_wheel = _write_wheel(
-        tmp_path / "missing-license-expression-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-license-expression-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         metadata_license_expression=None,
     )
     with pytest.raises(ValueError, match="License-Expression"):
@@ -2179,7 +2179,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     wrong_license_file_metadata_wheel = _write_wheel(
-        tmp_path / "wrong-license-file-metadata-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "wrong-license-file-metadata-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         metadata_license_file="NOTICE",
     )
     with pytest.raises(ValueError, match="License-File"):
@@ -2193,7 +2193,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_license_file_wheel = _write_wheel(
-        tmp_path / "missing-license-file-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-license-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_license_file=False,
     )
     with pytest.raises(ValueError, match="must contain license file"):
@@ -2207,7 +2207,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_cachet_init_wheel = _write_wheel(
-        tmp_path / "missing-cachet-init-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-cachet-init-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_cachet_init=False,
     )
     with pytest.raises(ValueError, match=r"cachet/__init__\.py"):
@@ -2220,8 +2220,36 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-cachet-init-bundle",
         )
 
+    missing_document_init_wheel = _write_wheel(
+        tmp_path / "missing-document-init-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        include_document_init=False,
+    )
+    with pytest.raises(ValueError, match=r"document_kv_cache/__init__\.py"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_document_init_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-document-init-bundle",
+        )
+
+    missing_legacy_init_wheel = _write_wheel(
+        tmp_path / "missing-legacy-init-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        include_legacy_init=False,
+    )
+    with pytest.raises(ValueError, match=r"restaurant_kv_serving/__init__\.py"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_legacy_init_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-legacy-init-bundle",
+        )
+
     missing_cachet_stub_wheel = _write_wheel(
-        tmp_path / "missing-cachet-stub-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-cachet-stub-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_cachet_stub=False,
     )
     with pytest.raises(ValueError, match=r"cachet/__init__\.pyi"):
@@ -2235,7 +2263,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_cachet_typed_marker_wheel = _write_wheel(
-        tmp_path / "missing-cachet-typed-marker-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-cachet-typed-marker-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_cachet_typed_marker=False,
     )
     with pytest.raises(ValueError, match=r"cachet/py\.typed"):
@@ -2249,7 +2277,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_document_typed_marker_wheel = _write_wheel(
-        tmp_path / "missing-document-typed-marker-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-document-typed-marker-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_document_typed_marker=False,
     )
     with pytest.raises(ValueError, match=r"document_kv_cache/py\.typed"):
@@ -2263,7 +2291,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         )
 
     missing_legacy_typed_marker_wheel = _write_wheel(
-        tmp_path / "missing-legacy-typed-marker-wheel" / "document_kv_cache-0.2.0-py3-none-any.whl",
+        tmp_path / "missing-legacy-typed-marker-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         include_legacy_typed_marker=False,
     )
     with pytest.raises(ValueError, match=r"restaurant_kv_serving/py\.typed"):
@@ -2274,6 +2302,52 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             package_wheel=missing_legacy_typed_marker_wheel,
             output_dir=tmp_path / "bad-wheel-missing-legacy-typed-marker-bundle",
+        )
+
+    missing_entry_points_wheel = _write_wheel(
+        tmp_path / "missing-entry-points-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        include_entry_points=False,
+    )
+    with pytest.raises(ValueError, match=r"entry_points\.txt"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_entry_points_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-entry-points-bundle",
+        )
+
+    missing_legacy_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    missing_legacy_script_entries.pop("restaurant-kv-vllm-smoke")
+    missing_legacy_script_wheel = _write_wheel(
+        tmp_path / "missing-legacy-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(missing_legacy_script_entries),
+    )
+    with pytest.raises(ValueError, match="restaurant-kv-vllm-smoke"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=missing_legacy_script_wheel,
+            output_dir=tmp_path / "bad-wheel-missing-legacy-script-bundle",
+        )
+
+    wrong_document_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    wrong_document_script_entries["document-kv-release-bundle"] = "cachet.release_bundle:main"
+    wrong_document_script_wheel = _write_wheel(
+        tmp_path / "wrong-document-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(wrong_document_script_entries),
+    )
+    with pytest.raises(ValueError, match="document-kv-release-bundle"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=wrong_document_script_wheel,
+            output_dir=tmp_path / "bad-wheel-wrong-document-script-bundle",
         )
 
     with pytest.raises(ValueError, match="PR evidence sidecar ok"):
@@ -2977,7 +3051,7 @@ def test_release_bundle_dataclasses_validate_json_safe_schema():
             bundled_path="x",
             size_bytes=1,
             sha256="a" * 64,
-            package_name="document-kv-cache",
+            package_name="cachet-kv",
         )
     with pytest.raises(ValueError, match="package identity can only"):
         ReleaseBundleArtifact(
@@ -2986,7 +3060,7 @@ def test_release_bundle_dataclasses_validate_json_safe_schema():
             bundled_path="x",
             size_bytes=1,
             sha256="a" * 64,
-            package_name="document-kv-cache",
+            package_name="cachet-kv",
             package_version="0.2.0",
         )
     with pytest.raises(TypeError, match="artifacts"):
@@ -3630,7 +3704,7 @@ def _strict_v1_release_bundle_kwargs(
         suite_id=suite_id,
         hardware_target=hardware_target,
     )
-    package_wheel = _write_wheel(source_dir / "document_kv_cache-0.2.0-py3-none-any.whl")
+    package_wheel = _write_wheel(source_dir / "cachet_kv-0.2.0-py3-none-any.whl")
     plan_execution = _write_json(
         source_dir / "plan-execution.json",
         _plan_execution_record(ok=True, suite_id=suite_id, hardware_target=hardware_target),
@@ -3727,24 +3801,28 @@ def _write_requirements_matrix(path: Path) -> Path:
 def _write_wheel(
     path: Path,
     *,
-    metadata_name: str = "document-kv-cache",
+    metadata_name: str = "cachet-kv",
     metadata_version: str | None = "0.2.0",
     metadata_license_expression: str | None = "Apache-2.0",
     metadata_license_file: str | None = "LICENSE",
-    dist_info_prefix: str = "document_kv_cache-0.2.0.dist-info",
+    dist_info_prefix: str = "cachet_kv-0.2.0.dist-info",
     include_record: bool = True,
     include_license_file: bool = True,
     include_cachet_init: bool = True,
+    include_document_init: bool = True,
+    include_legacy_init: bool = True,
     include_cachet_stub: bool = True,
     include_cachet_typed_marker: bool = True,
     include_document_typed_marker: bool = True,
     include_legacy_typed_marker: bool = True,
+    include_entry_points: bool = True,
+    entry_points_payload: bytes | None = None,
     record_lines: tuple[str, ...] | None = None,
     extra_entries: tuple[tuple[str, bytes], ...] = (),
     duplicate_entries: tuple[tuple[str, bytes], ...] = (),
     wheel_metadata_lines: tuple[str, ...] = (
         "Wheel-Version: 1.0",
-        "Generator: document-kv-cache test fixture",
+        "Generator: cachet-kv test fixture",
         "Root-Is-Purelib: true",
         "Tag: py3-none-any",
         "",
@@ -3770,7 +3848,17 @@ def _write_wheel(
         wheel_entries.append(("cachet/__init__.py", package_payload))
     if include_cachet_stub:
         wheel_entries.append(("cachet/__init__.pyi", package_payload))
-    wheel_entries.append(("document_kv_cache/__init__.py", package_payload))
+    if include_document_init:
+        wheel_entries.append(("document_kv_cache/__init__.py", package_payload))
+    if include_legacy_init:
+        wheel_entries.append(("restaurant_kv_serving/__init__.py", package_payload))
+    if include_entry_points:
+        wheel_entries.append(
+            (
+                f"{dist_info_prefix}/entry_points.txt",
+                entry_points_payload if entry_points_payload is not None else _wheel_entry_points_payload(),
+            )
+        )
     if include_license_file:
         wheel_entries.append((f"{dist_info_prefix}/licenses/LICENSE", b"Apache License 2.0\n"))
     if include_cachet_typed_marker:
@@ -3793,6 +3881,20 @@ def _write_wheel(
                 )
             wheel_zip.writestr(f"{dist_info_prefix}/RECORD", "\n".join(record_lines))
     return path
+
+
+def _wheel_entry_points_payload(
+    scripts: dict[str, str] | None = None,
+) -> bytes:
+    script_entries = (
+        dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+        if scripts is None
+        else scripts
+    )
+    lines = ["[console_scripts]"]
+    lines.extend(f"{name}={target}" for name, target in sorted(script_entries.items()))
+    lines.append("")
+    return "\n".join(lines).encode("utf-8")
 
 
 def _wheel_record_line(path: str, payload: bytes) -> str:
@@ -3876,12 +3978,12 @@ def _repository_hygiene_record(*, ok: bool):
     return {
         "record_type": REPOSITORY_HYGIENE_RECORD_TYPE,
         "ok": ok,
-        "repository_root": "/workspace/document-kv-cache",
+        "repository_root": "/workspace/cachet-kv",
         "tracked_path_count": 128,
         "required_gitignore_patterns": list(REQUIRED_GITIGNORE_PATTERNS),
         "missing_gitignore_patterns": [] if ok else [".env"],
         "forbidden_tracked_artifact_patterns": list(FORBIDDEN_TRACKED_ARTIFACT_PATTERNS),
-        "forbidden_tracked_paths": [] if ok else ["dist/document_kv_cache-0.2.0-py3-none-any.whl"],
+        "forbidden_tracked_paths": [] if ok else ["dist/cachet_kv-0.2.0-py3-none-any.whl"],
         "forbidden_untracked_paths": [],
         "dirty_tracked_paths": [],
         "documentation_checked_directory_paths": [".", "src", "src/document_kv_cache", "tests"],

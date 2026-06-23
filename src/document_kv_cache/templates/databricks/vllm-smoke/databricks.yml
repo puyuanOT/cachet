@@ -9,7 +9,7 @@ variables:
   output_dir:
     description: Cluster-visible output directory for vLLM smoke artifacts.
   wheel_uri:
-    description: Cluster-visible document-kv-cache wheel URI installed by the task runner.
+    description: Cluster-visible cachet-kv wheel URI installed by the task runner.
   node_type_id:
     default: g6.8xlarge
     description: AWS g5/g6 node type for the single-node GPU smoke.

@@ -15,6 +15,6 @@ databricks bundle validate \
   --var workspace_dir=/local_disk0/document-kv-storage-benchmark \
   --var benchmark_output_json=/Volumes/catalog/schema/volume/storage/storage-benchmark.json \
   --var uc_volume_root=/Volumes/catalog/schema/volume/storage \
-  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```

@@ -335,7 +335,7 @@ def _synthetic_chunks(chunk_count: int, chunk_bytes: int) -> tuple[PackChunk, ..
 
 
 def _payload_for(index: int, chunk_bytes: int) -> bytes:
-    pattern = f"document-kv-cache:{index:08d}:".encode("ascii")
+    pattern = f"cachet-kv:{index:08d}:".encode("ascii")
     repeats = (chunk_bytes // len(pattern)) + 1
     return (pattern * repeats)[:chunk_bytes]
 

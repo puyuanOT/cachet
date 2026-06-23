@@ -97,7 +97,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         repository_root=tmp_path,
         tracked_paths=(
             ".env.example",
-            "dist/document_kv_cache-0.2.0-py3-none-any.whl",
+            "dist/cachet_kv-0.2.0-py3-none-any.whl",
             ".databricks/bundle/dev/state.json",
             ".terraform/providers/registry.terraform.io/hashicorp/databricks/provider",
             "databricks-runs/cachet_probe/run-status.json",
@@ -128,7 +128,7 @@ def test_repository_hygiene_reports_missing_gitignore_and_forbidden_tracked_arti
         ".databricks/bundle/dev/state.json",
         ".terraform/providers/registry.terraform.io/hashicorp/databricks/provider",
         "databricks-runs/cachet_probe/run-status.json",
-        "dist/document_kv_cache-0.2.0-py3-none-any.whl",
+        "dist/cachet_kv-0.2.0-py3-none-any.whl",
         "notebooks/.ipynb_checkpoints/debug-checkpoint.ipynb",
         "src/document_kv_cache/__pycache__/cache.pyc",
         "terraform.tfstate.backup",

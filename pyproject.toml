@@ -3,7 +3,7 @@ requires = ["poetry-core==2.4.1"]
 build-backend = "poetry.core.masonry.api"
 
 [project]
-name = "document-kv-cache"
+name = "cachet-kv"
 version = "0.2.0"
 description = "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
 readme = "README.md"
@@ -114,7 +114,7 @@ restaurant-kv-vllm-smoke = "restaurant_kv_serving.vllm_smoke:main"
 restaurant-kv-vllm-smoke-databricks-job = "restaurant_kv_serving.databricks_vllm_smoke_job:main"
 
 [tool.poetry]
-name = "document-kv-cache"
+name = "cachet-kv"
 version = "0.2.0"
 description = "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
 authors = ["OpenTable Data Science"]

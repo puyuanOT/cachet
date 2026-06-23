@@ -1,6 +1,6 @@
 # Packaged Templates
 
-This folder contains template resources shipped inside the `document-kv-cache`
+This folder contains template resources shipped inside the `cachet-kv`
 wheel. They are packaged as importable resources, not executable runtime
 modules; the `document-kv-templates` CLI lists, shows, and extracts these files
 for teams that want repository-free Databricks job scaffolding.

@@ -8,7 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_cachet_pyproject_packages_sglang_adapter_without_raw_engine_extra():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert pyproject["project"]["name"] == "document-kv-cache"
+    assert pyproject["project"]["name"] == "cachet-kv"
     assert "sglang_kv_injection" in {
         package["include"]
         for package in pyproject["tool"]["poetry"]["packages"]
