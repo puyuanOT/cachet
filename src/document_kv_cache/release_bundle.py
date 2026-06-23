@@ -20,6 +20,7 @@ from typing import Any
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from document_kv_cache._hardware_targets import HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES
 from document_kv_cache.benchmark_plan import PLAN_VERSION
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
@@ -197,6 +198,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "preflight",
     "plan_execution",
     "databricks_run_status",
+    "compatibility_databricks_run_status",
     "package_wheel",
     "pr_evidence",
     "requirements_matrix",
@@ -536,6 +538,7 @@ def build_release_bundle(
     preflight_json: str | Path | None = None,
     plan_execution_jsons: Sequence[str | Path] = (),
     databricks_run_status_jsons: Sequence[str | Path] = (),
+    compatibility_databricks_run_status_jsons: Sequence[str | Path] = (),
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
     requirements_matrix_md: str | Path | None = None,
@@ -563,6 +566,7 @@ def build_release_bundle(
         preflight_json=preflight_json,
         plan_execution_jsons=plan_execution_jsons,
         databricks_run_status_jsons=databricks_run_status_jsons,
+        compatibility_databricks_run_status_jsons=compatibility_databricks_run_status_jsons,
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
         requirements_matrix_md=requirements_matrix_md,
@@ -642,6 +646,7 @@ def _release_bundle_sources(
     preflight_json: str | Path | None,
     plan_execution_jsons: Sequence[str | Path],
     databricks_run_status_jsons: Sequence[str | Path],
+    compatibility_databricks_run_status_jsons: Sequence[str | Path],
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
     requirements_matrix_md: str | Path | None,
@@ -663,6 +668,10 @@ def _release_bundle_sources(
         sources.append(("preflight", preflight_json))
     sources.extend(("plan_execution", path) for path in plan_execution_jsons)
     sources.extend(("databricks_run_status", path) for path in databricks_run_status_jsons)
+    sources.extend(
+        ("compatibility_databricks_run_status", path)
+        for path in compatibility_databricks_run_status_jsons
+    )
     if package_wheel is not None:
         sources.append(("package_wheel", package_wheel))
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
@@ -730,6 +739,12 @@ def _validate_release_bundle_inputs(
     engine_probe_records = tuple(artifact.record for artifact in artifacts if artifact.role == "engine_probe")
     engine_action_records = tuple(
         artifact.record for artifact in artifacts if artifact.role == "engine_connector_actions"
+    )
+    compatibility_hardware_targets = tuple(
+        target
+        for artifact in artifacts
+        if artifact.role == "compatibility_benchmark" and artifact.record is not None
+        if (target := _strict_v1_benchmark_hardware_target(artifact.record)) is not None
     )
     strict_v1_suite_id = _strict_v1_benchmark_suite_id(v1_record) if require_complete_v1 else None
     strict_v1_hardware_target = DEFAULT_HARDWARE_TARGET if require_complete_v1 else None
@@ -799,6 +814,16 @@ def _validate_release_bundle_inputs(
                     artifact.record,
                     expected_hardware_target=strict_v1_hardware_target,
                     expected_node_type_id=strict_v1_node_type_id,
+                )
+            )
+        elif artifact.role == "compatibility_databricks_run_status":
+            if artifact.record is None:
+                issues.append("compatibility Databricks run status sidecar must be JSON")
+                continue
+            issues.extend(
+                _compatibility_databricks_run_status_sidecar_issues(
+                    artifact.record,
+                    compatibility_hardware_targets=compatibility_hardware_targets,
                 )
             )
         elif artifact.role == "package_wheel":
@@ -1177,6 +1202,73 @@ def _compatibility_benchmark_sidecar_issues(
             f"compatibility benchmark hardware_target must be one of {SUPPORTED_V1_HARDWARE_TARGETS!r}"
         )
     return tuple(issues)
+
+
+def _compatibility_databricks_run_status_sidecar_issues(
+    record: Mapping[str, Any],
+    *,
+    compatibility_hardware_targets: Sequence[str],
+) -> tuple[str, ...]:
+    issues = list(databricks_run_status_sidecar_issues(record))
+    status_record = databricks_run_status_record(record)
+    if status_record is None:
+        return tuple(issues)
+    hardware_targets = _databricks_status_hardware_targets(status_record)
+    if not hardware_targets:
+        issues.append("compatibility Databricks run status sidecar must declare a supported hardware target")
+    for hardware_target in hardware_targets:
+        if hardware_target == DEFAULT_HARDWARE_TARGET:
+            issues.append(
+                "compatibility Databricks run status hardware_target must not be "
+                f"the strict V1 release target {DEFAULT_HARDWARE_TARGET!r}"
+            )
+        elif hardware_target not in SUPPORTED_V1_HARDWARE_TARGETS:
+            issues.append(
+                "compatibility Databricks run status hardware_target must be one of "
+                f"{SUPPORTED_V1_HARDWARE_TARGETS!r}"
+            )
+        elif hardware_target not in compatibility_hardware_targets:
+            issues.append(
+                "compatibility Databricks run status hardware_target "
+                f"{hardware_target!r} must match a bundled compatibility benchmark"
+            )
+    return _dedupe_strings(issues)
+
+
+def _databricks_status_hardware_targets(status_record: Mapping[str, Any]) -> tuple[str, ...]:
+    status_record = databricks_run_status_record(status_record) or status_record
+    submit_payload = status_record.get("submit_payload")
+    explicit_targets = _string_sequence(_mapping(submit_payload).get("hardware_targets"))
+    inferred_targets = [
+        target
+        for node_type_id in _databricks_status_node_type_ids(status_record)
+        if (target := _hardware_target_for_node_type_id(node_type_id)) is not None
+    ]
+    return _dedupe_strings((*explicit_targets, *inferred_targets))
+
+
+def _databricks_status_node_type_ids(status_record: Mapping[str, Any]) -> tuple[str, ...]:
+    values: list[str] = []
+    submit_payload = _mapping(status_record.get("submit_payload"))
+    for field_name in ("node_type_ids", "driver_node_type_ids"):
+        values.extend(_string_sequence(submit_payload.get(field_name)))
+    for task in _mapping_sequence(status_record.get("tasks")):
+        values.extend(
+            _string_sequence((task.get("node_type_id"), task.get("driver_node_type_id")))
+        )
+    for task in _mapping_sequence(submit_payload.get("tasks")):
+        values.extend(
+            _string_sequence((task.get("node_type_id"), task.get("driver_node_type_id")))
+        )
+    return _dedupe_strings(values)
+
+
+def _hardware_target_for_node_type_id(node_type_id: str) -> str | None:
+    node_type_id = node_type_id.casefold()
+    for hardware_target, prefixes in HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.items():
+        if node_type_id.startswith(tuple(prefix.casefold() for prefix in prefixes)):
+            return hardware_target
+    return None
 
 
 def _release_evidence_sidecar_issues(
@@ -2474,7 +2566,7 @@ def _artifact_record(role: str, payload: bytes, source_path: str) -> Mapping[str
 def _artifact_record_type(artifact: _PreparedReleaseBundleArtifact) -> str | None:
     if artifact.record is None:
         return None
-    if artifact.role == "databricks_run_status":
+    if artifact.role in ("databricks_run_status", "compatibility_databricks_run_status"):
         status_record = databricks_run_status_record(artifact.record)
         return _optional_str(status_record.get("record_type")) if status_record is not None else None
     if artifact.role == "github_governance":
@@ -2525,6 +2617,10 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return f"plan_execution_{index + 1:02d}.json"
     if role == "databricks_run_status":
         return f"databricks_run_status_{index + 1:02d}.json"
+    if role == "compatibility_databricks_run_status":
+        hardware_targets = _databricks_status_hardware_targets(record) if record is not None else ()
+        suffix = _path_safe_label(hardware_targets[0] if hardware_targets else f"record_{index + 1:02d}")
+        return f"compatibility_databricks_run_status_{index + 1:02d}_{suffix}.json"
     if role == "package_wheel":
         return Path(prepared.source_path).name
     if role == "pr_evidence":
@@ -2566,6 +2662,22 @@ def _optional_str(value: Any) -> str | None:
 def _optional_backend(value: Any) -> str | None:
     backend = _optional_str(value)
     return backend if backend in REQUIRED_ENGINE_PROBE_BACKENDS else None
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _mapping_sequence(value: Any) -> tuple[Mapping[str, Any], ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in value if isinstance(item, Mapping))
+
+
+def _string_sequence(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str) and item)
 
 
 def _release_bundle_artifact_backend(prepared: _PreparedReleaseBundleArtifact) -> str | None:
@@ -2630,6 +2742,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preflight-json")
     parser.add_argument("--plan-execution-json", action="append", default=[])
     parser.add_argument("--databricks-run-status-json", action="append", default=[])
+    parser.add_argument(
+        "--compatibility-databricks-run-status-json",
+        action="append",
+        default=[],
+        help=(
+            "Optional successful Databricks run-status sidecar for a non-default "
+            "compatibility benchmark target. Repeat for each compatibility target."
+        ),
+    )
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
     parser.add_argument("--requirements-matrix-md")
@@ -2660,6 +2781,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         preflight_json=args.preflight_json,
         plan_execution_jsons=args.plan_execution_json,
         databricks_run_status_jsons=args.databricks_run_status_json,
+        compatibility_databricks_run_status_jsons=args.compatibility_databricks_run_status_json,
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
         requirements_matrix_md=args.requirements_matrix_md,

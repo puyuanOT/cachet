@@ -842,6 +842,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "repository visibility as private",
         "still requires the GitHub governance sidecar",
         "still needs target AWS g6/L4 or Unity Catalog evidence in the release bundle",
+        "previous complete g5-enriched strict bundle",
+        "next complete strict bundle refresh",
         "426398182137665",
         "315109189523858",
         "cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main",
@@ -881,7 +883,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "complete strict release bundle",
         "strict V1 publication target",
         "compatibility_benchmark",
-        "22 artifacts",
+        "compatibility_databricks_run_status",
+        "23 artifacts",
         "872615985402004",
         "566743786103032",
         "cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main",
@@ -891,7 +894,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     ):
         assert required in matrix_text
 
-    assert "Bundle-refresh pending | `databricks_job.py`" in compact_matrix
+    assert "Release-gated | `databricks_job.py`" in compact_matrix
     assert "Run connector action descriptor validation" in matrix_text
     assert (
         "release evidence `ok=true` when paired with the current storage and native engine sidecars"
@@ -899,8 +902,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     )
     assert "cannot substitute for the strict release target" in matrix_text
     assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "previous complete g5-enriched strict bundle validates with 22 artifacts" in compact_matrix
-    assert "next complete strict bundle refresh should replace its benchmark/status sidecars" in compact_matrix
+    assert "current complete g5-enriched strict bundle validates with 23 artifacts" in compact_matrix
+    assert "compatibility Databricks run-status sidecar" in compact_matrix
     assert "GitHub governance is release-ready" in compact_matrix
     assert "auto-merge is enabled" in compact_matrix
     for stale_blocker in stale_release_blockers:
@@ -922,6 +925,8 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
         "repository visibility as private",
         "still requires the GitHub governance sidecar",
         "still needs to be bundled before publication",
+        "previous g5-enriched strict bundle",
+        "next complete bundle refresh",
         "426398182137665",
         "315109189523858",
         "cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main",
@@ -935,10 +940,11 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "task summaries carry non-empty `purpose` tags" in compact_text
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
+    assert "--compatibility-databricks-run-status-json" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "g5-enriched strict bundle validates with 22 artifacts" in compact_remaining_v1_work
-    assert "next complete bundle refresh should swap in the current g6/g5 benchmark status sidecars" in compact_remaining_v1_work
+    assert "g5-enriched strict bundle validates with 23 artifacts" in compact_remaining_v1_work
+    assert "compatibility_databricks_run_status" in compact_remaining_v1_work
     assert "GitHub governance sidecar" in compact_remaining_v1_work
     assert "Current governance evidence is green" in compact_remaining_v1_work
     assert "566743786103032" in compact_remaining_v1_work

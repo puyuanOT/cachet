@@ -210,6 +210,7 @@ class ReleaseBundlePlanConfig:
     requirements_matrix_md: str | None = None
     engine_launch_config_jsons: tuple[str, ...] = ()
     compatibility_benchmark_jsons: tuple[str, ...] = ()
+    compatibility_databricks_run_status_jsons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -238,6 +239,10 @@ class ReleaseBundlePlanConfig:
             raise ValueError("release bundle engine_launch_config_jsons entries must be non-empty")
         if any(not path for path in self.compatibility_benchmark_jsons):
             raise ValueError("release bundle compatibility_benchmark_jsons entries must be non-empty")
+        if any(not path for path in self.compatibility_databricks_run_status_jsons):
+            raise ValueError(
+                "release bundle compatibility_databricks_run_status_jsons entries must be non-empty"
+            )
         canonical_launch_config_paths = tuple(
             _canonical_artifact_path(path) for path in self.engine_launch_config_jsons
         )
@@ -248,6 +253,11 @@ class ReleaseBundlePlanConfig:
         )
         if len(set(canonical_compatibility_paths)) != len(canonical_compatibility_paths):
             raise ValueError("release bundle compatibility_benchmark_jsons entries must be distinct")
+        canonical_compatibility_status_paths = tuple(
+            _canonical_artifact_path(path) for path in self.compatibility_databricks_run_status_jsons
+        )
+        if len(set(canonical_compatibility_status_paths)) != len(canonical_compatibility_status_paths):
+            raise ValueError("release bundle compatibility_databricks_run_status_jsons entries must be distinct")
         if type(self.overwrite) is not bool:
             raise ValueError("release bundle overwrite must be boolean")
         if type(self.require_complete_v1) is not bool:
@@ -258,6 +268,11 @@ class ReleaseBundlePlanConfig:
         object.__setattr__(self, "native_probe_factories_jsons", tuple(self.native_probe_factories_jsons))
         object.__setattr__(self, "engine_launch_config_jsons", tuple(self.engine_launch_config_jsons))
         object.__setattr__(self, "compatibility_benchmark_jsons", tuple(self.compatibility_benchmark_jsons))
+        object.__setattr__(
+            self,
+            "compatibility_databricks_run_status_jsons",
+            tuple(self.compatibility_databricks_run_status_jsons),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1186,6 +1201,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         argv = (*argv, "--plan-execution-json", plan_execution_json)
     for status_json in bundle_config.databricks_run_status_jsons:
         argv = (*argv, "--databricks-run-status-json", status_json)
+    for status_json in bundle_config.compatibility_databricks_run_status_jsons:
+        argv = (*argv, "--compatibility-databricks-run-status-json", status_json)
     if bundle_config.package_wheel is not None:
         argv = (*argv, "--package-wheel", bundle_config.package_wheel)
     for pr_evidence_json in bundle_config.pr_evidence_jsons:
@@ -1227,6 +1244,9 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "preflight_json": _release_bundle_preflight_json(config),
         "plan_execution_jsons": list(bundle_config.plan_execution_jsons),
         "databricks_run_status_jsons": list(bundle_config.databricks_run_status_jsons),
+        "compatibility_databricks_run_status_jsons": list(
+            bundle_config.compatibility_databricks_run_status_jsons
+        ),
         "package_wheel": bundle_config.package_wheel,
         "pr_evidence_jsons": list(bundle_config.pr_evidence_jsons),
         "requirements_matrix_md": bundle_config.requirements_matrix_md,
@@ -2091,6 +2111,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         help="Compact successful Databricks run-status sidecar to include in the release bundle. Repeat as needed.",
     )
+    parser.add_argument(
+        "--release-bundle-compatibility-databricks-run-status-json",
+        action="append",
+        help=(
+            "Successful Databricks run-status sidecar for a non-default compatibility benchmark "
+            "target. Repeat for each compatibility target."
+        ),
+    )
     parser.add_argument("--release-bundle-package-wheel", help="Tested cachet-kv wheel to include.")
     parser.add_argument(
         "--release-bundle-compatibility-benchmark-json",
@@ -2625,6 +2653,9 @@ def _release_bundle_config_from_cli(
         databricks_run_status_jsons=tuple(args.release_bundle_databricks_run_status_json or ()),
         package_wheel=args.release_bundle_package_wheel,
         compatibility_benchmark_jsons=tuple(args.release_bundle_compatibility_benchmark_json or ()),
+        compatibility_databricks_run_status_jsons=tuple(
+            args.release_bundle_compatibility_databricks_run_status_json or ()
+        ),
         pr_evidence_jsons=tuple(args.release_bundle_pr_evidence_json or ()),
         requirements_matrix_md=args.release_bundle_requirements_matrix_md,
         github_governance_json=args.release_bundle_github_governance_json,
@@ -2658,6 +2689,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_databricks_run_status_json is not None
         or args.release_bundle_package_wheel is not None
         or args.release_bundle_compatibility_benchmark_json is not None
+        or args.release_bundle_compatibility_databricks_run_status_json is not None
         or args.release_bundle_pr_evidence_json is not None
         or args.release_bundle_requirements_matrix_md is not None
         or args.release_bundle_github_governance_json is not None

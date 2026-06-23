@@ -213,6 +213,89 @@ def test_build_release_bundle_rejects_non_release_ready_compatibility_benchmark(
         )
 
 
+def test_build_release_bundle_can_include_compatibility_databricks_status(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    compatibility_benchmark = _write_json(
+        source_dir / "g5-v1-benchmark.json",
+        _v1_record(ok=True, hardware_target="aws-g5-a10g"),
+    )
+    compatibility_status = _write_json(
+        source_dir / "g5-run-status.json",
+        _databricks_run_status_cli_record(
+            succeeded=True,
+            purpose="document-kv-v1-benchmark",
+            run_name="cachet-g5-compatibility",
+            task_key="document_kv_vllm_smoke",
+            node_type_id="g5.8xlarge",
+        ),
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        compatibility_benchmark_jsons=(compatibility_benchmark,),
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        release_evidence_json=artifacts["evidence"],
+        preflight_json=artifacts["preflight"],
+        compatibility_databricks_run_status_jsons=(compatibility_status,),
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    status_artifact = record["artifacts"][-1]
+    assert status_artifact["role"] == "compatibility_databricks_run_status"
+    assert status_artifact["record_type"] == DATABRICKS_RUN_STATUS_RECORD_TYPE
+    assert status_artifact["bundled_path"] == "compatibility_databricks_run_status_10_aws-g5-a10g.json"
+    bundled_record = json.loads((bundle_dir / status_artifact["bundled_path"]).read_text(encoding="utf-8"))
+    assert bundled_record["summary"]["submit_payload"]["node_type_ids"] == ["g5.8xlarge"]
+
+
+def test_build_release_bundle_rejects_default_target_compatibility_databricks_status(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    compatibility_benchmark = _write_json(
+        source_dir / "g5-v1-benchmark.json",
+        _v1_record(ok=True, hardware_target="aws-g5-a10g"),
+    )
+    default_target_status = _write_json(
+        source_dir / "g6-run-status.json",
+        _databricks_run_status_cli_record(succeeded=True, node_type_id="g6.8xlarge"),
+    )
+
+    with pytest.raises(ValueError, match="compatibility Databricks run status hardware_target"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            compatibility_benchmark_jsons=(compatibility_benchmark,),
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            compatibility_databricks_run_status_jsons=(default_target_status,),
+            output_dir=tmp_path / "default-target-compatibility-status-bundle",
+        )
+
+
+def test_build_release_bundle_rejects_unmatched_compatibility_databricks_status(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    compatibility_status = _write_json(
+        source_dir / "g5-run-status.json",
+        _databricks_run_status_cli_record(succeeded=True, node_type_id="g5.8xlarge"),
+    )
+
+    with pytest.raises(ValueError, match="must match a bundled compatibility benchmark"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            compatibility_databricks_run_status_jsons=(compatibility_status,),
+            output_dir=tmp_path / "unmatched-compatibility-status-bundle",
+        )
+
+
 def test_build_release_bundle_plan_execution_stays_out_of_release_sidecar_matching(tmp_path):
     source_dir = tmp_path / "sources"
     bundle_dir = tmp_path / "bundle"
@@ -3073,6 +3156,10 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
         tmp_path / "g5-v1-benchmark.json",
         _v1_record(ok=True, hardware_target="aws-g5-a10g"),
     )
+    compatibility_status = _write_json(
+        tmp_path / "g5-run-status.json",
+        _databricks_run_status_cli_record(succeeded=True, node_type_id="g5.8xlarge"),
+    )
     github_governance = _write_json(tmp_path / "github-governance.json", _github_governance_cli_record(ok=True))
     native_probe_factories = _write_json(
         tmp_path / "native-probe-factories.json",
@@ -3094,6 +3181,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
             str(artifacts["v1"]),
             "--compatibility-benchmark-json",
             str(compatibility_benchmark),
+            "--compatibility-databricks-run-status-json",
+            str(compatibility_status),
             "--storage-benchmark-json",
             str(artifacts["storage"]),
             "--engine-probe-json",
@@ -3127,6 +3216,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
     record = json.loads(output_json.read_text(encoding="utf-8"))
     assert record["artifacts"][1]["role"] == "compatibility_benchmark"
     assert record["artifacts"][1]["record_type"] == BENCHMARK_RUN_RECORD_TYPE
+    assert record["artifacts"][-3]["role"] == "compatibility_databricks_run_status"
+    assert record["artifacts"][-3]["record_type"] == DATABRICKS_RUN_STATUS_RECORD_TYPE
     assert record["artifacts"][-2]["role"] == "github_governance"
     assert record["artifacts"][-2]["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
     assert record["artifacts"][-1]["role"] == "native_probe_factories"

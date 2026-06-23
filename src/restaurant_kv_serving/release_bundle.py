@@ -59,6 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preflight-json")
     parser.add_argument("--plan-execution-json", action="append", default=[])
     parser.add_argument("--databricks-run-status-json", action="append", default=[])
+    parser.add_argument("--compatibility-databricks-run-status-json", action="append", default=[])
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
     parser.add_argument("--requirements-matrix-md")
@@ -88,6 +89,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         preflight_json=args.preflight_json,
         plan_execution_jsons=args.plan_execution_json,
         databricks_run_status_jsons=args.databricks_run_status_json,
+        compatibility_databricks_run_status_jsons=args.compatibility_databricks_run_status_json,
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
         requirements_matrix_md=args.requirements_matrix_md,
