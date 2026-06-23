@@ -12,7 +12,10 @@ This package defines the SGLang-facing document KV-cache integration contract.
   provider. When SGLang supplies
   `HiCacheStorageExtraInfo.extra_info.custom_params.kv_transfer_params`, the
   backend normalizes it into `DocumentKVHiCacheRequestContext` and forwards it
-  to provider batch methods that accept `document_kv_request_context`.
+  to provider batch methods that accept `document_kv_request_context`. Cachet's
+  built-in page provider uses that context to validate SGLang handoffs, read the
+  external payload, and hydrate full HiCache pages only when
+  `document_kv.sglang_hicache_page_keys` matches SGLang's runtime hash keys.
 - `probe.py` exposes strict debug and native probe wrappers, including the provider-backed `DocumentKVHiCacheProbeConnector` used to exercise Cachet's HiCache page provider without falling back to in-memory test doubles.
 - `sglang_hicache_config.py` builds launch metadata for a patched SGLang HiCache dynamic storage backend.
 - `sglang_runtime_preflight.py` validates provider-backed dynamic HiCache

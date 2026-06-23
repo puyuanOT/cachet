@@ -11,10 +11,19 @@ import pytest
 
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
 )
+from document_kv_cache.engine import EngineReadyRequest
+from document_kv_cache.engine_adapters import (
+    build_engine_adapter_request,
+    sglang_adapter_spec,
+    vllm_adapter_spec,
+    write_engine_adapter_request_json,
+)
+from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 import sglang_kv_injection
 import sglang_kv_injection.sglang_dynamic_backend as sglang_dynamic_backend
 from sglang_kv_injection.sglang_dynamic_backend import (
@@ -24,6 +33,7 @@ from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY,
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_HICACHE_RUNTIME_METHODS,
+    DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     DocumentKVHiCacheBackend,
     DocumentKVHiCachePageProvider,
     DocumentKVHiCacheRequestContext,
@@ -67,6 +77,51 @@ class FakeHostPool:
 
     def set_from_flat_data_page(self, index: int, data_page: object) -> None:
         self.loaded.append((index, data_page))
+
+
+def sglang_ready_request(*, request_id: str = "cachet-live-sglang-handoff") -> EngineReadyRequest:
+    layout = KVLayout(
+        model_id="tiny-sglang-model",
+        lora_id="base",
+        layout_version="tiny-v1",
+        dtype="int8",
+        num_layers=1,
+        block_size=2,
+        bytes_per_token=4,
+    )
+    return EngineReadyRequest(
+        handle=KVCacheHandle(
+            request_id=request_id,
+            handle_uri=f"document-kv://{request_id}",
+            layout=layout,
+            segments=(
+                KVSegment(
+                    "doc-a",
+                    "document_static",
+                    "static",
+                    0,
+                    4,
+                    0,
+                    16,
+                ),
+            ),
+            total_tokens=4,
+            total_bytes=16,
+        ),
+        payload=b"page-onepage-two",
+        estimated_gpu_bytes=16,
+    )
+
+
+def write_sglang_handoff(tmp_path, ready: EngineReadyRequest) -> tuple[Path, Path]:
+    payload_path = tmp_path / f"{ready.request_id}.kv"
+    payload_path.write_bytes(ready.payload if isinstance(ready.payload, bytes) else b"".join(ready.payload))
+    handoff_path = write_engine_adapter_request_json(
+        build_engine_adapter_request(ready, spec=sglang_adapter_spec()),
+        tmp_path / f"{ready.request_id}.handoff.json",
+        payload_uri=f"disk:{payload_path}",
+    )
+    return handoff_path, payload_path
 
 
 class RequestContextProvider(RecordingProvider):
@@ -531,6 +586,7 @@ def test_document_kv_hicache_request_context_parses_sglang_custom_params():
                 DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/cachet/live/sglang.handoff.json",
                 DOCUMENT_KV_PAYLOAD_URI_PARAM: "uc-volume:/catalog/schema/volume/live/sglang.kv",
                 DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
+                DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["page-a", "page-b"],
             },
         },
     }
@@ -547,6 +603,7 @@ def test_document_kv_hicache_request_context_parses_sglang_custom_params():
         handoff_json="/Volumes/cachet/live/sglang.handoff.json",
         payload_uri="uc-volume:/catalog/schema/volume/live/sglang.kv",
         prompt_text_mode="runtime",
+        sglang_hicache_page_keys=("page-a", "page-b"),
         prefix_keys=("prefix-a", "prefix-b"),
         raw_extra_info=extra_info_payload,
     )
@@ -575,6 +632,20 @@ def test_document_kv_hicache_request_context_rejects_malformed_kv_transfer_param
             {
                 "custom_params": {
                     "kv_transfer_params": ["not", "a", "mapping"],
+                },
+            }
+        )
+
+
+def test_document_kv_hicache_request_context_rejects_malformed_sglang_page_keys():
+    with pytest.raises(ValueError, match=r"sglang_hicache_page_keys must be a sequence"):
+        document_kv_request_context_from_extra_info(
+            {
+                "custom_params": {
+                    "kv_transfer_params": {
+                        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-keys",
+                        DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: "not-a-sequence",
+                    },
                 },
             }
         )
@@ -610,6 +681,206 @@ def test_document_kv_hicache_backend_forwards_request_context_to_batch_provider_
         assert context.request_id == "cachet-live-sglang-3"
         assert context.handoff_json == "/Volumes/cachet/live/sglang.handoff.json"
         assert context.prefix_keys == ("prefix-a",)
+
+
+def test_document_kv_hicache_page_provider_hydrates_sglang_handoff_pages(tmp_path):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: [
+                "sglang-hash-page-0",
+                "sglang-hash-page-1",
+            ],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("sglang-hash-page-0", "sglang-hash-page-1"),
+    )
+
+    assert (
+        provider.batch_exists(
+            ["sglang-hash-page-0", "sglang-hash-page-1"],
+            document_kv_request_context=context,
+        )
+        == 2
+    )
+
+    assert provider.get("sglang-hash-page-0") == b"page-one"
+    assert provider.get("sglang-hash-page-1") == b"page-two"
+
+
+def test_document_kv_hicache_page_provider_hydrates_with_prefix_key_offset(tmp_path):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: [
+                "already-matched-page",
+                "sglang-hash-page-1",
+            ],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("already-matched-page", "sglang-hash-page-1"),
+        prefix_keys=("already-matched-page",),
+    )
+
+    assert provider.batch_exists(["sglang-hash-page-1"], document_kv_request_context=context) == 1
+
+    assert provider.get("sglang-hash-page-1") == b"page-two"
+    assert provider.get("sglang-hash-page-0") is None
+
+
+def test_document_kv_hicache_page_provider_accepts_inline_handoff_record(tmp_path):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_RECORD_PARAM: handoff_record,
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["sglang-hash-page-0", "sglang-hash-page-1"],
+        },
+        request_id=ready.request_id,
+        handoff_record=handoff_record,
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("sglang-hash-page-0", "sglang-hash-page-1"),
+    )
+
+    assert provider.batch_get_v1(["sglang-hash-page-0"], document_kv_request_context=context) == [b"page-one"]
+
+
+def test_document_kv_hicache_page_provider_requires_expected_page_keys_for_handoff_hydration(tmp_path):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+    )
+
+    assert provider.batch_exists(["sglang-hash-page-0"], document_kv_request_context=context) == 0
+    assert provider.batch_get_v1(["sglang-hash-page-0"], document_kv_request_context=context) == [None]
+    assert provider.get("sglang-hash-page-0") is None
+
+
+def test_document_kv_hicache_page_provider_rejects_mismatched_runtime_page_keys(tmp_path):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: [
+                "expected-page-0",
+                "expected-page-1",
+            ],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("expected-page-0", "expected-page-1"),
+    )
+
+    assert provider.batch_exists(["wrong-live-page-0"], document_kv_request_context=context) == 0
+    assert provider.get("wrong-live-page-0") is None
+
+
+def test_document_kv_hicache_page_provider_rejects_wrong_backend_handoff(tmp_path):
+    ready = sglang_ready_request()
+    payload_path = tmp_path / f"{ready.request_id}.kv"
+    payload_path.write_bytes(ready.payload if isinstance(ready.payload, bytes) else b"".join(ready.payload))
+    handoff_path = write_engine_adapter_request_json(
+        build_engine_adapter_request(ready, spec=vllm_adapter_spec()),
+        tmp_path / f"{ready.request_id}.handoff.json",
+        payload_uri=f"disk:{payload_path}",
+    )
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["sglang-hash-page-0", "sglang-hash-page-1"],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("sglang-hash-page-0", "sglang-hash-page-1"),
+    )
+
+    with pytest.raises(ValueError, match="does not match expected_backend"):
+        provider.batch_exists(["sglang-hash-page-0"], document_kv_request_context=context)
+
+
+def test_document_kv_hicache_page_provider_validates_handoff_before_warm_page_hits(tmp_path):
+    ready = sglang_ready_request()
+    payload_path = tmp_path / f"{ready.request_id}.kv"
+    payload_path.write_bytes(ready.payload if isinstance(ready.payload, bytes) else b"".join(ready.payload))
+    handoff_path = write_engine_adapter_request_json(
+        build_engine_adapter_request(ready, spec=vllm_adapter_spec()),
+        tmp_path / f"{ready.request_id}.handoff.json",
+        payload_uri=f"disk:{payload_path}",
+    )
+    provider = DocumentKVHiCachePageProvider()
+    provider.set("sglang-hash-page-0", b"stale-page")
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["sglang-hash-page-0", "sglang-hash-page-1"],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("sglang-hash-page-0", "sglang-hash-page-1"),
+    )
+
+    with pytest.raises(ValueError, match="does not match expected_backend"):
+        provider.batch_exists(["sglang-hash-page-0"], document_kv_request_context=context)
+
+
+def test_document_kv_hicache_page_provider_rejects_request_id_mismatch(tmp_path):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: "wrong-request",
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["sglang-hash-page-0", "sglang-hash-page-1"],
+        },
+        request_id="wrong-request",
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("sglang-hash-page-0", "sglang-hash-page-1"),
+    )
+
+    with pytest.raises(ValueError, match="must match handoff request_id"):
+        provider.batch_exists(["sglang-hash-page-0"], document_kv_request_context=context)
 
 
 def test_document_kv_hicache_backend_omits_context_for_legacy_batch_provider_signatures():

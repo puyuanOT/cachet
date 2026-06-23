@@ -180,6 +180,8 @@ def build_sglang_launch_config(
         "backend_name": _SGLANG_DOCUMENT_KV_BACKEND_NAME,
         "module_path": module_path,
         "class_name": _SGLANG_DOCUMENT_KV_CLASS_NAME,
+        "hicache_storage_pass_prefix_keys": True,
+        "interface_v1": True,
         **_build_document_kv_extra_config(
             ServingBackend.SGLANG,
             record_type=record_type,

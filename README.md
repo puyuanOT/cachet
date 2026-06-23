@@ -1350,13 +1350,16 @@ environment, installs the pinned SGLang stack and Cachet wheel/source, launches
 `Qwen/Qwen3-4B-Instruct-2507` as `qwen3:4b-instruct` with Cachet's dynamic
 HiCache provider config, and writes `metadata.json`, `sglang-launch-config.json`,
 `sglang-import-probe.json`, `sglang-server.log`, and `sglang-live-smoke.json`.
-The current helper is a baseline/provider bring-up gate only. Handoff-backed
-cache-arm execution fails before server launch because pinned SGLang carries
-OpenAI `custom_params` on sampling params but does not yet pass Cachet
-`kv_transfer_params` into `HiCacheStorageExtraInfo.extra_info` for the dynamic
-HiCache storage backend. The SGLang runtime preflight records this as
+The current helper is a baseline/provider bring-up gate only. Cachet's built-in
+provider can hydrate validated handoff payload pages under SGLang runtime
+HiCache keys when `DocumentKVHiCacheRequestContext` includes explicit
+`document_kv.sglang_hicache_page_keys` metadata matching the runtime
+`prefix_keys` and batch hashes, but handoff-backed cache-arm execution still
+fails before server launch because pinned SGLang carries OpenAI `custom_params`
+on sampling params without passing Cachet `kv_transfer_params` into
+`HiCacheStorageExtraInfo.extra_info`. The SGLang runtime preflight records this as
 `live_request_metadata_bridge_ok=false`. Keep `--baseline-only` on these runs
-until request-to-HiCache binding is implemented and that field becomes true.
+until that field becomes true.
 
 ```bash
 python -m document_kv_cache.sglang_smoke \
@@ -1368,8 +1371,9 @@ python -m document_kv_cache.sglang_smoke \
 
 To submit that same smoke as a Databricks task, generate the runner script and
 single-node g5/g6 runs/submit payload. The helper rejects every handoff-backed
-SGLang cache-arm job until the live SGLang runtime consumes Cachet handoff
-params; baseline-only output must not be treated as Cachet benchmark evidence:
+SGLang cache-arm job until the live SGLang runtime forwards Cachet request
+metadata into HiCache `extra_info`; baseline-only output must not be treated as
+Cachet benchmark evidence:
 
 ```bash
 mkdir -p databricks-runs/sglang-smoke

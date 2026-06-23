@@ -54,6 +54,8 @@ def test_sglang_hicache_launch_config_builds_dynamic_backend_payload():
     assert extra["backend_name"] == "document_kv"
     assert extra["module_path"] == "company_sglang_patch.document_kv_backend"
     assert extra["class_name"] == "DocumentKVHiCacheBackend"
+    assert extra["hicache_storage_pass_prefix_keys"] is True
+    assert extra["interface_v1"] is True
     assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == (
         "company_sglang_patch.providers:build_provider"
     )
@@ -73,6 +75,8 @@ def test_sglang_hicache_launch_config_defaults_to_builtin_page_provider():
     extra = json.loads(config["hicache_storage_backend_extra_config"])
 
     assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == DOCUMENT_KV_HICACHE_PROVIDER_FACTORY
+    assert extra["hicache_storage_pass_prefix_keys"] is True
+    assert extra["interface_v1"] is True
 
 
 def test_sglang_hicache_cli_args_are_launch_server_ready():
@@ -90,6 +94,8 @@ def test_sglang_hicache_cli_args_are_launch_server_ready():
     extra = json.loads(args[extra_index])
     assert extra["module_path"] == DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH
     assert extra["class_name"] == DOCUMENT_KV_HICACHE_BACKEND_CLASS
+    assert extra["hicache_storage_pass_prefix_keys"] is True
+    assert extra["interface_v1"] is True
     assert extra[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY] == (
         "company_sglang_patch.providers:build_provider"
     )
