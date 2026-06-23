@@ -2252,7 +2252,7 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
         tmp_path / "unrecorded-legacy-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
         extra_entries=(("restaurant_kv_serving/compat_runtime.py", b"UNRECORDED = True\n"),),
     )
-    with pytest.raises(ValueError, match="RECORD must list every wheel file"):
+    with pytest.raises(ValueError, match="legacy compatibility package files"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
@@ -2450,18 +2450,50 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-document-init-bundle",
         )
 
-    missing_legacy_init_wheel = _write_wheel(
-        tmp_path / "missing-legacy-init-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        include_legacy_init=False,
+    legacy_package_file_wheel = _write_wheel(
+        tmp_path / "legacy-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        include_legacy_init=True,
     )
-    with pytest.raises(ValueError, match=r"restaurant_kv_serving/__init__\.py"):
+    with pytest.raises(ValueError, match="legacy compatibility package files"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=missing_legacy_init_wheel,
-            output_dir=tmp_path / "bad-wheel-missing-legacy-init-bundle",
+            package_wheel=legacy_package_file_wheel,
+            output_dir=tmp_path / "bad-wheel-legacy-package-file-bundle",
+        )
+
+    legacy_purelib_package_file_wheel = _write_wheel(
+        tmp_path / "legacy-purelib-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        extra_entries=(
+            ("cachet_kv-0.2.0.data/purelib/restaurant_kv_serving/__init__.py", b""),
+        ),
+    )
+    with pytest.raises(ValueError, match="legacy compatibility package files"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=legacy_purelib_package_file_wheel,
+            output_dir=tmp_path / "bad-wheel-legacy-purelib-package-file-bundle",
+        )
+
+    legacy_platlib_package_file_wheel = _write_wheel(
+        tmp_path / "legacy-platlib-package-file-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        extra_entries=(
+            ("cachet_kv-0.2.0.data/platlib/restaurant_kv_serving/__init__.py", b""),
+        ),
+    )
+    with pytest.raises(ValueError, match="legacy compatibility package files"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=legacy_platlib_package_file_wheel,
+            output_dir=tmp_path / "bad-wheel-legacy-platlib-package-file-bundle",
         )
 
     missing_cachet_stub_wheel = _write_wheel(
@@ -2506,18 +2538,18 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-document-typed-marker-bundle",
         )
 
-    missing_legacy_typed_marker_wheel = _write_wheel(
-        tmp_path / "missing-legacy-typed-marker-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        include_legacy_typed_marker=False,
+    legacy_typed_marker_wheel = _write_wheel(
+        tmp_path / "legacy-typed-marker-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        include_legacy_typed_marker=True,
     )
-    with pytest.raises(ValueError, match=r"restaurant_kv_serving/py\.typed"):
+    with pytest.raises(ValueError, match="legacy compatibility package files"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=missing_legacy_typed_marker_wheel,
-            output_dir=tmp_path / "bad-wheel-missing-legacy-typed-marker-bundle",
+            package_wheel=legacy_typed_marker_wheel,
+            output_dir=tmp_path / "bad-wheel-legacy-typed-marker-bundle",
         )
 
     missing_entry_points_wheel = _write_wheel(
@@ -2534,20 +2566,36 @@ def test_build_release_bundle_rejects_invalid_package_wheel_pr_evidence_or_githu
             output_dir=tmp_path / "bad-wheel-missing-entry-points-bundle",
         )
 
-    missing_legacy_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
-    missing_legacy_script_entries.pop("restaurant-kv-vllm-smoke")
-    missing_legacy_script_wheel = _write_wheel(
-        tmp_path / "missing-legacy-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
-        entry_points_payload=_wheel_entry_points_payload(missing_legacy_script_entries),
+    legacy_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    legacy_script_entries["restaurant-kv-vllm-smoke"] = "restaurant_kv_serving.vllm_smoke:main"
+    legacy_script_wheel = _write_wheel(
+        tmp_path / "legacy-script-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(legacy_script_entries),
     )
-    with pytest.raises(ValueError, match="restaurant-kv-vllm-smoke"):
+    with pytest.raises(ValueError, match="legacy compatibility console script"):
         build_release_bundle(
             v1_benchmark_json=artifacts["v1"],
             storage_benchmark_json=artifacts["storage"],
             engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
-            package_wheel=missing_legacy_script_wheel,
-            output_dir=tmp_path / "bad-wheel-missing-legacy-script-bundle",
+            package_wheel=legacy_script_wheel,
+            output_dir=tmp_path / "bad-wheel-legacy-script-bundle",
+        )
+
+    legacy_target_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
+    legacy_target_entries["cachet-legacy-smoke"] = "restaurant_kv_serving.vllm_smoke:main"
+    legacy_target_wheel = _write_wheel(
+        tmp_path / "legacy-script-target-wheel" / "cachet_kv-0.2.0-py3-none-any.whl",
+        entry_points_payload=_wheel_entry_points_payload(legacy_target_entries),
+    )
+    with pytest.raises(ValueError, match="legacy compatibility module"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            package_wheel=legacy_target_wheel,
+            output_dir=tmp_path / "bad-wheel-legacy-script-target-bundle",
         )
 
     wrong_document_script_entries = dict(public_release_bundle.RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS)
@@ -4035,11 +4083,11 @@ def _write_wheel(
     include_license_file: bool = True,
     include_cachet_init: bool = True,
     include_document_init: bool = True,
-    include_legacy_init: bool = True,
+    include_legacy_init: bool = False,
     include_cachet_stub: bool = True,
     include_cachet_typed_marker: bool = True,
     include_document_typed_marker: bool = True,
-    include_legacy_typed_marker: bool = True,
+    include_legacy_typed_marker: bool = False,
     include_entry_points: bool = True,
     entry_points_payload: bytes | None = None,
     record_lines: tuple[str, ...] | None = None,

@@ -207,7 +207,8 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-vllm-smoke`
 - `cachet-vllm-smoke-databricks-job`
 
-Legacy `restaurant-kv-*` aliases remain packaged only for downstream migration.
+Legacy `restaurant-kv-*` aliases are no longer included in built `cachet-kv`
+wheels. Use `cachet-*` or `document-kv-*` commands for installed environments.
 
 ## Optional Extras
 
@@ -219,11 +220,10 @@ their current dependency graphs conflict in one resolver. Install exactly one
 serving runtime in an isolated environment. `serving_env.py` exposes the pinned
 helper profiles used by smoke/probe jobs.
 
-The branded `cachet` facade, canonical `document_kv_cache` implementation,
-vendored `vllm_kv_injection`/`sglang_kv_injection` adapters, and
-migration-only `restaurant_kv_serving` package all ship `py.typed` markers so
-downstream type checkers can consume the inline type annotations from installed
-wheels.
+The branded `cachet` facade, canonical `document_kv_cache` implementation, and
+vendored `vllm_kv_injection`/`sglang_kv_injection` adapters ship `py.typed`
+markers so downstream type checkers can consume the inline type annotations
+from installed wheels.
 
 ## Template Subfolders
 

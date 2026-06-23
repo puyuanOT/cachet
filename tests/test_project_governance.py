@@ -426,7 +426,7 @@ def test_source_layout_readme_reflects_document_owned_implementation():
     assert "public product import namespace is the branded `cachet` facade" in compact_text
     assert "`cachet/` is the branded import facade" in text
     assert "`document_kv_cache/` is the canonical implementation and compatibility" in text
-    assert "`restaurant_kv_serving/` remains packaged as a migration-only compatibility" in compact_text
+    assert "`restaurant_kv_serving/` remains in source only for migration-history tests" in compact_text
     assert "`vllm_kv_injection/` and `sglang_kv_injection/` are vendored engine-adapter" in compact_text
     assert "contains the current implementation" not in text
 
@@ -528,11 +528,11 @@ def test_legacy_compatibility_removal_gate_is_documented():
     assert "`document_kv_cache` remains the canonical implementation namespace" in compact_gate
     assert "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts" in compact_gate
     assert "New code must not add production dependencies on the legacy package" in compact_gate
-    assert "`pyproject.toml` still packages `restaurant_kv_serving`" in compact_gate
-    assert "`src/document_kv_cache/release_bundle.py` still requires" in compact_gate
+    assert "`pyproject.toml` no longer packages `restaurant_kv_serving`" in compact_gate
+    assert "`src/document_kv_cache/release_bundle.py` rejects" in compact_gate
     assert "`restaurant_kv_serving/__init__.py`" in gate
     assert "`restaurant_kv_serving/py.typed`" in gate
-    assert "`tests/test_public_package.py` still proves" in compact_gate
+    assert "`tests/test_public_package.py` keeps source-only compatibility checks" in compact_gate
     assert "`tests/test_project_governance.py` keeps legacy references scoped" in compact_gate
     assert "PR evidence sidecars with Refactor-skill evidence" in compact_gate
     assert "completed GPT-5.5 review" in compact_gate
@@ -546,8 +546,8 @@ def test_legacy_compatibility_removal_gate_is_documented():
     assert "Current AWS g6/L4 release evidence" in compact_gate
     assert "optional AWS g5/A10G compatibility evidence" in compact_gate
     assert "strict release-bundle package-wheel gates are updated" in compact_gate
-    assert "Remove `restaurant_kv_serving` from `pyproject.toml` package metadata" in compact_gate
-    assert "Delete `src/restaurant_kv_serving`" in compact_gate
+    assert "Keep `restaurant_kv_serving` absent from `pyproject.toml` package metadata" in compact_gate
+    assert "Delete `src/restaurant_kv_serving` after the downstream migration evidence is attached" in compact_gate
     assert "Update `README.md`, `docs/v1-requirements-matrix.md`, `src/README.md`" in compact_gate
     assert "Run the focused governance, public-package, and release-bundle tests" in compact_gate
     assert "Refresh the tested wheel and strict release bundle before publication" in compact_gate
@@ -855,7 +855,7 @@ def test_readme_and_root_license_document_apache_2_license():
     assert "`py.typed` markers" in license_section
     assert "`cachet`" in license_section
     assert "`document_kv_cache`" in license_section
-    assert "`restaurant_kv_serving`" in license_section
+    assert "`restaurant_kv_serving`" not in license_section
     assert license_text.startswith("Apache License\nVersion 2.0, January 2004")
     assert "https://www.apache.org/licenses/" in license_text
 
@@ -976,7 +976,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main",
         "real vLLM and SGLang native block managers",
         "docs/native-engine-integration.md",
-        "`restaurant_kv_serving` compatibility package",
+        "`restaurant_kv_serving` compatibility directory",
     ):
         assert required in matrix_text
 
@@ -1462,7 +1462,8 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/cachet_kv-*.whl" in text
     assert "import cachet" in text
     assert "import document_kv_cache" in text
-    assert "import restaurant_kv_serving" in text
+    assert 'legacy_package = "restaurant" "_kv_serving"' in text
+    assert "find_spec(legacy_package) is None" in text
     assert "cachet.__all__ == document_kv_cache.__all__" in text
     assert 'not hasattr(cachet, "RestaurantKVRequest")' in text
     assert "assert cachet.storage is document_kv_cache.storage" in text
@@ -1471,7 +1472,8 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert "build with Cachet metadata" in compact_workflow_readme
     assert "verify the built wheel metadata" in compact_workflow_readme
     assert "built wheel into a fresh venv" in compact_workflow_readme
-    assert "`cachet`, `document_kv_cache`, and `restaurant_kv_serving`" in compact_workflow_readme
+    assert "`cachet` and `document_kv_cache`" in compact_workflow_readme
+    assert "`restaurant_kv_serving`" not in compact_workflow_readme
 
 
 def test_gitignore_blocks_local_secrets_and_generated_artifacts():
@@ -1785,7 +1787,7 @@ def test_poetry_metadata_keeps_conflicting_serving_engines_out_of_core_resolver(
     assert "sglang-kv-injection" not in optional_dependency_names
 
 
-def test_public_and_legacy_packages_publish_pep561_markers():
+def test_public_and_adapter_packages_publish_pep561_markers():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     includes = {
         include["path"]
@@ -1795,7 +1797,6 @@ def test_public_and_legacy_packages_publish_pep561_markers():
     marker_paths = (
         "src/cachet/py.typed",
         "src/document_kv_cache/py.typed",
-        "src/restaurant_kv_serving/py.typed",
         "src/vllm_kv_injection/py.typed",
         "src/sglang_kv_injection/py.typed",
     )
@@ -1803,3 +1804,5 @@ def test_public_and_legacy_packages_publish_pep561_markers():
     for marker_path in marker_paths:
         assert (REPO_ROOT / marker_path).is_file()
         assert marker_path in includes
+    assert (REPO_ROOT / "src" / "restaurant_kv_serving" / "py.typed").is_file()
+    assert "src/restaurant_kv_serving/py.typed" not in includes

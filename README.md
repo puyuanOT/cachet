@@ -22,9 +22,10 @@ distribution name is occupied by an unrelated Cachet API client, so `cachet-kv`
 is the V1 package-index identity for Cachet's document KV-cache package.
 Installed wheels expose `cachet-*` CLI aliases for the primary Cachet workflow
 commands as well as explicit `document-kv-*` command names. The legacy
-`restaurant_kv_serving` package and restaurant-specific aliases are still
-bundled as compatibility shims for existing benchmark jobs. New code should use
-the document-generic names:
+`restaurant_kv_serving` package and restaurant-specific aliases are no longer
+included in built wheels; source-only shims remain temporarily for
+migration-history tests and older local imports. New code should use the
+document-generic names:
 `DocumentKVRequest`, `DocumentChunkType.DOCUMENT_STATIC`,
 `DocumentChunkType.DOCUMENT_CHUNK`, `KVCacheKey.for_document`, and manifest
 `keys_for_document` methods. Core identifiers are stored as `document_id`;
@@ -1838,9 +1839,8 @@ Cachet is distributed under the Apache License 2.0. The repository includes
 the full license text in `LICENSE`, and the Poetry package metadata includes
 the `Apache-2.0` SPDX expression plus the license file in built wheels and
 source distributions. Release-bundle validation also requires the built wheel
-to carry `py.typed` markers for `cachet`, `document_kv_cache`, and the legacy
-`restaurant_kv_serving` compatibility package so downstream users keep inline
-type annotations after installation.
+to carry `py.typed` markers for `cachet` and `document_kv_cache` so downstream
+users keep inline type annotations after installation.
 
 ## Remaining V1 Work
 
@@ -1881,8 +1881,8 @@ type annotations after installation.
   engine block managers in vLLM and SGLang whenever adapter contracts, runtime
   pins, or launch configs change.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
-- Remove the legacy `restaurant_kv_serving` compatibility package only after
-  downstream jobs satisfy the gate in
-  `docs/legacy-compatibility-removal.md`, including validated
+- Delete the remaining source-only `restaurant_kv_serving` compatibility
+  directory after downstream jobs and local compatibility tests satisfy the gate
+  in `docs/legacy-compatibility-removal.md`, including validated
   `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
   through the optional `legacy_migration_evidence` release-bundle role.

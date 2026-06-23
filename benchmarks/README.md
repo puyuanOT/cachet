@@ -5,11 +5,24 @@ This directory contains curated Cachet benchmark evidence. It is separate from
 `databricks-runs/`, which remains ignored local scratch output.
 
 Start with the current Databricks snapshot:
-[`databricks/CURRENT.md`](databricks/CURRENT.md). Each benchmark folder contains
-a human-readable `README.md` plus the sanitized JSON artifacts needed to
-reproduce the claim. Do not commit Databricks tokens, raw Jobs API responses,
-package wheels, logs, generated dataset payloads, or cluster-local scratch
-output here.
+[`databricks/CURRENT.md`](databricks/CURRENT.md). Each benchmark run gets a
+standalone dated folder under `databricks/` with a human-readable `README.md`
+plus the sanitized JSON artifacts needed to reproduce the claim.
+
+Use this boundary when adding or reviewing benchmark output:
+
+- `benchmarks/databricks/CURRENT.md` is the current human-readable summary.
+- `benchmarks/databricks/<date>-<target>-<purpose>/README.md` is the
+  run-specific human-readable report.
+- JSON files beside each report are sanitized, schema-validated source records
+  for the claims in that report.
+- `pr-evidence/` is PR validation and release-audit material, not the benchmark
+  report surface.
+- `databricks-runs/` is ignored local scratch output and must not be used as the
+  durable benchmark location.
+
+Do not commit Databricks tokens, raw Jobs API responses, package wheels, logs,
+generated dataset payloads, or cluster-local scratch output here.
 
 ## Current Databricks Evidence
 

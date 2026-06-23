@@ -94,30 +94,10 @@ document-kv-vllm-runtime-preflight = "document_kv_cache.vllm_runtime_preflight:m
 document-kv-sglang-runtime-preflight = "document_kv_cache.sglang_runtime_preflight:main"
 document-kv-vllm-smoke = "document_kv_cache.vllm_smoke:main"
 document-kv-vllm-smoke-databricks-job = "document_kv_cache.databricks_vllm_smoke_job:main"
-restaurant-kv-benchmark-plan = "restaurant_kv_serving.benchmark_plan:main"
-restaurant-kv-benchmark-handoffs = "restaurant_kv_serving.benchmark_handoffs:main"
-restaurant-kv-benchmark-handoff-manifest = "restaurant_kv_serving.benchmark_handoffs:manifest_main"
-restaurant-kv-benchmark-handoff-bundles = "restaurant_kv_serving.benchmark_handoffs:bundle_main"
-restaurant-kv-run-benchmark-plan = "restaurant_kv_serving.benchmark_plan_executor:main"
-restaurant-kv-databricks-job = "restaurant_kv_serving.databricks_job:main"
-restaurant-kv-databricks-runs = "restaurant_kv_serving.databricks_runs:main"
-restaurant-kv-storage-benchmark = "restaurant_kv_serving.storage_benchmark:main"
-restaurant-kv-storage-benchmark-databricks-job = "restaurant_kv_serving.databricks_storage_benchmark_job:main"
-restaurant-kv-release-evidence = "restaurant_kv_serving.release_evidence:main"
-restaurant-kv-release-bundle = "restaurant_kv_serving.release_bundle:main"
-restaurant-kv-pr-evidence = "restaurant_kv_serving.pr_evidence:main"
-restaurant-kv-serving-env = "restaurant_kv_serving.serving_env:main"
-restaurant-kv-engine-probe = "restaurant_kv_serving.engine_probe:main"
-restaurant-kv-engine-probe-fixture = "restaurant_kv_serving.probe_fixtures:main"
-restaurant-kv-engine-probe-databricks-job = "restaurant_kv_serving.databricks_engine_probe_job:main"
-restaurant-kv-vllm-smoke = "restaurant_kv_serving.vllm_smoke:main"
-restaurant-kv-vllm-smoke-databricks-job = "restaurant_kv_serving.databricks_vllm_smoke_job:main"
-
 [tool.poetry]
 packages = [
   { include = "cachet", from = "src" },
   { include = "document_kv_cache", from = "src" },
-  { include = "restaurant_kv_serving", from = "src" },
   { include = "vllm_kv_injection", from = "src" },
   { include = "sglang_kv_injection", from = "src" },
 ]
@@ -125,7 +105,6 @@ include = [
   { path = "src/cachet/__init__.pyi", format = ["sdist", "wheel"] },
   { path = "src/cachet/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/py.typed", format = ["sdist", "wheel"] },
-  { path = "src/restaurant_kv_serving/py.typed", format = ["sdist", "wheel"] },
   { path = "src/vllm_kv_injection/py.typed", format = ["sdist", "wheel"] },
   { path = "src/sglang_kv_injection/py.typed", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.yml", format = ["sdist", "wheel"] },

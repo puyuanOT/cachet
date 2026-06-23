@@ -1063,6 +1063,45 @@ def test_cachet_brand_facade_delegates_to_document_package():
     assert "RestaurantKVRequest" not in stub_text
 
 
+def test_public_facades_import_without_source_only_legacy_package(tmp_path):
+    code = """
+import importlib.abc
+import sys
+
+
+class BlockLegacyPackage(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "restaurant_kv_serving" or fullname.startswith("restaurant_kv_serving."):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name="restaurant_kv_serving")
+        return None
+
+
+sys.meta_path.insert(0, BlockLegacyPackage())
+
+import cachet
+import document_kv_cache
+
+assert cachet.__all__ == document_kv_cache.__all__
+assert cachet.CacheTier is document_kv_cache.CacheTier
+assert cachet.DocumentKVRequest is document_kv_cache.DocumentKVRequest
+assert cachet.storage is document_kv_cache.storage
+assert not hasattr(document_kv_cache, "RestaurantKVRequest")
+assert not hasattr(cachet, "RestaurantKVRequest")
+"""
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_cachet_typing_stub_tracks_document_public_api():
     document_exports = set(document_kv_cache.__all__)
     stub_exports, non_reexport_aliases, missing_source_symbols = _cachet_stub_document_exports()
@@ -2205,7 +2244,7 @@ def test_package_level_submodule_imports_use_document_namespace_after_symbol_loo
     assert cache.ChunkCacheResult is restaurant_kv_serving.ChunkCacheResult
 
 
-def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
+def test_poetry_metadata_uses_public_package_name_and_public_script_aliases():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
     poetry = pyproject["tool"]["poetry"]
@@ -2245,30 +2284,9 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         )
         for script_name, target in expected_document_scripts.items()
     }
-    expected_legacy_scripts = {
-        "restaurant-kv-benchmark-plan": "restaurant_kv_serving.benchmark_plan:main",
-        "restaurant-kv-benchmark-handoffs": "restaurant_kv_serving.benchmark_handoffs:main",
-        "restaurant-kv-benchmark-handoff-manifest": "restaurant_kv_serving.benchmark_handoffs:manifest_main",
-        "restaurant-kv-benchmark-handoff-bundles": "restaurant_kv_serving.benchmark_handoffs:bundle_main",
-        "restaurant-kv-run-benchmark-plan": "restaurant_kv_serving.benchmark_plan_executor:main",
-        "restaurant-kv-databricks-job": "restaurant_kv_serving.databricks_job:main",
-        "restaurant-kv-databricks-runs": "restaurant_kv_serving.databricks_runs:main",
-        "restaurant-kv-storage-benchmark": "restaurant_kv_serving.storage_benchmark:main",
-        "restaurant-kv-storage-benchmark-databricks-job": "restaurant_kv_serving.databricks_storage_benchmark_job:main",
-        "restaurant-kv-release-evidence": "restaurant_kv_serving.release_evidence:main",
-        "restaurant-kv-release-bundle": "restaurant_kv_serving.release_bundle:main",
-        "restaurant-kv-pr-evidence": "restaurant_kv_serving.pr_evidence:main",
-        "restaurant-kv-serving-env": "restaurant_kv_serving.serving_env:main",
-        "restaurant-kv-engine-probe": "restaurant_kv_serving.engine_probe:main",
-        "restaurant-kv-engine-probe-fixture": "restaurant_kv_serving.probe_fixtures:main",
-        "restaurant-kv-engine-probe-databricks-job": "restaurant_kv_serving.databricks_engine_probe_job:main",
-        "restaurant-kv-vllm-smoke": "restaurant_kv_serving.vllm_smoke:main",
-        "restaurant-kv-vllm-smoke-databricks-job": "restaurant_kv_serving.databricks_vllm_smoke_job:main",
-    }
     expected_scripts = {
         **expected_cachet_scripts,
         **expected_document_scripts,
-        **expected_legacy_scripts,
     }
     expected_includes = [
         {
@@ -2281,10 +2299,6 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         },
         {
             "path": "src/document_kv_cache/py.typed",
-            "format": ["sdist", "wheel"],
-        },
-        {
-            "path": "src/restaurant_kv_serving/py.typed",
             "format": ["sdist", "wheel"],
         },
         {
@@ -2339,12 +2353,15 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
     assert {package["include"] for package in poetry["packages"]} == {
         "cachet",
         "document_kv_cache",
-        "restaurant_kv_serving",
         "vllm_kv_injection",
         "sglang_kv_injection",
     }
     assert artifact_includes == expected_includes
     assert scripts == expected_scripts
+    assert "restaurant_kv_serving" not in {package["include"] for package in poetry["packages"]}
+    assert "src/restaurant_kv_serving/py.typed" not in {include["path"] for include in artifact_includes}
+    assert not any(script_name.startswith("restaurant-kv-") for script_name in scripts)
+    assert not any("restaurant_kv_serving" in target for target in scripts.values())
     assert scripts["cachet-benchmark-plan"] == "cachet.benchmark_plan:main"
     assert scripts["cachet-templates"] == "cachet.template_resources:main"
     assert scripts["document-kv-benchmark-plan"] == "document_kv_cache.benchmark_plan:main"

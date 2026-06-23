@@ -109,7 +109,6 @@ RELEASE_BUNDLE_PACKAGE_LICENSE_FILE = "LICENSE"
 RELEASE_BUNDLE_PACKAGE_IMPORT_MARKER_PATHS = (
     "cachet/__init__.py",
     "document_kv_cache/__init__.py",
-    "restaurant_kv_serving/__init__.py",
 )
 RELEASE_BUNDLE_PACKAGE_TYPE_STUB_PATHS = (
     "cachet/__init__.pyi",
@@ -117,7 +116,19 @@ RELEASE_BUNDLE_PACKAGE_TYPE_STUB_PATHS = (
 RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
     "cachet/py.typed",
     "document_kv_cache/py.typed",
-    "restaurant_kv_serving/py.typed",
+)
+RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES = (
+    "restaurant" "_kv_serving/",
+)
+RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES = (
+    "purelib",
+    "platlib",
+)
+RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_PREFIXES = (
+    "restaurant" "-kv-",
+)
+RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES = (
+    "restaurant" "_kv_serving",
 )
 RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-benchmark-handoff-bundles": "cachet.benchmark_handoffs:bundle_main",
@@ -172,24 +183,6 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "document-kv-vllm-runtime-preflight": "document_kv_cache.vllm_runtime_preflight:main",
     "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
     "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
-    "restaurant-kv-benchmark-handoff-bundles": "restaurant_kv_serving.benchmark_handoffs:bundle_main",
-    "restaurant-kv-benchmark-handoff-manifest": "restaurant_kv_serving.benchmark_handoffs:manifest_main",
-    "restaurant-kv-benchmark-handoffs": "restaurant_kv_serving.benchmark_handoffs:main",
-    "restaurant-kv-benchmark-plan": "restaurant_kv_serving.benchmark_plan:main",
-    "restaurant-kv-databricks-job": "restaurant_kv_serving.databricks_job:main",
-    "restaurant-kv-databricks-runs": "restaurant_kv_serving.databricks_runs:main",
-    "restaurant-kv-engine-probe": "restaurant_kv_serving.engine_probe:main",
-    "restaurant-kv-engine-probe-databricks-job": "restaurant_kv_serving.databricks_engine_probe_job:main",
-    "restaurant-kv-engine-probe-fixture": "restaurant_kv_serving.probe_fixtures:main",
-    "restaurant-kv-pr-evidence": "restaurant_kv_serving.pr_evidence:main",
-    "restaurant-kv-release-bundle": "restaurant_kv_serving.release_bundle:main",
-    "restaurant-kv-release-evidence": "restaurant_kv_serving.release_evidence:main",
-    "restaurant-kv-run-benchmark-plan": "restaurant_kv_serving.benchmark_plan_executor:main",
-    "restaurant-kv-serving-env": "restaurant_kv_serving.serving_env:main",
-    "restaurant-kv-storage-benchmark": "restaurant_kv_serving.storage_benchmark:main",
-    "restaurant-kv-storage-benchmark-databricks-job": "restaurant_kv_serving.databricks_storage_benchmark_job:main",
-    "restaurant-kv-vllm-smoke": "restaurant_kv_serving.vllm_smoke:main",
-    "restaurant-kv-vllm-smoke-databricks-job": "restaurant_kv_serving.databricks_vllm_smoke_job:main",
 }
 RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
@@ -2227,6 +2220,9 @@ def _wheel_zip_payload_issues(
     license_issues = _wheel_license_file_issues(names, dist_info_prefix=dist_info_prefixes[0])
     if license_issues:
         return license_issues
+    forbidden_path_issues = _wheel_forbidden_path_issues(names)
+    if forbidden_path_issues:
+        return forbidden_path_issues
     typed_marker_issues = _wheel_typed_marker_issues(names)
     if typed_marker_issues:
         return typed_marker_issues
@@ -2380,12 +2376,47 @@ def _wheel_typed_marker_issues(names: Sequence[str]) -> tuple[str, ...]:
     )
 
 
+def _wheel_forbidden_path_issues(names: Sequence[str]) -> tuple[str, ...]:
+    forbidden_paths = tuple(name for name in names if _is_forbidden_package_wheel_path(name))
+    if not forbidden_paths:
+        return ()
+    return (
+        "package wheel artifact must not contain legacy compatibility package files: "
+        + ", ".join(repr(path) for path in forbidden_paths),
+    )
+
+
+def _is_forbidden_package_wheel_path(name: str) -> bool:
+    if any(name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
+        return True
+    path_parts = tuple(part for part in name.split("/") if part)
+    for index, part in enumerate(path_parts[:-1]):
+        if part not in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_INSTALL_SCHEMES:
+            continue
+        installed_path = "/".join(path_parts[index + 1 :])
+        if any(installed_path.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_PACKAGE_PATH_PREFIXES):
+            return True
+    return False
+
+
 def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
     try:
         scripts = _console_scripts_from_entry_points(payload.decode("utf-8"))
     except UnicodeDecodeError:
         return ("package wheel artifact entry_points.txt must be UTF-8 text",)
     issues: list[str] = []
+    for script_name in sorted(scripts):
+        if any(script_name.startswith(prefix) for prefix in RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_PREFIXES):
+            issues.append(
+                "package wheel artifact entry_points.txt must not include "
+                f"legacy compatibility console script {script_name!r}"
+            )
+        target = scripts[script_name]
+        if _is_forbidden_console_script_target(target):
+            issues.append(
+                "package wheel artifact entry_points.txt console script "
+                f"{script_name!r} must not target legacy compatibility module {target!r}"
+            )
     for script_name, expected_target in RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS.items():
         actual_target = scripts.get(script_name)
         if actual_target is None:
@@ -2396,6 +2427,13 @@ def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
                 f"{script_name!r} must target {expected_target!r}"
             )
     return tuple(issues)
+
+
+def _is_forbidden_console_script_target(target: str) -> bool:
+    return any(
+        target == prefix or target.startswith(f"{prefix}.") or target.startswith(f"{prefix}:")
+        for prefix in RELEASE_BUNDLE_FORBIDDEN_CONSOLE_SCRIPT_TARGET_PREFIXES
+    )
 
 
 def _console_scripts_from_entry_points(text: str) -> dict[str, str]:
@@ -2869,7 +2907,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Optional legacy compatibility migration evidence JSON to bundle when "
-            "removing the restaurant_kv_serving facade."
+            "removing the "
+            "restaurant"
+            "_kv_serving facade."
         ),
     )
     parser.add_argument("--requirements-matrix-md")

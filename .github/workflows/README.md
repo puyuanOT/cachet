@@ -10,6 +10,6 @@ This folder contains repository CI workflows.
   suite, verify a clean PEP 517 wheel
   build with Cachet metadata and entry points, build the source and wheel
   distributions with Poetry, verify the built wheel metadata, then install the
-  built wheel into a fresh venv and smoke-test the `cachet`,
-  `document_kv_cache`, and `restaurant_kv_serving` import namespaces plus a
-  Cachet CLI alias.
+  built wheel into a fresh venv and smoke-test the `cachet` and
+  `document_kv_cache` import namespaces, verify the legacy restaurant facade is
+  absent from installed wheels, and exercise a Cachet CLI alias.
