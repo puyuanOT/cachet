@@ -31,6 +31,7 @@ from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION,
+    DocumentKVConnectorMetadata,
     DocumentKVHandoffLoad,
     DocumentKVNativeProvider,
     DocumentKVNativeProbeConnector,
@@ -529,7 +530,97 @@ def test_native_provider_consumes_bound_load_metadata_after_successful_load():
     stats = connector.get_kv_connector_stats()
     assert stats["document_kv_loads_started"] == 1
     assert stats["document_kv_layers_loaded"] == 2
+    assert connector.get_kv_connector_stats() is None
     assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
+
+
+def test_native_provider_skips_rebound_duplicate_load_metadata_after_successful_load():
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+    connector.clear_connector_metadata()
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert stats["document_kv_loads_started"] == 1
+    assert stats["document_kv_layers_loaded"] == 2
+    assert connector.get_kv_connector_stats() is None
+    assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
+
+
+def test_native_provider_skips_duplicate_load_without_dropping_new_load_in_same_metadata():
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    req_1 = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    req_2 = SimpleNamespace(request_id="req-2", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(req_1, 0) == (2, False)
+    connector.update_state_after_alloc(req_1, AllocatedBlocks([5, 7]), 2)
+    meta_1 = connector.build_connector_meta(scheduler_output([5, 7], request_id="req-1"))
+    assert connector.get_num_new_matched_tokens(req_2, 0) == (2, False)
+    connector.update_state_after_alloc(req_2, AllocatedBlocks([6, 8]), 2)
+    meta_2 = connector.build_connector_meta(scheduler_output([6, 8], request_id="req-2"))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((9, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((9, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+
+    connector.bind_connector_metadata(meta_1)
+    connector.start_load_kv(SimpleNamespace())
+    assert connector.get_kv_connector_stats()["document_kv_loads_started"] == 1
+    assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
+    mixed_meta = DocumentKVConnectorMetadata(loads=(meta_1.loads[0], meta_2.loads[0]))
+    connector.bind_connector_metadata(mixed_meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert stats["document_kv_loads_started"] == 1
+    assert stats["document_kv_layers_loaded"] == 2
+    assert connector.get_kv_connector_stats() is None
+    assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-2"}]
+
+
+def test_native_provider_releases_loaded_identity_for_finished_request_ids():
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+    assert connector.get_finished({"req-1"}) == (None, None)
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert stats["document_kv_loads_started"] == 2
+    assert stats["document_kv_layers_loaded"] == 4
+    assert connector.get_kv_connector_stats() is None
 
 
 def test_native_provider_records_load_error_blocks_for_payload_view_failures(monkeypatch):
@@ -553,6 +644,7 @@ def test_native_provider_records_load_error_blocks_for_payload_view_failures(mon
 
     assert connector.get_block_ids_with_load_errors() == {5}
     assert connector.get_kv_connector_stats()["document_kv_load_error_blocks"] == 1
+    assert connector.get_kv_connector_stats() is None
 
 
 def test_native_provider_maps_vllm_layer_names_independently_of_registration_order():

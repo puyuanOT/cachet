@@ -165,6 +165,9 @@ class _PayloadTensorView:
     buffer: bytes | bytearray
 
 
+_LoadIdentity = tuple[str, int, int, tuple[tuple[int, int, int, int], ...]]
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentKVConnectorMetadata(_KVConnectorMetadata):
     """Scheduler-to-worker metadata consumed by :class:`DocumentKVNativeProvider`."""
@@ -252,14 +255,16 @@ class DocumentKVNativeProvider:
         self._loads: dict[str, DocumentKVHandoffLoad] = {}
         self._allocated: dict[str, DocumentKVLoadRequest] = {}
         self._active_external_request_ids: set[str] = set()
+        self._loaded_load_identities: dict[str, set[_LoadIdentity]] = {}
         self._metadata = DocumentKVConnectorMetadata()
         self._kv_caches: dict[str, object] = {}
         self._layer_indices: dict[str, int] = {}
         self._layer_mapping_inspection = DocumentKVVLLMLayerMappingInspection((), {})
         self._load_errors: set[int] = set()
         self._events: list[dict[str, object]] = []
-        self._loads_started = 0
-        self._layers_loaded = 0
+        self._stats_loads_started = 0
+        self._stats_layers_loaded = 0
+        self._stats_load_error_blocks = 0
 
     def get_num_new_matched_tokens(
         self,
@@ -380,8 +385,14 @@ class DocumentKVNativeProvider:
         if not self._kv_caches:
             raise ValueError("document KV provider has no registered vLLM KV caches")
         for index, load in enumerate(loads):
+            load_identity = _load_identity(load)
+            loaded_identities = self._loaded_load_identities.setdefault(load.request_id, set())
+            if load_identity in loaded_identities:
+                self._metadata = DocumentKVConnectorMetadata(loads=loads[index + 1 :])
+                continue
             self._load_request(load)
-            self._loads_started += 1
+            loaded_identities.add(load_identity)
+            self._stats_loads_started += 1
             self._events.append({"event": "document_kv_loaded", "request_id": load.request_id})
             self._metadata = DocumentKVConnectorMetadata(loads=loads[index + 1 :])
 
@@ -414,14 +425,24 @@ class DocumentKVNativeProvider:
     def get_block_ids_with_load_errors(self) -> set[int]:
         return set(self._load_errors)
 
-    def get_kv_connector_stats(self) -> DocumentKVConnectorStats:
-        return DocumentKVConnectorStats.from_mapping(
+    def get_kv_connector_stats(self) -> DocumentKVConnectorStats | None:
+        if (
+            self._stats_loads_started == 0
+            and self._stats_layers_loaded == 0
+            and self._stats_load_error_blocks == 0
+        ):
+            return None
+        stats = DocumentKVConnectorStats.from_mapping(
             {
-                "document_kv_loads_started": self._loads_started,
-                "document_kv_layers_loaded": self._layers_loaded,
-                "document_kv_load_error_blocks": len(self._load_errors),
+                "document_kv_loads_started": self._stats_loads_started,
+                "document_kv_layers_loaded": self._stats_layers_loaded,
+                "document_kv_load_error_blocks": self._stats_load_error_blocks,
             }
         )
+        self._stats_loads_started = 0
+        self._stats_layers_loaded = 0
+        self._stats_load_error_blocks = 0
+        return stats
 
     def vllm_layer_mapping_record(self) -> dict[str, Any]:
         """Return the last vLLM layer-name mapping accepted by the provider."""
@@ -447,6 +468,11 @@ class DocumentKVNativeProvider:
         events = list(self._events)
         self._events.clear()
         return events
+
+    def get_finished(self, finished_req_ids: set[str]) -> tuple[set[str] | None, set[str] | None]:
+        for request_id in finished_req_ids:
+            self._release_request(request_id)
+        return None, None
 
     def _load_request(self, load: DocumentKVLoadRequest) -> None:
         try:
@@ -477,15 +503,18 @@ class DocumentKVNativeProvider:
                     slot_mappings[device],
                     block_size=block_size,
                 )
-                self._layers_loaded += 1
+                self._stats_layers_loaded += 1
         except Exception:
-            self._load_errors.update(block.block_id for block in load.blocks)
+            error_block_ids = {block.block_id for block in load.blocks}
+            self._load_errors.update(error_block_ids)
+            self._stats_load_error_blocks += len(error_block_ids)
             raise
 
     def _release_request(self, request_id: str) -> None:
         self._loads.pop(request_id, None)
         self._allocated.pop(request_id, None)
         self._active_external_request_ids.discard(request_id)
+        self._loaded_load_identities.pop(request_id, None)
 
     def _load_for_request(self, request: object) -> DocumentKVHandoffLoad | None:
         request_id = _request_id(request)
@@ -572,7 +601,7 @@ class DocumentKVNativeProbeConnector(VLLMSupportsHMA):
     def get_block_ids_with_load_errors(self) -> set[int]:
         return self.provider.get_block_ids_with_load_errors()
 
-    def get_kv_connector_stats(self) -> DocumentKVConnectorStats:
+    def get_kv_connector_stats(self) -> DocumentKVConnectorStats | None:
         return self.provider.get_kv_connector_stats()
 
     def get_handshake_metadata(self) -> Mapping[str, Any]:
@@ -725,6 +754,18 @@ def _actions_record(actions_record: Mapping[str, Any]) -> dict[str, Any]:
     normalized = json.loads(json.dumps(actions_record))
     engine_kv_connector_actions_from_record(normalized, expected_backend=ServingBackend.VLLM)
     return normalized
+
+
+def _load_identity(load: DocumentKVLoadRequest) -> _LoadIdentity:
+    return (
+        load.request_id,
+        load.source_token_start,
+        load.token_count,
+        tuple(
+            (block.block_id, block.token_start, block.token_count, block.block_offset)
+            for block in load.blocks
+        ),
+    )
 
 
 def _handoff_request_id(params: Mapping[str, Any], record: Mapping[str, Any]) -> str | None:
