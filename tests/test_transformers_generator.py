@@ -66,6 +66,32 @@ class TinyModel:
         return SimpleNamespace(past_key_values=self.past_key_values)
 
 
+class TinyLogitsToKeepModel(TinyModel):
+    def __call__(self, *, input_ids, attention_mask=None, use_cache: bool, logits_to_keep: int):
+        self.calls.append(
+            {
+                "input_ids": input_ids.clone(),
+                "attention_mask": None if attention_mask is None else attention_mask.clone(),
+                "use_cache": use_cache,
+                "logits_to_keep": logits_to_keep,
+            }
+        )
+        return SimpleNamespace(past_key_values=self.past_key_values)
+
+
+class TinyNumLogitsToKeepModel(TinyModel):
+    def __call__(self, *, input_ids, attention_mask=None, use_cache: bool, num_logits_to_keep: int):
+        self.calls.append(
+            {
+                "input_ids": input_ids.clone(),
+                "attention_mask": None if attention_mask is None else attention_mask.clone(),
+                "use_cache": use_cache,
+                "num_logits_to_keep": num_logits_to_keep,
+            }
+        )
+        return SimpleNamespace(past_key_values=self.past_key_values)
+
+
 class ModernLayerCache:
     def __init__(self, key, value) -> None:
         self.keys = key
@@ -207,6 +233,50 @@ def test_transformers_generator_accepts_transformers5_layer_cache():
     )
     expected = torch.stack((layer_0, layer_1), dim=1).contiguous()
     assert pack_chunk.payload == tensor_bytes(expected)
+
+
+def test_transformers_generator_requests_single_logits_position_when_supported():
+    layout = tiny_layout(num_layers=1)
+    first_layer = layer([[1, 2], [3, 4]], [[11, 12], [13, 14]])
+    tokenizer = TinyTokenizer(token_count=2)
+    model = TinyLogitsToKeepModel((first_layer,))
+    source = document()
+    generator = TransformersKVChunkGenerator(model=model, tokenizer=tokenizer, layout=layout)
+
+    pack_chunk = generator.generate(
+        document=source,
+        chunk=source.chunks[0],
+        config=build_config(layout),
+    )
+
+    expected = torch.stack(
+        (first_layer[0][0].permute(1, 0, 2), first_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    ).unsqueeze(1)
+    assert pack_chunk.payload == tensor_bytes(expected)
+    assert model.calls[0]["logits_to_keep"] == 1
+
+
+def test_transformers_generator_supports_num_logits_to_keep_fallback():
+    layout = tiny_layout(num_layers=1)
+    first_layer = layer([[1, 2]], [[11, 12]])
+    tokenizer = TinyTokenizer(token_count=1)
+    model = TinyNumLogitsToKeepModel((first_layer,))
+    source = document()
+    generator = TransformersKVChunkGenerator(model=model, tokenizer=tokenizer, layout=layout)
+
+    pack_chunk = generator.generate(
+        document=source,
+        chunk=source.chunks[0],
+        config=build_config(layout),
+    )
+
+    expected = torch.stack(
+        (first_layer[0][0].permute(1, 0, 2), first_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    ).unsqueeze(1)
+    assert pack_chunk.payload == tensor_bytes(expected)
+    assert model.calls[0]["num_logits_to_keep"] == 1
 
 
 def test_transformers_generator_emits_bfloat16_payload_for_shared_layout():
