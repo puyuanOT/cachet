@@ -15,6 +15,14 @@ to inspect `pr-evidence/` or ignored local `databricks-runs/` output.
 | Cache arm | `document_kv_cache` |
 | Release evidence | `ok=true` for the tracked g6/L4 benchmark, storage, and native probe artifacts |
 
+## Scope
+
+The latency and quality results in this snapshot are vLLM benchmark runs. SGLang
+currently has provider-backed native HiCache probe and connector-action evidence
+in this benchmark tree, but it does not yet have a published live SGLang
+latency/quality benchmark. Treat SGLang benchmark evidence as pending until a
+live SGLang endpoint validates decode-time prefix binding with Cachet handoffs.
+
 ## V1 Latency And Quality
 
 | Target | Folder | Databricks run | Measurements | TTFT speedup | Time-to-completion speedup | Quality delta |
@@ -36,7 +44,8 @@ does not replace the strict AWS g6/L4 publication target.
 The native probe folder carries `document_kv.engine_kv_connector_probe.v1` and
 `document_kv.engine_kv_connector_actions.v1` records for both vLLM and SGLang.
 Those records prove Cachet uses established engine-owned KV block managers
-instead of a package-owned serving scheduler.
+instead of a package-owned serving scheduler. They are not latency, throughput,
+or quality benchmark measurements.
 
 ## Artifact Boundary
 
