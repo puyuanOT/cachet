@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import mmap
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -27,7 +28,8 @@ from document_kv_cache.engine_adapters import (
     read_engine_adapter_request_json,
     validate_engine_kv_connector_actions,
 )
-from document_kv_cache.engine_probe import read_engine_adapter_payload
+from document_kv_cache.engine_probe import _validate_local_payload_uri, read_engine_adapter_payload
+from document_kv_cache.storage import local_path
 from vllm_kv_injection.block_mapping import BlockSpan, plan_token_blocks
 from vllm_kv_injection.paged_kv_copy import inject_kv_cache_layer, slot_mapping_from_blocks
 from vllm_kv_injection.vllm_native_provider_constants import (
@@ -163,10 +165,12 @@ class _PayloadTensorView:
 
     token_major: object
     scalars_per_layer: int
-    buffer: bytes | bytearray
+    buffer: object
 
 
 _LoadIdentity = tuple[str, int, int, tuple[tuple[int, int, int, int], ...]]
+_PayloadBuffer = bytes | bytearray | mmap.mmap
+_PayloadOrSegments = _PayloadBuffer | tuple[bytes, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,7 +740,7 @@ def _validate_payload_reference(
     _required_string(payload_uri, field_name="payload_uri")
 
 
-def _validate_payload_matches_actions(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> None:
+def _validate_payload_matches_actions(actions: EngineKVConnectorActions, payload: _PayloadOrSegments) -> None:
     expected_mode = _payload_mode(actions)
     if isinstance(payload, tuple):
         if expected_mode != PayloadMode.SEGMENTED:
@@ -859,18 +863,28 @@ def _connector_actions_from_plan(plan: EngineKVInjectionPlan) -> EngineKVConnect
     return actions
 
 
-def _materialized_payload(load: DocumentKVLoadRequest) -> bytes | tuple[bytes, ...]:
+def _materialized_payload(load: DocumentKVLoadRequest) -> _PayloadOrSegments:
     if load.payload is not None:
         return load.payload
     payload_uri = _required_string(load.payload_uri, field_name="payload_uri")
-    payload = read_engine_adapter_payload(payload_uri, expected_bytes=_expected_payload_bytes(load.actions))
     if _payload_mode(load.actions) == PayloadMode.MERGED:
-        return payload
+        return _mapped_engine_adapter_payload(payload_uri, expected_bytes=_expected_payload_bytes(load.actions))
+    payload = read_engine_adapter_payload(payload_uri, expected_bytes=_expected_payload_bytes(load.actions))
     return _segmented_payload_from_materialized_payload(load.actions, payload)
 
 
 def _expected_payload_bytes(actions: EngineKVConnectorActions) -> int:
     return actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
+
+
+def _mapped_engine_adapter_payload(payload_uri: str, *, expected_bytes: int) -> mmap.mmap:
+    _validate_local_payload_uri(payload_uri)
+    payload_path = local_path(payload_uri)
+    payload_bytes = payload_path.stat().st_size
+    if payload_bytes != expected_bytes:
+        raise ValueError(f"Engine adapter payload length {payload_bytes} != expected {expected_bytes}")
+    with payload_path.open("rb") as payload_file:
+        return mmap.mmap(payload_file.fileno(), length=0, access=mmap.ACCESS_READ)
 
 
 def _segmented_payload_from_materialized_payload(
@@ -891,9 +905,9 @@ def _segmented_payload_from_materialized_payload(
     return tuple(bytes(segment) for segment in segments)
 
 
-def _merged_payload(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> bytes | bytearray:
+def _merged_payload(actions: EngineKVConnectorActions, payload: _PayloadOrSegments) -> _PayloadBuffer:
     _validate_payload_matches_actions(actions, payload)
-    if isinstance(payload, bytes):
+    if not isinstance(payload, tuple):
         return payload
     buffer = bytearray(actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token)
     for copy in actions.copies:
@@ -1046,7 +1060,7 @@ def _document_kv_prompt_text_mode(request: object) -> str | None:
 
 
 def _payload_tensor_view(
-    payload: bytes | bytearray,
+    payload: _PayloadBuffer,
     load: DocumentKVLoadRequest,
 ) -> _PayloadTensorView:
     torch = _torch()
@@ -1071,18 +1085,16 @@ def _payload_tensor_view(
     )
 
 
-def _torch_from_payload_buffer(torch: object, payload: bytes | bytearray, *, dtype: object, count: int) -> object:
+def _torch_from_payload_buffer(torch: object, payload: _PayloadBuffer, *, dtype: object, count: int) -> object:
     """Create a read-only source tensor; injection only copies from it."""
 
-    if isinstance(payload, bytes):
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="The given buffer is not writable.*",
-                category=UserWarning,
-            )
-            return torch.frombuffer(payload, dtype=dtype, count=count)
-    return torch.frombuffer(payload, dtype=dtype, count=count)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The given buffer is not writable.*",
+            category=UserWarning,
+        )
+        return torch.frombuffer(payload, dtype=dtype, count=count)
 
 
 def _payload_layer_tensor(
