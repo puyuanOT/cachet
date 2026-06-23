@@ -450,6 +450,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --actions-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/qwen3-v1-fixture.actions.json \
   --vllm-runtime-preflight-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-runtime-preflight.json \
   --vllm-runtime-preflight-layer-names-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json \
+  --native-probe-factories-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-native-probe-factories.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output databricks-runs/engine-probe-vllm/run_engine_probe.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
@@ -459,7 +460,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
 ```
 
 Release-safe single-backend engine-probe jobs derive backend-specific task keys
-(`document_kv_vllm_engine_probe` or `document_kv_sglang_engine_probe`) when
+(`document_kv_engine_probe_vllm` or `document_kv_engine_probe_sglang`) when
 `--task-key` is omitted, so split vLLM/SGLang Databricks status sidecars remain
 strict-bundle-ready without manual task-key overrides.
 
@@ -469,12 +470,14 @@ for the built-in vLLM path. It sets the Cachet vLLM probe factory, the
 provider-backed connector metadata, `--expected-backend vllm`, and Cachet's
 pinned vLLM serving dependency profile. The fixture option writes deterministic
 Qwen3 handoff/payload/action artifacts on the target node before the native
-probe runs. In release-safe mode, the preset also requires a vLLM runtime
-preflight output path and a layer-name JSON source from the runtime registration
-check; the Databricks runner writes that strict preflight record before starting
-the native probe and stops if validation fails. The preset rejects debug
-fallback flags and extra wheels so the provider-backed adapter modules come only
-from the Cachet wheel. When runtime packages or wheels are present, the
+probe runs. In release-safe mode, the preset also requires
+`--native-probe-factories-output-json` plus a vLLM runtime preflight output path
+and a layer-name JSON source from the runtime registration check; the
+Databricks runner writes the native-factory diagnostics from inside the
+installed engine runtime after preflight succeeds and before starting the native
+probe. The preset rejects debug fallback flags and extra wheels so the
+provider-backed adapter modules come only from the Cachet wheel. When runtime
+packages or wheels are present, the
 generated runner installs them into a local driver venv
 (`/local_disk0/cachet/engine-probe-venv` by default) and re-execs the probe
 inside that venv so Databricks ML image packages do not leak into the serving
@@ -486,7 +489,7 @@ SGLang probe factory, the
 `sglang_kv_injection.probe:build_native_connector_probe` delegate, the
 provider-backed connector metadata, `--expected-backend sglang`, and the pinned
 SGLang serving dependency profile. In release-safe mode, the preset requires
-both SGLang runtime preflight sidecars:
+`--native-probe-factories-output-json` and both SGLang runtime preflight sidecars:
 `--sglang-runtime-preflight-output-json` and
 `--sglang-runtime-preflight-launch-config-json`.
 
@@ -506,6 +509,7 @@ the same AWS g6/L4 policy:
       "payload_uri": "/Volumes/catalog/schema/volume/probes/vllm-payload.kv",
       "vllm_runtime_preflight_output_json": "/Volumes/catalog/schema/volume/probes/vllm-runtime-preflight.json",
       "vllm_runtime_preflight_layer_names_json": "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json",
+      "native_probe_factories_output_json": "/Volumes/catalog/schema/volume/probes/vllm-native-probe-factories.json",
       "native_probe_delegate_factory": "vllm_kv_injection.probe:build_native_connector_probe",
       "metadata": [
         "vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector"
@@ -533,6 +537,7 @@ the same AWS g6/L4 policy:
       ],
       "sglang_runtime_preflight_output_json": "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json",
       "sglang_runtime_preflight_launch_config_json": "/Volumes/catalog/schema/volume/probes/sglang-launch-config.json",
+      "native_probe_factories_output_json": "/Volumes/catalog/schema/volume/probes/sglang-native-probe-factories.json",
       "pip_packages": ["sglang==0.5.10.post1"]
     }
   ]
@@ -561,9 +566,11 @@ python -m document_kv_cache.databricks_engine_probe_job \
 ```
 
 In `--release-safe` matrix mode, the submit payload must contain exactly one
-native vLLM task and one native SGLang task. Debug fallbacks such as
-`engine_version` overrides or `allow_non_native_probe` are rejected before the
-Databricks job is written.
+native vLLM task and one native SGLang task, and each target must carry
+`native_probe_factories_output_json` so the runner records
+`document_kv.native_probe_factories.v1` diagnostics inside that backend's
+isolated runtime. Debug fallbacks such as `engine_version` overrides or
+`allow_non_native_probe` are rejected before the Databricks job is written.
 Add `--serial-tasks` when GPU capacity or cost constraints favor requesting
 only one backend probe cluster at a time; the generated matrix payload adds
 Databricks task dependencies so each backend runs after the previous task.
@@ -919,9 +926,11 @@ python -m document_kv_cache.benchmark_plan \
   --engine-probe-handoff-json vllm=/data/vllm-handoff.json \
   --engine-probe-output-json vllm=/data/vllm-engine-probe.json \
   --engine-probe-actions-output-json vllm=/data/vllm-connector-actions.json \
+  --engine-probe-native-probe-factories-output-json vllm=/data/vllm-native-probe-factories.json \
   --engine-probe-handoff-json sglang=/data/sglang-handoff.json \
   --engine-probe-output-json sglang=/data/sglang-engine-probe.json \
   --engine-probe-actions-output-json sglang=/data/sglang-connector-actions.json \
+  --engine-probe-native-probe-factories-output-json sglang=/data/sglang-native-probe-factories.json \
   --engine-probe-use-builtin-factories \
   --release-evidence-output-json /data/release-evidence.json \
   --release-preflight-output-json /data/release-inputs.json \
@@ -1007,6 +1016,10 @@ Add `--native-probe-factories-output-json` to the benchmark plan to emit the
 matching `document_kv.native_probe_factories.v1` diagnostics sidecar; when
 release-bundle assembly is also enabled, the generated sidecar is included in
 the bundle automatically.
+For Databricks engine-probe target JSON, use
+`--engine-probe-native-probe-factories-output-json BACKEND=PATH` to make the
+managed probe runner emit the same diagnostics sidecar from inside each
+backend-specific isolated serving runtime.
 Add `--release-preflight-output-json` to the benchmark plan to emit the
 matching `document_kv.release_evidence_inputs.v1` sidecar before release
 validation; when release-bundle assembly is also enabled, the generated
@@ -1038,6 +1051,11 @@ one native vLLM probe and one native SGLang probe and rejects debug-only planned
 probe settings before writing the target file. Release-safe targets also carry
 each backend's `actions_output_json` path so the Databricks probe jobs write the
 sidecars required by release evidence.
+Release-safe targets must also carry each backend's
+`native_probe_factories_output_json`; generate it with
+`--engine-probe-native-probe-factories-output-json BACKEND=PATH` so split vLLM
+and SGLang probe tasks produce native-factory diagnostics from the runtime that
+actually imports that backend.
 Provider-backed vLLM Databricks targets must also carry
 `vllm_runtime_preflight_output_json` and
 `vllm_runtime_preflight_layer_names_json` so the runner validates the installed
@@ -1670,6 +1688,10 @@ reading or writing JSONL artifacts.
 Backend target JSON may include per-target `pip_packages`; use that for
 backend-specific runtime packages instead of installing every engine into every
 task.
+Release-safe backend target JSON must include per-target
+`native_probe_factories_output_json`; the runner writes that sidecar after any
+runtime preflight succeeds and before the native engine probe starts, and stops
+without running the probe if diagnostics fail.
 Provider-backed vLLM release targets must include
 `vllm_runtime_preflight_output_json` and
 `vllm_runtime_preflight_layer_names_json`; the Databricks runner executes the

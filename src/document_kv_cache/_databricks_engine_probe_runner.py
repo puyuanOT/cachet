@@ -43,6 +43,10 @@ def run_engine_probe_task(argv: Sequence[str] | None = None) -> int:
         preflight_exit_code = _run_sglang_runtime_preflight(runner_args)
         if preflight_exit_code:
             return preflight_exit_code
+    if runner_args.native_probe_factories_output_json is not None:
+        diagnostics_exit_code = _run_native_probe_factories_diagnostics(runner_args)
+        if diagnostics_exit_code:
+            return diagnostics_exit_code
     from document_kv_cache import engine_probe
 
     return engine_probe.main(engine_probe_argv)
@@ -61,6 +65,7 @@ def _split_fixture_runner_args(argv: Sequence[str]) -> tuple[argparse.Namespace,
     parser.add_argument("--vllm-runtime-preflight-layer-names-json")
     parser.add_argument("--sglang-runtime-preflight-output-json")
     parser.add_argument("--sglang-runtime-preflight-launch-config-json")
+    parser.add_argument("--native-probe-factories-output-json")
     fixture_args, engine_probe_argv = parser.parse_known_args(argv)
     if fixture_args.fixture_output_dir is not None and fixture_args.fixture_backend is None:
         raise ValueError("--fixture-backend is required when --fixture-output-dir is provided")
@@ -119,6 +124,17 @@ def _run_sglang_runtime_preflight(runner_args: argparse.Namespace) -> int:
             _cluster_preflight_file_argument(runner_args.sglang_runtime_preflight_launch_config_json),
             "--output-json",
             _cluster_preflight_file_argument(runner_args.sglang_runtime_preflight_output_json),
+        ]
+    )
+
+
+def _run_native_probe_factories_diagnostics(runner_args: argparse.Namespace) -> int:
+    from document_kv_cache import native_probe_factories
+
+    return native_probe_factories.main(
+        [
+            "--output-json",
+            _cluster_preflight_file_argument(runner_args.native_probe_factories_output_json),
         ]
     )
 

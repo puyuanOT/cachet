@@ -1330,6 +1330,8 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
     vllm_fixture_dir = tmp_path / "vllm-fixture"
     vllm_fixture_handoff_json = vllm_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
     vllm_layer_names_json = vllm_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["vllm_layer_names"]
+    vllm_native_factories_json = tmp_path / "vllm-native-probe-factories.json"
+    sglang_native_factories_json = tmp_path / "sglang-native-probe-factories.json"
     probes = (
         EngineProbePlanConfig(
             backend="vllm",
@@ -1342,6 +1344,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
             fixture_payload_mode="merged",
             vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
             vllm_runtime_preflight_layer_names_json=str(vllm_layer_names_json),
+            native_probe_factories_output_json=str(vllm_native_factories_json),
         ),
         EngineProbePlanConfig(
             backend="sglang",
@@ -1351,6 +1354,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
             actions_output_json=str(tmp_path / "sglang-actions.json"),
             sglang_runtime_preflight_output_json=str(tmp_path / "sglang-runtime-preflight.json"),
             sglang_runtime_preflight_launch_config_json=str(tmp_path / "sglang-launch-config.json"),
+            native_probe_factories_output_json=str(sglang_native_factories_json),
         ),
     )
     record = engine_probe_targets_to_record(probes, release_safe=True)
@@ -1372,6 +1376,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
                 "fixture_payload_mode": "merged",
                 "vllm_runtime_preflight_output_json": str(tmp_path / "vllm-runtime-preflight.json"),
                 "vllm_runtime_preflight_layer_names_json": str(vllm_layer_names_json),
+                "native_probe_factories_output_json": str(vllm_native_factories_json),
             },
             {
                 "allow_non_native_probe": False,
@@ -1383,6 +1388,7 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
                 "probe_factory": "sglang_probe:factory",
                 "sglang_runtime_preflight_output_json": str(tmp_path / "sglang-runtime-preflight.json"),
                 "sglang_runtime_preflight_launch_config_json": str(tmp_path / "sglang-launch-config.json"),
+                "native_probe_factories_output_json": str(sglang_native_factories_json),
             },
         ],
     }
@@ -1410,8 +1416,10 @@ def test_engine_probe_targets_record_can_feed_databricks_matrix_helper(tmp_path)
     assert targets[0].fixture_payload_mode == "merged"
     assert targets[0].vllm_runtime_preflight_output_json == str(tmp_path / "vllm-runtime-preflight.json")
     assert targets[0].vllm_runtime_preflight_layer_names_json == str(vllm_layer_names_json)
+    assert targets[0].native_probe_factories_output_json == str(vllm_native_factories_json)
     assert targets[1].sglang_runtime_preflight_output_json == str(tmp_path / "sglang-runtime-preflight.json")
     assert targets[1].sglang_runtime_preflight_launch_config_json == str(tmp_path / "sglang-launch-config.json")
+    assert targets[1].native_probe_factories_output_json == str(sglang_native_factories_json)
 
 
 def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_probes(tmp_path):
@@ -1449,6 +1457,29 @@ def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_p
         )
 
 
+def test_engine_probe_targets_release_safe_requires_native_probe_factories_outputs(tmp_path):
+    with pytest.raises(ValueError, match="native_probe_factories_output_json.*sglang.*vllm"):
+        engine_probe_targets_to_record(
+            (
+                EngineProbePlanConfig(
+                    backend="vllm",
+                    handoff_json=str(tmp_path / "vllm-handoff.json"),
+                    probe_factory="vllm_probe:factory",
+                    output_json=str(tmp_path / "vllm-probe.json"),
+                    actions_output_json=str(tmp_path / "vllm-actions.json"),
+                ),
+                EngineProbePlanConfig(
+                    backend="sglang",
+                    handoff_json=str(tmp_path / "sglang-handoff.json"),
+                    probe_factory="sglang_probe:factory",
+                    output_json=str(tmp_path / "sglang-probe.json"),
+                    actions_output_json=str(tmp_path / "sglang-actions.json"),
+                ),
+            ),
+            release_safe=True,
+        )
+
+
 def test_engine_probe_targets_release_safe_requires_provider_backed_vllm_preflight(tmp_path):
     with pytest.raises(ValueError, match="provider-backed vLLM.*vllm_runtime_preflight_output_json"):
         engine_probe_targets_to_record(
@@ -1461,6 +1492,7 @@ def test_engine_probe_targets_release_safe_requires_provider_backed_vllm_preflig
                     actions_output_json=str(tmp_path / "vllm-actions.json"),
                     native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
                     metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+                    native_probe_factories_output_json=str(tmp_path / "vllm-native-probe-factories.json"),
                 ),
                 EngineProbePlanConfig(
                     backend="sglang",
@@ -1468,6 +1500,7 @@ def test_engine_probe_targets_release_safe_requires_provider_backed_vllm_preflig
                     probe_factory=SGLANG_NATIVE_PROBE_FACTORY,
                     output_json=str(tmp_path / "sglang-probe.json"),
                     actions_output_json=str(tmp_path / "sglang-actions.json"),
+                    native_probe_factories_output_json=str(tmp_path / "sglang-native-probe-factories.json"),
                 ),
             ),
             release_safe=True,
@@ -1537,6 +1570,7 @@ def test_engine_probe_targets_release_safe_accepts_sglang_known_delegate_connect
                 actions_output_json=str(tmp_path / "vllm-actions.json"),
                 vllm_runtime_preflight_output_json=str(tmp_path / "vllm-runtime-preflight.json"),
                 vllm_runtime_preflight_layer_names_json=str(tmp_path / "vllm-layer-names.json"),
+                native_probe_factories_output_json=str(tmp_path / "vllm-native-probe-factories.json"),
             ),
             EngineProbePlanConfig(
                 backend="sglang",
@@ -1548,6 +1582,7 @@ def test_engine_probe_targets_release_safe_accepts_sglang_known_delegate_connect
                 metadata=(SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
                 sglang_runtime_preflight_output_json=str(tmp_path / "sglang-runtime-preflight.json"),
                 sglang_runtime_preflight_launch_config_json=str(tmp_path / "sglang-launch-config.json"),
+                native_probe_factories_output_json=str(tmp_path / "sglang-native-probe-factories.json"),
             ),
         ),
         release_safe=True,
@@ -2984,6 +3019,8 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             f"vllm={tmp_path / 'vllm-probe.json'}",
             "--engine-probe-actions-output-json",
             f"vllm={tmp_path / 'vllm-actions.json'}",
+            "--engine-probe-native-probe-factories-output-json",
+            f"vllm={tmp_path / 'vllm-native-probe-factories.json'}",
             "--engine-probe-native-delegate-factory",
             "vllm=document_kv_vllm_native_adapter:build_probe",
             "--engine-probe-payload-uri",
@@ -3002,6 +3039,8 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
             f"sglang={tmp_path / 'sglang-probe.json'}",
             "--engine-probe-actions-output-json",
             f"sglang={tmp_path / 'sglang-actions.json'}",
+            "--engine-probe-native-probe-factories-output-json",
+            f"sglang={tmp_path / 'sglang-native-probe-factories.json'}",
             "--engine-probe-sglang-runtime-preflight-output-json",
             f"sglang={tmp_path / 'sglang-runtime-preflight.json'}",
             "--engine-probe-sglang-runtime-preflight-launch-config-json",
@@ -3045,6 +3084,9 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     assert record["planned_engine_probes"][0]["sglang_runtime_preflight_launch_config_json"] == (
         str(tmp_path / "sglang-launch-config.json")
     )
+    assert record["planned_engine_probes"][0]["native_probe_factories_output_json"] == (
+        str(tmp_path / "sglang-native-probe-factories.json")
+    )
     assert record["planned_engine_probes"][1]["metadata"] == ["probe.source=cli"]
     assert record["planned_engine_probes"][1]["native_probe_delegate_factory"] == (
         "document_kv_vllm_native_adapter:build_probe"
@@ -3054,6 +3096,9 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     )
     assert record["planned_engine_probes"][1]["vllm_runtime_preflight_layer_names_json"] == (
         str(tmp_path / "vllm-layer-names.json")
+    )
+    assert record["planned_engine_probes"][1]["native_probe_factories_output_json"] == (
+        str(tmp_path / "vllm-native-probe-factories.json")
     )
     assert vllm_argv[vllm_argv.index("--expected-backend") + 1] == "vllm"
     assert vllm_argv[vllm_argv.index("--payload-uri") + 1] == f"disk:{tmp_path / 'vllm.kv'}"
@@ -3081,11 +3126,17 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     assert targets_record["probes"][1]["vllm_runtime_preflight_layer_names_json"] == (
         str(tmp_path / "vllm-layer-names.json")
     )
+    assert targets_record["probes"][1]["native_probe_factories_output_json"] == (
+        str(tmp_path / "vllm-native-probe-factories.json")
+    )
     assert targets_record["probes"][0]["sglang_runtime_preflight_output_json"] == (
         str(tmp_path / "sglang-runtime-preflight.json")
     )
     assert targets_record["probes"][0]["sglang_runtime_preflight_launch_config_json"] == (
         str(tmp_path / "sglang-launch-config.json")
+    )
+    assert targets_record["probes"][0]["native_probe_factories_output_json"] == (
+        str(tmp_path / "sglang-native-probe-factories.json")
     )
     databricks_targets = read_databricks_engine_probe_targets_json(targets_json)
     assert databricks_targets[0].sglang_runtime_preflight_output_json == str(
@@ -3094,6 +3145,9 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     assert databricks_targets[0].sglang_runtime_preflight_launch_config_json == str(
         tmp_path / "sglang-launch-config.json"
     )
+    assert databricks_targets[0].native_probe_factories_output_json == str(
+        tmp_path / "sglang-native-probe-factories.json"
+    )
     assert databricks_targets[1].metadata == ("probe.source=cli",)
     assert databricks_targets[1].native_probe_delegate_factory == "document_kv_vllm_native_adapter:build_probe"
     assert databricks_targets[1].vllm_runtime_preflight_output_json == str(
@@ -3101,6 +3155,9 @@ def test_main_can_include_planned_engine_probes_and_release_evidence_validation(
     )
     assert databricks_targets[1].vllm_runtime_preflight_layer_names_json == str(
         tmp_path / "vllm-layer-names.json"
+    )
+    assert databricks_targets[1].native_probe_factories_output_json == str(
+        tmp_path / "vllm-native-probe-factories.json"
     )
 
 
@@ -3244,12 +3301,16 @@ def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_pat
             f"vllm={tmp_path / 'vllm-probe.json'}",
             "--engine-probe-actions-output-json",
             f"vllm={tmp_path / 'vllm-actions.json'}",
+            "--engine-probe-native-probe-factories-output-json",
+            f"vllm={tmp_path / 'vllm-native-probe-factories.json'}",
             "--engine-probe-handoff-json",
             f"sglang={tmp_path / 'sglang-handoff.json'}",
             "--engine-probe-output-json",
             f"sglang={tmp_path / 'sglang-probe.json'}",
             "--engine-probe-actions-output-json",
             f"sglang={tmp_path / 'sglang-actions.json'}",
+            "--engine-probe-native-probe-factories-output-json",
+            f"sglang={tmp_path / 'sglang-native-probe-factories.json'}",
             "--engine-probe-sglang-runtime-preflight-output-json",
             f"sglang={tmp_path / 'sglang-runtime-preflight.json'}",
             "--engine-probe-sglang-runtime-preflight-launch-config-json",
@@ -3276,11 +3337,18 @@ def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_pat
     }
     assert targets_record["release_safe"] is True
     sglang_target = next(probe for probe in targets_record["probes"] if probe["backend"] == "sglang")
+    vllm_target = next(probe for probe in targets_record["probes"] if probe["backend"] == "vllm")
     assert sglang_target["sglang_runtime_preflight_output_json"] == str(
         tmp_path / "sglang-runtime-preflight.json"
     )
     assert sglang_target["sglang_runtime_preflight_launch_config_json"] == str(
         tmp_path / "sglang-launch-config.json"
+    )
+    assert sglang_target["native_probe_factories_output_json"] == str(
+        tmp_path / "sglang-native-probe-factories.json"
+    )
+    assert vllm_target["native_probe_factories_output_json"] == str(
+        tmp_path / "vllm-native-probe-factories.json"
     )
     assert {probe["probe_factory"] for probe in targets_record["probes"]} == {
         SGLANG_NATIVE_PROBE_FACTORY,
