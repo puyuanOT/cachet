@@ -1784,21 +1784,24 @@ type annotations after installation.
 - Keep the complete strict release bundle refreshed from the target AWS
   g6/L4/UC evidence set. The benchmark, storage-reader, and vLLM/SGLang native
   engine-probe Databricks runs have succeeded, and release evidence over the
-  benchmark, storage, connector action descriptors, and native engine block
-  managers is green. The native engine block managers remain owned by vLLM and
-  SGLang rather than Cachet. The current g5-enriched strict bundle validates with 22
-  artifacts: release evidence sidecar, preflight sidecar, vLLM/SGLang native
-  engine probe sidecars, vLLM/SGLang connector action sidecars, vLLM/SGLang
-  engine launch config sidecars, benchmark plan execution sidecar, Databricks
-  run-status sidecars for benchmark, storage, and vLLM/SGLang engine-probe
-  runs, tested package wheel, PR evidence sidecar, V1 requirements matrix,
-  GitHub governance sidecar, repository hygiene sidecar, native probe factory
-  diagnostics sidecar entries from both runtime environments, and the current
-  `aws-g5-a10g` benchmark carried through the `compatibility_benchmark` role.
+  benchmark, storage, connector action descriptors, and native engine block managers
+  is green for the current `cachet-kv` wheel. The native engine block managers
+  remain owned by vLLM and SGLang rather than Cachet. The previous
+  g5-enriched strict bundle validates with 22 artifacts, and the next complete
+  bundle refresh should swap in the current g6/g5 benchmark status sidecars plus
+  this PR's evidence sidecar. The required artifact set remains: release
+  evidence sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
+  vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
+  sidecars, benchmark plan execution sidecar, Databricks run-status
+  sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs, tested
+  package wheel, PR evidence sidecar, V1 requirements matrix, GitHub governance
+  sidecar, repository hygiene sidecar, native probe factory diagnostics sidecar
+  entries from both runtime environments, and the current `aws-g5-a10g`
+  benchmark carried through the `compatibility_benchmark` role.
 - Keep the current AWS g5/A10G compatibility benchmark evidence with the
-  release handoff: QA Databricks run `315109189523858` on `g5.8xlarge`
+  release handoff: QA Databricks run `566743786103032` on `g5.8xlarge`
   completed Biography, HotpotQA, MusiQue, and NIAH with no benchmark errors,
-  current `v1_evidence.ok=true`, TTFT speedups of 4.55x-6.07x, and release
+  current `v1_evidence.ok=true`, TTFT speedups of 4.66x-6.04x, and release
   evidence `ok=true` when validated with the current storage and native
   vLLM/SGLang probe/action artifacts. Carry it in release handoffs with
   `--compatibility-benchmark-json`; this compatibility evidence does not change
