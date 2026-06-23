@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -8,6 +9,7 @@ import tomllib
 
 import pytest
 
+from document_kv_cache.databricks_runs import databricks_run_status_sidecar_issues
 from document_kv_cache.release_bundle import STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
 
 
@@ -985,6 +987,33 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`pr-evidence/` tree" in compact_project_readme
     assert "Raw local run directories stay under ignored `databricks-runs/`" in databricks_readme
 
+    expected_files = {
+        "README.md",
+        "databricks/README.md",
+        "databricks/2026-06-21-g6-l4-storage-readers/README.md",
+        "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
+        "databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
+        "databricks/2026-06-23-g5-a10g-v1-compatibility/README.md",
+        "databricks/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json",
+        "databricks/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/README.md",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
+        "databricks/2026-06-23-g6-l4-v1/README.md",
+        "databricks/2026-06-23-g6-l4-v1/databricks_run_status.json",
+        "databricks/2026-06-23-g6-l4-v1/release_evidence.json",
+        "databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
+    }
+    actual_files = {
+        path.relative_to(benchmark_root).as_posix()
+        for path in benchmark_root.rglob("*")
+        if path.is_file()
+    }
+    assert actual_files == expected_files
+
     expected_folders = {
         "2026-06-23-g6-l4-v1": {
             "run_id": 872615985402004,
@@ -1030,6 +1059,11 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         assert summary["active_task_key"] is None
         assert summary["submit_payload"]["hardware_targets"] == [expected["hardware_target"]]
         assert summary["submit_payload"]["node_type_ids"] == [expected["node_type"]]
+        assert databricks_run_status_sidecar_issues(
+            status,
+            expected_hardware_target=expected["hardware_target"],
+            expected_node_type_id=expected["node_type"],
+        ) == ()
 
     g6_benchmark = json.loads(
         (databricks_root / "2026-06-23-g6-l4-v1" / "v1_benchmark.json").read_text(encoding="utf-8")
@@ -1054,6 +1088,22 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert g6_release_evidence["v1_benchmark_ok"] is True
     assert g6_release_evidence["storage_benchmark_ok"] is True
     assert set(g6_release_evidence["engine_probe_backends"]) == {"sglang", "vllm"}
+    artifact_sources = g6_release_evidence["artifact_sources"]
+    artifact_source_paths = {source["path"] for source in artifact_sources}
+    assert not any(path.startswith("databricks-runs/") for path in artifact_source_paths)
+    assert artifact_source_paths == {
+        "benchmarks/databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
+    }
+    for source in artifact_sources:
+        artifact_path = REPO_ROOT / source["path"]
+        artifact_bytes = artifact_path.read_bytes()
+        assert source["size_bytes"] == len(artifact_bytes)
+        assert source["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
 
     g5_benchmark = json.loads(
         (
