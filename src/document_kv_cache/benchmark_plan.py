@@ -2456,7 +2456,11 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
             allow_non_native_probe=backend in non_native_backends,
             metadata=tuple(metadata.get(backend, ())),
             fixture_output_dir=fixture_output_dirs.get(backend),
-            fixture_payload_mode=fixture_payload_modes.get(backend, PayloadMode.SEGMENTED),
+            fixture_payload_mode=_engine_probe_fixture_payload_mode_from_cli(
+                backend,
+                factories=factories,
+                fixture_payload_modes=fixture_payload_modes,
+            ),
             vllm_runtime_preflight_output_json=vllm_runtime_preflight_output_jsons.get(backend),
             vllm_runtime_preflight_layer_names_json=vllm_runtime_preflight_layer_names_jsons.get(backend),
             sglang_runtime_preflight_output_json=sglang_runtime_preflight_output_jsons.get(backend),
@@ -2465,6 +2469,19 @@ def _engine_probe_configs_from_cli(args: argparse.Namespace) -> tuple[EngineProb
         )
         for backend in sorted(backends)
     )
+
+
+def _engine_probe_fixture_payload_mode_from_cli(
+    backend: str,
+    *,
+    factories: Mapping[str, str],
+    fixture_payload_modes: Mapping[str, str],
+) -> PayloadMode | str:
+    if backend in fixture_payload_modes:
+        return fixture_payload_modes[backend]
+    if factories.get(backend) == builtin_native_probe_factory_path(backend):
+        return _native_probe_adapter_payload_mode()
+    return PayloadMode.SEGMENTED
 
 
 def _engine_probe_handoff_jsons_with_fixtures(
