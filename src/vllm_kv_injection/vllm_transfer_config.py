@@ -21,6 +21,7 @@ from vllm_kv_injection.vllm_dynamic_connector import (
 from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
 )
 
 DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE = "vllm_kv_injection.document_kv_transfer_config.v1"
@@ -36,6 +37,7 @@ __all__ = [
     "DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE",
     "DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION",
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY",
+    "DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY",
     "document_kv_transfer_config",
     "document_kv_transfer_config_json",
     "main",
@@ -50,6 +52,7 @@ def document_kv_transfer_config(
     extra_config: Mapping[str, Any] | None = None,
     provider_factory: str | None = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     handoff_source_factory: str | None = None,
+    payload_cache_max_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Return a vLLM ``KVTransferConfig``-shaped dictionary.
 
@@ -70,6 +73,7 @@ def document_kv_transfer_config(
             extra_config,
             provider_factory=provider_factory,
             handoff_source_factory=handoff_source_factory,
+            payload_cache_max_bytes=payload_cache_max_bytes,
         ),
     }
     _validate_json_serializable(config, field_name="vLLM KV transfer config")
@@ -84,6 +88,7 @@ def document_kv_transfer_config_json(
     extra_config: Mapping[str, Any] | None = None,
     provider_factory: str | None = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     handoff_source_factory: str | None = None,
+    payload_cache_max_bytes: int | None = None,
 ) -> str:
     """Return compact JSON for passing to vLLM CLI launch paths."""
 
@@ -95,6 +100,7 @@ def document_kv_transfer_config_json(
             extra_config=extra_config,
             provider_factory=provider_factory,
             handoff_source_factory=handoff_source_factory,
+            payload_cache_max_bytes=payload_cache_max_bytes,
         ),
         separators=(",", ":"),
         sort_keys=True,
@@ -124,6 +130,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Optional module:attribute factory for a custom document KV handoff source.",
     )
     parser.add_argument(
+        "--payload-cache-max-bytes",
+        type=int,
+        help=(
+            "Optional positive byte budget for the built-in vLLM provider's in-process "
+            "payload URI cache. Omit or pass 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--extra-config",
         action="append",
         default=[],
@@ -140,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
             extra_config=_extra_config_from_cli(args.extra_config),
             provider_factory=args.provider_factory,
             handoff_source_factory=args.handoff_source_factory,
+            payload_cache_max_bytes=args.payload_cache_max_bytes,
         )
         payload = json.dumps(config, indent=2, sort_keys=True) + "\n"
         if args.output_json:
@@ -159,6 +174,7 @@ def _document_kv_extra_config(
     *,
     provider_factory: str | None,
     handoff_source_factory: str | None,
+    payload_cache_max_bytes: int | None,
 ) -> dict[str, Any]:
     spec = vllm_adapter_spec()
     merged: dict[str, Any] = {}
@@ -172,6 +188,11 @@ def _document_kv_extra_config(
     if handoff_source_factory is not None:
         _validate_module_attribute(handoff_source_factory, field_name="handoff_source_factory")
         merged[DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY] = handoff_source_factory
+    if payload_cache_max_bytes is not None:
+        merged[DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] = _non_negative_int(
+            payload_cache_max_bytes,
+            field_name="payload_cache_max_bytes",
+        )
     merged.update(
         {
             "document_kv.record_type": DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,
@@ -192,6 +213,14 @@ def _validate_extra_config_key(key: str) -> None:
     _validate_non_empty_string(key, field_name="extra_config key")
     if key.startswith(DOCUMENT_KV_TRANSFER_CONFIG_PREFIX):
         raise ValueError(f"extra_config keys starting with {DOCUMENT_KV_TRANSFER_CONFIG_PREFIX!r} are reserved")
+
+
+def _non_negative_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
 
 
 def _extra_config_from_cli(values: list[str]) -> dict[str, Any]:

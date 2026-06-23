@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 import math
@@ -12,6 +13,7 @@ from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+from document_kv_cache.cache import ByteLRU
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
@@ -36,6 +38,7 @@ from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
@@ -58,6 +61,7 @@ __all__ = [
     "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
     "DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY",
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY",
+    "DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "DOCUMENT_KV_REQUEST_ID_PARAM",
@@ -171,6 +175,54 @@ _LoadIdentity = tuple[str, int, int, tuple[tuple[int, int, int, int], ...]]
 
 
 @dataclass(frozen=True, slots=True)
+class _PayloadCacheRead:
+    payload: bytes
+    hit: bool
+
+
+class _PayloadReader(Protocol):
+    def __call__(
+        self,
+        payload_uri: str,
+        *,
+        expected_bytes: int,
+        actions: EngineKVConnectorActions,
+    ) -> bytes: ...
+
+
+class _PayloadCache:
+    def __init__(self, *, max_bytes: int) -> None:
+        self._max_bytes = max_bytes
+        self._lru = ByteLRU(max_bytes)
+
+    def read(
+        self,
+        payload_uri: str,
+        *,
+        expected_bytes: int,
+        cache_identity: str,
+    ) -> _PayloadCacheRead:
+        key = self._cache_key(
+            payload_uri,
+            expected_bytes=expected_bytes,
+            cache_identity=cache_identity,
+        )
+        cached = self._lru.get(key)
+        if cached is not None:
+            return _PayloadCacheRead(payload=cached, hit=True)
+        payload = read_engine_adapter_payload(payload_uri, expected_bytes=expected_bytes)
+        self._lru.put(key, payload)
+        return _PayloadCacheRead(payload=payload, hit=False)
+
+    def reset(self) -> None:
+        self._lru = ByteLRU(self._max_bytes)
+
+    @staticmethod
+    def _cache_key(payload_uri: str, *, expected_bytes: int, cache_identity: str) -> str:
+        return f"{payload_uri}\n{expected_bytes}\n{cache_identity}"
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentKVConnectorMetadata(_KVConnectorMetadata):
     """Scheduler-to-worker metadata consumed by :class:`DocumentKVNativeProvider`."""
 
@@ -249,9 +301,17 @@ class DocumentKVNativeProvider:
         *,
         source: DocumentKVHandoffSource | None = None,
         provider_factory: str = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+        payload_cache_max_bytes: int = 0,
     ) -> None:
+        payload_cache_max_bytes = _non_negative_int(
+            payload_cache_max_bytes,
+            field_name="payload_cache_max_bytes",
+        )
         self.source = source or KVTransferParamsDocumentKVSource()
         self.provider_factory = _provider_factory_path(provider_factory)
+        self._payload_cache = (
+            None if payload_cache_max_bytes == 0 else _PayloadCache(max_bytes=payload_cache_max_bytes)
+        )
         self._loads: dict[str, DocumentKVHandoffLoad] = {}
         self._allocated: dict[str, DocumentKVLoadRequest] = {}
         self._active_external_request_ids: set[str] = set()
@@ -269,6 +329,8 @@ class DocumentKVNativeProvider:
         self._stats_payload_merge_ns = 0
         self._stats_payload_view_ns = 0
         self._stats_layer_load_ns = 0
+        self._stats_payload_cache_hits = 0
+        self._stats_payload_cache_misses = 0
 
     def get_num_new_matched_tokens(
         self,
@@ -440,6 +502,8 @@ class DocumentKVNativeProvider:
             and self._stats_payload_merge_ns == 0
             and self._stats_payload_view_ns == 0
             and self._stats_layer_load_ns == 0
+            and self._stats_payload_cache_hits == 0
+            and self._stats_payload_cache_misses == 0
         ):
             return None
         stats = DocumentKVConnectorStats.from_mapping(
@@ -451,6 +515,8 @@ class DocumentKVNativeProvider:
                 "document_kv_payload_merge_ns": self._stats_payload_merge_ns,
                 "document_kv_payload_view_ns": self._stats_payload_view_ns,
                 "document_kv_layer_load_ns": self._stats_layer_load_ns,
+                "document_kv_payload_cache_hits": self._stats_payload_cache_hits,
+                "document_kv_payload_cache_misses": self._stats_payload_cache_misses,
             }
         )
         self._stats_loads_started = 0
@@ -460,6 +526,8 @@ class DocumentKVNativeProvider:
         self._stats_payload_merge_ns = 0
         self._stats_payload_view_ns = 0
         self._stats_layer_load_ns = 0
+        self._stats_payload_cache_hits = 0
+        self._stats_payload_cache_misses = 0
         return stats
 
     def vllm_layer_mapping_record(self) -> dict[str, Any]:
@@ -496,7 +564,7 @@ class DocumentKVNativeProvider:
         try:
             started_ns = time.perf_counter_ns()
             try:
-                payload = _materialized_payload(load)
+                payload = _materialized_payload(load, payload_reader=self._read_payload)
             finally:
                 self._stats_payload_materialize_ns += time.perf_counter_ns() - started_ns
 
@@ -547,6 +615,32 @@ class DocumentKVNativeProvider:
             self._load_errors.update(error_block_ids)
             self._stats_load_error_blocks += len(error_block_ids)
             raise
+
+    def _read_payload(
+        self,
+        payload_uri: str,
+        *,
+        expected_bytes: int,
+        actions: EngineKVConnectorActions,
+    ) -> bytes:
+        if self._payload_cache is None:
+            return read_engine_adapter_payload(payload_uri, expected_bytes=expected_bytes)
+        result = self._payload_cache.read(
+            payload_uri,
+            expected_bytes=expected_bytes,
+            cache_identity=_payload_cache_identity(actions),
+        )
+        if result.hit:
+            self._stats_payload_cache_hits += 1
+        else:
+            self._stats_payload_cache_misses += 1
+        return result.payload
+
+    def reset_cache(self) -> bool | None:
+        if self._payload_cache is None:
+            return None
+        self._payload_cache.reset()
+        return True
 
     def _release_request(self, request_id: str) -> None:
         self._loads.pop(request_id, None)
@@ -715,13 +809,19 @@ def build_document_kv_provider(*, vllm_config: object | None, extra_config: Mapp
 
     del vllm_config
     source_factory = extra_config.get(DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY)
+    payload_cache_max_bytes = _payload_cache_max_bytes_from_config(extra_config)
     if source_factory is None:
-        return DocumentKVNativeProvider()
+        return DocumentKVNativeProvider(payload_cache_max_bytes=payload_cache_max_bytes)
     if not isinstance(source_factory, str) or not source_factory.strip():
         raise ValueError(f"{DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY} must be a non-empty module:attribute string")
     source = _load_source_factory(source_factory)()
     _validate_source(source)
-    return DocumentKVNativeProvider(source=source)
+    return DocumentKVNativeProvider(source=source, payload_cache_max_bytes=payload_cache_max_bytes)
+
+
+def _payload_cache_max_bytes_from_config(extra_config: Mapping[str, Any]) -> int:
+    value = extra_config.get(DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY, 0)
+    return _non_negative_int(value, field_name=DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY)
 
 
 def _load_source_factory(factory_path: str) -> object:
@@ -740,6 +840,14 @@ def _provider_factory_path(factory_path: str) -> str:
     module_name, separator, attribute_name = value.partition(":")
     if not separator or not module_name or not attribute_name:
         raise ValueError("provider_factory must use module:attribute syntax")
+    return value
+
+
+def _non_negative_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be a non-negative integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
     return value
 
 
@@ -895,14 +1003,76 @@ def _connector_actions_from_plan(plan: EngineKVInjectionPlan) -> EngineKVConnect
     return actions
 
 
-def _materialized_payload(load: DocumentKVLoadRequest) -> bytes | tuple[bytes, ...]:
+def _materialized_payload(
+    load: DocumentKVLoadRequest,
+    *,
+    payload_reader: _PayloadReader,
+) -> bytes | tuple[bytes, ...]:
     if load.payload is not None:
         return load.payload
     payload_uri = _required_string(load.payload_uri, field_name="payload_uri")
-    payload = read_engine_adapter_payload(payload_uri, expected_bytes=_expected_payload_bytes(load.actions))
+    payload = payload_reader(
+        payload_uri,
+        expected_bytes=_expected_payload_bytes(load.actions),
+        actions=load.actions,
+    )
     if _payload_mode(load.actions) == PayloadMode.MERGED:
         return payload
     return _segmented_payload_from_materialized_payload(load.actions, payload)
+
+
+def _payload_cache_identity(actions: EngineKVConnectorActions) -> str:
+    layout = actions.reservation.layout
+    copies = []
+    for copy in actions.copies:
+        if not copy.content_hash:
+            raise ValueError("document KV payload cache requires non-empty content_hash on every copy action")
+        copies.append(
+            {
+                "document_id": copy.document_id,
+                "chunk_type": copy.chunk_type,
+                "chunk_id": copy.chunk_id,
+                "payload_index": copy.payload_index,
+                "source_byte_start": copy.source_byte_start,
+                "source_byte_length": copy.source_byte_length,
+                "source_byte_end": copy.source_byte_end,
+                "global_byte_start": copy.global_byte_start,
+                "global_byte_end": copy.global_byte_end,
+                "token_start": copy.token_start,
+                "token_count": copy.token_count,
+                "token_end": copy.token_end,
+                "first_block_index": copy.first_block_index,
+                "last_block_index_exclusive": copy.last_block_index_exclusive,
+                "content_hash": copy.content_hash,
+                "cache_tier": str(copy.cache_tier),
+            }
+        )
+    record = {
+        "schema": "vllm_kv_injection.payload_cache_identity.v1",
+        "backend": actions.reservation.backend.value,
+        "payload_mode": _payload_mode(actions).value,
+        "total_blocks": actions.reservation.total_blocks,
+        "total_tokens": actions.reservation.total_tokens,
+        "layout": {
+            "model_id": layout.model_id,
+            "lora_id": layout.lora_id,
+            "layout_version": layout.layout_version,
+            "dtype": layout.dtype,
+            "num_layers": layout.num_layers,
+            "block_size": layout.block_size,
+            "bytes_per_token": layout.bytes_per_token,
+            "num_query_heads": layout.num_query_heads,
+            "num_kv_heads": layout.num_kv_heads,
+            "head_size": layout.head_size,
+            "kv_stride_bytes": layout.kv_stride_bytes,
+            "shares_kv_storage": layout.shares_kv_storage,
+            "storage_layout": str(layout.storage_layout),
+        },
+        "adapter_ids": list(actions.reservation.adapter_ids),
+        "copies": copies,
+    }
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _expected_payload_bytes(actions: EngineKVConnectorActions) -> int:

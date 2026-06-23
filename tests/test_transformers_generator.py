@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 
 import pytest
@@ -198,6 +199,7 @@ def test_transformers_generator_emits_token_major_layer_major_payload():
     assert pack_chunk.layout_version == "tiny-v1"
     assert pack_chunk.storage_layout == KVStorageLayout.SEPARATE_KEY_VALUE
     assert pack_chunk.payload == tensor_bytes(expected)
+    assert pack_chunk.key.content_hash == hashlib.sha256(pack_chunk.payload).hexdigest()
     assert tokenizer.calls == [
         {
             "text": "alpha beta",

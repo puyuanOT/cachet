@@ -12,6 +12,7 @@ from vllm_kv_injection.vllm_transfer_config import (
     DOCUMENT_KV_CONNECTOR_MODULE_PATH,
     DOCUMENT_KV_DEFAULT_ROLE,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
     DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,
     DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION,
     document_kv_transfer_config,
@@ -64,6 +65,19 @@ def test_document_kv_transfer_config_accepts_custom_handoff_source_factory():
         extra["document_kv.handoff_source_factory"]
         == "company_vllm_patch.document_kv_source:build_source"
     )
+
+
+def test_document_kv_transfer_config_accepts_payload_cache_budget():
+    config = document_kv_transfer_config(payload_cache_max_bytes=4096)
+
+    extra = config["kv_connector_extra_config"]
+    assert extra[DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] == 4096
+
+
+@pytest.mark.parametrize("value", [-1, True, "4096"])
+def test_document_kv_transfer_config_rejects_invalid_payload_cache_budget(value):
+    with pytest.raises((TypeError, ValueError), match="payload_cache_max_bytes"):
+        document_kv_transfer_config(payload_cache_max_bytes=value)
 
 
 def test_document_kv_transfer_config_json_is_cli_ready():

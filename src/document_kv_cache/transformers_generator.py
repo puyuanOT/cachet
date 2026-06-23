@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -238,6 +239,7 @@ class TransformersKVChunkGenerator:
                 document_id=document.document_id,
                 chunk_type=chunk.chunk_type,
                 chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
             ),
             payload=payload,
             token_count=token_count,
