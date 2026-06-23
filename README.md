@@ -1769,9 +1769,9 @@ type annotations after installation.
   native probe factory diagnostics sidecar entries from both runtime
   environments.
 - Make GitHub governance release-ready, then rebuild the complete strict bundle
-  with the GitHub governance sidecar included. The repository must be public or
-  on a plan that supports required `main` branch protection, GitHub auto-merge
-  must report enabled, branch protection must apply to administrators, and the
+  with the GitHub governance sidecar included. The repository must be public,
+  required `main` branch protection must be configured, GitHub auto-merge must
+  report enabled, branch protection must apply to administrators, and the
   governance sidecar must have no issues.
 - Continue running connector action descriptors validation against native
   engine block managers in vLLM and SGLang whenever adapter contracts, runtime
