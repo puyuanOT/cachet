@@ -1747,8 +1747,11 @@ runtime in an isolated environment. The Databricks vLLM smoke helper creates
 one such isolated local-NVMe environment and pins `vllm==0.23.0`.
 `document_kv_cache.serving_env` records the exact helper profiles for vLLM and
 SGLang so future smoke/probe jobs share the same install boundary.
+The committed `poetry.lock` records the resolver output for the base package,
+Databricks extras, and test extras; CI validates it with `poetry check --lock`.
 
 ```bash
+poetry check --lock
 poetry install -E test
 poetry run pytest -q
 ```
