@@ -1,0 +1,77 @@
+{
+  "action": "get",
+  "ok": true,
+  "summary": {
+    "active_task_key": null,
+    "cluster_id": null,
+    "end_time": 1782057357328,
+    "life_cycle_state": "TERMINATED",
+    "record_type": "document_kv.databricks_run_status.v1",
+    "result_state": "SUCCESS",
+    "run_id": 948365719597221,
+    "run_name": "cachet-storage-benchmark-20260621_095026",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/608327512926668/run/948365719597221",
+    "start_time": 1782057030711,
+    "state_message": "",
+    "submit_payload": {
+      "aws_g5_node_type": true,
+      "aws_single_node_gpu_type": true,
+      "data_security_modes": [
+        "SINGLE_USER"
+      ],
+      "driver_node_type_ids": [
+        "g6.8xlarge"
+      ],
+      "hardware_targets": [
+        "aws-g6-l4"
+      ],
+      "node_type_ids": [
+        "g6.8xlarge"
+      ],
+      "record_type": "document_kv.databricks_run_submit_payload.v1",
+      "run_name": "cachet-storage-benchmark-20260621_095026",
+      "sha256": "21e836fc3697a841157d564f38aec8f08041fd98bca3011a36d9be8633b997d2",
+      "single_node": true,
+      "source_path": "databricks-runs/cachet_readiness_20260621_095026/storage-benchmark-runs-submit.json",
+      "spark_env_keys": [],
+      "spark_versions": [
+        "15.4.x-gpu-ml-scala2.12"
+      ],
+      "task_count": 1,
+      "task_keys": [
+        "document_kv_storage_benchmark"
+      ],
+      "tasks": [
+        {
+          "data_security_mode": "SINGLE_USER",
+          "driver_node_type_id": "g6.8xlarge",
+          "node_type_id": "g6.8xlarge",
+          "num_workers": 0,
+          "purpose": "document-kv-storage-benchmark",
+          "single_node": true,
+          "spark_env_keys": [],
+          "spark_version": "15.4.x-gpu-ml-scala2.12",
+          "task_key": "document_kv_storage_benchmark"
+        }
+      ]
+    },
+    "succeeded": true,
+    "task_count": 1,
+    "tasks": [
+      {
+        "cluster_id": "0621-155031-dvwynjf6",
+        "driver_node_type_id": "g6.8xlarge",
+        "end_time": 1782057356987,
+        "life_cycle_state": "TERMINATED",
+        "node_type_id": "g6.8xlarge",
+        "result_state": "SUCCESS",
+        "run_id": 825477872540270,
+        "spark_env_keys": [],
+        "start_time": 1782057030734,
+        "state_message": "",
+        "task_key": "document_kv_storage_benchmark"
+      }
+    ],
+    "terminal": true
+  }
+}

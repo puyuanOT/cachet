@@ -821,6 +821,12 @@ the explicit non-default `aws-g5-a10g` target for `g5.8xlarge` compatibility
 runs. It defines a common schema for comparing the no-cache prefill baseline
 with document KV-cache reuse:
 
+Curated, human-readable Databricks benchmark folders are tracked under
+[`benchmarks/`](benchmarks/README.md). Those folders contain the current g6/L4
+target benchmark, g5/A10G compatibility benchmark, storage-reader benchmark,
+and native vLLM/SGLang probe artifacts without relying on the PR-only
+`pr-evidence/` tree or ignored local `databricks-runs/` output.
+
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
 - `build_prompt_parts` splits each example into `system_prompt`, `document_context`, and `user_prompt`.
