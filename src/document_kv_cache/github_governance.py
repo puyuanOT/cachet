@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 from typing import Any, Protocol
 import urllib.error
 import urllib.parse
@@ -33,6 +34,7 @@ DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com"
 DEFAULT_GITHUB_BRANCH = "main"
 DEFAULT_GITHUB_REPOSITORY_ENV = "GITHUB_REPOSITORY"
 DEFAULT_GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
+DEFAULT_GH_AUTH_TOKEN_TIMEOUT_SECONDS = 10.0
 DEFAULT_GITHUB_TIMEOUT_SECONDS = 60.0
 GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE = "document_kv.github_repository_governance.v1"
 REQUIRED_CI_STATUS_CHECK = "Test and build"
@@ -102,6 +104,78 @@ def github_repository_config_from_env(
         api_base_url=api_base_url,
         timeout_seconds=timeout_seconds,
     )
+
+
+def _github_repository_config_from_cli(
+    *,
+    repository: str | None,
+    repository_env: str,
+    token_env: str,
+    branch: str,
+    api_base_url: str,
+    timeout_seconds: float,
+    allow_gh_auth_token_fallback: bool,
+    gh_auth_token_timeout_seconds: float,
+    environ: Mapping[str, str] | None = None,
+) -> GitHubRepositoryConfig:
+    env = os.environ if environ is None else environ
+    resolved_repository = repository or env.get(repository_env, "")
+    if not resolved_repository:
+        raise ValueError(f"{repository_env} must be set")
+    token = _github_token_from_cli_context(
+        token_env=token_env,
+        allow_gh_auth_token_fallback=allow_gh_auth_token_fallback,
+        timeout_seconds=gh_auth_token_timeout_seconds,
+        environ=env,
+    )
+    return GitHubRepositoryConfig(
+        repository=resolved_repository,
+        token=token,
+        branch=branch,
+        api_base_url=api_base_url,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _github_token_from_cli_context(
+    *,
+    token_env: str,
+    allow_gh_auth_token_fallback: bool,
+    timeout_seconds: float,
+    environ: Mapping[str, str],
+) -> str:
+    token = environ.get(token_env, "")
+    if token:
+        return token
+    if not allow_gh_auth_token_fallback:
+        raise ValueError(f"{token_env} must be set")
+    try:
+        token = _github_token_from_gh_auth(timeout_seconds=timeout_seconds)
+    except ValueError as exc:
+        raise ValueError(str(exc).replace(DEFAULT_GITHUB_TOKEN_ENV, token_env)) from exc
+    if token:
+        return token
+    raise ValueError(f"{token_env} must be set or `gh auth token` must return a token")
+
+
+def _github_token_from_gh_auth(*, timeout_seconds: float) -> str:
+    if timeout_seconds <= 0:
+        raise ValueError("gh auth token timeout_seconds must be positive")
+    try:
+        completed = subprocess.run(
+            ["gh", "auth", "token"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise ValueError("GITHUB_TOKEN must be set or GitHub CLI must be installed") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError("GITHUB_TOKEN must be set or `gh auth token` must finish before timeout") from exc
+    if completed.returncode != 0:
+        raise ValueError("GITHUB_TOKEN must be set or `gh auth token` must succeed")
+    return completed.stdout.strip()
 
 
 def summarize_github_repository_governance(
@@ -461,6 +535,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--api-base-url", default=DEFAULT_GITHUB_API_BASE_URL)
     parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_GITHUB_TIMEOUT_SECONDS)
     parser.add_argument(
+        "--no-gh-auth-token-fallback",
+        action="store_true",
+        help=(
+            "Do not fall back to `gh auth token` when the configured token environment "
+            "variable is unset."
+        ),
+    )
+    parser.add_argument(
+        "--gh-auth-token-timeout-seconds",
+        type=float,
+        default=DEFAULT_GH_AUTH_TOKEN_TIMEOUT_SECONDS,
+        help="Timeout for the optional `gh auth token` fallback.",
+    )
+    parser.add_argument(
         "--allow-open-pull-request-number",
         action="append",
         type=int,
@@ -474,25 +562,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        if args.repository:
-            token = os.environ.get(args.token_env, "")
-            if not token:
-                raise ValueError(f"{args.token_env} must be set")
-            config = GitHubRepositoryConfig(
-                repository=args.repository,
-                token=token,
-                branch=args.branch,
-                api_base_url=args.api_base_url,
-                timeout_seconds=args.timeout_seconds,
-            )
-        else:
-            config = github_repository_config_from_env(
-                repository_env=args.repository_env,
-                token_env=args.token_env,
-                branch=args.branch,
-                api_base_url=args.api_base_url,
-                timeout_seconds=args.timeout_seconds,
-            )
+        config = _github_repository_config_from_cli(
+            repository=args.repository,
+            repository_env=args.repository_env,
+            token_env=args.token_env,
+            branch=args.branch,
+            api_base_url=args.api_base_url,
+            timeout_seconds=args.timeout_seconds,
+            allow_gh_auth_token_fallback=not args.no_gh_auth_token_fallback,
+            gh_auth_token_timeout_seconds=args.gh_auth_token_timeout_seconds,
+        )
         summary = summarize_github_repository_governance(
             config,
             allowed_open_pull_request_numbers=args.allow_open_pull_request_number,

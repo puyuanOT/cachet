@@ -1443,22 +1443,26 @@ must use unique file paths so the `RECORD` manifest cannot hide duplicate
 installed files.
 
 Capture repository governance status as a separate release-readiness sidecar.
-The command reads the GitHub token from an environment variable, records
-repository visibility, branded repository metadata, `main` branch protection
-state, and open pull-request pressure. It returns non-zero until the repository
-is public, the description is non-empty and mentions Cachet, the repository
-topics include `cachet` and `kv-cache`, the required `Test and build`
+The command reads the GitHub token from `GITHUB_TOKEN` or, for local developer
+runs, falls back to `gh auth token` unless `--no-gh-auth-token-fallback` is set.
+It records repository visibility, branded repository metadata, `main` branch
+protection state, and open pull-request pressure. It returns non-zero until the
+repository is public, the description is non-empty and mentions Cachet, the
+repository topics include `cachet` and `kv-cache`, the required `Test and build`
 protection is active, branch protection applies to administrators, repository
 merge settings allow squash or rebase merges, GitHub auto-merge is enabled,
 merged PR branches are deleted automatically, and no unexpected pull requests
 remain open:
 
 ```bash
-export GITHUB_TOKEN=...
 python -m document_kv_cache.github_governance \
   --repository OWNER/cachet \
   --output-json github-governance.json
 ```
+
+Use an explicit `GITHUB_TOKEN` in CI and Databricks jobs. For hermetic checks
+that should fail instead of reading the local GitHub CLI keyring, add
+`--no-gh-auth-token-fallback`.
 
 When producing a sidecar from inside the current release PR, pass
 `--allow-open-pull-request-number <PR_NUMBER>` so that one active pull request is

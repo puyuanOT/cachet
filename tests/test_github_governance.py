@@ -377,10 +377,16 @@ def test_github_http_errors_are_sanitized():
 def test_main_writes_release_readiness_summary(monkeypatch, tmp_path):
     output_path = tmp_path / "github-governance.json"
     monkeypatch.setenv(DEFAULT_GITHUB_TOKEN_ENV, "secret-token")
+    monkeypatch.setattr(
+        "document_kv_cache.github_governance._github_token_from_gh_auth",
+        lambda *, timeout_seconds: (_ for _ in ()).throw(AssertionError("gh fallback should not run")),
+    )
     captured_allowed_numbers = []
+    captured_token = []
 
     def fake_summary(config, *, allowed_open_pull_request_numbers=()):
         captured_allowed_numbers.extend(allowed_open_pull_request_numbers)
+        captured_token.append(config.token)
         return {
             "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
             "ok": True,
@@ -403,6 +409,7 @@ def test_main_writes_release_readiness_summary(monkeypatch, tmp_path):
 
     assert exit_code == 0
     assert captured_allowed_numbers == [73]
+    assert captured_token == ["secret-token"]
     assert json.loads(output_path.read_text(encoding="utf-8")) == {
         "ok": True,
         "summary": {
@@ -412,6 +419,71 @@ def test_main_writes_release_readiness_summary(monkeypatch, tmp_path):
             "issues": [],
         },
     }
+
+
+def test_main_falls_back_to_gh_auth_token_when_token_env_is_missing(monkeypatch, tmp_path):
+    output_path = tmp_path / "github-governance.json"
+    monkeypatch.delenv(DEFAULT_GITHUB_TOKEN_ENV, raising=False)
+    captured_token = []
+    captured_timeout = []
+
+    def fake_gh_auth_token(*, timeout_seconds):
+        captured_timeout.append(timeout_seconds)
+        return "gh-cli-token"
+
+    def fake_summary(config, *, allowed_open_pull_request_numbers=()):
+        captured_token.append(config.token)
+        return {
+            "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
+            "ok": True,
+            "repository": config.repository,
+            "issues": [],
+        }
+
+    monkeypatch.setattr("document_kv_cache.github_governance._github_token_from_gh_auth", fake_gh_auth_token)
+    monkeypatch.setattr("document_kv_cache.github_governance.summarize_github_repository_governance", fake_summary)
+
+    exit_code = main(
+        [
+            "--repository",
+            "owner/document-kv-cache",
+            "--gh-auth-token-timeout-seconds",
+            "3.5",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured_timeout == [3.5]
+    assert captured_token == ["gh-cli-token"]
+    assert json.loads(output_path.read_text(encoding="utf-8"))["summary"]["repository"] == (
+        "owner/document-kv-cache"
+    )
+
+
+def test_main_can_disable_gh_auth_token_fallback(monkeypatch, tmp_path):
+    output_path = tmp_path / "github-governance.json"
+    monkeypatch.delenv(DEFAULT_GITHUB_TOKEN_ENV, raising=False)
+    monkeypatch.setattr(
+        "document_kv_cache.github_governance._github_token_from_gh_auth",
+        lambda *, timeout_seconds: (_ for _ in ()).throw(AssertionError("gh fallback should not run")),
+    )
+
+    exit_code = main(
+        [
+            "--repository",
+            "owner/document-kv-cache",
+            "--no-gh-auth-token-fallback",
+            "--output-json",
+            str(output_path),
+        ]
+    )
+
+    assert exit_code == 1
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["error_type"] == "ValueError"
+    assert record["error"] == f"{DEFAULT_GITHUB_TOKEN_ENV} must be set"
 
 
 def test_main_returns_nonzero_when_governance_summary_is_not_release_ready(monkeypatch, capsys):
@@ -447,7 +519,14 @@ def test_write_github_repository_governance_json(tmp_path):
 def test_github_governance_module_executes_with_python_m():
     pythonpath = os.pathsep.join(["src", os.environ.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     completed = subprocess.run(
-        [sys.executable, "-m", "document_kv_cache.github_governance", "--repository", "owner/repo"],
+        [
+            sys.executable,
+            "-m",
+            "document_kv_cache.github_governance",
+            "--repository",
+            "owner/repo",
+            "--no-gh-auth-token-fallback",
+        ],
         env={**os.environ, "PYTHONPATH": pythonpath, DEFAULT_GITHUB_TOKEN_ENV: ""},
         check=False,
         capture_output=True,
