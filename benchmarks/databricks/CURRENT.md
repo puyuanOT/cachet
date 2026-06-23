@@ -1,8 +1,11 @@
 # Current Databricks Benchmark Snapshot
 
-This is the human-readable entry point for the current Cachet V1 benchmark
-evidence. It summarizes the tracked Databricks results without requiring readers
-to inspect `pr-evidence/` or ignored local `databricks-runs/` output.
+This is the human-readable Databricks artifact snapshot for the current Cachet
+V1 benchmark evidence. For standalone benchmark reports, start with
+[`../vllm/`](../vllm/), [`../sglang/`](../sglang/),
+[`../storage/`](../storage/), and [`../native-engine/`](../native-engine/). This
+snapshot summarizes the tracked Databricks results without requiring readers to
+inspect `pr-evidence/` or ignored local `databricks-runs/` output.
 
 | Field | Current value |
 | --- | --- |

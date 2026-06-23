@@ -865,13 +865,17 @@ the explicit non-default `aws-g5-a10g` target for `g5.8xlarge` compatibility
 runs. It defines a common schema for comparing the no-cache prefill baseline
 with document KV-cache reuse:
 
-Curated, human-readable Databricks benchmark folders are tracked under
-[`benchmarks/`](benchmarks/README.md). Start with the current snapshot at
-[`benchmarks/databricks/CURRENT.md`](benchmarks/databricks/CURRENT.md). Those
-folders contain the current g6/L4 target benchmark, g5/A10G compatibility
-benchmark, storage-reader benchmark, and native vLLM/SGLang probe artifacts
-without relying on the PR-only `pr-evidence/` tree or ignored local
-`databricks-runs/` output.
+Curated, human-readable benchmark reports are tracked under
+[`benchmarks/`](benchmarks/README.md). Start with the standalone report folders
+for [`vLLM`](benchmarks/vllm/), [`SGLang`](benchmarks/sglang/),
+[`storage`](benchmarks/storage/), and
+[`native-engine`](benchmarks/native-engine/) status, then use the Databricks
+artifact snapshot at
+[`benchmarks/databricks/CURRENT.md`](benchmarks/databricks/CURRENT.md) for
+sanitized source records. Those folders contain the current g6/L4 target
+benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and
+native vLLM/SGLang probe artifacts without relying on the PR-only
+`pr-evidence/` tree or ignored local `databricks-runs/` output.
 
 The latency and quality benchmark rows are vLLM benchmark runs. The current
 SGLang artifacts are provider-backed native HiCache probe and connector-action

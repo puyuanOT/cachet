@@ -1019,27 +1019,59 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     benchmark_root = REPO_ROOT / "benchmarks"
     databricks_root = benchmark_root / "databricks"
     root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
+    vllm_readme = (benchmark_root / "vllm" / "README.md").read_text(encoding="utf-8")
+    sglang_readme = (benchmark_root / "sglang" / "README.md").read_text(encoding="utf-8")
+    storage_readme = (benchmark_root / "storage" / "README.md").read_text(encoding="utf-8")
+    native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(
+        encoding="utf-8"
+    )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
     compact_root_readme = " ".join(root_readme.split())
+    compact_vllm_readme = " ".join(vllm_readme.split())
+    compact_sglang_readme = " ".join(sglang_readme.split())
+    compact_storage_readme = " ".join(storage_readme.split())
+    compact_native_engine_readme = " ".join(native_engine_readme.split())
     compact_databricks_readme = " ".join(databricks_readme.split())
     compact_matrix_text = " ".join(matrix_text.split())
     compact_project_readme = " ".join(project_readme.split())
+    compact_docs_readme = " ".join(docs_readme.split())
     compact_snapshot = " ".join(current_databricks_snapshot.split())
 
     assert "[`benchmarks/`](benchmarks/README.md)" in project_readme
+    assert "[`vLLM`](benchmarks/vllm/)" in project_readme
+    assert "[`SGLang`](benchmarks/sglang/)" in project_readme
+    assert "[`storage`](benchmarks/storage/)" in project_readme
+    assert "[`native-engine`](benchmarks/native-engine/)" in project_readme
     assert "[`benchmarks/databricks/CURRENT.md`](benchmarks/databricks/CURRENT.md)" in project_readme
+    assert "[`vllm/`](vllm/)" in root_readme
+    assert "[`sglang/`](sglang/)" in root_readme
+    assert "[`storage/`](storage/)" in root_readme
+    assert "[`native-engine/`](native-engine/)" in root_readme
     assert "[`databricks/CURRENT.md`](databricks/CURRENT.md)" in root_readme
     assert "[`CURRENT.md`](CURRENT.md)" in databricks_readme
     assert "`../benchmarks/README.md`" in docs_readme
-    assert "Standalone human-readable benchmark folders" in matrix_text
+    assert "standalone, human-readable benchmark report folders" in compact_docs_readme
+    assert "Standalone human-readable benchmark report folders" in matrix_text
+    assert "`benchmarks/vllm/`" in matrix_text
+    assert "`benchmarks/sglang/`" in matrix_text
+    assert "`benchmarks/storage/`" in matrix_text
+    assert "`benchmarks/native-engine/`" in matrix_text
     assert "`pr-evidence/` tree" in compact_project_readme
     assert "without requiring readers to inspect `pr-evidence/`" in compact_snapshot
     assert "ignored local `databricks-runs/` output" in compact_snapshot
     assert "Raw local run directories stay under ignored `databricks-runs/`" in databricks_readme
+    assert "[`../vllm/`](../vllm/)" in databricks_readme
+    assert "[`../sglang/`](../sglang/)" in databricks_readme
+    assert "[`../storage/`](../storage/)" in databricks_readme
+    assert "[`../native-engine/`](../native-engine/)" in databricks_readme
+    assert "[`../vllm/`](../vllm/)" in current_databricks_snapshot
+    assert "[`../sglang/`](../sglang/)" in current_databricks_snapshot
+    assert "[`../storage/`](../storage/)" in current_databricks_snapshot
+    assert "[`../native-engine/`](../native-engine/)" in current_databricks_snapshot
     assert "Strict publication target | AWS g6/L4, `aws-g6-l4`, `g6.8xlarge`" in current_databricks_snapshot
     assert "Compatibility target | AWS g5/A10G, `aws-g5-a10g`, `g5.8xlarge`" in current_databricks_snapshot
     assert "`baseline_prefill`" in current_databricks_snapshot
@@ -1058,10 +1090,31 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "not live SGLang latency or quality benchmark results" in compact_matrix_text
     assert "Validate live SGLang decode-time prefix binding" in compact_matrix_text
     assert "Release-bundle manifests are regenerated from these benchmark artifacts" in compact_snapshot
+    assert "vLLM latency and quality benchmark results" in compact_vllm_readme
+    assert "872615985402004" in vllm_readme
+    assert "566743786103032" in vllm_readme
+    assert "strict g6/L4 release target" in vllm_readme
+    assert "Do not use `../../pr-evidence/` as the benchmark report surface" in vllm_readme
+    assert (
+        "There is not yet a published live SGLang latency or quality benchmark result"
+        in compact_sglang_readme
+    )
+    assert "Native HiCache integration evidence" in sglang_readme
+    assert "must not be cited as SGLang latency, throughput, or quality benchmark results" in compact_sglang_readme
+    assert "948365719597221" in storage_readme
+    assert "unity_catalog" in storage_readme
+    assert "not model-serving latency or quality measurements" in compact_storage_readme
+    assert "Native Engine Integration Evidence" in native_engine_readme
+    assert "Provider-backed dynamic HiCache probe succeeded" in native_engine_readme
+    assert "not latency, throughput, or quality benchmark measurements" in compact_native_engine_readme
 
     expected_files = {
         "databricks/CURRENT.md",
         "README.md",
+        "native-engine/README.md",
+        "sglang/README.md",
+        "storage/README.md",
+        "vllm/README.md",
         "databricks/README.md",
         "databricks/2026-06-21-g6-l4-storage-readers/README.md",
         "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",

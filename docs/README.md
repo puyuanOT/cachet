@@ -14,5 +14,5 @@ notes under `src/`.
   `../evidence/legacy-migration/current/`.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
-- `../benchmarks/README.md` indexes the standalone, human-readable Databricks
-  benchmark evidence folders.
+- `../benchmarks/README.md` indexes the standalone, human-readable benchmark
+  report folders and their Databricks source-artifact records.
