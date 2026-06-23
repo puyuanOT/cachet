@@ -15,18 +15,17 @@ from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
     EngineKVConnectorActions,
+    EngineKVInjectionPlan,
     EngineKVReleaseAction,
     EngineKVReservationAction,
     EngineKVSegmentCopyAction,
     PayloadMode,
     ServingBackend,
-    build_engine_kv_connector_actions,
     build_engine_kv_injection_plan,
     engine_kv_connector_actions_from_record,
     engine_kv_connector_actions_to_record,
     read_engine_adapter_request_json,
     validate_engine_kv_connector_actions,
-    view_engine_adapter_payload,
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
 from vllm_kv_injection.block_mapping import BlockSpan, plan_token_blocks
@@ -98,16 +97,17 @@ class DocumentKVHandoffSource(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class DocumentKVHandoffLoad:
-    """Validated Cachet connector actions plus materialized payload bytes."""
+    """Validated Cachet connector actions plus either payload bytes or a payload URI."""
 
     actions: EngineKVConnectorActions
-    payload: bytes | tuple[bytes, ...]
+    payload: bytes | tuple[bytes, ...] | None = None
+    payload_uri: str | None = None
 
     def __post_init__(self) -> None:
         validate_engine_kv_connector_actions(self.actions)
         if self.actions.reservation.backend != ServingBackend.VLLM:
             raise ValueError("Document KV vLLM loads require vllm connector actions")
-        _validate_payload_matches_actions(self.actions, self.payload)
+        _validate_payload_reference(self.actions, payload=self.payload, payload_uri=self.payload_uri)
 
     @property
     def request_id(self) -> str:
@@ -124,10 +124,11 @@ class DocumentKVLoadRequest:
 
     request_id: str
     actions_record: Mapping[str, Any]
-    payload: bytes | tuple[bytes, ...]
+    payload: bytes | tuple[bytes, ...] | None
     blocks: tuple[BlockSpan, ...]
     source_token_start: int
     token_count: int
+    payload_uri: str | None = None
 
     def __post_init__(self) -> None:
         actions_record = _actions_record(self.actions_record)
@@ -140,7 +141,7 @@ class DocumentKVLoadRequest:
             raise ValueError("token_count must be positive")
         if self.source_token_start + self.token_count > actions.reservation.total_tokens:
             raise ValueError("load token span exceeds connector actions")
-        _validate_payload_matches_actions(actions, self.payload)
+        _validate_payload_reference(actions, payload=self.payload, payload_uri=self.payload_uri)
         object.__setattr__(self, "actions_record", actions_record)
 
     @property
@@ -227,10 +228,8 @@ class KVTransferParamsDocumentKVSource:
         payload_uri = payload_uri_override or plan.payload_source_uri
         if payload_uri is None:
             raise ValueError("document KV handoff requires an external payload URI")
-        payload = read_engine_adapter_payload(payload_uri, expected_bytes=plan.total_bytes)
-        payload_or_segments = view_engine_adapter_payload(record, payload)
-        actions = build_engine_kv_connector_actions(plan, payload_or_segments)
-        return DocumentKVHandoffLoad(actions=actions, payload=_payload_bytes(payload_or_segments))
+        actions = _connector_actions_from_plan(plan)
+        return DocumentKVHandoffLoad(actions=actions, payload_uri=payload_uri)
 
 
 class DocumentKVNativeProvider:
@@ -323,6 +322,7 @@ class DocumentKVNativeProvider:
             blocks=block_spans,
             source_token_start=source_token_start,
             token_count=num_external_tokens,
+            payload_uri=load.payload_uri,
         )
 
     def build_connector_meta(self, scheduler_output: object) -> DocumentKVConnectorMetadata:
@@ -349,6 +349,7 @@ class DocumentKVNativeProvider:
                     blocks=blocks,
                     source_token_start=allocated.source_token_start,
                     token_count=allocated.token_count,
+                    payload_uri=allocated.payload_uri,
                 )
             )
         if missing_request_ids:
@@ -476,7 +477,8 @@ class DocumentKVNativeProvider:
 
     def _load_request(self, load: DocumentKVLoadRequest) -> None:
         try:
-            merged_payload = _merged_payload(load.actions, load.payload)
+            payload = _materialized_payload(load)
+            merged_payload = _merged_payload(load.actions, payload)
             payload_view = _payload_tensor_view(merged_payload, load)
             block_size = load.actions.reservation.layout.block_size
             slot_mappings: dict[object | None, object] = {}
@@ -718,6 +720,22 @@ def _payload_bytes(payload_or_segments: bytes | memoryview | tuple[bytes | memor
     return tuple(bytes(segment) for segment in payload_or_segments)
 
 
+def _validate_payload_reference(
+    actions: EngineKVConnectorActions,
+    *,
+    payload: bytes | tuple[bytes, ...] | None,
+    payload_uri: str | None,
+) -> None:
+    if payload is None and payload_uri is None:
+        raise ValueError("document KV load requires payload bytes or payload_uri")
+    if payload is not None and payload_uri is not None:
+        raise ValueError("document KV load must use only one of payload bytes or payload_uri")
+    if payload is not None:
+        _validate_payload_matches_actions(actions, payload)
+        return
+    _required_string(payload_uri, field_name="payload_uri")
+
+
 def _validate_payload_matches_actions(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> None:
     expected_mode = _payload_mode(actions)
     if isinstance(payload, tuple):
@@ -793,6 +811,84 @@ def _connector_actions_for_runtime_request(
     )
     validate_engine_kv_connector_actions(rebound)
     return rebound
+
+
+def _connector_actions_from_plan(plan: EngineKVInjectionPlan) -> EngineKVConnectorActions:
+    payload_mode = plan.payload_mode
+    actions = EngineKVConnectorActions(
+        reservation=EngineKVReservationAction(
+            backend=plan.backend,
+            request_id=plan.request_id,
+            total_blocks=plan.total_blocks,
+            total_tokens=plan.total_tokens,
+            estimated_gpu_bytes=plan.estimated_gpu_bytes,
+            layout=plan.layout,
+            adapter_ids=plan.adapter_ids,
+        ),
+        copies=tuple(
+            EngineKVSegmentCopyAction(
+                request_id=plan.request_id,
+                document_id=segment.document_id,
+                chunk_type=segment.chunk_type,
+                chunk_id=segment.chunk_id,
+                payload_index=index if payload_mode == PayloadMode.SEGMENTED else None,
+                source_byte_start=0 if payload_mode == PayloadMode.SEGMENTED else segment.byte_start,
+                source_byte_length=segment.byte_length,
+                global_byte_start=segment.byte_start,
+                global_byte_end=segment.byte_end,
+                token_start=segment.token_start,
+                token_count=segment.token_count,
+                token_end=segment.token_end,
+                first_block_index=segment.first_block_index,
+                last_block_index_exclusive=segment.last_block_index_exclusive,
+                content_hash=segment.content_hash,
+                cache_tier=segment.cache_tier,
+            )
+            for index, segment in enumerate(plan.segments)
+        ),
+        bind=EngineKVBindAction(
+            request_id=plan.request_id,
+            handle_uri=plan.handle_uri,
+            cache_method=plan.cache_method,
+            adapter_ids=plan.adapter_ids,
+            metadata=plan.metadata,
+        ),
+        release=EngineKVReleaseAction(request_id=plan.request_id),
+    )
+    validate_engine_kv_connector_actions(actions)
+    return actions
+
+
+def _materialized_payload(load: DocumentKVLoadRequest) -> bytes | tuple[bytes, ...]:
+    if load.payload is not None:
+        return load.payload
+    payload_uri = _required_string(load.payload_uri, field_name="payload_uri")
+    payload = read_engine_adapter_payload(payload_uri, expected_bytes=_expected_payload_bytes(load.actions))
+    if _payload_mode(load.actions) == PayloadMode.MERGED:
+        return payload
+    return _segmented_payload_from_materialized_payload(load.actions, payload)
+
+
+def _expected_payload_bytes(actions: EngineKVConnectorActions) -> int:
+    return actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
+
+
+def _segmented_payload_from_materialized_payload(
+    actions: EngineKVConnectorActions,
+    payload: bytes,
+) -> tuple[bytes, ...]:
+    max_payload_index = max(copy.payload_index or 0 for copy in actions.copies)
+    segments = [bytearray() for _ in range(max_payload_index + 1)]
+    for copy in actions.copies:
+        assert copy.payload_index is not None
+        source = payload[copy.global_byte_start : copy.global_byte_end]
+        if len(source) != copy.source_byte_length:
+            raise ValueError(f"Copy action {copy.chunk_id!r} source range exceeds materialized payload")
+        segment = segments[copy.payload_index]
+        if len(segment) < copy.source_byte_end:
+            segment.extend(b"\x00" * (copy.source_byte_end - len(segment)))
+        segment[copy.source_byte_start : copy.source_byte_end] = source
+    return tuple(bytes(segment) for segment in segments)
 
 
 def _merged_payload(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> bytes | bytearray:
