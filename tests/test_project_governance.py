@@ -1052,18 +1052,33 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     databricks_root = benchmark_root / "databricks"
     root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
+    current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
     compact_project_readme = " ".join(project_readme.split())
+    compact_snapshot = " ".join(current_databricks_snapshot.split())
 
     assert "[`benchmarks/`](benchmarks/README.md)" in project_readme
+    assert "[`benchmarks/databricks/CURRENT.md`](benchmarks/databricks/CURRENT.md)" in project_readme
+    assert "[`databricks/CURRENT.md`](databricks/CURRENT.md)" in root_readme
+    assert "[`CURRENT.md`](CURRENT.md)" in databricks_readme
     assert "`../benchmarks/README.md`" in docs_readme
     assert "Standalone human-readable benchmark folders" in matrix_text
     assert "`pr-evidence/` tree" in compact_project_readme
+    assert "without requiring readers to inspect `pr-evidence/`" in compact_snapshot
+    assert "ignored local `databricks-runs/` output" in compact_snapshot
     assert "Raw local run directories stay under ignored `databricks-runs/`" in databricks_readme
+    assert "Strict publication target | AWS g6/L4, `aws-g6-l4`, `g6.8xlarge`" in current_databricks_snapshot
+    assert "Compatibility target | AWS g5/A10G, `aws-g5-a10g`, `g5.8xlarge`" in current_databricks_snapshot
+    assert "`baseline_prefill`" in current_databricks_snapshot
+    assert "`document_kv_cache`" in current_databricks_snapshot
+    assert "does not replace the strict AWS g6/L4 publication target" in current_databricks_snapshot
+    assert "instead of a package-owned serving scheduler" in current_databricks_snapshot
+    assert "Release-bundle manifests are regenerated from these benchmark artifacts" in compact_snapshot
 
     expected_files = {
+        "databricks/CURRENT.md",
         "README.md",
         "databricks/README.md",
         "databricks/2026-06-21-g6-l4-storage-readers/README.md",
