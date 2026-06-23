@@ -1,0 +1,37 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review found no blocking issues. The reviewer verified the snapshot matches tracked benchmarks/databricks artifacts, the g6/L4 strict target versus g5/A10G compatibility distinction is clear, the benchmark/pr-evidence/databricks-runs artifact boundary is preserved, release evidence claims remain scoped to tracked benchmark/storage/native probe artifacts, and no Databricks runs were launched.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 436,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/436",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "benchmarks/README.md",
+    "benchmarks/databricks/README.md",
+    "benchmarks/databricks/CURRENT.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/current-benchmark-status/"
+  ],
+  "verification": [
+    "poetry run pytest -q tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs tests/test_project_governance.py::test_readme_release_bundle_documents_artifact_validation_contracts tests/test_project_governance.py::test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates -> 3 passed",
+    "poetry run pytest -q tests/test_project_governance.py tests/test_pr_evidence.py -> 71 passed",
+    "poetry run pytest -q -> 2023 passed",
+    "poetry check && poetry check --lock -> All set",
+    "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/cachet-current-benchmark-status-hygiene-committed.json -> ok=true",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/current-benchmark-status --output-json pr-evidence/current-benchmark-status/pr-evidence-validation.json -> ok=true",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence -> ok=true",
+    "poetry run pytest -q tests/test_pr_evidence.py tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs -> 25 passed",
+    "GPT-5.5 reviewer approved PR #436 with no blocking issues; GitHub rejected recording formal approval as self-review"
+  ],
+  "what_changed": [
+    "Added benchmarks/databricks/CURRENT.md as the human-readable entry point for the current Cachet Databricks benchmark snapshot.",
+    "Linked the current snapshot from the root README and benchmark README files.",
+    "Extended governance coverage so the standalone benchmark area keeps g6/L4 target, g5/A10G compatibility, baseline/cache arms, and benchmark/pr-evidence/databricks-runs boundaries explicit."
+  ],
+  "why": "The current benchmark JSON and per-run README files were tracked, but readers still needed to know which folder represented the current release picture. This PR makes benchmark status discoverable without asking humans to inspect pr-evidence or local scratch bundles."
+}
