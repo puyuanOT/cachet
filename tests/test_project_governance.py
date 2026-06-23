@@ -907,7 +907,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "strict V1 publication target",
         "compatibility_benchmark",
         "compatibility_databricks_run_status",
-        "23 artifacts",
+        "24 artifacts",
         "872615985402004",
         "566743786103032",
         "cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main",
@@ -926,7 +926,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     )
     assert "cannot substitute for the strict release target" in matrix_text
     assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "current complete g5-enriched strict bundle validates with 23 artifacts" in compact_matrix
+    assert "current complete g5-enriched strict bundle validates with 24 artifacts" in compact_matrix
+    assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
     assert "compatibility Databricks run-status sidecar" in compact_matrix
     assert "GitHub governance is release-ready" in compact_matrix
     assert "auto-merge is enabled" in compact_matrix
@@ -1217,8 +1218,9 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "--compatibility-databricks-run-status-json" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "g5-enriched strict bundle validates with 23 artifacts" in compact_remaining_v1_work
+    assert "g5-enriched strict bundle validates with 24 artifacts" in compact_remaining_v1_work
     assert "current release-gate PR evidence sidecar" in compact_remaining_v1_work
+    assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_remaining_v1_work
     assert "compatibility_databricks_run_status" in compact_remaining_v1_work
     assert "GitHub governance sidecar" in compact_remaining_v1_work
     assert "Current governance evidence is green" in compact_remaining_v1_work

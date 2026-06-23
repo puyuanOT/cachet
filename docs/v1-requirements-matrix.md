@@ -26,7 +26,7 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars are bundled for the current `cachet-kv` benchmark run `872615985402004`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `566743786103032` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. Standalone human-readable benchmark folders under `benchmarks/databricks/` carry the sanitized JSON artifacts for those runs. The current complete g5-enriched strict bundle validates with 23 artifacts and carries the g5 report in the `compatibility_benchmark` artifact role plus the matching g5 run status in the `compatibility_databricks_run_status` role; compatibility artifacts cannot substitute for the strict release target. | Keep g6/L4 and g5/A10G evidence refreshed when benchmark, model, native connector contracts, package wheel identity, or standalone benchmark folders change. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars are bundled for the current `cachet-kv` benchmark run `872615985402004`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `566743786103032` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. Standalone human-readable benchmark folders under `benchmarks/databricks/` carry the sanitized JSON artifacts for those runs. The current complete g5-enriched strict bundle validates with 24 artifacts, carries the g5 report in the `compatibility_benchmark` artifact role plus the matching g5 run status in the `compatibility_databricks_run_status` role, and includes `legacy_migration_evidence` for the removed restaurant facade; compatibility artifacts cannot substitute for the strict release target. | Keep g6/L4 and g5/A10G evidence refreshed when benchmark, model, native connector contracts, package wheel identity, or standalone benchmark folders change. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
 | Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. Current QA benchmark run `872615985402004` produced bundled `document_kv.benchmark_run.v1` evidence from the tested `cachet_kv-0.2.0-py3-none-any.whl` with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.27x to 6.97x, and time-to-completion speedups from 1.74x to 2.25x; the same sanitized report is tracked in `benchmarks/databricks/2026-06-23-g6-l4-v1/`. Release evidence over that benchmark plus the current storage and native vLLM/SGLang probe/action sidecars is `ok=true`. | Re-run, re-bundle, and refresh standalone benchmark folders whenever benchmark code, runtime pins, connector behavior, or package wheel identity changes. |
 | Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. Current QA benchmark run `872615985402004` completed Biography, HotpotQA, MusiQue, and NIAH with bundled release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, native connector behavior, or package wheel identity changes. |
@@ -104,19 +104,20 @@ mean:
   vLLM/SGLang native probe/action artifacts is `ok=true` with no issues, and
   the same validation is green for the current `aws-g5-a10g` compatibility
   benchmark via the `compatibility_benchmark` role. The current complete
-  g5-enriched strict bundle validates with 23 artifacts after replacing its
+  g5-enriched strict bundle validates with 24 artifacts after replacing its
   benchmark/status sidecars with the current `872615985402004`/`566743786103032`
-  evidence and including a current release-gate PR evidence sidecar. The bundled
+  evidence, including a current release-gate PR evidence sidecar, and carrying
+  `legacy_migration_evidence` for the removed restaurant facade. The bundled
   artifacts include the release evidence
   sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, benchmark plan execution sidecar, Databricks run-status sidecars
   for benchmark, storage, and vLLM/SGLang engine-probe runs, the
   `aws-g5-a10g` compatibility benchmark and compatibility Databricks run-status
-  sidecar, tested package wheel, PR evidence sidecar, V1 requirements matrix,
-  GitHub governance sidecar, repository hygiene sidecar, and native probe
-  factory diagnostics sidecars emitted from the split vLLM/SGLang runtime probe
-  environments.
+  sidecar, tested package wheel, PR evidence sidecar, legacy migration evidence
+  sidecar, V1 requirements matrix, GitHub governance sidecar, repository
+  hygiene sidecar, and native probe factory diagnostics sidecars emitted from
+  the split vLLM/SGLang runtime probe environments.
 - GitHub governance is release-ready: the repository is public, visibility is
   public, auto-merge is enabled, merged head branches are deleted automatically,
   `main` branch protection requires the `Test and build` check, branch
