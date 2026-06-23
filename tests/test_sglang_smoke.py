@@ -6,8 +6,6 @@ import pytest
 
 import document_kv_cache.sglang_smoke as public_sglang_smoke
 from document_kv_cache.benchmarks import (
-    DOCUMENT_KV_HANDOFF_JSON_PARAM,
-    DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
 )
 from document_kv_cache.engine import EngineReadyRequest
@@ -16,8 +14,10 @@ from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.sglang_smoke import (
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     HF_MODEL_ID,
+    SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SERVED_MODEL_NAME,
     SGLANG_DEPENDENCY_CONSTRAINTS,
+    SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
     SGLANG_VERSION,
     SGLangSmokeBenchmarkConfig,
     build_metadata,
@@ -30,7 +30,6 @@ from document_kv_cache.sglang_smoke import (
     parse_args,
     run_live_checks,
     sglang_hicache_config_for_smoke,
-    sglang_live_kv_transfer_params,
 )
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
@@ -95,10 +94,28 @@ def test_dependency_constraints_match_pinned_sglang_stack():
     assert SERVED_MODEL_NAME == "qwen3:4b-instruct"
 
 
-def test_sglang_smoke_requires_handoff_unless_baseline_only(tmp_path):
-    with pytest.raises(ValueError, match="requires handoff_json or handoff_record"):
+def test_sglang_smoke_rejects_cache_arm_until_request_to_hicache_binding_exists(tmp_path):
+    with pytest.raises(ValueError) as exc:
         SGLangSmokeBenchmarkConfig(benchmark_id="sglang-1", output_dir=tmp_path / "out")
 
+    assert str(exc.value) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri)
+    with pytest.raises(ValueError) as exc:
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            handoff_json=str(handoff_path),
+            payload_uri=payload_uri,
+            request_id="cachet-live-sglang-1",
+        )
+
+    assert str(exc.value) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+
+
+def test_sglang_smoke_accepts_baseline_only_without_handoff_fields(tmp_path):
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
         output_dir=tmp_path / "out",
@@ -107,6 +124,25 @@ def test_sglang_smoke_requires_handoff_unless_baseline_only(tmp_path):
 
     assert config.baseline_only is True
     assert config.local_dir == Path("/local_disk0/document-kv-sglang-smoke-sglang-1")
+
+
+def test_sglang_smoke_rejects_handoff_fields_for_baseline_only(tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    write_handoff_json(
+        handoff_path,
+        request_id="cachet-live-sglang-1",
+        payload_uri=f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            handoff_json=str(handoff_path),
+        )
+
+    assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
 
 
 def test_document_kv_package_install_spec_prefers_config_then_env(monkeypatch, tmp_path):
@@ -214,21 +250,35 @@ def test_sglang_hicache_provider_probe_accepts_builtin_provider(tmp_path):
     assert record["document_kv_provider_type"].endswith("DocumentKVHiCachePageProvider")
 
 
-def test_sglang_live_kv_transfer_params_validates_sglang_handoff(tmp_path):
+def test_sglang_smoke_cli_rejects_handoff_cache_arm_before_launch(monkeypatch, capsys, tmp_path):
     handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
     payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
     write_handoff_json(handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri)
-    config = SGLangSmokeBenchmarkConfig(
-        benchmark_id="sglang-1",
-        output_dir=tmp_path / "out",
-        handoff_json=str(handoff_path),
+
+    def fail_if_called(_config):
+        raise AssertionError("SGLang smoke must fail before server launch")
+
+    monkeypatch.setattr(public_sglang_smoke, "run_sglang_live_smoke", fail_if_called)
+
+    exit_code = public_sglang_smoke.main(
+        [
+            "--benchmark-id",
+            "sglang-1",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--handoff-json",
+            str(handoff_path),
+            "--payload-uri",
+            payload_uri,
+            "--request-id",
+            "cachet-live-sglang-1",
+        ]
     )
 
-    assert sglang_live_kv_transfer_params(config) == {
-        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-1",
-        DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
-        DOCUMENT_KV_PAYLOAD_URI_PARAM: payload_uri,
-    }
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert payload["error_type"] == "ValueError"
+    assert payload["error"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
 
 
 def test_build_metadata_records_custom_params_transport(tmp_path):
@@ -245,16 +295,15 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["kv_transfer_params_transport"] == "custom_params"
     assert metadata["cache_prompt_text_mode"] == "runtime"
     assert metadata["requires_kv_transfer_params"] is False
+    assert metadata["cache_arm_supported"] is False
+    assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
 
 
-def test_run_live_checks_uses_runtime_cache_arm_with_custom_params(monkeypatch, tmp_path):
-    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
-    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
-    write_handoff_json(handoff_path, request_id="cachet-live-sglang-2", payload_uri=payload_uri)
+def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkeypatch, tmp_path):
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
         output_dir=tmp_path / "out",
-        handoff_json=str(handoff_path),
+        baseline_only=True,
     )
     seen_configs = []
 
@@ -272,15 +321,15 @@ def test_run_live_checks_uses_runtime_cache_arm_with_custom_params(monkeypatch, 
     record = run_live_checks(config)
 
     assert record["ok"] is True
-    assert len(seen_configs) == 2
+    assert len(seen_configs) == 1
     assert seen_configs[0].use_cache_arm is False
     assert seen_configs[0].prompt_text_mode == "logical"
-    assert seen_configs[1].use_cache_arm is True
-    assert seen_configs[1].prompt_text_mode == "runtime"
-    assert seen_configs[1].kv_transfer_params_transport == "custom_params"
-    assert seen_configs[1].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM] == "cachet-live-sglang-2"
+    assert record["cache"] is None
+    assert record["requires_kv_transfer_params"] is False
+    assert record["cache_arm_supported"] is False
+    assert record["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
-    assert written["cache"]["request_id"] == "cachet-live-sglang-2"
+    assert written["cache"] is None
 
 
 def test_parse_args_builds_baseline_only_config(tmp_path):

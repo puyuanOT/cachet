@@ -26,7 +26,13 @@ from document_kv_cache.databricks_job import (
     _validated_spark_env_vars,
     build_single_node_gpu_cluster,
 )
-from document_kv_cache.sglang_smoke import DEFAULT_LOCAL_ROOT, SERVER_HOST, SERVER_PORT
+from document_kv_cache.sglang_smoke import (
+    DEFAULT_LOCAL_ROOT,
+    SERVER_HOST,
+    SERVER_PORT,
+    SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+    SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+)
 
 
 DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME = "document-kv-sglang-smoke"
@@ -169,10 +175,17 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
         if self.handoff_json and self.handoff_record_json:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record_json")
-        if not self.baseline_only and self.handoff_json is None and self.handoff_record_json is None:
-            raise ValueError("SGLang smoke cache arm requires handoff_json or handoff_record_json unless baseline_only=True")
         if self.handoff_record_json is not None:
             _json_object_from_text(self.handoff_record_json, "handoff_record_json")
+        has_handoff_fields = any(
+            value is not None
+            for value in (self.handoff_json, self.handoff_record_json, self.payload_uri, self.request_id)
+        )
+        if self.baseline_only:
+            if has_handoff_fields:
+                raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
+        else:
+            raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         if self.hicache_size_gb is not None and self.hicache_size_gb < 0:
             raise ValueError("hicache_size_gb must be non-negative")
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))

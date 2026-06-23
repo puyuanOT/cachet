@@ -14,15 +14,18 @@ benchmark result.
 ## Live Smoke Helper
 
 `document_kv_cache.sglang_smoke` and
-`document_kv_cache.databricks_sglang_smoke_job` now provide the strict live
-SGLang readiness path. The smoke launches pinned SGLang with Cachet's dynamic
-HiCache provider config, validates the provider factory, runs a full-prompt
-baseline, then runs a Cachet handoff-backed cache arm with suffix-only runtime
-prompt text and `kv_transfer_params` under SGLang `custom_params`.
+`document_kv_cache.databricks_sglang_smoke_job` provide the current live SGLang
+readiness path. The smoke launches pinned SGLang with Cachet's dynamic HiCache
+provider config, validates the provider factory, and runs a full-prompt
+baseline. Handoff-backed cache-arm execution is intentionally blocked before
+server launch because the pinned SGLang OpenAI path carries `custom_params` on
+sampling params but does not yet pass Cachet `kv_transfer_params` into the
+dynamic HiCache storage backend.
 
-Those helpers are a submission path, not a result. This report remains pending
-until a Databricks g6/L4 or g5/A10G run writes `sglang-live-smoke.json` with a
-passing baseline and cache arm.
+Those helpers are a provider/server bring-up path, not a benchmark result. Use
+`--baseline-only` until request-to-HiCache handoff binding is implemented. This
+report remains pending until a Databricks g6/L4 or g5/A10G run writes
+`sglang-live-smoke.json` with a passing handoff-backed cache arm.
 
 ## Benchmark Gate
 

@@ -1350,22 +1350,25 @@ environment, installs the pinned SGLang stack and Cachet wheel/source, launches
 `Qwen/Qwen3-4B-Instruct-2507` as `qwen3:4b-instruct` with Cachet's dynamic
 HiCache provider config, and writes `metadata.json`, `sglang-launch-config.json`,
 `sglang-import-probe.json`, `sglang-server.log`, and `sglang-live-smoke.json`.
-The cache arm is strict by default: it validates a SGLang Cachet handoff, sends
-the request suffix with `kv_transfer_params` under SGLang `custom_params`, and
-fails unless the live endpoint can answer from the cached prefix.
+The current helper is a baseline/provider bring-up gate only. Handoff-backed
+cache-arm execution fails before server launch because pinned SGLang carries
+OpenAI `custom_params` on sampling params but does not yet pass Cachet
+`kv_transfer_params` into the dynamic HiCache storage backend. Keep
+`--baseline-only` on these runs until request-to-HiCache binding is
+implemented.
 
 ```bash
 python -m document_kv_cache.sglang_smoke \
   --benchmark-id v1_sglang_live_001 \
   --output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live \
-  --handoff-json /Volumes/catalog/schema/volume/cachet/live/sglang.handoff.json \
+  --baseline-only \
   --hardware-target aws-g6-l4
 ```
 
 To submit that same smoke as a Databricks task, generate the runner script and
-single-node g5/g6 runs/submit payload. The helper rejects cache-arm jobs without
-`--handoff-json` or `--handoff-record-json`; pass `--baseline-only` only for a
-server bring-up check that must not be treated as Cachet benchmark evidence:
+single-node g5/g6 runs/submit payload. The helper rejects every handoff-backed
+SGLang cache-arm job until the live SGLang runtime consumes Cachet handoff
+params; baseline-only output must not be treated as Cachet benchmark evidence:
 
 ```bash
 mkdir -p databricks-runs/sglang-smoke
@@ -1376,7 +1379,7 @@ python -m document_kv_cache.databricks_sglang_smoke_job \
   --runner-script-output databricks-runs/sglang-smoke/run_sglang_smoke.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
-  --handoff-json /Volumes/catalog/schema/volume/cachet/live/sglang.handoff.json \
+  --baseline-only \
   --hardware-target aws-g6-l4 \
   --output-json databricks-runs/sglang-smoke/databricks-sglang-smoke-submit.json
 ```
@@ -1853,8 +1856,8 @@ The command prints a JSON record with TTFT, time-to-completion, token counts, `p
 
 For native engine paths, pass a validated Cachet handoff so the smoke request
 carries the same `kv_transfer_params` field as benchmark cache-arm requests.
-This is the next live SGLang validation step after the current native HiCache
-probe evidence:
+For SGLang, this request transport is a prerequisite but not sufficient for
+benchmark evidence until the live runtime passes those params into HiCache:
 
 ```bash
 python -m document_kv_cache.live_server \

@@ -14,12 +14,15 @@ from document_kv_cache.databricks_sglang_smoke_job import (
     write_databricks_sglang_smoke_run_submit_json,
     write_databricks_sglang_smoke_runner_script,
 )
+from document_kv_cache.sglang_smoke import (
+    SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+    SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+)
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl"
 SINGLE_USER_NAME = "user@example.com"
 HANDOFF_JSON = "/Volumes/catalog/schema/volume/live/sglang-live.handoff.json"
-PAYLOAD_URI = "uc-volume:/catalog/schema/volume/live/sglang-live.kv"
 
 
 def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
@@ -41,9 +44,7 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
         context_length=8192,
         mem_fraction_static=0.72,
         stream=False,
-        handoff_json=HANDOFF_JSON,
-        payload_uri=PAYLOAD_URI,
-        request_id="cachet-live-sglang-1",
+        baseline_only=True,
         hicache_page_store_uri="/local_disk0/cachet/sglang-hicache",
         hicache_size_gb=4,
         custom_tags={"team": "document-kv"},
@@ -96,12 +97,7 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
             "--cache-prompt-text-mode",
             "runtime",
             "--no-stream",
-            "--handoff-json",
-            HANDOFF_JSON,
-            "--payload-uri",
-            PAYLOAD_URI,
-            "--request-id",
-            "cachet-live-sglang-1",
+            "--baseline-only",
             "--hicache-page-store-uri",
             "/local_disk0/cachet/sglang-hicache",
             "--hicache-size-gb",
@@ -112,7 +108,7 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
     }
 
 
-def test_databricks_sglang_smoke_config_requires_handoff_unless_baseline_only():
+def test_databricks_sglang_smoke_config_rejects_cache_arm_until_binding_exists():
     try:
         DatabricksSGLangSmokeJobConfig(
             benchmark_id="v1-sglang-smoke-001",
@@ -121,9 +117,22 @@ def test_databricks_sglang_smoke_config_requires_handoff_unless_baseline_only():
             single_user_name=SINGLE_USER_NAME,
         )
     except ValueError as exc:
-        assert "requires handoff_json or handoff_record_json" in str(exc)
+        assert str(exc) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
     else:
-        raise AssertionError("expected handoff validation to fail")
+        raise AssertionError("expected unsupported cache-arm validation to fail")
+
+    try:
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="v1-sglang-smoke-001",
+            output_dir="/Volumes/catalog/schema/volume/v1-sglang-smoke",
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            single_user_name=SINGLE_USER_NAME,
+            handoff_json=HANDOFF_JSON,
+        )
+    except ValueError as exc:
+        assert str(exc) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+    else:
+        raise AssertionError("expected unsupported handoff validation to fail")
 
     config = DatabricksSGLangSmokeJobConfig(
         benchmark_id="v1-sglang-baseline-001",
@@ -145,8 +154,15 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         ({"context_length": 0, "baseline_only": True}, "context_length must be positive"),
         ({"mem_fraction_static": 0, "baseline_only": True}, "mem_fraction_static must be in"),
         ({"cache_prompt_text_mode": "full", "baseline_only": True}, "cache_prompt_text_mode"),
-        ({"handoff_json": HANDOFF_JSON, "handoff_record_json": "{}"}, "only one of handoff_json"),
-        ({"handoff_json": None, "handoff_record_json": "[]"}, "handoff_record_json must decode"),
+        (
+            {"handoff_json": HANDOFF_JSON, "handoff_record_json": "{}", "baseline_only": True},
+            "only one of handoff_json",
+        ),
+        ({"handoff_record_json": "[]", "baseline_only": True}, "handoff_record_json must decode"),
+        (
+            {"handoff_json": HANDOFF_JSON, "baseline_only": True},
+            SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+        ),
         ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}, "baseline_only": True}, "looks secret-bearing"),
     ]
 
@@ -156,7 +172,7 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
             "output_dir": "/Volumes/catalog/schema/volume/v1-sglang-smoke",
             "runner_python_file": "dbfs:/benchmarks/run_sglang_smoke.py",
             "single_user_name": SINGLE_USER_NAME,
-            "handoff_json": HANDOFF_JSON,
+            "baseline_only": True,
         }
         kwargs.update(overrides)
         try:
@@ -290,7 +306,7 @@ def test_write_databricks_sglang_smoke_run_submit_json_writes_payload(tmp_path):
             output_dir="/Volumes/catalog/schema/volume/v1-sglang-smoke",
             runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
             single_user_name=SINGLE_USER_NAME,
-            handoff_json=HANDOFF_JSON,
+            baseline_only=True,
         ),
         path,
     )
@@ -315,8 +331,7 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
             SINGLE_USER_NAME,
             "--wheel-uri",
             WHEEL_URI,
-            "--handoff-json",
-            HANDOFF_JSON,
+            "--baseline-only",
             "--spark-env-var",
             "CACHET_SGLANG_TRACE=1",
             "--output-json",

@@ -52,6 +52,17 @@ SERVER_PORT = 8000
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
+SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
+    "SGLang handoff-backed live smoke is not supported yet: the pinned SGLang "
+    "OpenAI path carries custom_params on sampling params but does not pass "
+    "Cachet kv_transfer_params into the dynamic HiCache storage backend. Use "
+    "--baseline-only for provider/server bring-up until request-to-HiCache "
+    "handoff binding is implemented."
+)
+SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE = (
+    "baseline-only SGLang smoke must not include handoff_json, handoff_record, handoff_record_json, "
+    "payload_uri, or request_id"
+)
 
 __all__ = [
     "SGLANG_VERSION",
@@ -60,6 +71,8 @@ __all__ = [
     "SERVED_MODEL_NAME",
     "SERVER_BASE_URL",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
+    "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
+    "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
     "SGLangSmokeBenchmarkConfig",
     "build_metadata",
     "build_sglang_hicache_provider_probe_record",
@@ -148,10 +161,17 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
         if self.handoff_json and self.handoff_record is not None:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record")
-        if not self.baseline_only and self.handoff_json is None and self.handoff_record is None:
-            raise ValueError("SGLang smoke cache arm requires handoff_json or handoff_record unless baseline_only=True")
         if self.handoff_record is not None and not isinstance(self.handoff_record, Mapping):
             raise ValueError("handoff_record must be a JSON object")
+        has_handoff_fields = any(
+            value is not None
+            for value in (self.handoff_json, self.handoff_record, self.payload_uri, self.request_id)
+        )
+        if self.baseline_only:
+            if has_handoff_fields:
+                raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
+        else:
+            raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         object.__setattr__(self, "local_root", Path(self.local_root))
         if self.handoff_record is not None:
@@ -268,7 +288,9 @@ def build_metadata(
         "hardware_target": config.hardware_target,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "baseline_only": config.baseline_only,
-        "requires_kv_transfer_params": not config.baseline_only,
+        "cache_arm_supported": False,
+        "cache_arm_blocker": SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        "requires_kv_transfer_params": False,
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
         "kv_transfer_params_transport": "custom_params",
         "sglang_hicache_launch_config": dict(launch_config or sglang_hicache_config_for_smoke(config)),
@@ -342,6 +364,8 @@ def build_sglang_hicache_provider_probe_record(
 
 
 def sglang_live_kv_transfer_params(config: SGLangSmokeBenchmarkConfig) -> dict[str, Any]:
+    if not config.baseline_only:
+        raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
     params = live_check_kv_transfer_params(
         handoff_json=config.handoff_json,
         handoff_record=config.handoff_record,
@@ -349,8 +373,6 @@ def sglang_live_kv_transfer_params(config: SGLangSmokeBenchmarkConfig) -> dict[s
         payload_uri=config.payload_uri,
         expected_backend=ServingBackend.SGLANG,
     )
-    if not config.baseline_only and not params:
-        raise ValueError("SGLang smoke cache arm requires non-empty kv_transfer_params")
     return params
 
 
@@ -376,6 +398,8 @@ def document_kv_package_install_spec(config: SGLangSmokeBenchmarkConfig) -> str:
 
 
 def run_live_checks(config: SGLangSmokeBenchmarkConfig) -> dict[str, object]:
+    if not config.baseline_only:
+        raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
     baseline = run_openai_compatible_live_check(
         LiveServerCheckConfig(
             base_url=config.server_base_url,
@@ -390,31 +414,10 @@ def run_live_checks(config: SGLangSmokeBenchmarkConfig) -> dict[str, object]:
     baseline_record = baseline.to_record()
     baseline_record["label"] = "baseline_prefill"
     cache_record: dict[str, object] | None = None
-    if not config.baseline_only:
-        params = sglang_live_kv_transfer_params(config)
-        cache = run_openai_compatible_live_check(
-            LiveServerCheckConfig(
-                base_url=config.server_base_url,
-                model_id=SERVED_MODEL_NAME,
-                hardware_target=config.hardware_target,
-                use_cache_arm=True,
-                prompt_text_mode=config.cache_prompt_text_mode,
-                prompt_token_accounting="server_usage",
-                kv_transfer_params_transport="custom_params",
-                max_tokens=config.max_tokens,
-                timeout_seconds=config.timeout_seconds,
-                stream=config.stream,
-                kv_transfer_params=params,
-            )
-        )
-        cache_record = cache.to_record()
-        cache_record["label"] = "document_kv_cache"
 
     issues = []
     if baseline_record.get("ok") is not True:
         issues.append("baseline live check failed")
-    if not config.baseline_only and (cache_record is None or cache_record.get("ok") is not True):
-        issues.append("SGLang document KV cache live check failed")
     record = {
         "ok": not issues,
         "benchmark_id": config.benchmark_id,
@@ -422,7 +425,9 @@ def run_live_checks(config: SGLangSmokeBenchmarkConfig) -> dict[str, object]:
         "model_id": SERVED_MODEL_NAME,
         "hardware_target": config.hardware_target,
         "baseline_only": config.baseline_only,
-        "requires_kv_transfer_params": not config.baseline_only,
+        "cache_arm_supported": False,
+        "cache_arm_blocker": SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        "requires_kv_transfer_params": False,
         "kv_transfer_params_transport": "custom_params",
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
         "baseline": baseline_record,
