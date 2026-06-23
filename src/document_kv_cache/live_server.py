@@ -13,10 +13,19 @@ from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     BenchmarkExample,
+    DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_HANDOFF_RECORD_PARAM,
+    DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_REQUEST_ID_PARAM,
     answer_found,
     baseline_prefill_arm,
     build_prompt_parts,
     document_kv_cache_arm,
+)
+from document_kv_cache.engine_adapters import (
+    ServingBackend,
+    read_engine_adapter_request_json,
+    validate_engine_adapter_request_record,
 )
 from document_kv_cache.openai_compatible import (
     OpenAICompatibleCompletionEngine,
@@ -32,6 +41,7 @@ __all__ = [
     "LiveServerCheckConfig",
     "LiveServerCheckResult",
     "build_live_server_check_request",
+    "live_check_kv_transfer_params",
     "run_openai_compatible_live_check",
     "main",
 ]
@@ -54,6 +64,7 @@ class LiveServerCheckConfig:
     expected_answer: str = DEFAULT_LIVE_CHECK_ANSWER
     api_key: str | None = None
     extra_body: Mapping[str, Any] = field(default_factory=dict)
+    kv_transfer_params: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.base_url:
@@ -64,6 +75,11 @@ class LiveServerCheckConfig:
             raise ValueError("timeout_seconds must be positive")
         if self.prompt_text_mode == "runtime" and not self.use_cache_arm:
             raise ValueError("prompt_text_mode='runtime' requires use_cache_arm=True")
+        if not isinstance(self.kv_transfer_params, Mapping):
+            raise ValueError("kv_transfer_params must be a mapping")
+        object.__setattr__(self, "kv_transfer_params", dict(self.kv_transfer_params))
+        if self.kv_transfer_params and not self.use_cache_arm:
+            raise ValueError("kv_transfer_params require use_cache_arm=True")
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +101,10 @@ class LiveServerCheckResult:
             "hardware_target": self.request.hardware_target,
             "dataset": self.request.example.dataset,
             "arm_id": self.request.arm.arm_id,
+            "request_id": self.request.request_id,
             "prompt_text_mode": self.prompt_text_mode,
+            "kv_transfer_params_present": bool(self.request.kv_transfer_params),
+            "kv_transfer_param_keys": sorted(self.request.kv_transfer_params),
             "logical_prompt_chars": len(self.request.logical_prompt_text),
             "runtime_prompt_chars": len(self.request.runtime_prompt_text),
             "prompt_tokens": self.generation.prompt_tokens,
@@ -105,7 +124,11 @@ def build_live_server_check_request(
     hardware_target: str = DEFAULT_HARDWARE_TARGET,
     use_cache_arm: bool = False,
     expected_answer: str = DEFAULT_LIVE_CHECK_ANSWER,
+    kv_transfer_params: Mapping[str, Any] | None = None,
 ) -> BenchmarkEngineRequest:
+    params = {} if kv_transfer_params is None else dict(kv_transfer_params)
+    if params and not use_cache_arm:
+        raise ValueError("kv_transfer_params require use_cache_arm=True")
     example = BenchmarkExample(
         example_id="live-niah-synthetic-nonce",
         dataset="niah",
@@ -123,15 +146,66 @@ def build_live_server_check_request(
         ),
         query="What is the hidden live-check verification code?",
         expected_answer=expected_answer,
+        kv_transfer_params=params,
     )
+    arm = document_kv_cache_arm() if use_cache_arm else baseline_prefill_arm()
+    request_params = example.kv_transfer_params if arm.uses_cache else {}
     return BenchmarkEngineRequest(
         suite_id=LIVE_CHECK_SUITE_ID,
         model_id=model_id,
         hardware_target=hardware_target,
         example=example,
-        arm=document_kv_cache_arm() if use_cache_arm else baseline_prefill_arm(),
+        arm=arm,
         prompt_parts=build_prompt_parts(example),
+        request_id=_request_id_from_kv_transfer_params(request_params),
+        kv_transfer_params=request_params,
     )
+
+
+def live_check_kv_transfer_params(
+    *,
+    handoff_json: str | None = None,
+    handoff_record: Mapping[str, Any] | None = None,
+    request_id: str | None = None,
+    payload_uri: str | None = None,
+    expected_backend: ServingBackend | str | None = None,
+) -> dict[str, Any]:
+    """Build strict Cachet handoff params for live endpoint smoke checks."""
+
+    if handoff_json and handoff_record is not None:
+        raise ValueError("live check handoff params must use only one of handoff_json or handoff_record")
+    if handoff_json is None and handoff_record is None:
+        if request_id is not None or payload_uri is not None:
+            raise ValueError("request_id and payload_uri require handoff_json or handoff_record")
+        return {}
+    if handoff_json is not None:
+        record = read_engine_adapter_request_json(
+            handoff_json,
+            expected_backend=expected_backend,
+            require_external_payload_uri=payload_uri is None,
+        )
+        params: dict[str, Any] = {
+            DOCUMENT_KV_REQUEST_ID_PARAM: _resolve_request_id(request_id, record),
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: handoff_json,
+        }
+    else:
+        if not isinstance(handoff_record, Mapping):
+            raise ValueError("handoff_record must be a JSON object")
+        record = dict(handoff_record)
+        validate_engine_adapter_request_record(
+            record,
+            expected_backend=expected_backend,
+            require_external_payload_uri=payload_uri is None,
+        )
+        params = {
+            DOCUMENT_KV_REQUEST_ID_PARAM: _resolve_request_id(request_id, record),
+            DOCUMENT_KV_HANDOFF_RECORD_PARAM: record,
+        }
+    resolved_payload_uri = _resolve_payload_uri(payload_uri, record)
+    if resolved_payload_uri is not None:
+        params[DOCUMENT_KV_PAYLOAD_URI_PARAM] = resolved_payload_uri
+    build_live_server_check_request(use_cache_arm=True, kv_transfer_params=params)
+    return params
 
 
 def run_openai_compatible_live_check(
@@ -144,6 +218,7 @@ def run_openai_compatible_live_check(
         hardware_target=config.hardware_target,
         use_cache_arm=config.use_cache_arm,
         expected_answer=config.expected_answer,
+        kv_transfer_params=config.kv_transfer_params,
     )
     active_engine = engine or OpenAICompatibleCompletionEngine(
         OpenAICompatibleEngineConfig(
@@ -191,12 +266,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--extra-body-json", default="{}", help="Additional JSON fields merged into the request body.")
+    parser.add_argument(
+        "--handoff-json",
+        help="Validated Cachet engine-adapter handoff JSON path to send through kv_transfer_params.",
+    )
+    parser.add_argument(
+        "--handoff-record-json",
+        help="Inline Cachet engine-adapter handoff JSON object to send through kv_transfer_params.",
+    )
+    parser.add_argument(
+        "--payload-uri",
+        help="Optional adapter-readable payload URI override for the live handoff.",
+    )
+    parser.add_argument(
+        "--request-id",
+        help="Optional request id override; must match the handoff record request id when provided.",
+    )
+    parser.add_argument(
+        "--expected-backend",
+        choices=[ServingBackend.VLLM.value, ServingBackend.SGLANG.value],
+        help="Validate the live handoff against a specific serving backend before sending it.",
+    )
     args = parser.parse_args(argv)
 
     try:
         extra_body = json.loads(args.extra_body_json)
         if not isinstance(extra_body, Mapping):
             raise ValueError("--extra-body-json must decode to a JSON object")
+        handoff_record = _json_object_option(args.handoff_record_json, "--handoff-record-json")
+        kv_transfer_params = live_check_kv_transfer_params(
+            handoff_json=args.handoff_json,
+            handoff_record=handoff_record,
+            request_id=args.request_id,
+            payload_uri=args.payload_uri,
+            expected_backend=args.expected_backend,
+        )
         result = run_openai_compatible_live_check(
             LiveServerCheckConfig(
                 base_url=args.base_url,
@@ -210,6 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 prompt_text_mode="runtime" if args.runtime_prompt else "logical",
                 prompt_token_accounting="server_usage" if args.server_usage else "logical",
                 extra_body=extra_body,
+                kv_transfer_params=kv_transfer_params,
             )
         )
     except Exception as exc:
@@ -218,6 +323,47 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(json.dumps(result.to_record(), indent=2, sort_keys=True))
     return 0 if result.ok else 2
+
+
+def _request_id_from_kv_transfer_params(params: Mapping[str, Any]) -> str | None:
+    if not params:
+        return None
+    request_id = params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+    if isinstance(request_id, str) and request_id:
+        return request_id
+    return None
+
+
+def _resolve_request_id(request_id: str | None, record: Mapping[str, Any]) -> str:
+    record_request_id = record.get("request_id")
+    if not isinstance(record_request_id, str) or not record_request_id:
+        raise ValueError("handoff record request_id must be a non-empty string")
+    if request_id is not None and request_id != record_request_id:
+        raise ValueError("request_id must match the handoff record request_id")
+    return record_request_id
+
+
+def _resolve_payload_uri(payload_uri: str | None, record: Mapping[str, Any]) -> str | None:
+    if payload_uri is not None:
+        return payload_uri
+    payload_source = record.get("payload_source")
+    if not isinstance(payload_source, Mapping):
+        return None
+    uri = payload_source.get("uri")
+    if uri is None:
+        return None
+    if not isinstance(uri, str) or not uri:
+        raise ValueError("handoff record payload_source.uri must be a non-empty string when present")
+    return uri
+
+
+def _json_object_option(value: str | None, option_name: str) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    decoded = json.loads(value)
+    if not isinstance(decoded, Mapping):
+        raise ValueError(f"{option_name} must decode to a JSON object")
+    return decoded
 
 
 if __name__ == "__main__":  # pragma: no cover

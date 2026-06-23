@@ -1810,6 +1810,25 @@ python -m document_kv_cache.live_server \
 
 The command prints a JSON record with TTFT, time-to-completion, token counts, `prompt_token_source`, answer-found quality, and the prompt mode used. Add `--cache-arm --runtime-prompt` only for a KV-aware proxy that injects the cached prefix out of band; ordinary OpenAI-compatible servers should use the default full-prompt mode.
 
+For native engine paths, pass a validated Cachet handoff so the smoke request
+carries the same `kv_transfer_params` field as benchmark cache-arm requests.
+This is the next live SGLang validation step after the current native HiCache
+probe evidence:
+
+```bash
+python -m document_kv_cache.live_server \
+  --base-url http://localhost:8000 \
+  --model-id qwen3:4b-instruct \
+  --cache-arm \
+  --handoff-json /Volumes/catalog/schema/volume/cachet/live/sglang.handoff.json \
+  --expected-backend sglang
+```
+
+The command validates the handoff backend and derives the request id and payload
+URI before sending the OpenAI-compatible request. Use full-prompt mode for
+engine-native scheduling; reserve `--runtime-prompt` for a proxy that binds the
+cached prefix before forwarding the suffix.
+
 ## Development
 
 This package uses Poetry metadata with exact direct dependency pins: Python

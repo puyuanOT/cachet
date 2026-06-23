@@ -258,6 +258,7 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'LiveServerCheckConfig',
     'LiveServerCheckResult',
     'build_live_server_check_request',
+    'live_check_kv_transfer_params',
     'run_openai_compatible_live_check',
     'InMemoryManifestStore',
     'ManifestStore',

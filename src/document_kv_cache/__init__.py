@@ -308,6 +308,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     'LiveServerCheckConfig': ('document_kv_cache.live_server', 'LiveServerCheckConfig'),
     'LiveServerCheckResult': ('document_kv_cache.live_server', 'LiveServerCheckResult'),
     'build_live_server_check_request': ('document_kv_cache.live_server', 'build_live_server_check_request'),
+    'live_check_kv_transfer_params': ('document_kv_cache.live_server', 'live_check_kv_transfer_params'),
     'run_openai_compatible_live_check': ('document_kv_cache.live_server', 'run_openai_compatible_live_check'),
     'InMemoryManifestStore': ('document_kv_cache.manifest', 'InMemoryManifestStore'),
     'ManifestStore': ('document_kv_cache.manifest', 'ManifestStore'),
