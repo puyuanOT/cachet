@@ -5,8 +5,9 @@ mean:
 
 - **Implemented:** source, tests, and documentation exist in the repository.
 - **Release-gated:** source/tests exist, but V1 publication still needs target
-  AWS g6/L4, g5/A10G compatibility, or Unity Catalog evidence in the release
-  bundle.
+  AWS g6/L4 or Unity Catalog evidence in the release bundle. Non-default
+  g5/A10G compatibility evidence is tracked separately and never substitutes
+  for the strict release target.
 - **Remaining:** the repository intentionally records the work as unfinished.
 
 ## Ecosystem And Infrastructure
@@ -22,7 +23,7 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g5/A10G and g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `315109189523858` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. | Publish the complete strict g6/L4 release bundle once GitHub governance is release-ready, and keep g5/A10G compatibility evidence refreshed when benchmark, model, or native connector contracts change. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `315109189523858` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. | Publish the complete strict g6/L4 release bundle once GitHub governance is release-ready, and keep g5/A10G compatibility evidence refreshed when benchmark, model, or native connector contracts change. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
 | Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. QA benchmark run `426398182137665` produced `document_kv.benchmark_run.v1` evidence with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.18x to 6.78x, and time-to-completion speedups from 1.74x to 2.22x. | Bundle the refreshed benchmark report and run-status sidecar in the strict release bundle after GitHub governance is release-ready. |
 | Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. QA benchmark run `426398182137665` completed Biography, HotpotQA, MusiQue, and NIAH with release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, or native connector behavior changes. |
