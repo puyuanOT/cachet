@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -378,9 +378,36 @@ def _legacy_past_key_values(past_key_values: object) -> tuple[object, ...]:
     value_cache = getattr(past_key_values, "value_cache", None)
     if key_cache is not None and value_cache is not None:
         return tuple(zip(tuple(key_cache), tuple(value_cache), strict=True))
+    layer_cache = _layer_past_key_values(past_key_values)
+    if layer_cache is not None:
+        return layer_cache
     if isinstance(past_key_values, (tuple, list)):
         return tuple(past_key_values)
+    if isinstance(past_key_values, Iterable) and not isinstance(
+        past_key_values, (str, bytes, bytearray, Mapping)
+    ):
+        return tuple(past_key_values)
     raise TypeError("model outputs must include tuple-like past_key_values")
+
+
+def _layer_past_key_values(past_key_values: object) -> tuple[object, ...] | None:
+    layers = getattr(past_key_values, "layers", None)
+    if layers is None:
+        return None
+    try:
+        layer_tuple = tuple(layers)
+    except TypeError:
+        return None
+    legacy_layers = []
+    for layer_index, layer in enumerate(layer_tuple):
+        key = getattr(layer, "keys", None)
+        value = getattr(layer, "values", None)
+        if key is None or value is None:
+            raise TypeError(
+                f"past_key_values.layers[{layer_index}] must expose keys and values tensors"
+            )
+        legacy_layers.append((key, value))
+    return tuple(legacy_layers)
 
 
 def _key_value_pair(layer: object, *, layer_index: int) -> tuple[object, object]:

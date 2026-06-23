@@ -66,6 +66,17 @@ class TinyModel:
         return SimpleNamespace(past_key_values=self.past_key_values)
 
 
+class ModernLayerCache:
+    def __init__(self, key, value) -> None:
+        self.keys = key
+        self.values = value
+
+
+class ModernPastKeyValues:
+    def __init__(self, layers) -> None:
+        self.layers = [ModernLayerCache(key, value) for key, value in layers]
+
+
 def tiny_layout(
     *,
     dtype: str = "float32",
@@ -169,6 +180,33 @@ def test_transformers_generator_emits_token_major_layer_major_payload():
         }
     ]
     assert model.calls[0]["use_cache"] is True
+
+
+def test_transformers_generator_accepts_transformers5_layer_cache():
+    layout = tiny_layout()
+    first_layer = layer([[1, 2], [3, 4]], [[11, 12], [13, 14]])
+    second_layer = layer([[21, 22], [23, 24]], [[31, 32], [33, 34]])
+    tokenizer = TinyTokenizer(token_count=2)
+    model = TinyModel(ModernPastKeyValues((first_layer, second_layer)))
+    source = document()
+    generator = TransformersKVChunkGenerator(model=model, tokenizer=tokenizer, layout=layout)
+
+    pack_chunk = generator.generate(
+        document=source,
+        chunk=source.chunks[0],
+        config=build_config(layout),
+    )
+
+    layer_0 = torch.stack(
+        (first_layer[0][0].permute(1, 0, 2), first_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    )
+    layer_1 = torch.stack(
+        (second_layer[0][0].permute(1, 0, 2), second_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    )
+    expected = torch.stack((layer_0, layer_1), dim=1).contiguous()
+    assert pack_chunk.payload == tensor_bytes(expected)
 
 
 def test_transformers_generator_emits_bfloat16_payload_for_shared_layout():
