@@ -1453,6 +1453,20 @@ def _single_target_allow_non_native_probe_from_cli(args: argparse.Namespace) -> 
     return args.allow_non_native_probe
 
 
+def _single_target_fixture_payload_mode_from_cli(args: argparse.Namespace) -> PayloadMode:
+    preset = _provider_backed_native_probe_preset(args)
+    if preset is None:
+        return args.fixture_payload_mode or PayloadMode.SEGMENTED
+    expected = _native_probe_adapter_payload_mode()
+    if args.fixture_payload_mode is not None and _payload_mode(args.fixture_payload_mode) != expected:
+        option_name = _provider_backed_native_probe_option_name(preset)
+        raise ValueError(
+            f"{option_name} sets --fixture-payload-mode to {expected.value!r}; "
+            f"got conflicting value {args.fixture_payload_mode!r}"
+        )
+    return expected
+
+
 def _append_required_pip_packages(
     packages: list[str],
     *,
@@ -1755,7 +1769,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     _PROVIDER_BACKED_NATIVE_PROBE_DELEGATE_FACTORIES,
                 ),
                 fixture_output_dir=args.fixture_output_dir,
-                fixture_payload_mode=args.fixture_payload_mode or PayloadMode.SEGMENTED,
+                fixture_payload_mode=_single_target_fixture_payload_mode_from_cli(args),
                 vllm_runtime_preflight_output_json=args.vllm_runtime_preflight_output_json,
                 vllm_runtime_preflight_layer_names_json=args.vllm_runtime_preflight_layer_names_json,
                 sglang_runtime_preflight_output_json=args.sglang_runtime_preflight_output_json,

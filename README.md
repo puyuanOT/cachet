@@ -470,7 +470,9 @@ for the built-in vLLM path. It sets the Cachet vLLM probe factory, the
 provider-backed connector metadata, `--expected-backend vllm`, and Cachet's
 pinned vLLM serving dependency profile. The fixture option writes deterministic
 Qwen3 handoff/payload/action artifacts on the target node before the native
-probe runs. In release-safe mode, the preset also requires
+probe runs; when a fixture is requested, the preset defaults the fixture payload
+mode to the native adapter contract (`merged`) and rejects conflicting modes.
+In release-safe mode, the preset also requires
 `--native-probe-factories-output-json` plus a vLLM runtime preflight output path
 and a layer-name JSON source from the runtime registration check; the
 Databricks runner writes the native-factory diagnostics from inside the
@@ -993,6 +995,9 @@ fixture payload format. The fixture directory includes the `.kvpack`, payload,
 handoff JSON, and `qwen3-v1-fixture.actions.json` connector-action sidecar so
 native adapter work can inspect the exact reserve/copy/bind/release descriptors
 before running a backend block-manager probe.
+When `--engine-probe-use-builtin-factories` selects Cachet's built-in native
+probe factories, fixture-backed planned probes default to the native adapter
+contract (`merged`).
 When `--engine-probe-actions-output-json` is omitted for a fixture-backed probe,
 the plan uses that derived `qwen3-v1-fixture.actions.json` path as the release
 connector-action sidecar and avoids rewriting it from the probe command.

@@ -3366,10 +3366,6 @@ def test_main_derives_fixture_actions_for_release_planned_engine_probes(tmp_path
             f"vllm={vllm_fixture_dir}",
             "--engine-probe-fixture-output-dir",
             f"sglang={sglang_fixture_dir}",
-            "--engine-probe-fixture-payload-mode",
-            "vllm=merged",
-            "--engine-probe-fixture-payload-mode",
-            "sglang=merged",
             "--engine-probe-output-json",
             f"vllm={tmp_path / 'vllm-probe.json'}",
             "--engine-probe-output-json",
@@ -3384,11 +3380,20 @@ def test_main_derives_fixture_actions_for_release_planned_engine_probes(tmp_path
 
     record = json.loads(plan_json.read_text(encoding="utf-8"))
     command_names = [command["name"] for command in record["commands"]]
+    sglang_fixture_argv = record["commands"][command_names.index("write-sglang-engine-probe-fixture")]["argv"]
+    vllm_fixture_argv = record["commands"][command_names.index("write-vllm-engine-probe-fixture")]["argv"]
     sglang_probe_argv = record["commands"][command_names.index("run-sglang-engine-probe")]["argv"]
     vllm_probe_argv = record["commands"][command_names.index("run-vllm-engine-probe")]["argv"]
     release_argv = record["commands"][-1]["argv"]
+    planned_modes = {
+        probe["backend"]: probe["fixture_payload_mode"]
+        for probe in record["planned_engine_probes"]
+    }
 
     assert exit_code == 0
+    assert planned_modes == {"sglang": "merged", "vllm": "merged"}
+    assert sglang_fixture_argv[sglang_fixture_argv.index("--payload-mode") + 1] == "merged"
+    assert vllm_fixture_argv[vllm_fixture_argv.index("--payload-mode") + 1] == "merged"
     assert record["release_engine_actions_jsons"] == [str(sglang_actions_json), str(vllm_actions_json)]
     assert "--actions-output-json" not in sglang_probe_argv
     assert "--actions-output-json" not in vllm_probe_argv
@@ -3400,6 +3405,8 @@ def test_main_derives_fixture_actions_for_release_planned_engine_probes(tmp_path
 def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_path):
     plan_json = tmp_path / "plan.json"
     targets_json = tmp_path / "engine-probe-targets.json"
+    vllm_fixture_dir = tmp_path / "vllm-fixture"
+    sglang_fixture_dir = tmp_path / "sglang-fixture"
 
     exit_code = main(
         [
@@ -3416,16 +3423,16 @@ def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_pat
             str(tmp_path / "storage.json"),
             "--storage-benchmark-uc-volume-root",
             "/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
-            "--engine-probe-handoff-json",
-            f"vllm={tmp_path / 'vllm-handoff.json'}",
+            "--engine-probe-fixture-output-dir",
+            f"vllm={vllm_fixture_dir}",
             "--engine-probe-output-json",
             f"vllm={tmp_path / 'vllm-probe.json'}",
             "--engine-probe-actions-output-json",
             f"vllm={tmp_path / 'vllm-actions.json'}",
             "--engine-probe-native-probe-factories-output-json",
             f"vllm={tmp_path / 'vllm-native-probe-factories.json'}",
-            "--engine-probe-handoff-json",
-            f"sglang={tmp_path / 'sglang-handoff.json'}",
+            "--engine-probe-fixture-output-dir",
+            f"sglang={sglang_fixture_dir}",
             "--engine-probe-output-json",
             f"sglang={tmp_path / 'sglang-probe.json'}",
             "--engine-probe-actions-output-json",
@@ -3450,15 +3457,28 @@ def test_main_can_fill_builtin_engine_probe_factories_for_planned_probes(tmp_pat
     record = json.loads(plan_json.read_text(encoding="utf-8"))
     targets_record = json.loads(targets_json.read_text(encoding="utf-8"))
     factories = {probe["backend"]: probe["probe_factory"] for probe in record["planned_engine_probes"]}
+    planned_modes = {
+        probe["backend"]: probe["fixture_payload_mode"]
+        for probe in record["planned_engine_probes"]
+    }
 
     assert exit_code == 0
     assert factories == {
         "sglang": SGLANG_NATIVE_PROBE_FACTORY,
         "vllm": VLLM_NATIVE_PROBE_FACTORY,
     }
+    assert planned_modes == {"sglang": "merged", "vllm": "merged"}
     assert targets_record["release_safe"] is True
     sglang_target = next(probe for probe in targets_record["probes"] if probe["backend"] == "sglang")
     vllm_target = next(probe for probe in targets_record["probes"] if probe["backend"] == "vllm")
+    assert sglang_target["fixture_payload_mode"] == "merged"
+    assert sglang_target["handoff_json"] == str(
+        sglang_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+    )
+    assert vllm_target["fixture_payload_mode"] == "merged"
+    assert vllm_target["handoff_json"] == str(
+        vllm_fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]
+    )
     assert sglang_target["sglang_runtime_preflight_output_json"] == str(
         tmp_path / "sglang-runtime-preflight.json"
     )

@@ -193,6 +193,8 @@ For Cachet's built-in provider-backed vLLM path,
 `--provider-backed-vllm-native-probe` fills in the Cachet probe factory, vLLM
 delegate factory, strict connector metadata, expected backend, and pinned
 vLLM serving dependency profile.
+When a fixture is requested, the preset defaults the fixture payload mode to the
+native adapter contract (`merged`) and rejects conflicting modes.
 In release-safe mode it also requires the vLLM runtime preflight output path and
 layer-name JSON source so the Databricks runner can validate the installed vLLM
 contract and layer mapping before starting the native probe. It rejects debug
