@@ -446,6 +446,8 @@ class DocumentKVNativeProvider:
         try:
             merged_payload = _merged_payload(load.actions, load.payload)
             payload_view = _payload_tensor_view(merged_payload, load)
+            block_size = load.actions.reservation.layout.block_size
+            slot_mappings: dict[object | None, object] = {}
             for layer_name, dst_layer in self._kv_caches.items():
                 layer_index = self._layer_indices[layer_name]
                 if layer_index >= load.actions.reservation.layout.num_layers:
@@ -456,16 +458,18 @@ class DocumentKVNativeProvider:
                     layer_index=layer_index,
                     dst_kv_cache_layer=dst_layer,
                 )
-                slot_mapping = slot_mapping_from_blocks(
-                    load.blocks,
-                    block_size=load.actions.reservation.layout.block_size,
-                    device=getattr(dst_layer, "device", None),
-                )
+                device = getattr(dst_layer, "device", None)
+                if device not in slot_mappings:
+                    slot_mappings[device] = slot_mapping_from_blocks(
+                        load.blocks,
+                        block_size=block_size,
+                        device=device,
+                    )
                 inject_kv_cache_layer(
                     dst_layer,
                     src_layer,
-                    slot_mapping,
-                    block_size=load.actions.reservation.layout.block_size,
+                    slot_mappings[device],
+                    block_size=block_size,
                 )
                 self._layers_loaded += 1
         except Exception:
