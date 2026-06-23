@@ -1755,15 +1755,26 @@ type annotations after installation.
 
 ## Remaining V1 Work
 
-- Run and publish the complete release bundle from target AWS g6/L4/UC runs,
-  including the V1 benchmark and storage-reader benchmark plus the strict
-  artifact set: release evidence sidecar, preflight sidecar, vLLM/SGLang native
-  engine probe sidecars, vLLM/SGLang connector action sidecars, vLLM/SGLang
-  engine launch config sidecars, benchmark plan execution sidecar, Databricks
-  run-status sidecars for benchmark, storage, and vLLM/SGLang engine-probe
-  runs, tested package wheel, PR evidence sidecar, V1 requirements matrix,
-  GitHub governance sidecar, repository hygiene sidecar, and native probe
-  factory diagnostics sidecar.
-- Run the connector action descriptors validation probe against native engine block managers in vLLM and SGLang.
+- Publish the complete strict release bundle from the target AWS g6/L4/UC
+  evidence set. The benchmark, storage-reader, and vLLM/SGLang native
+  engine-probe Databricks runs have succeeded, and release evidence over the
+  benchmark, storage, connector action descriptors, and native engine block managers
+  is green. The current no-governance bundle validates with the strict artifact
+  set that is not GitHub-controlled: release evidence sidecar,
+  preflight sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
+  connector action sidecars, vLLM/SGLang engine launch config sidecars,
+  benchmark plan execution sidecar, Databricks run-status sidecars for
+  benchmark, storage, and vLLM/SGLang engine-probe runs, tested package wheel,
+  PR evidence sidecar, V1 requirements matrix, repository hygiene sidecar, and
+  native probe factory diagnostics sidecar entries from both runtime
+  environments.
+- Make GitHub governance release-ready, then rebuild the complete strict bundle
+  with the GitHub governance sidecar included. The repository must be public or
+  on a plan that supports required `main` branch protection, GitHub auto-merge
+  must report enabled, branch protection must apply to administrators, and the
+  governance sidecar must have no issues.
+- Continue running connector action descriptors validation against native
+  engine block managers in vLLM and SGLang whenever adapter contracts, runtime
+  pins, or launch configs change.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package after downstream jobs migrate.
