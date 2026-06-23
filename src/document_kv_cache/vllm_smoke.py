@@ -125,6 +125,7 @@ class VLLMPreparedHandoffGenerationConfig:
     output_dir: Path
     dtype: str = "bfloat16"
     align_bytes: int = 4096
+    timeout_seconds: float = 1800.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
@@ -135,6 +136,8 @@ class VLLMPreparedHandoffGenerationConfig:
             raise ValueError("benchmark_handoff_dtype must be non-empty")
         if type(self.align_bytes) is not int or self.align_bytes <= 0:
             raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
+        if self.timeout_seconds <= 0:
+            raise ValueError("benchmark_handoff_timeout_seconds must be positive")
         object.__setattr__(self, "output_dir", Path(self.output_dir))
 
     def to_metadata(self) -> dict[str, object]:
@@ -143,6 +146,7 @@ class VLLMPreparedHandoffGenerationConfig:
             "output_dir": str(self.output_dir),
             "dtype": self.dtype,
             "align_bytes": self.align_bytes,
+            "timeout_seconds": self.timeout_seconds,
         }
 
 
@@ -638,6 +642,14 @@ def prepare_generated_benchmark_handoffs(
     generation = config.handoff_generation
     if generation is None:
         return dataset_paths
+    if config.venv_python.exists():
+        generated_paths, record = _generate_prepared_benchmark_handoff_inputs_in_subprocess(
+            config,
+            dataset_paths,
+            generation,
+        )
+        write_json(config.prepared_handoff_generation_path, record)
+        return generated_paths
     generation.output_dir.mkdir(parents=True, exist_ok=True)
     try:
         generated_paths, record = _generate_prepared_benchmark_handoff_inputs(config, dataset_paths, generation)
@@ -645,6 +657,118 @@ def prepare_generated_benchmark_handoffs(
         release_handoff_generation_resources()
     write_json(config.prepared_handoff_generation_path, record)
     return generated_paths
+
+
+def _generate_prepared_benchmark_handoff_inputs_in_subprocess(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    generation: VLLMPreparedHandoffGenerationConfig,
+) -> tuple[dict[str, Path], dict[str, object]]:
+    input_path = config.local_dir / "prepared-handoff-generation-worker-input.json"
+    output_path = config.local_dir / "prepared-handoff-generation-worker-output.json"
+    payload: dict[str, object] = {
+        "benchmark_id": config.benchmark_id,
+        "output_dir": str(config.output_dir),
+        "dataset_paths": {dataset: str(path) for dataset, path in dataset_paths.items()},
+        "handoff_generation": generation.to_metadata(),
+    }
+    write_json(input_path, payload)
+    code = """
+import json
+import sys
+from pathlib import Path
+
+from document_kv_cache.vllm_smoke import (
+    VLLMPreparedHandoffGenerationConfig,
+    VLLMSmokeBenchmarkConfig,
+    _generate_prepared_benchmark_handoff_inputs,
+    release_handoff_generation_resources,
+    write_json,
+)
+
+input_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+payload = json.loads(input_path.read_text(encoding="utf-8"))
+generation_payload = payload["handoff_generation"]
+generation = VLLMPreparedHandoffGenerationConfig(
+    generator_factory=generation_payload["generator_factory"],
+    output_dir=Path(generation_payload["output_dir"]),
+    dtype=generation_payload["dtype"],
+    align_bytes=int(generation_payload["align_bytes"]),
+    timeout_seconds=float(generation_payload["timeout_seconds"]),
+)
+config = VLLMSmokeBenchmarkConfig(
+    benchmark_id=payload["benchmark_id"],
+    output_dir=Path(payload["output_dir"]),
+)
+dataset_paths = {
+    dataset: Path(path)
+    for dataset, path in payload["dataset_paths"].items()
+}
+try:
+    generated_paths, record = _generate_prepared_benchmark_handoff_inputs(config, dataset_paths, generation)
+finally:
+    release_handoff_generation_resources()
+record["generator_python"] = sys.executable
+write_json(
+    output_path,
+    {
+        "generated_paths": {dataset: str(path) for dataset, path in generated_paths.items()},
+        "record": record,
+    },
+)
+"""
+    argv = [
+        str(config.venv_python),
+        "-c",
+        code,
+        str(input_path),
+        str(output_path),
+    ]
+    print("+", " ".join([argv[0], "-c", "<prepared handoff generation>", *argv[3:]]), flush=True)
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=generation.timeout_seconds,
+            env=server_env(config),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"prepared handoff generation timed out after {generation.timeout_seconds:.1f}s; "
+            f"stdout_tail={tail_text(exc.stdout)!r}; stderr_tail={tail_text(exc.stderr)!r}"
+        ) from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"prepared handoff generation failed with return code {completed.returncode}; "
+            f"stdout_tail={tail_text(completed.stdout)!r}; stderr_tail={tail_text(completed.stderr)!r}"
+        )
+    if not output_path.exists():
+        raise RuntimeError(f"prepared handoff generation did not write {output_path}")
+    result = json.loads(output_path.read_text(encoding="utf-8"))
+    generated_paths_payload = result.get("generated_paths")
+    record = result.get("record")
+    if not isinstance(generated_paths_payload, dict) or not isinstance(record, dict):
+        raise RuntimeError(f"prepared handoff generation wrote invalid result {output_path}")
+    if record.get("ok") is not True:
+        raise RuntimeError(f"prepared handoff generation worker result was not ok in {output_path}")
+    if set(generated_paths_payload) != set(SMOKE_DATASETS):
+        raise RuntimeError(
+            "prepared handoff generation worker result must include exactly "
+            f"{sorted(SMOKE_DATASETS)!r}; got {sorted(str(dataset) for dataset in generated_paths_payload)!r}"
+        )
+    generated_paths = {
+        str(dataset): Path(str(path))
+        for dataset, path in generated_paths_payload.items()
+    }
+    for dataset, path in generated_paths.items():
+        if not str(path):
+            raise RuntimeError(f"prepared handoff generation worker returned empty path for {dataset}")
+        if not path.exists():
+            raise RuntimeError(f"prepared handoff generation worker output for {dataset} does not exist: {path}")
+    return generated_paths, record
 
 
 def _generate_prepared_benchmark_handoff_inputs(
