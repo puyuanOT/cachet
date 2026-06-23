@@ -7,6 +7,7 @@ import math
 import os
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from inspect import signature
 from typing import Any
 
 from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout, dtype_byte_width
@@ -214,8 +215,9 @@ class TransformersKVChunkGenerator:
         if token_count <= 0:
             raise ValueError("tokenized chunk must contain at least one token")
         inputs = _inputs_to_device(inputs, _model_device(self.model))
+        forward_kwargs = _kv_generation_forward_kwargs(self.model)
         with torch.no_grad():
-            outputs = self.model(**inputs, use_cache=True)
+            outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
         past_key_values = _past_key_values(outputs)
         payload = _payload_from_past_key_values(
             past_key_values,
@@ -541,6 +543,24 @@ def _past_key_values(outputs: object) -> object:
     if value is None:
         raise ValueError("model output must include past_key_values")
     return value
+
+
+def _kv_generation_forward_kwargs(model: object) -> dict[str, object]:
+    if _callable_accepts_keyword(model, "logits_to_keep"):
+        return {"logits_to_keep": 1}
+    if _callable_accepts_keyword(model, "num_logits_to_keep"):
+        return {"num_logits_to_keep": 1}
+    return {}
+
+
+def _callable_accepts_keyword(callable_object: object, keyword: str) -> bool:
+    forward = getattr(callable_object, "forward", None)
+    inspected = forward if callable(forward) else callable_object
+    try:
+        parameters = signature(inspected).parameters
+    except (TypeError, ValueError):
+        return False
+    return keyword in parameters
 
 
 def _torch_dtype_from_name(torch: object, dtype: str) -> object:
