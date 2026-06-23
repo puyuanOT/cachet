@@ -1,0 +1,39 @@
+{
+  "files": {
+    "pr-evidence/standalone-benchmark-evidence-folders/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 review initially found that the benchmark folder contract was too weak and that release evidence could still point at non-standalone paths. The PR added a strict benchmark-folder allowlist, status-sidecar validation, committed artifact path checks, and size/hash verification; the reviewer rechecked the fixes and approved.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 431,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/431",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "docs/README.md",
+        "docs/v1-requirements-matrix.md",
+        "benchmarks/README.md",
+        "benchmarks/databricks/",
+        "tests/test_project_governance.py"
+      ],
+      "verification": [
+        "git diff --check",
+        "poetry run pytest tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs -q",
+        "poetry run pytest tests/test_project_governance.py -q",
+        "poetry run pytest -q -> 2021 passed",
+        "GPT-5.5 review found weak artifact-contract and non-standalone release-path issues; both were fixed before approval"
+      ],
+      "what_changed": [
+        "Added standalone human-readable Databricks benchmark evidence folders under benchmarks/databricks for the strict g6/L4 benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and native engine probe evidence.",
+        "Added governance coverage that allowlists the benchmark folder contents, validates Databricks run-status sidecars, checks benchmark summaries, and verifies release-evidence artifact paths and hashes point at benchmarks/.",
+        "Linked the benchmark folders from the README, docs README, and V1 requirements matrix while keeping raw pr-evidence and ignored databricks-runs output separate."
+      ],
+      "why": "Benchmark and release reviewers need standalone human-readable benchmark folders instead of having to inspect raw PR evidence or temporary Databricks run output."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

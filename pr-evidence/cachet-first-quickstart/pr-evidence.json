@@ -1,0 +1,29 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review found no issues. The reviewer confirmed the quickstart is Cachet-first, legacy names are only framed as compatibility, no Databricks credentials or launch paths were touched, the README snippet executes, and CI passed.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 433,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/433",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "git diff --check",
+    "poetry run pytest tests/test_project_governance.py::test_readme_cachet_first_quickstart_uses_branded_imports_and_cli tests/test_project_governance.py::test_readme_documents_cachet_brand_and_scope tests/test_project_governance.py::test_repository_text_files_do_not_contain_committed_credentials -q -> 3 passed",
+    "poetry run pytest tests/test_project_governance.py -q -> 48 passed",
+    "poetry run pytest -q -> 2023 passed",
+    "GPT-5.5 review approved with no findings; GitHub could not record the approval because the authenticated account owned the PR"
+  ],
+  "what_changed": [
+    "Added a top-level Cachet-first README quickstart that uses cachet imports and cachet-* console scripts for new integrations.",
+    "Clarified that legacy import paths and command aliases remain packaged only for compatibility while new user-facing code should start from the Cachet-branded surface.",
+    "Added governance coverage that executes the README Python snippet and rejects legacy package and command names in the quickstart section."
+  ],
+  "why": "New users should see the canonical one-repo Cachet path first instead of learning the historical document_kv_cache or restaurant_kv_serving migration story before trying the package."
+}

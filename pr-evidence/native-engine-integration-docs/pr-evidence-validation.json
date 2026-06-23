@@ -1,0 +1,38 @@
+{
+  "files": {
+    "pr-evidence/native-engine-integration-docs/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 review found that the first draft overclaimed SGLang live-request coverage and used ambiguous profile wording for hardware targets. The PR scoped live request-flow language to vLLM, added the SGLang current-evidence caveat, clarified hardware-target wording, and the reviewer approved the corrected documentation.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 432,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/432",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "docs/README.md",
+        "docs/native-engine-integration.md",
+        "docs/v1-requirements-matrix.md",
+        "tests/test_project_governance.py"
+      ],
+      "verification": [
+        "git diff --check",
+        "poetry run pytest tests/test_project_governance.py::test_native_engine_integration_doc_examples_are_validated -q",
+        "poetry run pytest tests/test_project_governance.py -q",
+        "poetry run pytest -q -> 2022 passed",
+        "GPT-5.5 review found two documentation-scope issues; both were fixed before approval"
+      ],
+      "what_changed": [
+        "Added docs/native-engine-integration.md with Cachet launch-config examples, vLLM and SGLang provider wiring, kv_transfer_params handoff steps, and release evidence guidance.",
+        "Linked the native engine integration guide from the README, docs README, and V1 requirements matrix.",
+        "Added governance coverage that executes the launch-config example and checks the documented vLLM/SGLang provider paths and current benchmark-evidence references."
+      ],
+      "why": "The one-repo Cachet package needs an end-to-end native engine integration guide so users can connect cache generation, handoff bundles, launch configs, and provider-backed serving evidence without relying on scattered implementation notes."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
