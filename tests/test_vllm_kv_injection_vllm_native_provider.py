@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pickle
+from dataclasses import replace
 from types import SimpleNamespace
 
 from document_kv_cache.benchmark_handoffs import generate_benchmark_handoff_bundles
@@ -121,6 +122,10 @@ def payload() -> bytes:
 
 def ready_request() -> EngineReadyRequest:
     return EngineReadyRequest(handle=handle(), payload=payload(), estimated_gpu_bytes=24)
+
+
+def segmented_ready_request() -> EngineReadyRequest:
+    return EngineReadyRequest(handle=handle(), payload=(payload()[:16], payload()[16:]), estimated_gpu_bytes=24)
 
 
 def extended_ready_request() -> EngineReadyRequest:
@@ -826,32 +831,40 @@ def test_native_provider_handshake_metadata_includes_runtime_preflight(monkeypat
     validate_document_kv_vllm_runtime_preflight_record(record)
 
 
-def test_kv_transfer_params_source_reads_cachet_handoff_bundle(tmp_path):
+def test_kv_transfer_params_source_builds_lazy_cachet_handoff_load(tmp_path, monkeypatch):
     adapter_request = build_engine_adapter_request(ready_request(), spec=vllm_adapter_spec())
+    payload_uri = f"disk:{tmp_path / 'req-1.kv'}"
     handoff_path, _payload_path = write_engine_adapter_handoff_bundle(
         adapter_request,
         tmp_path / "handoff.json",
-        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+        payload_uri=payload_uri,
     )
     request = SimpleNamespace(
         request_id="req-1",
         kv_transfer_params={DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path)},
     )
 
+    def fail_scheduler_payload_read(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("scheduler-side source must not materialize KV payload bytes")
+
+    monkeypatch.setattr(vllm_native_provider, "read_engine_adapter_payload", fail_scheduler_payload_read)
     load = KVTransferParamsDocumentKVSource().get_load(request)
 
     assert load is not None
     assert load.request_id == "req-1"
     assert load.total_tokens == 3
-    assert load.payload == payload()
+    assert load.payload is None
+    assert load.payload_uri == payload_uri
 
 
 def test_kv_transfer_params_source_uses_cachet_request_id_for_wrapped_vllm_request(tmp_path):
     adapter_request = build_engine_adapter_request(ready_request(), spec=vllm_adapter_spec())
+    payload_uri = f"disk:{tmp_path / 'req-1.kv'}"
     handoff_path, _payload_path = write_engine_adapter_handoff_bundle(
         adapter_request,
         tmp_path / "handoff.json",
-        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+        payload_uri=payload_uri,
     )
     request = SimpleNamespace(
         request_id="cmpl-req-1-0",
@@ -865,7 +878,8 @@ def test_kv_transfer_params_source_uses_cachet_request_id_for_wrapped_vllm_reque
 
     assert load is not None
     assert load.request_id == "req-1"
-    assert load.payload == payload()
+    assert load.payload is None
+    assert load.payload_uri == payload_uri
 
 
 def test_kv_transfer_params_source_rejects_cachet_request_id_mismatch(tmp_path):
@@ -913,6 +927,8 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
     meta = connector.build_connector_meta(scheduler_output([4], request_id=runtime_request_id))
     assert meta.loads[0].request_id == runtime_request_id
     assert meta.loads[0].actions.reservation.request_id == runtime_request_id
+    assert meta.loads[0].payload is None
+    assert meta.loads[0].payload_uri == entry.payload_uri
     connector.register_kv_caches(
         {
             "model.layers.0.self_attn.attn": layer_0,
@@ -927,6 +943,86 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
     assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
     assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+
+
+def test_segmented_handoff_bundle_feeds_lazy_vllm_native_provider_load_path(tmp_path):
+    adapter_request = build_engine_adapter_request(segmented_ready_request(), spec=vllm_adapter_spec())
+    payload_uri = f"disk:{tmp_path / 'req-1.kv'}"
+    handoff_path, _payload_path = write_engine_adapter_handoff_bundle(
+        adapter_request,
+        tmp_path / "handoff.json",
+        payload_uri=payload_uri,
+    )
+    connector = DocumentKVConnector(provider=DocumentKVNativeProvider())
+    request = SimpleNamespace(
+        request_id="req-1",
+        num_tokens=5,
+        kv_transfer_params={DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path)},
+    )
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([4, 6]), 2)
+    meta = connector.build_connector_meta(scheduler_output([4, 6]))
+    assert meta.loads[0].payload is None
+    assert meta.loads[0].payload_uri == payload_uri
+    meta = pickle.loads(pickle.dumps(meta))
+    connector.register_kv_caches(
+        {
+            "model.layers.0.self_attn.attn": layer_0,
+            "model.layers.1.self_attn.attn": layer_1,
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_0[4, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+
+
+def test_lazy_segmented_payload_uri_respects_copy_payload_index(tmp_path):
+    request = segmented_ready_request()
+    payload_uri = f"disk:{tmp_path / 'req-1.kv'}"
+    (tmp_path / "req-1.kv").write_bytes(b"".join(request.payload))
+    adapter_request = build_engine_adapter_request(request, spec=vllm_adapter_spec())
+    record = engine_adapter_request_to_record(adapter_request, payload_uri=payload_uri)
+    plan = build_engine_kv_injection_plan(record, expected_backend="vllm")
+    actions = build_engine_kv_connector_actions(plan, request.payload)
+    reordered_actions = replace(
+        actions,
+        copies=(
+            replace(actions.copies[0], payload_index=1),
+            replace(actions.copies[1], payload_index=0),
+        ),
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(DocumentKVHandoffLoad(actions=reordered_actions, payload_uri=payload_uri))
+    )
+    connector = DocumentKVConnector(provider=provider)
+    vllm_request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+
+    assert connector.get_num_new_matched_tokens(vllm_request, 0) == (2, False)
+    connector.update_state_after_alloc(vllm_request, AllocatedBlocks([4, 6]), 2)
+    meta = connector.build_connector_meta(scheduler_output([4, 6]))
+    connector.register_kv_caches(
+        {
+            "model.layers.0.self_attn.attn": layer_0,
+            "model.layers.1.self_attn.attn": layer_1,
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_0[4, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
 
 
 def test_native_provider_factory_is_release_safe_provider_wiring():
