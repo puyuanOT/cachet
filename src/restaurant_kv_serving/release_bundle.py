@@ -62,6 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--compatibility-databricks-run-status-json", action="append", default=[])
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
+    parser.add_argument("--legacy-migration-evidence-json", action="append", default=[])
     parser.add_argument("--requirements-matrix-md")
     parser.add_argument("--github-governance-json")
     parser.add_argument("--repository-hygiene-json")
@@ -92,6 +93,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         compatibility_databricks_run_status_jsons=args.compatibility_databricks_run_status_json,
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
+        legacy_migration_evidence_jsons=args.legacy_migration_evidence_json,
         requirements_matrix_md=args.requirements_matrix_md,
         github_governance_json=args.github_governance_json,
         repository_hygiene_json=args.repository_hygiene_json,

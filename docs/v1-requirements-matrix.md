@@ -129,4 +129,6 @@ mean:
 - Keep runtime serving inside established engines and outside Cachet's package
   boundary.
 - Remove the `restaurant_kv_serving` compatibility package only after downstream
-  jobs satisfy the gate in `docs/legacy-compatibility-removal.md`.
+  jobs satisfy the gate in `docs/legacy-compatibility-removal.md`, including a
+  validated `document_kv.legacy_compatibility_migration.v1` evidence sidecar
+  that can be bundled through the optional `legacy_migration_evidence` role.

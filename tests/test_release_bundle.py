@@ -54,6 +54,7 @@ from document_kv_cache.engine_launch_config import (
     DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
+from document_kv_cache.legacy_compatibility import LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
@@ -259,6 +260,52 @@ def test_build_release_bundle_can_include_compatibility_databricks_status(tmp_pa
     assert status_artifact["bundled_path"] == "compatibility_databricks_run_status_10_aws-g5-a10g.json"
     bundled_record = json.loads((bundle_dir / status_artifact["bundled_path"]).read_text(encoding="utf-8"))
     assert bundled_record["summary"]["submit_payload"]["node_type_ids"] == ["g5.8xlarge"]
+
+
+def test_build_release_bundle_can_include_legacy_migration_evidence(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    migration_evidence = _write_json(
+        source_dir / "legacy-migration.json",
+        _legacy_migration_evidence_record(ok=True),
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        legacy_migration_evidence_jsons=(migration_evidence,),
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    artifact = record["artifacts"][-1]
+    assert artifact["role"] == "legacy_migration_evidence"
+    assert artifact["record_type"] == LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE
+    assert artifact["bundled_path"] == "legacy_migration_evidence_07.json"
+    bundled_record = json.loads((bundle_dir / artifact["bundled_path"]).read_text(encoding="utf-8"))
+    assert bundled_record["record_type"] == LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE
+
+
+def test_build_release_bundle_rejects_invalid_legacy_migration_evidence(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    migration_evidence = _write_json(
+        source_dir / "legacy-migration.json",
+        _legacy_migration_evidence_record(ok=False),
+    )
+
+    with pytest.raises(ValueError, match="legacy migration evidence ok must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            legacy_migration_evidence_jsons=(migration_evidence,),
+            output_dir=tmp_path / "invalid-legacy-migration-bundle",
+        )
 
 
 def test_build_release_bundle_rejects_non_benchmark_compatibility_databricks_status(tmp_path):
@@ -3456,6 +3503,7 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
 
     assert "--require-complete-v1" in completed.stdout
     assert "--compatibility-benchmark-json" in completed.stdout
+    assert "--legacy-migration-evidence-json" in completed.stdout
     assert "--requirements-matrix-md" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
     assert "vLLM/SGLang native engine probes, connector actions, and launch configs" in help_text
@@ -4095,6 +4143,41 @@ def _pr_evidence_record(*, ok: bool):
         "gpt55_review_outcome": "clean",
         "gpt55_review_summary": "clean" if ok else "",
         "issues": [] if ok else ["missing review summary"],
+    }
+
+
+def _legacy_migration_evidence_record(*, ok: bool):
+    return {
+        "record_type": LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE,
+        "ok": ok,
+        "checked_downstream_jobs": [
+            _legacy_migration_checked_job("release", "cachet-release-bundle"),
+            _legacy_migration_checked_job("benchmark", "cachet-vllm-benchmark"),
+            _legacy_migration_checked_job("storage", "cachet-storage-benchmark"),
+            _legacy_migration_checked_job("native_probe", "cachet-native-engine-probe"),
+            _legacy_migration_checked_job("smoke", "cachet-vllm-smoke"),
+        ],
+        "release_evidence": [
+            {
+                "hardware_target": "aws-g6-l4",
+                "evidence_uri": "dbfs:/evidence/g6-release.json",
+                "runner_uses_legacy_facade": False,
+            }
+        ],
+        "issues": [] if ok else ["legacy runner remains"],
+    }
+
+
+def _legacy_migration_checked_job(category: str, name: str):
+    return {
+        "name": name,
+        "category": category,
+        "environment": "Databricks QA",
+        "migrated_import_surface": "cachet",
+        "migrated_command_prefix": "cachet-",
+        "legacy_imports_present": False,
+        "legacy_console_scripts_present": False,
+        "evidence_uri": f"dbfs:/migration/{name}.json",
     }
 
 

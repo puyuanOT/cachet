@@ -64,6 +64,10 @@ from document_kv_cache.engine_launch_config import (
     evaluate_engine_launch_config_evidence,
 )
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
+from document_kv_cache.legacy_compatibility import (
+    LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE,
+    evaluate_legacy_compatibility_migration_record,
+)
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     native_probe_adapter_contract_to_record,
@@ -201,6 +205,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "compatibility_databricks_run_status",
     "package_wheel",
     "pr_evidence",
+    "legacy_migration_evidence",
     "requirements_matrix",
     "github_governance",
     "repository_hygiene",
@@ -543,6 +548,7 @@ def build_release_bundle(
     compatibility_databricks_run_status_jsons: Sequence[str | Path] = (),
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
+    legacy_migration_evidence_jsons: Sequence[str | Path] = (),
     requirements_matrix_md: str | Path | None = None,
     github_governance_json: str | Path | None = None,
     repository_hygiene_json: str | Path | None = None,
@@ -571,6 +577,7 @@ def build_release_bundle(
         compatibility_databricks_run_status_jsons=compatibility_databricks_run_status_jsons,
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
+        legacy_migration_evidence_jsons=legacy_migration_evidence_jsons,
         requirements_matrix_md=requirements_matrix_md,
         github_governance_json=github_governance_json,
         repository_hygiene_json=repository_hygiene_json,
@@ -651,6 +658,7 @@ def _release_bundle_sources(
     compatibility_databricks_run_status_jsons: Sequence[str | Path],
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
+    legacy_migration_evidence_jsons: Sequence[str | Path],
     requirements_matrix_md: str | Path | None,
     github_governance_json: str | Path | None,
     repository_hygiene_json: str | Path | None,
@@ -677,6 +685,7 @@ def _release_bundle_sources(
     if package_wheel is not None:
         sources.append(("package_wheel", package_wheel))
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
+    sources.extend(("legacy_migration_evidence", path) for path in legacy_migration_evidence_jsons)
     if requirements_matrix_md is not None:
         sources.append(("requirements_matrix", requirements_matrix_md))
     if github_governance_json is not None:
@@ -783,6 +792,11 @@ def _validate_release_bundle_inputs(
                 issues.append("PR evidence sidecar must be JSON")
                 continue
             issues.extend(_pr_evidence_sidecar_issues(artifact.record))
+        elif artifact.role == "legacy_migration_evidence":
+            if artifact.record is None:
+                issues.append("legacy migration evidence sidecar must be JSON")
+                continue
+            issues.extend(_legacy_migration_evidence_sidecar_issues(artifact.record))
         elif artifact.role == "requirements_matrix":
             issues.extend(_requirements_matrix_issues(artifact.source_path, artifact.payload))
         elif artifact.role == "github_governance":
@@ -1431,6 +1445,19 @@ def _pr_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
         issues.append("PR evidence sidecar GPT-5.5 review must be completed")
     if evidence.refactor_skill_applied is not True:
         issues.append("PR evidence sidecar Refactor skill must be applied")
+    return _dedupe_strings(issues)
+
+
+def _legacy_migration_evidence_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    evidence = evaluate_legacy_compatibility_migration_record(record)
+    issues = list(evidence.issues)
+    if record.get("record_type") != LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE:
+        issues.append(
+            "legacy migration evidence sidecar record_type must be "
+            f"{LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE!r}"
+        )
+    if record.get("ok") is not True:
+        issues.append("legacy migration evidence sidecar ok must be true")
     return _dedupe_strings(issues)
 
 
@@ -2706,6 +2733,8 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return Path(prepared.source_path).name
     if role == "pr_evidence":
         return f"pr_evidence_{index + 1:02d}.json"
+    if role == "legacy_migration_evidence":
+        return f"legacy_migration_evidence_{index + 1:02d}.json"
     if role == "requirements_matrix":
         return "v1_requirements_matrix.md"
     if role == "github_governance":
@@ -2834,6 +2863,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--package-wheel")
     parser.add_argument("--pr-evidence-json", action="append", default=[])
+    parser.add_argument(
+        "--legacy-migration-evidence-json",
+        action="append",
+        default=[],
+        help=(
+            "Optional legacy compatibility migration evidence JSON to bundle when "
+            "removing the restaurant_kv_serving facade."
+        ),
+    )
     parser.add_argument("--requirements-matrix-md")
     parser.add_argument("--github-governance-json")
     parser.add_argument("--repository-hygiene-json")
@@ -2865,6 +2903,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         compatibility_databricks_run_status_jsons=args.compatibility_databricks_run_status_json,
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
+        legacy_migration_evidence_jsons=args.legacy_migration_evidence_json,
         requirements_matrix_md=args.requirements_matrix_md,
         github_governance_json=args.github_governance_json,
         repository_hygiene_json=args.repository_hygiene_json,

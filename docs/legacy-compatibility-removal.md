@@ -40,9 +40,12 @@ Do not remove `restaurant_kv_serving` until all of these blockers are closed:
   `restaurant_kv_serving` imports and `restaurant-kv-*` commands to `cachet`
   imports, `cachet-*` commands, or explicit `document_kv_cache` /
   `document-kv-*` names.
-- A current migration evidence artifact lists the downstream jobs checked and
-  confirms no remaining release, benchmark, storage, native probe, or smoke
-  runner depends on the legacy package.
+- A current migration evidence artifact with record type
+  `document_kv.legacy_compatibility_migration.v1` validates with
+  `python -m document_kv_cache.legacy_compatibility --validate-json`. The
+  artifact must cover `release`, `benchmark`, `storage`, `native_probe`, and
+  `smoke` downstream job categories, and it must confirm no checked runner uses
+  `restaurant_kv_serving` imports or `restaurant-kv-*` commands.
 - Current AWS g6/L4 release evidence and optional AWS g5/A10G compatibility
   evidence were generated from migrated runners or otherwise prove that the
   bundled Cachet wheel no longer needs the legacy facade for those paths.
@@ -71,6 +74,9 @@ The removal must be a normal reviewed pull request, not a direct push to
 - Attach a PR evidence sidecar that records what changed, why removal is now
   safe, the downstream migration evidence, Refactor-skill usage, GPT-5.5 review,
   and verification.
+- Bundle the migration evidence through the optional release-bundle
+  `legacy_migration_evidence` artifact role when the removal changes the
+  package surface.
 - Run the focused governance, public-package, and release-bundle tests, then run
   the full test suite before merging.
 - Refresh the tested wheel and strict release bundle before publication if the

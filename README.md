@@ -1828,4 +1828,6 @@ type annotations after installation.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Remove the legacy `restaurant_kv_serving` compatibility package only after
   downstream jobs satisfy the gate in
-  `docs/legacy-compatibility-removal.md`.
+  `docs/legacy-compatibility-removal.md`, including validated
+  `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
+  through the optional `legacy_migration_evidence` release-bundle role.
