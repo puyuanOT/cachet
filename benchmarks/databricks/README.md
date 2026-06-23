@@ -18,4 +18,9 @@ release-bundle evidence set:
   `document_kv.engine_kv_connector_actions.v1` for native vLLM/SGLang connector
   probes.
 
+Only folders containing `v1_benchmark.json` should be cited as latency and
+quality benchmark reports. The native-engine probe folder proves provider-backed
+vLLM/SGLang integration against engine-owned KV block managers, but it does not
+publish SGLang latency, throughput, or quality benchmark results.
+
 Raw local run directories stay under ignored `databricks-runs/`.

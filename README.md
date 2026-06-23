@@ -873,6 +873,12 @@ benchmark, storage-reader benchmark, and native vLLM/SGLang probe artifacts
 without relying on the PR-only `pr-evidence/` tree or ignored local
 `databricks-runs/` output.
 
+The latency and quality benchmark rows are vLLM benchmark runs. The current
+SGLang artifacts are provider-backed native HiCache probe and connector-action
+records; they are integration evidence, not SGLang latency or quality
+benchmark results. Treat SGLang benchmark publication as pending until a live
+SGLang deployment validates decode-time prefix binding with Cachet handoffs.
+
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
 - `build_prompt_parts` splits each example into `system_prompt`, `document_context`, and `user_prompt`.

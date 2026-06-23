@@ -1024,6 +1024,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
+    compact_root_readme = " ".join(root_readme.split())
+    compact_databricks_readme = " ".join(databricks_readme.split())
+    compact_matrix_text = " ".join(matrix_text.split())
     compact_project_readme = " ".join(project_readme.split())
     compact_snapshot = " ".join(current_databricks_snapshot.split())
 
@@ -1043,6 +1046,17 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`document_kv_cache`" in current_databricks_snapshot
     assert "does not replace the strict AWS g6/L4 publication target" in current_databricks_snapshot
     assert "instead of a package-owned serving scheduler" in current_databricks_snapshot
+    assert "The latency and quality results in this snapshot are vLLM benchmark runs" in current_databricks_snapshot
+    assert "does not yet have a published live SGLang latency/quality benchmark" in compact_snapshot
+    assert "live SGLang endpoint validates decode-time prefix binding" in current_databricks_snapshot
+    assert "They are not latency, throughput, or quality benchmark measurements" in compact_snapshot
+    assert "Folders with `v1_benchmark.json` are latency and quality benchmark reports" in root_readme
+    assert "native-engine probe folder is integration evidence only" in compact_root_readme
+    assert "Only folders containing `v1_benchmark.json` should be cited" in databricks_readme
+    assert "does not publish SGLang latency, throughput, or quality benchmark results" in compact_databricks_readme
+    assert "vLLM `document_kv.benchmark_run.v1` evidence" in matrix_text
+    assert "not live SGLang latency or quality benchmark results" in compact_matrix_text
+    assert "Validate live SGLang decode-time prefix binding" in compact_matrix_text
     assert "Release-bundle manifests are regenerated from these benchmark artifacts" in compact_snapshot
 
     expected_files = {
@@ -1123,6 +1137,21 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             expected_hardware_target=expected["hardware_target"],
             expected_node_type_id=expected["node_type"],
         ) == ()
+
+    native_probe_readme = (
+        databricks_root / "2026-06-23-g6-l4-native-engine-probes" / "README.md"
+    ).read_text(encoding="utf-8")
+    compact_native_probe_readme = " ".join(native_probe_readme.split())
+    assert "not benchmark latency measurements" in native_probe_readme
+    assert (
+        "They should not be cited as SGLang latency, throughput, or quality benchmark results"
+        in compact_native_probe_readme
+    )
+    assert "They do not prove live decode-time prefix binding" in native_probe_readme
+    assert (
+        "cache-vs-baseline latency/quality behavior for a serving SGLang endpoint"
+        in compact_native_probe_readme
+    )
 
     g6_benchmark = json.loads(
         (databricks_root / "2026-06-23-g6-l4-v1" / "v1_benchmark.json").read_text(encoding="utf-8")

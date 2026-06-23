@@ -3,6 +3,8 @@
 This folder records the current provider-backed native connector probes for
 vLLM and SGLang on the strict AWS g6/L4 Databricks target. These probes verify
 the native engine handoff path; they are not benchmark latency measurements.
+They should not be cited as SGLang latency, throughput, or quality benchmark
+results.
 
 | Field | Value |
 | --- | --- |
@@ -19,6 +21,13 @@ the native engine handoff path; they are not benchmark latency measurements.
 | --- | --- | --- | ---: | ---: | --- |
 | vllm | 0.23.0 | merged | 48 | 3538944 | `vllm_kv_injection.vllm_native_provider:build_document_kv_provider` |
 | sglang | 0.5.10.post1 | merged | 48 | 3538944 | `sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider` |
+
+## Scope Boundary
+
+The SGLang rows prove that Cachet's provider-backed dynamic HiCache integration
+can run the strict native probe and connector action descriptors in the target
+runtime environment. They do not prove live decode-time prefix binding or
+cache-vs-baseline latency/quality behavior for a serving SGLang endpoint.
 
 ## Artifacts
 

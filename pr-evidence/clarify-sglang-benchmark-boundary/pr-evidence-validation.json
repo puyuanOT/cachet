@@ -1,0 +1,42 @@
+{
+  "files": {
+    "pr-evidence/clarify-sglang-benchmark-boundary/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 review found no blocking issues. The reviewer confirmed the docs and governance assertions clearly separate published vLLM latency/quality benchmark evidence from SGLang provider-backed native HiCache probe and connector-action integration evidence, and found no overclaims of new Databricks or SGLang latency/throughput/quality benchmark results. GitHub would not allow the reviewer process to approve because it authenticated as the PR author, so the clean result was posted as a review comment.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 444,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/444",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "benchmarks/README.md",
+        "benchmarks/databricks/README.md",
+        "benchmarks/databricks/CURRENT.md",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/README.md",
+        "docs/v1-requirements-matrix.md",
+        "tests/test_project_governance.py"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs -q -> 1 passed",
+        "poetry run pytest tests/test_project_governance.py -q -> 50 passed",
+        "poetry run pytest -q -> 1786 passed",
+        "poetry check && poetry check --lock -> All set! / All set!",
+        "git diff --check -> clean",
+        "GitHub CI Test and build passed on initial PR head c0f921c9798a53dbd1d09fca6ecc66cdca4807fa",
+        "GPT-5.5 reviewer found no blocking issues and posted a COMMENTED review because GitHub rejected self-approval by the PR author identity"
+      ],
+      "what_changed": [
+        "Clarified the standalone Databricks benchmark entry points so V1 latency/quality rows are identified as vLLM benchmark runs.",
+        "Marked SGLang native HiCache artifacts as provider-backed probe and connector-action integration evidence, not live SGLang latency/quality benchmark results.",
+        "Added governance assertions that pin the benchmark/probe evidence boundary in the README, benchmark folders, and V1 requirements matrix."
+      ],
+      "why": "Benchmark readers should not have to inspect PR evidence or raw Databricks artifacts to distinguish published latency/quality benchmarks from native connector probe evidence; SGLang live decode-time prefix binding remains a future validation gate."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
