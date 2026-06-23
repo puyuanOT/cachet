@@ -514,6 +514,43 @@ def test_legacy_package_readme_describes_migration_shims_not_new_implementation_
     assert "this package owns" not in compact_text
 
 
+def test_legacy_compatibility_removal_gate_is_documented():
+    root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
+    gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(encoding="utf-8")
+    compact_gate = " ".join(gate.split())
+
+    assert "`docs/legacy-compatibility-removal.md`" in root_readme
+    assert "`legacy-compatibility-removal.md`" in docs_readme
+    assert "`docs/legacy-compatibility-removal.md`" in matrix
+    assert "one repository and one distribution package" in compact_gate
+    assert "`puyuanOT/cachet`" in gate
+    assert "`cachet-kv`" in gate
+    assert "primary import surface is the branded `cachet` facade" in compact_gate
+    assert "`document_kv_cache` remains the canonical implementation namespace" in compact_gate
+    assert "`restaurant_kv_serving` package and `restaurant-kv-*` console scripts" in compact_gate
+    assert "New code must not add production dependencies on the legacy package" in compact_gate
+    assert "`pyproject.toml` still packages `restaurant_kv_serving`" in compact_gate
+    assert "`src/document_kv_cache/release_bundle.py` still requires" in compact_gate
+    assert "`restaurant_kv_serving/__init__.py`" in gate
+    assert "`restaurant_kv_serving/py.typed`" in gate
+    assert "`tests/test_public_package.py` still proves" in compact_gate
+    assert "`tests/test_project_governance.py` keeps legacy references scoped" in compact_gate
+    assert "PR evidence sidecars with Refactor-skill evidence" in compact_gate
+    assert "completed GPT-5.5 review" in compact_gate
+    assert "Downstream Databricks benchmark runners and QA jobs have migrated" in compact_gate
+    assert "current migration evidence artifact lists the downstream jobs checked" in compact_gate
+    assert "Current AWS g6/L4 release evidence" in compact_gate
+    assert "optional AWS g5/A10G compatibility evidence" in compact_gate
+    assert "strict release-bundle package-wheel gates are updated" in compact_gate
+    assert "Remove `restaurant_kv_serving` from `pyproject.toml` package metadata" in compact_gate
+    assert "Delete `src/restaurant_kv_serving`" in compact_gate
+    assert "Update `README.md`, `docs/v1-requirements-matrix.md`, `src/README.md`" in compact_gate
+    assert "Run the focused governance, public-package, and release-bundle tests" in compact_gate
+    assert "Refresh the tested wheel and strict release bundle before publication" in compact_gate
+
+
 def test_legacy_restaurant_imports_in_tests_are_explicitly_scoped():
     actual = {
         str(path.relative_to(REPO_ROOT)): _legacy_references_in_test_module(path)

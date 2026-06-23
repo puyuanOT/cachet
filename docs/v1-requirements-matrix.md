@@ -129,4 +129,4 @@ mean:
 - Keep runtime serving inside established engines and outside Cachet's package
   boundary.
 - Remove the `restaurant_kv_serving` compatibility package only after downstream
-  jobs migrate.
+  jobs satisfy the gate in `docs/legacy-compatibility-removal.md`.
