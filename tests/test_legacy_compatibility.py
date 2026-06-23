@@ -6,8 +6,10 @@ from pathlib import Path
 
 from document_kv_cache.legacy_compatibility import (
     LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE,
+    LEGACY_COMPATIBILITY_SCAN_CONFIG_RECORD_TYPE,
     LEGACY_COMPATIBILITY_MIGRATION_VALIDATION_RECORD_TYPE,
     LegacyCompatibilityMigrationEvidence,
+    build_legacy_compatibility_migration_evidence_from_scan_config,
     evaluate_legacy_compatibility_migration_file,
     evaluate_legacy_compatibility_migration_record,
     legacy_compatibility_migration_to_record,
@@ -29,11 +31,30 @@ def test_legacy_compatibility_migration_evidence_accepts_complete_record():
     assert legacy_compatibility_migration_to_record(evidence) == record
 
 
+def test_legacy_compatibility_migration_evidence_accepts_optional_scan_provenance():
+    record = _migration_record()
+    record["checked_downstream_jobs"][0]["checked_paths"] = ["databricks/databricks.yml"]
+    record["checked_downstream_jobs"][0]["legacy_reference_hits"] = []
+
+    evidence = evaluate_legacy_compatibility_migration_record(record)
+
+    assert evidence.ok is True
+    assert legacy_compatibility_migration_to_record(evidence) == record
+
+
 def test_legacy_compatibility_migration_evidence_reports_missing_categories_and_legacy_usage():
     record = _migration_record()
     record["checked_downstream_jobs"] = record["checked_downstream_jobs"][:1]
     record["checked_downstream_jobs"][0]["legacy_imports_present"] = True
     record["checked_downstream_jobs"][0]["legacy_console_scripts_present"] = True
+    record["checked_downstream_jobs"][0]["legacy_reference_hits"] = [
+        {
+            "path": "databricks/databricks.yml",
+            "line": 12,
+            "kind": "legacy_console_script",
+            "match": "restaurant-kv-",
+        }
+    ]
     record["release_evidence"] = [
         {
             "hardware_target": "aws-g5-a10g",
@@ -47,6 +68,7 @@ def test_legacy_compatibility_migration_evidence_reports_missing_categories_and_
     assert evidence.ok is False
     assert "checked_downstream_jobs[0].legacy_imports_present must be false" in evidence.issues
     assert "checked_downstream_jobs[0].legacy_console_scripts_present must be false" in evidence.issues
+    assert "checked_downstream_jobs[0].legacy_reference_hits must be an empty array" in evidence.issues
     assert "checked_downstream_jobs must cover required categories: benchmark, storage, native_probe, smoke" in (
         evidence.issues
     )
@@ -137,6 +159,103 @@ def test_legacy_compatibility_migration_cli_validates_json(tmp_path):
     assert json.loads(cachet_completed.stdout)["ok"] is True
 
 
+def test_legacy_compatibility_migration_scan_config_builds_evidence(tmp_path):
+    for path in (
+        "release.py",
+        "benchmark.py",
+        "storage.py",
+        "native_probe.py",
+        "smoke.py",
+    ):
+        (tmp_path / path).write_text("from cachet import DocumentKVRequest\n", encoding="utf-8")
+    config = _scan_config()
+
+    evidence = build_legacy_compatibility_migration_evidence_from_scan_config(config, base_dir=tmp_path)
+    record = legacy_compatibility_migration_to_record(evidence)
+
+    assert record["ok"] is True
+    assert record["checked_downstream_jobs"][0]["checked_paths"] == ["release.py"]
+    assert record["checked_downstream_jobs"][0]["legacy_imports_present"] is False
+    assert record["checked_downstream_jobs"][0]["legacy_console_scripts_present"] is False
+    assert record["checked_downstream_jobs"][0]["legacy_reference_hits"] == []
+
+
+def test_legacy_compatibility_migration_scan_config_reports_legacy_hits(tmp_path):
+    for path in (
+        "release.py",
+        "benchmark.py",
+        "storage.py",
+        "native_probe.py",
+        "smoke.py",
+    ):
+        (tmp_path / path).write_text("from cachet import DocumentKVRequest\n", encoding="utf-8")
+    (tmp_path / "benchmark.py").write_text(
+        "from restaurant_kv_serving import DocumentKVRequest\n"
+        "cmd = 'restaurant-kv-benchmark-plan --help'\n",
+        encoding="utf-8",
+    )
+
+    evidence = build_legacy_compatibility_migration_evidence_from_scan_config(_scan_config(), base_dir=tmp_path)
+    record = legacy_compatibility_migration_to_record(evidence)
+    benchmark_job = record["checked_downstream_jobs"][1]
+
+    assert record["ok"] is False
+    assert benchmark_job["legacy_imports_present"] is True
+    assert benchmark_job["legacy_console_scripts_present"] is True
+    assert benchmark_job["legacy_reference_hits"] == [
+        {
+            "kind": "legacy_import",
+            "line": 1,
+            "match": "restaurant_kv_serving",
+            "path": "benchmark.py",
+        },
+        {
+            "kind": "legacy_console_script",
+            "line": 2,
+            "match": "restaurant-kv-",
+            "path": "benchmark.py",
+        },
+    ]
+    assert (
+        "checked_downstream_jobs[1] found legacy_import reference "
+        "'restaurant_kv_serving' in benchmark.py:1"
+    ) in evidence.issues
+    assert "checked_downstream_jobs[1].legacy_reference_hits must be an empty array" in evidence.issues
+
+
+def test_legacy_compatibility_migration_cli_scans_config(tmp_path):
+    for path in (
+        "release.py",
+        "benchmark.py",
+        "storage.py",
+        "native_probe.py",
+        "smoke.py",
+    ):
+        (tmp_path / path).write_text("from document_kv_cache import DocumentKVRequest\n", encoding="utf-8")
+    config_path = tmp_path / "scan-config.json"
+    config_path.write_text(json.dumps(_scan_config()), encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")}
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "document_kv_cache.legacy_compatibility",
+            "--scan-config-json",
+            str(config_path),
+        ],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    record = json.loads(completed.stdout)
+    assert record["ok"] is True
+    assert record["checked_downstream_jobs"][0]["checked_paths"] == ["release.py"]
+
+
 def test_legacy_compatibility_migration_evidence_dataclass_rejects_bad_issue_values():
     try:
         LegacyCompatibilityMigrationEvidence(
@@ -186,5 +305,31 @@ def _checked_job(category: str, name: str):
         "migrated_command_prefix": "cachet-",
         "legacy_imports_present": False,
         "legacy_console_scripts_present": False,
+        "evidence_uri": f"dbfs:/migration/{name}.json",
+    }
+
+
+def _scan_config():
+    return {
+        "record_type": LEGACY_COMPATIBILITY_SCAN_CONFIG_RECORD_TYPE,
+        "checked_downstream_jobs": [
+            _scan_job("release", "cachet-release-bundle", "release.py"),
+            _scan_job("benchmark", "cachet-vllm-benchmark", "benchmark.py"),
+            _scan_job("storage", "cachet-storage-benchmark", "storage.py"),
+            _scan_job("native_probe", "cachet-native-engine-probe", "native_probe.py"),
+            _scan_job("smoke", "cachet-vllm-smoke", "smoke.py"),
+        ],
+        "release_evidence": _migration_record()["release_evidence"],
+    }
+
+
+def _scan_job(category: str, name: str, path: str):
+    return {
+        "name": name,
+        "category": category,
+        "environment": "Databricks QA",
+        "migrated_import_surface": "cachet",
+        "migrated_command_prefix": "cachet-",
+        "checked_paths": [path],
         "evidence_uri": f"dbfs:/migration/{name}.json",
     }
