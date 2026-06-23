@@ -1363,6 +1363,11 @@ def _release_bundle_native_probe_factories_jsons(config: BenchmarkPlanConfig) ->
     paths = []
     if config.native_probe_factories_output_json is not None:
         paths.append(config.native_probe_factories_output_json)
+    paths.extend(
+        probe.native_probe_factories_output_json
+        for probe in config.engine_probes
+        if probe.native_probe_factories_output_json is not None
+    )
     paths.extend(bundle_config.native_probe_factories_jsons)
     return _dedupe_artifact_paths(paths)
 

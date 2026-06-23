@@ -313,6 +313,7 @@ class DatabricksEngineProbeTargetConfig:
             raise ValueError("fixture_output_dir must be non-empty when provided")
         if self.native_probe_factories_output_json is not None and not self.native_probe_factories_output_json:
             raise ValueError("native_probe_factories_output_json must be non-empty when provided")
+        _DEFAULT_DERIVE_FIXTURE_ACTIONS_OUTPUT(self)
         _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES(self, label="engine probe target")
         _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe target")
         _DEFAULT_VALIDATE_SGLANG_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe target")
@@ -326,6 +327,7 @@ class DatabricksEngineProbeTargetConfig:
                 payload_uri=self.payload_uri,
                 fixture_output_dir=self.fixture_output_dir,
             )
+        _DEFAULT_VALIDATE_RUNNER_OUTPUT_PATHS(self, label="engine probe target")
         if type(self.allow_non_native_probe) is not bool:
             raise ValueError("allow_non_native_probe must be a boolean")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
@@ -456,6 +458,7 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("fixture_output_dir must be non-empty when provided")
         if self.native_probe_factories_output_json is not None and not self.native_probe_factories_output_json:
             raise ValueError("native_probe_factories_output_json must be non-empty when provided")
+        _DEFAULT_DERIVE_FIXTURE_ACTIONS_OUTPUT(self)
         _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES(self, label="engine probe job")
         _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe job")
         _DEFAULT_VALIDATE_SGLANG_RUNTIME_PREFLIGHT_CONFIG(self, label="engine probe job")
@@ -469,6 +472,7 @@ class DatabricksEngineProbeJobConfig:
                 payload_uri=self.payload_uri,
                 fixture_output_dir=self.fixture_output_dir,
             )
+        _DEFAULT_VALIDATE_RUNNER_OUTPUT_PATHS(self, label="engine probe job")
         _DEFAULT_VALIDATE_METADATA_ITEMS(self.metadata)
         object.__setattr__(self, "metadata", tuple(self.metadata))
         _DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA(
@@ -784,6 +788,7 @@ def _validate_release_safe_probe_targets(
             raise ValueError("release-safe probe matrix targets must not set engine_version")
         if target.allow_non_native_probe:
             raise ValueError("release-safe probe matrix targets must not allow non-native probes")
+        _DEFAULT_VALIDATE_RELEASE_SAFE_ACTIONS_OUTPUT(target, label="engine probe matrix target")
         _DEFAULT_VALIDATE_RELEASE_SAFE_NATIVE_PROBE_FACTORIES_OUTPUT(
             target,
             label="engine probe matrix target",
@@ -801,9 +806,22 @@ def _validate_release_safe_probe_job(config: DatabricksEngineProbeJobConfig) -> 
         raise ValueError("release-safe engine probe jobs must not set engine_version")
     if config.allow_non_native_probe:
         raise ValueError("release-safe engine probe jobs must not allow non-native probes")
+    _DEFAULT_VALIDATE_RELEASE_SAFE_ACTIONS_OUTPUT(config, label="engine probe job")
     _DEFAULT_VALIDATE_RELEASE_SAFE_NATIVE_PROBE_FACTORIES_OUTPUT(config, label="engine probe job")
     _DEFAULT_VALIDATE_RELEASE_SAFE_PROVIDER_BACKED_VLLM_PREFLIGHT(config, label="engine probe job")
     _DEFAULT_VALIDATE_RELEASE_SAFE_SGLANG_RUNTIME_PREFLIGHT(config, label="engine probe job")
+
+
+def _validate_release_safe_actions_output(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+    *,
+    label: str,
+) -> None:
+    if config.actions_output_json is None:
+        raise ValueError(
+            f"release-safe {label} must set actions_output_json so the Databricks runtime "
+            "emits document_kv.engine_kv_connector_actions.v1 diagnostics"
+        )
 
 
 def _validate_release_safe_native_probe_factories_output(
@@ -1042,6 +1060,18 @@ def _derive_vllm_fixture_runtime_preflight_layer_names(
     )
 
 
+def _derive_fixture_actions_output(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+) -> None:
+    if config.fixture_output_dir is None or config.actions_output_json is not None:
+        return
+    object.__setattr__(
+        config,
+        "actions_output_json",
+        _engine_probe_fixture_actions_json(config.fixture_output_dir),
+    )
+
+
 def _engine_probe_uses_fixture_actions_output(
     config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
 ) -> bool:
@@ -1052,10 +1082,40 @@ def _engine_probe_uses_fixture_actions_output(
     )
 
 
+def _validate_runner_output_paths(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+    *,
+    label: str,
+) -> None:
+    output_paths = [
+        ("output_json", config.output_json),
+    ]
+    if config.actions_output_json is not None:
+        output_paths.append(("actions_output_json", config.actions_output_json))
+    if config.vllm_runtime_preflight_output_json is not None:
+        output_paths.append(("vllm_runtime_preflight_output_json", config.vllm_runtime_preflight_output_json))
+    if config.sglang_runtime_preflight_output_json is not None:
+        output_paths.append(("sglang_runtime_preflight_output_json", config.sglang_runtime_preflight_output_json))
+    if config.native_probe_factories_output_json is not None:
+        output_paths.append(("native_probe_factories_output_json", config.native_probe_factories_output_json))
+    labels_by_path: dict[str, list[str]] = {}
+    for field_name, path in output_paths:
+        labels_by_path.setdefault(_canonical_artifact_path(path), []).append(field_name)
+    collisions = {
+        path: field_names
+        for path, field_names in labels_by_path.items()
+        if len(field_names) > 1
+    }
+    if collisions:
+        raise ValueError(f"{label} output paths must be distinct: {collisions}")
+
+
+def _canonical_artifact_path(path: str) -> str:
+    return str(local_path(path).expanduser().resolve(strict=False))
+
+
 def _same_artifact_path(left: str, right: str) -> bool:
-    return str(local_path(left).expanduser().resolve(strict=False)) == str(
-        local_path(right).expanduser().resolve(strict=False)
-    )
+    return _canonical_artifact_path(left) == _canonical_artifact_path(right)
 
 
 def _validate_fixture_output_dir(fixture_output_dir: str) -> None:
@@ -1104,12 +1164,15 @@ _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_TARGETS = _validate_release_safe_probe_targ
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB = _validate_release_safe_probe_job
 _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG = _validate_vllm_runtime_preflight_config
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROVIDER_BACKED_VLLM_PREFLIGHT = _validate_release_safe_provider_backed_vllm_preflight
+_DEFAULT_VALIDATE_RELEASE_SAFE_ACTIONS_OUTPUT = _validate_release_safe_actions_output
 _DEFAULT_VALIDATE_METADATA_ITEMS = _validate_metadata_items
 _DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA = _validate_known_native_delegate_metadata
 _DEFAULT_VALIDATE_WHEEL_URIS = _validate_wheel_uris
 _DEFAULT_VALIDATE_PIP_PACKAGES = _validate_pip_packages
 _DEFAULT_SERVING_BACKEND = _serving_backend
 _DEFAULT_DERIVE_VLLM_FIXTURE_RUNTIME_PREFLIGHT_LAYER_NAMES = _derive_vllm_fixture_runtime_preflight_layer_names
+_DEFAULT_DERIVE_FIXTURE_ACTIONS_OUTPUT = _derive_fixture_actions_output
+_DEFAULT_VALIDATE_RUNNER_OUTPUT_PATHS = _validate_runner_output_paths
 _DEFAULT_VALIDATE_SGLANG_RUNTIME_PREFLIGHT_CONFIG = _validate_sglang_runtime_preflight_config
 _DEFAULT_VALIDATE_RELEASE_SAFE_SGLANG_RUNTIME_PREFLIGHT = _validate_release_safe_sglang_runtime_preflight
 _DEFAULT_VALIDATE_RELEASE_SAFE_NATIVE_PROBE_FACTORIES_OUTPUT = (

@@ -145,6 +145,10 @@ def release_action_jsons(tmp_path):
     )
 
 
+def _parameter_values(parameters, flag):
+    return [parameters[index + 1] for index, value in enumerate(parameters[:-1]) if value == flag]
+
+
 def databricks_run_status_jsons(tmp_path):
     return (
         str(tmp_path / "databricks-run-status-benchmark.json"),
@@ -1070,6 +1074,62 @@ def test_build_v1_benchmark_plan_dedupes_equivalent_native_probe_factories_paths
     assert bundle_command.argv[bundle_command.argv.index("--native-probe-factories-json") + 1] == (
         native_probe_factories_json
     )
+
+
+def test_build_v1_benchmark_plan_bundles_engine_probe_runtime_native_factories(tmp_path):
+    vllm_native_factories_json = str(tmp_path / "vllm-native-probe-factories.json")
+    sglang_native_factories_json = str(tmp_path / "sglang-native-probe-factories.json")
+    config = BenchmarkPlanConfig(
+        suite_id="v1-g6-l4",
+        dataset_paths=dataset_paths(tmp_path),
+        base_url="http://localhost:8000",
+        benchmark_output_json=str(tmp_path / "results.json"),
+        storage_benchmark=StorageBenchmarkPlanConfig(
+            workspace_dir="/local_disk0/document-kv-storage-benchmark",
+            output_json=str(tmp_path / "storage.json"),
+            readers=("memory", "disk", "unity_catalog"),
+            uc_volume_root="/Volumes/catalog/schema/volume/document-kv-storage-benchmark",
+        ),
+        engine_probes=(
+            EngineProbePlanConfig(
+                backend="vllm",
+                handoff_json=str(tmp_path / "vllm-handoff.json"),
+                probe_factory="vllm_probe:factory",
+                output_json=str(tmp_path / "vllm-probe.json"),
+                actions_output_json=str(tmp_path / "vllm-actions.json"),
+                native_probe_factories_output_json=vllm_native_factories_json,
+            ),
+            EngineProbePlanConfig(
+                backend="sglang",
+                handoff_json=str(tmp_path / "sglang-handoff.json"),
+                probe_factory="sglang_probe:factory",
+                output_json=str(tmp_path / "sglang-probe.json"),
+                actions_output_json=str(tmp_path / "sglang-actions.json"),
+                native_probe_factories_output_json=sglang_native_factories_json,
+            ),
+        ),
+        release_evidence=ReleaseEvidencePlanConfig(
+            output_json=str(tmp_path / "release-evidence.json"),
+        ),
+        release_bundle=ReleaseBundlePlanConfig(
+            output_dir=str(tmp_path / "release-bundle"),
+            output_json=str(tmp_path / "release-bundle-manifest.json"),
+        ),
+    )
+
+    plan = build_v1_benchmark_plan(config)
+    record = benchmark_job_plan_to_record(plan)
+    bundle_command = plan.post_benchmark_commands[-1]
+
+    assert "inspect-native-probe-factories" not in [command.name for command in plan.commands]
+    assert record["release_bundle"]["native_probe_factories_jsons"] == [
+        vllm_native_factories_json,
+        sglang_native_factories_json,
+    ]
+    assert _parameter_values(bundle_command.argv, "--native-probe-factories-json") == [
+        vllm_native_factories_json,
+        sglang_native_factories_json,
+    ]
 
 
 def test_build_v1_benchmark_plan_can_run_planned_engine_probes_before_release_validation(tmp_path):
@@ -2061,6 +2121,25 @@ def test_benchmark_plan_rejects_native_probe_factories_output_path_collisions(tm
                 output_json=str(tmp_path / "storage.json"),
             ),
             native_probe_factories_output_json=str(tmp_path / "storage.json"),
+        )
+
+
+def test_benchmark_plan_rejects_engine_probe_native_factories_output_path_collisions(tmp_path):
+    with pytest.raises(ValueError, match="output paths must be distinct"):
+        BenchmarkPlanConfig(
+            suite_id="v1-g6-l4",
+            dataset_paths=dataset_paths(tmp_path),
+            base_url="http://localhost:8000",
+            benchmark_output_json=str(tmp_path / "results.json"),
+            engine_probes=(
+                EngineProbePlanConfig(
+                    backend="vllm",
+                    handoff_json=str(tmp_path / "vllm-handoff.json"),
+                    probe_factory="vllm_probe:factory",
+                    output_json=str(tmp_path / "vllm-probe.json"),
+                    native_probe_factories_output_json=str(tmp_path / "vllm-probe.json"),
+                ),
+            ),
         )
 
 
