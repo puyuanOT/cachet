@@ -106,8 +106,8 @@ mean:
   benchmark via the `compatibility_benchmark` role. The current complete
   g5-enriched strict bundle validates with 23 artifacts after replacing its
   benchmark/status sidecars with the current `872615985402004`/`566743786103032`
-  evidence and including the PR #427 PR-evidence sidecar. The bundled artifacts
-  include the release evidence
+  evidence and including a current release-gate PR evidence sidecar. The bundled
+  artifacts include the release evidence
   sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, benchmark plan execution sidecar, Databricks run-status sidecars

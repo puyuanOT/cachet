@@ -1797,8 +1797,8 @@ type annotations after installation.
   remain owned by vLLM and SGLang rather than Cachet. The current
   g5-enriched strict bundle validates with 23 artifacts after adding the current
   g6 benchmark status sidecar, current `aws-g5-a10g` compatibility benchmark,
-  matching `aws-g5-a10g` Databricks run-status sidecar, and PR #427 evidence
-  sidecar. The required artifact set remains: release
+  matching `aws-g5-a10g` Databricks run-status sidecar, and a current
+  release-gate PR evidence sidecar. The required artifact set remains: release
   evidence sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, benchmark plan execution sidecar, Databricks run-status
