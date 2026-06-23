@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 review found no blocking issues. The reviewer verified the diff was limited to pyproject.toml and packaging/governance tests, poetry-core 2.4.1/PEP 621 wheel metadata remained identical for package identity fields, packaging checks and dry-run install/build paths passed, focused benchmark/release/storage/PR-evidence suites passed, and no Databricks runs were launched.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 435,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/435",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "pyproject.toml",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "pr-evidence/poetry-metadata-cleanup/"
+  ],
+  "verification": [
+    "poetry check && poetry check --lock -> All set, no warnings",
+    "poetry run pytest -q tests/test_public_package.py::test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases tests/test_project_governance.py::test_poetry_dependency_collection_requires_build_backend_and_groups tests/test_project_governance.py::test_poetry_dependencies_use_exact_direct_pins -> 3 passed",
+    "poetry build -f wheel -o /tmp/cachet-poetry-metadata-cleanup-dist",
+    "inspected wheel METADATA -> Name: cachet-kv; Version: 0.2.0; Summary and Author preserved",
+    "poetry run pytest -q -> 2023 passed",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/poetry-metadata-cleanup --output-json pr-evidence/poetry-metadata-cleanup/pr-evidence-validation.json -> ok=true",
+    "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence -> ok=true",
+    "GPT-5.5 reviewer approved PR #435 with no blocking issues; GitHub rejected recording formal approval as self-review"
+  ],
+  "what_changed": [
+    "Removed duplicate name/version/description/authors fields from [tool.poetry] so [project] is the single authoritative package identity source.",
+    "Updated package and governance tests to reject duplicate Poetry identity metadata while preserving Poetry-specific package/include configuration."
+  ],
+  "why": "Poetry 2 accepts the duplicated metadata but emits warnings because [tool.poetry] identity fields are ignored when [project] already defines them. Removing the duplicates keeps Cachet release packaging clean and warning-free."
+}
