@@ -21,7 +21,10 @@ from document_kv_cache._native_probe_metadata import (
 )
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
 from document_kv_cache.engine_protocol import dtype_byte_width
-from document_kv_cache.native_probe_factories import builtin_native_probe_factory_path
+from document_kv_cache.native_probe_factories import (
+    builtin_native_probe_factory_path,
+    native_probe_adapter_contract_to_record,
+)
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
 from document_kv_cache.storage import local_path
 from document_kv_cache.storage_benchmark import (
@@ -1455,17 +1458,33 @@ def _uses_release_storage_benchmark_readers(readers: Sequence[str]) -> bool:
 def _validate_release_planned_engine_probes(engine_probes: Sequence[EngineProbePlanConfig]) -> None:
     debug_engine_versions = sorted(probe.backend.value for probe in engine_probes if probe.engine_version is not None)
     non_native_probes = sorted(probe.backend.value for probe in engine_probes if probe.allow_non_native_probe)
+    invalid_fixture_payload_modes = sorted(
+        f"{probe.backend.value}={probe.fixture_payload_mode.value}"
+        for probe in engine_probes
+        if probe.fixture_output_dir is not None
+        and probe.fixture_payload_mode != _native_probe_adapter_payload_mode()
+    )
     issues = []
     if debug_engine_versions:
         issues.append(f"engine_version overrides for {debug_engine_versions}")
     if non_native_probes:
         issues.append(f"non-native debug probes for {non_native_probes}")
+    if invalid_fixture_payload_modes:
+        expected = _native_probe_adapter_payload_mode().value
+        issues.append(
+            f"fixture_payload_mode values outside the native probe adapter contract "
+            f"{expected!r}: {invalid_fixture_payload_modes}"
+        )
     if issues:
         raise ValueError(
             "release_evidence cannot consume planned debug engine probes; remove "
             + " and ".join(issues)
             + " or pass explicit --release-engine-probe-json artifacts instead"
         )
+
+
+def _native_probe_adapter_payload_mode() -> PayloadMode:
+    return PayloadMode(str(native_probe_adapter_contract_to_record()["payload_mode"]))
 
 
 def _validate_release_planned_engine_probe_actions(engine_probes: Sequence[EngineProbePlanConfig]) -> None:

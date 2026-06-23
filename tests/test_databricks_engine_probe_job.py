@@ -521,6 +521,7 @@ def test_vllm_runtime_preflight_layer_names_derive_from_fixture_output_dir():
         extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
         single_user_name=SINGLE_USER_NAME,
         fixture_output_dir=fixture_dir,
+        fixture_payload_mode="merged",
         release_safe=True,
         native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
         metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
@@ -793,6 +794,28 @@ def test_build_databricks_engine_probe_matrix_payload_can_run_tasks_serially():
     first_task, second_task = payload["tasks"]
     assert "depends_on" not in first_task
     assert second_task["depends_on"] == [{"task_key": first_task["task_key"]}]
+
+
+def test_release_safe_engine_probe_matrix_rejects_fixture_payload_mode_outside_contract():
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+
+    with pytest.raises(ValueError, match="fixture_payload_mode.*'merged'"):
+        DatabricksEngineProbeMatrixJobConfig(
+            probe_targets=(
+                _release_target(
+                    "vllm",
+                    handoff_json=f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+                    payload_uri=None,
+                    fixture_output_dir=fixture_dir,
+                    fixture_payload_mode="segmented",
+                ),
+                _release_target("sglang"),
+            ),
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            wheel_uri=WHEEL_URI,
+            single_user_name=SINGLE_USER_NAME,
+            release_safe=True,
+        )
 
 
 def test_databricks_engine_probe_matrix_payload_runs_fixture_before_probe():
@@ -1070,6 +1093,24 @@ def test_databricks_engine_probe_matrix_release_safe_rejects_debug_target_option
             runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
             single_user_name=SINGLE_USER_NAME,
             release_safe=True,
+        )
+
+
+def test_release_safe_single_engine_probe_rejects_fixture_payload_mode_outside_contract():
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+
+    with pytest.raises(ValueError, match="fixture_payload_mode.*'merged'"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json=f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+            probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
+            output_json=f"{fixture_dir}/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend="vllm",
+            single_user_name=SINGLE_USER_NAME,
+            fixture_output_dir=fixture_dir,
+            fixture_payload_mode="segmented",
+            release_safe=True,
+            native_probe_factories_output_json=f"{fixture_dir}/vllm-native-probe-factories.json",
         )
 
 
@@ -2992,6 +3033,8 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
             "--provider-backed-vllm-native-probe",
             "--fixture-output-dir",
             fixture_dir,
+            "--fixture-payload-mode",
+            "merged",
             "--probe-output-json",
             "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-probe.json",
             "--actions-output-json",
@@ -3036,7 +3079,7 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
         "--fixture-backend",
         "vllm",
         "--fixture-payload-mode",
-        "segmented",
+        "merged",
         "--vllm-runtime-preflight-output-json",
         f"{fixture_dir}/vllm-runtime-preflight.json",
         "--vllm-runtime-preflight-layer-names-json",
@@ -3064,6 +3107,8 @@ def test_main_provider_backed_sglang_preset_writes_g6_payload(tmp_path):
             "--provider-backed-sglang-native-probe",
             "--fixture-output-dir",
             fixture_dir,
+            "--fixture-payload-mode",
+            "merged",
             "--probe-output-json",
             "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-probe.json",
             "--actions-output-json",
@@ -3110,7 +3155,7 @@ def test_main_provider_backed_sglang_preset_writes_g6_payload(tmp_path):
         "--fixture-backend",
         "sglang",
         "--fixture-payload-mode",
-        "segmented",
+        "merged",
         "--sglang-runtime-preflight-output-json",
         f"{fixture_dir}/sglang-runtime-preflight.json",
         "--sglang-runtime-preflight-launch-config-json",
@@ -3218,6 +3263,8 @@ def test_main_provider_backed_vllm_preset_requires_runtime_preflight_in_release_
             "--provider-backed-vllm-native-probe",
             "--fixture-output-dir",
             "/Volumes/catalog/schema/volume/probes/vllm-fixture",
+            "--fixture-payload-mode",
+            "merged",
             "--probe-output-json",
             "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-probe.json",
             "--runner-python-file",
@@ -3252,6 +3299,8 @@ def test_main_provider_backed_sglang_preset_requires_runtime_preflight_in_releas
             "--provider-backed-sglang-native-probe",
             "--fixture-output-dir",
             "/Volumes/catalog/schema/volume/probes/sglang-fixture",
+            "--fixture-payload-mode",
+            "merged",
             "--probe-output-json",
             "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-probe.json",
             "--runner-python-file",

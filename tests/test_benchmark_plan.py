@@ -1517,6 +1517,36 @@ def test_engine_probe_targets_release_safe_rejects_debug_or_incomplete_planned_p
         )
 
 
+def test_engine_probe_targets_release_safe_rejects_fixture_payload_mode_outside_contract(tmp_path):
+    fixture_dir = tmp_path / "vllm-fixture"
+
+    with pytest.raises(ValueError, match="fixture_payload_mode.*'merged'"):
+        engine_probe_targets_to_record(
+            (
+                EngineProbePlanConfig(
+                    backend="vllm",
+                    handoff_json=str(fixture_dir / DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES["handoff"]),
+                    probe_factory="vllm_probe:factory",
+                    output_json=str(tmp_path / "vllm-probe.json"),
+                    actions_output_json=str(tmp_path / "vllm-actions.json"),
+                    fixture_output_dir=str(fixture_dir),
+                    native_probe_factories_output_json=str(tmp_path / "vllm-native-probe-factories.json"),
+                ),
+                EngineProbePlanConfig(
+                    backend="sglang",
+                    handoff_json=str(tmp_path / "sglang-handoff.json"),
+                    probe_factory="sglang_probe:factory",
+                    output_json=str(tmp_path / "sglang-probe.json"),
+                    actions_output_json=str(tmp_path / "sglang-actions.json"),
+                    sglang_runtime_preflight_output_json=str(tmp_path / "sglang-runtime-preflight.json"),
+                    sglang_runtime_preflight_launch_config_json=str(tmp_path / "sglang-launch-config.json"),
+                    native_probe_factories_output_json=str(tmp_path / "sglang-native-probe-factories.json"),
+                ),
+            ),
+            release_safe=True,
+        )
+
+
 def test_engine_probe_targets_release_safe_requires_native_probe_factories_outputs(tmp_path):
     with pytest.raises(ValueError, match="native_probe_factories_output_json.*sglang.*vllm"):
         engine_probe_targets_to_record(
@@ -3328,6 +3358,10 @@ def test_main_derives_fixture_actions_for_release_planned_engine_probes(tmp_path
             f"vllm={vllm_fixture_dir}",
             "--engine-probe-fixture-output-dir",
             f"sglang={sglang_fixture_dir}",
+            "--engine-probe-fixture-payload-mode",
+            "vllm=merged",
+            "--engine-probe-fixture-payload-mode",
+            "sglang=merged",
             "--engine-probe-output-json",
             f"vllm={tmp_path / 'vllm-probe.json'}",
             "--engine-probe-output-json",
