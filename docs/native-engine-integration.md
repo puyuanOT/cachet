@@ -74,13 +74,18 @@ factory metadata for the native runtime path.
    `benchmark_plan` handoff generation flags.
 2. Start vLLM or SGLang through the engine's normal deployment mechanism, using
    the launch-config sidecar for that engine.
-3. Send OpenAI-compatible requests with the full logical prompt and
-   `kv_transfer_params` on the cache arm. Native vLLM scheduling needs the
-   logical prefix token positions before it can claim external matched tokens
-   and allocate runtime KV blocks.
+3. For the vLLM native provider path, send OpenAI-compatible requests with the
+   full logical prompt and `kv_transfer_params` on the cache arm. Native vLLM
+   scheduling needs the logical prefix token positions before it can claim
+   external matched tokens and allocate runtime KV blocks.
 4. Keep the payload URI and handoff record stable for the request id. Cachet's
    native provider uses those fields to load assembled KV into the engine's
    allocated block mappings.
+
+For SGLang, the current evidence covers the runtime-facing dynamic HiCache
+provider, launch config, preflight, native probe, and connector action
+descriptors. Validate live decode-time prefix binding in the target SGLang
+deployment before treating it as benchmark evidence.
 
 Cachet does not run a proprietary request scheduler. If an integration needs a
 different batching, decode, routing, or cleanup policy, implement it inside the
@@ -88,9 +93,9 @@ serving engine or the engine adapter package rather than inside Cachet.
 
 ## Databricks Preflight
 
-For QA, target the default AWS g6/L4 Databricks profile: `aws-g6-l4` on
-`g6.8xlarge`. The explicit `aws-g5-a10g` profile on `g5.8xlarge` is compatibility
-evidence only.
+For QA, target the default AWS g6/L4 hardware target: `aws-g6-l4` on
+`g6.8xlarge`. The explicit `aws-g5-a10g` hardware target on `g5.8xlarge` is
+compatibility evidence only.
 
 Dry-run the generated payload before submitting a GPU job:
 
