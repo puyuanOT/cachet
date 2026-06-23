@@ -1,6 +1,8 @@
 from pathlib import Path
 import json
 import subprocess
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -12,11 +14,18 @@ from document_kv_cache.benchmarks import (
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import build_engine_adapter_request, engine_adapter_request_to_record, sglang_adapter_spec
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
+from document_kv_cache.kvpack import PackChunk
+from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.models import KVCacheKey
 from document_kv_cache.sglang_smoke import (
+    DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     HF_MODEL_ID,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+    SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SERVED_MODEL_NAME,
+    SGLangLiveHandoffGenerationConfig,
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
     SGLANG_VERSION,
@@ -29,9 +38,12 @@ from document_kv_cache.sglang_smoke import (
     install_document_kv_package,
     install_sglang,
     parse_args,
+    prepare_generated_live_handoff,
     run_live_checks,
     sglang_hicache_config_for_smoke,
 )
+from document_kv_cache.storage import local_path
+from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
@@ -87,6 +99,47 @@ class FakeLiveResult:
         }
 
 
+class TinyTokenizer:
+    token_ids = (11, 12, 13)
+
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert text
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        return {"input_ids": [list(self.token_ids)]}
+
+
+class TinySGLangLiveKVGenerator:
+    tokenizer = TinyTokenizer()
+    add_special_tokens = False
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = layout_for_model(
+            config.model_id,
+            dtype=config.dtype,
+            lora_id=config.lora_id,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+        token_count = len(self.tokenizer.token_ids)
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=b"\0" * (token_count * layout.bytes_per_token),
+            token_count=token_count,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
 def test_dependency_constraints_match_pinned_sglang_stack():
     assert dependency_constraints() == list(SGLANG_DEPENDENCY_CONSTRAINTS)
     assert dependency_constraints() == ["sglang==0.5.10.post1"]
@@ -129,6 +182,49 @@ def test_sglang_smoke_cache_arm_requires_handoff_and_page_keys(tmp_path):
     assert config.sglang_hicache_page_keys == ("page-a", "page-b")
 
 
+def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp_path):
+    generation = SGLangLiveHandoffGenerationConfig(
+        output_dir=tmp_path / "generated-live",
+        generator_factory="module:factory",
+        page_size=2,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        handoff_generation=generation,
+    )
+
+    assert config.handoff_generation == generation
+    assert config.hicache_page_size == 2
+    assert config.sglang_hicache_page_keys == ()
+    assert config.live_handoff_generation_path == tmp_path / "out" / "sglang-live-handoff-generation.json"
+
+
+def test_sglang_smoke_rejects_generated_live_handoff_with_explicit_fields(tmp_path):
+    generation = SGLangLiveHandoffGenerationConfig(
+        output_dir=tmp_path / "generated-live",
+        generator_factory="module:factory",
+    )
+
+    with pytest.raises(ValueError) as exc:
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            handoff_generation=generation,
+            sglang_hicache_page_keys=("page-a",),
+        )
+
+    assert str(exc.value) == SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE
+
+    with pytest.raises(ValueError, match="must match live handoff generation page_size"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            handoff_generation=generation,
+            hicache_page_size=2,
+        )
+
+
 def test_sglang_smoke_accepts_baseline_only_without_handoff_fields(tmp_path):
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
@@ -168,6 +264,109 @@ def test_sglang_smoke_rejects_handoff_fields_for_baseline_only(tmp_path):
         )
 
     assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
+
+
+def test_sglang_smoke_rejects_generated_live_handoff_for_baseline_only(tmp_path):
+    with pytest.raises(ValueError) as exc:
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            handoff_generation=SGLangLiveHandoffGenerationConfig(output_dir=tmp_path / "generated-live"),
+        )
+
+    assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
+
+
+def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(tmp_path, monkeypatch):
+    module = ModuleType("cachet_test_sglang_live_handoff_generator")
+    module.build_generator = TinySGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-live",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=2,
+        ),
+    )
+
+    runtime_config = prepare_generated_live_handoff(config)
+
+    assert runtime_config.handoff_generation is None
+    assert runtime_config.request_id == "cachet-live-sglang-generated-1"
+    assert runtime_config.sglang_hicache_page_keys == sglang_hicache_page_keys(
+        TinyTokenizer.token_ids,
+        page_size=2,
+    )
+    assert runtime_config.handoff_json is not None
+    assert Path(runtime_config.handoff_json).exists()
+    assert runtime_config.payload_uri is not None
+    assert local_path(runtime_config.payload_uri).exists()
+    generation = json.loads(config.live_handoff_generation_path.read_text(encoding="utf-8"))
+    assert generation["ok"] is True
+    assert generation["cache_prefix_tokens"] == len(TinyTokenizer.token_ids)
+    assert generation["sglang_hicache_page_size"] == 2
+
+
+def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(tmp_path, monkeypatch):
+    generation = SGLangLiveHandoffGenerationConfig(
+        output_dir=tmp_path / "generated-live",
+        generator_factory="module:factory",
+        dtype="bfloat16",
+        align_bytes=1,
+        page_size=3,
+        timeout_seconds=1234.0,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-venv",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=generation,
+    )
+    config.venv_python.parent.mkdir(parents=True)
+    config.venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, *, check, capture_output, text, timeout, env):
+        calls.append((argv, check, capture_output, text, timeout, env))
+        assert argv[0] == str(config.venv_python)
+        assert argv[1] == "-c"
+        input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
+        assert input_payload["benchmark_id"] == "sglang-generated-venv"
+        assert input_payload["handoff_generation"]["generator_factory"] == "module:factory"
+        assert input_payload["handoff_generation"]["sglang_hicache_page_size"] == 3
+        Path(argv[4]).parent.mkdir(parents=True, exist_ok=True)
+        Path(argv[4]).write_text(
+            json.dumps(
+                {
+                    "ok": True,
+                    "request_id": "cachet-live-sglang-generated-venv",
+                    "handoff_json": str(tmp_path / "generated-live" / "sglang-live.handoff.json"),
+                    "payload_uri": f"disk:{tmp_path / 'generated-live' / 'sglang-live.kv'}",
+                    "sglang_hicache_page_keys": ["page-a"],
+                    "generator_python": str(config.venv_python),
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout="worker ok", stderr="")
+
+    monkeypatch.setattr(public_sglang_smoke.subprocess, "run", fake_run)
+
+    runtime_config = prepare_generated_live_handoff(config)
+
+    assert runtime_config.handoff_json == str(tmp_path / "generated-live" / "sglang-live.handoff.json")
+    assert runtime_config.sglang_hicache_page_keys == ("page-a",)
+    generation_record = json.loads(config.live_handoff_generation_path.read_text(encoding="utf-8"))
+    assert generation_record["generator_python"] == str(config.venv_python)
+    assert len(calls) == 1
+    assert calls[0][4] == 1234.0
+    assert calls[0][5]["HF_HOME"] == str(config.hf_cache_dir)
 
 
 def test_document_kv_package_install_spec_prefers_config_then_env(monkeypatch, tmp_path):
@@ -225,6 +424,7 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
         context_length=8192,
         mem_fraction_static=0.72,
         hicache_page_store_uri=f"disk:{tmp_path / 'hicache-pages'}",
+        hicache_page_size=2,
         hicache_size_gb=4,
         hicache_write_policy="write_through_selective",
     )
@@ -240,6 +440,7 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
     assert args[args.index("--mem-fraction-static") + 1] == "0.72"
     assert "--enable-hierarchical-cache" in args
     assert args[args.index("--hicache-storage-backend") + 1] == "dynamic"
+    assert args[args.index("--page-size") + 1] == "2"
     assert args[args.index("--hicache-size") + 1] == "4"
     assert args[args.index("--hicache-write-policy") + 1] == "write_through_selective"
     extra_config = json.loads(args[args.index("--hicache-storage-backend-extra-config") + 1])
@@ -305,6 +506,45 @@ def test_sglang_smoke_cli_accepts_handoff_cache_arm(monkeypatch, tmp_path):
     assert seen_configs[0].sglang_hicache_page_keys == ("page-a", "page-b")
 
 
+def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
+    seen_configs = []
+    monkeypatch.setattr(public_sglang_smoke, "run_sglang_live_smoke", lambda config: seen_configs.append(config))
+
+    exit_code = public_sglang_smoke.main(
+        [
+            "--benchmark-id",
+            "sglang-generated-1",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--generate-live-handoff",
+            "--live-handoff-output-dir",
+            str(tmp_path / "generated-live"),
+            "--live-handoff-generator-factory",
+            "module:factory",
+            "--live-handoff-dtype",
+            "float16",
+            "--live-handoff-align-bytes",
+            "8",
+            "--sglang-hicache-page-size",
+            "2",
+            "--live-handoff-generation-timeout-seconds",
+            "12.5",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(seen_configs) == 1
+    generation = seen_configs[0].handoff_generation
+    assert generation is not None
+    assert generation.output_dir == tmp_path / "generated-live"
+    assert generation.generator_factory == "module:factory"
+    assert generation.dtype == "float16"
+    assert generation.align_bytes == 8
+    assert generation.page_size == 2
+    assert generation.timeout_seconds == 12.5
+    assert seen_configs[0].hicache_page_size == 2
+
+
 def test_build_metadata_records_custom_params_transport(tmp_path):
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
@@ -323,6 +563,8 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
     assert metadata["live_request_metadata_bridge_required"] is True
     assert metadata["live_request_metadata_bridge_ok"] is False
+    assert metadata["generates_live_handoff"] is False
+    assert metadata["live_handoff_generation"] is None
 
 
 def test_build_metadata_records_cache_arm_support_for_handoff_smoke(tmp_path):
@@ -345,6 +587,17 @@ def test_build_metadata_records_cache_arm_support_for_handoff_smoke(tmp_path):
     assert metadata["cache_arm_blocker"] is None
     assert metadata["live_request_metadata_bridge_ok"] is False
     assert metadata["sglang_import_probe_ok"] is False
+
+    generated_config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-1",
+        output_dir=tmp_path / "generated-out",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(output_dir=tmp_path / "generated-live"),
+    )
+    metadata = build_metadata(generated_config)
+
+    assert metadata["generates_live_handoff"] is True
+    assert metadata["live_handoff_generation"]["generator_factory"] == DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
+    assert metadata["live_handoff_generation"]["sglang_hicache_page_size"] == DEFAULT_SGLANG_HICACHE_PAGE_SIZE
 
     metadata = build_metadata(
         config,
@@ -479,6 +732,73 @@ def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_pa
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["ok"] is False
     assert "request metadata bridge not verified" in written["issues"]
+
+
+def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(monkeypatch, tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-run",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(output_dir=tmp_path / "generated-live"),
+    )
+    events = []
+    runtime_config = SGLangSmokeBenchmarkConfig(
+        benchmark_id=config.benchmark_id,
+        output_dir=config.output_dir,
+        local_root=config.local_root,
+        handoff_json=str(tmp_path / "generated-live" / "sglang-live.handoff.json"),
+        payload_uri=f"disk:{tmp_path / 'generated-live' / 'sglang-live.kv'}",
+        request_id="cachet-live-sglang-generated-run",
+        sglang_hicache_page_keys=("page-a",),
+    )
+
+    class FakeServer:
+        pass
+
+    def fake_prepare(seen_config):
+        events.append("prepare")
+        assert seen_config is config
+        return runtime_config
+
+    def fake_start(seen_config, python_executable, log_path):
+        events.append("start")
+        assert seen_config is runtime_config
+        assert python_executable == runtime_config.venv_python
+        assert log_path == runtime_config.server_log_path
+        return FakeServer()
+
+    def fake_run_live_checks(seen_config, *, import_probe_record):
+        events.append("live")
+        assert seen_config is runtime_config
+        assert import_probe_record["document_kv_request_metadata_bridge_ok"] is True
+        return {"ok": True}
+
+    monkeypatch.setattr(public_sglang_smoke, "create_venv", lambda path: events.append("venv"))
+    monkeypatch.setattr(public_sglang_smoke, "install_sglang", lambda python: events.append("install-sglang"))
+    monkeypatch.setattr(public_sglang_smoke, "install_document_kv_package", lambda python, spec: events.append("install-cachet"))
+    monkeypatch.setattr(public_sglang_smoke, "installed_versions", lambda python: {})
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "probe_sglang_import",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "document_kv_request_metadata_bridge_ok": True,
+            "document_kv_request_metadata_bridge": {"ok": True},
+        },
+    )
+    monkeypatch.setattr(public_sglang_smoke, "prepare_generated_live_handoff", fake_prepare)
+    monkeypatch.setattr(public_sglang_smoke, "start_sglang_server", fake_start)
+    monkeypatch.setattr(public_sglang_smoke, "wait_for_sglang_server", lambda *args, **kwargs: events.append("wait"))
+    monkeypatch.setattr(public_sglang_smoke, "copy_file_if_exists", lambda *args, **kwargs: events.append("copy"))
+    monkeypatch.setattr(public_sglang_smoke, "run_live_checks", fake_run_live_checks)
+    monkeypatch.setattr(public_sglang_smoke, "terminate_process", lambda server: events.append("terminate"))
+
+    public_sglang_smoke.run_sglang_live_smoke(config)
+
+    assert events.index("prepare") < events.index("start") < events.index("live")
+    metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["generated_live_handoff"] is True
+    assert metadata["generated_live_handoff_page_keys"] == 1
 
 
 def test_parse_args_builds_baseline_only_config(tmp_path):

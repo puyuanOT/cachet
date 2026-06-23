@@ -85,7 +85,10 @@ factory metadata for the native runtime path.
 For SGLang, the current evidence covers the runtime-facing dynamic HiCache
 provider, launch config, preflight, native probe, and connector action
 descriptors. Validate live decode-time prefix binding in the target SGLang
-deployment before treating it as benchmark evidence.
+deployment before treating it as benchmark evidence. The SGLang smoke helper can
+prepare that readiness run with `--generate-live-handoff`, which creates the
+live synthetic Cachet handoff and matching SGLang HiCache page-key metadata
+inside the same isolated runtime used to launch SGLang.
 
 Cachet does not run a proprietary request scheduler. If an integration needs a
 different batching, decode, routing, or cleanup policy, implement it inside the

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+import gc
 import json
 import os
 from pathlib import Path
@@ -18,20 +19,32 @@ from typing import Any
 import urllib.error
 import urllib.request
 
-from document_kv_cache.benchmarks import DEFAULT_HARDWARE_TARGET, validate_v1_hardware_target
-from document_kv_cache.engine_adapters import ServingBackend
+from document_kv_cache.benchmark_handoffs import load_benchmark_kv_chunk_generator
+from document_kv_cache.benchmarks import (
+    DEFAULT_HARDWARE_TARGET,
+    DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    benchmark_cache_request,
+    benchmark_cache_source_document,
+    validate_v1_hardware_target,
+)
+from document_kv_cache.engine_adapters import ServingBackend, build_engine_adapter_request, sglang_adapter_spec
+from document_kv_cache.engine_probe import write_engine_adapter_handoff_bundle
 from document_kv_cache.live_server import (
     LiveServerCheckConfig,
+    build_live_server_check_request,
     live_check_kv_transfer_params,
     run_openai_compatible_live_check,
 )
-from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.manifest import InMemoryManifestStore
+from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID, layout_for_model
 from document_kv_cache.openai_compatible import PromptTextMode
 from document_kv_cache.serving_env import (
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_SERVING_ENVIRONMENT_PROFILE,
     SGLANG_VERSION,
 )
+from document_kv_cache.workflow import CacheBuildConfig, DocumentKVWorkflow
+from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_BACKEND_CLASS,
     DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
@@ -55,6 +68,11 @@ SERVER_PORT = 8000
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
+DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
+    "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
+)
+DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
+LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
     "SGLang handoff-backed live smoke requires handoff_json or handoff_record "
     "plus explicit sglang_hicache_page_keys metadata so Cachet can bind the "
@@ -62,7 +80,11 @@ SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
 )
 SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE = (
     "baseline-only SGLang smoke must not include handoff_json, handoff_record, handoff_record_json, "
-    "payload_uri, request_id, or sglang_hicache_page_keys"
+    "payload_uri, request_id, sglang_hicache_page_keys, or generated live handoff settings"
+)
+SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE = (
+    "generated SGLang live handoff must not be combined with explicit handoff_json, "
+    "handoff_record, payload_uri, request_id, or sglang_hicache_page_keys"
 )
 
 __all__ = [
@@ -72,8 +94,13 @@ __all__ = [
     "SERVED_MODEL_NAME",
     "SERVER_BASE_URL",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
+    "DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY",
+    "DEFAULT_SGLANG_HICACHE_PAGE_SIZE",
+    "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
     "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
     "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
+    "SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE",
+    "SGLangLiveHandoffGenerationConfig",
     "SGLangSmokeBenchmarkConfig",
     "build_metadata",
     "build_sglang_hicache_provider_probe_record",
@@ -83,12 +110,51 @@ __all__ = [
     "install_document_kv_package",
     "install_sglang",
     "parse_args",
+    "prepare_generated_live_handoff",
+    "release_live_handoff_generation_resources",
     "run_sglang_live_smoke",
     "sglang_hicache_config_for_smoke",
     "sglang_live_kv_transfer_params",
     "write_json",
     "main",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class SGLangLiveHandoffGenerationConfig:
+    """Optional generation settings for the SGLang live smoke cache arm."""
+
+    output_dir: Path
+    generator_factory: str = DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
+    dtype: str = "bfloat16"
+    align_bytes: int = 4096
+    page_size: int = DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+    timeout_seconds: float = 1800.0
+
+    def __post_init__(self) -> None:
+        if self.output_dir is None:
+            raise ValueError("live_handoff_output_dir must be provided")
+        if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
+            raise ValueError("live_handoff_generator_factory must be non-empty")
+        if not isinstance(self.dtype, str) or not self.dtype.strip():
+            raise ValueError("live_handoff_dtype must be non-empty")
+        if isinstance(self.align_bytes, bool) or not isinstance(self.align_bytes, int) or self.align_bytes <= 0:
+            raise ValueError("live_handoff_align_bytes must be a positive integer")
+        if isinstance(self.page_size, bool) or not isinstance(self.page_size, int) or self.page_size <= 0:
+            raise ValueError("sglang_hicache_page_size must be a positive integer")
+        if self.timeout_seconds <= 0:
+            raise ValueError("live_handoff_generation_timeout_seconds must be positive")
+        object.__setattr__(self, "output_dir", Path(self.output_dir))
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "generator_factory": self.generator_factory,
+            "output_dir": str(self.output_dir),
+            "dtype": self.dtype,
+            "align_bytes": self.align_bytes,
+            "sglang_hicache_page_size": self.page_size,
+            "timeout_seconds": self.timeout_seconds,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,7 +183,9 @@ class SGLangSmokeBenchmarkConfig:
     payload_uri: str | None = None
     request_id: str | None = None
     sglang_hicache_page_keys: Sequence[str] | None = None
+    handoff_generation: SGLangLiveHandoffGenerationConfig | None = None
     hicache_page_store_uri: str | None = None
+    hicache_page_size: int | None = None
     hicache_ratio: float | None = None
     hicache_size_gb: int | None = None
     hicache_io_backend: str | None = None
@@ -171,17 +239,40 @@ class SGLangSmokeBenchmarkConfig:
             value is not None
             for value in (self.handoff_json, self.handoff_record, self.payload_uri, self.request_id)
         ) or page_keys_provided
+        if self.handoff_generation is not None and not isinstance(
+            self.handoff_generation, SGLangLiveHandoffGenerationConfig
+        ):
+            raise TypeError("handoff_generation must be a SGLangLiveHandoffGenerationConfig")
+        if (
+            self.hicache_page_size is not None
+            and (isinstance(self.hicache_page_size, bool) or not isinstance(self.hicache_page_size, int))
+        ):
+            raise ValueError("hicache_page_size must be a positive integer when provided")
+        if self.hicache_page_size is not None and self.hicache_page_size <= 0:
+            raise ValueError("hicache_page_size must be a positive integer when provided")
+        if (
+            self.handoff_generation is not None
+            and self.hicache_page_size is not None
+            and self.hicache_page_size != self.handoff_generation.page_size
+        ):
+            raise ValueError("hicache_page_size must match live handoff generation page_size")
         if self.baseline_only:
-            if has_handoff_fields:
+            if has_handoff_fields or self.handoff_generation is not None:
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
-            if self.handoff_json is None and self.handoff_record is None:
-                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
-            if not page_keys:
-                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+            if self.handoff_generation is not None:
+                if has_handoff_fields:
+                    raise ValueError(SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE)
+            else:
+                if self.handoff_json is None and self.handoff_record is None:
+                    raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+                if not page_keys:
+                    raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         object.__setattr__(self, "local_root", Path(self.local_root))
         object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
+        if self.handoff_generation is not None and self.hicache_page_size is None:
+            object.__setattr__(self, "hicache_page_size", self.handoff_generation.page_size)
         if self.handoff_record is not None:
             object.__setattr__(self, "handoff_record", dict(self.handoff_record))
 
@@ -229,6 +320,10 @@ class SGLangSmokeBenchmarkConfig:
     def live_smoke_output_path(self) -> Path:
         return self.output_dir / "sglang-live-smoke.json"
 
+    @property
+    def live_handoff_generation_path(self) -> Path:
+        return self.output_dir / "sglang-live-handoff-generation.json"
+
 
 def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     """Create an isolated SGLang env, start Qwen3, and run strict live checks."""
@@ -256,24 +351,33 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     )
     metadata.update(_metadata_from_import_probe(import_probe_record))
 
-    metadata["sglang_server_local_log"] = str(config.server_log_path)
-    metadata["sglang_server_log"] = str(config.server_log_copy_path)
-    metadata["live_smoke_output_path"] = str(config.live_smoke_output_path)
+    runtime_config = prepare_generated_live_handoff(config)
+    if runtime_config is not config:
+        metadata["generated_live_handoff"] = True
+        metadata["live_handoff_generation_path"] = str(config.live_handoff_generation_path)
+        metadata["generated_live_handoff_json"] = runtime_config.handoff_json
+        metadata["generated_live_handoff_payload_uri"] = runtime_config.payload_uri
+        metadata["generated_live_handoff_page_keys"] = len(runtime_config.sglang_hicache_page_keys or ())
+        write_json(config.metadata_path, metadata)
+
+    metadata["sglang_server_local_log"] = str(runtime_config.server_log_path)
+    metadata["sglang_server_log"] = str(runtime_config.server_log_copy_path)
+    metadata["live_smoke_output_path"] = str(runtime_config.live_smoke_output_path)
     write_json(config.metadata_path, metadata)
 
-    server = start_sglang_server(config, config.venv_python, config.server_log_path)
+    server = start_sglang_server(runtime_config, runtime_config.venv_python, runtime_config.server_log_path)
     try:
         wait_for_sglang_server(
             server,
-            config.server_log_path,
-            config,
-            timeout_seconds=config.server_start_timeout_seconds,
+            runtime_config.server_log_path,
+            runtime_config,
+            timeout_seconds=runtime_config.server_start_timeout_seconds,
         )
-        copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
-        run_live_checks(config, import_probe_record=import_probe_record)
+        copy_file_if_exists(runtime_config.server_log_path, runtime_config.server_log_copy_path)
+        run_live_checks(runtime_config, import_probe_record=import_probe_record)
     finally:
         terminate_process(server)
-        copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
+        copy_file_if_exists(runtime_config.server_log_path, runtime_config.server_log_copy_path)
 
 
 def build_metadata(
@@ -305,6 +409,13 @@ def build_metadata(
         "requires_kv_transfer_params": not config.baseline_only,
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
         "kv_transfer_params_transport": "custom_params",
+        "generates_live_handoff": config.handoff_generation is not None,
+        "live_handoff_generation": (
+            config.handoff_generation.to_metadata() if config.handoff_generation is not None else None
+        ),
+        "live_handoff_generation_path": str(config.live_handoff_generation_path)
+        if config.handoff_generation is not None
+        else None,
         "sglang_hicache_launch_config": dict(launch_config or sglang_hicache_config_for_smoke(config)),
     }
     metadata.update(_metadata_from_import_probe(import_probe_record))
@@ -317,6 +428,7 @@ def sglang_hicache_config_for_smoke(config: SGLangSmokeBenchmarkConfig) -> dict[
         extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = config.hicache_page_store_uri
     return sglang_hicache_launch_config(
         extra_config=extra_config,
+        page_size=config.hicache_page_size,
         hicache_ratio=config.hicache_ratio,
         hicache_size_gb=config.hicache_size_gb,
         hicache_io_backend=config.hicache_io_backend,
@@ -394,6 +506,300 @@ def sglang_live_kv_transfer_params(config: SGLangSmokeBenchmarkConfig) -> dict[s
         expected_backend=ServingBackend.SGLANG,
     )
     return params
+
+
+def prepare_generated_live_handoff(config: SGLangSmokeBenchmarkConfig) -> SGLangSmokeBenchmarkConfig:
+    """Generate the SGLang live-smoke handoff and page keys when requested."""
+
+    generation = config.handoff_generation
+    if generation is None:
+        return config
+    if config.venv_python.exists():
+        record = _generate_live_handoff_inputs_in_subprocess(config, generation)
+    else:
+        generation.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            record = _generate_live_handoff_inputs(config, generation)
+        finally:
+            release_live_handoff_generation_resources()
+    write_json(config.live_handoff_generation_path, record)
+    return _config_with_generated_live_handoff(config, record)
+
+
+def _generate_live_handoff_inputs_in_subprocess(
+    config: SGLangSmokeBenchmarkConfig,
+    generation: SGLangLiveHandoffGenerationConfig,
+) -> dict[str, object]:
+    input_path = config.local_dir / "sglang-live-handoff-generation-worker-input.json"
+    output_path = config.local_dir / "sglang-live-handoff-generation-worker-output.json"
+    payload: dict[str, object] = {
+        "benchmark_id": config.benchmark_id,
+        "output_dir": str(config.output_dir),
+        "local_root": str(config.local_root),
+        "hardware_target": config.hardware_target,
+        "handoff_generation": generation.to_metadata(),
+    }
+    write_json(input_path, payload)
+    code = """
+import json
+import sys
+from pathlib import Path
+
+from document_kv_cache.sglang_smoke import (
+    SGLangLiveHandoffGenerationConfig,
+    SGLangSmokeBenchmarkConfig,
+    _generate_live_handoff_inputs,
+    release_live_handoff_generation_resources,
+    write_json,
+)
+
+input_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+payload = json.loads(input_path.read_text(encoding="utf-8"))
+generation_payload = payload["handoff_generation"]
+generation = SGLangLiveHandoffGenerationConfig(
+    output_dir=Path(generation_payload["output_dir"]),
+    generator_factory=generation_payload["generator_factory"],
+    dtype=generation_payload["dtype"],
+    align_bytes=int(generation_payload["align_bytes"]),
+    page_size=int(generation_payload["sglang_hicache_page_size"]),
+    timeout_seconds=float(generation_payload["timeout_seconds"]),
+)
+config = SGLangSmokeBenchmarkConfig(
+    benchmark_id=payload["benchmark_id"],
+    output_dir=Path(payload["output_dir"]),
+    local_root=Path(payload["local_root"]),
+    hardware_target=payload["hardware_target"],
+    handoff_generation=generation,
+)
+try:
+    record = _generate_live_handoff_inputs(config, generation)
+finally:
+    release_live_handoff_generation_resources()
+record["generator_python"] = sys.executable
+write_json(output_path, record)
+"""
+    argv = [
+        str(config.venv_python),
+        "-c",
+        code,
+        str(input_path),
+        str(output_path),
+    ]
+    print("+", " ".join([argv[0], "-c", "<sglang live handoff generation>", *argv[3:]]), flush=True)
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=generation.timeout_seconds,
+            env=server_env(config),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"SGLang live handoff generation timed out after {generation.timeout_seconds:.1f}s; "
+            f"stdout_tail={tail_text(exc.stdout)!r}; stderr_tail={tail_text(exc.stderr)!r}"
+        ) from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"SGLang live handoff generation failed with return code {completed.returncode}; "
+            f"stdout_tail={tail_text(completed.stdout)!r}; stderr_tail={tail_text(completed.stderr)!r}"
+        )
+    if not output_path.exists():
+        raise RuntimeError(f"SGLang live handoff generation did not write {output_path}")
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict):
+        raise RuntimeError(f"SGLang live handoff generation wrote invalid result {output_path}")
+    if record.get("ok") is not True:
+        raise RuntimeError(f"SGLang live handoff generation worker result was not ok in {output_path}")
+    return record
+
+
+def _generate_live_handoff_inputs(
+    config: SGLangSmokeBenchmarkConfig,
+    generation: SGLangLiveHandoffGenerationConfig,
+) -> dict[str, object]:
+    generation.output_dir.mkdir(parents=True, exist_ok=True)
+    generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
+    layout = layout_for_model(SERVED_MODEL_NAME, dtype=generation.dtype)
+    live_request = build_live_server_check_request(
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+        use_cache_arm=True,
+    )
+    source_document = benchmark_cache_source_document(
+        live_request.example,
+        prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX,
+    )
+    source_chunk = source_document.chunks[0]
+    page_keys = sglang_hicache_page_keys(
+        _token_ids_for_generator(generator, source_chunk.text),
+        page_size=generation.page_size,
+    )
+    if not page_keys:
+        raise RuntimeError("SGLang live handoff generation produced no HiCache page keys")
+
+    request_id = f"{LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX}-{config.benchmark_id}"
+    document_request = benchmark_cache_request(
+        live_request.example,
+        model_id=SERVED_MODEL_NAME,
+        request_id=request_id,
+        prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX,
+    )
+    cache_config = CacheBuildConfig(
+        model_id=layout.model_id,
+        lora_id=layout.lora_id,
+        prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+        dtype=layout.dtype,
+        layout_version=layout.layout_version,
+        storage_layout=layout.storage_layout,
+    )
+    workflow = DocumentKVWorkflow.with_storage(manifest=InMemoryManifestStore())
+    source_shard_uri = f"disk:{generation.output_dir / 'sglang-live-source.kvpack'}"
+    cache_generation = workflow.generate_cache(
+        documents=(source_document,),
+        generator=generator,
+        config=cache_config,
+        shard_uri=source_shard_uri,
+        align_bytes=generation.align_bytes,
+    )
+    ready = workflow.prepare_for_engine(
+        document_request,
+        layout=layout,
+        metadata={
+            "cachet.live_smoke": "sglang",
+            "cachet.live_smoke.benchmark_id": config.benchmark_id,
+        },
+        cache_method=cache_generation.cache_method,
+        training_artifacts=cache_generation.training_artifacts,
+    )
+    adapter_request = build_engine_adapter_request(ready, spec=sglang_adapter_spec())
+    handoff_json = generation.output_dir / "sglang-live.handoff.json"
+    payload_uri = f"disk:{generation.output_dir / 'sglang-live.kv'}"
+    handoff_path, payload_path = write_engine_adapter_handoff_bundle(
+        adapter_request,
+        handoff_json,
+        payload_uri=payload_uri,
+        require_external_payload_uri=True,
+    )
+    return {
+        "ok": True,
+        "backend": ServingBackend.SGLANG.value,
+        "benchmark_id": config.benchmark_id,
+        "request_id": request_id,
+        "handoff_json": str(handoff_path),
+        "payload_uri": payload_uri,
+        "payload_path": str(payload_path),
+        "source_shard_uri": source_shard_uri,
+        "sglang_hicache_page_keys": list(page_keys),
+        "sglang_hicache_page_size": generation.page_size,
+        "cache_prefix_chars": len(source_chunk.text),
+        "cache_prefix_tokens": ready.handle.total_tokens,
+        "generator_factory": generation.generator_factory,
+        "output_dir": str(generation.output_dir),
+        "dtype": generation.dtype,
+        "align_bytes": generation.align_bytes,
+    }
+
+
+def release_live_handoff_generation_resources() -> None:
+    """Release best-effort Transformers/Torch memory before SGLang starts."""
+
+    gc.collect()
+    try:
+        import torch
+    except ImportError:
+        return
+    cuda = getattr(torch, "cuda", None)
+    empty_cache = getattr(cuda, "empty_cache", None)
+    if callable(empty_cache):
+        empty_cache()
+
+
+def _config_with_generated_live_handoff(
+    config: SGLangSmokeBenchmarkConfig,
+    record: Mapping[str, object],
+) -> SGLangSmokeBenchmarkConfig:
+    if record.get("ok") is not True:
+        raise RuntimeError("SGLang live handoff generation did not report ok=true")
+    handoff_json = record.get("handoff_json")
+    payload_uri = record.get("payload_uri")
+    request_id = record.get("request_id")
+    if not isinstance(handoff_json, str) or not handoff_json:
+        raise RuntimeError("SGLang live handoff generation must return handoff_json")
+    if not isinstance(payload_uri, str) or not payload_uri:
+        raise RuntimeError("SGLang live handoff generation must return payload_uri")
+    if not isinstance(request_id, str) or not request_id:
+        raise RuntimeError("SGLang live handoff generation must return request_id")
+    page_keys = _string_tuple(
+        record.get("sglang_hicache_page_keys"),
+        field_name="sglang_hicache_page_keys",
+    )
+    if not page_keys:
+        raise RuntimeError("SGLang live handoff generation must return at least one HiCache page key")
+    return replace(
+        config,
+        handoff_json=handoff_json,
+        handoff_record=None,
+        payload_uri=payload_uri,
+        request_id=request_id,
+        sglang_hicache_page_keys=page_keys,
+        handoff_generation=None,
+    )
+
+
+def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
+    tokenizer = getattr(generator, "tokenizer", None)
+    if tokenizer is None:
+        raise TypeError("SGLang live handoff generator must expose tokenizer")
+    encoded = tokenizer(
+        text,
+        return_tensors="pt",
+        add_special_tokens=bool(getattr(generator, "add_special_tokens", False)),
+    )
+    if isinstance(encoded, Mapping):
+        input_ids = encoded.get("input_ids")
+    else:
+        input_ids = getattr(encoded, "input_ids", None)
+    if input_ids is None:
+        raise ValueError("SGLang live handoff tokenizer output must include input_ids")
+    return _flatten_token_ids(input_ids)
+
+
+def _flatten_token_ids(value: object) -> tuple[int, ...]:
+    flattened: list[int] = []
+    _append_token_ids(flattened, value)
+    if not flattened:
+        raise ValueError("SGLang live handoff tokenizer must return at least one token id")
+    return tuple(flattened)
+
+
+def _append_token_ids(flattened: list[int], value: object) -> None:
+    detach = getattr(value, "detach", None)
+    if callable(detach):
+        value = detach()
+    cpu = getattr(value, "cpu", None)
+    if callable(cpu):
+        value = cpu()
+    reshape = getattr(value, "reshape", None)
+    if callable(reshape):
+        try:
+            value = reshape(-1)
+        except TypeError:
+            pass
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        value = tolist()
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError("SGLang live handoff token ids must be integers")
+    if isinstance(value, Sequence):
+        for item in value:
+            _append_token_ids(flattened, item)
+        return
+    if type(value) is not int:
+        raise ValueError("SGLang live handoff token ids must be integers")
+    flattened.append(value)
 
 
 def dependency_constraints() -> list[str]:
@@ -515,6 +921,7 @@ def build_sglang_server_args(config: SGLangSmokeBenchmarkConfig, python_executab
     args.extend(
         sglang_hicache_cli_args(
             extra_config=extra_config,
+            page_size=config.hicache_page_size,
             hicache_ratio=config.hicache_ratio,
             hicache_size_gb=config.hicache_size_gb,
             hicache_io_backend=config.hicache_io_backend,
@@ -790,6 +1197,20 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--payload-uri")
     parser.add_argument("--request-id")
     parser.add_argument("--sglang-hicache-page-keys-json")
+    parser.add_argument(
+        "--generate-live-handoff",
+        action="store_true",
+        help="Generate the live SGLang handoff and HiCache page keys before starting the server.",
+    )
+    parser.add_argument("--live-handoff-output-dir")
+    parser.add_argument(
+        "--live-handoff-generator-factory",
+        default=DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
+    )
+    parser.add_argument("--live-handoff-dtype", default="bfloat16")
+    parser.add_argument("--live-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument("--sglang-hicache-page-size", type=int)
+    parser.add_argument("--live-handoff-generation-timeout-seconds", type=float, default=1800.0)
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -799,9 +1220,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--hicache-write-policy")
     args = parser.parse_args(argv)
 
+    output_dir = Path(args.output_dir)
+    handoff_generation = _live_handoff_generation_from_args(args, output_dir)
     return SGLangSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
-        output_dir=Path(args.output_dir),
+        output_dir=output_dir,
         max_tokens=args.max_tokens,
         timeout_seconds=args.timeout_seconds,
         import_probe_timeout_seconds=args.import_probe_timeout_seconds,
@@ -825,7 +1248,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
             args.sglang_hicache_page_keys_json,
             "--sglang-hicache-page-keys-json",
         ),
+        handoff_generation=handoff_generation,
         hicache_page_store_uri=args.hicache_page_store_uri,
+        hicache_page_size=(
+            handoff_generation.page_size if handoff_generation is not None else args.sglang_hicache_page_size
+        ),
         hicache_ratio=args.hicache_ratio,
         hicache_size_gb=args.hicache_size_gb,
         hicache_io_backend=args.hicache_io_backend,
@@ -883,6 +1310,24 @@ def _json_string_array_option(value: str | None, option_name: str) -> tuple[str,
         return None
     decoded = json.loads(value)
     return _string_tuple(decoded, field_name=option_name)
+
+
+def _live_handoff_generation_from_args(
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> SGLangLiveHandoffGenerationConfig | None:
+    if not args.generate_live_handoff:
+        if args.live_handoff_output_dir is not None:
+            raise ValueError("--live-handoff-output-dir requires --generate-live-handoff")
+        return None
+    return SGLangLiveHandoffGenerationConfig(
+        output_dir=Path(args.live_handoff_output_dir) if args.live_handoff_output_dir else output_dir / "live-handoff",
+        generator_factory=args.live_handoff_generator_factory,
+        dtype=args.live_handoff_dtype,
+        align_bytes=args.live_handoff_align_bytes,
+        page_size=args.sglang_hicache_page_size or DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+        timeout_seconds=args.live_handoff_generation_timeout_seconds,
+    )
 
 
 def _string_tuple(values: object, *, field_name: str) -> tuple[str, ...]:

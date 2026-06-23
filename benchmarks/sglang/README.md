@@ -32,17 +32,21 @@ when all patch points install.
 
 Those helpers are a live readiness path, not a benchmark result. Use
 `--baseline-only` for provider/server bring-up. For handoff-backed smoke,
-provide a validated SGLang handoff plus `document_kv.sglang_hicache_page_keys`
-metadata; the runner then records both baseline and cache-arm results. This
-report remains pending until a Databricks g6/L4 or g5/A10G run writes
-`sglang-live-smoke.json` with a passing handoff-backed cache arm.
+prefer `--generate-live-handoff`, which generates the synthetic live Cachet
+handoff and exact SGLang HiCache page keys inside the isolated SGLang runtime
+before the server starts. Manual handoff inputs remain supported when callers
+already have a validated SGLang handoff plus
+`document_kv.sglang_hicache_page_keys` metadata. This report remains pending
+until a Databricks g6/L4 or g5/A10G run writes `sglang-live-smoke.json` with a
+passing handoff-backed cache arm.
 
 ## Benchmark Gate
 
 Treat SGLang benchmark publication as pending until all of these are true:
 
 - A real SGLang serving endpoint is launched on the target Databricks hardware.
-- The endpoint receives Cachet `kv_transfer_params` from a generated handoff.
+- The endpoint receives Cachet `kv_transfer_params` from a generated live
+  handoff or an equivalent validated handoff.
 - Cachet handoff params include SGLang page-key metadata that matches the
   runtime HiCache hash chain.
 - The SGLang runtime preflight reports `live_request_metadata_bridge_ok=true`.

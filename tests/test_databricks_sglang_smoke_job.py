@@ -15,7 +15,10 @@ from document_kv_cache.databricks_sglang_smoke_job import (
     write_databricks_sglang_smoke_runner_script,
 )
 from document_kv_cache.sglang_smoke import (
+    DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+    SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
 )
 
@@ -168,6 +171,51 @@ def test_databricks_sglang_smoke_config_requires_handoff_and_page_keys_for_cache
     assert "--handoff-json" not in parameters
 
 
+def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_arm():
+    default_config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="v1-sglang-generated-defaults",
+        output_dir="/Volumes/catalog/schema/volume/v1-sglang-generated",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        generate_live_handoff=True,
+    )
+    assert default_config.live_handoff_generator_factory == DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
+    assert default_config.sglang_hicache_page_size == DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+
+    config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="v1-sglang-generated-001",
+        output_dir="/Volumes/catalog/schema/volume/v1-sglang-generated",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        generate_live_handoff=True,
+        live_handoff_output_dir="/Volumes/catalog/schema/volume/v1-sglang-generated/live-handoff",
+        live_handoff_generator_factory="module:factory",
+        live_handoff_dtype="float16",
+        live_handoff_align_bytes=8,
+        sglang_hicache_page_size=2,
+        live_handoff_generation_timeout_seconds=12.5,
+        spark_env_vars={"CACHET_TRANSFORMERS_DEVICE": "cuda"},
+    )
+
+    payload = build_databricks_sglang_smoke_run_submit_payload(config)
+    cluster = payload["tasks"][0]["new_cluster"]
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert cluster["node_type_id"] == "g6.8xlarge"
+    assert cluster["spark_env_vars"] == {"CACHET_TRANSFORMERS_DEVICE": "cuda"}
+    assert "--baseline-only" not in parameters
+    assert "--handoff-json" not in parameters
+    assert "--sglang-hicache-page-keys-json" not in parameters
+    assert "--generate-live-handoff" in parameters
+    assert parameters[parameters.index("--live-handoff-output-dir") + 1].endswith("/live-handoff")
+    assert parameters[parameters.index("--live-handoff-generator-factory") + 1] == "module:factory"
+    assert parameters[parameters.index("--live-handoff-dtype") + 1] == "float16"
+    assert parameters[parameters.index("--live-handoff-align-bytes") + 1] == "8"
+    assert parameters[parameters.index("--sglang-hicache-page-size") + 1] == "2"
+    assert parameters[parameters.index("--live-handoff-generation-timeout-seconds") + 1] == "12.5"
+
+
 def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
     invalid_cases = [
         ({"context_length": 0, "baseline_only": True}, "context_length must be positive"),
@@ -202,6 +250,17 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
             {"handoff_json": HANDOFF_JSON, "baseline_only": True},
             SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
         ),
+        (
+            {"generate_live_handoff": True, "baseline_only": True},
+            SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+        ),
+        (
+            {"generate_live_handoff": True, "handoff_json": HANDOFF_JSON, "baseline_only": False},
+            SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
+        ),
+        ({"generate_live_handoff": True, "live_handoff_generator_factory": "", "baseline_only": False}, "factory"),
+        ({"generate_live_handoff": True, "live_handoff_align_bytes": 0, "baseline_only": False}, "align"),
+        ({"generate_live_handoff": True, "sglang_hicache_page_size": 0, "baseline_only": False}, "page_size"),
         ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}, "baseline_only": True}, "looks secret-bearing"),
     ]
 

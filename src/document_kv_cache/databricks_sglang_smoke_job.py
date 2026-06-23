@@ -27,10 +27,13 @@ from document_kv_cache.databricks_job import (
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.sglang_smoke import (
+    DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+    SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
 )
 
@@ -118,6 +121,13 @@ class DatabricksSGLangSmokeJobConfig:
     payload_uri: str | None = None
     request_id: str | None = None
     sglang_hicache_page_keys_json: str | None = None
+    generate_live_handoff: bool = False
+    live_handoff_output_dir: str | None = None
+    live_handoff_generator_factory: str = DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
+    live_handoff_dtype: str = "bfloat16"
+    live_handoff_align_bytes: int = 4096
+    sglang_hicache_page_size: int = DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+    live_handoff_generation_timeout_seconds: float = 1800.0
     hicache_page_store_uri: str | None = None
     hicache_ratio: float | None = None
     hicache_size_gb: int | None = None
@@ -178,6 +188,28 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record_json")
         if self.handoff_record_json is not None:
             _json_object_from_text(self.handoff_record_json, "handoff_record_json")
+        if type(self.generate_live_handoff) is not bool:
+            raise ValueError("generate_live_handoff must be a boolean")
+        if self.live_handoff_output_dir is not None and not self.live_handoff_output_dir:
+            raise ValueError("live_handoff_output_dir must be non-empty when provided")
+        if not isinstance(self.live_handoff_generator_factory, str) or not self.live_handoff_generator_factory.strip():
+            raise ValueError("live_handoff_generator_factory must be non-empty")
+        if not isinstance(self.live_handoff_dtype, str) or not self.live_handoff_dtype.strip():
+            raise ValueError("live_handoff_dtype must be non-empty")
+        if (
+            isinstance(self.live_handoff_align_bytes, bool)
+            or not isinstance(self.live_handoff_align_bytes, int)
+            or self.live_handoff_align_bytes <= 0
+        ):
+            raise ValueError("live_handoff_align_bytes must be a positive integer")
+        if (
+            isinstance(self.sglang_hicache_page_size, bool)
+            or not isinstance(self.sglang_hicache_page_size, int)
+            or self.sglang_hicache_page_size <= 0
+        ):
+            raise ValueError("sglang_hicache_page_size must be a positive integer")
+        if self.live_handoff_generation_timeout_seconds <= 0:
+            raise ValueError("live_handoff_generation_timeout_seconds must be positive")
         sglang_hicache_page_keys: tuple[str, ...] | None = None
         if self.sglang_hicache_page_keys_json is not None:
             sglang_hicache_page_keys = _json_string_array_from_text(
@@ -195,13 +227,17 @@ class DatabricksSGLangSmokeJobConfig:
             )
         )
         if self.baseline_only:
-            if has_handoff_fields:
+            if has_handoff_fields or self.generate_live_handoff or self.live_handoff_output_dir is not None:
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
-            if self.handoff_json is None and self.handoff_record_json is None:
-                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
-            if not sglang_hicache_page_keys:
-                raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+            if self.generate_live_handoff:
+                if has_handoff_fields:
+                    raise ValueError(SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE)
+            else:
+                if self.handoff_json is None and self.handoff_record_json is None:
+                    raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+                if not sglang_hicache_page_keys:
+                    raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         if self.hicache_size_gb is not None and self.hicache_size_gb < 0:
             raise ValueError("hicache_size_gb must be non-negative")
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
@@ -318,6 +354,24 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         parameters.extend(["--request-id", config.request_id])
     if config.sglang_hicache_page_keys_json is not None:
         parameters.extend(["--sglang-hicache-page-keys-json", config.sglang_hicache_page_keys_json])
+    if config.generate_live_handoff:
+        parameters.append("--generate-live-handoff")
+        if config.live_handoff_output_dir is not None:
+            parameters.extend(["--live-handoff-output-dir", config.live_handoff_output_dir])
+        parameters.extend(
+            [
+                "--live-handoff-generator-factory",
+                config.live_handoff_generator_factory,
+                "--live-handoff-dtype",
+                config.live_handoff_dtype,
+                "--live-handoff-align-bytes",
+                str(config.live_handoff_align_bytes),
+                "--sglang-hicache-page-size",
+                str(config.sglang_hicache_page_size),
+                "--live-handoff-generation-timeout-seconds",
+                str(config.live_handoff_generation_timeout_seconds),
+            ]
+        )
     if config.hicache_page_store_uri is not None:
         parameters.extend(["--hicache-page-store-uri", config.hicache_page_store_uri])
     if config.hicache_ratio is not None:
@@ -375,6 +429,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--payload-uri")
     parser.add_argument("--request-id")
     parser.add_argument("--sglang-hicache-page-keys-json")
+    parser.add_argument("--generate-live-handoff", action="store_true")
+    parser.add_argument("--live-handoff-output-dir")
+    parser.add_argument(
+        "--live-handoff-generator-factory",
+        default=DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
+    )
+    parser.add_argument("--live-handoff-dtype", default="bfloat16")
+    parser.add_argument("--live-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument("--sglang-hicache-page-size", type=int, default=DEFAULT_SGLANG_HICACHE_PAGE_SIZE)
+    parser.add_argument("--live-handoff-generation-timeout-seconds", type=float, default=1800.0)
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -423,6 +487,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             payload_uri=args.payload_uri,
             request_id=args.request_id,
             sglang_hicache_page_keys_json=args.sglang_hicache_page_keys_json,
+            generate_live_handoff=args.generate_live_handoff,
+            live_handoff_output_dir=args.live_handoff_output_dir,
+            live_handoff_generator_factory=args.live_handoff_generator_factory,
+            live_handoff_dtype=args.live_handoff_dtype,
+            live_handoff_align_bytes=args.live_handoff_align_bytes,
+            sglang_hicache_page_size=args.sglang_hicache_page_size,
+            live_handoff_generation_timeout_seconds=args.live_handoff_generation_timeout_seconds,
             hicache_page_store_uri=args.hicache_page_store_uri,
             hicache_ratio=args.hicache_ratio,
             hicache_size_gb=args.hicache_size_gb,
