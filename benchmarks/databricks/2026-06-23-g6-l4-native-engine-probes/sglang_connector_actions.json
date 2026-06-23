@@ -1,0 +1,112 @@
+{
+  "backend": "sglang",
+  "bind": {
+    "adapter_ids": [],
+    "cache_method": "vanilla_prefill",
+    "handle_uri": "document-kv://qwen3-v1-fixture-req",
+    "metadata": {
+      "document_kv.cache_method": "vanilla_prefill",
+      "document_kv.handle_uri": "document-kv://qwen3-v1-fixture-req",
+      "document_kv.payload_mode": "merged",
+      "document_kv.request_id": "qwen3-v1-fixture-req",
+      "document_kv.total_bytes": "3538944",
+      "document_kv.total_tokens": "48",
+      "engine.backend": "sglang",
+      "engine.connector_package": "sglang",
+      "engine.dynamic_loading": "true",
+      "engine.kv_injection_method": "runtime-prefix-cache-bind",
+      "engine.scheduler": "sglang"
+    },
+    "request_id": "qwen3-v1-fixture-req"
+  },
+  "copies": [
+    {
+      "cache_tier": "cold_storage",
+      "chunk_id": "static",
+      "chunk_type": "document_static",
+      "content_hash": "",
+      "document_id": "qwen3-v1-fixture-doc",
+      "first_block_index": 0,
+      "global_byte_end": 1179648,
+      "global_byte_start": 0,
+      "last_block_index_exclusive": 1,
+      "payload_index": null,
+      "request_id": "qwen3-v1-fixture-req",
+      "source_byte_end": 1179648,
+      "source_byte_length": 1179648,
+      "source_byte_start": 0,
+      "token_count": 16,
+      "token_end": 16,
+      "token_start": 0
+    },
+    {
+      "cache_tier": "cold_storage",
+      "chunk_id": "section-1",
+      "chunk_type": "document_chunk",
+      "content_hash": "",
+      "document_id": "qwen3-v1-fixture-doc",
+      "first_block_index": 1,
+      "global_byte_end": 2359296,
+      "global_byte_start": 1179648,
+      "last_block_index_exclusive": 2,
+      "payload_index": null,
+      "request_id": "qwen3-v1-fixture-req",
+      "source_byte_end": 2359296,
+      "source_byte_length": 1179648,
+      "source_byte_start": 1179648,
+      "token_count": 16,
+      "token_end": 32,
+      "token_start": 16
+    },
+    {
+      "cache_tier": "cold_storage",
+      "chunk_id": "section-2",
+      "chunk_type": "document_chunk",
+      "content_hash": "",
+      "document_id": "qwen3-v1-fixture-doc",
+      "first_block_index": 2,
+      "global_byte_end": 3538944,
+      "global_byte_start": 2359296,
+      "last_block_index_exclusive": 3,
+      "payload_index": null,
+      "request_id": "qwen3-v1-fixture-req",
+      "source_byte_end": 3538944,
+      "source_byte_length": 1179648,
+      "source_byte_start": 2359296,
+      "token_count": 16,
+      "token_end": 48,
+      "token_start": 32
+    }
+  ],
+  "record_type": "document_kv.engine_kv_connector_actions.v1",
+  "release": {
+    "request_id": "qwen3-v1-fixture-req"
+  },
+  "request_id": "qwen3-v1-fixture-req",
+  "reservation": {
+    "adapter_ids": [],
+    "backend": "sglang",
+    "estimated_gpu_bytes": 3538944,
+    "layout": {
+      "attention_mechanism": "gqa",
+      "block_size": 16,
+      "bytes_per_token": 73728,
+      "dtype": "int8",
+      "head_size": 128,
+      "kv_stride_bytes": 128,
+      "layout_version": "qwen3-v1",
+      "lora_id": "base",
+      "model_id": "qwen3:4b-instruct",
+      "num_kv_heads": 8,
+      "num_layers": 36,
+      "num_query_heads": 32,
+      "query_heads_per_kv_head": 4,
+      "shares_kv_storage": true,
+      "storage_layout": "shared_key_value"
+    },
+    "request_id": "qwen3-v1-fixture-req",
+    "total_blocks": 3,
+    "total_tokens": 48
+  },
+  "schema_version": 1
+}

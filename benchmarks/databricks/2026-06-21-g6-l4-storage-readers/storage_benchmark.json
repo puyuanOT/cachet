@@ -1,0 +1,91 @@
+{
+  "align_bytes": 4096,
+  "benchmark_id": "cachet_readiness_20260621_095026_storage",
+  "chunk_bytes": 1048576,
+  "chunk_count": 64,
+  "parallelism": 8,
+  "readers": [
+    "memory",
+    "disk",
+    "unity_catalog"
+  ],
+  "record_type": "document_kv.storage_benchmark.v1",
+  "release_storage_evidence": {
+    "issues": [],
+    "missing_readers": [],
+    "ok": true,
+    "readers_with_errors": [],
+    "readers_without_latency": [],
+    "readers_without_throughput": [],
+    "require_real_uc_volume": true,
+    "required_readers": [
+      "memory",
+      "disk",
+      "unity_catalog"
+    ],
+    "uc_volume_is_real": true,
+    "uc_volume_root": "/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/cachet_readiness_20260621_095026/storage/uc-root"
+  },
+  "repeats": 4,
+  "results": [
+    {
+      "errors": 0,
+      "latency_mean_seconds": 0.0009685362968745448,
+      "latency_p50_seconds": 0.0008470034999845666,
+      "latency_p95_seconds": 0.0016485819999729756,
+      "parallelism": 8,
+      "reader_id": "memory",
+      "throughput_bytes_per_second": 6848713331.434622,
+      "throughput_mib_per_second": 6531.442004618284,
+      "total_bytes": 268435456,
+      "total_reads": 256,
+      "wall_seconds": 0.039195020000022396
+    },
+    {
+      "errors": 0,
+      "latency_mean_seconds": 0.0012003184843756287,
+      "latency_p50_seconds": 0.001129617000003691,
+      "latency_p95_seconds": 0.0016038355000347337,
+      "parallelism": 8,
+      "reader_id": "disk",
+      "throughput_bytes_per_second": 6516307661.242694,
+      "throughput_mib_per_second": 6214.435254328436,
+      "total_bytes": 268435456,
+      "total_reads": 256,
+      "wall_seconds": 0.04119441100004906
+    },
+    {
+      "errors": 0,
+      "latency_mean_seconds": 0.006821507035157159,
+      "latency_p50_seconds": 0.005332466999988128,
+      "latency_p95_seconds": 0.017457503000002816,
+      "parallelism": 8,
+      "reader_id": "unity_catalog",
+      "throughput_bytes_per_second": 1203725722.4245026,
+      "throughput_mib_per_second": 1147.962305473807,
+      "total_bytes": 268435456,
+      "total_reads": 256,
+      "wall_seconds": 0.223003838000011
+    }
+  ],
+  "shard_uri": "/local_disk0/cachet_readiness_20260621_095026/storage-workspace/storage-benchmark.kvpack",
+  "storage_evidence": {
+    "issues": [],
+    "missing_readers": [],
+    "ok": true,
+    "readers_with_errors": [],
+    "readers_without_latency": [],
+    "readers_without_throughput": [],
+    "require_real_uc_volume": false,
+    "required_readers": [
+      "memory",
+      "disk",
+      "unity_catalog"
+    ],
+    "uc_volume_is_real": true,
+    "uc_volume_root": "/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/cachet_readiness_20260621_095026/storage/uc-root"
+  },
+  "uc_volume_is_real": true,
+  "uc_volume_root": "/Volumes/datascience_qa/kv_cache_restaurant_cls/kv_cache_storage_benchmark/cachet_readiness_20260621_095026/storage/uc-root",
+  "workspace_dir": "/local_disk0/cachet_readiness_20260621_095026/storage-workspace"
+}

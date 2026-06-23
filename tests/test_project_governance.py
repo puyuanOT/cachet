@@ -1,4 +1,5 @@
 import ast
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -8,6 +9,7 @@ import tomllib
 
 import pytest
 
+from document_kv_cache.databricks_runs import databricks_run_status_sidecar_issues
 from document_kv_cache.release_bundle import STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
 
 
@@ -967,6 +969,191 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         assert stale_blocker not in matrix_text
     for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         assert label in compact_remaining_release_gates
+
+
+def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
+    benchmark_root = REPO_ROOT / "benchmarks"
+    databricks_root = benchmark_root / "databricks"
+    root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
+    databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
+    project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
+    compact_project_readme = " ".join(project_readme.split())
+
+    assert "[`benchmarks/`](benchmarks/README.md)" in project_readme
+    assert "`../benchmarks/README.md`" in docs_readme
+    assert "Standalone human-readable benchmark folders" in matrix_text
+    assert "`pr-evidence/` tree" in compact_project_readme
+    assert "Raw local run directories stay under ignored `databricks-runs/`" in databricks_readme
+
+    expected_files = {
+        "README.md",
+        "databricks/README.md",
+        "databricks/2026-06-21-g6-l4-storage-readers/README.md",
+        "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
+        "databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
+        "databricks/2026-06-23-g5-a10g-v1-compatibility/README.md",
+        "databricks/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json",
+        "databricks/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/README.md",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
+        "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
+        "databricks/2026-06-23-g6-l4-v1/README.md",
+        "databricks/2026-06-23-g6-l4-v1/databricks_run_status.json",
+        "databricks/2026-06-23-g6-l4-v1/release_evidence.json",
+        "databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
+    }
+    actual_files = {
+        path.relative_to(benchmark_root).as_posix()
+        for path in benchmark_root.rglob("*")
+        if path.is_file()
+    }
+    assert actual_files == expected_files
+
+    expected_folders = {
+        "2026-06-23-g6-l4-v1": {
+            "run_id": 872615985402004,
+            "hardware_target": "aws-g6-l4",
+            "node_type": "g6.8xlarge",
+        },
+        "2026-06-23-g5-a10g-v1-compatibility": {
+            "run_id": 566743786103032,
+            "hardware_target": "aws-g5-a10g",
+            "node_type": "g5.8xlarge",
+        },
+        "2026-06-21-g6-l4-storage-readers": {
+            "run_id": 948365719597221,
+            "hardware_target": "aws-g6-l4",
+            "node_type": "g6.8xlarge",
+        },
+        "2026-06-23-g6-l4-native-engine-probes": {
+            "run_id": 934698284395881,
+            "hardware_target": "aws-g6-l4",
+            "node_type": "g6.8xlarge",
+        },
+    }
+
+    for folder_name, expected in expected_folders.items():
+        folder = databricks_root / folder_name
+        folder_readme = (folder / "README.md").read_text(encoding="utf-8")
+        status = json.loads((folder / "databricks_run_status.json").read_text(encoding="utf-8"))
+        summary = status["summary"]
+
+        assert folder_name in root_readme
+        assert str(expected["run_id"]) in root_readme
+        assert str(expected["run_id"]) in folder_readme
+        assert expected["hardware_target"] in folder_readme
+        assert expected["node_type"] in folder_readme
+        assert status["ok"] is True
+        assert status["action"] == "get"
+        assert summary["record_type"] == "document_kv.databricks_run_status.v1"
+        assert summary["run_id"] == expected["run_id"]
+        assert summary["terminal"] is True
+        assert summary["succeeded"] is True
+        assert summary["life_cycle_state"] == "TERMINATED"
+        assert summary["result_state"] == "SUCCESS"
+        assert summary["active_task_key"] is None
+        assert summary["submit_payload"]["hardware_targets"] == [expected["hardware_target"]]
+        assert summary["submit_payload"]["node_type_ids"] == [expected["node_type"]]
+        assert databricks_run_status_sidecar_issues(
+            status,
+            expected_hardware_target=expected["hardware_target"],
+            expected_node_type_id=expected["node_type"],
+        ) == ()
+
+    g6_benchmark = json.loads(
+        (databricks_root / "2026-06-23-g6-l4-v1" / "v1_benchmark.json").read_text(encoding="utf-8")
+    )
+    assert g6_benchmark["record_type"] == "document_kv.benchmark_run.v1"
+    assert g6_benchmark["suite"]["hardware_target"] == "aws-g6-l4"
+    assert g6_benchmark["suite"]["model_id"] == "qwen3:4b-instruct"
+    assert g6_benchmark["suite"]["datasets"] == ["biography", "hotpotqa", "musique", "niah"]
+    assert len(g6_benchmark["measurements"]) == 24
+    assert g6_benchmark["v1_evidence"]["ok"] is True
+    assert min(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(5.2668743391)
+    assert max(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(6.9722325045)
+
+    g6_release_evidence = json.loads(
+        (databricks_root / "2026-06-23-g6-l4-v1" / "release_evidence.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert g6_release_evidence["record_type"] == "document_kv.release_evidence.v1"
+    assert g6_release_evidence["ok"] is True
+    assert g6_release_evidence["issues"] == []
+    assert g6_release_evidence["v1_benchmark_ok"] is True
+    assert g6_release_evidence["storage_benchmark_ok"] is True
+    assert set(g6_release_evidence["engine_probe_backends"]) == {"sglang", "vllm"}
+    artifact_sources = g6_release_evidence["artifact_sources"]
+    artifact_source_paths = {source["path"] for source in artifact_sources}
+    assert not any(path.startswith("databricks-runs/") for path in artifact_source_paths)
+    assert artifact_source_paths == {
+        "benchmarks/databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
+        "benchmarks/databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
+    }
+    for source in artifact_sources:
+        artifact_path = REPO_ROOT / source["path"]
+        artifact_bytes = artifact_path.read_bytes()
+        assert source["size_bytes"] == len(artifact_bytes)
+        assert source["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
+
+    g5_benchmark = json.loads(
+        (
+            databricks_root
+            / "2026-06-23-g5-a10g-v1-compatibility"
+            / "v1_benchmark.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert g5_benchmark["suite"]["hardware_target"] == "aws-g5-a10g"
+    assert len(g5_benchmark["measurements"]) == 24
+    assert g5_benchmark["v1_evidence"]["ok"] is True
+    assert min(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(4.6620010419)
+    assert max(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(6.0430383626)
+
+    storage_benchmark = json.loads(
+        (
+            databricks_root
+            / "2026-06-21-g6-l4-storage-readers"
+            / "storage_benchmark.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert storage_benchmark["record_type"] == "document_kv.storage_benchmark.v1"
+    assert storage_benchmark["uc_volume_is_real"] is True
+    assert storage_benchmark["readers"] == ["memory", "disk", "unity_catalog"]
+    assert storage_benchmark["release_storage_evidence"]["ok"] is True
+    assert {row["reader_id"] for row in storage_benchmark["results"]} == {
+        "disk",
+        "memory",
+        "unity_catalog",
+    }
+    assert all(row["errors"] == 0 for row in storage_benchmark["results"])
+
+    native_probe_root = databricks_root / "2026-06-23-g6-l4-native-engine-probes"
+    for backend, provider_factory in {
+        "vllm": "vllm_kv_injection.vllm_native_provider:build_document_kv_provider",
+        "sglang": "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider",
+    }.items():
+        probe = json.loads((native_probe_root / f"{backend}_engine_probe.json").read_text(encoding="utf-8"))
+        actions = json.loads(
+            (native_probe_root / f"{backend}_connector_actions.json").read_text(encoding="utf-8")
+        )
+
+        assert probe["record_type"] == "document_kv.engine_kv_connector_probe.v1"
+        assert probe["backend"] == backend
+        assert probe["native_probe"] is True
+        assert probe["payload_mode"] == "merged"
+        assert probe["copied_tokens"] == 48
+        assert probe["metadata"][f"{backend}_kv_injection.provider_factory"] == provider_factory
+        assert actions["record_type"] == "document_kv.engine_kv_connector_actions.v1"
+        assert actions["backend"] == backend
 
 
 def test_readme_release_bundle_documents_artifact_validation_contracts():
