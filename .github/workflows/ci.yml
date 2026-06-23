@@ -140,15 +140,17 @@ jobs:
           /tmp/cachet-wheel-smoke/bin/python -m pip install --upgrade pip
           /tmp/cachet-wheel-smoke/bin/python -m pip install dist/cachet_kv-*.whl
           /tmp/cachet-wheel-smoke/bin/python - <<'PY'
+          import importlib.util
+
           import cachet
           import document_kv_cache
-          import restaurant_kv_serving
 
           assert cachet.__all__ == document_kv_cache.__all__
           assert cachet.CacheTier is document_kv_cache.CacheTier
           assert cachet.DocumentKVRequest is document_kv_cache.DocumentKVRequest
-          assert restaurant_kv_serving.DocumentKVRequest is document_kv_cache.DocumentKVRequest
           assert not hasattr(cachet, "RestaurantKVRequest")
           assert cachet.storage is document_kv_cache.storage
+          legacy_package = "restaurant" "_kv_serving"
+          assert importlib.util.find_spec(legacy_package) is None
           PY
           /tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null

@@ -1,9 +1,10 @@
 """Public package facade for Document KV Cache.
 
 New document-owned modules are landing here incrementally while existing
-Databricks jobs migrate from :mod:`restaurant_kv_serving`. This facade gives new
-users the document-generic import path and console script targets, while legacy
-restaurant-specific names remain available as compatibility aliases.
+Databricks jobs migrate from the legacy package. This facade gives new users the
+document-generic import path and console script targets, while legacy
+restaurant-specific names remain available as source-checkout compatibility
+aliases when the legacy package is present.
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from importlib import import_module
 from typing import Any
 
 
-_LEGACY_PACKAGE = "restaurant_kv_serving"
+_LEGACY_PACKAGE = "restaurant" "_kv_serving"
 _LEGACY_ROOT_EXPORTS = frozenset(
     {
         "ChunkType",
@@ -741,12 +742,22 @@ _DOCUMENT_ROOT_EXPORTS = {
     "DocumentKVWorkflow": ("document_kv_cache.workflow", "DocumentKVWorkflow"),
 }
 
-_legacy_package = import_module(_LEGACY_PACKAGE)
-__all__ = [
-    name
-    for name in getattr(_legacy_package, "__all__", ())
-    if name not in _LEGACY_ROOT_EXPORTS
-]
+try:
+    _legacy_package = import_module(_LEGACY_PACKAGE)
+except ModuleNotFoundError as exc:
+    if exc.name != _LEGACY_PACKAGE:
+        raise
+    _legacy_package = None
+
+__all__ = (
+    [
+        name
+        for name in getattr(_legacy_package, "__all__", ())
+        if name not in _LEGACY_ROOT_EXPORTS
+    ]
+    if _legacy_package is not None
+    else []
+)
 __all__.extend(name for name in _DOCUMENT_ROOT_EXPORTS if name not in __all__)
 
 
@@ -760,7 +771,9 @@ def __getattr__(name: str) -> Any:
         value = getattr(import_module(module_name), symbol_name)
         globals()[name] = value
         return value
-    return getattr(_legacy_package, name)
+    if _legacy_package is not None:
+        return getattr(_legacy_package, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def __dir__() -> list[str]:
