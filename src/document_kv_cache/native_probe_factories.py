@@ -129,6 +129,8 @@ _BUILTIN_NATIVE_PROBE_FACTORY_TARGETS = frozenset(
     {
         ("cachet", "sglang_native_probe_factory"),
         ("cachet", "vllm_native_probe_factory"),
+        ("cachet.native_probe_factories", "sglang_native_probe_factory"),
+        ("cachet.native_probe_factories", "vllm_native_probe_factory"),
         ("document_kv_cache", "sglang_native_probe_factory"),
         ("document_kv_cache", "vllm_native_probe_factory"),
         ("document_kv_cache.native_probe_factories", "vllm_native_probe_factory"),

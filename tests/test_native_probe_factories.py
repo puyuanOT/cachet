@@ -522,6 +522,12 @@ def test_inspect_builtin_native_probe_factory_requires_importable_backend_for_de
         (
             ServingBackend.VLLM,
             VLLM_NATIVE_PROBE_DELEGATE_ENV,
+            "cachet.native_probe_factories:vllm_native_probe_factory",
+            vllm_native_probe_factory,
+        ),
+        (
+            ServingBackend.VLLM,
+            VLLM_NATIVE_PROBE_DELEGATE_ENV,
             SGLANG_NATIVE_PROBE_FACTORY,
             vllm_native_probe_factory,
         ),
@@ -553,6 +559,12 @@ def test_inspect_builtin_native_probe_factory_requires_importable_backend_for_de
             ServingBackend.SGLANG,
             SGLANG_NATIVE_PROBE_DELEGATE_ENV,
             "cachet:sglang_native_probe_factory",
+            sglang_native_probe_factory,
+        ),
+        (
+            ServingBackend.SGLANG,
+            SGLANG_NATIVE_PROBE_DELEGATE_ENV,
+            "cachet.native_probe_factories.sglang_native_probe_factory",
             sglang_native_probe_factory,
         ),
         (
@@ -850,6 +862,27 @@ def test_validate_native_probe_factories_record_reports_malformed_sidecars():
     )
     with pytest.raises(ValueError, match="must not point at a built-in native probe factory"):
         validate_native_probe_factories_record(alias_reserved_delegate_record)
+
+    facade_module_reserved_delegate_record = builtin_native_probe_factories_to_record()
+    facade_module_reserved_delegate_record["factories"][0] = {
+        **facade_module_reserved_delegate_record["factories"][0],
+        "delegate_factory_path": "cachet.native_probe_factories:vllm_native_probe_factory",
+        "package_importable": True,
+        "package_version": "0.23.0",
+        "delegate_adapter_contract": native_probe_adapter_contract_to_record(),
+        "delegate_adapter_contract_valid": True,
+        "supported": True,
+    }
+    facade_module_reserved_delegate_issues = native_probe_factories_record_issues(
+        facade_module_reserved_delegate_record
+    )
+
+    assert any(
+        "delegate_factory_path must not point at a built-in native probe factory" in issue
+        for issue in facade_module_reserved_delegate_issues
+    )
+    with pytest.raises(ValueError, match="must not point at a built-in native probe factory"):
+        validate_native_probe_factories_record(facade_module_reserved_delegate_record)
 
     legacy_delegate_record = builtin_native_probe_factories_to_record()
     legacy_delegate_record["factories"][0] = {
