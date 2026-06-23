@@ -102,7 +102,7 @@ class FakeErrorBody:
         self.closed = True
 
 
-def benchmark_request(kv_transfer_params=None) -> BenchmarkEngineRequest:
+def benchmark_request(kv_transfer_params=None, *, repeat_index: int = 1) -> BenchmarkEngineRequest:
     example = BenchmarkExample(
         example_id="bio-1",
         dataset="biography",
@@ -126,6 +126,7 @@ def benchmark_request(kv_transfer_params=None) -> BenchmarkEngineRequest:
         prompt_parts=build_prompt_parts(example),
         request_id=example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
         kv_transfer_params=example.kv_transfer_params,
+        repeat_index=repeat_index,
     )
 
 
@@ -220,6 +221,30 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
     assert generation.metadata["kv_transfer_params_attached"] == "true"
     assert generation.metadata["request_id"] == "cachet-bio-1"
     assert generation.metadata["prefix_cache_salt_attached"] == "true"
+    assert generation.metadata["prefix_cache_salt"] == "cachet-document-kv-cache"
+
+
+def test_extra_body_factory_can_vary_prefix_cache_salt_per_request():
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            stream=False,
+            extra_body={"cache_salt": "static-salt", "top_p": 0.9},
+        ),
+        extra_body_factory=lambda request: {"cache_salt": f"dynamic-repeat-{request.repeat_index}"},
+        response=FakeJSONResponse(),
+        clock=FakeClock([1.0, 2.0, 3.0, 4.0]),
+    )
+
+    first = engine.generate(benchmark_request(repeat_index=1))
+    second = engine.generate(benchmark_request(repeat_index=2))
+
+    assert engine.payloads[0]["cache_salt"] == "dynamic-repeat-1"
+    assert engine.payloads[1]["cache_salt"] == "dynamic-repeat-2"
+    assert engine.payloads[0]["top_p"] == 0.9
+    assert engine.payloads[1]["top_p"] == 0.9
+    assert first.metadata["prefix_cache_salt"] == "dynamic-repeat-1"
+    assert second.metadata["prefix_cache_salt"] == "dynamic-repeat-2"
 
 
 def test_non_streaming_completion_engine_uses_usage_and_total_latency():

@@ -67,6 +67,7 @@ SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
 CACHE_PREFIX_CACHE_SALT = "cachet-document-kv-cache"
+PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
@@ -350,6 +351,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
             {
                 "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
                 "cache_cache_salt": CACHE_PREFIX_CACHE_SALT,
+                "cache_salt_mode": PREPARED_PREFIX_CACHE_SALT_MODE,
             }
             if config.uses_prepared_datasets
             else None
@@ -1367,6 +1369,8 @@ def build_benchmark_runner_args(
                 json.dumps({"cache_salt": BASELINE_PREFIX_CACHE_SALT}, sort_keys=True),
                 "--cache-extra-body-json",
                 json.dumps({"cache_salt": CACHE_PREFIX_CACHE_SALT}, sort_keys=True),
+                "--prefix-cache-salt-mode",
+                PREPARED_PREFIX_CACHE_SALT_MODE,
             ]
         )
     args.extend(dataset_args(dataset_paths))

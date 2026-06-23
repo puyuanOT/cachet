@@ -384,6 +384,7 @@ def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tm
     assert json.loads(args[args.index("--cache-extra-body-json") + 1]) == {
         "cache_salt": CACHE_PREFIX_CACHE_SALT
     }
+    assert args[args.index("--prefix-cache-salt-mode") + 1] == "per_request"
 
 
 def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
@@ -1124,6 +1125,7 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
     assert metadata["prefix_cache_isolation"] == {
         "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
         "cache_cache_salt": CACHE_PREFIX_CACHE_SALT,
+        "cache_salt_mode": "per_request",
     }
     assert metadata["requires_kv_transfer_params"] is True
     assert metadata["generates_prepared_handoffs"] is False

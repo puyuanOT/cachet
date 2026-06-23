@@ -516,6 +516,7 @@ def test_openai_compatible_benchmark_config_rejects_empty_limit_and_unsafe_runti
         ("stream", 1, "stream must be a boolean"),
         ("cache_runtime_prompt", 0, "cache_runtime_prompt must be a boolean"),
         ("api_key", 123, "api_key must be a string"),
+        ("prefix_cache_salt_mode", "dynamic", "prefix_cache_salt_mode"),
     ],
 )
 def test_openai_compatible_benchmark_config_rejects_invalid_public_fields(field_name, value, message):
@@ -565,6 +566,32 @@ def test_openai_compatible_benchmark_config_normalizes_json_body_tuples():
     )
 
     assert config.baseline_extra_body == {"guided_choice": ["yes", "no"]}
+
+
+def test_openai_compatible_engine_derives_per_request_prefix_cache_salts():
+    config = OpenAICompatibleBenchmarkConfig(
+        suite_id="v1",
+        dataset_paths={"biography": "biography.jsonl"},
+        base_url="http://server",
+        cache_base_url="http://cache",
+        cache_extra_body={"cache_salt": "cachet-document-kv-cache"},
+        prefix_cache_salt_mode="per_request",
+    )
+    engine = legacy_benchmark_runner._openai_compatible_engine(default_benchmark_arms()[1], config)
+    request = BenchmarkEngineRequest(
+        suite_id="v1",
+        model_id="qwen3:4b-instruct",
+        hardware_target="aws-g6-l4",
+        example=example("biography", example_id="bio-1"),
+        arm=default_benchmark_arms()[1],
+        prompt_parts=legacy_benchmark_runner.build_prompt_parts(example("biography", example_id="bio-1")),
+        repeat_index=2,
+    )
+
+    assert engine.extra_body_factory is not None
+    assert engine.extra_body_factory(request) == {
+        "cache_salt": "cachet-document-kv-cache:v1:biography:bio-1:document_kv_cache:repeat-2"
+    }
 
 
 def test_openai_compatible_engine_normalizes_openai_v1_base_url_for_default_endpoint():
@@ -748,6 +775,8 @@ def test_run_benchmark_suite_supports_repeats_and_seeded_shuffle():
     assert len(result.measurements) == 6
     assert sum(1 for measurement in result.measurements if measurement.arm_id == BASELINE_PREFILL_ARM) == 3
     assert sum(1 for measurement in result.measurements if measurement.arm_id == CACHE_REUSE_ARM) == 3
+    assert [request.repeat_index for request in baseline.requests] == [1, 2, 3]
+    assert [request.repeat_index for request in cache.requests] == [1, 2, 3]
 
 
 def test_seeded_shuffle_uses_dataset_and_example_identity():
