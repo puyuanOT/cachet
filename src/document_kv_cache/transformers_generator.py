@@ -348,7 +348,7 @@ def _payload_from_past_key_values(
             f"{layout.num_layers}"
         )
     dtype = _torch_dtype_from_name(torch, layout.dtype)
-    layer_values = []
+    payload_tensor = None
     for layer_index, layer in enumerate(legacy_cache):
         key, value = _key_value_pair(layer, layer_index=layer_index)
         key_values = _normalize_cache_tensor(
@@ -365,9 +365,21 @@ def _payload_from_past_key_values(
             label="value",
             cache_axis_order=cache_axis_order,
         )
-        layer_values.append(_layer_values(key_values, value_values, dtype=dtype, layout=layout))
-    stacked = torch.stack(layer_values, dim=1).contiguous()
-    return _tensor_bytes(stacked)
+        layer_values = _layer_values(key_values, value_values, dtype=dtype, layout=layout)
+        if payload_tensor is None:
+            # Keep the full token/layer payload in CPU memory; long L4 runs cannot
+            # afford an extra all-layer stack on top of model-owned GPU KV tensors.
+            payload_tensor = torch.empty(
+                (token_count, len(legacy_cache), *tuple(layer_values.shape[1:])),
+                dtype=layer_values.dtype,
+                device="cpu",
+            )
+        payload_tensor[:, layer_index, ...].copy_(layer_values)
+        del key_values, value_values, layer_values
+        _empty_cuda_cache(torch)
+    if payload_tensor is None:  # pragma: no cover - layout validation should reject this first.
+        raise ValueError("past_key_values must contain at least one layer")
+    return _tensor_bytes(payload_tensor)
 
 
 def _legacy_past_key_values(past_key_values: object) -> tuple[object, ...]:
@@ -451,11 +463,21 @@ def _normalize_cache_tensor(
 
 def _layer_values(key: object, value: object, *, dtype: object, layout: KVLayout) -> object:
     torch = _torch()
-    key = key.to(dtype=dtype)
-    value = value.to(dtype=dtype)
+    key = key.to(device="cpu", dtype=dtype).contiguous()
+    value = value.to(device="cpu", dtype=dtype).contiguous()
     key = _pad_kv_stride(key, layout=layout)
     value = _pad_kv_stride(value, layout=layout)
     return torch.stack((key, value), dim=1).contiguous()
+
+
+def _empty_cuda_cache(torch: object) -> None:
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None:
+        return
+    is_available = getattr(cuda, "is_available", None)
+    empty_cache = getattr(cuda, "empty_cache", None)
+    if callable(is_available) and callable(empty_cache) and is_available():
+        empty_cache()
 
 
 def _pad_kv_stride(tensor: object, *, layout: KVLayout) -> object:
