@@ -16,7 +16,10 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.storage import local_path
 from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY
-from vllm_kv_injection.vllm_native_provider_constants import DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
+from vllm_kv_injection.vllm_native_provider_constants import (
+    DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
+)
 
 ENGINE_LAUNCH_CONFIG_EVIDENCE_RECORD_TYPE = "document_kv.engine_launch_config_evidence.v1"
 ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION = 1
@@ -138,6 +141,7 @@ def build_vllm_launch_config(
     kv_injection_method: str = DEFAULT_ENGINE_LAUNCH_CONFIG_KV_INJECTION_METHOD,
     extra_config: Mapping[str, Any] | None = None,
     provider_factory: str | None = DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
+    payload_cache_max_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Build a validated vLLM transfer config for the document KV connector."""
 
@@ -148,6 +152,7 @@ def build_vllm_launch_config(
         kv_injection_method=kv_injection_method,
         extra_config=extra_config,
         provider_factory=provider_factory,
+        payload_cache_max_bytes=payload_cache_max_bytes,
     )
     record = {
         "kv_connector": _VLLM_DOCUMENT_KV_CONNECTOR,
@@ -335,6 +340,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 kv_injection_method=args.kv_injection_method,
                 extra_config=extra_config,
                 provider_factory=args.provider_factory,
+                payload_cache_max_bytes=args.payload_cache_max_bytes,
             )
             expected_backend = ServingBackend.VLLM
         elif args.command == "build-sglang":
@@ -488,6 +494,9 @@ def _validate_document_kv_extra_config(
             field_name=DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
         )
         issues.extend(provider_factory_issues)
+    payload_cache_max_bytes = extra_config.get(DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY)
+    if payload_cache_max_bytes is not None and not _is_non_negative_int(payload_cache_max_bytes):
+        issues.append(f"{DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY} must be a non-negative integer")
     return tuple(issues)
 
 
@@ -499,6 +508,7 @@ def _build_document_kv_extra_config(
     kv_injection_method: str,
     extra_config: Mapping[str, Any] | None,
     provider_factory: str | None = None,
+    payload_cache_max_bytes: int | None = None,
     reserved_keys: set[str] | None = None,
 ) -> dict[str, Any]:
     record = {
@@ -515,6 +525,11 @@ def _build_document_kv_extra_config(
     if provider_factory is not None:
         _validate_module_attribute(provider_factory, field_name=DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY)
         record[DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY] = provider_factory
+    if payload_cache_max_bytes is not None:
+        record[DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] = _non_negative_int(
+            payload_cache_max_bytes,
+            field_name="payload_cache_max_bytes",
+        )
     record_type_prefix = (
         _VLLM_RECORD_TYPE_PREFIX if backend == ServingBackend.VLLM else _SGLANG_RECORD_TYPE_PREFIX
     )
@@ -598,6 +613,16 @@ def _is_positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def _is_non_negative_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _non_negative_int(value: Any, *, field_name: str) -> int:
+    if not _is_non_negative_int(value):
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return value
+
+
 def _validate_module_attribute(value: Any, *, field_name: str) -> None:
     issues = _module_attribute_issues(value, field_name=field_name)
     if issues:
@@ -647,6 +672,14 @@ def _add_vllm_parser(subparsers: Any) -> None:
         "--provider-factory",
         default=DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY,
         help="vLLM document KV provider factory module:attribute path.",
+    )
+    parser.add_argument(
+        "--payload-cache-max-bytes",
+        type=int,
+        help=(
+            "Optional non-negative byte budget for the built-in vLLM provider's "
+            "in-process payload URI cache. Omit or pass 0 to disable."
+        ),
     )
     _add_common_build_args(parser, default_record_type=DEFAULT_VLLM_ENGINE_LAUNCH_CONFIG_RECORD_TYPE)
 

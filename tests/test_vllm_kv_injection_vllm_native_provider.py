@@ -28,6 +28,7 @@ import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+    DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
@@ -37,6 +38,7 @@ from vllm_kv_injection.vllm_native_provider import (
     DocumentKVNativeProvider,
     DocumentKVNativeProbeConnector,
     KVTransferParamsDocumentKVSource,
+    build_document_kv_provider,
     document_kv_vllm_layer_index_from_name,
     document_kv_vllm_layer_mapping_record_issues,
     document_kv_vllm_layer_mapping_to_record,
@@ -170,6 +172,24 @@ def handoff_load() -> DocumentKVHandoffLoad:
     return _handoff_load_from_ready_request(ready_request())
 
 
+def handoff_load_with_content_hashes(
+    content_hashes: tuple[str, ...] = ("hash-doc-a-static", "hash-doc-a-chunk-a"),
+) -> DocumentKVHandoffLoad:
+    load = handoff_load()
+    if len(content_hashes) != len(load.actions.copies):
+        raise ValueError("content_hashes must match copy count")
+    return DocumentKVHandoffLoad(
+        actions=replace(
+            load.actions,
+            copies=tuple(
+                replace(copy, content_hash=content_hash)
+                for copy, content_hash in zip(load.actions.copies, content_hashes, strict=True)
+            ),
+        ),
+        payload=load.payload,
+    )
+
+
 def extended_handoff_load() -> DocumentKVHandoffLoad:
     return _handoff_load_from_ready_request(extended_ready_request())
 
@@ -191,6 +211,14 @@ class StaticHandoffSource:
     def get_load(self, request):
         self.requests.append(request.request_id)
         return self.load
+
+
+class RequestHandoffSource:
+    def __init__(self, loads_by_request_id: dict[str, DocumentKVHandoffLoad]) -> None:
+        self.loads_by_request_id = dict(loads_by_request_id)
+
+    def get_load(self, request):
+        return self.loads_by_request_id.get(request.request_id)
 
 
 class AllocatedBlocks:
@@ -498,6 +526,178 @@ def test_native_provider_reports_phase_timing_metrics(monkeypatch):
     assert stats["document_kv_payload_view_ns"] == 30
     assert stats["document_kv_layer_load_ns"] == 90
     assert connector.get_kv_connector_stats() is None
+
+
+def test_native_provider_reuses_payload_uri_cache_for_hot_documents(tmp_path, monkeypatch):
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    payload_uri = f"disk:{payload_path}"
+    read_calls = []
+    original_read_payload = vllm_native_provider.read_engine_adapter_payload
+
+    def counting_read_payload(uri, *, expected_bytes=None):
+        read_calls.append((uri, expected_bytes))
+        return original_read_payload(uri, expected_bytes=expected_bytes)
+
+    monkeypatch.setattr(vllm_native_provider, "read_engine_adapter_payload", counting_read_payload)
+    load = DocumentKVHandoffLoad(actions=handoff_load_with_content_hashes().actions, payload_uri=payload_uri)
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(load),
+        payload_cache_max_bytes=len(payload()) * 2,
+    )
+    connector = DocumentKVConnector(provider=provider)
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+
+    for request_id, block_ids in (("req-1", [4, 6]), ("req-2", [5, 7])):
+        request = SimpleNamespace(request_id=request_id, num_tokens=5, kv_transfer_params={})
+        assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+        connector.update_state_after_alloc(request, AllocatedBlocks(block_ids), 2)
+        meta = connector.build_connector_meta(scheduler_output(block_ids, request_id=request_id))
+        connector.bind_connector_metadata(meta)
+        connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert read_calls == [(payload_uri, len(payload()))]
+    assert stats["document_kv_loads_started"] == 2
+    assert stats["document_kv_layers_loaded"] == 4
+    assert stats["document_kv_payload_cache_misses"] == 1
+    assert stats["document_kv_payload_cache_hits"] == 1
+    assert connector.get_kv_connector_stats() is None
+
+
+def test_native_provider_payload_uri_cache_skips_oversized_payloads(tmp_path, monkeypatch):
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    payload_uri = f"disk:{payload_path}"
+    read_calls = []
+    original_read_payload = vllm_native_provider.read_engine_adapter_payload
+
+    def counting_read_payload(uri, *, expected_bytes=None):
+        read_calls.append((uri, expected_bytes))
+        return original_read_payload(uri, expected_bytes=expected_bytes)
+
+    monkeypatch.setattr(vllm_native_provider, "read_engine_adapter_payload", counting_read_payload)
+    load = DocumentKVHandoffLoad(actions=handoff_load_with_content_hashes().actions, payload_uri=payload_uri)
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(load), payload_cache_max_bytes=1)
+    connector = DocumentKVConnector(provider=provider)
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+
+    for request_id, block_ids in (("req-1", [4, 6]), ("req-2", [5, 7])):
+        request = SimpleNamespace(request_id=request_id, num_tokens=5, kv_transfer_params={})
+        assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+        connector.update_state_after_alloc(request, AllocatedBlocks(block_ids), 2)
+        meta = connector.build_connector_meta(scheduler_output(block_ids, request_id=request_id))
+        connector.bind_connector_metadata(meta)
+        connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert read_calls == [(payload_uri, len(payload())), (payload_uri, len(payload()))]
+    assert stats["document_kv_payload_cache_misses"] == 2
+    assert stats["document_kv_payload_cache_hits"] == 0
+
+
+def test_native_provider_payload_uri_cache_rejects_unhashed_copy_actions(tmp_path):
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    payload_uri = f"disk:{payload_path}"
+    load = DocumentKVHandoffLoad(actions=handoff_load().actions, payload_uri=payload_uri)
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(load),
+        payload_cache_max_bytes=len(payload()) * 2,
+    )
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([4, 6]), 2)
+    connector.bind_connector_metadata(connector.build_connector_meta(scheduler_output([4, 6])))
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    with pytest.raises(ValueError, match="content_hash"):
+        connector.start_load_kv(SimpleNamespace())
+
+
+def test_native_provider_payload_uri_cache_misses_when_content_identity_changes(tmp_path, monkeypatch):
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    payload_uri = f"disk:{payload_path}"
+    read_calls = []
+    original_read_payload = vllm_native_provider.read_engine_adapter_payload
+
+    def counting_read_payload(uri, *, expected_bytes=None):
+        read_calls.append((uri, expected_bytes))
+        return original_read_payload(uri, expected_bytes=expected_bytes)
+
+    monkeypatch.setattr(vllm_native_provider, "read_engine_adapter_payload", counting_read_payload)
+    load_1 = DocumentKVHandoffLoad(
+        actions=handoff_load_with_content_hashes(("old-static", "old-chunk")).actions,
+        payload_uri=payload_uri,
+    )
+    load_2 = DocumentKVHandoffLoad(
+        actions=handoff_load_with_content_hashes(("new-static", "new-chunk")).actions,
+        payload_uri=payload_uri,
+    )
+    provider = DocumentKVNativeProvider(
+        source=RequestHandoffSource({"req-1": load_1, "req-2": load_2}),
+        payload_cache_max_bytes=len(payload()) * 2,
+    )
+    connector = DocumentKVConnector(provider=provider)
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+
+    for request_id, block_ids in (("req-1", [4, 6]), ("req-2", [5, 7])):
+        request = SimpleNamespace(request_id=request_id, num_tokens=5, kv_transfer_params={})
+        assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+        connector.update_state_after_alloc(request, AllocatedBlocks(block_ids), 2)
+        meta = connector.build_connector_meta(scheduler_output(block_ids, request_id=request_id))
+        connector.bind_connector_metadata(meta)
+        if request_id == "req-2":
+            payload_path.write_bytes(bytes(reversed(payload())))
+        connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert read_calls == [(payload_uri, len(payload())), (payload_uri, len(payload()))]
+    assert stats["document_kv_payload_cache_misses"] == 2
+    assert stats["document_kv_payload_cache_hits"] == 0
+
+
+def test_native_provider_reset_cache_clears_payload_uri_cache(tmp_path, monkeypatch):
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    payload_uri = f"disk:{payload_path}"
+    read_calls = []
+    original_read_payload = vllm_native_provider.read_engine_adapter_payload
+
+    def counting_read_payload(uri, *, expected_bytes=None):
+        read_calls.append((uri, expected_bytes))
+        return original_read_payload(uri, expected_bytes=expected_bytes)
+
+    monkeypatch.setattr(vllm_native_provider, "read_engine_adapter_payload", counting_read_payload)
+    load = DocumentKVHandoffLoad(actions=handoff_load_with_content_hashes().actions, payload_uri=payload_uri)
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(load),
+        payload_cache_max_bytes=len(payload()) * 2,
+    )
+    connector = DocumentKVConnector(provider=provider)
+    connector.register_kv_caches({"layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+
+    for request_id, block_ids in (("req-1", [4, 6]), ("req-2", [5, 7])):
+        request = SimpleNamespace(request_id=request_id, num_tokens=5, kv_transfer_params={})
+        assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+        connector.update_state_after_alloc(request, AllocatedBlocks(block_ids), 2)
+        meta = connector.build_connector_meta(scheduler_output(block_ids, request_id=request_id))
+        connector.bind_connector_metadata(meta)
+        if request_id == "req-2":
+            assert connector.reset_cache() is True
+        connector.start_load_kv(SimpleNamespace())
+
+    stats = connector.get_kv_connector_stats()
+    assert read_calls == [(payload_uri, len(payload())), (payload_uri, len(payload()))]
+    assert stats["document_kv_payload_cache_misses"] == 2
+    assert stats["document_kv_payload_cache_hits"] == 0
 
 
 def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
@@ -1082,6 +1282,24 @@ def test_native_provider_factory_is_release_safe_provider_wiring():
 
     assert isinstance(connector.provider, DocumentKVNativeProvider)
     assert connector.provider.document_kv_native_provider is True
+
+
+def test_native_provider_factory_accepts_payload_cache_budget():
+    provider = build_document_kv_provider(
+        vllm_config=None,
+        extra_config={DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY: 4096},
+    )
+
+    assert isinstance(provider, DocumentKVNativeProvider)
+
+
+@pytest.mark.parametrize("value", [-1, True, "4096"])
+def test_native_provider_factory_rejects_invalid_payload_cache_budget(value):
+    with pytest.raises((TypeError, ValueError), match=DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY):
+        build_document_kv_provider(
+            vllm_config=None,
+            extra_config={DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY: value},
+        )
 
 
 def test_native_probe_connector_does_not_require_vllm_base_config(monkeypatch):

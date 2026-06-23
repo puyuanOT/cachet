@@ -28,6 +28,7 @@ from document_kv_cache.engine_launch_config import (
     write_engine_launch_config_evidence_json,
 )
 from sglang_kv_injection.sglang_dynamic_backend import DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY
+from vllm_kv_injection.vllm_native_provider_constants import DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY
 
 
 SGLANG_TEST_PROVIDER_FACTORY = "company_sglang_patch.providers:build_provider"
@@ -129,6 +130,19 @@ def test_build_vllm_launch_config_accepts_custom_provider_factory():
         == "company_vllm_patch.provider:build_provider"
     )
     validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
+
+
+def test_build_vllm_launch_config_accepts_payload_cache_budget():
+    record = build_vllm_launch_config(payload_cache_max_bytes=4096)
+
+    assert record["kv_connector_extra_config"][DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] == 4096
+    validate_engine_launch_config_record(record, expected_backend=ServingBackend.VLLM)
+
+
+@pytest.mark.parametrize("value", [-1, True, "4096"])
+def test_build_vllm_launch_config_rejects_invalid_payload_cache_budget(value):
+    with pytest.raises(ValueError, match="payload_cache_max_bytes"):
+        build_vllm_launch_config(payload_cache_max_bytes=value)
 
 
 def test_build_sglang_launch_config_emits_valid_release_shape():
@@ -346,7 +360,20 @@ def test_main_builds_launch_config_sidecars(tmp_path):
     vllm_path = tmp_path / "vllm.json"
     sglang_path = tmp_path / "sglang.json"
 
-    assert main(["build-vllm", "--output-json", str(vllm_path), "--extra-config", "max_model_len=32768"]) == 0
+    assert (
+        main(
+            [
+                "build-vllm",
+                "--output-json",
+                str(vllm_path),
+                "--extra-config",
+                "max_model_len=32768",
+                "--payload-cache-max-bytes",
+                "4096",
+            ]
+        )
+        == 0
+    )
     assert (
         main(
             [
@@ -368,6 +395,9 @@ def test_main_builds_launch_config_sidecars(tmp_path):
     assert read_engine_launch_config_json(vllm_path, expected_backend="vllm")[
         "kv_connector_extra_config"
     ]["document_kv.provider_factory"] == DEFAULT_VLLM_DOCUMENT_KV_PROVIDER_FACTORY
+    assert read_engine_launch_config_json(vllm_path, expected_backend="vllm")[
+        "kv_connector_extra_config"
+    ][DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] == 4096
     sglang_extra = json.loads(
         read_engine_launch_config_json(sglang_path, expected_backend="sglang")[
             "hicache_storage_backend_extra_config"

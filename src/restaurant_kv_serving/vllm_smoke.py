@@ -56,6 +56,7 @@ __all__ = reexport_public(
         "document_kv_package_install_spec",
         "install_document_kv_package",
         "build_vllm_server_args",
+        "document_kv_transfer_config_for_smoke",
         "build_benchmark_runner_args",
         "build_prompt_token_budget_rows",
         "prepared_benchmark_handoff_coverage_record",

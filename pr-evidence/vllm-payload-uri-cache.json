@@ -1,0 +1,43 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Hume the 2nd found stale mutable-URI cache keying, missing reset_cache clearing, and missing release launch-config plumbing. The amended branch keys cached loads by hashed connector-action content identity, requires copy content_hash values when caching is enabled, clears the payload LRU on reset_cache, plumbs the release launch-config builder/CLI, and Hume rechecked those findings as clean.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 407,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/407",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/vllm_kv_injection/vllm_native_provider.py",
+    "src/vllm_kv_injection/vllm_transfer_config.py",
+    "src/vllm_kv_injection/vllm_native_provider_constants.py",
+    "src/document_kv_cache/vllm_smoke.py",
+    "src/document_kv_cache/databricks_vllm_smoke_job.py",
+    "src/document_kv_cache/engine_launch_config.py",
+    "src/document_kv_cache/transformers_generator.py",
+    "src/restaurant_kv_serving/vllm_smoke.py",
+    "tests/test_vllm_kv_injection_vllm_native_provider.py",
+    "tests/test_vllm_kv_injection_vllm_transfer_config.py",
+    "tests/test_vllm_smoke.py",
+    "tests/test_databricks_vllm_smoke_job.py",
+    "tests/test_engine_launch_config.py",
+    "tests/test_transformers_generator.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_vllm_kv_injection_vllm_native_provider.py tests/test_vllm_kv_injection_vllm_transfer_config.py tests/test_vllm_smoke.py tests/test_databricks_vllm_smoke_job.py tests/test_engine_launch_config.py tests/test_transformers_generator.py tests/test_public_package.py tests/test_project_governance.py -q -> 181 passed, 2 skipped",
+    "poetry run pytest tests/test_vllm_kv_injection_vllm_dynamic_connector.py -q -> 12 passed",
+    "poetry run pytest -q -> 1889 passed, 4 skipped",
+    "git diff --check -> passed",
+    "poetry run python -m compileall -q src tests -> passed",
+    "poetry check -> passed with existing duplicated project/tool.poetry metadata warnings",
+    "changed-file path-only secret scan for Databricks token/profile strings -> no matches"
+  ],
+  "what_changed": [
+    "Added an opt-in, byte-bounded vLLM native-provider payload URI cache keyed by content-bearing connector-action identity and cleared by vLLM reset_cache.",
+    "Plumbed document_kv.payload_cache_max_bytes through vLLM transfer config, release launch-config sidecars/CLI, local smoke launch metadata, and Databricks smoke job parameters.",
+    "Made the Transformers benchmark handoff generator populate KV payload content hashes so cached URI loads have immutable content identity."
+  ],
+  "why": "The latest g6/L4 Databricks run proved the native connector path works but showed UC Volume payload materialization dominates latency; repeated-document benchmarks need a safe hot-payload cache before another meaningful Databricks run."
+}

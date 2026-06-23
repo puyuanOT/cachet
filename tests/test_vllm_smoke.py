@@ -41,6 +41,7 @@ from document_kv_cache.vllm_smoke import (
     dataset_args,
     dependency_constraints,
     dependency_override_constraints,
+    document_kv_transfer_config_for_smoke,
     document_kv_package_install_spec,
     install_document_kv_package,
     install_vllm,
@@ -293,6 +294,20 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert "--trust-remote-code" in args
     assert "--no-enable-log-requests" in args
     assert "--disable-log-requests" not in args
+
+
+def test_vllm_server_args_include_payload_cache_budget(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-cache-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        payload_cache_max_bytes=4096,
+    )
+
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+    decoded = json.loads(args[args.index("--kv-transfer-config") + 1])
+
+    assert decoded == document_kv_transfer_config(payload_cache_max_bytes=4096)
 
 
 def test_vllm_server_args_accept_full_benchmark_sizing_overrides(tmp_path):
@@ -968,6 +983,20 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config()
 
 
+def test_metadata_records_payload_cache_budget(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-cache-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        payload_cache_max_bytes=4096,
+    )
+
+    metadata = build_metadata(config)
+
+    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(config)
+    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config(payload_cache_max_bytes=4096)
+
+
 def test_vllm_native_provider_probe_record_instantiates_default_provider():
     record = build_vllm_native_provider_probe_record()
 
@@ -1185,6 +1214,7 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"max_num_seqs": 0}, "max_num_seqs must be positive"),
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
+        ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         ({"package_install_spec": ""}, "package_install_spec must be non-empty"),
         (

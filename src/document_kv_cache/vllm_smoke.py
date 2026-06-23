@@ -98,6 +98,7 @@ __all__ = [
     "document_kv_package_install_spec",
     "install_document_kv_package",
     "build_vllm_server_args",
+    "document_kv_transfer_config_for_smoke",
     "build_benchmark_runner_args",
     "build_prompt_token_budget_rows",
     "prepared_benchmark_handoff_coverage_record",
@@ -172,6 +173,7 @@ class VLLMSmokeBenchmarkConfig:
     dataset_specs: tuple[str, ...] = ()
     package_install_spec: str | None = None
     handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
+    payload_cache_max_bytes: int = 0
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -200,6 +202,10 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("max_num_seqs must be positive")
         if not 0 < self.gpu_memory_utilization <= 1:
             raise ValueError("gpu_memory_utilization must be in (0, 1]")
+        if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
+            raise TypeError("payload_cache_max_bytes must be a non-negative integer")
+        if self.payload_cache_max_bytes < 0:
+            raise ValueError("payload_cache_max_bytes must be a non-negative integer")
         object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
         if self.dataset_specs:
             parse_dataset_specs(self.dataset_specs)
@@ -354,7 +360,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "dependency_override_constraints": dependency_override_constraints(),
         "vllm_server_env_overrides": vllm_server_env_overrides(),
-        "vllm_kv_transfer_config": document_kv_transfer_config(),
+        "vllm_kv_transfer_config": document_kv_transfer_config_for_smoke(config),
     }
 
 
@@ -393,6 +399,12 @@ def build_vllm_native_provider_probe_record(
         "document_kv_connector_type": connector_type,
         "document_kv_requires_native_runtime": True,
     }
+
+
+def document_kv_transfer_config_for_smoke(config: VLLMSmokeBenchmarkConfig) -> dict[str, Any]:
+    return document_kv_transfer_config(
+        payload_cache_max_bytes=config.payload_cache_max_bytes or None,
+    )
 
 
 def dependency_constraints() -> list[str]:
@@ -1256,7 +1268,9 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         "--gpu-memory-utilization",
         str(config.gpu_memory_utilization),
         "--kv-transfer-config",
-        document_kv_transfer_config_json(),
+        document_kv_transfer_config_json(
+            payload_cache_max_bytes=config.payload_cache_max_bytes or None,
+        ),
         "--trust-remote-code",
         "--no-enable-log-requests",
     ]
@@ -1474,6 +1488,15 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
     parser.add_argument(
+        "--payload-cache-max-bytes",
+        type=int,
+        default=0,
+        help=(
+            "Optional byte budget for the vLLM provider's in-process payload URI cache. "
+            "Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--package-install-spec",
         help=(
             "Cachet wheel path or source checkout to install into the isolated vLLM environment. "
@@ -1516,6 +1539,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        payload_cache_max_bytes=args.payload_cache_max_bytes,
         dataset_specs=tuple(args.dataset or ()),
         package_install_spec=args.package_install_spec,
         handoff_generation=handoff_generation,

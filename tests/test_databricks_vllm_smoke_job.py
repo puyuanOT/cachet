@@ -108,6 +108,24 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
     }
 
 
+def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="v1-vllm-smoke-cache-001",
+        output_dir="/Volumes/catalog/schema/volume/v1-vllm-smoke",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        payload_cache_max_bytes=4096,
+        dataset_specs=DATASET_SPECS,
+    )
+
+    payload = build_databricks_vllm_smoke_run_submit_payload(config)
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert parameters[parameters.index("--payload-cache-max-bytes") + 1] == "4096"
+    assert parameters.index("--payload-cache-max-bytes") < parameters.index("--dataset")
+
+
 def test_databricks_vllm_smoke_config_requires_single_user_name():
     try:
         DatabricksVLLMSmokeJobConfig(
@@ -127,6 +145,7 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ({"max_num_seqs": 0}, "max_num_seqs must be positive"),
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
+        ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         (
             {"benchmark_handoff_generator_factory": "document_kv_cache.transformers_generator:build"},
