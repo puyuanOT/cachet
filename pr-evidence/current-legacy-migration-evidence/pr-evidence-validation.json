@@ -1,0 +1,46 @@
+{
+  "files": {
+    "pr-evidence/current-legacy-migration-evidence/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer Locke the 2nd found a native-probe sidecar validation gap for cachet.native_probe_factories facade delegate paths. The branch added those facade-module targets to the built-in delegate guard, added runtime and sidecar regression tests, reran verification, and the same reviewer approved PR #439 with no remaining findings.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 439,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/439",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "evidence/README.md",
+        "evidence/legacy-migration/README.md",
+        "evidence/legacy-migration/current",
+        "src/document_kv_cache/native_probe_factories.py",
+        "tests/test_native_probe_factories.py",
+        "tests/test_project_governance.py",
+        "README.md",
+        "docs/README.md",
+        "docs/legacy-compatibility-removal.md",
+        "docs/v1-requirements-matrix.md",
+        "pr-evidence/current-legacy-migration-evidence"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_native_probe_factories.py -q -> 40 passed",
+        "poetry run python native-probe facade delegate reproducer -> built-in delegate issue detected",
+        "poetry run pytest tests/test_project_governance.py tests/test_repository_hygiene.py tests/test_pr_evidence.py tests/test_native_probe_factories.py tests/test_legacy_compatibility.py tests/test_release_bundle.py -q -> 212 passed",
+        "poetry run pytest -q -> 2031 passed",
+        "poetry check && poetry check --lock -> All set",
+        "git diff --check -> passed",
+        "GPT-5.5 reviewer found one native-probe facade delegate validation gap; follow-up commit fixed it and re-review approved PR #439"
+      ],
+      "what_changed": [
+        "Added generated current legacy compatibility migration evidence under evidence/legacy-migration/current.",
+        "Separated durable migration evidence from benchmark evidence and PR traceability sidecars.",
+        "Rejected source-only restaurant_kv_serving and Cachet built-in facade native-probe delegate paths in release-safe native factory validation."
+      ],
+      "why": "Close the downstream migration-evidence blocker for eventual removal of the source-only legacy compatibility package without weakening native-probe validation or benchmark artifact boundaries."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
