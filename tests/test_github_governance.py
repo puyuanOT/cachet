@@ -21,13 +21,13 @@ from document_kv_cache.github_governance import (
 def test_github_repository_config_from_env_hides_token_in_repr():
     config = github_repository_config_from_env(
         environ={
-            DEFAULT_GITHUB_REPOSITORY_ENV: "owner/document-kv-cache",
+            DEFAULT_GITHUB_REPOSITORY_ENV: "owner/cachet",
             DEFAULT_GITHUB_TOKEN_ENV: "secret-token",
         },
         timeout_seconds=9,
     )
 
-    assert config.repository == "owner/document-kv-cache"
+    assert config.repository == "owner/cachet"
     assert config.normalized_api_base_url == "https://api.github.com"
     assert config.timeout_seconds == 9
     assert "secret-token" not in repr(config)
@@ -47,19 +47,19 @@ def test_github_repository_config_validates_repository_and_token():
 def test_summarize_github_repository_governance_reports_release_ready_repo():
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": _repository(private=False),
-            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+            "/repos/owner/cachet": _repository(private=False),
+            "/repos/owner/cachet/branches/main/protection": _branch_protection(),
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token", timeout_seconds=11)
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token", timeout_seconds=11)
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
     assert summary == {
         "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
         "ok": True,
-        "repository": "owner/document-kv-cache",
+        "repository": "owner/cachet",
         "default_branch": "main",
         "branch": "main",
         "private": False,
@@ -67,7 +67,7 @@ def test_summarize_github_repository_governance_reports_release_ready_repo():
         "archived": False,
         "disabled": False,
         "description": "Cachet: document KV-cache orchestration.",
-        "homepage": "https://github.com/owner/document-kv-cache",
+        "homepage": "https://github.com/owner/cachet",
         "topics": ["cachet", "kv-cache"],
         "branch_protection": {
             "enabled": True,
@@ -106,9 +106,9 @@ def test_summarize_github_repository_governance_reports_release_ready_repo():
         "issues": [],
     }
     assert [request.full_url for request in opener.requests] == [
-        "https://api.github.com/repos/owner/document-kv-cache",
-        "https://api.github.com/repos/owner/document-kv-cache/branches/main/protection",
-        "https://api.github.com/repos/owner/document-kv-cache/pulls?state=open&per_page=100",
+        "https://api.github.com/repos/owner/cachet",
+        "https://api.github.com/repos/owner/cachet/branches/main/protection",
+        "https://api.github.com/repos/owner/cachet/pulls?state=open&per_page=100",
     ]
     assert opener.requests[0].headers["Authorization"] == "Bearer secret-token"
     assert opener.timeouts == [11, 11, 11]
@@ -117,18 +117,18 @@ def test_summarize_github_repository_governance_reports_release_ready_repo():
 def test_summarize_github_repository_governance_fails_closed_for_private_unprotected_repo():
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": _repository(private=True),
-            "/repos/owner/document-kv-cache/branches/main/protection": urllib.error.HTTPError(
-                "https://api.github.com/repos/owner/document-kv-cache/branches/main/protection",
+            "/repos/owner/cachet": _repository(private=True),
+            "/repos/owner/cachet/branches/main/protection": urllib.error.HTTPError(
+                "https://api.github.com/repos/owner/cachet/branches/main/protection",
                 403,
                 "Forbidden",
                 {},
                 _BytesFile(b'{"message":"Upgrade to GitHub Pro or make this repository public"}'),
             ),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
@@ -148,12 +148,12 @@ def test_summarize_github_repository_governance_requires_public_visibility():
     repository["visibility"] = "internal"
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": repository,
-            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+            "/repos/owner/cachet": repository,
+            "/repos/owner/cachet/branches/main/protection": _branch_protection(),
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
@@ -168,7 +168,33 @@ def test_summarize_github_repository_governance_requires_public_visibility():
 def test_summarize_github_repository_governance_requires_cachet_repository_branding():
     repository = _repository(private=False)
     repository["description"] = "Document KV-cache orchestration."
+    repository["homepage"] = "https://github.com/owner/document-kv-cache"
     repository["topics"] = ["long-context"]
+    opener = _FakeGitHubOpener(
+        {
+            "/repos/owner/cachet": repository,
+            "/repos/owner/cachet/branches/main/protection": _branch_protection(),
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [],
+        }
+    )
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
+
+    summary = summarize_github_repository_governance(config, opener=opener)
+
+    assert summary["ok"] is False
+    assert summary["description"] == "Document KV-cache orchestration."
+    assert summary["topics"] == ["long-context"]
+    assert summary["issues"] == [
+        "repository description must mention Cachet before open-source release",
+        "repository homepage must mention Cachet before open-source release",
+        "repository topics must include: cachet, kv-cache",
+    ]
+
+
+def test_summarize_github_repository_governance_requires_cachet_repository_name():
+    repository = _repository(private=False)
+    repository["name"] = "document-kv-cache"
+    repository["full_name"] = "owner/document-kv-cache"
     opener = _FakeGitHubOpener(
         {
             "/repos/owner/document-kv-cache": repository,
@@ -181,11 +207,9 @@ def test_summarize_github_repository_governance_requires_cachet_repository_brand
     summary = summarize_github_repository_governance(config, opener=opener)
 
     assert summary["ok"] is False
-    assert summary["description"] == "Document KV-cache orchestration."
-    assert summary["topics"] == ["long-context"]
+    assert summary["repository"] == "owner/document-kv-cache"
     assert summary["issues"] == [
-        "repository description must mention Cachet before open-source release",
-        "repository topics must include: cachet, kv-cache",
+        "repository name must be 'cachet' before open-source release",
     ]
 
 
@@ -194,12 +218,12 @@ def test_summarize_github_repository_governance_requires_admin_branch_protection
     protection["enforce_admins"] = {"enabled": False}
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": _repository(private=False),
-            "/repos/owner/document-kv-cache/branches/main/protection": protection,
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+            "/repos/owner/cachet": _repository(private=False),
+            "/repos/owner/cachet/branches/main/protection": protection,
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
@@ -217,12 +241,12 @@ def test_summarize_github_repository_governance_requires_pr_merge_hygiene():
     repository["delete_branch_on_merge"] = False
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": repository,
-            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+            "/repos/owner/cachet": repository,
+            "/repos/owner/cachet/branches/main/protection": _branch_protection(),
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
@@ -245,12 +269,12 @@ def test_summarize_github_repository_governance_requires_auto_merge():
     repository["allow_auto_merge"] = False
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": repository,
-            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+            "/repos/owner/cachet": repository,
+            "/repos/owner/cachet/branches/main/protection": _branch_protection(),
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
@@ -264,15 +288,15 @@ def test_summarize_github_repository_governance_requires_auto_merge():
 def test_summarize_github_repository_governance_rejects_unexpected_open_pull_requests():
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": _repository(private=False),
-            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [
+            "/repos/owner/cachet": _repository(private=False),
+            "/repos/owner/cachet/branches/main/protection": _branch_protection(),
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [
                 _pull_request(72, title="Stale experiment branch", head_ref="experiment", draft=True),
                 _pull_request(73, title="Ready release guard", head_ref="release-guard", draft=False),
             ],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
@@ -289,7 +313,7 @@ def test_summarize_github_repository_governance_rejects_unexpected_open_pull_req
                 "number": 72,
                 "title": "Stale experiment branch",
                 "draft": True,
-                "html_url": "https://github.com/owner/document-kv-cache/pull/72",
+                "html_url": "https://github.com/owner/cachet/pull/72",
                 "head_ref": "experiment",
                 "base_ref": "main",
             },
@@ -297,7 +321,7 @@ def test_summarize_github_repository_governance_rejects_unexpected_open_pull_req
                 "number": 73,
                 "title": "Ready release guard",
                 "draft": False,
-                "html_url": "https://github.com/owner/document-kv-cache/pull/73",
+                "html_url": "https://github.com/owner/cachet/pull/73",
                 "head_ref": "release-guard",
                 "base_ref": "main",
             },
@@ -312,14 +336,14 @@ def test_summarize_github_repository_governance_rejects_unexpected_open_pull_req
 def test_summarize_github_repository_governance_allows_current_open_pull_request():
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": _repository(private=False),
-            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [
+            "/repos/owner/cachet": _repository(private=False),
+            "/repos/owner/cachet/branches/main/protection": _branch_protection(),
+            "/repos/owner/cachet/pulls?state=open&per_page=100": [
                 _pull_request(73, title="Ready release guard", head_ref="release-guard", draft=False),
             ],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     summary = summarize_github_repository_governance(
         config,
@@ -338,7 +362,7 @@ def test_summarize_github_repository_governance_allows_current_open_pull_request
                 "number": 73,
                 "title": "Ready release guard",
                 "draft": False,
-                "html_url": "https://github.com/owner/document-kv-cache/pull/73",
+                "html_url": "https://github.com/owner/cachet/pull/73",
                 "head_ref": "release-guard",
                 "base_ref": "main",
             },
@@ -353,8 +377,8 @@ def test_summarize_github_repository_governance_allows_current_open_pull_request
 def test_github_http_errors_are_sanitized():
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": urllib.error.HTTPError(
-                "https://api.github.com/repos/owner/document-kv-cache",
+            "/repos/owner/cachet": urllib.error.HTTPError(
+                "https://api.github.com/repos/owner/cachet",
                 401,
                 "Unauthorized",
                 {},
@@ -362,7 +386,7 @@ def test_github_http_errors_are_sanitized():
             ),
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/cachet", "secret-token")
 
     with pytest.raises(RuntimeError) as excinfo:
         summarize_github_repository_governance(config, opener=opener)
@@ -399,7 +423,7 @@ def test_main_writes_release_readiness_summary(monkeypatch, tmp_path):
     exit_code = main(
         [
             "--repository",
-            "owner/document-kv-cache",
+            "owner/cachet",
             "--allow-open-pull-request-number",
             "73",
             "--output-json",
@@ -415,7 +439,7 @@ def test_main_writes_release_readiness_summary(monkeypatch, tmp_path):
         "summary": {
             "record_type": GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE,
             "ok": True,
-            "repository": "owner/document-kv-cache",
+            "repository": "owner/cachet",
             "issues": [],
         },
     }
@@ -446,7 +470,7 @@ def test_main_falls_back_to_gh_auth_token_when_token_env_is_missing(monkeypatch,
     exit_code = main(
         [
             "--repository",
-            "owner/document-kv-cache",
+            "owner/cachet",
             "--gh-auth-token-timeout-seconds",
             "3.5",
             "--output-json",
@@ -458,7 +482,7 @@ def test_main_falls_back_to_gh_auth_token_when_token_env_is_missing(monkeypatch,
     assert captured_timeout == [3.5]
     assert captured_token == ["gh-cli-token"]
     assert json.loads(output_path.read_text(encoding="utf-8"))["summary"]["repository"] == (
-        "owner/document-kv-cache"
+        "owner/cachet"
     )
 
 
@@ -473,7 +497,7 @@ def test_main_can_disable_gh_auth_token_fallback(monkeypatch, tmp_path):
     exit_code = main(
         [
             "--repository",
-            "owner/document-kv-cache",
+            "owner/cachet",
             "--no-gh-auth-token-fallback",
             "--output-json",
             str(output_path),
@@ -487,7 +511,7 @@ def test_main_can_disable_gh_auth_token_fallback(monkeypatch, tmp_path):
 
 
 def test_main_returns_nonzero_when_governance_summary_is_not_release_ready(monkeypatch, capsys):
-    monkeypatch.setenv(DEFAULT_GITHUB_REPOSITORY_ENV, "owner/document-kv-cache")
+    monkeypatch.setenv(DEFAULT_GITHUB_REPOSITORY_ENV, "owner/cachet")
     monkeypatch.setenv(DEFAULT_GITHUB_TOKEN_ENV, "secret-token")
     monkeypatch.setattr(
         "document_kv_cache.github_governance.summarize_github_repository_governance",
@@ -582,14 +606,15 @@ class _BytesFile:
 
 def _repository(*, private: bool):
     return {
-        "full_name": "owner/document-kv-cache",
+        "name": "cachet",
+        "full_name": "owner/cachet",
         "default_branch": "main",
         "private": private,
         "visibility": "private" if private else "public",
         "archived": False,
         "disabled": False,
         "description": "Cachet: document KV-cache orchestration.",
-        "homepage": "https://github.com/owner/document-kv-cache",
+        "homepage": "https://github.com/owner/cachet",
         "topics": ["kv-cache", "cachet"],
         "allow_squash_merge": True,
         "allow_rebase_merge": True,
@@ -623,7 +648,7 @@ def _pull_request(number: int, *, title: str, head_ref: str, draft: bool):
         "number": number,
         "title": title,
         "draft": draft,
-        "html_url": f"https://github.com/owner/document-kv-cache/pull/{number}",
+        "html_url": f"https://github.com/owner/cachet/pull/{number}",
         "head": {"ref": head_ref},
         "base": {"ref": "main"},
     }

@@ -39,6 +39,7 @@ DEFAULT_GITHUB_TIMEOUT_SECONDS = 60.0
 GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE = "document_kv.github_repository_governance.v1"
 REQUIRED_CI_STATUS_CHECK = "Test and build"
 _REQUIRED_REPOSITORY_DESCRIPTION_TERM = "cachet"
+_REQUIRED_REPOSITORY_NAME = "cachet"
 _REQUIRED_REPOSITORY_TOPICS = ("cachet", "kv-cache")
 
 
@@ -430,16 +431,35 @@ def _repository_merge_settings_issues(merge_settings: Mapping[str, Any]) -> list
 
 def _repository_branding_issues(repository: Mapping[str, Any]) -> list[str]:
     issues: list[str] = []
+    if _repository_name(repository) != _REQUIRED_REPOSITORY_NAME:
+        issues.append("repository name must be 'cachet' before open-source release")
     description = repository.get("description")
     if not isinstance(description, str) or not description.strip():
         issues.append("repository description must be non-empty before open-source release")
     elif _REQUIRED_REPOSITORY_DESCRIPTION_TERM not in description.casefold():
         issues.append("repository description must mention Cachet before open-source release")
+    homepage = repository.get("homepage")
+    if (
+        isinstance(homepage, str)
+        and homepage.strip()
+        and _REQUIRED_REPOSITORY_DESCRIPTION_TERM not in homepage.casefold()
+    ):
+        issues.append("repository homepage must mention Cachet before open-source release")
     topics = set(_sorted_texts(repository.get("topics")))
     missing_topics = [topic for topic in _REQUIRED_REPOSITORY_TOPICS if topic not in topics]
     if missing_topics:
         issues.append(f"repository topics must include: {', '.join(missing_topics)}")
     return issues
+
+
+def _repository_name(repository: Mapping[str, Any]) -> str | None:
+    name = repository.get("name")
+    if isinstance(name, str) and name:
+        return name.casefold()
+    full_name = repository.get("full_name")
+    if isinstance(full_name, str) and "/" in full_name:
+        return full_name.rsplit("/", 1)[1].casefold()
+    return None
 
 
 def _format_github_http_error(status_code: int, body: str, *, token: str | None = None) -> str:

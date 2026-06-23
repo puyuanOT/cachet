@@ -1308,11 +1308,17 @@ def _github_governance_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, .
 
 def _github_repository_branding_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     issues: list[str] = []
+    repository = record.get("repository")
+    if not isinstance(repository, str) or repository.rsplit("/", 1)[-1].casefold() != "cachet":
+        issues.append("GitHub governance sidecar summary.repository must end with '/cachet'")
     description = record.get("description")
     if not isinstance(description, str) or not description.strip():
         issues.append("GitHub governance sidecar summary.description must be a non-empty string")
     elif _GITHUB_REQUIRED_REPOSITORY_DESCRIPTION_TERM not in description.casefold():
         issues.append("GitHub governance sidecar summary.description must mention Cachet")
+    homepage = record.get("homepage")
+    if isinstance(homepage, str) and homepage.strip() and "cachet" not in homepage.casefold():
+        issues.append("GitHub governance sidecar summary.homepage must mention Cachet")
     topic_field_issues = _list_of_strings_field(record, "topics", "GitHub governance sidecar summary")
     issues.extend(topic_field_issues)
     if not topic_field_issues:

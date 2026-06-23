@@ -1447,12 +1447,13 @@ The command reads the GitHub token from `GITHUB_TOKEN` or, for local developer
 runs, falls back to `gh auth token` unless `--no-gh-auth-token-fallback` is set.
 It records repository visibility, branded repository metadata, `main` branch
 protection state, and open pull-request pressure. It returns non-zero until the
-repository is public, the description is non-empty and mentions Cachet, the
-repository topics include `cachet` and `kv-cache`, the required `Test and build`
-protection is active, branch protection applies to administrators, repository
-merge settings allow squash or rebase merges, GitHub auto-merge is enabled,
-merged PR branches are deleted automatically, and no unexpected pull requests
-remain open:
+repository is public, the repository name is `cachet`, the description is
+non-empty and mentions Cachet, any homepage URL also mentions Cachet, the
+repository topics include `cachet` and `kv-cache`, the required
+`Test and build` protection is active, branch protection applies to
+administrators, repository merge settings allow squash or rebase merges, GitHub
+auto-merge is enabled, merged PR branches are deleted automatically, and no
+unexpected pull requests remain open:
 
 ```bash
 python -m document_kv_cache.github_governance \
