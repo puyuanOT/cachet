@@ -36,11 +36,7 @@ class InMemoryManifestStore:
         self.put_many(refs)
 
     def get(self, key: KVCacheKey) -> ChunkRef:
-        try:
-            return self._refs[key]
-        except KeyError as exc:
-            if key.content_hash:
-                raise KeyError(f"Missing manifest entry for {key.storage_key()}") from exc
+        if not key.content_hash:
             matches = tuple(
                 ref
                 for ref_key, ref in self._refs.items()
@@ -52,7 +48,10 @@ class InMemoryManifestStore:
                 raise KeyError(
                     "Ambiguous manifest entries for "
                     f"{key.storage_key()}; include content_hash to select a content version"
-                ) from exc
+                )
+        try:
+            return self._refs[key]
+        except KeyError as exc:
             raise KeyError(f"Missing manifest entry for {key.storage_key()}") from exc
 
     def put_many(self, refs: Iterable[ChunkRef]) -> None:

@@ -581,6 +581,23 @@ def test_manifest_rejects_ambiguous_content_hash_variants_for_logical_lookup(tmp
     assert manifest.get(replace(logical_key, content_hash="hash-b")) == refs[1]
 
 
+def test_manifest_rejects_mixed_empty_and_hashed_content_variants_for_logical_lookup(tmp_path):
+    logical_key = make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1")
+    refs = write_kvpack(
+        tmp_path / "mixed-hash-manifest.kvpack",
+        [
+            PackChunk(logical_key, b"old", 3, "fp8", "v1"),
+            PackChunk(replace(logical_key, content_hash="hash-a"), b"new", 3, "fp8", "v1"),
+        ],
+        align_bytes=1,
+    )
+    manifest = InMemoryManifestStore(refs)
+
+    with pytest.raises(KeyError, match="Ambiguous manifest entries"):
+        manifest.get(logical_key)
+    assert manifest.get(replace(logical_key, content_hash="hash-a")) == refs[1]
+
+
 def test_manifest_validates_and_normalizes_document_filters(tmp_path):
     refs = write_kvpack(
         tmp_path / "filtered-manifest.kvpack",
