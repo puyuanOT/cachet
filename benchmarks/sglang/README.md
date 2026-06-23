@@ -30,10 +30,11 @@ transfers. The runtime preflight records that bridge separately from upstream
 SGLang source detection and can report `live_request_metadata_bridge_ok=true`
 when all patch points install.
 
-Those helpers are a provider/server bring-up path, not a benchmark result. Use
-`--baseline-only` until the smoke runner promotes a handoff-backed cache arm and
-records decode-time prefix binding against the live endpoint. This report
-remains pending until a Databricks g6/L4 or g5/A10G run writes
+Those helpers are a live readiness path, not a benchmark result. Use
+`--baseline-only` for provider/server bring-up. For handoff-backed smoke,
+provide a validated SGLang handoff plus `document_kv.sglang_hicache_page_keys`
+metadata; the runner then records both baseline and cache-arm results. This
+report remains pending until a Databricks g6/L4 or g5/A10G run writes
 `sglang-live-smoke.json` with a passing handoff-backed cache arm.
 
 ## Benchmark Gate

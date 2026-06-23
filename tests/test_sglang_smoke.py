@@ -7,6 +7,7 @@ import pytest
 import document_kv_cache.sglang_smoke as public_sglang_smoke
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import build_engine_adapter_request, engine_adapter_request_to_record, sglang_adapter_spec
@@ -94,7 +95,7 @@ def test_dependency_constraints_match_pinned_sglang_stack():
     assert SERVED_MODEL_NAME == "qwen3:4b-instruct"
 
 
-def test_sglang_smoke_rejects_cache_arm_until_request_to_hicache_binding_exists(tmp_path):
+def test_sglang_smoke_cache_arm_requires_handoff_and_page_keys(tmp_path):
     with pytest.raises(ValueError) as exc:
         SGLangSmokeBenchmarkConfig(benchmark_id="sglang-1", output_dir=tmp_path / "out")
 
@@ -113,6 +114,18 @@ def test_sglang_smoke_rejects_cache_arm_until_request_to_hicache_binding_exists(
         )
 
     assert str(exc.value) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+    )
+
+    assert config.baseline_only is False
+    assert config.sglang_hicache_page_keys == ("page-a", "page-b")
 
 
 def test_sglang_smoke_accepts_baseline_only_without_handoff_fields(tmp_path):
@@ -140,6 +153,16 @@ def test_sglang_smoke_rejects_handoff_fields_for_baseline_only(tmp_path):
             output_dir=tmp_path / "out",
             baseline_only=True,
             handoff_json=str(handoff_path),
+        )
+
+    assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
+
+    with pytest.raises(ValueError) as exc:
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            sglang_hicache_page_keys=("page-a",),
         )
 
     assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
@@ -250,15 +273,13 @@ def test_sglang_hicache_provider_probe_accepts_builtin_provider(tmp_path):
     assert record["document_kv_provider_type"].endswith("DocumentKVHiCachePageProvider")
 
 
-def test_sglang_smoke_cli_rejects_handoff_cache_arm_before_launch(monkeypatch, capsys, tmp_path):
+def test_sglang_smoke_cli_accepts_handoff_cache_arm(monkeypatch, tmp_path):
     handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
     payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
     write_handoff_json(handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri)
+    seen_configs = []
 
-    def fail_if_called(_config):
-        raise AssertionError("SGLang smoke must fail before server launch")
-
-    monkeypatch.setattr(public_sglang_smoke, "run_sglang_live_smoke", fail_if_called)
+    monkeypatch.setattr(public_sglang_smoke, "run_sglang_live_smoke", lambda config: seen_configs.append(config))
 
     exit_code = public_sglang_smoke.main(
         [
@@ -272,13 +293,14 @@ def test_sglang_smoke_cli_rejects_handoff_cache_arm_before_launch(monkeypatch, c
             payload_uri,
             "--request-id",
             "cachet-live-sglang-1",
+            "--sglang-hicache-page-keys-json",
+            '["page-a","page-b"]',
         ]
     )
 
-    payload = json.loads(capsys.readouterr().out)
-    assert exit_code == 1
-    assert payload["error_type"] == "ValueError"
-    assert payload["error"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+    assert exit_code == 0
+    assert len(seen_configs) == 1
+    assert seen_configs[0].sglang_hicache_page_keys == ("page-a", "page-b")
 
 
 def test_build_metadata_records_custom_params_transport(tmp_path):
@@ -299,6 +321,27 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
     assert metadata["live_request_metadata_bridge_required"] is True
     assert metadata["live_request_metadata_bridge_ok"] is False
+
+
+def test_build_metadata_records_cache_arm_support_for_handoff_smoke(tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri)
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a",),
+    )
+
+    metadata = build_metadata(config)
+
+    assert metadata["requires_kv_transfer_params"] is True
+    assert metadata["cache_arm_supported"] is True
+    assert metadata["cache_arm_blocker"] is None
+    assert metadata["live_request_metadata_bridge_ok"] is True
 
 
 def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkeypatch, tmp_path):
@@ -334,6 +377,53 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkey
     assert record["live_request_metadata_bridge_ok"] is False
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"] is None
+
+
+def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri)
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+    )
+    seen_configs = []
+
+    def fake_live_check(live_config):
+        seen_configs.append(live_config)
+        return FakeLiveResult(
+            ok=True,
+            request_id=live_config.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
+            prompt_text_mode=live_config.prompt_text_mode,
+            cache_arm=live_config.use_cache_arm,
+        )
+
+    monkeypatch.setattr(public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check)
+
+    record = run_live_checks(config)
+
+    assert record["ok"] is True
+    assert len(seen_configs) == 2
+    assert seen_configs[0].use_cache_arm is False
+    assert seen_configs[1].use_cache_arm is True
+    assert seen_configs[1].kv_transfer_params_transport == "custom_params"
+    assert seen_configs[1].prompt_text_mode == "runtime"
+    assert seen_configs[1].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM] == "cachet-live-sglang-1"
+    assert seen_configs[1].kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] == [
+        "page-a",
+        "page-b",
+    ]
+    assert record["cache"]["arm_id"] == "document_kv_cache"
+    assert record["cache_arm_supported"] is True
+    assert record["cache_arm_blocker"] is None
+    assert record["requires_kv_transfer_params"] is True
+    assert record["live_request_metadata_bridge_ok"] is True
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["cache"]["request_id"] == "cachet-live-sglang-1"
 
 
 def test_parse_args_builds_baseline_only_config(tmp_path):
@@ -375,3 +465,30 @@ def test_probe_sglang_import_writes_timeout_artifact(monkeypatch, tmp_path):
     assert record["error_type"] == "TimeoutExpired"
     assert "partial out" in record["stdout_tail"]
     assert "partial err" in record["stderr_tail"]
+
+
+def test_probe_sglang_import_requires_request_metadata_bridge(monkeypatch, tmp_path):
+    def successful_probe_without_bridge(argv, **kwargs):
+        payload = {
+            "ok": True,
+            "document_kv_request_metadata_bridge_ok": False,
+            "document_kv_request_metadata_bridge": {"ok": False, "reason": "missing patch"},
+        }
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(payload) + "\n", stderr="")
+
+    monkeypatch.setattr(public_sglang_smoke.subprocess, "run", successful_probe_without_bridge)
+    launch_config_path = tmp_path / "launch.json"
+    launch_config_path.write_text("{}", encoding="utf-8")
+    output_path = tmp_path / "probe.json"
+
+    with pytest.raises(RuntimeError, match="request metadata bridge"):
+        public_sglang_smoke.probe_sglang_import(
+            tmp_path / "python",
+            output_path,
+            launch_config_path=launch_config_path,
+            timeout_seconds=3,
+        )
+
+    record = json.loads(output_path.read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["error_type"] == "SGLangRequestMetadataBridgeUnavailable"
