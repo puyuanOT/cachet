@@ -1365,6 +1365,7 @@ python -m document_kv_cache.release_bundle \
   --databricks-run-status-json databricks-run-status-storage.json \
   --databricks-run-status-json databricks-run-status-vllm-engine-probe.json \
   --databricks-run-status-json databricks-run-status-sglang-engine-probe.json \
+  --compatibility-databricks-run-status-json databricks-run-status-g5-benchmark.json \
   --package-wheel dist/cachet_kv-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
@@ -1390,6 +1391,13 @@ artifacts. Add
 evidence such as AWS g5/A10G compatibility runs; the bundle validates each
 compatibility benchmark against the same storage/native probe/action sidecars
 and rejects the strict AWS g6/L4 release target in that compatibility role. Add
+`--compatibility-databricks-run-status-json` to carry the matching successful
+Databricks run-status sidecar for that non-default compatibility target; the
+bundle rejects default g6/L4 statuses in this compatibility status role and
+requires the status hardware target to match a bundled compatibility benchmark.
+Strict bundles that include compatibility benchmark evidence require a matching
+compatibility Databricks benchmark run-status sidecar for each compatibility
+target. Add
 `--require-complete-v1` for release publishing; this strict mode refuses to
 build a V1 bundle unless the release evidence, preflight, vLLM/SGLang native
 engine-probe, connector-action, and engine-launch-config sidecars,
@@ -1786,10 +1794,11 @@ type annotations after installation.
   engine-probe Databricks runs have succeeded, and release evidence over the
   benchmark, storage, connector action descriptors, and native engine block managers
   is green for the current `cachet-kv` wheel. The native engine block managers
-  remain owned by vLLM and SGLang rather than Cachet. The previous
-  g5-enriched strict bundle validates with 22 artifacts, and the next complete
-  bundle refresh should swap in the current g6/g5 benchmark status sidecars plus
-  this PR's evidence sidecar. The required artifact set remains: release
+  remain owned by vLLM and SGLang rather than Cachet. The current
+  g5-enriched strict bundle validates with 23 artifacts after adding the current
+  g6 benchmark status sidecar, current `aws-g5-a10g` compatibility benchmark,
+  matching `aws-g5-a10g` Databricks run-status sidecar, and PR #427 evidence
+  sidecar. The required artifact set remains: release
   evidence sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, benchmark plan execution sidecar, Databricks run-status
@@ -1797,7 +1806,8 @@ type annotations after installation.
   package wheel, PR evidence sidecar, V1 requirements matrix, GitHub governance
   sidecar, repository hygiene sidecar, native probe factory diagnostics sidecar
   entries from both runtime environments, and the current `aws-g5-a10g`
-  benchmark carried through the `compatibility_benchmark` role.
+  benchmark/status evidence carried through the `compatibility_benchmark` and
+  `compatibility_databricks_run_status` roles.
 - Keep the current AWS g5/A10G compatibility benchmark evidence with the
   release handoff: QA Databricks run `566743786103032` on `g5.8xlarge`
   completed Biography, HotpotQA, MusiQue, and NIAH with no benchmark errors,

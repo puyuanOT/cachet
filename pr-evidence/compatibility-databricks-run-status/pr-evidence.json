@@ -1,0 +1,39 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 review found that compatibility Databricks status evidence accepted non-benchmark g5 statuses and that strict bundles/plans could include compatibility benchmarks without matching compatibility status sidecars. The PR now requires compatibility statuses to be single-task V1 benchmark/vLLM-smoke statuses, rejects storage/engine/other statuses in the compatibility role, and requires matching compatibility Databricks run-status evidence for each strict bundled compatibility benchmark target. The same reviewer rechecked cd75ad4 and approved the fixes.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 428,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/428",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "src/document_kv_cache/benchmark_plan.py",
+    "src/document_kv_cache/release_bundle.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_benchmark_plan.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py",
+    "pr-evidence/compatibility-databricks-run-status/README.md",
+    "pr-evidence/compatibility-databricks-run-status/pr-evidence.json"
+  ],
+  "verification": [
+    "git diff --check",
+    "python -m py_compile src/document_kv_cache/release_bundle.py src/document_kv_cache/benchmark_plan.py",
+    "poetry check && poetry check --lock -> existing Poetry metadata warnings only",
+    "poetry run pytest tests/test_release_bundle.py tests/test_benchmark_plan.py tests/test_project_governance.py -q -> 268 passed",
+    "poetry run pytest -q -> 2009 passed",
+    "strict release bundle rebuild from the current 23-artifact g5-enriched manifest -> ok=true, artifact_count=23, compatibility_databricks_run_status_16_aws-g5-a10g.json included",
+    "GPT-5.5 focused review found two issues; fixes were re-reviewed by the same reviewer and approved"
+  ],
+  "what_changed": [
+    "Added a compatibility_databricks_run_status release-bundle artifact role and CLI/benchmark-plan plumbing for non-default Databricks compatibility targets.",
+    "Required compatibility Databricks status sidecars to be successful non-default V1 benchmark/vLLM-smoke statuses that match bundled compatibility benchmark hardware targets.",
+    "Required strict bundles and strict benchmark plans to include matching compatibility Databricks status evidence when compatibility benchmark evidence is bundled.",
+    "Updated release docs and governance tests to describe the current 23-artifact g5-enriched strict bundle contract."
+  ],
+  "why": "The g5/A10G compatibility benchmark should travel with release evidence without weakening the strict AWS g6/L4 release target or allowing storage/engine/no-op status sidecars to satisfy benchmark compatibility evidence."
+}
