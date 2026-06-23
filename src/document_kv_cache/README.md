@@ -61,6 +61,8 @@ return as a production dependency.
   runs that check before DBFS uploads or run submission.
 - `databricks_storage_benchmark_job.py` owns standalone storage-reader
   benchmark run payloads.
+- `databricks_sglang_smoke_job.py` owns standalone Qwen3/SGLang live smoke run
+  payloads that target AWS g5/g6 Databricks clusters.
 - `databricks_vllm_smoke_job.py` owns standalone Qwen3/vLLM smoke run payloads.
 - `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and NIAH
   normalization into canonical benchmark JSONL.
@@ -119,6 +121,9 @@ return as a production dependency.
 - `sglang_runtime_preflight.py` exposes the Cachet-branded CLI wrapper for the
   strict installed-SGLang HiCache dynamic-backend and provider-factory
   preflight required before provider-backed native SGLang probes.
+- `sglang_smoke.py` owns the self-contained Qwen3/SGLang Databricks live smoke
+  that starts a pinned SGLang server, validates the dynamic HiCache provider,
+  and runs baseline plus Cachet handoff-backed OpenAI-compatible live checks.
 - `storage.py` provides Memory, Disk, Unity Catalog Volume, and routed range
   readers.
 - `storage_benchmark.py` measures storage-reader latency and throughput.
@@ -175,6 +180,8 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-sglang-runtime-preflight`
 - `document-kv-vllm-smoke`
 - `document-kv-vllm-smoke-databricks-job`
+- `document-kv-sglang-smoke`
+- `document-kv-sglang-smoke-databricks-job`
 
 Cachet-branded aliases point to the same document-owned entry points:
 
@@ -204,6 +211,8 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-sglang-runtime-preflight`
 - `cachet-vllm-smoke`
 - `cachet-vllm-smoke-databricks-job`
+- `cachet-sglang-smoke`
+- `cachet-sglang-smoke-databricks-job`
 
 Legacy `restaurant-kv-*` aliases are no longer included in built `cachet-kv`
 wheels. Use `cachet-*` or `document-kv-*` commands for installed environments.

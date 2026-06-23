@@ -225,6 +225,40 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
     assert generation.metadata["prefix_cache_salt"] == "cachet-kv-cache"
 
 
+def test_custom_params_transport_sends_sglang_compatible_kv_transfer_params():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+    }
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            stream=False,
+            prompt_text_mode="runtime",
+            kv_transfer_params_transport="custom_params",
+            extra_body={"custom_params": {"existing": "sglang-value"}},
+        ),
+        response=FakeJSONResponse(),
+        clock=FakeClock([1.0, 2.0]),
+    )
+
+    generation = engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
+
+    payload = engine.payloads[0]
+    assert "request_id" not in payload
+    assert "kv_transfer_params" not in payload
+    assert payload["custom_params"] == {
+        "existing": "sglang-value",
+        "kv_transfer_params": {
+            **kv_transfer_params,
+            DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
+        },
+    }
+    assert generation.metadata["kv_transfer_params_attached"] == "true"
+    assert generation.metadata["request_id"] == "cachet-bio-1"
+
+
 def test_extra_body_factory_can_vary_prefix_cache_salt_per_request():
     engine = CapturingEngine(
         OpenAICompatibleEngineConfig(
@@ -383,6 +417,7 @@ def test_whitespace_token_counter_is_available_as_local_fallback():
         ("model_id", "", "model_id must be non-empty"),
         ("prompt_text_mode", "full", "prompt_text_mode"),
         ("prompt_token_accounting", "usage", "prompt_token_accounting"),
+        ("kv_transfer_params_transport", "query", "kv_transfer_params_transport"),
     ],
 )
 def test_openai_compatible_engine_config_rejects_invalid_public_fields(field_name, value, message):

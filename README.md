@@ -1344,6 +1344,43 @@ prompt. The cache arm also posts the full logical prompt by default; add
 `--cache-base-url` and `--cache-runtime-prompt` only when that explicit cache
 endpoint is a KV-aware adapter or proxy that binds the cached prefix out of band.
 
+For the SGLang path, use `document_kv_cache.sglang_smoke` as the live readiness
+gate before publishing SGLang benchmark numbers. It creates an isolated SGLang
+environment, installs the pinned SGLang stack and Cachet wheel/source, launches
+`Qwen/Qwen3-4B-Instruct-2507` as `qwen3:4b-instruct` with Cachet's dynamic
+HiCache provider config, and writes `metadata.json`, `sglang-launch-config.json`,
+`sglang-import-probe.json`, `sglang-server.log`, and `sglang-live-smoke.json`.
+The cache arm is strict by default: it validates a SGLang Cachet handoff, sends
+the request suffix with `kv_transfer_params` under SGLang `custom_params`, and
+fails unless the live endpoint can answer from the cached prefix.
+
+```bash
+python -m document_kv_cache.sglang_smoke \
+  --benchmark-id v1_sglang_live_001 \
+  --output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live \
+  --handoff-json /Volumes/catalog/schema/volume/cachet/live/sglang.handoff.json \
+  --hardware-target aws-g6-l4
+```
+
+To submit that same smoke as a Databricks task, generate the runner script and
+single-node g5/g6 runs/submit payload. The helper rejects cache-arm jobs without
+`--handoff-json` or `--handoff-record-json`; pass `--baseline-only` only for a
+server bring-up check that must not be treated as Cachet benchmark evidence:
+
+```bash
+mkdir -p databricks-runs/sglang-smoke
+python -m document_kv_cache.databricks_sglang_smoke_job \
+  --benchmark-id v1_sglang_live_001 \
+  --output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live \
+  --runner-python-file dbfs:/benchmarks/run_sglang_smoke.py \
+  --runner-script-output databricks-runs/sglang-smoke/run_sglang_smoke.py \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
+  --single-user-name user@example.com \
+  --handoff-json /Volumes/catalog/schema/volume/cachet/live/sglang.handoff.json \
+  --hardware-target aws-g6-l4 \
+  --output-json databricks-runs/sglang-smoke/databricks-sglang-smoke-submit.json
+```
+
 After the real V1 benchmark, storage benchmark, and native vLLM/SGLang probe
 runs complete, validate the collected release artifacts:
 
@@ -1824,14 +1861,15 @@ python -m document_kv_cache.live_server \
   --base-url http://localhost:8000 \
   --model-id qwen3:4b-instruct \
   --cache-arm \
+  --runtime-prompt \
+  --kv-transfer-params-transport custom-params \
   --handoff-json /Volumes/catalog/schema/volume/cachet/live/sglang.handoff.json \
   --expected-backend sglang
 ```
 
 The command validates the handoff backend and derives the request id and payload
-URI before sending the OpenAI-compatible request. Use full-prompt mode for
-engine-native scheduling; reserve `--runtime-prompt` for a proxy that binds the
-cached prefix before forwarding the suffix.
+URI before sending the OpenAI-compatible request. Use `custom-params` transport
+for SGLang's OpenAI schema; keep the default top-level transport for vLLM.
 
 ## Development
 

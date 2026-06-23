@@ -28,6 +28,7 @@ from document_kv_cache.engine_adapters import (
     validate_engine_adapter_request_record,
 )
 from document_kv_cache.openai_compatible import (
+    KVTransferParamsTransport,
     OpenAICompatibleCompletionEngine,
     OpenAICompatibleEngineConfig,
     PromptTextMode,
@@ -58,6 +59,7 @@ class LiveServerCheckConfig:
     use_cache_arm: bool = False
     prompt_text_mode: PromptTextMode = "logical"
     prompt_token_accounting: PromptTokenAccounting = "logical"
+    kv_transfer_params_transport: KVTransferParamsTransport = "top_level"
     stream: bool = True
     max_tokens: int = 32
     timeout_seconds: float = 120.0
@@ -75,6 +77,8 @@ class LiveServerCheckConfig:
             raise ValueError("timeout_seconds must be positive")
         if self.prompt_text_mode == "runtime" and not self.use_cache_arm:
             raise ValueError("prompt_text_mode='runtime' requires use_cache_arm=True")
+        if self.kv_transfer_params_transport not in {"top_level", "custom_params"}:
+            raise ValueError("kv_transfer_params_transport must be 'top_level' or 'custom_params'")
         if not isinstance(self.kv_transfer_params, Mapping):
             raise ValueError("kv_transfer_params must be a mapping")
         object.__setattr__(self, "kv_transfer_params", dict(self.kv_transfer_params))
@@ -229,6 +233,7 @@ def run_openai_compatible_live_check(
             stream=config.stream,
             prompt_text_mode=config.prompt_text_mode,
             prompt_token_accounting=config.prompt_token_accounting,
+            kv_transfer_params_transport=config.kv_transfer_params_transport,
             model_id=config.model_id,
             extra_body=config.extra_body,
         )
@@ -263,6 +268,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Record server usage.prompt_tokens in metadata when present; "
             "reported prompt_tokens still follow the logical/runtime prompt context."
+        ),
+    )
+    parser.add_argument(
+        "--kv-transfer-params-transport",
+        choices=("top-level", "custom-params"),
+        default="top-level",
+        help=(
+            "Where to attach Cachet handoff params in the OpenAI-compatible request. "
+            "Use top-level for vLLM and custom-params for SGLang."
         ),
     )
     parser.add_argument("--extra-body-json", default="{}", help="Additional JSON fields merged into the request body.")
@@ -313,6 +327,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 use_cache_arm=args.cache_arm,
                 prompt_text_mode="runtime" if args.runtime_prompt else "logical",
                 prompt_token_accounting="server_usage" if args.server_usage else "logical",
+                kv_transfer_params_transport=args.kv_transfer_params_transport.replace("-", "_"),
                 extra_body=extra_body,
                 kv_transfer_params=kv_transfer_params,
             )

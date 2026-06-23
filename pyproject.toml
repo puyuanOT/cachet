@@ -68,6 +68,8 @@ cachet-vllm-runtime-preflight = "cachet.vllm_runtime_preflight:main"
 cachet-sglang-runtime-preflight = "cachet.sglang_runtime_preflight:main"
 cachet-vllm-smoke = "cachet.vllm_smoke:main"
 cachet-vllm-smoke-databricks-job = "cachet.databricks_vllm_smoke_job:main"
+cachet-sglang-smoke = "cachet.sglang_smoke:main"
+cachet-sglang-smoke-databricks-job = "cachet.databricks_sglang_smoke_job:main"
 document-kv-benchmark-plan = "document_kv_cache.benchmark_plan:main"
 document-kv-benchmark-handoffs = "document_kv_cache.benchmark_handoffs:main"
 document-kv-benchmark-handoff-manifest = "document_kv_cache.benchmark_handoffs:manifest_main"
@@ -94,6 +96,8 @@ document-kv-vllm-runtime-preflight = "document_kv_cache.vllm_runtime_preflight:m
 document-kv-sglang-runtime-preflight = "document_kv_cache.sglang_runtime_preflight:main"
 document-kv-vllm-smoke = "document_kv_cache.vllm_smoke:main"
 document-kv-vllm-smoke-databricks-job = "document_kv_cache.databricks_vllm_smoke_job:main"
+document-kv-sglang-smoke = "document_kv_cache.sglang_smoke:main"
+document-kv-sglang-smoke-databricks-job = "document_kv_cache.databricks_sglang_smoke_job:main"
 [tool.poetry]
 packages = [
   { include = "cachet", from = "src" },

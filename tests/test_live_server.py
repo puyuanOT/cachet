@@ -236,6 +236,14 @@ def test_run_openai_compatible_live_check_attaches_kv_transfer_params(tmp_path):
     assert result.to_record()["kv_transfer_param_keys"] == sorted(params)
 
 
+def test_live_server_check_config_rejects_invalid_kv_transfer_transport():
+    with pytest.raises(ValueError, match="kv_transfer_params_transport"):
+        LiveServerCheckConfig(
+            base_url="http://localhost:8000",
+            kv_transfer_params_transport="query",  # type: ignore[arg-type]
+        )
+
+
 def test_live_check_reports_failed_quality_when_expected_answer_is_missing():
     result = run_openai_compatible_live_check(
         LiveServerCheckConfig(base_url="http://localhost:8000"),
@@ -293,6 +301,8 @@ def test_cli_reports_json_error_for_handoff_without_cache_arm(tmp_path, capsys):
             str(handoff_path),
             "--expected-backend",
             "sglang",
+            "--kv-transfer-params-transport",
+            "custom-params",
         ]
     )
 
@@ -330,6 +340,8 @@ def test_cli_sends_validated_handoff_params_for_cache_arm(tmp_path, monkeypatch,
             str(handoff_path),
             "--expected-backend",
             "sglang",
+            "--kv-transfer-params-transport",
+            "custom-params",
         ]
     )
 
@@ -337,6 +349,7 @@ def test_cli_sends_validated_handoff_params_for_cache_arm(tmp_path, monkeypatch,
     config = captured["config"]
     assert exit_code == 0
     assert config.use_cache_arm is True
+    assert config.kv_transfer_params_transport == "custom_params"
     assert config.kv_transfer_params == {
         DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-4",
         DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),

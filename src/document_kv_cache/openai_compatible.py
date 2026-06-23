@@ -19,6 +19,7 @@ __all__ = [
     "TokenCounter",
     "PromptTextMode",
     "PromptTokenAccounting",
+    "KVTransferParamsTransport",
     "WhitespaceTokenCounter",
     "OpenAICompatibleEngineConfig",
     "OpenAICompatibleCompletionEngine",
@@ -33,6 +34,7 @@ class TokenCounter(Protocol):
 
 PromptTextMode = Literal["logical", "runtime"]
 PromptTokenAccounting = Literal["logical", "server_usage"]
+KVTransferParamsTransport = Literal["top_level", "custom_params"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +56,7 @@ class OpenAICompatibleEngineConfig:
     model_id: str | None = None
     prompt_text_mode: PromptTextMode = "logical"
     prompt_token_accounting: PromptTokenAccounting = "logical"
+    kv_transfer_params_transport: KVTransferParamsTransport = "top_level"
     extra_body: Mapping[str, Any] = field(default_factory=dict)
     extra_headers: Mapping[str, str] = field(default_factory=dict)
 
@@ -75,6 +78,8 @@ class OpenAICompatibleEngineConfig:
             raise ValueError("prompt_text_mode must be 'logical' or 'runtime'")
         if self.prompt_token_accounting not in {"logical", "server_usage"}:
             raise ValueError("prompt_token_accounting must be 'logical' or 'server_usage'")
+        if self.kv_transfer_params_transport not in {"top_level", "custom_params"}:
+            raise ValueError("kv_transfer_params_transport must be 'top_level' or 'custom_params'")
         object.__setattr__(self, "extra_body", _json_object_mapping(self.extra_body, "extra_body"))
         object.__setattr__(self, "extra_headers", _string_mapping(self.extra_headers, "extra_headers"))
 
@@ -190,11 +195,16 @@ class OpenAICompatibleCompletionEngine:
             payload["stream_options"] = {"include_usage": True}
         payload.update(self._extra_body(request))
         if request.kv_transfer_params:
-            if request.request_id:
-                payload["request_id"] = request.request_id
             kv_transfer_params = dict(request.kv_transfer_params)
             kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = self.config.prompt_text_mode
-            payload["kv_transfer_params"] = kv_transfer_params
+            if self.config.kv_transfer_params_transport == "custom_params":
+                custom_params = _json_object_mapping(payload.get("custom_params") or {}, "custom_params")
+                custom_params["kv_transfer_params"] = kv_transfer_params
+                payload["custom_params"] = custom_params
+            else:
+                if request.request_id:
+                    payload["request_id"] = request.request_id
+                payload["kv_transfer_params"] = kv_transfer_params
         return payload
 
     def _extra_body(self, request: BenchmarkEngineRequest) -> dict[str, Any]:
