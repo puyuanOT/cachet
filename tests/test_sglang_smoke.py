@@ -297,6 +297,8 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["cache_arm_supported"] is False
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+    assert metadata["live_request_metadata_bridge_required"] is True
+    assert metadata["live_request_metadata_bridge_ok"] is False
 
 
 def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkeypatch, tmp_path):
@@ -328,6 +330,8 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkey
     assert record["requires_kv_transfer_params"] is False
     assert record["cache_arm_supported"] is False
     assert record["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+    assert record["live_request_metadata_bridge_required"] is True
+    assert record["live_request_metadata_bridge_ok"] is False
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"] is None
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import importlib
+import inspect
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -35,7 +37,7 @@ DOCUMENT_KV_SGLANG_INSTALLED_HICACHE_CONTRACT_RECORD_TYPE = (
     "sglang_kv_injection.installed_hicache_contract.v1"
 )
 DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_RECORD_TYPE = "sglang_kv_injection.runtime_preflight.v1"
-DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION = 2
+DOCUMENT_KV_SGLANG_RUNTIME_PREFLIGHT_SCHEMA_VERSION = 3
 SGLANG_HICACHE_DYNAMIC_RUNTIME = "sglang-hicache-dynamic-storage"
 SGLANG_HICACHE_DYNAMIC_BACKEND = "dynamic"
 SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME = "document_kv"
@@ -70,6 +72,19 @@ SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS = (
 SGLANG_HICACHE_REQUIRED_BACKEND_METHODS = DOCUMENT_KV_HICACHE_RUNTIME_METHODS
 SGLANG_HICACHE_PROVIDER_REQUIRED_METHODS = ("get", "set", "exists")
 SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE = "sglang_kv_injection.dynamic_backend_factory_preflight.v1"
+SGLANG_HICACHE_REQUEST_METADATA_SOURCE_MODULES = (
+    "sglang.srt.managers.cache_controller",
+    "sglang.srt.mem_cache.hybrid_cache.hybrid_cache_controller",
+    "sglang.srt.mem_cache.hiradix_cache",
+    "sglang.srt.mem_cache.hi_mamba_radix_cache",
+)
+SGLANG_REQUEST_CUSTOM_PARAMS_SOURCE_MODULES = (
+    "sglang.srt.entrypoints.openai.protocol",
+    "sglang.srt.entrypoints.openai.serving_chat",
+    "sglang.srt.entrypoints.openai.serving_completions",
+    "sglang.srt.managers.schedule_batch",
+    "sglang.srt.sampling.sampling_params",
+)
 
 _INSTALLED_CONTRACT_KEYS = frozenset(
     {
@@ -84,10 +99,15 @@ _INSTALLED_CONTRACT_KEYS = frozenset(
         "server_arg_fields",
         "cli_options",
         "hicache_storage_backend_choices",
+        "hicache_storage_extra_info_fields",
         "storage_backend_factory_methods",
         "document_kv_backend_importable",
         "document_kv_backend_subclasses_hicache_storage",
         "document_kv_backend_methods",
+        "request_custom_params_available",
+        "request_metadata_extra_info_bridge",
+        "request_metadata_bridge_sources",
+        "live_request_metadata_bridge_ok",
         "error",
         "ok",
     }
@@ -161,6 +181,7 @@ _RUNTIME_PREFLIGHT_KEYS = frozenset(
         "launch_config",
         "provider_factory",
         "dynamic_backend_factory",
+        "live_request_metadata_bridge_ok",
         "ok",
     }
 )
@@ -177,6 +198,8 @@ __all__ = [
     "SGLANG_HICACHE_REQUIRED_CLI_OPTIONS",
     "SGLANG_HICACHE_REQUIRED_SERVER_ARG_FIELDS",
     "SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS",
+    "SGLANG_HICACHE_REQUEST_METADATA_SOURCE_MODULES",
+    "SGLANG_REQUEST_CUSTOM_PARAMS_SOURCE_MODULES",
     "SGLANG_DOCUMENT_KV_HICACHE_BACKEND_NAME",
     "SGLANG_DYNAMIC_BACKEND_FACTORY_RECORD_TYPE",
     "SGLangInstalledHiCacheContract",
@@ -203,10 +226,14 @@ class SGLangInstalledHiCacheContract:
     server_arg_fields: tuple[str, ...] = ()
     cli_options: tuple[str, ...] = ()
     hicache_storage_backend_choices: tuple[str, ...] = ()
+    hicache_storage_extra_info_fields: tuple[str, ...] = ()
     storage_backend_factory_methods: tuple[str, ...] = ()
     document_kv_backend_importable: bool = False
     document_kv_backend_subclasses_hicache_storage: bool = False
     document_kv_backend_methods: tuple[str, ...] = ()
+    request_custom_params_available: bool = False
+    request_metadata_extra_info_bridge: bool = False
+    request_metadata_bridge_sources: tuple[str, ...] = ()
     error: str | None = None
 
 
@@ -236,11 +263,16 @@ def installed_sglang_hicache_contract_to_record(
         "server_arg_fields": sorted(set(contract.server_arg_fields)),
         "cli_options": sorted(set(contract.cli_options)),
         "hicache_storage_backend_choices": sorted(set(contract.hicache_storage_backend_choices)),
+        "hicache_storage_extra_info_fields": sorted(set(contract.hicache_storage_extra_info_fields)),
         "storage_backend_factory_methods": sorted(set(contract.storage_backend_factory_methods)),
         "document_kv_backend_importable": contract.document_kv_backend_importable,
         "document_kv_backend_subclasses_hicache_storage": contract.document_kv_backend_subclasses_hicache_storage,
         "document_kv_backend_methods": sorted(set(contract.document_kv_backend_methods)),
+        "request_custom_params_available": contract.request_custom_params_available,
+        "request_metadata_extra_info_bridge": contract.request_metadata_extra_info_bridge,
+        "request_metadata_bridge_sources": sorted(set(contract.request_metadata_bridge_sources)),
     }
+    record["live_request_metadata_bridge_ok"] = _live_request_metadata_bridge_ok(record)
     if contract.error:
         record["error"] = contract.error
     record["ok"] = _installed_sglang_hicache_contract_ok(record)
@@ -311,6 +343,13 @@ def installed_sglang_hicache_contract_record_issues(record: object) -> tuple[str
     )
     issues.extend(
         _required_string_items_issues(
+            record.get("hicache_storage_extra_info_fields"),
+            required=("extra_info", "prefix_keys"),
+            field_name="installed SGLang HiCache contract hicache_storage_extra_info_fields",
+        )
+    )
+    issues.extend(
+        _required_string_items_issues(
             record.get("storage_backend_factory_methods"),
             required=SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
             field_name="installed SGLang HiCache contract storage_backend_factory_methods",
@@ -323,6 +362,31 @@ def installed_sglang_hicache_contract_record_issues(record: object) -> tuple[str
             field_name="installed SGLang HiCache contract document_kv_backend_methods",
         )
     )
+    for field_name in (
+        "request_custom_params_available",
+        "request_metadata_extra_info_bridge",
+        "live_request_metadata_bridge_ok",
+    ):
+        if type(record.get(field_name)) is not bool:
+            issues.append(f"installed SGLang HiCache contract {field_name} must be boolean")
+    if record.get("request_custom_params_available") is not True:
+        issues.append("installed SGLang HiCache contract request_custom_params_available must be true")
+    bridge_sources = _string_tuple(record.get("request_metadata_bridge_sources"))
+    if bridge_sources is None:
+        issues.append("installed SGLang HiCache contract request_metadata_bridge_sources must be a string array")
+        bridge_sources = ()
+    if record.get("request_metadata_extra_info_bridge") is True and not bridge_sources:
+        issues.append(
+            "installed SGLang HiCache contract request_metadata_bridge_sources must identify the bridge source"
+        )
+    expected_bridge_ok = _live_request_metadata_bridge_ok(record)
+    if type(record.get("live_request_metadata_bridge_ok")) is bool and (
+        record.get("live_request_metadata_bridge_ok") != expected_bridge_ok
+    ):
+        issues.append(
+            "installed SGLang HiCache contract live_request_metadata_bridge_ok must match "
+            "extra_info field, custom_params, and request-metadata bridge detection"
+        )
     if "error" in record and not isinstance(record.get("error"), str):
         issues.append("installed SGLang HiCache contract error must be a string when present")
     ok = record.get("ok")
@@ -374,6 +438,7 @@ def document_kv_sglang_runtime_preflight_to_record(
         "launch_config": launch_config_record,
         "provider_factory": provider_factory_record,
         "dynamic_backend_factory": dynamic_backend_factory_record,
+        "live_request_metadata_bridge_ok": installed_contract_record.get("live_request_metadata_bridge_ok") is True,
         "ok": ok,
     }
 
@@ -451,6 +516,14 @@ def document_kv_sglang_runtime_preflight_record_issues(record: object) -> tuple[
         )
         if not dynamic_backend_matches_launch:
             issues.append("dynamic_backend_factory.provider_factory must match launch_config.provider_factory")
+
+    live_request_metadata_bridge_ok = record.get("live_request_metadata_bridge_ok")
+    if type(live_request_metadata_bridge_ok) is not bool:
+        issues.append("live_request_metadata_bridge_ok must be boolean")
+    elif isinstance(installed_contract, Mapping) and (
+        live_request_metadata_bridge_ok != (installed_contract.get("live_request_metadata_bridge_ok") is True)
+    ):
+        issues.append("live_request_metadata_bridge_ok must match installed_contract.live_request_metadata_bridge_ok")
 
     ok = record.get("ok")
     if type(ok) is not bool:
@@ -535,6 +608,7 @@ def _inspect_installed_sglang_hicache_contract() -> SGLangInstalledHiCacheContra
         document_kv_backend_error = f"{type(exc).__name__}: {exc}"
 
     cli_options, backend_choices = _server_args_cli_surface(server_args_cls)
+    request_metadata_bridge_sources = _request_metadata_bridge_sources()
     return SGLangInstalledHiCacheContract(
         package_version=package_version,
         importable=True,
@@ -548,6 +622,7 @@ def _inspect_installed_sglang_hicache_contract() -> SGLangInstalledHiCacheContra
         ),
         cli_options=tuple(cli_options),
         hicache_storage_backend_choices=tuple(backend_choices),
+        hicache_storage_extra_info_fields=_hicache_storage_extra_info_fields(hicache_storage_module),
         storage_backend_factory_methods=tuple(
             method_name
             for method_name in SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS
@@ -556,6 +631,9 @@ def _inspect_installed_sglang_hicache_contract() -> SGLangInstalledHiCacheContra
         document_kv_backend_importable=document_kv_backend_importable,
         document_kv_backend_subclasses_hicache_storage=document_kv_backend_subclasses_hicache_storage,
         document_kv_backend_methods=document_kv_backend_methods,
+        request_custom_params_available=_request_custom_params_available(),
+        request_metadata_extra_info_bridge=bool(request_metadata_bridge_sources),
+        request_metadata_bridge_sources=request_metadata_bridge_sources,
         error=document_kv_backend_error,
     )
 
@@ -567,9 +645,13 @@ def _failed_installed_contract(*, package_version: str | None, error: str) -> SG
         server_args_importable=False,
         storage_backend_factory_importable=False,
         hicache_storage_base_importable=False,
+        hicache_storage_extra_info_fields=(),
         document_kv_backend_importable=False,
         document_kv_backend_subclasses_hicache_storage=False,
         document_kv_backend_methods=(),
+        request_custom_params_available=False,
+        request_metadata_extra_info_bridge=False,
+        request_metadata_bridge_sources=(),
         error=error,
     )
 
@@ -992,6 +1074,7 @@ def _installed_sglang_hicache_contract_ok(record: Mapping[str, Any]) -> bool:
         and _contains_required_strings(record.get("server_arg_fields"), SGLANG_HICACHE_REQUIRED_SERVER_ARG_FIELDS)
         and _contains_required_strings(record.get("cli_options"), SGLANG_HICACHE_REQUIRED_CLI_OPTIONS)
         and _contains_required_strings(record.get("hicache_storage_backend_choices"), (SGLANG_HICACHE_DYNAMIC_BACKEND,))
+        and _contains_required_strings(record.get("hicache_storage_extra_info_fields"), ("extra_info", "prefix_keys"))
         and _contains_required_strings(
             record.get("storage_backend_factory_methods"),
             SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS,
@@ -1002,7 +1085,161 @@ def _installed_sglang_hicache_contract_ok(record: Mapping[str, Any]) -> bool:
             record.get("document_kv_backend_methods"),
             SGLANG_HICACHE_REQUIRED_BACKEND_METHODS,
         )
+        and record.get("request_custom_params_available") is True
     )
+
+
+def _live_request_metadata_bridge_ok(record: Mapping[str, Any]) -> bool:
+    return (
+        _contains_required_strings(record.get("hicache_storage_extra_info_fields"), ("extra_info",))
+        and record.get("request_custom_params_available") is True
+        and record.get("request_metadata_extra_info_bridge") is True
+    )
+
+
+def _hicache_storage_extra_info_fields(hicache_storage_module: object) -> tuple[str, ...]:
+    extra_info_cls = getattr(hicache_storage_module, "HiCacheStorageExtraInfo", None)
+    dataclass_fields = getattr(extra_info_cls, "__dataclass_fields__", None)
+    if isinstance(dataclass_fields, Mapping):
+        return tuple(str(field_name) for field_name in dataclass_fields)
+    annotations = getattr(extra_info_cls, "__annotations__", None)
+    if isinstance(annotations, Mapping):
+        return tuple(str(field_name) for field_name in annotations)
+    return ()
+
+
+def _request_custom_params_available() -> bool:
+    sources = _module_sources(SGLANG_REQUEST_CUSTOM_PARAMS_SOURCE_MODULES)
+    has_openai_custom_params = any("custom_params" in source for source in sources.values())
+    has_request_custom_params = any("sampling_params.custom_params" in source for source in sources.values())
+    return has_openai_custom_params and has_request_custom_params
+
+
+def _request_metadata_bridge_sources() -> tuple[str, ...]:
+    return tuple(
+        module_name
+        for module_name, source in _module_sources(SGLANG_HICACHE_REQUEST_METADATA_SOURCE_MODULES).items()
+        if _source_contains_request_metadata_bridge(source)
+    )
+
+
+def _source_contains_request_metadata_bridge(source: str) -> bool:
+    if "HiCacheStorageExtraInfo" not in source or "extra_info" not in source:
+        return False
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    return any(
+        _hicache_extra_info_call_has_request_metadata(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    )
+
+
+def _hicache_extra_info_call_has_request_metadata(node: ast.Call) -> bool:
+    if _ast_call_name(node.func) != "HiCacheStorageExtraInfo":
+        return False
+    for keyword in node.keywords:
+        if keyword.arg == "extra_info" and _ast_expression_mentions_request_metadata(keyword.value):
+            return True
+    return False
+
+
+def _ast_call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _ast_expression_mentions_request_metadata(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and child.id in {
+            "custom_params",
+            "kv_transfer_params",
+            "request_metadata",
+            "document_kv_request_metadata",
+            "document_kv_extra_info",
+        }:
+            return True
+        if isinstance(child, ast.Attribute) and _ast_attribute_is_request_metadata(child):
+            return True
+        if isinstance(child, ast.Constant) and isinstance(child.value, str) and _string_is_request_metadata_key(
+            child.value
+        ):
+            return True
+    return False
+
+
+def _ast_attribute_is_request_metadata(node: ast.Attribute) -> bool:
+    if node.attr in {"custom_params", "kv_transfer_params", "request_metadata"}:
+        return True
+    if node.attr != "extra_info":
+        return False
+    return _ast_root_name(node.value) in {"operation", "request", "req"}
+
+
+def _ast_root_name(node: ast.AST) -> str | None:
+    current = node
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    if isinstance(current, ast.Name):
+        return current.id
+    return None
+
+
+def _string_is_request_metadata_key(value: str) -> bool:
+    return value in {
+        "custom_params",
+        "kv_transfer_params",
+        "request_metadata",
+        "document_kv",
+        "document_kv.request_id",
+        "document_kv.handoff_json",
+        "document_kv.handoff_record",
+        "document_kv.payload_uri",
+        "document_kv.prompt_text_mode",
+    }
+
+
+def _module_sources(module_names: Sequence[str]) -> dict[str, str]:
+    sources: dict[str, str] = {}
+    for module_name in module_names:
+        source = _module_source(module_name)
+        if source is not None:
+            sources[module_name] = source
+    return sources
+
+
+def _module_source(module_name: str) -> str | None:
+    try:
+        module = importlib.import_module(module_name)
+    except Exception:
+        module = None
+    if module is not None:
+        try:
+            return inspect.getsource(module)
+        except (OSError, TypeError):
+            pass
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except (ImportError, AttributeError, ValueError):
+        return None
+    origin = getattr(spec, "origin", None)
+    if not origin or origin in {"built-in", "frozen"}:
+        return None
+    try:
+        path = Path(origin)
+    except TypeError:
+        return None
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _provider_method_names(provider: object) -> tuple[str, ...]:
