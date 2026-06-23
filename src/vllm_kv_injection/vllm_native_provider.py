@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
@@ -161,7 +162,7 @@ class _PayloadTensorView:
 
     token_major: object
     scalars_per_layer: int
-    buffer: bytearray
+    buffer: bytes | bytearray
 
 
 @dataclass(frozen=True, slots=True)
@@ -742,7 +743,7 @@ def _connector_actions_for_runtime_request(
     return rebound
 
 
-def _merged_payload(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> bytes:
+def _merged_payload(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> bytes | bytearray:
     _validate_payload_matches_actions(actions, payload)
     if isinstance(payload, bytes):
         return payload
@@ -753,7 +754,7 @@ def _merged_payload(actions: EngineKVConnectorActions, payload: bytes | tuple[by
         buffer[copy.global_byte_start : copy.global_byte_end] = source[
             copy.source_byte_start : copy.source_byte_end
         ]
-    return bytes(buffer)
+    return buffer
 
 
 def _block_spans_for_token_range(
@@ -897,7 +898,7 @@ def _document_kv_prompt_text_mode(request: object) -> str | None:
 
 
 def _payload_tensor_view(
-    payload: bytes,
+    payload: bytes | bytearray,
     load: DocumentKVLoadRequest,
 ) -> _PayloadTensorView:
     torch = _torch()
@@ -913,14 +914,27 @@ def _payload_tensor_view(
     if scalars_per_token % layout.num_layers != 0:
         raise ValueError("layout bytes_per_token is not divisible by num_layers")
     scalars_per_layer = scalars_per_token // layout.num_layers
-    buffer = bytearray(payload)
-    tensor = torch.frombuffer(buffer, dtype=dtype, count=total_scalars)
+    tensor = _torch_from_payload_buffer(torch, payload, dtype=dtype, count=total_scalars)
     token_major = tensor.reshape(load.actions.reservation.total_tokens, scalars_per_token)
     return _PayloadTensorView(
         token_major=token_major,
         scalars_per_layer=scalars_per_layer,
-        buffer=buffer,
+        buffer=payload,
     )
+
+
+def _torch_from_payload_buffer(torch: object, payload: bytes | bytearray, *, dtype: object, count: int) -> object:
+    """Create a read-only source tensor; injection only copies from it."""
+
+    if isinstance(payload, bytes):
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="The given buffer is not writable.*",
+                category=UserWarning,
+            )
+            return torch.frombuffer(payload, dtype=dtype, count=count)
+    return torch.frombuffer(payload, dtype=dtype, count=count)
 
 
 def _payload_layer_tensor(
