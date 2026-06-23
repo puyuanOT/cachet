@@ -86,7 +86,8 @@ mean:
   benchmark plan execution sidecar, Databricks run-status sidecars for
   benchmark, storage, and vLLM/SGLang engine-probe runs, tested package wheel,
   PR evidence sidecar, V1 requirements matrix, GitHub governance sidecar,
-  repository hygiene sidecar, and native probe factory diagnostics sidecar.
+  repository hygiene sidecar, and native probe factory diagnostics sidecars
+  emitted from the split vLLM/SGLang runtime probe environments.
 - `benchmark_plan.py` can now emit the vLLM/SGLang engine launch config sidecars
   through `--engine-launch-config-output-dir`; those generated paths satisfy the
   strict bundle launch-config gate when paired with the native probe/action

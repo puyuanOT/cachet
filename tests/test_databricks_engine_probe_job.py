@@ -65,6 +65,10 @@ VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm
 VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON = "/Volumes/catalog/schema/volume/probes/vllm-layer-names.json"
 SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/sglang-runtime-preflight.json"
 SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON = "/Volumes/catalog/schema/volume/probes/sglang-launch-config.json"
+VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON = "/Volumes/catalog/schema/volume/probes/vllm-native-probe-factories.json"
+SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON = (
+    "/Volumes/catalog/schema/volume/probes/sglang-native-probe-factories.json"
+)
 SINGLE_USER_NAME = "user@example.com"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -86,6 +90,19 @@ def _target(backend: str, **overrides):
         )
     values.update(overrides)
     return DatabricksEngineProbeTargetConfig(**values)
+
+
+def _release_target(backend: str, **overrides):
+    values = {
+        "actions_output_json": f"/Volumes/catalog/schema/volume/probes/{backend}-actions.json",
+        "native_probe_factories_output_json": (
+            VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON
+            if backend == "vllm"
+            else SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON
+        )
+    }
+    values.update(overrides)
+    return _target(backend, **values)
 
 
 def _parameter_values(parameters, flag):
@@ -182,6 +199,8 @@ def test_build_databricks_engine_probe_release_safe_payload_omits_debug_flags():
         wheel_uri=WHEEL_URI,
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
+        actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+        native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
@@ -203,13 +222,127 @@ def test_build_databricks_engine_probe_release_safe_sglang_payload_uses_backend_
         wheel_uri=WHEEL_URI,
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
+        actions_output_json="/Volumes/catalog/schema/volume/probes/sglang-actions.json",
         sglang_runtime_preflight_output_json=SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
         sglang_runtime_preflight_launch_config_json=SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+        native_probe_factories_output_json=SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
 
     assert payload["tasks"][0]["task_key"] == f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang"
+
+
+def test_databricks_engine_probe_release_safe_requires_native_factories_output():
+    with pytest.raises(ValueError, match="native_probe_factories_output_json"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache_vllm_probe:build_probe",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            single_user_name=SINGLE_USER_NAME,
+            release_safe=True,
+            actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+        )
+
+
+def test_databricks_engine_probe_release_safe_requires_actions_output():
+    with pytest.raises(ValueError, match="actions_output_json"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache_vllm_probe:build_probe",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            single_user_name=SINGLE_USER_NAME,
+            release_safe=True,
+            native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
+        )
+
+
+def test_build_databricks_engine_probe_payload_forwards_native_factories_output():
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        probe_factory="document_kv_cache_vllm_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        single_user_name=SINGLE_USER_NAME,
+        native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
+    )
+
+    payload = build_databricks_engine_probe_run_submit_payload(config)
+    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert parameters[:2] == [
+        "--native-probe-factories-output-json",
+        VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
+    ]
+
+
+def test_databricks_engine_probe_rejects_colliding_runner_output_paths():
+    with pytest.raises(ValueError, match="output paths must be distinct"):
+        DatabricksEngineProbeJobConfig(
+            handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+            probe_factory="document_kv_cache_vllm_probe:build_probe",
+            output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+            runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+            expected_backend=ServingBackend.VLLM,
+            single_user_name=SINGLE_USER_NAME,
+            native_probe_factories_output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "fixture_filename_key"),
+    [
+        ("output_json", "handoff"),
+        ("native_probe_factories_output_json", "pack"),
+        ("native_probe_factories_output_json", "payload"),
+        ("native_probe_factories_output_json", "actions"),
+        ("native_probe_factories_output_json", "manifest"),
+        ("native_probe_factories_output_json", "vllm_layer_names"),
+    ],
+)
+def test_databricks_engine_probe_rejects_fixture_child_output_collisions(
+    field_name,
+    fixture_filename_key,
+):
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+    values = {
+        "handoff_json": f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+        "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+        "output_json": f"{fixture_dir}/vllm-probe.json",
+        "runner_python_file": "dbfs:/benchmarks/run_engine_probe.py",
+        "expected_backend": ServingBackend.VLLM,
+        "payload_uri": None,
+        "single_user_name": SINGLE_USER_NAME,
+        "fixture_output_dir": fixture_dir,
+        "native_probe_factories_output_json": f"{fixture_dir}/vllm-native-probe-factories.json",
+    }
+    values[field_name] = f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES[fixture_filename_key]}"
+
+    with pytest.raises(ValueError, match="output paths must be distinct"):
+        DatabricksEngineProbeJobConfig(**values)
+
+
+def test_databricks_engine_probe_allows_derived_fixture_actions_output_once():
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json=f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+        probe_factory="document_kv_cache_vllm_probe:build_probe",
+        output_json=f"{fixture_dir}/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        payload_uri=None,
+        single_user_name=SINGLE_USER_NAME,
+        fixture_output_dir=fixture_dir,
+        native_probe_factories_output_json=f"{fixture_dir}/vllm-native-probe-factories.json",
+    )
+
+    assert config.actions_output_json == f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}"
 
 
 def test_databricks_engine_probe_job_config_preserves_existing_positional_arguments():
@@ -261,6 +394,8 @@ def test_build_databricks_engine_probe_payload_installs_extra_wheels_in_order():
         extra_wheel_uris=(CUSTOM_VLLM_EXTENSION_WHEEL_URI, CUSTOM_SGLANG_EXTENSION_WHEEL_URI),
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
+        actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+        native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
@@ -288,6 +423,8 @@ def test_build_databricks_engine_probe_payload_installs_pip_packages_before_whee
         extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
+        actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+        native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
@@ -314,7 +451,9 @@ def test_build_databricks_engine_probe_payload_sets_native_delegate_env_var():
         wheel_uri=WHEEL_URI,
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
+        actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
         native_probe_delegate_factory="document_kv_vllm_native_adapter:build_probe",
+        native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
@@ -338,10 +477,12 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
         extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
         single_user_name=SINGLE_USER_NAME,
         release_safe=True,
+        actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
         native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
         metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
         vllm_runtime_preflight_output_json=VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
         vllm_runtime_preflight_layer_names_json=VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
+        native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
@@ -356,7 +497,9 @@ def test_provider_backed_vllm_probe_installs_runtime_and_cachet_wheel_only():
     package_wheel_uris = _parameter_values(parameters, "--package-wheel-uri")
     assert package_wheel_uris == [WHEEL_URI]
     assert not any("vllm_kv_injection" in wheel_uri for wheel_uri in package_wheel_uris)
-    assert parameters[:4] == [
+    assert parameters[:6] == [
+        "--native-probe-factories-output-json",
+        VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
         "--vllm-runtime-preflight-output-json",
         VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
         "--vllm-runtime-preflight-layer-names-json",
@@ -382,6 +525,7 @@ def test_vllm_runtime_preflight_layer_names_derive_from_fixture_output_dir():
         native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
         metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
         vllm_runtime_preflight_output_json=f"{fixture_dir}/vllm-runtime-preflight.json",
+        native_probe_factories_output_json=f"{fixture_dir}/vllm-native-probe-factories.json",
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
@@ -424,8 +568,10 @@ def test_release_safe_provider_backed_vllm_probe_requires_runtime_preflight():
             extra_pip_packages=(VLLM_RUNTIME_PACKAGE,),
             single_user_name=SINGLE_USER_NAME,
             release_safe=True,
+            actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
             native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
             metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
+            native_probe_factories_output_json=VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
         )
 
 
@@ -472,12 +618,12 @@ def test_sglang_runtime_preflight_rejects_vllm_backend():
 def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required_backends():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
-            _target(
+            _release_target(
                 "vllm",
                 metadata=("probe.source=matrix",),
                 actions_output_json="/Volumes/catalog/schema/volume/probes/vllm-actions.json",
             ),
-            _target("sglang"),
+            _release_target("sglang"),
         ),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
@@ -517,11 +663,10 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
             "--payload-uri",
             f"/Volumes/catalog/schema/volume/probes/{backend}-payload.kv",
         ]
-        if backend == "vllm":
-            expected_parameters[8:8] = [
-                "--actions-output-json",
-                "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
-            ]
+        expected_parameters[8:8] = [
+            "--actions-output-json",
+            f"/Volumes/catalog/schema/volume/probes/{backend}-actions.json",
+        ]
         if backend == "vllm":
             expected_parameters.extend(["--metadata", "probe.source=matrix"])
         if backend == "sglang":
@@ -531,6 +676,14 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
                 "--sglang-runtime-preflight-launch-config-json",
                 SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
             ]
+        expected_parameters[0:0] = [
+            "--native-probe-factories-output-json",
+            (
+                VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON
+                if backend == "vllm"
+                else SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON
+            ),
+        ]
         expected_parameters.extend(["--package-wheel-uri", WHEEL_URI])
         assert parameters == expected_parameters
         assert "--engine-version" not in parameters
@@ -539,7 +692,7 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
 
 def test_databricks_engine_probe_matrix_config_preserves_existing_positional_arguments():
     config = DatabricksEngineProbeMatrixJobConfig(
-        (_target("vllm"), _target("sglang")),
+        (_release_target("vllm"), _release_target("sglang")),
         "dbfs:/benchmarks/run_engine_probe.py",
         DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME,
         "g6.4xlarge",
@@ -563,7 +716,7 @@ def test_databricks_engine_probe_matrix_config_preserves_existing_positional_arg
 
 def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_each_task():
     config = DatabricksEngineProbeMatrixJobConfig(
-        probe_targets=(_target("vllm"), _target("sglang")),
+        probe_targets=(_release_target("vllm"), _release_target("sglang")),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
         extra_wheel_uris=(CUSTOM_VLLM_EXTENSION_WHEEL_URI, CUSTOM_SGLANG_EXTENSION_WHEEL_URI),
@@ -587,8 +740,8 @@ def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_
 def test_build_databricks_engine_probe_matrix_payload_installs_backend_pip_packages_and_cachet_wheel_per_task():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
-            _target("vllm", pip_packages=(VLLM_RUNTIME_PACKAGE,)),
-            _target("sglang", pip_packages=(SGLANG_RUNTIME_PACKAGE,)),
+            _release_target("vllm", pip_packages=(VLLM_RUNTIME_PACKAGE,)),
+            _release_target("sglang", pip_packages=(SGLANG_RUNTIME_PACKAGE,)),
         ),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
@@ -627,7 +780,7 @@ def test_build_databricks_engine_probe_matrix_payload_installs_backend_pip_packa
 
 def test_build_databricks_engine_probe_matrix_payload_can_run_tasks_serially():
     config = DatabricksEngineProbeMatrixJobConfig(
-        probe_targets=(_target("vllm"), _target("sglang")),
+        probe_targets=(_release_target("vllm"), _release_target("sglang")),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
         single_user_name=SINGLE_USER_NAME,
@@ -736,12 +889,12 @@ def test_databricks_engine_probe_matrix_payload_skips_fixture_owned_actions_alia
 def test_build_databricks_engine_probe_matrix_payload_sets_backend_delegate_env_vars():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
-            _target(
+            _release_target(
                 "vllm",
                 probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
                 native_probe_delegate_factory="document_kv_vllm_native_adapter:build_probe",
             ),
-            _target(
+            _release_target(
                 "sglang",
                 probe_factory="document_kv_cache.native_probe_factories:sglang_native_probe_factory",
                 native_probe_delegate_factory="document_kv_sglang_native_adapter:build_probe",
@@ -772,7 +925,7 @@ def test_build_databricks_engine_probe_matrix_payload_sets_backend_delegate_env_
 def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_preflight():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
-            _target(
+            _release_target(
                 "vllm",
                 probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
                 native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
@@ -781,7 +934,7 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_pref
                 vllm_runtime_preflight_output_json=VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
                 vllm_runtime_preflight_layer_names_json=VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
             ),
-            _target("sglang"),
+            _release_target("sglang"),
         ),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
@@ -792,7 +945,9 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_pref
     payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
     vllm_parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
 
-    assert vllm_parameters[:4] == [
+    assert vllm_parameters[:6] == [
+        "--native-probe-factories-output-json",
+        VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
         "--vllm-runtime-preflight-output-json",
         VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
         "--vllm-runtime-preflight-layer-names-json",
@@ -805,7 +960,7 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_vllm_runtime_pref
 def test_build_databricks_engine_probe_matrix_payload_rejects_conflicting_provider_backed_profile():
     config = DatabricksEngineProbeMatrixJobConfig(
         probe_targets=(
-            _target(
+            _release_target(
                 "vllm",
                 probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
                 native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
@@ -814,7 +969,7 @@ def test_build_databricks_engine_probe_matrix_payload_rejects_conflicting_provid
                 vllm_runtime_preflight_output_json=VLLM_RUNTIME_PREFLIGHT_OUTPUT_JSON,
                 vllm_runtime_preflight_layer_names_json=VLLM_RUNTIME_PREFLIGHT_LAYER_NAMES_JSON,
             ),
-            _target("sglang"),
+            _release_target("sglang"),
         ),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
@@ -828,7 +983,7 @@ def test_build_databricks_engine_probe_matrix_payload_rejects_conflicting_provid
 
 def test_build_databricks_engine_probe_matrix_payload_forwards_sglang_runtime_preflight():
     config = DatabricksEngineProbeMatrixJobConfig(
-        probe_targets=(_target("vllm"), _target("sglang")),
+        probe_targets=(_release_target("vllm"), _release_target("sglang")),
         runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
         wheel_uri=WHEEL_URI,
         single_user_name=SINGLE_USER_NAME,
@@ -838,7 +993,9 @@ def test_build_databricks_engine_probe_matrix_payload_forwards_sglang_runtime_pr
     payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
     sglang_parameters = payload["tasks"][1]["spark_python_task"]["parameters"]
 
-    assert sglang_parameters[:4] == [
+    assert sglang_parameters[:6] == [
+        "--native-probe-factories-output-json",
+        SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
         "--sglang-runtime-preflight-output-json",
         SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
         "--sglang-runtime-preflight-launch-config-json",
@@ -920,14 +1077,14 @@ def test_databricks_engine_probe_matrix_release_safe_requires_provider_backed_vl
     with pytest.raises(ValueError, match="release-safe provider-backed vLLM"):
         DatabricksEngineProbeMatrixJobConfig(
             probe_targets=(
-                _target(
+                _release_target(
                     "vllm",
                     probe_factory="document_kv_cache.native_probe_factories:vllm_native_probe_factory",
                     native_probe_delegate_factory=VLLM_NATIVE_PROBE_DELEGATE_FACTORY,
                     metadata=(VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,),
                     pip_packages=(VLLM_RUNTIME_PACKAGE,),
                 ),
-                _target("sglang"),
+                _release_target("sglang"),
             ),
             runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
             single_user_name=SINGLE_USER_NAME,
@@ -939,8 +1096,8 @@ def test_databricks_engine_probe_matrix_release_safe_requires_sglang_runtime_pre
     with pytest.raises(ValueError, match="release-safe SGLang.*sglang_runtime_preflight_output_json"):
         DatabricksEngineProbeMatrixJobConfig(
             probe_targets=(
-                _target("vllm"),
-                _target(
+                _release_target("vllm"),
+                _release_target(
                     "sglang",
                     sglang_runtime_preflight_output_json=None,
                     sglang_runtime_preflight_launch_config_json=None,
@@ -964,6 +1121,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_object_and_aliases(tm
                         "probe_factory": "document_kv_cache_vllm_probe:build_probe",
                         "probe_output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
                         "connector_actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+                        "native_probe_factories_output_json": VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
                     },
                     {
                         "expected_backend": "sglang",
@@ -988,6 +1146,7 @@ def test_read_databricks_engine_probe_targets_json_accepts_object_and_aliases(tm
     assert [target.expected_backend for target in targets] == [ServingBackend.VLLM, ServingBackend.SGLANG]
     assert targets[0].output_json == "/Volumes/catalog/schema/volume/probes/vllm-probe.json"
     assert targets[0].actions_output_json == "/Volumes/catalog/schema/volume/probes/vllm-actions.json"
+    assert targets[0].native_probe_factories_output_json == VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON
     assert targets[1].output_json == "/Volumes/catalog/schema/volume/probes/sglang-probe.json"
     assert targets[1].actions_output_json == "/Volumes/catalog/schema/volume/probes/sglang-actions.json"
     assert targets[1].metadata == ("probe.source=targets",)
@@ -1716,6 +1875,93 @@ def test_run_engine_probe_task_stops_when_sglang_runtime_preflight_fails(monkeyp
     assert [name for name, _argv in calls] == ["preflight"]
 
 
+def test_run_engine_probe_task_writes_native_probe_factories_before_probe(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import document_kv_cache.native_probe_factories as native_probe_factories
+
+    calls = []
+
+    def fake_native_probe_factories_main(argv):
+        calls.append(("native_probe_factories", tuple(argv)))
+        return 0
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(native_probe_factories, "main", fake_native_probe_factories_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--native-probe-factories-output-json",
+            "dbfs:/benchmarks/cachet/probes/native-probe-factories.json",
+            "--handoff-json",
+            "dbfs:/benchmarks/cachet/probes/vllm-handoff.json",
+            "--probe-factory",
+            "document_kv_cache_vllm_probe:build_probe",
+            "--output-json",
+            "dbfs:/benchmarks/cachet/probes/vllm-probe.json",
+            "--expected-backend",
+            "vllm",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls == [
+        (
+            "native_probe_factories",
+            (
+                "--output-json",
+                "/dbfs/benchmarks/cachet/probes/native-probe-factories.json",
+            ),
+        ),
+        (
+            "probe",
+            (
+                "--handoff-json",
+                "dbfs:/benchmarks/cachet/probes/vllm-handoff.json",
+                "--probe-factory",
+                "document_kv_cache_vllm_probe:build_probe",
+                "--output-json",
+                "dbfs:/benchmarks/cachet/probes/vllm-probe.json",
+                "--expected-backend",
+                "vllm",
+            ),
+        ),
+    ]
+
+
+def test_run_engine_probe_task_stops_when_native_probe_factories_fail(monkeypatch):
+    import document_kv_cache.engine_probe as engine_probe
+    import document_kv_cache.native_probe_factories as native_probe_factories
+
+    calls = []
+
+    def fake_native_probe_factories_main(argv):
+        calls.append(("native_probe_factories", tuple(argv)))
+        return 4
+
+    def fake_probe_main(argv):
+        calls.append(("probe", tuple(argv)))
+        return 0
+
+    monkeypatch.setattr(native_probe_factories, "main", fake_native_probe_factories_main)
+    monkeypatch.setattr(engine_probe, "main", fake_probe_main)
+
+    exit_code = run_engine_probe_task(
+        [
+            "--native-probe-factories-output-json",
+            VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
+            "--handoff-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+        ]
+    )
+
+    assert exit_code == 4
+    assert [name for name, _argv in calls] == ["native_probe_factories"]
+
+
 def test_write_databricks_engine_probe_runner_script_installs_pip_packages(tmp_path):
     path = tmp_path / "run_engine_probe.py"
 
@@ -1988,14 +2234,18 @@ def test_read_databricks_engine_probe_targets_json_honors_release_safe_envelope(
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
                         "probe_factory": "document_kv_cache_vllm_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                        "actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+                        "native_probe_factories_output_json": VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
                     },
                     {
                         "backend": "sglang",
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-actions.json",
                         "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
                         "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+                        "native_probe_factories_output_json": SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
                     },
                 ],
             }
@@ -2232,14 +2482,18 @@ def test_main_honors_release_safe_engine_probe_targets_envelope_without_cli_flag
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
                         "probe_factory": "document_kv_cache_vllm_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                        "actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+                        "native_probe_factories_output_json": VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
                     },
                     {
                         "backend": "sglang",
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-actions.json",
                         "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
                         "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+                        "native_probe_factories_output_json": SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
                     },
                 ],
             }
@@ -2266,6 +2520,58 @@ def test_main_honors_release_safe_engine_probe_targets_envelope_without_cli_flag
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm",
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang",
     ]
+
+
+def test_main_rejects_release_safe_targets_without_actions_output(tmp_path, capsys):
+    backend_config_path = tmp_path / "probe-targets.json"
+    payload_path = tmp_path / "payload.json"
+    backend_config_path.write_text(
+        json.dumps(
+            {
+                "record_type": "document_kv.engine_probe_targets.v1",
+                "schema_version": 1,
+                "release_safe": True,
+                "probes": [
+                    {
+                        "backend": "vllm",
+                        "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                        "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+                        "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                        "native_probe_factories_output_json": VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
+                    },
+                    {
+                        "backend": "sglang",
+                        "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+                        "probe_factory": "document_kv_cache_sglang_probe:build_probe",
+                        "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+                        "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+                        "native_probe_factories_output_json": SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "--backend-config-json",
+            str(backend_config_path),
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_engine_probe.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1
+    assert output["error_type"] == "ValueError"
+    assert "actions_output_json" in output["error"]
+    assert not payload_path.exists()
 
 
 def test_main_rejects_debug_targets_when_release_safe_envelope_is_true(tmp_path, capsys):
@@ -2320,7 +2626,7 @@ def test_write_databricks_engine_probe_matrix_run_submit_json_writes_payload(tmp
 
     write_databricks_engine_probe_matrix_run_submit_json(
         DatabricksEngineProbeMatrixJobConfig(
-            probe_targets=(_target("vllm"), _target("sglang")),
+            probe_targets=(_release_target("vllm"), _release_target("sglang")),
             runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
             single_user_name=SINGLE_USER_NAME,
             release_safe=True,
@@ -2692,6 +2998,8 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
             f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}",
             "--vllm-runtime-preflight-output-json",
             f"{fixture_dir}/vllm-runtime-preflight.json",
+            "--native-probe-factories-output-json",
+            f"{fixture_dir}/vllm-native-probe-factories.json",
             "--runner-python-file",
             "dbfs:/benchmarks/run_engine_probe.py",
             "--wheel-uri",
@@ -2720,7 +3028,9 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
     assert cluster["spark_env_vars"] == {
         VLLM_NATIVE_PROBE_DELEGATE_ENV: VLLM_NATIVE_PROBE_DELEGATE_FACTORY
     }
-    assert parameters[:10] == [
+    assert parameters[:12] == [
+        "--native-probe-factories-output-json",
+        f"{fixture_dir}/vllm-native-probe-factories.json",
         "--fixture-output-dir",
         fixture_dir,
         "--fixture-backend",
@@ -2762,6 +3072,8 @@ def test_main_provider_backed_sglang_preset_writes_g6_payload(tmp_path):
             f"{fixture_dir}/sglang-runtime-preflight.json",
             "--sglang-runtime-preflight-launch-config-json",
             f"{fixture_dir}/sglang-launch-config.json",
+            "--native-probe-factories-output-json",
+            f"{fixture_dir}/sglang-native-probe-factories.json",
             "--runner-python-file",
             "dbfs:/benchmarks/run_engine_probe.py",
             "--wheel-uri",
@@ -2790,7 +3102,9 @@ def test_main_provider_backed_sglang_preset_writes_g6_payload(tmp_path):
     assert cluster["spark_env_vars"] == {
         SGLANG_NATIVE_PROBE_DELEGATE_ENV: SGLANG_NATIVE_PROBE_DELEGATE_FACTORY
     }
-    assert parameters[:10] == [
+    assert parameters[:12] == [
+        "--native-probe-factories-output-json",
+        f"{fixture_dir}/sglang-native-probe-factories.json",
         "--fixture-output-dir",
         fixture_dir,
         "--fixture-backend",
@@ -2910,6 +3224,8 @@ def test_main_provider_backed_vllm_preset_requires_runtime_preflight_in_release_
             "dbfs:/benchmarks/run_engine_probe.py",
             "--wheel-uri",
             WHEEL_URI,
+            "--native-probe-factories-output-json",
+            "/Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-native-probe-factories.json",
             "--single-user-name",
             SINGLE_USER_NAME,
             "--release-safe",
@@ -2942,6 +3258,8 @@ def test_main_provider_backed_sglang_preset_requires_runtime_preflight_in_releas
             "dbfs:/benchmarks/run_engine_probe.py",
             "--wheel-uri",
             WHEEL_URI,
+            "--native-probe-factories-output-json",
+            "/Volumes/catalog/schema/volume/probes/sglang-fixture/sglang-native-probe-factories.json",
             "--single-user-name",
             SINGLE_USER_NAME,
             "--release-safe",
@@ -3110,14 +3428,18 @@ def test_main_writes_engine_probe_matrix_payload_from_backend_config_json(tmp_pa
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
                         "probe_factory": "document_kv_cache_vllm_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                        "actions_output_json": "/Volumes/catalog/schema/volume/probes/vllm-actions.json",
+                        "native_probe_factories_output_json": VLLM_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
                     },
                     {
                         "backend": "sglang",
                         "handoff_json": "/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
                         "probe_factory": "document_kv_cache_sglang_probe:build_probe",
                         "output_json": "/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+                        "actions_output_json": "/Volumes/catalog/schema/volume/probes/sglang-actions.json",
                         "sglang_runtime_preflight_output_json": SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
                         "sglang_runtime_preflight_launch_config_json": SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+                        "native_probe_factories_output_json": SGLANG_NATIVE_PROBE_FACTORIES_OUTPUT_JSON,
                     },
                 ]
             }
