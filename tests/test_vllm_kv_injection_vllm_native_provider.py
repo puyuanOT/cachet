@@ -433,7 +433,8 @@ def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
         return original_frombuffer(*args, **kwargs)
 
     monkeypatch.setattr(torch, "frombuffer", counting_frombuffer)
-    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    load = handoff_load()
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(load))
     connector = DocumentKVConnector(provider=provider)
     request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
@@ -450,7 +451,8 @@ def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
     connector.start_load_kv(SimpleNamespace())
 
     assert len(calls) == 1
-    assert isinstance(calls[0][0][0], bytearray)
+    assert calls[0][0][0] is load.payload
+    assert isinstance(calls[0][0][0], bytes)
 
 
 def test_native_provider_records_load_error_blocks_for_payload_view_failures(monkeypatch):
