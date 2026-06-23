@@ -13,6 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from document_kv_cache.engine_adapters import (
+    EngineKVInjectionPlan,
+    ServingBackend,
+    build_engine_kv_injection_plan,
+    read_engine_adapter_request_json,
+)
+from document_kv_cache.engine_probe import read_engine_adapter_payload
+
 
 def _load_sglang_hicache_storage_base() -> type:
     try:
@@ -40,6 +48,7 @@ _DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 _DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 _DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 _DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
+DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 DOCUMENT_KV_HICACHE_RUNTIME_METHODS = (
     "register_mem_pool_host",
     "register_mem_host_pool_v2",
@@ -66,6 +75,7 @@ __all__ = [
     "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY",
     "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY",
     "DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG",
+    "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
     "DOCUMENT_KV_HICACHE_RUNTIME_METHODS",
     "DocumentKVHiCacheBackend",
     "DocumentKVHiCachePageProvider",
@@ -125,6 +135,7 @@ class DocumentKVHiCacheRequestContext:
     payload_uri: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     prompt_text_mode: str | None = None
+    sglang_hicache_page_keys: tuple[str, ...] = ()
     prefix_keys: tuple[str, ...] = ()
     raw_extra_info: Mapping[str, Any] | None = None
 
@@ -146,8 +157,12 @@ class DocumentKVHiCachePageProvider:
         self.hits = 0
         self.misses = 0
         self.sets = 0
+        self.mem_pool_host: object | None = None
         if self.root is not None:
             self.root.mkdir(parents=True, exist_ok=True)
+
+    def register_mem_pool_host(self, mem_pool_host: object) -> None:
+        self.mem_pool_host = mem_pool_host
 
     def get(
         self,
@@ -184,6 +199,79 @@ class DocumentKVHiCachePageProvider:
             return False
         self.sets += 1
         return True
+
+    def batch_exists(
+        self,
+        keys: Iterable[object],
+        *,
+        extra_info: object | None = None,
+        document_kv_request_context: DocumentKVHiCacheRequestContext | None = None,
+    ) -> int:
+        del extra_info
+        key_list = list(keys)
+        hydrated = self._hydrate_request_pages(key_list, document_kv_request_context)
+        if _requires_strict_handoff_binding(document_kv_request_context) and not hydrated:
+            return 0
+        for index, key in enumerate(key_list):
+            if not self.exists(key):
+                return index
+        return len(key_list)
+
+    def batch_get_v1(
+        self,
+        keys: Iterable[object],
+        *,
+        host_indices: object | None = None,
+        extra_info: object | None = None,
+        document_kv_request_context: DocumentKVHiCacheRequestContext | None = None,
+    ) -> list[object | None] | list[bool]:
+        del extra_info
+        key_list = list(keys)
+        hydrated = self._hydrate_request_pages(key_list, document_kv_request_context)
+        if _requires_strict_handoff_binding(document_kv_request_context) and not hydrated:
+            if host_indices is None:
+                return [None] * len(key_list)
+            return [False] * len(key_list)
+        if host_indices is None:
+            return [self.get(key) for key in key_list]
+        mem_pool_host = self.mem_pool_host
+        if mem_pool_host is None or not _host_indices_cover_pages(host_indices, len(key_list), mem_pool_host):
+            return [False] * len(key_list)
+        return [
+            _load_host_page(self, key, mem_pool_host, _host_page_offset(host_indices, index, mem_pool_host))
+            for index, key in enumerate(key_list)
+        ]
+
+    def batch_set_v1(
+        self,
+        keys: Iterable[object],
+        *,
+        host_indices: object | None = None,
+        extra_info: object | None = None,
+        document_kv_request_context: DocumentKVHiCacheRequestContext | None = None,
+    ) -> list[bool] | None:
+        del extra_info, document_kv_request_context
+        key_list = list(keys)
+        if host_indices is None:
+            return [False] * len(key_list)
+        mem_pool_host = self.mem_pool_host
+        if mem_pool_host is not None:
+            if not _host_indices_cover_pages(host_indices, len(key_list), mem_pool_host):
+                return [False] * len(key_list)
+            return [
+                _store_provider_host_page(
+                    self,
+                    key,
+                    mem_pool_host,
+                    _host_page_offset(host_indices, index, mem_pool_host),
+                )
+                for index, key in enumerate(key_list)
+            ]
+        if _looks_like_host_indices(host_indices):
+            return [False] * len(key_list)
+        for key, value in zip(key_list, host_indices, strict=True):
+            self.set(key, value)
+        return None
 
     def clear(self) -> None:
         self._memory_pages.clear()
@@ -235,6 +323,55 @@ class DocumentKVHiCachePageProvider:
         if self.root is None:
             return len(self._memory_pages)
         return sum(1 for _ in self.root.glob(f"{_page_namespace_prefix(self.storage_identity)}-*{_PAGE_FILE_SUFFIX}"))
+
+    def _hydrate_request_pages(
+        self,
+        keys: list[object],
+        request_context: DocumentKVHiCacheRequestContext | None,
+    ) -> bool:
+        if not keys or request_context is None:
+            return False
+        first_page_index = _sglang_hicache_page_binding_start(keys, request_context)
+        if first_page_index is None:
+            return False
+        handoff_plan = self._handoff_plan_for_context(request_context)
+        if handoff_plan is None:
+            return False
+        plan, payload_uri = handoff_plan
+        if first_page_index + len(keys) > _sglang_hicache_full_page_count(plan):
+            return False
+        if all(self.exists(key) for key in keys):
+            return True
+        pages = _sglang_hicache_payload_pages(
+            plan,
+            read_engine_adapter_payload(payload_uri, expected_bytes=plan.total_bytes),
+        )
+        if not pages:
+            return False
+        for offset, key in enumerate(keys):
+            page_index = first_page_index + offset
+            if self.exists(key):
+                continue
+            self._write_page(key, pages[page_index])
+        return True
+
+    def _handoff_plan_for_context(
+        self,
+        request_context: DocumentKVHiCacheRequestContext,
+    ) -> tuple[EngineKVInjectionPlan, str] | None:
+        handoff_record = _handoff_record_from_request_context(request_context)
+        if handoff_record is None:
+            return None
+        plan = build_engine_kv_injection_plan(
+            handoff_record,
+            expected_backend=ServingBackend.SGLANG,
+            require_external_payload_uri=request_context.payload_uri is None,
+        )
+        _validate_handoff_request_context(request_context, plan)
+        payload_uri = request_context.payload_uri or plan.payload_source_uri
+        if payload_uri is None:
+            raise ValueError("SGLang document KV handoff requires an external payload URI")
+        return plan, payload_uri
 
 
 class DocumentKVHiCacheBackend(_SGLANG_HICACHE_STORAGE_BASE):
@@ -579,9 +716,95 @@ def document_kv_request_context_from_extra_info(extra_info: object | None) -> Do
         payload_uri=_optional_string(kv_transfer_params.get(_DOCUMENT_KV_PAYLOAD_URI_PARAM)),
         handoff_record=_optional_mapping(kv_transfer_params.get(_DOCUMENT_KV_HANDOFF_RECORD_PARAM)),
         prompt_text_mode=_optional_string(kv_transfer_params.get(_DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM)),
+        sglang_hicache_page_keys=_sglang_hicache_page_keys_from_params(kv_transfer_params),
         prefix_keys=_prefix_keys_from_extra_info(extra_info),
         raw_extra_info=raw_extra_info,
     )
+
+
+def _handoff_record_from_request_context(
+    request_context: DocumentKVHiCacheRequestContext,
+) -> Mapping[str, Any] | None:
+    handoff_record = request_context.handoff_record
+    handoff_json = request_context.handoff_json
+    if handoff_record is None and handoff_json is None:
+        return None
+    if handoff_record is not None and handoff_json is not None:
+        raise ValueError(
+            f"Use only one of {_DOCUMENT_KV_HANDOFF_RECORD_PARAM} "
+            f"or {_DOCUMENT_KV_HANDOFF_JSON_PARAM}"
+        )
+    if handoff_record is not None:
+        return handoff_record
+    assert handoff_json is not None
+    return read_engine_adapter_request_json(
+        handoff_json,
+        expected_backend=ServingBackend.SGLANG,
+        require_external_payload_uri=request_context.payload_uri is None,
+    )
+
+
+def _validate_handoff_request_context(
+    request_context: DocumentKVHiCacheRequestContext,
+    plan: EngineKVInjectionPlan,
+) -> None:
+    if request_context.request_id is not None and request_context.request_id != plan.request_id:
+        raise ValueError(f"{_DOCUMENT_KV_REQUEST_ID_PARAM} must match handoff request_id")
+
+
+def _requires_strict_handoff_binding(
+    request_context: DocumentKVHiCacheRequestContext | None,
+) -> bool:
+    if request_context is None:
+        return False
+    return request_context.handoff_json is not None or request_context.handoff_record is not None
+
+
+def _sglang_hicache_page_binding_start(
+    keys: list[object],
+    request_context: DocumentKVHiCacheRequestContext,
+) -> int | None:
+    expected_page_keys = request_context.sglang_hicache_page_keys
+    if not expected_page_keys:
+        return None
+    runtime_keys = _runtime_hicache_keys(keys)
+    if runtime_keys is None:
+        return None
+    prefix_keys = request_context.prefix_keys
+    first_page_index = len(prefix_keys)
+    end_page_index = first_page_index + len(runtime_keys)
+    if first_page_index > len(expected_page_keys) or end_page_index > len(expected_page_keys):
+        return None
+    if prefix_keys != expected_page_keys[:first_page_index]:
+        return None
+    if runtime_keys != expected_page_keys[first_page_index:end_page_index]:
+        return None
+    return first_page_index
+
+
+def _runtime_hicache_keys(keys: list[object]) -> tuple[str, ...] | None:
+    if not keys:
+        return ()
+    if not all(isinstance(key, str) and key for key in keys):
+        return None
+    return tuple(keys)
+
+
+def _sglang_hicache_payload_pages(
+    plan: EngineKVInjectionPlan,
+    payload: bytes,
+) -> tuple[bytes, ...]:
+    page_tokens = plan.layout.block_size
+    page_bytes = page_tokens * plan.layout.bytes_per_token
+    full_page_count = _sglang_hicache_full_page_count(plan)
+    return tuple(
+        payload[index * page_bytes : (index + 1) * page_bytes]
+        for index in range(full_page_count)
+    )
+
+
+def _sglang_hicache_full_page_count(plan: EngineKVInjectionPlan) -> int:
+    return plan.total_tokens // plan.layout.block_size
 
 
 def _provider_from_extra_config(
@@ -802,6 +1025,23 @@ def _prefix_keys_from_extra_info(extra_info: object | None) -> tuple[str, ...]:
         return ()
     if not items or not all(isinstance(item, str) and item for item in items):
         return ()
+    return tuple(items)
+
+
+def _sglang_hicache_page_keys_from_params(params: Mapping[str, Any]) -> tuple[str, ...]:
+    value = params.get(DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM)
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM} must be a sequence of strings")
+    try:
+        items = list(value)
+    except TypeError as exc:
+        raise ValueError(f"{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM} must be a sequence of strings") from exc
+    if not all(isinstance(item, str) and item for item in items):
+        raise ValueError(
+            f"{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM} entries must be non-empty strings"
+        )
     return tuple(items)
 
 
@@ -1071,6 +1311,20 @@ def _store_host_page(
     if not callable(get_data_page):
         return False
     return _set_result_ok(backend, backend.set(key, get_data_page(page_offset, flat=True)))
+
+
+def _store_provider_host_page(
+    provider: DocumentKVHiCachePageProvider,
+    key: object,
+    host_pool: object,
+    page_offset: int | None,
+) -> bool:
+    if page_offset is None:
+        return False
+    get_data_page = getattr(host_pool, "get_data_page", None)
+    if not callable(get_data_page):
+        return False
+    return provider.set(key, get_data_page(page_offset, flat=True)) is not False
 
 
 def _batch_pool_transfer(

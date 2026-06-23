@@ -158,6 +158,8 @@ def test_build_sglang_launch_config_emits_valid_release_shape():
         "backend_name": "document_kv",
         "module_path": "sglang_kv_injection.sglang_dynamic_backend",
         "class_name": "DocumentKVHiCacheBackend",
+        "hicache_storage_pass_prefix_keys": True,
+        "interface_v1": True,
         "deployment": "qa",
         **_document_kv_extra("sglang", provider_factory=SGLANG_TEST_PROVIDER_FACTORY),
         "document_kv.record_type": DEFAULT_SGLANG_ENGINE_LAUNCH_CONFIG_RECORD_TYPE,

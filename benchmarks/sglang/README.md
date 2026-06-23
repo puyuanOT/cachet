@@ -17,15 +17,17 @@ benchmark result.
 `document_kv_cache.databricks_sglang_smoke_job` provide the current live SGLang
 readiness path. The smoke launches pinned SGLang with Cachet's dynamic HiCache
 provider config, validates the provider factory, and runs a full-prompt
-baseline. Handoff-backed cache-arm execution is intentionally blocked before
-server launch because the pinned SGLang OpenAI path carries `custom_params` on
-sampling params but does not yet pass Cachet `kv_transfer_params` into
-`HiCacheStorageExtraInfo.extra_info` for the dynamic HiCache storage backend.
-The runtime preflight now exposes this directly as
-`live_request_metadata_bridge_ok=false`.
+baseline. Cachet's built-in provider can hydrate validated handoff payload
+pages under SGLang runtime HiCache keys when request context reaches the
+provider with explicit `document_kv.sglang_hicache_page_keys` metadata matching
+the runtime `prefix_keys` and batch hashes. Handoff-backed cache-arm execution
+is intentionally blocked before server launch because the pinned SGLang OpenAI
+path carries `custom_params` on sampling params without passing Cachet
+`kv_transfer_params` into `HiCacheStorageExtraInfo.extra_info`. The runtime
+preflight exposes this as `live_request_metadata_bridge_ok=false`.
 
 Those helpers are a provider/server bring-up path, not a benchmark result. Use
-`--baseline-only` until request-to-HiCache handoff binding is implemented. This
+`--baseline-only` until the live request metadata bridge is available. This
 report remains pending until a Databricks g6/L4 or g5/A10G run writes
 `sglang-live-smoke.json` with a passing handoff-backed cache arm.
 
@@ -35,6 +37,8 @@ Treat SGLang benchmark publication as pending until all of these are true:
 
 - A real SGLang serving endpoint is launched on the target Databricks hardware.
 - The endpoint receives Cachet `kv_transfer_params` from a generated handoff.
+- Cachet handoff params include SGLang page-key metadata that matches the
+  runtime HiCache hash chain.
 - The SGLang runtime preflight reports `live_request_metadata_bridge_ok=true`.
 - Decode-time prefix binding is validated against the live endpoint.
 - Latency, throughput, and quality measurements are recorded with the same

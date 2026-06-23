@@ -210,6 +210,8 @@ def _document_kv_hicache_extra_config(
         "backend_name": backend_name,
         "module_path": module_path,
         "class_name": class_name,
+        "hicache_storage_pass_prefix_keys": True,
+        "interface_v1": True,
     }
     if extra_config is not None:
         for key, value in extra_config.items():

@@ -55,9 +55,11 @@ DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
     "SGLang handoff-backed live smoke is not supported yet: the pinned SGLang "
     "OpenAI path carries custom_params on sampling params but does not pass "
-    "Cachet kv_transfer_params into the dynamic HiCache storage backend. Use "
-    "--baseline-only for provider/server bring-up until request-to-HiCache "
-    "handoff binding is implemented."
+    "Cachet kv_transfer_params into HiCacheStorageExtraInfo.extra_info. "
+    "Cachet's provider can hydrate validated handoff payload pages once that "
+    "runtime bridge and SGLang page-key metadata are present. Use "
+    "--baseline-only for provider/server bring-up until "
+    "live_request_metadata_bridge_ok=true."
 )
 SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE = (
     "baseline-only SGLang smoke must not include handoff_json, handoff_record, handoff_record_json, "
