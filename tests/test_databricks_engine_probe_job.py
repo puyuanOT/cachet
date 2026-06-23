@@ -294,6 +294,57 @@ def test_databricks_engine_probe_rejects_colliding_runner_output_paths():
         )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "fixture_filename_key"),
+    [
+        ("output_json", "handoff"),
+        ("native_probe_factories_output_json", "pack"),
+        ("native_probe_factories_output_json", "payload"),
+        ("native_probe_factories_output_json", "actions"),
+        ("native_probe_factories_output_json", "manifest"),
+        ("native_probe_factories_output_json", "vllm_layer_names"),
+    ],
+)
+def test_databricks_engine_probe_rejects_fixture_child_output_collisions(
+    field_name,
+    fixture_filename_key,
+):
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+    values = {
+        "handoff_json": f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+        "probe_factory": "document_kv_cache_vllm_probe:build_probe",
+        "output_json": f"{fixture_dir}/vllm-probe.json",
+        "runner_python_file": "dbfs:/benchmarks/run_engine_probe.py",
+        "expected_backend": ServingBackend.VLLM,
+        "payload_uri": None,
+        "single_user_name": SINGLE_USER_NAME,
+        "fixture_output_dir": fixture_dir,
+        "native_probe_factories_output_json": f"{fixture_dir}/vllm-native-probe-factories.json",
+    }
+    values[field_name] = f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES[fixture_filename_key]}"
+
+    with pytest.raises(ValueError, match="output paths must be distinct"):
+        DatabricksEngineProbeJobConfig(**values)
+
+
+def test_databricks_engine_probe_allows_derived_fixture_actions_output_once():
+    fixture_dir = "/Volumes/catalog/schema/volume/probes/vllm-fixture"
+
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json=f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}",
+        probe_factory="document_kv_cache_vllm_probe:build_probe",
+        output_json=f"{fixture_dir}/vllm-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.VLLM,
+        payload_uri=None,
+        single_user_name=SINGLE_USER_NAME,
+        fixture_output_dir=fixture_dir,
+        native_probe_factories_output_json=f"{fixture_dir}/vllm-native-probe-factories.json",
+    )
+
+    assert config.actions_output_json == f"{fixture_dir}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}"
+
+
 def test_databricks_engine_probe_job_config_preserves_existing_positional_arguments():
     config = DatabricksEngineProbeJobConfig(
         "/Volumes/catalog/schema/volume/probes/vllm-handoff.json",

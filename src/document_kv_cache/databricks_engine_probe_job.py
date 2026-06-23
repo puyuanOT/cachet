@@ -1020,20 +1020,32 @@ def _payload_mode(value: PayloadMode | str) -> PayloadMode:
         raise ValueError(f"fixture_payload_mode must be one of: {supported}") from exc
 
 
+def _engine_probe_fixture_output_uri(fixture_output_dir: str, filename_key: str) -> str:
+    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES[filename_key]}"
+
+
+def _engine_probe_fixture_pack_uri(fixture_output_dir: str) -> str:
+    return _engine_probe_fixture_output_uri(fixture_output_dir, "pack")
+
+
 def _engine_probe_fixture_handoff_json(fixture_output_dir: str) -> str:
-    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['handoff']}"
+    return _engine_probe_fixture_output_uri(fixture_output_dir, "handoff")
 
 
 def _engine_probe_fixture_payload_uri(fixture_output_dir: str) -> str:
-    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['payload']}"
+    return _engine_probe_fixture_output_uri(fixture_output_dir, "payload")
 
 
 def _engine_probe_fixture_actions_json(fixture_output_dir: str) -> str:
-    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['actions']}"
+    return _engine_probe_fixture_output_uri(fixture_output_dir, "actions")
+
+
+def _engine_probe_fixture_manifest_json(fixture_output_dir: str) -> str:
+    return _engine_probe_fixture_output_uri(fixture_output_dir, "manifest")
 
 
 def _engine_probe_fixture_vllm_layer_names_json(fixture_output_dir: str) -> str:
-    return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES['vllm_layer_names']}"
+    return _engine_probe_fixture_output_uri(fixture_output_dir, "vllm_layer_names")
 
 
 def _derive_vllm_fixture_runtime_preflight_layer_names(
@@ -1090,7 +1102,7 @@ def _validate_runner_output_paths(
     output_paths = [
         ("output_json", config.output_json),
     ]
-    if config.actions_output_json is not None:
+    if config.actions_output_json is not None and not _engine_probe_uses_fixture_actions_output(config):
         output_paths.append(("actions_output_json", config.actions_output_json))
     if config.vllm_runtime_preflight_output_json is not None:
         output_paths.append(("vllm_runtime_preflight_output_json", config.vllm_runtime_preflight_output_json))
@@ -1098,6 +1110,7 @@ def _validate_runner_output_paths(
         output_paths.append(("sglang_runtime_preflight_output_json", config.sglang_runtime_preflight_output_json))
     if config.native_probe_factories_output_json is not None:
         output_paths.append(("native_probe_factories_output_json", config.native_probe_factories_output_json))
+    output_paths.extend(_fixture_output_paths(config))
     labels_by_path: dict[str, list[str]] = {}
     for field_name, path in output_paths:
         labels_by_path.setdefault(_canonical_artifact_path(path), []).append(field_name)
@@ -1108,6 +1121,28 @@ def _validate_runner_output_paths(
     }
     if collisions:
         raise ValueError(f"{label} output paths must be distinct: {collisions}")
+
+
+def _fixture_output_paths(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+) -> list[tuple[str, str]]:
+    if config.fixture_output_dir is None:
+        return []
+    output_paths = [
+        ("fixture_pack", _engine_probe_fixture_pack_uri(config.fixture_output_dir)),
+        ("fixture_handoff", _engine_probe_fixture_handoff_json(config.fixture_output_dir)),
+        ("fixture_payload", _engine_probe_fixture_payload_uri(config.fixture_output_dir)),
+        ("fixture_actions", _engine_probe_fixture_actions_json(config.fixture_output_dir)),
+        ("fixture_manifest", _engine_probe_fixture_manifest_json(config.fixture_output_dir)),
+    ]
+    if config.expected_backend == ServingBackend.VLLM:
+        output_paths.append(
+            (
+                "fixture_vllm_layer_names",
+                _engine_probe_fixture_vllm_layer_names_json(config.fixture_output_dir),
+            )
+        )
+    return output_paths
 
 
 def _canonical_artifact_path(path: str) -> str:
