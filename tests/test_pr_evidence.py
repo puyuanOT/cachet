@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 def test_evaluate_pr_evidence_accepts_complete_traceability_record():
     evidence = evaluate_pr_evidence(
         pull_request_number=123,
-        pull_request_url="https://github.com/puyuanOT/document-kv-cache/pull/123",
+        pull_request_url="https://github.com/puyuanOT/cachet/pull/123",
         what_changed=("Added release evidence latency guards",),
         why="Make the release gate reject impossible latency artifacts.",
         scope=("release-evidence", "tests"),
@@ -48,7 +48,7 @@ def test_evaluate_pr_evidence_accepts_complete_traceability_record():
         "record_type": PR_EVIDENCE_RECORD_TYPE,
         "ok": True,
         "pull_request_number": 123,
-        "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/123",
+        "pull_request_url": "https://github.com/puyuanOT/cachet/pull/123",
         "what_changed": ["Added release evidence latency guards"],
         "why": "Make the release gate reject impossible latency artifacts.",
         "scope": ["release-evidence", "tests"],
@@ -91,7 +91,7 @@ def test_evaluate_pr_evidence_reports_missing_traceability_and_review_gates():
 def test_pr_evidence_tracks_optional_pull_request_identity():
     evidence = evaluate_pr_evidence(
         pull_request_number=264,
-        pull_request_url="https://github.com/puyuanOT/document-kv-cache/pull/264",
+        pull_request_url="https://github.com/puyuanOT/cachet/pull/264",
         what_changed=("Added Databricks status target validation",),
         why="Tie release evidence to the PR that changed the validator.",
         scope=("databricks_runs.py",),
@@ -109,7 +109,7 @@ def test_pr_evidence_tracks_optional_pull_request_identity():
     mismatched = evaluate_pr_evidence_record(
         {
             **pr_evidence_to_record(evidence),
-            "pull_request_url": "https://github.com/puyuanOT/document-kv-cache/pull/999",
+            "pull_request_url": "https://github.com/puyuanOT/cachet/pull/999",
         }
     )
 
@@ -120,7 +120,7 @@ def test_pr_evidence_tracks_optional_pull_request_identity():
 def test_pr_evidence_rejects_malformed_github_pull_request_urls():
     evidence = evaluate_pr_evidence(
         pull_request_number=123,
-        pull_request_url="https://github.com/owner/document-kv-cache/pull/123",
+        pull_request_url="https://github.com/owner/cachet/pull/123",
         what_changed=("Hardened PR URL validation",),
         why="Release traceability must identify the exact GitHub pull request.",
         scope=("pr_evidence.py",),
@@ -131,21 +131,21 @@ def test_pr_evidence_rejects_malformed_github_pull_request_urls():
         gpt55_review_outcome="clean",
         gpt55_review_summary="Review was clean.",
     )
-    assert _github_pull_request_url_identity(evidence.pull_request_url) == ("owner/document-kv-cache", 123)
+    assert _github_pull_request_url_identity(evidence.pull_request_url) == ("owner/cachet", 123)
 
     for malformed_url in (
         "https://github.com/pull/123",
-        "https://github.com/owner/document-kv-cache/issues/123",
-        "https://github.com/owner/document-kv-cache/pull/0",
-        "https://github.com/owner/document-kv-cache/pull/123?debug=true",
-        "https://github.com/owner/document-kv-cache?debug=true/pull/123",
-        "https://github.com/owner/document-kv-cache#fragment/pull/123",
+        "https://github.com/owner/cachet/issues/123",
+        "https://github.com/owner/cachet/pull/0",
+        "https://github.com/owner/cachet/pull/123?debug=true",
+        "https://github.com/owner/cachet?debug=true/pull/123",
+        "https://github.com/owner/cachet#fragment/pull/123",
         "https://github.com/owner/document%20kv-cache/pull/123",
-        "https://github.com/owner/document-kv-cache/pull/１２３",
-        "https://github.com/owner/document-kv-cache/pull/١٢٣",
-        "https://github.com/owner/document-kv-cache/pull/0123",
-        "https://github.com//owner/document-kv-cache/pull/123",
-        "https://github.com/owner/document-kv-cache/pull/123/",
+        "https://github.com/owner/cachet/pull/１２３",
+        "https://github.com/owner/cachet/pull/١٢٣",
+        "https://github.com/owner/cachet/pull/0123",
+        "https://github.com//owner/cachet/pull/123",
+        "https://github.com/owner/cachet/pull/123/",
     ):
         parsed = evaluate_pr_evidence_record(
             {
@@ -471,7 +471,7 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
             "--pull-request-number",
             "321",
             "--pull-request-url",
-            "https://github.com/puyuanOT/document-kv-cache/pull/321",
+            "https://github.com/puyuanOT/cachet/pull/321",
             "--refactor-skill-applied",
             "--gpt55-review-completed",
             "--gpt55-review-findings-resolved",
@@ -487,7 +487,7 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
     assert exit_code == 0
     assert called["kwargs"]["what_changed"] == ("ignored",)
     assert called["kwargs"]["pull_request_number"] == 321
-    assert called["kwargs"]["pull_request_url"] == "https://github.com/puyuanOT/document-kv-cache/pull/321"
+    assert called["kwargs"]["pull_request_url"] == "https://github.com/puyuanOT/cachet/pull/321"
     assert called["kwargs"]["gpt55_review_outcome"] == "findings_resolved"
     record = json.loads(output_path.read_text(encoding="utf-8"))
     assert record["what_changed"] == ["public wrapper hook"]

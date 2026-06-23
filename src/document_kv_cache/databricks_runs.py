@@ -335,7 +335,7 @@ def _databricks_sdk_config(
     except ModuleNotFoundError as exc:
         raise ValueError(
             "Databricks SDK profile auth requires installing the databricks extra "
-            "with document-kv-cache[databricks]"
+            "with cachet-kv[databricks]"
         ) from exc
     env_snapshot = _unset_environment(_databricks_sdk_profile_env_names(Config))
     try:

@@ -425,7 +425,7 @@ def test_source_layout_readme_reflects_document_owned_implementation():
     compact_text = " ".join(text.split())
 
     assert "Cachet, the document KV-cache library" in compact_text
-    assert "distribution package is still `document-kv-cache`" in text
+    assert "distribution package is `cachet-kv`" in text
     assert "public product import namespace is the branded `cachet` facade" in compact_text
     assert "`cachet/` is the branded import facade" in text
     assert "`document_kv_cache/` is the canonical implementation and compatibility" in text
@@ -668,7 +668,8 @@ def test_readme_documents_cachet_brand_and_scope():
     compact_text = " ".join(text.split())
 
     assert "Cachet is the product brand and primary repository identity" in compact_text
-    assert "The package publishes through the transitional `document-kv-cache` distribution name" in compact_text
+    assert "The package publishes through the Cachet-branded `cachet-kv` distribution name" in compact_text
+    assert "unrelated Cachet API client" in compact_text
     assert "branded `cachet` root and `cachet.<module>` import facades" in compact_text
     assert "canonical `document_kv_cache` implementation modules" in compact_text
     assert "applications that repeatedly serve long, mostly stable document context" in compact_purpose
@@ -747,11 +748,11 @@ def test_readme_model_profile_example_uses_portable_definition_artifact():
     assert missing_exports == []
 
 
-def test_project_metadata_uses_cachet_brand_with_transitional_distribution():
+def test_project_metadata_uses_cachet_branded_distribution():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = pyproject["project"]
 
-    assert project["name"] == "document-kv-cache"
+    assert project["name"] == "cachet-kv"
     assert "Cachet document KV-cache" in project["description"]
     assert "cachet" in project["keywords"]
     assert project["license"] == "Apache-2.0"
@@ -1088,9 +1089,9 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert "Verify PEP 517 wheel build" in text
     assert "python -m venv /tmp/cachet-pep517-wheel" in text
     assert "/tmp/cachet-pep517-wheel/bin/python -m pip wheel . --no-deps" in text
-    assert 'Path("/tmp/cachet-pep517-wheelhouse").glob("document_kv_cache-*.whl")' in text
+    assert 'Path("/tmp/cachet-pep517-wheelhouse").glob("cachet_kv-*.whl")' in text
     assert "Verify built wheel metadata" in text
-    assert 'Path("dist").glob("document_kv_cache-*.whl")' in text
+    assert 'Path("dist").glob("cachet_kv-*.whl")' in text
     assert "def read_dist_info(archive, filename):" in text
     assert "assert len(roots) == 1" in text
     assert 'archive.read(f"{roots.pop()}/{filename}").decode("utf-8")' in text
@@ -1102,7 +1103,7 @@ def test_github_ci_workflow_smokes_built_wheel_imports():
     assert "cachet-pr-evidence=cachet.pr_evidence:main" in text
     assert "Verify built wheel import smoke" in text
     assert "python -m venv /tmp/cachet-wheel-smoke" in text
-    assert "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/document_kv_cache-*.whl" in text
+    assert "/tmp/cachet-wheel-smoke/bin/python -m pip install dist/cachet_kv-*.whl" in text
     assert "import cachet" in text
     assert "import document_kv_cache" in text
     assert "import restaurant_kv_serving" in text

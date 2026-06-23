@@ -68,7 +68,7 @@ SERVED_MODEL_NAME = "qwen3:4b-instruct"
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
-CACHE_PREFIX_CACHE_SALT = "cachet-document-kv-cache"
+CACHE_PREFIX_CACHE_SALT = "cachet-kv-cache"
 PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
@@ -465,7 +465,7 @@ def document_kv_package_install_spec(config: VLLMSmokeBenchmarkConfig) -> str:
 def installed_versions(python_executable: Path) -> dict[str, str]:
     return {
         "vllm_version_installed": installed_package_version(python_executable, "vllm"),
-        "document_kv_cache_version_installed": installed_package_version(python_executable, "document-kv-cache"),
+        "document_kv_cache_version_installed": installed_package_version(python_executable, "cachet-kv"),
         "transformers_version_installed": installed_package_version(python_executable, "transformers"),
         "torch_version_installed": installed_package_version(python_executable, "torch"),
         "opencv_python_headless_version_installed": installed_package_version(
@@ -1091,7 +1091,7 @@ payload = {
     "cuda_available": torch.cuda.is_available(),
     "cuda_device_count": torch.cuda.device_count(),
     "vllm_version": md.version("vllm"),
-    "document_kv_cache_version": md.version("document-kv-cache"),
+    "document_kv_cache_version": md.version("cachet-kv"),
     "document_kv_cache_module": document_kv_cache.__name__,
     "document_kv_connector_module": document_kv_vllm_connector.__name__,
     "document_kv_connector": transfer_config["kv_connector"],

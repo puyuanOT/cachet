@@ -98,11 +98,13 @@ __all__ = [
 
 RELEASE_BUNDLE_RECORD_TYPE = "document_kv.release_bundle.v1"
 RELEASE_BUNDLE_MANIFEST_FILENAME = "manifest.json"
-RELEASE_BUNDLE_PACKAGE_NAME = "document-kv-cache"
+RELEASE_BUNDLE_PACKAGE_NAME = "cachet-kv"
 RELEASE_BUNDLE_PACKAGE_LICENSE_EXPRESSION = "Apache-2.0"
 RELEASE_BUNDLE_PACKAGE_LICENSE_FILE = "LICENSE"
 RELEASE_BUNDLE_PACKAGE_IMPORT_MARKER_PATHS = (
     "cachet/__init__.py",
+    "document_kv_cache/__init__.py",
+    "restaurant_kv_serving/__init__.py",
 )
 RELEASE_BUNDLE_PACKAGE_TYPE_STUB_PATHS = (
     "cachet/__init__.pyi",
@@ -112,6 +114,78 @@ RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
     "document_kv_cache/py.typed",
     "restaurant_kv_serving/py.typed",
 )
+RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
+    "cachet-benchmark-handoff-bundles": "cachet.benchmark_handoffs:bundle_main",
+    "cachet-benchmark-handoff-manifest": "cachet.benchmark_handoffs:manifest_main",
+    "cachet-benchmark-handoffs": "cachet.benchmark_handoffs:main",
+    "cachet-benchmark-plan": "cachet.benchmark_plan:main",
+    "cachet-databricks-job": "cachet.databricks_job:main",
+    "cachet-databricks-runs": "cachet.databricks_runs:main",
+    "cachet-engine-launch-config": "cachet.engine_launch_config:main",
+    "cachet-engine-probe": "cachet.engine_probe:main",
+    "cachet-engine-probe-databricks-job": "cachet.databricks_engine_probe_job:main",
+    "cachet-engine-probe-fixture": "cachet.probe_fixtures:main",
+    "cachet-github-governance": "cachet.github_governance:main",
+    "cachet-native-probe-factories": "cachet.native_probe_factories:main",
+    "cachet-native-probe-scaffold": "cachet.adapter_scaffold:main",
+    "cachet-pr-evidence": "cachet.pr_evidence:main",
+    "cachet-release-bundle": "cachet.release_bundle:main",
+    "cachet-release-evidence": "cachet.release_evidence:main",
+    "cachet-repository-hygiene": "cachet.repository_hygiene:main",
+    "cachet-run-benchmark-plan": "cachet.benchmark_plan_executor:main",
+    "cachet-serving-env": "cachet.serving_env:main",
+    "cachet-sglang-runtime-preflight": "cachet.sglang_runtime_preflight:main",
+    "cachet-storage-benchmark": "cachet.storage_benchmark:main",
+    "cachet-storage-benchmark-databricks-job": "cachet.databricks_storage_benchmark_job:main",
+    "cachet-templates": "cachet.template_resources:main",
+    "cachet-vllm-runtime-preflight": "cachet.vllm_runtime_preflight:main",
+    "cachet-vllm-smoke": "cachet.vllm_smoke:main",
+    "cachet-vllm-smoke-databricks-job": "cachet.databricks_vllm_smoke_job:main",
+    "document-kv-benchmark-handoff-bundles": "document_kv_cache.benchmark_handoffs:bundle_main",
+    "document-kv-benchmark-handoff-manifest": "document_kv_cache.benchmark_handoffs:manifest_main",
+    "document-kv-benchmark-handoffs": "document_kv_cache.benchmark_handoffs:main",
+    "document-kv-benchmark-plan": "document_kv_cache.benchmark_plan:main",
+    "document-kv-databricks-job": "document_kv_cache.databricks_job:main",
+    "document-kv-databricks-runs": "document_kv_cache.databricks_runs:main",
+    "document-kv-engine-launch-config": "document_kv_cache.engine_launch_config:main",
+    "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
+    "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
+    "document-kv-engine-probe-fixture": "document_kv_cache.probe_fixtures:main",
+    "document-kv-github-governance": "document_kv_cache.github_governance:main",
+    "document-kv-native-probe-factories": "document_kv_cache.native_probe_factories:main",
+    "document-kv-native-probe-scaffold": "document_kv_cache.adapter_scaffold:main",
+    "document-kv-pr-evidence": "document_kv_cache.pr_evidence:main",
+    "document-kv-release-bundle": "document_kv_cache.release_bundle:main",
+    "document-kv-release-evidence": "document_kv_cache.release_evidence:main",
+    "document-kv-repository-hygiene": "document_kv_cache.repository_hygiene:main",
+    "document-kv-run-benchmark-plan": "document_kv_cache.benchmark_plan_executor:main",
+    "document-kv-serving-env": "document_kv_cache.serving_env:main",
+    "document-kv-sglang-runtime-preflight": "document_kv_cache.sglang_runtime_preflight:main",
+    "document-kv-storage-benchmark": "document_kv_cache.storage_benchmark:main",
+    "document-kv-storage-benchmark-databricks-job": "document_kv_cache.databricks_storage_benchmark_job:main",
+    "document-kv-templates": "document_kv_cache.template_resources:main",
+    "document-kv-vllm-runtime-preflight": "document_kv_cache.vllm_runtime_preflight:main",
+    "document-kv-vllm-smoke": "document_kv_cache.vllm_smoke:main",
+    "document-kv-vllm-smoke-databricks-job": "document_kv_cache.databricks_vllm_smoke_job:main",
+    "restaurant-kv-benchmark-handoff-bundles": "restaurant_kv_serving.benchmark_handoffs:bundle_main",
+    "restaurant-kv-benchmark-handoff-manifest": "restaurant_kv_serving.benchmark_handoffs:manifest_main",
+    "restaurant-kv-benchmark-handoffs": "restaurant_kv_serving.benchmark_handoffs:main",
+    "restaurant-kv-benchmark-plan": "restaurant_kv_serving.benchmark_plan:main",
+    "restaurant-kv-databricks-job": "restaurant_kv_serving.databricks_job:main",
+    "restaurant-kv-databricks-runs": "restaurant_kv_serving.databricks_runs:main",
+    "restaurant-kv-engine-probe": "restaurant_kv_serving.engine_probe:main",
+    "restaurant-kv-engine-probe-databricks-job": "restaurant_kv_serving.databricks_engine_probe_job:main",
+    "restaurant-kv-engine-probe-fixture": "restaurant_kv_serving.probe_fixtures:main",
+    "restaurant-kv-pr-evidence": "restaurant_kv_serving.pr_evidence:main",
+    "restaurant-kv-release-bundle": "restaurant_kv_serving.release_bundle:main",
+    "restaurant-kv-release-evidence": "restaurant_kv_serving.release_evidence:main",
+    "restaurant-kv-run-benchmark-plan": "restaurant_kv_serving.benchmark_plan_executor:main",
+    "restaurant-kv-serving-env": "restaurant_kv_serving.serving_env:main",
+    "restaurant-kv-storage-benchmark": "restaurant_kv_serving.storage_benchmark:main",
+    "restaurant-kv-storage-benchmark-databricks-job": "restaurant_kv_serving.databricks_storage_benchmark_job:main",
+    "restaurant-kv-vllm-smoke": "restaurant_kv_serving.vllm_smoke:main",
+    "restaurant-kv-vllm-smoke-databricks-job": "restaurant_kv_serving.databricks_vllm_smoke_job:main",
+}
 RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
     "compatibility_benchmark",
@@ -1932,6 +2006,7 @@ def _wheel_zip_payload_issues(
             metadata_names = tuple(name for name in names if _is_root_dist_info_file(name, "METADATA"))
             record_names = tuple(name for name in names if _is_root_dist_info_file(name, "RECORD"))
             wheel_names = tuple(name for name in names if _is_root_dist_info_file(name, "WHEEL"))
+            entry_point_names = tuple(name for name in names if _is_root_dist_info_file(name, "entry_points.txt"))
     except zipfile.BadZipFile:
         return ("package wheel artifact must be a valid wheel zip payload",)
     if duplicate_member_issues:
@@ -1947,6 +2022,8 @@ def _wheel_zip_payload_issues(
         return ("package wheel artifact must contain exactly one .dist-info/METADATA file",)
     if len(record_names) != 1:
         return ("package wheel artifact must contain exactly one .dist-info/RECORD file",)
+    if len(entry_point_names) != 1:
+        return ("package wheel artifact must contain exactly one .dist-info/entry_points.txt file",)
     license_issues = _wheel_license_file_issues(names, dist_info_prefix=dist_info_prefixes[0])
     if license_issues:
         return license_issues
@@ -1956,11 +2033,12 @@ def _wheel_zip_payload_issues(
     with zipfile.ZipFile(io.BytesIO(payload)) as wheel_zip:
         wheel_payload = wheel_zip.read(wheel_names[0])
         metadata_payload = wheel_zip.read(metadata_names[0])
+        entry_points_payload = wheel_zip.read(entry_point_names[0])
         record_payload = wheel_zip.read(record_names[0])
         record_issues = _wheel_record_issues(
             record_payload,
             wheel_zip=wheel_zip,
-            required_paths=(wheel_names[0], metadata_names[0], record_names[0]),
+            required_paths=(wheel_names[0], metadata_names[0], entry_point_names[0], record_names[0]),
         )
     return (
         *_wheel_file_issues(wheel_payload),
@@ -1969,6 +2047,7 @@ def _wheel_zip_payload_issues(
             filename_match=filename_match,
             expected_version=expected_version,
         ),
+        *_wheel_entry_points_issues(entry_points_payload),
         *record_issues,
     )
 
@@ -2099,6 +2178,42 @@ def _wheel_typed_marker_issues(names: Sequence[str]) -> tuple[str, ...]:
             if path not in wheel_paths
         ),
     )
+
+
+def _wheel_entry_points_issues(payload: bytes) -> tuple[str, ...]:
+    try:
+        scripts = _console_scripts_from_entry_points(payload.decode("utf-8"))
+    except UnicodeDecodeError:
+        return ("package wheel artifact entry_points.txt must be UTF-8 text",)
+    issues: list[str] = []
+    for script_name, expected_target in RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS.items():
+        actual_target = scripts.get(script_name)
+        if actual_target is None:
+            issues.append(f"package wheel artifact entry_points.txt must include {script_name!r}")
+        elif actual_target != expected_target:
+            issues.append(
+                "package wheel artifact entry_points.txt console script "
+                f"{script_name!r} must target {expected_target!r}"
+            )
+    return tuple(issues)
+
+
+def _console_scripts_from_entry_points(text: str) -> dict[str, str]:
+    section_name: str | None = None
+    scripts: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            section_name = line[1:-1].strip()
+            continue
+        if section_name != "console_scripts":
+            continue
+        name, separator, target = line.partition("=")
+        if separator and name.strip():
+            scripts[name.strip()] = target.strip()
+    return scripts
 
 
 def _wheel_file_issues(payload: bytes) -> tuple[str, ...]:

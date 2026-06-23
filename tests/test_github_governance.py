@@ -168,7 +168,7 @@ def test_summarize_github_repository_governance_requires_public_visibility():
 def test_summarize_github_repository_governance_requires_cachet_repository_branding():
     repository = _repository(private=False)
     repository["description"] = "Document KV-cache orchestration."
-    repository["homepage"] = "https://github.com/owner/document-kv-cache"
+    repository["homepage"] = "https://github.com/owner/doc-kv"
     repository["topics"] = ["long-context"]
     opener = _FakeGitHubOpener(
         {
@@ -193,21 +193,21 @@ def test_summarize_github_repository_governance_requires_cachet_repository_brand
 
 def test_summarize_github_repository_governance_requires_cachet_repository_name():
     repository = _repository(private=False)
-    repository["name"] = "document-kv-cache"
-    repository["full_name"] = "owner/document-kv-cache"
+    repository["name"] = "doc-kv"
+    repository["full_name"] = "owner/doc-kv"
     opener = _FakeGitHubOpener(
         {
-            "/repos/owner/document-kv-cache": repository,
-            "/repos/owner/document-kv-cache/branches/main/protection": _branch_protection(),
-            "/repos/owner/document-kv-cache/pulls?state=open&per_page=100": [],
+            "/repos/owner/doc-kv": repository,
+            "/repos/owner/doc-kv/branches/main/protection": _branch_protection(),
+            "/repos/owner/doc-kv/pulls?state=open&per_page=100": [],
         }
     )
-    config = GitHubRepositoryConfig("owner/document-kv-cache", "secret-token")
+    config = GitHubRepositoryConfig("owner/doc-kv", "secret-token")
 
     summary = summarize_github_repository_governance(config, opener=opener)
 
     assert summary["ok"] is False
-    assert summary["repository"] == "owner/document-kv-cache"
+    assert summary["repository"] == "owner/doc-kv"
     assert summary["issues"] == [
         "repository name must be 'cachet' before open-source release",
     ]

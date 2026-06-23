@@ -15,7 +15,7 @@ variables:
   uc_volume_root:
     description: Real UC Volume root, usually /Volumes/catalog/schema/volume/path.
   wheel_uri:
-    description: Cluster-supported document-kv-cache wheel URI, such as a UC Volume or workspace file path.
+    description: Cluster-supported cachet-kv wheel URI, such as a UC Volume or workspace file path.
   chunk_count:
     default: 64
     description: Number of synthetic KV chunks to write into the benchmark shard.

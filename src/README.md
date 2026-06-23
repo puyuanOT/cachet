@@ -1,9 +1,8 @@
 # Source Layout
 
 This folder contains importable Python packages for Cachet, the document
-KV-cache library. The distribution package is still `document-kv-cache` during
-the compatibility window, while the public product import namespace is the
-branded `cachet` facade.
+KV-cache library. The distribution package is `cachet-kv`, while the public
+product import namespace is the branded `cachet` facade.
 
 - `cachet/` is the branded import facade for root Cachet APIs and public
   `cachet.<module>` aliases.

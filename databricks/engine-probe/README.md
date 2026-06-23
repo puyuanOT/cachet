@@ -23,7 +23,7 @@ databricks bundle validate \
   --var expected_backend=vllm \
   --var vllm_native_probe_delegate_factory=vllm_kv_injection.probe:build_native_connector_probe \
   --var native_probe_metadata=vllm_kv_injection.connector_factory=vllm_kv_injection.probe:build_document_kv_native_probe_connector \
-  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --var wheel_uri=/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --var single_user_name=user@example.com
 ```
 
@@ -59,7 +59,7 @@ payload with both required native backend probes:
 python -m document_kv_cache.databricks_engine_probe_job \
   --backend-config-json engine-probe-targets.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json databricks-engine-probes-submit.json

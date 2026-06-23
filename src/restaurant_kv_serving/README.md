@@ -146,7 +146,7 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --output-dir /Volumes/catalog/schema/volume/document-kv-v1-smoke \
   --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
   --runner-script-output run_vllm_smoke.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --output-json databricks-vllm-smoke-submit.json
 ```
@@ -183,7 +183,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --vllm-runtime-preflight-layer-names-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-layer-names.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output run_engine_probe.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json databricks-engine-probe-submit.json
@@ -222,7 +222,7 @@ python -m document_kv_cache.databricks_job \
   --plan-json-uri dbfs:/benchmarks/v1-plan.json \
   --runner-python-file dbfs:/benchmarks/run_plan.py \
   --runner-script-output run_plan.py \
-  --wheel-uri dbfs:/benchmarks/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri dbfs:/benchmarks/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --vllm-native-probe-delegate-factory vllm_kv_injection.probe:build_native_connector_probe \
   --sglang-native-probe-delegate-factory my_sglang_adapter.probes:build_probe \
@@ -276,7 +276,7 @@ python -m document_kv_cache.databricks_storage_benchmark_job \
   --uc-volume-root /Volumes/catalog/schema/volume/storage \
   --runner-python-file dbfs:/benchmarks/run_storage_benchmark.py \
   --runner-script-output run_storage_benchmark.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --output-json databricks-storage-benchmark-submit.json
 ```

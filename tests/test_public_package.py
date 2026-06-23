@@ -1762,7 +1762,7 @@ def test_public_document_submodules_have_curated_star_import_surfaces():
     exec("from restaurant_kv_serving.release_bundle import *", release_bundle_legacy_star_namespace)
     assert not hasattr(legacy_release_bundle, "__all__")
     assert "RELEASE_BUNDLE_PACKAGE_NAME" not in release_bundle.__all__
-    assert release_bundle_legacy_star_namespace["RELEASE_BUNDLE_PACKAGE_NAME"] == "document-kv-cache"
+    assert release_bundle_legacy_star_namespace["RELEASE_BUNDLE_PACKAGE_NAME"] == "cachet-kv"
     assert release_bundle.ReleaseBundle.__module__ == "document_kv_cache.release_bundle"
     assert legacy_release_bundle.ReleaseBundle is release_bundle.ReleaseBundle
     assert release_bundle.main.__module__ == "document_kv_cache.release_bundle"
@@ -2305,7 +2305,7 @@ def test_poetry_metadata_uses_public_package_name_and_legacy_script_aliases():
         }
     ]
 
-    assert project["name"] == "document-kv-cache"
+    assert project["name"] == "cachet-kv"
     assert project["description"] == (
         "Cachet document KV-cache orchestration and materialization for long-context LLM serving."
     )

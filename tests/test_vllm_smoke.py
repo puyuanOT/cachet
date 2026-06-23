@@ -1098,6 +1098,7 @@ def test_probe_vllm_import_records_native_provider_evidence(monkeypatch, tmp_pat
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
         assert "build_vllm_native_provider_probe_record" in argv[2]
+        assert 'md.version("cachet-kv")' in argv[2]
         return completed
 
     monkeypatch.setattr(public_vllm_smoke.subprocess, "run", fake_run)
@@ -1117,6 +1118,28 @@ def test_probe_vllm_import_records_native_provider_evidence(monkeypatch, tmp_pat
         == "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
     )
     assert calls[0][1]["env"]["HF_HOME"] == str(tmp_path / "hf-cache")
+
+
+def test_installed_versions_uses_cachet_distribution_name(monkeypatch, tmp_path):
+    requested_packages = []
+
+    def fake_installed_package_version(python_executable, package_name):
+        requested_packages.append((python_executable, package_name))
+        return f"{package_name}-version"
+
+    monkeypatch.setattr(public_vllm_smoke, "installed_package_version", fake_installed_package_version)
+
+    python_executable = tmp_path / "venv" / "bin" / "python"
+    versions = public_vllm_smoke.installed_versions(python_executable)
+
+    assert versions["document_kv_cache_version_installed"] == "cachet-kv-version"
+    assert requested_packages == [
+        (python_executable, "vllm"),
+        (python_executable, "cachet-kv"),
+        (python_executable, "transformers"),
+        (python_executable, "torch"),
+        (python_executable, "opencv-python-headless"),
+    ]
 
 
 def test_metadata_records_prepared_dataset_context(tmp_path):

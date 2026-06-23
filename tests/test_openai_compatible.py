@@ -205,7 +205,7 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
             base_url="http://localhost:8000",
             stream=False,
             prompt_text_mode="runtime",
-            extra_body={"cache_salt": "cachet-document-kv-cache"},
+            extra_body={"cache_salt": "cachet-kv-cache"},
         ),
         response=FakeJSONResponse(),
         clock=FakeClock([1.0, 2.0]),
@@ -219,11 +219,11 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
         **kv_transfer_params,
         DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
     }
-    assert engine.payloads[0]["cache_salt"] == "cachet-document-kv-cache"
+    assert engine.payloads[0]["cache_salt"] == "cachet-kv-cache"
     assert generation.metadata["kv_transfer_params_attached"] == "true"
     assert generation.metadata["request_id"] == "cachet-bio-1"
     assert generation.metadata["prefix_cache_salt_attached"] == "true"
-    assert generation.metadata["prefix_cache_salt"] == "cachet-document-kv-cache"
+    assert generation.metadata["prefix_cache_salt"] == "cachet-kv-cache"
 
 
 def test_extra_body_factory_can_vary_prefix_cache_salt_per_request():

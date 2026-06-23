@@ -602,7 +602,7 @@ import restaurant_kv_serving.storage_benchmark as legacy_storage_benchmark
 assert legacy_storage_benchmark.StorageBenchmarkConfig is not FakeStorageBenchmarkConfig
 assert legacy_storage_benchmark.RELEASE_STORAGE_BENCHMARK_READERS == ("memory", "disk", "unity_catalog")
 payload = legacy_storage_benchmark._payload_for(0, 32)
-assert payload.startswith(b"document-kv-cache:00000000:")
+assert payload.startswith(b"cachet-kv:00000000:")
 try:
     public_storage_benchmark._payload_for(0, 32)
 except AssertionError:

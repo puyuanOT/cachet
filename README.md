@@ -14,16 +14,17 @@ outside the inference engine:
 - admission metadata for external serving-engine connectors
 - local tests and Databricks benchmark support
 
-The package publishes through the transitional `document-kv-cache` distribution
-name and exposes the branded `cachet` root and `cachet.<module>` import
-facades over the canonical `document_kv_cache` implementation modules. Cachet
-is the product brand and primary repository identity; the distribution name
-stays explicit for package discovery and backward compatibility until the
-package-index migration is complete. Installed wheels expose `cachet-*` CLI
-aliases for the primary Cachet workflow commands as well as explicit
-`document-kv-*` command names. The legacy `restaurant_kv_serving` package and
-restaurant-specific aliases are still bundled as compatibility shims for
-existing benchmark jobs. New code should use the document-generic names:
+Cachet is the product brand and primary repository identity. The package
+publishes through the Cachet-branded `cachet-kv` distribution name
+and exposes the branded `cachet` root and `cachet.<module>` import facades over
+the canonical `document_kv_cache` implementation modules. The exact `cachet`
+distribution name is occupied by an unrelated Cachet API client, so `cachet-kv`
+is the V1 package-index identity for Cachet's document KV-cache package.
+Installed wheels expose `cachet-*` CLI aliases for the primary Cachet workflow
+commands as well as explicit `document-kv-*` command names. The legacy
+`restaurant_kv_serving` package and restaurant-specific aliases are still
+bundled as compatibility shims for existing benchmark jobs. New code should use
+the document-generic names:
 `DocumentKVRequest`, `DocumentChunkType.DOCUMENT_STATIC`,
 `DocumentChunkType.DOCUMENT_CHUNK`, `KVCacheKey.for_document`, and manifest
 `keys_for_document` methods. Core identifiers are stored as `document_id`;
@@ -126,7 +127,7 @@ for every request.
 ```python
 cache = ChunkCache(
     cpu_max_bytes=8 * 1024**3,
-    local_dir="/local_disk0/document-kv-cache",
+    local_dir="/local_disk0/cachet-kv",
     local_max_bytes=200 * 1024**3,
 )
 materializer = KVMaterializer(
@@ -180,7 +181,7 @@ python -m document_kv_cache.databricks_storage_benchmark_job \
   --uc-volume-root /Volumes/catalog/schema/volume/storage \
   --runner-python-file dbfs:/benchmarks/run_storage_benchmark.py \
   --runner-script-output databricks-runs/storage-benchmark/run_storage_benchmark.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --output-json databricks-runs/storage-benchmark/databricks-storage-benchmark-submit.json
 ```
@@ -202,7 +203,7 @@ layout = layout_for_model("qwen3:4b-instruct")
 workflow = DocumentKVWorkflow.with_storage(
     manifest=manifest,
     cpu_cache_bytes=2 * 1024**3,
-    local_cache_dir="/local_disk0/document-kv-cache",
+    local_cache_dir="/local_disk0/cachet-kv",
     local_cache_bytes=200 * 1024**3,
     uc_volume_root="/Volumes/catalog/schema/volume",
 )
@@ -367,7 +368,7 @@ adapter_request = build_engine_adapter_request(
     spec=vllm_adapter_spec(),
 )
 handoff_record = engine_adapter_request_to_record(adapter_request)
-payload_path = Path("/local_disk0/document-kv-cache/req-123.kv")
+payload_path = Path("/local_disk0/cachet-kv/req-123.kv")
 handoff_path, written_payload_path = write_engine_adapter_handoff_bundle(
     adapter_request,
     "req-123-handoff.json",
@@ -453,7 +454,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --native-probe-factories-output-json /Volumes/catalog/schema/volume/probes/vllm-fixture/vllm-native-probe-factories.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output databricks-runs/engine-probe-vllm/run_engine_probe.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json databricks-runs/engine-probe-vllm/databricks-engine-probe-submit.json
@@ -561,7 +562,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --backend-config-json engine-probe-targets.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output databricks-runs/engine-probe-matrix/run_engine_probe.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json databricks-runs/engine-probe-matrix/databricks-engine-probes-submit.json
@@ -948,7 +949,7 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-storage.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-vllm-engine-probe.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-sglang-engine-probe.json \
-  --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
+  --release-bundle-package-wheel /data/dist/cachet_kv-0.2.0-py3-none-any.whl \
   --release-bundle-compatibility-benchmark-json /data/g5-v1-results.json \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
   --github-governance-output-json /data/github-governance.json \
@@ -1231,7 +1232,7 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --output-dir /Volumes/catalog/schema/volume/document-kv-v1-smoke \
   --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
   --runner-script-output databricks-runs/vllm-smoke/run_vllm_smoke.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --output-json databricks-runs/vllm-smoke/databricks-vllm-smoke-submit.json
 ```
@@ -1250,7 +1251,7 @@ python -m document_kv_cache.databricks_vllm_smoke_job \
   --output-dir /Volumes/catalog/schema/volume/document-kv-v1-prepared \
   --runner-python-file dbfs:/benchmarks/run_vllm_smoke.py \
   --runner-script-output databricks-runs/vllm-prepared/run_vllm_smoke.py \
-  --wheel-uri dbfs:/benchmarks/cachet-v1/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri dbfs:/benchmarks/cachet-v1/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
   --max-model-len 32768 \
@@ -1364,7 +1365,7 @@ python -m document_kv_cache.release_bundle \
   --databricks-run-status-json databricks-run-status-storage.json \
   --databricks-run-status-json databricks-run-status-vllm-engine-probe.json \
   --databricks-run-status-json databricks-run-status-sglang-engine-probe.json \
-  --package-wheel dist/document_kv_cache-0.2.0-py3-none-any.whl \
+  --package-wheel dist/cachet_kv-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
   --github-governance-json github-governance.json \
@@ -1434,7 +1435,7 @@ marked resolved before they can enter the release bundle. When a GitHub
 governance sidecar is bundled, each PR URL must also point at the governed
 repository. They are also validated as closed schemas so ad hoc review notes or
 debug payloads stay out of the release handoff.
-Wheel artifacts must be valid wheels for `document-kv-cache` with non-empty
+Wheel artifacts must be valid wheels for `cachet-kv` with non-empty
 package metadata, and the wheel filename, root `.dist-info` directory, and
 `METADATA` name/version must describe the same normalized package identity. The
 release bundle manifest records the normalized package name and package version
@@ -1520,7 +1521,7 @@ python -m document_kv_cache.databricks_job \
   --plan-json-uri dbfs:/benchmarks/v1-plan.json \
   --runner-python-file dbfs:/benchmarks/run_plan.py \
   --runner-script-output databricks-runs/managed-plan/run_plan.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --hardware-target aws-g6-l4 \
   --spark-env-var CACHET_TRANSFORMERS_MODEL_ID=Qwen/Qwen3-4B-Instruct-2507 \
@@ -1693,7 +1694,7 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --backend-config-json /data/engine-probe-targets.json \
   --runner-python-file dbfs:/benchmarks/run_engine_probe.py \
   --runner-script-output /data/run_engine_probe.py \
-  --wheel-uri /Volumes/catalog/schema/volume/wheels/document_kv_cache-0.2.0-py3-none-any.whl \
+  --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
   --release-safe \
   --output-json /data/databricks-engine-probes-submit.json
