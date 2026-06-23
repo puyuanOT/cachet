@@ -536,6 +536,68 @@ def test_manifest_allows_explicit_key_replacement_across_batches(tmp_path):
     assert manifest.keys_for_document("doc-a") == [replacement_ref.key]
 
 
+def test_manifest_resolves_unique_content_hash_variant_for_logical_lookup(tmp_path):
+    logical_key = make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1")
+    hashed_key = replace(logical_key, content_hash="hash-a")
+    ref = write_kvpack(
+        tmp_path / "hashed-manifest.kvpack",
+        [PackChunk(hashed_key, b"body", 4, "fp8", "v1")],
+        align_bytes=1,
+    )[0]
+    manifest = InMemoryManifestStore([ref])
+
+    assert manifest.get(logical_key) == ref
+
+    request = DocumentKVRequest(
+        request_id="req-1",
+        task_id="qa",
+        model_id=logical_key.model_id,
+        lora_id=logical_key.lora_id,
+        prompt_template_version=logical_key.prompt_template_version,
+        document_chunks={"doc-a": ["section-1"]},
+        include_static=False,
+    )
+    plan = CachePlanner(manifest).build_plan(request)
+
+    assert plan.segments[0].ref == ref
+    assert plan.segments[0].ref.key.content_hash == "hash-a"
+
+
+def test_manifest_rejects_ambiguous_content_hash_variants_for_logical_lookup(tmp_path):
+    logical_key = make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1")
+    refs = write_kvpack(
+        tmp_path / "ambiguous-manifest.kvpack",
+        [
+            PackChunk(replace(logical_key, content_hash="hash-a"), b"alpha", 5, "fp8", "v1"),
+            PackChunk(replace(logical_key, content_hash="hash-b"), b"beta", 4, "fp8", "v1"),
+        ],
+        align_bytes=1,
+    )
+    manifest = InMemoryManifestStore(refs)
+
+    with pytest.raises(KeyError, match="Ambiguous manifest entries"):
+        manifest.get(logical_key)
+    assert manifest.get(replace(logical_key, content_hash="hash-a")) == refs[0]
+    assert manifest.get(replace(logical_key, content_hash="hash-b")) == refs[1]
+
+
+def test_manifest_rejects_mixed_empty_and_hashed_content_variants_for_logical_lookup(tmp_path):
+    logical_key = make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1")
+    refs = write_kvpack(
+        tmp_path / "mixed-hash-manifest.kvpack",
+        [
+            PackChunk(logical_key, b"old", 3, "fp8", "v1"),
+            PackChunk(replace(logical_key, content_hash="hash-a"), b"new", 3, "fp8", "v1"),
+        ],
+        align_bytes=1,
+    )
+    manifest = InMemoryManifestStore(refs)
+
+    with pytest.raises(KeyError, match="Ambiguous manifest entries"):
+        manifest.get(logical_key)
+    assert manifest.get(replace(logical_key, content_hash="hash-a")) == refs[1]
+
+
 def test_manifest_validates_and_normalizes_document_filters(tmp_path):
     refs = write_kvpack(
         tmp_path / "filtered-manifest.kvpack",

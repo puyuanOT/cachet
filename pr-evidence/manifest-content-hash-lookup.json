@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Laplace the 2nd found that a mixed empty-hash and hashed manifest state could return a stale empty-hash ref. The lookup now treats empty-hash requests as logical-identity resolution and raises ambiguity when more than one variant exists; re-review was clean.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 409,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/409",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/document_kv_cache/manifest.py",
+    "tests/test_planner_materializer.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_planner_materializer.py -q -> 42 passed",
+    "poetry run pytest tests/test_benchmark_handoffs.py tests/test_vllm_smoke.py -q -> 89 passed",
+    "poetry run pytest -q -> 1892 passed, 4 skipped",
+    "git diff --check -> passed",
+    "poetry run python -m compileall -q src tests -> passed",
+    "poetry check -> passed with existing duplicated project/tool.poetry metadata warnings",
+    "changed-file Databricks credential pattern scan -> no matches"
+  ],
+  "what_changed": [
+    "Manifest lookups with an empty content_hash now resolve a unique same-logical-identity manifest entry, including entries written with a content hash.",
+    "Manifest lookups with explicit non-empty content_hash remain exact-match strict.",
+    "Mixed empty-hash/hashed or multiple hashed variants for the same logical identity now raise an ambiguity error instead of selecting a stale or arbitrary ref."
+  ],
+  "why": "The Databricks g6.8xlarge hot-payload run reached workload execution but failed during prepared handoff generation because the generator wrote hashed manifest refs while benchmark requests still addressed chunks by logical document/chunk identity."
+}
