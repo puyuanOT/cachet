@@ -57,6 +57,9 @@ STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
     "exactly three distinct Databricks run-status sidecars "
     "for benchmark, storage, and engine-probe runs"
 )
+STRICT_V1_COMPATIBILITY_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
+    "matching compatibility Databricks run-status sidecars for compatibility benchmarks"
+)
 
 __all__ = [
     "PLAN_VERSION",
@@ -1359,6 +1362,13 @@ def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None
         or len(set(bundle_config.databricks_run_status_jsons)) != len(bundle_config.databricks_run_status_jsons)
     ):
         missing.append(STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL)
+    if bundle_config.compatibility_benchmark_jsons and (
+        len(bundle_config.compatibility_databricks_run_status_jsons)
+        != len(bundle_config.compatibility_benchmark_jsons)
+        or len(set(bundle_config.compatibility_databricks_run_status_jsons))
+        != len(bundle_config.compatibility_databricks_run_status_jsons)
+    ):
+        missing.append(STRICT_V1_COMPATIBILITY_DATABRICKS_RUN_STATUS_SIDECAR_LABEL)
     if bundle_config.package_wheel is None:
         missing.append("tested package wheel")
     if not bundle_config.pr_evidence_jsons:

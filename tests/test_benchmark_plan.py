@@ -692,6 +692,14 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
             None,
             "vLLM/SGLang engine launch config sidecars",
         ),
+        (
+            {
+                "compatibility_benchmark_jsons": ("g5-v1-benchmark.json",),
+                "compatibility_databricks_run_status_jsons": (),
+            },
+            None,
+            "matching compatibility Databricks run-status sidecars for compatibility benchmarks",
+        ),
     ],
 )
 def test_benchmark_plan_rejects_incomplete_strict_release_bundle(

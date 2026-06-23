@@ -1394,7 +1394,10 @@ and rejects the strict AWS g6/L4 release target in that compatibility role. Add
 `--compatibility-databricks-run-status-json` to carry the matching successful
 Databricks run-status sidecar for that non-default compatibility target; the
 bundle rejects default g6/L4 statuses in this compatibility status role and
-requires the status hardware target to match a bundled compatibility benchmark. Add
+requires the status hardware target to match a bundled compatibility benchmark.
+Strict bundles that include compatibility benchmark evidence require a matching
+compatibility Databricks benchmark run-status sidecar for each compatibility
+target. Add
 `--require-complete-v1` for release publishing; this strict mode refuses to
 build a V1 bundle unless the release evidence, preflight, vLLM/SGLang native
 engine-probe, connector-action, and engine-launch-config sidecars,

@@ -262,7 +262,9 @@ STRICT_V1_RELEASE_HELP = (
     "vLLM/SGLang native engine probes, connector actions, and launch configs, "
     "plan execution, Databricks status for benchmark/storage/engine-probe runs, "
     "tested wheel, PR evidence, governance, repository hygiene, and supported "
-    "native probe factory diagnostics, plus the V1 requirements matrix."
+    "native probe factory diagnostics, plus the V1 requirements matrix. "
+    "Compatibility benchmarks bundled with strict releases also require matching "
+    "compatibility Databricks benchmark run-status evidence."
 )
 _ENGINE_BACKEND_ARTIFACT_ROLES = frozenset(
     {
@@ -867,6 +869,18 @@ def _validate_strict_v1_release_bundle_completeness(
     role_counts = {role: 0 for role in RELEASE_BUNDLE_ARTIFACT_ROLES}
     for artifact in artifacts:
         role_counts[artifact.role] = role_counts.get(artifact.role, 0) + 1
+    compatibility_hardware_targets = tuple(
+        target
+        for artifact in artifacts
+        if artifact.role == "compatibility_benchmark" and artifact.record is not None
+        if (target := _strict_v1_benchmark_hardware_target(artifact.record)) is not None
+    )
+    compatibility_status_hardware_targets = tuple(
+        target
+        for artifact in artifacts
+        if artifact.role == "compatibility_databricks_run_status" and artifact.record is not None
+        for target in _databricks_status_hardware_targets(artifact.record)
+    )
     missing = []
     for role, minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         count = role_counts.get(role, 0)
@@ -874,6 +888,12 @@ def _validate_strict_v1_release_bundle_completeness(
             continue
         if count < minimum_count:
             missing.append(label)
+    missing.extend(
+        _compatibility_databricks_run_status_coverage_issues(
+            compatibility_hardware_targets,
+            compatibility_status_hardware_targets,
+        )
+    )
     if missing:
         raise ValueError(
             "Strict V1 release bundle requires "
@@ -1213,6 +1233,7 @@ def _compatibility_databricks_run_status_sidecar_issues(
     status_record = databricks_run_status_record(record)
     if status_record is None:
         return tuple(issues)
+    issues.extend(_compatibility_databricks_run_status_benchmark_task_issues(status_record))
     hardware_targets = _databricks_status_hardware_targets(status_record)
     if not hardware_targets:
         issues.append("compatibility Databricks run status sidecar must declare a supported hardware target")
@@ -1233,6 +1254,66 @@ def _compatibility_databricks_run_status_sidecar_issues(
                 f"{hardware_target!r} must match a bundled compatibility benchmark"
             )
     return _dedupe_strings(issues)
+
+
+def _compatibility_databricks_run_status_coverage_issues(
+    compatibility_hardware_targets: Sequence[str],
+    compatibility_status_hardware_targets: Sequence[str],
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    for hardware_target in _dedupe_strings(compatibility_hardware_targets):
+        matching_count = compatibility_status_hardware_targets.count(hardware_target)
+        if matching_count == 0:
+            issues.append(
+                "compatibility Databricks run-status evidence for hardware_target "
+                f"{hardware_target!r}"
+            )
+        elif matching_count > 1:
+            issues.append(
+                "compatibility Databricks run-status evidence for hardware_target "
+                f"{hardware_target!r} must appear exactly once"
+            )
+    return tuple(issues)
+
+
+def _compatibility_databricks_run_status_benchmark_task_issues(
+    status_record: Mapping[str, Any],
+) -> tuple[str, ...]:
+    submit_payload = _mapping(status_record.get("submit_payload"))
+    tasks = _mapping_sequence(submit_payload.get("tasks"))
+    if not tasks:
+        return ()
+
+    benchmark_tasks = tuple(
+        task
+        for task in tasks
+        if task.get("purpose") == DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE
+    )
+    if len(benchmark_tasks) != 1 or len(tasks) != 1:
+        task_descriptions = ", ".join(
+            _databricks_status_task_description(task) for task in tasks
+        )
+        issues = [
+            "compatibility Databricks run status sidecar must contain exactly one "
+            f"V1 benchmark task with purpose {DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE!r}"
+        ]
+        if task_descriptions:
+            issues.append(f"found tasks: {task_descriptions}")
+        return tuple(issues)
+
+    task_key = benchmark_tasks[0].get("task_key")
+    if task_key != DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY:
+        return (
+            "compatibility Databricks run status sidecar benchmark task_key must be "
+            f"{DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY!r}",
+        )
+    return ()
+
+
+def _databricks_status_task_description(task: Mapping[str, Any]) -> str:
+    purpose = task.get("purpose")
+    task_key = task.get("task_key")
+    return f"purpose={purpose!r}, task_key={task_key!r}"
 
 
 def _databricks_status_hardware_targets(status_record: Mapping[str, Any]) -> tuple[str, ...]:
