@@ -25,6 +25,9 @@
         "poetry run pytest -q -> 2023 passed",
         "poetry check && poetry check --lock -> All set",
         "poetry run python -m document_kv_cache.repository_hygiene --repository-root . --output-json /tmp/cachet-current-benchmark-status-hygiene-committed.json -> ok=true",
+        "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/current-benchmark-status --output-json pr-evidence/current-benchmark-status/pr-evidence-validation.json -> ok=true",
+        "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence -> ok=true",
+        "poetry run pytest -q tests/test_pr_evidence.py tests/test_project_governance.py::test_repository_directories_have_readme_or_package_docstring tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs -> 25 passed",
         "GPT-5.5 reviewer approved PR #436 with no blocking issues; GitHub rejected recording formal approval as self-review"
       ],
       "what_changed": [
