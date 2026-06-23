@@ -833,6 +833,15 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     compact_matrix = " ".join(matrix_text.split())
     remaining_release_gates = _markdown_section(matrix_text, "Remaining V1 Release Gates")
     compact_remaining_release_gates = " ".join(remaining_release_gates.split())
+    stale_release_blockers = (
+        "no-governance",
+        "21 artifacts",
+        "allow_auto_merge=false",
+        "repository as private",
+        "repository visibility as private",
+        "still requires the GitHub governance sidecar",
+        "still needs target AWS g6/L4 or Unity Catalog evidence in the release bundle",
+    )
 
     assert "docs/v1-requirements-matrix.md" in readme_text
     assert "`v1-requirements-matrix.md`" in docs_readme
@@ -866,7 +875,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "complete strict release bundle",
         "strict V1 publication target",
         "compatibility_benchmark",
-        "21 artifacts",
+        "22 artifacts",
         "315109189523858",
         "cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main",
         "real vLLM and SGLang native block managers",
@@ -882,7 +891,11 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     )
     assert "does not replace the strict V1 publication target" in matrix_text
     assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "g5-enriched no-governance bundle also validates with 21 artifacts" in compact_matrix
+    assert "complete g5-enriched strict bundle now validates with 22 artifacts" in compact_matrix
+    assert "GitHub governance is release-ready" in compact_matrix
+    assert "auto-merge is enabled" in compact_matrix
+    for stale_blocker in stale_release_blockers:
+        assert stale_blocker not in matrix_text
     for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         assert label in compact_remaining_release_gates
 
@@ -892,6 +905,15 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     compact_text = " ".join(text.split())
     remaining_v1_work = _markdown_section(text, "Remaining V1 Work")
     compact_remaining_v1_work = " ".join(remaining_v1_work.split())
+    stale_release_blockers = (
+        "no-governance",
+        "21 artifacts",
+        "allow_auto_merge=false",
+        "repository as private",
+        "repository visibility as private",
+        "still requires the GitHub governance sidecar",
+        "still needs to be bundled before publication",
+    )
 
     assert "package name/version for wheel artifacts" in compact_text
     assert "records the normalized package name and package version" in compact_text
@@ -902,13 +924,17 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "V1 requirements matrix" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "g5-enriched no-governance bundle also validates with 21 artifacts" in compact_remaining_v1_work
+    assert "g5-enriched strict bundle validates with 22 artifacts" in compact_remaining_v1_work
+    assert "GitHub governance sidecar" in compact_remaining_v1_work
+    assert "Current governance evidence is green" in compact_remaining_v1_work
     assert "315109189523858" in compact_remaining_v1_work
     assert "release evidence `ok=true`" in compact_remaining_v1_work
     assert (
         "does not change the strict V1 publication target from AWS g6/L4"
         in compact_remaining_v1_work
     )
+    for stale_blocker in stale_release_blockers:
+        assert stale_blocker not in text
     for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         assert label in compact_remaining_v1_work
 

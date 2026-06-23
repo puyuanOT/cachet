@@ -52,8 +52,8 @@ Databricks probe metadata and launch-config compatibility.
 The current implementation and release gaps are tracked in
 `docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1
 open-source package goal: it distinguishes repository-implemented requirements
-from target AWS g6/L4/Unity Catalog evidence that still needs to be bundled before
-publication.
+from target AWS g6/L4/Unity Catalog evidence that has been bundled for the
+current release and must be kept fresh before each publication.
 
 ## Logical Model
 
@@ -1780,21 +1780,20 @@ type annotations after installation.
 
 ## Remaining V1 Work
 
-- Publish the complete strict release bundle from the target AWS g6/L4/UC
-  evidence set. The benchmark, storage-reader, and vLLM/SGLang native
+- Keep the complete strict release bundle refreshed from the target AWS
+  g6/L4/UC evidence set. The benchmark, storage-reader, and vLLM/SGLang native
   engine-probe Databricks runs have succeeded, and release evidence over the
-  benchmark, storage, connector action descriptors, and native engine block managers
-  is green. The current no-governance bundle validates with the strict artifact
-  set that is not GitHub-controlled: release evidence sidecar,
-  preflight sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
-  connector action sidecars, vLLM/SGLang engine launch config sidecars,
-  benchmark plan execution sidecar, Databricks run-status sidecars for
-  benchmark, storage, and vLLM/SGLang engine-probe runs, tested package wheel,
-  PR evidence sidecar, V1 requirements matrix, repository hygiene sidecar, and
-  native probe factory diagnostics sidecar entries from both runtime
-  environments. A g5-enriched no-governance bundle also validates with 21
-  artifacts when the current `aws-g5-a10g` benchmark is added through the
-  `compatibility_benchmark` role.
+  benchmark, storage, connector action descriptors, and native engine block
+  managers is green. The native engine block managers remain owned by vLLM and
+  SGLang rather than Cachet. The current g5-enriched strict bundle validates with 22
+  artifacts: release evidence sidecar, preflight sidecar, vLLM/SGLang native
+  engine probe sidecars, vLLM/SGLang connector action sidecars, vLLM/SGLang
+  engine launch config sidecars, benchmark plan execution sidecar, Databricks
+  run-status sidecars for benchmark, storage, and vLLM/SGLang engine-probe
+  runs, tested package wheel, PR evidence sidecar, V1 requirements matrix,
+  GitHub governance sidecar, repository hygiene sidecar, native probe factory
+  diagnostics sidecar entries from both runtime environments, and the current
+  `aws-g5-a10g` benchmark carried through the `compatibility_benchmark` role.
 - Keep the current AWS g5/A10G compatibility benchmark evidence with the
   release handoff: QA Databricks run `315109189523858` on `g5.8xlarge`
   completed Biography, HotpotQA, MusiQue, and NIAH with no benchmark errors,
@@ -1803,11 +1802,12 @@ type annotations after installation.
   vLLM/SGLang probe/action artifacts. Carry it in release handoffs with
   `--compatibility-benchmark-json`; this compatibility evidence does not change
   the strict V1 publication target from AWS g6/L4.
-- Make GitHub governance release-ready, then rebuild the complete strict bundle
-  with the GitHub governance sidecar included. The repository must be public,
-  required `main` branch protection must be configured, GitHub auto-merge must
-  report enabled, branch protection must apply to administrators, and the
-  governance sidecar must have no issues.
+- Keep GitHub governance release-ready before each public release. Current
+  governance evidence is green: the repository is public, `allow_auto_merge`
+  reports enabled, merged head branches are deleted automatically, `main`
+  branch protection requires the `Test and build` check, branch protection
+  applies to administrators, force-pushes/deletions are blocked, and no
+  unexpected pull requests are open.
 - Continue running connector action descriptors validation against native
   engine block managers in vLLM and SGLang whenever adapter contracts, runtime
   pins, or launch configs change.
