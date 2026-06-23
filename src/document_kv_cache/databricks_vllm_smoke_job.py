@@ -105,6 +105,7 @@ class DatabricksVLLMSmokeJobConfig:
     max_model_len: int = 4096
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
+    benchmark_repeats: int = 1
     payload_cache_max_bytes: int = 0
     dataset_specs: tuple[str, ...] = ()
     benchmark_handoff_generator_factory: str | None = None
@@ -151,6 +152,10 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("max_num_seqs must be positive")
         if not 0 < self.gpu_memory_utilization <= 1:
             raise ValueError("gpu_memory_utilization must be in (0, 1]")
+        if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
+            raise TypeError("benchmark_repeats must be a positive integer")
+        if self.benchmark_repeats <= 0:
+            raise ValueError("benchmark_repeats must be a positive integer")
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -253,6 +258,8 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         str(config.max_num_seqs),
         "--gpu-memory-utilization",
         str(config.gpu_memory_utilization),
+        "--benchmark-repeats",
+        str(config.benchmark_repeats),
     ]
     if config.payload_cache_max_bytes:
         parameters.extend(["--payload-cache-max-bytes", str(config.payload_cache_max_bytes)])
@@ -307,6 +314,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument(
+        "--benchmark-repeats",
+        type=int,
+        default=1,
+        help=(
+            "Number of baseline/cache arm repeats per benchmark example. "
+            "Use values greater than 1 for hot-document cache measurements."
+        ),
+    )
     parser.add_argument(
         "--payload-cache-max-bytes",
         type=int,
@@ -371,6 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_model_len=args.max_model_len,
             max_num_seqs=args.max_num_seqs,
             gpu_memory_utilization=args.gpu_memory_utilization,
+            benchmark_repeats=args.benchmark_repeats,
             payload_cache_max_bytes=args.payload_cache_max_bytes,
             dataset_specs=tuple(args.dataset or ()),
             benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,
