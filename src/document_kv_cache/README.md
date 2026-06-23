@@ -82,6 +82,8 @@ new document modules depend on restaurant-owned implementations.
   protection, merge-settings, auto-merge, and merged-branch cleanup status
   records for release-readiness evidence.
 - `kvpack.py` writes and reads packed KV shard byte ranges.
+- `legacy_compatibility.py` validates downstream migration evidence before the
+  legacy `restaurant_kv_serving` compatibility facade can be removed.
 - `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.

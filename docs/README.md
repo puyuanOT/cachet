@@ -8,3 +8,6 @@ notes under `src/`.
 
 - `v1-requirements-matrix.md` maps the generalized document KV-cache goal to
   current repository evidence and remaining V1 release gaps.
+- `legacy-compatibility-removal.md` records the machine-checkable gate for
+  removing the migration-only `restaurant_kv_serving` package and
+  `restaurant-kv-*` console scripts after downstream jobs migrate.

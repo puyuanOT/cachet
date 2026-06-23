@@ -1,0 +1,38 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 review found that migration evidence was prose-only and that production source did not yet have a legacy dependency guard. The PR now includes a closed legacy migration evidence schema/validator, an optional release-bundle artifact role, and a production-source scanner with an empty allowlist; the same reviewer re-checked and approved both fixes.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 430,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/430",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/legacy-compatibility-removal.md",
+    "docs/v1-requirements-matrix.md",
+    "src/document_kv_cache/legacy_compatibility.py",
+    "src/cachet/legacy_compatibility.py",
+    "src/document_kv_cache/release_bundle.py",
+    "src/restaurant_kv_serving/release_bundle.py",
+    "tests/test_legacy_compatibility.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_legacy_compatibility.py -q -> 7 passed",
+    "poetry run pytest tests/test_project_governance.py -q -> 45 passed",
+    "poetry run pytest tests/test_release_bundle.py -q -> 79 passed",
+    "poetry run pytest tests/test_public_package.py -q -> 14 passed",
+    "poetry run pytest -q -> 2020 passed",
+    "GPT-5.5 review found two issues; both were fixed and the same reviewer approved the follow-up"
+  ],
+  "what_changed": [
+    "Added a documented legacy compatibility removal gate for the migration-only restaurant_kv_serving facade.",
+    "Added document_kv.legacy_compatibility_migration.v1 evidence validation, a Cachet facade, and an optional legacy_migration_evidence release-bundle role.",
+    "Extended governance tests to reject production source dependencies on restaurant_kv_serving outside the legacy compatibility package."
+  ],
+  "why": "Cachet should remain one repository and one distribution package while preserving legacy shims only until downstream Databricks runners and older imports have machine-checkable migration evidence."
+}
