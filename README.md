@@ -810,7 +810,13 @@ write_model_profile_definition_json(
 
 ## Benchmark Contract
 
-The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH on AWS g6/L4 with Qwen3 4B Instruct. The default and release QA target remains `aws-g6-l4` on plain AWS `g6.8xlarge` Databricks hardware; Cachet also models the explicit non-default `aws-g5-a10g` target for g5/A10G compatibility runs. It defines a common schema for comparing the no-cache prefill baseline with document KV-cache reuse:
+The V1 benchmark surface targets Biography, HotpotQA, MusiQue, and NIAH with
+Qwen3 4B Instruct on the default AWS g6/L4 release target and the explicit AWS
+g5/A10G compatibility target. The default and release QA target remains
+`aws-g6-l4` on plain AWS `g6.8xlarge` Databricks hardware; Cachet also models
+the explicit non-default `aws-g5-a10g` target for `g5.8xlarge` compatibility
+runs. It defines a common schema for comparing the no-cache prefill baseline
+with document KV-cache reuse:
 
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
@@ -1768,6 +1774,13 @@ type annotations after installation.
   PR evidence sidecar, V1 requirements matrix, repository hygiene sidecar, and
   native probe factory diagnostics sidecar entries from both runtime
   environments.
+- Keep the current AWS g5/A10G compatibility benchmark evidence with the
+  release handoff: QA Databricks run `315109189523858` on `g5.8xlarge`
+  completed Biography, HotpotQA, MusiQue, and NIAH with no benchmark errors,
+  current `v1_evidence.ok=true`, TTFT speedups of 4.55x-6.07x, and release
+  evidence `ok=true` when validated with the current storage and native
+  vLLM/SGLang probe/action artifacts. This compatibility evidence does not
+  change the strict V1 publication target from AWS g6/L4.
 - Make GitHub governance release-ready, then rebuild the complete strict bundle
   with the GitHub governance sidecar included. The repository must be public,
   required `main` branch protection must be configured, GitHub auto-merge must

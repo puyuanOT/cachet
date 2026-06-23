@@ -5,7 +5,9 @@ mean:
 
 - **Implemented:** source, tests, and documentation exist in the repository.
 - **Release-gated:** source/tests exist, but V1 publication still needs target
-  AWS g6/L4 or Unity Catalog evidence in the release bundle.
+  AWS g6/L4 or Unity Catalog evidence in the release bundle. Non-default
+  g5/A10G compatibility evidence is tracked separately and never substitutes
+  for the strict release target.
 - **Remaining:** the repository intentionally records the work as unfinished.
 
 ## Ecosystem And Infrastructure
@@ -21,7 +23,7 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target. | Publish the complete strict release bundle once GitHub governance is release-ready. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `315109189523858` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. | Publish the complete strict g6/L4 release bundle once GitHub governance is release-ready, and keep g5/A10G compatibility evidence refreshed when benchmark, model, or native connector contracts change. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
 | Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. QA benchmark run `426398182137665` produced `document_kv.benchmark_run.v1` evidence with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.18x to 6.78x, and time-to-completion speedups from 1.74x to 2.22x. | Bundle the refreshed benchmark report and run-status sidecar in the strict release bundle after GitHub governance is release-ready. |
 | Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. QA benchmark run `426398182137665` completed Biography, HotpotQA, MusiQue, and NIAH with release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, or native connector behavior changes. |
@@ -49,7 +51,7 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| PR-driven development, no direct pushes to main | Release-gated | `CONTRIBUTING.md`, `.github/main-branch-protection.json`, GitHub governance sidecars, and CI docs encode the protected-main workflow. | GitHub currently reports the repository as private and main branch protection disabled; make the repository public or upgrade the GitHub plan, then apply the branch-protection policy before public release. |
+| PR-driven development, no direct pushes to main | Release-gated | `CONTRIBUTING.md`, `.github/main-branch-protection.json`, GitHub governance sidecars, and CI docs encode the protected-main workflow. | GitHub currently reports the repository as private and main branch protection disabled; make the repository public, then apply the branch-protection policy before public release. |
 | GPT-5.5 review for each PR | Implemented | PR evidence sidecars require completed GPT-5.5 review and resolved findings. | Continue attaching PR evidence to release bundles. |
 | Auto-merge approved PRs to avoid open PR buildup | Release-gated | GitHub governance evidence records merge settings, auto-merge, branch deletion, and unexpected open PR counts. Current operations still follow the one-PR-at-a-time merge discipline after review and green CI. | GitHub currently reports `allow_auto_merge=false`; enable auto-merge before public release, keep exactly one PR open during active release work, and merge after review plus green CI. |
 | Apply Refactor skill to every PR | Implemented | PR evidence validation requires Refactor-skill evidence, and the pull request template asks reviewers to check it. | Continue recording the evidence per PR. |
@@ -66,6 +68,19 @@ mean:
   The vLLM server log recorded external prefix-cache hits and successful
   Cachet layer loads (`document_kv_layers_loaded=36`,
   `document_kv_load_error_blocks=0`).
+- Current g5/A10G compatibility benchmark evidence exists for
+  `cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main`
+  from QA Databricks run `315109189523858` on a single-node `g5.8xlarge`: all
+  four datasets completed with no benchmark errors, 24 measurements, 4
+  cache-vs-baseline comparisons, `v1_evidence.ok=true`, TTFT speedups of
+  4.55x-6.07x, and time-to-completion speedups of 2.03x-2.68x. Release
+  evidence over that g5 benchmark plus the current storage and native
+  vLLM/SGLang probe/action artifacts is `ok=true` with no issues. The vLLM
+  server log recorded native `DocumentKVConnector` startup, payload-cache hits,
+  successful Cachet layer loads (`document_kv_layers_loaded=36`), and zero load
+  error blocks (`document_kv_load_error_blocks=0`). This compatibility evidence
+  does not replace the strict V1 publication target, which remains the default
+  AWS g6/L4 release bundle.
 - Target g6/L4 UC storage-reader evidence exists for
   `cachet_readiness_20260621_095026` from QA Databricks run
   `948365719597221`: Memory, Disk, and Unity Catalog readers all completed with
@@ -95,10 +110,9 @@ mean:
   as private, repository visibility as private, `allow_auto_merge=false`, and
   main branch protection disabled; the branch-protection API returns a 403 that
   says to upgrade GitHub Pro or make the repository public. Make the repository
-  public or move it to a plan that supports required branch protection, enable
-  auto-merge, apply the main branch-protection policy, regenerate the GitHub
-  governance sidecar, and then rebuild the complete strict release bundle with
-  the full strict artifact set.
+  public, enable auto-merge, apply the main branch-protection policy,
+  regenerate the GitHub governance sidecar, and then rebuild the complete
+  strict release bundle with the full strict artifact set.
 - `benchmark_plan.py` can now emit the vLLM/SGLang engine launch config sidecars
   through `--engine-launch-config-output-dir`; those generated paths satisfy the
   strict bundle launch-config gate when paired with the native probe/action
