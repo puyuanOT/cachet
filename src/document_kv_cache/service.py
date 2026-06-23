@@ -94,6 +94,3 @@ class DocumentKVService:
         )
         connector.submit(ready)
         return ready
-
-
-RestaurantKVService = DocumentKVService

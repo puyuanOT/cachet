@@ -23,14 +23,11 @@ is the V1 package-index identity for Cachet's document KV-cache package.
 Installed wheels expose `cachet-*` CLI aliases for the primary Cachet workflow
 commands as well as explicit `document-kv-*` command names. The legacy
 `restaurant_kv_serving` package and restaurant-specific aliases are no longer
-included in built wheels; source-only shims remain temporarily for
-migration-history tests and older local imports. New code should use the
-document-generic names:
+included in built wheels or the core runtime model layer. New code should use
+the document-generic names:
 `DocumentKVRequest`, `DocumentChunkType.DOCUMENT_STATIC`,
 `DocumentChunkType.DOCUMENT_CHUNK`, `KVCacheKey.for_document`, and manifest
-`keys_for_document` methods. Core identifiers are stored as `document_id`;
-legacy `restaurant_id` and `selected_restaurants` accessors remain aliases for
-old callers.
+`keys_for_document` methods. Core identifiers are stored as `document_id`.
 
 ## Cachet-First Quickstart
 
@@ -112,11 +109,10 @@ task_prefix_cache
 + user/task suffix
 ```
 
-The public `DocumentChunkRole` helper maps concrete chunk-type aliases onto the
-canonical roles `TASK_PREFIX`, `STATIC`, and `CONTENT`. Generic document chunk
-types and legacy restaurant chunk types share those roles, so manifests and
+The public `DocumentChunkRole` helper maps concrete document chunk types onto
+the canonical roles `TASK_PREFIX`, `STATIC`, and `CONTENT`, so manifests and
 planners order task prefixes, static document context, and selected content
-consistently while downstream jobs migrate away from restaurant-specific names.
+consistently without restaurant-specific runtime aliases.
 
 Physical storage uses large packed files, not one file per chunk:
 

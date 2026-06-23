@@ -13,7 +13,6 @@ from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer, MaterializedKV, SegmentedMaterializedKV
 from document_kv_cache.models import (
     CacheChunkType,
-    ChunkType,
     DOCUMENT_CHUNK_TYPES,
     DEFAULT_STATIC_CHUNK_ID,
     DocumentChunkType,
@@ -21,10 +20,8 @@ from document_kv_cache.models import (
     DocumentKVRequest,
     FrozenDocumentChunkMap,
     KVCacheKey,
-    LEGACY_RESTAURANT_CHUNK_TYPES,
     MaterializationPlan,
     PlanSegment,
-    RestaurantKVRequest,
     chunk_type_role,
     chunk_type_sort_order,
     chunk_types_for_request,
@@ -83,26 +80,17 @@ class BatchCountingReader:
         return tuple(self.payloads[ref.key.chunk_id] for ref in refs)
 
 
-def test_kv_cache_key_uses_document_id_with_restaurant_alias_compatibility():
+def test_kv_cache_key_uses_document_id_only():
     key = make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1")
-    legacy_key = KVCacheKey(
-        model_id="qwen35-4b-w8a8",
-        lora_id="selection",
-        prompt_template_version="v1",
-        restaurant_id="doc-a",
-        chunk_type=DocumentChunkType.DOCUMENT_CHUNK,
-        chunk_id="section-1",
-    )
 
     assert key.document_id == "doc-a"
-    assert key.restaurant_id == "doc-a"
-    assert key == legacy_key
     assert "|doc-a|document_chunk|section-1|" in key.storage_key()
     assert replace(key, document_id="doc-b").document_id == "doc-b"
-    assert replace(key, restaurant_id="legacy-b").document_id == "legacy-b"
+    with pytest.raises(TypeError, match="restaurant_id"):
+        replace(key, restaurant_id="legacy-b")  # type: ignore[call-arg]
 
 
-def test_kv_cache_key_requires_a_document_or_legacy_restaurant_id():
+def test_kv_cache_key_requires_a_document_id():
     with pytest.raises(TypeError, match="document_id"):
         KVCacheKey(
             model_id="qwen35-4b-w8a8",
@@ -137,7 +125,7 @@ def test_kv_cache_key_validates_storage_key_fields():
         replace(key, content_hash="hash|with-delimiter")
 
 
-def test_chunk_roles_unify_document_and_legacy_aliases():
+def test_chunk_roles_use_document_chunk_types():
     document_request = DocumentKVRequest(
         request_id="doc-req",
         task_id="qa",
@@ -146,29 +134,21 @@ def test_chunk_roles_unify_document_and_legacy_aliases():
         prompt_template_version="v1",
         document_chunks={"doc-a": ["section-1"]},
     )
-    restaurant_request = RestaurantKVRequest(
-        request_id="legacy-req",
-        task_id="selection",
-        model_id="qwen35-4b-w8a8",
-        lora_id="selection",
-        prompt_template_version="v1",
-        restaurant_reviews={"r1": ["rev1"]},
-    )
 
     assert chunk_types_for_request(document_request) == DOCUMENT_CHUNK_TYPES
-    assert chunk_types_for_request(restaurant_request) == LEGACY_RESTAURANT_CHUNK_TYPES
     assert chunk_type_role(DocumentChunkType.TASK_PREFIX) == DocumentChunkRole.TASK_PREFIX
-    assert chunk_type_role(ChunkType.TASK_PREFIX) == DocumentChunkRole.TASK_PREFIX
     assert chunk_type_role(DocumentChunkType.DOCUMENT_STATIC) == DocumentChunkRole.STATIC
-    assert chunk_type_role(ChunkType.RESTAURANT_STATIC) == DocumentChunkRole.STATIC
     assert chunk_type_role(DocumentChunkType.DOCUMENT_CHUNK) == DocumentChunkRole.CONTENT
-    assert chunk_type_role(ChunkType.REVIEW) == DocumentChunkRole.CONTENT
     assert chunk_type_role("custom_chunk") == DocumentChunkRole.OTHER
+    assert chunk_type_role("review") == DocumentChunkRole.OTHER
+    assert chunk_type_role("restaurant_static") == DocumentChunkRole.OTHER
     assert chunk_type_sort_order(DocumentChunkType.TASK_PREFIX) < chunk_type_sort_order(DocumentChunkType.DOCUMENT_STATIC)
-    assert chunk_type_sort_order(ChunkType.REVIEW) == chunk_type_sort_order(DocumentChunkType.DOCUMENT_CHUNK)
+    assert chunk_type_sort_order(DocumentChunkType.DOCUMENT_CHUNK) < chunk_type_sort_order("review")
 
     with pytest.raises(TypeError, match="chunk_type"):
         chunk_type_role(object())  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="request"):
+        chunk_types_for_request(object())  # type: ignore[arg-type]
 
 
 def test_document_kv_request_validates_metadata_and_chunk_map():
@@ -421,53 +401,11 @@ def test_frozen_document_chunk_map_normalizes_direct_construction():
         FrozenDocumentChunkMap({"doc-a": [2, "2"]})
 
 
-def test_restaurant_kv_request_validates_legacy_review_map():
-    review_ids = ["rev1", 7]
-    restaurant_reviews = {"r1": review_ids}
-    request = RestaurantKVRequest(
-        request_id="legacy-req",
-        task_id="selection",
-        model_id="qwen35-4b-w8a8",
-        lora_id="selection",
-        prompt_template_version="v1",
-        restaurant_reviews=restaurant_reviews,
-    )
-
-    review_ids.append("late-review")
-    restaurant_reviews["r2"] = ("late-review",)
-
-    assert request.restaurant_reviews == {"r1": ("rev1", 7)}
-    assert request.document_chunks == {"r1": ("rev1", 7)}
-    assert request.selected_documents == ("r1",)
-    assert json.loads(json.dumps(request.restaurant_reviews)) == {"r1": ["rev1", 7]}
-    assert asdict(request)["restaurant_reviews"] == {"r1": ("rev1", 7)}
-    assert copy.deepcopy(request).restaurant_reviews == {"r1": ("rev1", 7)}
-    assert pickle.loads(pickle.dumps(request)).restaurant_reviews == {"r1": ("rev1", 7)}
-    with pytest.raises(TypeError, match="immutable"):
-        request.restaurant_reviews["r2"] = ("late-review",)  # type: ignore[index]
-    with pytest.raises(TypeError, match="immutable"):
-        request.restaurant_reviews.update({"r2": ("late-review",)})
-    with pytest.raises(TypeError, match="restaurant_reviews"):
-        replace(request, restaurant_reviews=())  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="restaurant_reviews keys"):
-        replace(request, restaurant_reviews={None: ["rev1"]})  # type: ignore[dict-item]
-    with pytest.raises(TypeError, match="restaurant_reviews values"):
-        replace(request, restaurant_reviews={"r1": b"rev1"})  # type: ignore[dict-item]
-    with pytest.raises(TypeError, match="restaurant_reviews values"):
-        replace(request, restaurant_reviews={"r1": bytearray(b"rev1")})  # type: ignore[dict-item]
-    with pytest.raises(TypeError, match="restaurant_reviews values"):
-        replace(request, restaurant_reviews={"r1": memoryview(b"rev1")})  # type: ignore[dict-item]
-    with pytest.raises(ValueError, match="restaurant_reviews chunk ids"):
-        replace(request, restaurant_reviews={"r1": [None]})  # type: ignore[list-item]
-    with pytest.raises(ValueError, match="restaurant_reviews chunk ids contain duplicates for r1: rev1"):
-        replace(request, restaurant_reviews={"r1": ["rev1", "rev1"]})
-
-
-def test_manifest_orders_mixed_legacy_and_document_aliases_deterministically(tmp_path):
+def test_manifest_orders_document_chunk_types_deterministically(tmp_path):
     chunks = [
-        PackChunk(make_key("doc-a", ChunkType.REVIEW, "same-id"), b"legacy", 6, "fp8", "v1"),
         PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "same-id"), b"generic", 7, "fp8", "v1"),
         PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_STATIC, "static"), b"static", 6, "fp8", "v1"),
+        PackChunk(make_key("_task", DocumentChunkType.TASK_PREFIX, "prefix"), b"task", 4, "fp8", "v1"),
     ]
     refs = write_kvpack(tmp_path / "mixed.kvpack", reversed(chunks), align_bytes=1)
     manifest = InMemoryManifestStore(refs)
@@ -475,8 +413,8 @@ def test_manifest_orders_mixed_legacy_and_document_aliases_deterministically(tmp
     assert [key.chunk_type for key in manifest.keys_for_document("doc-a")] == [
         DocumentChunkType.DOCUMENT_STATIC,
         DocumentChunkType.DOCUMENT_CHUNK,
-        ChunkType.REVIEW,
     ]
+    assert manifest.keys_for_document("_task") == [ref.key for ref in refs if ref.key.document_id == "_task"]
 
 
 def test_manifest_validates_refs_before_mutating_store(tmp_path):
@@ -610,7 +548,8 @@ def test_manifest_validates_and_normalizes_document_filters(tmp_path):
     manifest = InMemoryManifestStore(refs)
 
     assert manifest.keys_for_document("doc-a", "document_chunk") == [refs[1].key]
-    assert manifest.keys_for_restaurant("doc-a", "document_static") == [refs[0].key]
+    assert manifest.keys_for_document("doc-a", "document_static") == [refs[0].key]
+    assert not hasattr(manifest, "keys_for_restaurant")
     with pytest.raises(ValueError, match="document_id"):
         manifest.keys_for_document("")
     with pytest.raises(ValueError, match="document_id"):
@@ -621,24 +560,24 @@ def test_manifest_validates_and_normalizes_document_filters(tmp_path):
         manifest.keys_for_document("doc-a", object())  # type: ignore[arg-type]
 
 
-def test_plan_static_then_selected_reviews_and_materialize(tmp_path):
+def test_plan_static_then_selected_document_chunks_and_materialize(tmp_path):
     chunks = [
-        PackChunk(make_key("r1", ChunkType.RESTAURANT_STATIC, "static"), b"menu:", 5, "fp8", "v1"),
-        PackChunk(make_key("r1", ChunkType.REVIEW, "rev2"), b"good", 4, "fp8", "v1"),
-        PackChunk(make_key("r1", ChunkType.REVIEW, "rev1"), b"bad", 3, "fp8", "v1"),
-        PackChunk(make_key("r2", ChunkType.RESTAURANT_STATIC, "static"), b"ramen:", 6, "fp8", "v1"),
-        PackChunk(make_key("r2", ChunkType.REVIEW, "rev9"), b"great", 5, "fp8", "v1"),
+        PackChunk(make_key("doc-1", DocumentChunkType.DOCUMENT_STATIC, "static"), b"title:", 6, "fp8", "v1"),
+        PackChunk(make_key("doc-1", DocumentChunkType.DOCUMENT_CHUNK, "section-2"), b"beta", 4, "fp8", "v1"),
+        PackChunk(make_key("doc-1", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"alpha", 5, "fp8", "v1"),
+        PackChunk(make_key("doc-2", DocumentChunkType.DOCUMENT_STATIC, "static"), b"name:", 5, "fp8", "v1"),
+        PackChunk(make_key("doc-2", DocumentChunkType.DOCUMENT_CHUNK, "section-9"), b"omega", 5, "fp8", "v1"),
     ]
     refs = write_kvpack(tmp_path / "shard.kvpack", chunks, align_bytes=1)
     manifest = InMemoryManifestStore(refs)
     planner = CachePlanner(manifest)
-    request = RestaurantKVRequest(
+    request = DocumentKVRequest(
         request_id="req-1",
-        task_id="selection",
+        task_id="qa",
         model_id="qwen35-4b-w8a8",
         lora_id="selection",
         prompt_template_version="v1",
-        restaurant_reviews={"r1": ["rev1", "rev2"], "r2": ["rev9"]},
+        document_chunks={"doc-1": ["section-1", "section-2"], "doc-2": ["section-9"]},
     )
 
     plan = planner.build_plan(request)
@@ -648,17 +587,22 @@ def test_plan_static_then_selected_reviews_and_materialize(tmp_path):
     )
     materialized = materializer.materialize(plan)
 
-    assert plan.selected_document_ids == ("r1", "r2")
-    assert plan.selected_documents == ("r1", "r2")
-    assert plan.selected_restaurants == ("r1", "r2")
-    assert plan.total_tokens == 23
-    assert [segment.ref.key.chunk_id for segment in plan.segments] == ["static", "rev1", "rev2", "static", "rev9"]
-    assert materialized.payload == b"menu:badgoodramen:great"
-    assert materialized.segment_byte_offsets == (0, 5, 8, 12, 18)
+    assert plan.selected_document_ids == ("doc-1", "doc-2")
+    assert plan.selected_documents == ("doc-1", "doc-2")
+    assert plan.total_tokens == 25
+    assert [segment.ref.key.chunk_id for segment in plan.segments] == [
+        "static",
+        "section-1",
+        "section-2",
+        "static",
+        "section-9",
+    ]
+    assert materialized.payload == b"title:alphabetaname:omega"
+    assert materialized.segment_byte_offsets == (0, 6, 11, 15, 20)
     assert materialized.segment_tiers == (CacheTier.COLD_STORAGE,) * 5
 
     segmented = materializer.materialize_segmented(plan)
-    assert segmented.payloads == (b"menu:", b"bad", b"good", b"ramen:", b"great")
+    assert segmented.payloads == (b"title:", b"alpha", b"beta", b"name:", b"omega")
     assert segmented.total_bytes == len(materialized.payload)
     assert segmented.segment_byte_offsets == materialized.segment_byte_offsets
     assert segmented.segment_tiers == (CacheTier.CPU,) * 5
@@ -832,16 +776,6 @@ def test_materialization_plan_validates_segment_cursors_and_totals(tmp_path):
         ).selected_document_ids
         == ("doc-a",)
     )
-    assert (
-        MaterializationPlan(
-            request=plan.request,
-            segments=plan.segments,
-            total_tokens=5,
-            total_bytes=5,
-            selected_restaurants=(document_id for document_id in ("doc-a",)),
-        ).selected_document_ids
-        == ("doc-a",)
-    )
     with pytest.raises(TypeError, match="request"):
         MaterializationPlan(
             request=object(),  # type: ignore[arg-type]
@@ -898,13 +832,13 @@ def test_materialization_plan_validates_segment_cursors_and_totals(tmp_path):
             total_bytes=5,
             selected_document_ids=("doc-a", "doc-a"),
         )
-    with pytest.raises(ValueError, match="selected_document_ids entries must be unique"):
+    with pytest.raises(TypeError, match="selected_restaurants"):
         MaterializationPlan(
             request=plan.request,
             segments=plan.segments,
             total_tokens=5,
             total_bytes=5,
-            selected_restaurants=("doc-a", "doc-a"),
+            selected_restaurants=("doc-a",),  # type: ignore[call-arg]
         )
     with pytest.raises(ValueError, match="output_token_start"):
         MaterializationPlan(
@@ -931,18 +865,18 @@ def test_materialization_plan_validates_segment_cursors_and_totals(tmp_path):
 def test_materializer_uses_cpu_cache_on_second_read(tmp_path):
     ref = write_kvpack(
         tmp_path / "shard.kvpack",
-        [PackChunk(make_key("r1", ChunkType.REVIEW, "rev1"), b"cached", 3, "fp8", "v1")],
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"cached", 3, "fp8", "v1")],
         align_bytes=1,
     )[0]
     manifest = InMemoryManifestStore([ref])
     plan = CachePlanner(manifest).build_plan(
-        RestaurantKVRequest(
+        DocumentKVRequest(
             request_id="req-1",
-            task_id="selection",
+            task_id="qa",
             model_id="qwen35-4b-w8a8",
             lora_id="selection",
             prompt_template_version="v1",
-            restaurant_reviews={"r1": ["rev1"]},
+            document_chunks={"doc-a": ["section-1"]},
             include_static=False,
         )
     )
@@ -958,18 +892,18 @@ def test_materializer_uses_cpu_cache_on_second_read(tmp_path):
 def test_materializer_reports_local_disk_tier_after_cpu_eviction(tmp_path):
     ref = write_kvpack(
         tmp_path / "shard.kvpack",
-        [PackChunk(make_key("r1", ChunkType.REVIEW, "rev1"), b"cached", 3, "fp8", "v1")],
+        [PackChunk(make_key("doc-a", DocumentChunkType.DOCUMENT_CHUNK, "section-1"), b"cached", 3, "fp8", "v1")],
         align_bytes=1,
     )[0]
     manifest = InMemoryManifestStore([ref])
     plan = CachePlanner(manifest).build_plan(
-        RestaurantKVRequest(
+        DocumentKVRequest(
             request_id="req-1",
-            task_id="selection",
+            task_id="qa",
             model_id="qwen35-4b-w8a8",
             lora_id="selection",
             prompt_template_version="v1",
-            restaurant_reviews={"r1": ["rev1"]},
+            document_chunks={"doc-a": ["section-1"]},
             include_static=False,
         )
     )
@@ -1007,7 +941,6 @@ def test_document_request_uses_generic_chunk_aliases(tmp_path):
 
     assert plan.selected_documents == ("doc-a",)
     assert plan.selected_document_ids == ("doc-a",)
-    assert plan.selected_restaurants == ("doc-a",)
     assert [segment.ref.key.document_id for segment in plan.segments] == ["_task", "doc-a", "doc-a"]
     assert [segment.ref.key.chunk_id for segment in plan.segments] == ["prefix", "profile", "section-1"]
     assert [segment.ref.key.chunk_type for segment in plan.segments] == [
@@ -1049,7 +982,7 @@ def test_document_selection_helper_plans_multiple_documents(tmp_path):
     ]
 
 
-def test_materialization_plan_uses_document_id_metadata_with_legacy_alias_compatibility():
+def test_materialization_plan_uses_document_id_metadata():
     request = DocumentKVRequest(
         request_id="req-1",
         task_id="qa",
@@ -1067,4 +1000,5 @@ def test_materialization_plan_uses_document_id_metadata_with_legacy_alias_compat
     assert selected_document_ids_field.default_factory is not MISSING
     assert plan.selected_document_ids == ()
     assert replace(plan, selected_document_ids=("doc-a",)).selected_documents == ("doc-a",)
-    assert replace(plan, selected_restaurants=("legacy-a",)).selected_document_ids == ("legacy-a",)
+    with pytest.raises(TypeError, match="selected_restaurants"):
+        replace(plan, selected_restaurants=("legacy-a",))  # type: ignore[call-arg]

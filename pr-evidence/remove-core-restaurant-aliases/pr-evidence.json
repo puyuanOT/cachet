@@ -1,0 +1,42 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 review found no runtime blockers and one stale tests/README.md line that still mentioned restaurant compatibility aliases. The PR updated that test documentation, reran governance and full test suites, and the reviewer rechecked the final head with no remaining blockers. GitHub would not allow the reviewer process to approve because it authenticated as the PR author, so the final result was posted as a review comment.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 442,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/442",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/v1-requirements-matrix.md",
+    "src/document_kv_cache/README.md",
+    "src/document_kv_cache/models.py",
+    "src/document_kv_cache/manifest.py",
+    "src/document_kv_cache/planner.py",
+    "src/document_kv_cache/service.py",
+    "src/document_kv_cache/__init__.py",
+    "src/cachet/__init__.pyi",
+    "tests/test_planner_materializer.py",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "tests/README.md"
+  ],
+  "verification": [
+    "rg core runtime alias scans for RestaurantKVRequest, RestaurantKVService, ChunkType, LEGACY_RESTAURANT_CHUNK_TYPES, restaurant_id, restaurant_reviews, selected_restaurants, and keys_for_restaurant -> no core hits",
+    "poetry run pytest tests/test_project_governance.py -q -> 50 passed",
+    "poetry run pytest -q -> 1786 passed",
+    "poetry check && poetry check --lock -> All set! / All set!",
+    "git diff --check -> clean",
+    "built cachet_kv-0.2.0-py3-none-any.whl and inspected packaged core runtime files for removed restaurant alias tokens -> ok",
+    "GPT-5.5 reviewer found stale tests/README.md wording; the wording was fixed, rechecked, and no blockers remained"
+  ],
+  "what_changed": [
+    "Removed direct restaurant-named compatibility aliases from the core Cachet runtime model, planner, manifest, service, and root export surfaces.",
+    "Kept legacy restaurant handling in the dedicated migration scanner and release guard path instead of runtime request/key/service APIs.",
+    "Updated README, package README, V1 requirements matrix, planner/materializer tests, public export tests, governance tests, and test directory documentation for the document-only core model layer."
+  ],
+  "why": "Cachet V1 should present a generalized document KV-cache runtime surface; restaurant-specific names belong only in migration evidence and compatibility scanners, not in production request, key, manifest, or service APIs."
+}

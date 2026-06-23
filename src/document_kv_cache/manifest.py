@@ -6,7 +6,6 @@ from typing import Protocol
 from document_kv_cache.models import (
     CacheChunkType,
     ChunkRef,
-    ChunkType,
     DocumentChunkType,
     KVCacheKey,
     chunk_type_sort_order,
@@ -73,10 +72,6 @@ class InMemoryManifestStore:
             key=lambda item: (chunk_type_sort_order(item.chunk_type), item.chunk_type.value, item.chunk_id),
         )
 
-    def keys_for_restaurant(self, restaurant_id: str, chunk_type: CacheChunkType | str | None = None) -> list[KVCacheKey]:
-        return self.keys_for_document(restaurant_id, chunk_type)
-
-
 def _chunk_refs_tuple(refs: Iterable[ChunkRef]) -> tuple[ChunkRef, ...]:
     if isinstance(refs, (str, bytes, bytearray)):
         raise TypeError("refs must be an iterable of ChunkRef instances")
@@ -122,13 +117,11 @@ def _validate_document_id(document_id: object) -> None:
 
 
 def _normalize_chunk_type_filter(chunk_type: CacheChunkType | str | None) -> CacheChunkType | None:
-    if chunk_type is None or isinstance(chunk_type, (ChunkType, DocumentChunkType)):
+    if chunk_type is None or isinstance(chunk_type, DocumentChunkType):
         return chunk_type
     if isinstance(chunk_type, str):
-        for enum_type in (DocumentChunkType, ChunkType):
-            try:
-                return enum_type(chunk_type)
-            except ValueError:
-                continue
-        raise ValueError("chunk_type must be one of the known document or legacy chunk types")
+        try:
+            return DocumentChunkType(chunk_type)
+        except ValueError as exc:
+            raise ValueError("chunk_type must be one of the known document chunk types") from exc
     raise TypeError("chunk_type must be a CacheChunkType, string, or None")
