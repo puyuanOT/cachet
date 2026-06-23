@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mmap
 import pickle
 from dataclasses import replace
 from types import SimpleNamespace
@@ -943,6 +944,84 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
     assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
     assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+
+
+def test_lazy_merged_payload_uri_uses_mmap_without_worker_byte_read(tmp_path, monkeypatch):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(benchmark_jsonl_record()) + "\n", encoding="utf-8")
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=TwoTokenBenchmarkGenerator(),
+        layout=layout(),
+        align_bytes=1,
+    )
+    entry = result.manifest.entries[0]
+    runtime_request_id = f"cmpl-{entry.request_id}-0"
+    connector = DocumentKVConnector(provider=DocumentKVNativeProvider())
+    request = SimpleNamespace(
+        request_id=runtime_request_id,
+        num_tokens=3,
+        kv_transfer_params=entry.kv_transfer_params(),
+    )
+    frombuffer_calls = []
+    original_frombuffer = torch.frombuffer
+
+    def fail_worker_byte_read(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("worker merged payload_uri loads must not materialize bytes")
+
+    def counting_frombuffer(*args, **kwargs):
+        frombuffer_calls.append((args, kwargs))
+        return original_frombuffer(*args, **kwargs)
+
+    monkeypatch.setattr(vllm_native_provider, "read_engine_adapter_payload", fail_worker_byte_read)
+    monkeypatch.setattr(torch, "frombuffer", counting_frombuffer)
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([4]), 2)
+    meta = connector.build_connector_meta(scheduler_output([4], request_id=runtime_request_id))
+    connector.register_kv_caches(
+        {
+            "model.layers.0.self_attn.attn": layer_0,
+            "model.layers.1.self_attn.attn": layer_1,
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert len(frombuffer_calls) == 1
+    assert isinstance(frombuffer_calls[0][0][0], mmap.mmap)
+    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+
+
+def test_lazy_merged_payload_uri_validates_mapped_payload_size(tmp_path):
+    adapter_request = build_engine_adapter_request(ready_request(), spec=vllm_adapter_spec())
+    payload_uri = f"disk:{tmp_path / 'req-1.kv'}"
+    handoff_path, payload_path = write_engine_adapter_handoff_bundle(
+        adapter_request,
+        tmp_path / "handoff.json",
+        payload_uri=payload_uri,
+    )
+    payload_path.write_bytes(payload()[:-1])
+    connector = DocumentKVConnector(provider=DocumentKVNativeProvider())
+    request = SimpleNamespace(
+        request_id="req-1",
+        num_tokens=5,
+        kv_transfer_params={DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path)},
+    )
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([4, 6]), 2)
+    meta = connector.build_connector_meta(scheduler_output([4, 6]))
+    connector.register_kv_caches({"model.layers.0.self_attn.attn": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)})
+    connector.bind_connector_metadata(meta)
+
+    with pytest.raises(ValueError, match="Engine adapter payload length 23 != expected 24"):
+        connector.start_load_kv(SimpleNamespace())
 
 
 def test_segmented_handoff_bundle_feeds_lazy_vllm_native_provider_load_path(tmp_path):
