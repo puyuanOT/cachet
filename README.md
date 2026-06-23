@@ -72,9 +72,9 @@ cachet-engine-launch-config build-vllm --output-json /data/engine-launch/vllm.js
 cachet-databricks-runs payload-summary --help
 ```
 
-Compatibility import paths and legacy command aliases remain packaged for
-existing evidence and downstream migrations, but new user-facing code should
-start with `cachet` and `cachet-*`.
+Source-checkout compatibility import paths remain temporarily for migration
+history, but legacy command aliases are not part of built wheels. New
+user-facing code should start with `cachet` and `cachet-*`.
 
 ## Purpose And Scope
 
@@ -1882,7 +1882,9 @@ users keep inline type annotations after installation.
   pins, or launch configs change.
 - Keep serving integrations inside established engines; do not add a proprietary scheduler or custom solver.
 - Delete the remaining source-only `restaurant_kv_serving` compatibility
-  directory after downstream jobs and local compatibility tests satisfy the gate
-  in `docs/legacy-compatibility-removal.md`, including validated
+  directory after local compatibility tests are migrated or removed. Current
+  downstream migration evidence is tracked under
+  `evidence/legacy-migration/current/` as validated
   `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
-  through the optional `legacy_migration_evidence` release-bundle role.
+  through the optional `legacy_migration_evidence` release-bundle role; see
+  `docs/legacy-compatibility-removal.md` for the deletion checklist.

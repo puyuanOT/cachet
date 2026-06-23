@@ -10,6 +10,12 @@ import tomllib
 import pytest
 
 from document_kv_cache.databricks_runs import databricks_run_status_sidecar_issues
+from document_kv_cache.legacy_compatibility import (
+    LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES,
+    build_legacy_compatibility_migration_evidence_from_scan_config,
+    evaluate_legacy_compatibility_migration_record,
+    legacy_compatibility_migration_to_record,
+)
 from document_kv_cache.release_bundle import STRICT_V1_RELEASE_REQUIRED_ARTIFACTS
 
 
@@ -553,6 +559,55 @@ def test_legacy_compatibility_removal_gate_is_documented():
     assert "Refresh the tested wheel and strict release bundle before publication" in compact_gate
 
 
+def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
+    evidence_dir = REPO_ROOT / "evidence" / "legacy-migration" / "current"
+    scan_config_path = evidence_dir / "legacy-migration-scan-config.json"
+    evidence_path = evidence_dir / "legacy-migration-evidence.json"
+    validation_path = evidence_dir / "legacy-migration-validation.json"
+    readme = (evidence_dir / "README.md").read_text(encoding="utf-8")
+    scan_config = json.loads(scan_config_path.read_text(encoding="utf-8"))
+    committed_record = json.loads(evidence_path.read_text(encoding="utf-8"))
+    validation_record = json.loads(validation_path.read_text(encoding="utf-8"))
+    generated_record = legacy_compatibility_migration_to_record(
+        build_legacy_compatibility_migration_evidence_from_scan_config(
+            scan_config,
+            base_dir=REPO_ROOT,
+        )
+    )
+    evidence = evaluate_legacy_compatibility_migration_record(committed_record)
+
+    assert committed_record == generated_record
+    assert evidence.ok is True
+    assert evidence.issues == ()
+    assert validation_record["ok"] is True
+    assert validation_record["files"][evidence_path.relative_to(REPO_ROOT).as_posix()] == committed_record
+    assert {job["category"] for job in committed_record["checked_downstream_jobs"]} == set(
+        LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES
+    )
+    assert all(job["legacy_imports_present"] is False for job in committed_record["checked_downstream_jobs"])
+    assert all(
+        job["legacy_console_scripts_present"] is False
+        for job in committed_record["checked_downstream_jobs"]
+    )
+    assert all(job["legacy_reference_hits"] == [] for job in committed_record["checked_downstream_jobs"])
+    assert {evidence["hardware_target"] for evidence in committed_record["release_evidence"]} == {
+        "aws-g6-l4",
+        "aws-g5-a10g",
+    }
+    for job in committed_record["checked_downstream_jobs"]:
+        for checked_path in job["checked_paths"]:
+            assert (REPO_ROOT / checked_path).is_file()
+        assert (REPO_ROOT / job["evidence_uri"]).is_file()
+    for release_evidence in committed_record["release_evidence"]:
+        assert release_evidence["runner_uses_legacy_facade"] is False
+        assert (REPO_ROOT / release_evidence["evidence_uri"]).is_file()
+    assert "This is not the benchmark report directory" in readme
+    assert "`benchmarks/databricks/CURRENT.md`" in readme
+    assert "durable standalone benchmark artifacts" in readme
+    assert "document_kv.legacy_compatibility_migration.v1" in readme
+    assert "generated from `legacy-migration-scan-config.json`" in readme
+
+
 def test_legacy_restaurant_imports_in_tests_are_explicitly_scoped():
     actual = {
         str(path.relative_to(REPO_ROOT)): _legacy_references_in_test_module(path)
@@ -740,7 +795,7 @@ def test_readme_cachet_first_quickstart_uses_branded_imports_and_cli():
     assert "cachet-benchmark-plan --help" in quickstart
     assert "cachet-engine-launch-config build-vllm" in quickstart
     assert "cachet-databricks-runs payload-summary --help" in quickstart
-    assert "Compatibility import paths and legacy command aliases" in quickstart
+    assert "legacy command aliases are not part of built wheels" in quickstart
     assert "document_kv_cache" not in quickstart
     assert "document-kv-" not in quickstart
     assert "restaurant_kv_serving" not in quickstart

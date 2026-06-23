@@ -30,6 +30,12 @@ source shim.
 - `tests/test_project_governance.py` keeps legacy references scoped to
   compatibility tests and prevents new accidental `restaurant_kv_serving`
   dependencies from spreading.
+- Current downstream migration evidence is tracked in
+  `evidence/legacy-migration/current/legacy-migration-evidence.json`.
+  It is generated from
+  `evidence/legacy-migration/current/legacy-migration-scan-config.json`
+  and validates with no legacy references across the `release`, `benchmark`,
+  `storage`, `native_probe`, and `smoke` runner categories.
 - Release PRs continue to include PR evidence sidecars with Refactor-skill
   evidence and completed GPT-5.5 review before the strict release bundle can use
   those changes.
@@ -43,7 +49,7 @@ all of these blockers are closed:
   `restaurant_kv_serving` imports and `restaurant-kv-*` commands to `cachet`
   imports, `cachet-*` commands, or explicit `document_kv_cache` /
   `document-kv-*` names.
-- A current migration evidence artifact with record type
+- Keep the current migration evidence artifact with record type
   `document_kv.legacy_compatibility_migration.v1` validates with
   `python -m document_kv_cache.legacy_compatibility --validate-json`. The
   artifact must cover `release`, `benchmark`, `storage`, `native_probe`, and
