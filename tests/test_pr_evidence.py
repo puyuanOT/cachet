@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 import document_kv_cache.pr_evidence as public_pr_evidence
-import restaurant_kv_serving.pr_evidence as legacy_pr_evidence
 from document_kv_cache.pr_evidence import (
     GPT55_REVIEW_OUTCOMES,
     PR_EVIDENCE_RECORD_TYPE,
@@ -493,57 +492,6 @@ def test_public_pr_evidence_cli_uses_wrapper_hooks(monkeypatch, tmp_path):
     assert record["what_changed"] == ["public wrapper hook"]
 
 
-def test_legacy_pr_evidence_cli_uses_legacy_namespace_hooks(monkeypatch, tmp_path):
-    output_path = tmp_path / "pr-evidence.json"
-    original_public_hook = public_pr_evidence.evaluate_pr_evidence
-    called = {}
-
-    def fake_evaluate_pr_evidence(**kwargs):
-        called["kwargs"] = kwargs
-        return PullRequestEvidence(
-            what_changed=("legacy wrapper hook",),
-            why="prove legacy hook bridging",
-            scope=("governance",),
-            verification=("hooked",),
-            refactor_skill_applied=True,
-            gpt55_review_completed=True,
-            gpt55_review_findings_resolved=True,
-            gpt55_review_outcome="clean",
-            gpt55_review_summary="clean",
-        )
-
-    monkeypatch.setattr(legacy_pr_evidence, "evaluate_pr_evidence", fake_evaluate_pr_evidence)
-
-    exit_code = legacy_pr_evidence.main(
-        [
-            "--what-changed",
-            "ignored",
-            "--why",
-            "ignored",
-            "--scope",
-            "ignored",
-            "--verification",
-            "ignored",
-            "--refactor-skill-applied",
-            "--gpt55-review-completed",
-            "--gpt55-review-findings-resolved",
-            "--gpt55-review-outcome",
-            "findings_resolved",
-            "--gpt55-review-summary",
-            "ignored",
-            "--output-json",
-            str(output_path),
-        ]
-    )
-
-    assert exit_code == 0
-    assert called["kwargs"]["what_changed"] == ("ignored",)
-    assert called["kwargs"]["gpt55_review_outcome"] == "findings_resolved"
-    record = json.loads(output_path.read_text(encoding="utf-8"))
-    assert record["what_changed"] == ["legacy wrapper hook"]
-    assert public_pr_evidence.evaluate_pr_evidence is original_public_hook
-
-
 def test_public_pr_evidence_cli_validates_directory_with_wrapper_hooks(monkeypatch, tmp_path):
     output_path = tmp_path / "validation.json"
     called = {}
@@ -581,78 +529,6 @@ def test_public_pr_evidence_cli_validates_directory_with_wrapper_hooks(monkeypat
     assert called == {"directory": str(tmp_path), "pattern": "*.json"}
     assert record["record_type"] == PR_EVIDENCE_VALIDATION_RECORD_TYPE
     assert record["files"][f"{tmp_path}/valid.json"]["what_changed"] == ["public validation hook"]
-
-
-def test_legacy_pr_evidence_cli_validates_directory_with_legacy_hooks(monkeypatch, tmp_path):
-    output_path = tmp_path / "validation.json"
-    original_public_hook = public_pr_evidence.evaluate_pr_evidence_directory
-    called = {}
-
-    def fake_evaluate_pr_evidence_directory(directory, *, pattern="*.json"):
-        called["directory"] = directory
-        called["pattern"] = pattern
-        return {
-            "valid.json": PullRequestEvidence(
-                what_changed=("legacy validation hook",),
-                why="prove legacy validation hook bridging",
-                scope=("governance",),
-                verification=("hooked",),
-                refactor_skill_applied=True,
-                gpt55_review_completed=True,
-                gpt55_review_findings_resolved=False,
-                gpt55_review_outcome="clean",
-                gpt55_review_summary="clean",
-            )
-        }
-
-    monkeypatch.setattr(legacy_pr_evidence, "evaluate_pr_evidence_directory", fake_evaluate_pr_evidence_directory)
-
-    exit_code = legacy_pr_evidence.main(
-        [
-            "--validate-directory",
-            str(tmp_path),
-            "--output-json",
-            str(output_path),
-        ]
-    )
-
-    record = json.loads(output_path.read_text(encoding="utf-8"))
-    assert exit_code == 0
-    assert called == {"directory": str(tmp_path), "pattern": "*.json"}
-    assert record["record_type"] == PR_EVIDENCE_VALIDATION_RECORD_TYPE
-    assert record["files"][f"{tmp_path}/valid.json"]["what_changed"] == ["legacy validation hook"]
-    assert public_pr_evidence.evaluate_pr_evidence_directory is original_public_hook
-
-
-def test_legacy_pr_evidence_cli_restores_document_hooks_after_error(monkeypatch):
-    original_public_hook = public_pr_evidence.evaluate_pr_evidence
-
-    def fake_evaluate_pr_evidence(**kwargs):
-        raise RuntimeError("legacy hook failure")
-
-    monkeypatch.setattr(legacy_pr_evidence, "evaluate_pr_evidence", fake_evaluate_pr_evidence)
-
-    exit_code = legacy_pr_evidence.main(
-        [
-            "--what-changed",
-            "ignored",
-            "--why",
-            "ignored",
-            "--scope",
-            "ignored",
-            "--verification",
-            "ignored",
-            "--refactor-skill-applied",
-            "--gpt55-review-completed",
-            "--gpt55-review-outcome",
-            "clean",
-            "--gpt55-review-summary",
-            "ignored",
-        ]
-    )
-
-    assert exit_code == 1
-    assert public_pr_evidence.evaluate_pr_evidence is original_public_hook
 
 
 def test_public_pr_evidence_cli_validates_json_with_record_wrapper_hook(monkeypatch, tmp_path):

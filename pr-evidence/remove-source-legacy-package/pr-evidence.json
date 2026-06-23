@@ -1,0 +1,45 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "GPT-5.5 reviewer Kierkegaard the 2nd found a live document_kv_cache fallback to stale restaurant_kv_serving modules and insufficient exact public-surface coverage. The branch removed the fallback, made runtime exports match the typed Cachet facade, added a fake-stale-legacy regression test, pinned public exports/submodules/scripts exactly, reran verification, and the same reviewer approved PR #440 with no remaining findings.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 440,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/440",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/restaurant_kv_serving",
+    "src/document_kv_cache/__init__.py",
+    "src/document_kv_cache/openai_compatible.py",
+    "src/README.md",
+    "src/document_kv_cache/README.md",
+    "README.md",
+    "docs/README.md",
+    "docs/legacy-compatibility-removal.md",
+    "docs/v1-requirements-matrix.md",
+    "evidence/legacy-migration/README.md",
+    "tests/test_public_package.py",
+    "tests/test_project_governance.py",
+    "tests/test_release_bundle.py",
+    "tests/* legacy-facade assertions removed",
+    "pr-evidence/remove-source-legacy-package"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_public_package.py tests/test_project_governance.py -q --maxfail=10 --tb=short -> 64 passed",
+    "poetry run pytest -q -> 1786 passed",
+    "poetry check -> All set",
+    "poetry check --lock -> All set",
+    "git diff --check -> clean",
+    "built cachet_kv-0.2.0-py3-none-any.whl in /tmp/cachet-wheel-check and inspected: legacy_entries=[] and legacy_script_files=[]",
+    "changed-file high-signal secret-pattern scan -> no findings",
+    "GPT-5.5 reviewer Kierkegaard the 2nd found two issues: live legacy fallback and weakened public-surface tests; both were fixed and re-review approved with no findings"
+  ],
+  "what_changed": [
+    "Removed the source-only src/restaurant_kv_serving compatibility facade after current downstream migration evidence proved runners no longer depend on it.",
+    "Removed stale runtime fallback from document_kv_cache so a stray external restaurant_kv_serving package cannot change Cachet/document root exports.",
+    "Pinned public package exports, typed Cachet root exports, public submodules, and console scripts with exact tests while keeping release-bundle guards against legacy wheel files and restaurant-kv scripts."
+  ],
+  "why": "Finish the one-repo Cachet package consolidation by making Cachet/document_kv_cache the only supported source package surfaces and preventing old restaurant import paths from silently re-entering source, wheels, or CLI metadata."
+}

@@ -45,7 +45,7 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Primary implementation language is Python | Implemented | Source packages live under `src/cachet`, `src/document_kv_cache`, vendored `src/vllm_kv_injection`/`src/sglang_kv_injection`, and the legacy compatibility facade. | None for V1. |
+| Primary implementation language is Python | Implemented | Source packages live under `src/cachet`, `src/document_kv_cache`, and vendored `src/vllm_kv_injection`/`src/sglang_kv_injection`; the legacy restaurant facade has been removed from `src/`. | None for V1. |
 | Provide an end-to-end API | Implemented | `workflow.py`, `service.py`, README workflow examples, `docs/native-engine-integration.md`, and tests cover optional training, cache generation, materialization, launch-config sidecars, `kv_transfer_params`, and provider-backed vLLM/SGLang handoff. | Keep native engine integration examples aligned whenever connector contracts, launch-config fields, runtime pins, or benchmark evidence change. |
 | Use premium package branding | Implemented | The repository is `puyuanOT/cachet`; the distribution is the Cachet-branded `cachet-kv`; the product/import brand is Cachet with `cachet.<module>` imports plus `cachet-*` and `document-kv-*` CLI aliases. The exact `cachet` PyPI name is occupied by an unrelated Cachet API client, so `cachet-kv` is the V1 package-index identity. | Keep package metadata, README examples, and release-bundle wheel gates aligned with the Cachet brand. |
 | Document every folder | Implemented | Repository governance tests require every tracked directory to have a README or package docstring. | Continue applying the directory documentation gate to every PR. |
@@ -128,11 +128,9 @@ mean:
   evidence.
 - Keep runtime serving inside established engines and outside Cachet's package
   boundary.
-- The built `cachet-kv` wheel no longer includes the legacy restaurant facade
-  or `restaurant-kv-*` scripts. Delete the remaining source-only
-  `restaurant_kv_serving` compatibility directory after local compatibility
-  tests are migrated or removed. Current downstream migration evidence is
-  tracked under `evidence/legacy-migration/current/` as validated
+- The built `cachet-kv` wheel and source tree no longer include the legacy
+  restaurant facade or `restaurant-kv-*` scripts. Current downstream migration
+  evidence is tracked under `evidence/legacy-migration/current/` as validated
   `document_kv.legacy_compatibility_migration.v1` evidence that can be bundled
   through the optional `legacy_migration_evidence` role; see
-  `docs/legacy-compatibility-removal.md` for the deletion checklist.
+  `docs/legacy-compatibility-removal.md` for the completed removal contract.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
 import urllib.error as _urlerror
 import urllib.parse as _urlparse
@@ -25,8 +24,7 @@ __all__ = [
     "OpenAICompatibleCompletionEngine",
 ]
 
-_stdlib_urlopen = _urlrequest.urlopen
-_urlopen = _stdlib_urlopen
+_urlopen = _urlrequest.urlopen
 
 
 class TokenCounter(Protocol):
@@ -373,11 +371,6 @@ def _iter_sse_events(response: Any) -> Iterator[str]:
 
 
 def _active_urlopen() -> Callable[..., Any]:
-    # Preserve the old module-level monkeypatch hook while the legacy namespace exists.
-    legacy_module = sys.modules.get("restaurant_kv_serving.openai_compatible")
-    legacy_urlopen = getattr(legacy_module, "urlopen", None)
-    if legacy_urlopen is not None and legacy_urlopen is not _stdlib_urlopen:
-        return legacy_urlopen
     return _urlopen
 
 
