@@ -65,6 +65,8 @@ HF_MODEL_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
 SERVED_MODEL_NAME = "qwen3:4b-instruct"
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
+BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
+CACHE_PREFIX_CACHE_SALT = "cachet-document-kv-cache"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
@@ -333,6 +335,14 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "dataset_specs": list(config.dataset_specs),
         "cache_runtime_prompt": False,
         "cache_prompt_text_mode": "logical",
+        "prefix_cache_isolation": (
+            {
+                "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
+                "cache_cache_salt": CACHE_PREFIX_CACHE_SALT,
+            }
+            if config.uses_prepared_datasets
+            else None
+        ),
         "requires_kv_transfer_params": config.uses_prepared_datasets,
         "generates_prepared_handoffs": config.handoff_generation is not None,
         "benchmark_handoff_generation": (
@@ -1327,7 +1337,16 @@ def build_benchmark_runner_args(
         str(config.benchmark_output_path),
     ]
     if config.uses_prepared_datasets:
-        args.extend(["--cache-base-url", config.server_base_url])
+        args.extend(
+            [
+                "--cache-base-url",
+                config.server_base_url,
+                "--baseline-extra-body-json",
+                json.dumps({"cache_salt": BASELINE_PREFIX_CACHE_SALT}, sort_keys=True),
+                "--cache-extra-body-json",
+                json.dumps({"cache_salt": CACHE_PREFIX_CACHE_SALT}, sort_keys=True),
+            ]
+        )
     args.extend(dataset_args(dataset_paths))
     return args
 
