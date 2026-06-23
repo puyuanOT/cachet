@@ -844,6 +844,9 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "vLLM/SGLang handoff boundary",
         "Memory, Disk, UC Volume, and routed readers",
         "AWS g6/L4",
+        "AWS g5/A10G",
+        "`aws-g5-a10g`",
+        "`g5.8xlarge`",
         "`qwen3:4b-instruct`",
         "Biography",
         "HotpotQA",
@@ -859,6 +862,9 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "Refactor skill",
         "one PR open",
         "complete strict release bundle",
+        "strict V1 publication target",
+        "315109189523858",
+        "cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main",
         "real vLLM and SGLang native block managers",
         "`restaurant_kv_serving` compatibility package",
     ):
@@ -866,6 +872,11 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 
     assert "Release-gated | `databricks_job.py`" in compact_matrix
     assert "Run connector action descriptor validation" in matrix_text
+    assert (
+        "release evidence `ok=true` when paired with the current storage and native engine sidecars"
+        in matrix_text
+    )
+    assert "does not replace the strict V1 publication target" in matrix_text
     for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         assert label in compact_remaining_release_gates
 
@@ -883,6 +894,13 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "task summaries carry non-empty `purpose` tags" in compact_text
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
+    assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
+    assert "315109189523858" in compact_remaining_v1_work
+    assert "release evidence `ok=true`" in compact_remaining_v1_work
+    assert (
+        "does not change the strict V1 publication target from AWS g6/L4"
+        in compact_remaining_v1_work
+    )
     for _role, _minimum_count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS:
         assert label in compact_remaining_v1_work
 
