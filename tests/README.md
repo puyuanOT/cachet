@@ -7,7 +7,7 @@ These tests cover the document KV-cache orchestration package.
 - `test_engine.py` verifies engine-ready handles, MQA/GQA layout validation, and service preparation for vLLM/SGLang adapters.
 - `test_engine_adapters.py` verifies the explicit external vLLM/SGLang adapter contracts and rejection of unsupported payload or LoRA modes.
 - `test_engine_probe.py` verifies the CLI runner that loads a handoff payload, invokes a backend-provided native probe factory, and emits release-gate probe records.
-- `test_planner_materializer.py` verifies document planning, restaurant compatibility aliases, CPU cache reuse, and materialized byte ordering.
+- `test_planner_materializer.py` verifies document-only planning, CPU cache reuse, and materialized byte ordering.
 - `test_scheduler.py` verifies admission queue accounting for pending GPU bytes and the legacy scheduler-module compatibility shim.
 - `test_storage.py` verifies Memory, Disk, Unity Catalog Volume, and routed range readers.
 - `test_storage_benchmark.py` verifies the synthetic Memory/Disk/Unity Catalog reader benchmark and JSON/CLI result contract.
