@@ -111,6 +111,7 @@ def test_sglang_smoke_cache_arm_requires_handoff_and_page_keys(tmp_path):
             handoff_json=str(handoff_path),
             payload_uri=payload_uri,
             request_id="cachet-live-sglang-1",
+            sglang_hicache_page_keys=(),
         )
 
     assert str(exc.value) == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
@@ -136,6 +137,7 @@ def test_sglang_smoke_accepts_baseline_only_without_handoff_fields(tmp_path):
     )
 
     assert config.baseline_only is True
+    assert config.sglang_hicache_page_keys == ()
     assert config.local_dir == Path("/local_disk0/document-kv-sglang-smoke-sglang-1")
 
 
@@ -162,7 +164,7 @@ def test_sglang_smoke_rejects_handoff_fields_for_baseline_only(tmp_path):
             benchmark_id="sglang-1",
             output_dir=tmp_path / "out",
             baseline_only=True,
-            sglang_hicache_page_keys=("page-a",),
+            sglang_hicache_page_keys=(),
         )
 
     assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
@@ -341,7 +343,21 @@ def test_build_metadata_records_cache_arm_support_for_handoff_smoke(tmp_path):
     assert metadata["requires_kv_transfer_params"] is True
     assert metadata["cache_arm_supported"] is True
     assert metadata["cache_arm_blocker"] is None
+    assert metadata["live_request_metadata_bridge_ok"] is False
+    assert metadata["sglang_import_probe_ok"] is False
+
+    metadata = build_metadata(
+        config,
+        import_probe_record={
+            "ok": True,
+            "document_kv_request_metadata_bridge_ok": True,
+            "document_kv_request_metadata_bridge": {"ok": True},
+        },
+    )
+
     assert metadata["live_request_metadata_bridge_ok"] is True
+    assert metadata["sglang_import_probe_ok"] is True
+    assert metadata["document_kv_request_metadata_bridge"] == {"ok": True}
 
 
 def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkeypatch, tmp_path):
@@ -404,7 +420,14 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
 
     monkeypatch.setattr(public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check)
 
-    record = run_live_checks(config)
+    record = run_live_checks(
+        config,
+        import_probe_record={
+            "ok": True,
+            "document_kv_request_metadata_bridge_ok": True,
+            "document_kv_request_metadata_bridge": {"ok": True},
+        },
+    )
 
     assert record["ok"] is True
     assert len(seen_configs) == 2
@@ -426,6 +449,38 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert written["cache"]["request_id"] == "cachet-live-sglang-1"
 
 
+def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri)
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+    )
+
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_openai_compatible_live_check",
+        lambda live_config: FakeLiveResult(
+            ok=True,
+            request_id=live_config.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
+            prompt_text_mode=live_config.prompt_text_mode,
+            cache_arm=live_config.use_cache_arm,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="request metadata bridge not verified"):
+        run_live_checks(config)
+
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+    assert "request metadata bridge not verified" in written["issues"]
+
+
 def test_parse_args_builds_baseline_only_config(tmp_path):
     config = parse_args(
         [
@@ -443,6 +498,21 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
     assert config.baseline_only is True
     assert config.hardware_target == "aws-g5-a10g"
     assert config.stream is False
+
+    with pytest.raises(ValueError) as exc:
+        parse_args(
+            [
+                "--benchmark-id",
+                "sglang-1",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--baseline-only",
+                "--sglang-hicache-page-keys-json",
+                "[]",
+            ]
+        )
+
+    assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
 
 
 def test_probe_sglang_import_writes_timeout_artifact(monkeypatch, tmp_path):

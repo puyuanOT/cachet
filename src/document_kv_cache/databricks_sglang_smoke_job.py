@@ -178,8 +178,12 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record_json")
         if self.handoff_record_json is not None:
             _json_object_from_text(self.handoff_record_json, "handoff_record_json")
+        sglang_hicache_page_keys: tuple[str, ...] | None = None
         if self.sglang_hicache_page_keys_json is not None:
-            _json_string_array_from_text(self.sglang_hicache_page_keys_json, "sglang_hicache_page_keys_json")
+            sglang_hicache_page_keys = _json_string_array_from_text(
+                self.sglang_hicache_page_keys_json,
+                "sglang_hicache_page_keys_json",
+            )
         has_handoff_fields = any(
             value is not None
             for value in (
@@ -196,7 +200,7 @@ class DatabricksSGLangSmokeJobConfig:
         else:
             if self.handoff_json is None and self.handoff_record_json is None:
                 raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
-            if self.sglang_hicache_page_keys_json is None:
+            if not sglang_hicache_page_keys:
                 raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         if self.hicache_size_gb is not None and self.hicache_size_gb < 0:
             raise ValueError("hicache_size_gb must be non-negative")

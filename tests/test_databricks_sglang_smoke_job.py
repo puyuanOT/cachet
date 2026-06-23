@@ -183,11 +183,19 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
             SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
         ),
         (
+            {"sglang_hicache_page_keys_json": "[]", "baseline_only": True},
+            SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+        ),
+        (
             {"sglang_hicache_page_keys_json": '"page-a"', "baseline_only": False},
             "sglang_hicache_page_keys_json must decode",
         ),
         (
             {"sglang_hicache_page_keys_json": PAGE_KEYS_JSON, "baseline_only": False},
+            SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        ),
+        (
+            {"handoff_json": HANDOFF_JSON, "sglang_hicache_page_keys_json": "[]", "baseline_only": False},
             SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
         ),
         (
