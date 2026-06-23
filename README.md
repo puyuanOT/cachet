@@ -975,6 +975,20 @@ cachet-benchmark-handoff-manifest \
   --output-json /data/handoffs/biography-manifest.json
 ```
 
+For SGLang handoffs, add
+`--sglang-hicache-page-keys-json-template` pointing at per-example JSON arrays,
+or JSON objects containing `document_kv.sglang_hicache_page_keys`. Those keys
+must be the exact SGLang HiCache page-hash chain for the cached prefix:
+
+```bash
+cachet-benchmark-handoff-manifest \
+  --input-jsonl /data/v1-prepared/biography.jsonl \
+  --handoff-json-template '/Volumes/catalog/schema/volume/cachet/handoffs/{dataset}/{example_id}.handoff.json' \
+  --sglang-hicache-page-keys-json-template '/data/sglang-page-keys/{dataset}/{example_id}.json' \
+  --expected-backend sglang \
+  --output-json /data/handoffs/biography-sglang-manifest.json
+```
+
 To run the V1 benchmark contract against existing OpenAI-compatible vLLM or SGLang servers, generate a reproducible command plan for all four datasets:
 
 ```bash
@@ -1872,6 +1886,7 @@ python -m document_kv_cache.live_server \
   --runtime-prompt \
   --kv-transfer-params-transport custom-params \
   --handoff-json /Volumes/catalog/schema/volume/cachet/live/sglang.handoff.json \
+  --sglang-hicache-page-keys-json '["first-runtime-page-key", "second-runtime-page-key"]' \
   --expected-backend sglang
 ```
 

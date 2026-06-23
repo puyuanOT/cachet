@@ -31,6 +31,7 @@ DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
+DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 FINAL_ANSWER_CUE = "Answer:"
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
+    "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",
@@ -721,6 +723,10 @@ def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
             payload_uri,
             field_name=f"kv_transfer_params.{DOCUMENT_KV_PAYLOAD_URI_PARAM}",
         )
+    _validate_optional_string_sequence(
+        kv_transfer_params.get(DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM),
+        field_name=f"kv_transfer_params.{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM}",
+    )
     if handoff_record is not None:
         if not isinstance(handoff_record, Mapping):
             raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")
@@ -740,6 +746,18 @@ def _validate_runtime_payload_uri(value: object, *, field_name: str) -> None:
         _validate_local_payload_uri(value)
     except ValueError as exc:
         raise ValueError(f"{field_name}: {exc}") from exc
+
+
+def _validate_optional_string_sequence(value: object, *, field_name: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{field_name} must be a sequence of strings")
+    if not isinstance(value, Sequence):
+        raise ValueError(f"{field_name} must be a sequence of strings")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{field_name}[{index}] must be a non-empty string")
 
 
 def _validate_inline_handoff_record(

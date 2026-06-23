@@ -12,6 +12,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -144,6 +145,44 @@ def test_live_check_kv_transfer_params_accepts_inline_handoff_record(tmp_path):
     assert params[DOCUMENT_KV_REQUEST_ID_PARAM] == "cachet-live-inline-1"
     assert params[DOCUMENT_KV_HANDOFF_RECORD_PARAM] == record
     assert params[DOCUMENT_KV_PAYLOAD_URI_PARAM].endswith("/override.kv")
+
+
+def test_live_check_kv_transfer_params_can_attach_sglang_page_keys(tmp_path):
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    record = handoff_record(
+        request_id="cachet-live-inline-1",
+        payload_uri=payload_uri,
+        backend="sglang",
+    )
+
+    params = live_check_kv_transfer_params(
+        handoff_record=record,
+        sglang_hicache_page_keys=("page-a", "page-b"),
+        expected_backend="sglang",
+    )
+
+    assert params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] == ["page-a", "page-b"]
+
+
+def test_live_check_kv_transfer_params_rejects_malformed_sglang_page_keys(tmp_path):
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    record = handoff_record(
+        request_id="cachet-live-inline-1",
+        payload_uri=payload_uri,
+        backend="sglang",
+    )
+
+    with pytest.raises(ValueError, match="sglang_hicache_page_keys must be a sequence"):
+        live_check_kv_transfer_params(
+            handoff_record=record,
+            sglang_hicache_page_keys="page-a",
+            expected_backend="sglang",
+        )
+
+
+def test_live_check_kv_transfer_params_rejects_page_keys_without_handoff():
+    with pytest.raises(ValueError, match="sglang_hicache_page_keys require handoff_json or handoff_record"):
+        live_check_kv_transfer_params(sglang_hicache_page_keys=("page-a",))
 
 
 def test_live_check_kv_transfer_params_rejects_backend_mismatch(tmp_path):

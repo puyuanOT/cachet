@@ -20,11 +20,14 @@ provider config, validates the provider factory, and runs a full-prompt
 baseline. Cachet's built-in provider can hydrate validated handoff payload
 pages under SGLang runtime HiCache keys when request context reaches the
 provider with explicit `document_kv.sglang_hicache_page_keys` metadata matching
-the runtime `prefix_keys` and batch hashes. Handoff-backed cache-arm execution
-is intentionally blocked before server launch because the pinned SGLang OpenAI
-path carries `custom_params` on sampling params without passing Cachet
-`kv_transfer_params` into `HiCacheStorageExtraInfo.extra_info`. The runtime
-preflight exposes this as `live_request_metadata_bridge_ok=false`.
+the runtime `prefix_keys` and batch hashes. `sglang_kv_injection.hicache_keys`
+and `cachet-benchmark-handoff-manifest --sglang-hicache-page-keys-json-template`
+provide the local page-key metadata path for future live runs. Handoff-backed
+cache-arm execution is intentionally blocked before server launch because the
+pinned SGLang OpenAI path carries `custom_params` on sampling params without
+passing Cachet `kv_transfer_params` into
+`HiCacheStorageExtraInfo.extra_info`. The runtime preflight exposes this as
+`live_request_metadata_bridge_ok=false`.
 
 Those helpers are a provider/server bring-up path, not a benchmark result. Use
 `--baseline-only` until the live request metadata bridge is available. This

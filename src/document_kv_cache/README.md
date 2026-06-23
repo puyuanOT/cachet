@@ -30,7 +30,8 @@ return as a production dependency.
   plans.
 - `benchmark_handoffs.py` generates per-row Cachet handoff bundles from
   prepared benchmark JSONL, builds fail-closed `(dataset, example_id)` handoff
-  manifests, and attaches those handoffs to prepared benchmark JSONL rows.
+  manifests, carries optional SGLang HiCache page-key proof, and attaches those
+  handoffs to prepared benchmark JSONL rows.
 - `benchmark_handoff_bundles.py` is the `python -m` entry point for the
   handoff-bundle generation CLI used by reproducible benchmark plans.
 - `benchmark_plan_executor.py` runs command-plan JSON files for local or managed

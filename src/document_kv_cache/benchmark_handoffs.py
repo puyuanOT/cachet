@@ -23,6 +23,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     benchmark_cache_artifact_stem,
     benchmark_cache_request,
     benchmark_cache_source_document,
@@ -52,7 +53,8 @@ from document_kv_cache.workflow import (
 
 
 BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE = "document_kv.benchmark_handoffs.v1"
-BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION = 1
+BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION = 2
+_BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION})
 _TEMPLATE_FIELDS = frozenset({"dataset", "example_id"})
 _BUNDLE_TEMPLATE_FIELDS = frozenset({"dataset", "example_id", "artifact_stem"})
 _DEFAULT_BUNDLE_SHARD_FILENAME = "cachet-benchmark.kvpack"
@@ -65,7 +67,7 @@ _MANUAL_LAYOUT_TRIGGER_FIELDS = (
     "head_size",
 )
 _MANIFEST_KEYS = frozenset({"record_type", "schema_version", "entries"})
-_ENTRY_KEYS = frozenset(
+_ENTRY_KEYS_V1 = frozenset(
     {
         "dataset",
         "example_id",
@@ -75,6 +77,11 @@ _ENTRY_KEYS = frozenset(
         "payload_uri",
     }
 )
+_ENTRY_KEYS = _ENTRY_KEYS_V1 | {"sglang_hicache_page_keys"}
+_ENTRY_KEYS_BY_SCHEMA_VERSION = {
+    1: _ENTRY_KEYS_V1,
+    BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION: _ENTRY_KEYS,
+}
 
 __all__ = [
     "BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE",
@@ -107,6 +114,7 @@ class BenchmarkHandoffEntry:
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
+    sglang_hicache_page_keys: Sequence[str] = ()
 
     def __post_init__(self) -> None:
         validate_v1_dataset(_required_string(self.dataset, field_name="dataset"))
@@ -141,6 +149,8 @@ class BenchmarkHandoffEntry:
                 "payload_uri",
                 _runtime_payload_uri(self.payload_uri, field_name="payload_uri"),
             )
+        page_keys = _string_tuple(self.sglang_hicache_page_keys, field_name="sglang_hicache_page_keys")
+        object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -158,6 +168,8 @@ class BenchmarkHandoffEntry:
             params[DOCUMENT_KV_HANDOFF_RECORD_PARAM] = dict(self.handoff_record)
         if self.payload_uri is not None:
             params[DOCUMENT_KV_PAYLOAD_URI_PARAM] = self.payload_uri
+        if self.sglang_hicache_page_keys:
+            params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = list(self.sglang_hicache_page_keys)
         return params
 
 
@@ -228,13 +240,18 @@ def benchmark_handoff_manifest_from_record(record: Mapping[str, Any]) -> Benchma
         raise ValueError(f"handoff manifest has unsupported keys: {unexpected}")
     if record.get("record_type") != BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE:
         raise ValueError(f"record_type must be {BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE!r}")
-    if record.get("schema_version") != BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION:
-        raise ValueError(f"schema_version must be {BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION}")
+    schema_version = record.get("schema_version")
+    if (
+        type(schema_version) is not int
+        or schema_version not in _BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS
+    ):
+        supported = sorted(_BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS)
+        raise ValueError(f"schema_version must be one of {supported}")
     raw_entries = record.get("entries")
     if not isinstance(raw_entries, Sequence) or isinstance(raw_entries, (str, bytes, bytearray)):
         raise ValueError("entries must be an array")
     entries = tuple(
-        _entry_from_record(entry, index=index)
+        _entry_from_record(entry, index=index, schema_version=schema_version)
         for index, entry in enumerate(raw_entries)
     )
     return BenchmarkHandoffManifest(entries=entries)
@@ -285,6 +302,7 @@ def build_benchmark_handoff_manifest_from_jsonl(
     handoff_json_template: str,
     dataset: str | None = None,
     payload_uri_template: str | None = None,
+    sglang_hicache_page_keys_json_template: str | None = None,
     expected_backend: ServingBackend | str | None = None,
     allow_missing: bool = False,
 ) -> BenchmarkHandoffManifest:
@@ -327,6 +345,11 @@ def build_benchmark_handoff_manifest_from_jsonl(
             if payload_uri_template is not None
             else _payload_uri_from_handoff_record(handoff_record)
         )
+        sglang_hicache_page_keys = _sglang_hicache_page_keys_from_template(
+            sglang_hicache_page_keys_json_template,
+            dataset=row_dataset,
+            example_id=example_id,
+        )
         entries.append(
             BenchmarkHandoffEntry(
                 dataset=row_dataset,
@@ -334,6 +357,7 @@ def build_benchmark_handoff_manifest_from_jsonl(
                 request_id=_required_string(handoff_record.get("request_id"), field_name="handoff_record.request_id"),
                 handoff_json=handoff_json,
                 payload_uri=payload_uri,
+                sglang_hicache_page_keys=sglang_hicache_page_keys,
             )
         )
     if missing_keys and not allow_missing:
@@ -763,6 +787,13 @@ def manifest_main(argv: Sequence[str] | None = None) -> int:
         "--payload-uri-template",
         help="Optional payload URI override template. Supports {dataset} and {example_id}.",
     )
+    parser.add_argument(
+        "--sglang-hicache-page-keys-json-template",
+        help=(
+            "Optional JSON array template for SGLang HiCache page keys. "
+            "Supports {dataset} and {example_id}."
+        ),
+    )
     parser.add_argument("--expected-backend", choices=[backend.value for backend in ServingBackend])
     parser.add_argument("--allow-missing", action="store_true", help="Skip rows whose handoff JSON is absent.")
     try:
@@ -772,6 +803,7 @@ def manifest_main(argv: Sequence[str] | None = None) -> int:
             handoff_json_template=args.handoff_json_template,
             dataset=args.dataset,
             payload_uri_template=args.payload_uri_template,
+            sglang_hicache_page_keys_json_template=args.sglang_hicache_page_keys_json_template,
             expected_backend=args.expected_backend,
             allow_missing=args.allow_missing,
         )
@@ -816,10 +848,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _entry_from_record(record: object, *, index: int) -> BenchmarkHandoffEntry:
+def _entry_from_record(record: object, *, index: int, schema_version: int) -> BenchmarkHandoffEntry:
     if not isinstance(record, Mapping):
         raise ValueError(f"entries[{index}] must be an object")
-    unexpected = sorted(str(key) for key in record if key not in _ENTRY_KEYS)
+    entry_keys = _ENTRY_KEYS_BY_SCHEMA_VERSION[schema_version]
+    unexpected = sorted(str(key) for key in record if key not in entry_keys)
     if unexpected:
         raise ValueError(f"entries[{index}] has unsupported keys: {unexpected}")
     return BenchmarkHandoffEntry(
@@ -829,6 +862,7 @@ def _entry_from_record(record: object, *, index: int) -> BenchmarkHandoffEntry:
         handoff_json=record.get("handoff_json"),
         handoff_record=record.get("handoff_record"),
         payload_uri=record.get("payload_uri"),
+        sglang_hicache_page_keys=record.get("sglang_hicache_page_keys", ()),
     )
 
 
@@ -844,6 +878,8 @@ def _entry_to_record(entry: BenchmarkHandoffEntry) -> dict[str, Any]:
         record["handoff_record"] = dict(entry.handoff_record)
     if entry.payload_uri is not None:
         record["payload_uri"] = entry.payload_uri
+    if entry.sglang_hicache_page_keys:
+        record["sglang_hicache_page_keys"] = list(entry.sglang_hicache_page_keys)
     return record
 
 
@@ -865,6 +901,39 @@ def _payload_uri_from_handoff_record(record: Mapping[str, Any]) -> str:
     if not isinstance(payload_source, Mapping):
         raise ValueError("handoff_record.payload_source must be an object")
     return _runtime_payload_uri(payload_source.get("uri"), field_name="handoff_record.payload_source.uri")
+
+
+def _sglang_hicache_page_keys_from_template(
+    template: str | None,
+    *,
+    dataset: str,
+    example_id: str,
+) -> tuple[str, ...]:
+    if template is None:
+        return ()
+    path = _format_benchmark_handoff_template(
+        template,
+        dataset=dataset,
+        example_id=example_id,
+        field_name="sglang_hicache_page_keys_json_template",
+    )
+    try:
+        decoded = json.loads(local_path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise ValueError(f"Missing SGLang HiCache page-key JSON for {dataset}/{example_id}: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"SGLang HiCache page-key JSON is invalid for {dataset}/{example_id}: {exc.msg}") from exc
+    if isinstance(decoded, Mapping):
+        if DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM in decoded:
+            decoded = decoded[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM]
+        elif "sglang_hicache_page_keys" in decoded:
+            decoded = decoded["sglang_hicache_page_keys"]
+        else:
+            raise ValueError(
+                "SGLang HiCache page-key JSON object must include "
+                f"{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM!r} or 'sglang_hicache_page_keys'"
+            )
+    return _string_tuple(decoded, field_name=f"sglang_hicache_page_keys_json[{dataset}/{example_id}]")
 
 
 def _format_benchmark_handoff_template(
@@ -1211,7 +1280,10 @@ def _optional_string(value: str | None, *, default: str, field_name: str) -> str
 def _string_tuple(values: Iterable[str], *, field_name: str) -> tuple[str, ...]:
     if isinstance(values, (str, bytes, bytearray)):
         raise TypeError(f"{field_name} must be a sequence of strings")
-    normalized = tuple(values)
+    try:
+        normalized = tuple(values)
+    except TypeError as exc:
+        raise TypeError(f"{field_name} must be a sequence of strings") from exc
     for index, value in enumerate(normalized):
         _required_string(value, field_name=f"{field_name}[{index}]")
     return normalized
