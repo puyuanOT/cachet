@@ -458,6 +458,11 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --output-json databricks-runs/engine-probe-vllm/databricks-engine-probe-submit.json
 ```
 
+Release-safe single-backend engine-probe jobs derive backend-specific task keys
+(`document_kv_vllm_engine_probe` or `document_kv_sglang_engine_probe`) when
+`--task-key` is omitted, so split vLLM/SGLang Databricks status sidecars remain
+strict-bundle-ready without manual task-key overrides.
+
 `--provider-backed-vllm-native-probe` is the preferred single-backend QA probe
 for the built-in vLLM path. It sets the Cachet vLLM probe factory, the
 `vllm_kv_injection.probe:build_native_connector_probe` delegate, the

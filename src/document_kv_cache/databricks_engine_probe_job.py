@@ -429,6 +429,10 @@ class DatabricksEngineProbeJobConfig:
             raise ValueError("payload_uri must be non-empty when provided")
         if not self.run_name:
             raise ValueError("run_name must be non-empty")
+        if type(self.release_safe) is not bool:
+            raise ValueError("release_safe must be a boolean")
+        if self.release_safe and self.task_key == DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY:
+            object.__setattr__(self, "task_key", _default_task_key_for_backend(self.expected_backend))
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
         if self.wheel_uri is not None and not self.wheel_uri:

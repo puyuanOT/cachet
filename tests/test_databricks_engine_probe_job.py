@@ -185,10 +185,31 @@ def test_build_databricks_engine_probe_release_safe_payload_omits_debug_flags():
     )
 
     payload = build_databricks_engine_probe_run_submit_payload(config)
-    parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+    task = payload["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
 
+    assert task["task_key"] == f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm"
     assert "--engine-version" not in parameters
     assert "--allow-non-native-probe" not in parameters
+
+
+def test_build_databricks_engine_probe_release_safe_sglang_payload_uses_backend_task_key():
+    config = DatabricksEngineProbeJobConfig(
+        handoff_json="/Volumes/catalog/schema/volume/probes/sglang-handoff.json",
+        probe_factory="document_kv_cache_sglang_probe:build_probe",
+        output_json="/Volumes/catalog/schema/volume/probes/sglang-probe.json",
+        runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+        expected_backend=ServingBackend.SGLANG,
+        wheel_uri=WHEEL_URI,
+        single_user_name=SINGLE_USER_NAME,
+        release_safe=True,
+        sglang_runtime_preflight_output_json=SGLANG_RUNTIME_PREFLIGHT_OUTPUT_JSON,
+        sglang_runtime_preflight_launch_config_json=SGLANG_RUNTIME_PREFLIGHT_LAUNCH_CONFIG_JSON,
+    )
+
+    payload = build_databricks_engine_probe_run_submit_payload(config)
+
+    assert payload["tasks"][0]["task_key"] == f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang"
 
 
 def test_databricks_engine_probe_job_config_preserves_existing_positional_arguments():
@@ -2693,6 +2714,7 @@ def test_main_provider_backed_vllm_preset_writes_g6_payload(tmp_path):
     parameters = task["spark_python_task"]["parameters"]
 
     assert exit_code == 0
+    assert task["task_key"] == f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm"
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["spark_env_vars"] == {
@@ -2762,6 +2784,7 @@ def test_main_provider_backed_sglang_preset_writes_g6_payload(tmp_path):
     parameters = task["spark_python_task"]["parameters"]
 
     assert exit_code == 0
+    assert task["task_key"] == f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang"
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["spark_env_vars"] == {
