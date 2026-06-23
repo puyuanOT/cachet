@@ -458,6 +458,11 @@ python -m document_kv_cache.databricks_engine_probe_job \
   --output-json databricks-runs/engine-probe-vllm/databricks-engine-probe-submit.json
 ```
 
+Release-safe single-backend engine-probe jobs derive backend-specific task keys
+(`document_kv_vllm_engine_probe` or `document_kv_sglang_engine_probe`) when
+`--task-key` is omitted, so split vLLM/SGLang Databricks status sidecars remain
+strict-bundle-ready without manual task-key overrides.
+
 `--provider-backed-vllm-native-probe` is the preferred single-backend QA probe
 for the built-in vLLM path. It sets the Cachet vLLM probe factory, the
 `vllm_kv_injection.probe:build_native_connector_probe` delegate, the
@@ -924,7 +929,8 @@ python -m document_kv_cache.benchmark_plan \
   --release-bundle-output-json /data/release-bundle-manifest.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-benchmark.json \
   --release-bundle-databricks-run-status-json /data/databricks-run-status-storage.json \
-  --release-bundle-databricks-run-status-json /data/databricks-run-status-engine-probe.json \
+  --release-bundle-databricks-run-status-json /data/databricks-run-status-vllm-engine-probe.json \
+  --release-bundle-databricks-run-status-json /data/databricks-run-status-sglang-engine-probe.json \
   --release-bundle-package-wheel /data/dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --release-bundle-pr-evidence-json /data/pr-evidence/release-provenance.json \
   --github-governance-output-json /data/github-governance.json \
@@ -1325,7 +1331,8 @@ python -m document_kv_cache.release_bundle \
   --plan-execution-json plan-execution.json \
   --databricks-run-status-json databricks-run-status-benchmark.json \
   --databricks-run-status-json databricks-run-status-storage.json \
-  --databricks-run-status-json databricks-run-status-engine-probe.json \
+  --databricks-run-status-json databricks-run-status-vllm-engine-probe.json \
+  --databricks-run-status-json databricks-run-status-sglang-engine-probe.json \
   --package-wheel dist/document_kv_cache-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
@@ -1354,8 +1361,11 @@ benchmark-plan execution, Databricks run-status sidecars for benchmark,
 storage, and engine-probe runs, tested wheel, PR evidence, V1 requirements
 matrix, GitHub governance, repository hygiene, and native-probe factory
 diagnostics sidecars are all present; the release bundle also verifies exactly
-one Databricks sidecar for each required purpose. The native factory diagnostics
-must also report supported built-in vLLM and SGLang factory entry points.
+one Databricks sidecar for the benchmark and storage purposes plus one vLLM and
+one SGLang engine-probe status, either split across backend runs or grouped in
+an engine-probe matrix run. The native factory diagnostics must also report
+supported built-in vLLM and SGLang factory entry points across the bundled
+diagnostics sidecars.
 Benchmark-plan execution sidecars are validated as closed schemas, including
 each command entry and the embedded plan-source provenance record, before they
 are copied into the release bundle. Add
@@ -1371,7 +1381,8 @@ untracked and no tracked paths differ from `HEAD`. Repeat
 `document_kv.native_probe_factories.v1` diagnostics emitted by
 `document_kv_cache.native_probe_factories`; the bundle validates that the
 diagnostics cover the built-in vLLM and SGLang native factory entry points, and
-strict V1 release bundles require both entries to be supported.
+strict V1 release bundles require both entries to be supported across the
+bundled diagnostics.
 Repeat
 `--databricks-run-status-json` for compact `databricks_runs get --summary`
 outputs, or extracted inner `summary` records, from the managed runs whose
@@ -1726,8 +1737,8 @@ type annotations after installation.
   including the V1 benchmark and storage-reader benchmark plus the strict
   artifact set: release evidence sidecar, preflight sidecar, vLLM/SGLang native
   engine probe sidecars, vLLM/SGLang connector action sidecars, vLLM/SGLang
-  engine launch config sidecars, benchmark plan execution sidecar, exactly
-  three Databricks run-status sidecars for benchmark, storage, and engine-probe
+  engine launch config sidecars, benchmark plan execution sidecar, Databricks
+  run-status sidecars for benchmark, storage, and vLLM/SGLang engine-probe
   runs, tested package wheel, PR evidence sidecar, V1 requirements matrix,
   GitHub governance sidecar, repository hygiene sidecar, and native probe
   factory diagnostics sidecar.

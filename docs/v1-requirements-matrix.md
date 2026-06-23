@@ -83,8 +83,8 @@ mean:
   Catalog runs with the full strict artifact set: release evidence sidecar,
   preflight sidecar, vLLM/SGLang native engine probe sidecars, vLLM/SGLang
   connector action sidecars, vLLM/SGLang engine launch config sidecars,
-  benchmark plan execution sidecar, exactly three Databricks run-status
-  sidecars for benchmark, storage, and engine-probe runs, tested package wheel,
+  benchmark plan execution sidecar, Databricks run-status sidecars for
+  benchmark, storage, and vLLM/SGLang engine-probe runs, tested package wheel,
   PR evidence sidecar, V1 requirements matrix, GitHub governance sidecar,
   repository hygiene sidecar, and native probe factory diagnostics sidecar.
 - `benchmark_plan.py` can now emit the vLLM/SGLang engine launch config sidecars

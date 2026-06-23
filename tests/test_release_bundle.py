@@ -680,13 +680,14 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "engine_launch_config",
         "release_evidence",
         "preflight",
-        "plan_execution",
-        "databricks_run_status",
-        "databricks_run_status",
-        "databricks_run_status",
-        "package_wheel",
-        "pr_evidence",
-        "requirements_matrix",
+            "plan_execution",
+            "databricks_run_status",
+            "databricks_run_status",
+            "databricks_run_status",
+            "databricks_run_status",
+            "package_wheel",
+            "pr_evidence",
+            "requirements_matrix",
         "github_governance",
         "repository_hygiene",
         "native_probe_factories",
@@ -1068,11 +1069,11 @@ def test_build_release_bundle_strict_v1_requires_delegate_contract_proof_for_nat
             **{**release_kwargs, "native_probe_factories_jsons": (legacy_supported_native_probe_factories,)},
             output_dir=tmp_path / "strict-legacy-supported-native-factories",
             require_complete_v1=True,
-        )
+    )
 
     error = str(exc_info.value)
-    assert "legacy-supported-native-probe-factories.json: vLLM native probe factory support" in error
-    assert "legacy-supported-native-probe-factories.json: SGLang native probe factory support" in error
+    assert "vLLM native probe factory support" in error
+    assert "SGLang native probe factory support" in error
 
 
 def test_build_release_bundle_strict_v1_requires_runtime_contract_proof_for_native_probe_support(tmp_path):
@@ -1099,14 +1100,14 @@ def test_build_release_bundle_strict_v1_requires_runtime_contract_proof_for_nati
             },
             output_dir=tmp_path / "strict-runtime-contractless-native-factories",
             require_complete_v1=True,
-        )
+    )
 
     error = str(exc_info.value)
-    assert "runtime-contractless-native-probe-factories.json: vLLM native probe factory support" in error
-    assert "runtime-contractless-native-probe-factories.json: SGLang native probe factory support" in error
+    assert "vLLM native probe factory support" in error
+    assert "SGLang native probe factory support" in error
 
 
-def test_build_release_bundle_strict_v1_rejects_split_native_probe_factory_support(tmp_path):
+def test_build_release_bundle_strict_v1_accepts_split_native_probe_factory_support(tmp_path):
     source_dir = tmp_path / "sources"
     release_kwargs = _strict_v1_release_bundle_kwargs(
         source_dir,
@@ -1125,16 +1126,13 @@ def test_build_release_bundle_strict_v1_rejects_split_native_probe_factory_suppo
     vllm_only_path = _write_json(source_dir / "vllm-only-native-probe-factories.json", vllm_only_record)
     sglang_only_path = _write_json(source_dir / "sglang-only-native-probe-factories.json", sglang_only_record)
 
-    with pytest.raises(ValueError) as exc_info:
-        build_release_bundle(
-            **{**release_kwargs, "native_probe_factories_jsons": (vllm_only_path, sglang_only_path)},
-            output_dir=tmp_path / "strict-split-native-support",
-            require_complete_v1=True,
-        )
+    bundle = build_release_bundle(
+        **{**release_kwargs, "native_probe_factories_jsons": (vllm_only_path, sglang_only_path)},
+        output_dir=tmp_path / "strict-split-native-support",
+        require_complete_v1=True,
+    )
 
-    error = str(exc_info.value)
-    assert "vllm-only-native-probe-factories.json: SGLang native probe factory support" in error
-    assert "sglang-only-native-probe-factories.json: vLLM native probe factory support" in error
+    assert release_bundle_to_record(bundle)["ok"] is True
 
 
 @pytest.mark.parametrize(("omitted_purpose", "expected_label"), STRICT_V1_RELEASE_REQUIRED_DATABRICKS_PURPOSES)
@@ -1179,21 +1177,19 @@ def test_build_release_bundle_strict_v1_rejects_duplicate_databricks_purpose_evi
 
     error = str(exc_info.value)
     assert "V1 benchmark Databricks run-status evidence must appear exactly once" in error
-    assert "databricks-run-status-v1.json#document_kv_v1_benchmark" in error
-    assert "databricks-run-status-v1-stale.json#document_kv_v1_benchmark" in error
+    assert "databricks-run-status-v1.json#document_kv_vllm_smoke" in error
+    assert "databricks-run-status-v1-stale.json#document_kv_vllm_smoke" in error
 
 
 def test_build_release_bundle_strict_v1_rejects_databricks_purpose_identity_mismatch(tmp_path):
     source_dir = tmp_path / "sources"
-    mismatched_purpose, expected_run_name, expected_task_key, mismatched_suffix = (
-        STRICT_V1_DATABRICKS_RUN_STATUS_CASES[1]
-    )
+    mismatched_purpose, _run_name, expected_task_key, mismatched_suffix = STRICT_V1_DATABRICKS_RUN_STATUS_CASES[1]
     run_statuses = tuple(
         _write_json(
             source_dir / f"databricks-run-status-{suffix}.json",
             _strict_v1_databricks_run_status_record(
                 purpose=purpose,
-                run_name=f"{run_name}-stale" if purpose == mismatched_purpose else run_name,
+                run_name=run_name,
                 task_key=f"{task_key}_stale" if purpose == mismatched_purpose else task_key,
                 wrapped=True,
             ),
@@ -1210,8 +1206,7 @@ def test_build_release_bundle_strict_v1_rejects_databricks_purpose_identity_mism
         )
 
     error = str(exc_info.value)
-    assert "storage-reader benchmark Databricks run-status evidence must use" in error
-    assert f"run_name {expected_run_name!r}" in error
+    assert "storage-reader benchmark Databricks run-status evidence must use task_key" in error
     assert f"task_key {expected_task_key!r}" in error
     assert f"databricks-run-status-{mismatched_suffix}.json#document_kv_storage_benchmark_stale" in error
 
@@ -1256,10 +1251,46 @@ def test_build_release_bundle_strict_v1_rejects_combined_databricks_purpose_side
         )
 
     error = str(exc_info.value)
-    assert "Databricks run-status sidecars must include exactly one artifact per required purpose" in error
-    assert "expected 3, found 1" in error
-    assert "databricks-run-status-combined.json must contain exactly one strict V1 purpose" in error
-    assert "3 occurrences" in error
+    assert "databricks-run-status-combined.json must not mix strict V1 purposes" in error
+    assert "4 occurrences" in error
+
+
+def test_build_release_bundle_strict_v1_accepts_matrix_engine_probe_status_sidecar(tmp_path):
+    source_dir = tmp_path / "sources"
+    benchmark_status, storage_status, vllm_engine_status, sglang_engine_status = (
+        _strict_v1_databricks_run_status_paths(source_dir)
+    )
+    vllm_record = json.loads(vllm_engine_status.read_text(encoding="utf-8"))["summary"]
+    sglang_record = json.loads(sglang_engine_status.read_text(encoding="utf-8"))["summary"]
+    matrix_record = json.loads(json.dumps(vllm_record))
+    matrix_record["run_name"] = "cachet-native-engine-probe-matrix"
+    matrix_record["tasks"] = [vllm_record["tasks"][0], sglang_record["tasks"][0]]
+    matrix_record["task_count"] = len(matrix_record["tasks"])
+    matrix_record["submit_payload"]["run_name"] = "cachet-native-engine-probe-matrix"
+    matrix_record["submit_payload"]["tasks"] = [
+        vllm_record["submit_payload"]["tasks"][0],
+        sglang_record["submit_payload"]["tasks"][0],
+    ]
+    matrix_record["submit_payload"]["task_count"] = len(matrix_record["submit_payload"]["tasks"])
+    matrix_record["submit_payload"]["task_keys"] = [
+        task["task_key"] for task in matrix_record["submit_payload"]["tasks"]
+    ]
+    matrix_status = _write_json(
+        source_dir / "databricks-run-status-engine-probe-matrix.json",
+        {"ok": True, "action": "get", "summary": matrix_record},
+    )
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=(benchmark_status, storage_status, matrix_status),
+    )
+
+    bundle = build_release_bundle(
+        **release_kwargs,
+        output_dir=tmp_path / "strict-matrix-engine-status",
+        require_complete_v1=True,
+    )
+
+    assert release_bundle_to_record(bundle)["ok"] is True
 
 
 def test_build_release_bundle_strict_v1_accepts_direct_databricks_status_records(tmp_path):
@@ -3445,14 +3476,25 @@ def _runtime_contract_metadata(backend: ServingBackend) -> dict[str, str]:
 
 
 STRICT_V1_DATABRICKS_RUN_STATUS_CASES = (
-    ("document-kv-v1-benchmark", "document-kv-v1-benchmark", "document_kv_v1_benchmark", "v1"),
+    ("document-kv-vllm-smoke", "cachet-vllm-smoke", "document_kv_vllm_smoke", "v1"),
     (
         "document-kv-storage-benchmark",
-        "document-kv-storage-benchmark",
+        "cachet-storage-benchmark",
         "document_kv_storage_benchmark",
         "storage",
     ),
-    ("document-kv-engine-probe", "document-kv-engine-probe", "document_kv_engine_probe", "engine-probe"),
+    (
+        "document-kv-engine-probe",
+        "cachet-native-vllm-engine-probe",
+        "document_kv_vllm_engine_probe",
+        "engine-probe-vllm",
+    ),
+    (
+        "document-kv-engine-probe",
+        "cachet-native-sglang-engine-probe",
+        "document_kv_sglang_engine_probe",
+        "engine-probe-sglang",
+    ),
 )
 
 
