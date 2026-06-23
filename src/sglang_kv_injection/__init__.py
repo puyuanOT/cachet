@@ -1,6 +1,12 @@
 """Thin KV-injection primitives for an SGLang integration."""
 
 from sglang_kv_injection.connector import InMemorySGLangKVConnector, KVPayload, SGLangKVConnector
+from sglang_kv_injection.hicache_keys import (
+    SGLANG_HICACHE_HASH_HEX_LENGTH,
+    SGLangTokenId,
+    sglang_hicache_page_hash,
+    sglang_hicache_page_keys,
+)
 from sglang_kv_injection.probe import (
     DocumentKVHiCacheProbeConnector,
     NativeSGLangConnectorFactory,
@@ -123,6 +129,7 @@ __all__ = [
     "SGLangDocumentKVInjector",
     "SGLangIntegrationUnavailable",
     "SGLangKVConnector",
+    "SGLANG_HICACHE_HASH_HEX_LENGTH",
     "SGLANG_DOCUMENT_KV_HICACHE_PROBE_CONNECTOR_FACTORY",
     "SGLANG_PROBE_METADATA_CONNECTOR_CLASS",
     "SGLANG_PROBE_METADATA_CONNECTOR_FACTORY",
@@ -151,6 +158,7 @@ __all__ = [
     "SGLANG_HICACHE_REQUIRED_STORAGE_BACKEND_FACTORY_METHODS",
     "SGLANG_NATIVE_PROBE_CONTRACT",
     "SGLangPrefixKey",
+    "SGLangTokenId",
     "SGLangInstalledHiCacheContract",
     "build_in_memory_debug_probe",
     "build_document_kv_hicache_probe_connector",
@@ -165,8 +173,10 @@ __all__ = [
     "load_document_kv_hicache_provider_factory",
     "load_native_connector_factory",
     "prefix_key_for_handle",
+    "sglang_hicache_page_hash",
     "sglang_hicache_cli_args",
     "sglang_hicache_launch_config",
+    "sglang_hicache_page_keys",
     "sglang_runtime_cache_contract_record_issues",
     "sglang_runtime_cache_contract_to_record",
     "sglang_runtime_cache_method_issues",

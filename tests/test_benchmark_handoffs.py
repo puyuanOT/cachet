@@ -11,6 +11,7 @@ from document_kv_cache.benchmark_handoffs import (
     BenchmarkHandoffEntry,
     BenchmarkHandoffManifest,
     build_benchmark_handoff_manifest_from_jsonl,
+    benchmark_handoff_manifest_from_record,
     benchmark_handoff_manifest_to_record,
     enrich_benchmark_jsonl_with_handoffs,
     enrich_benchmark_records_with_handoffs,
@@ -25,6 +26,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -232,6 +234,28 @@ def test_enrich_benchmark_jsonl_with_handoffs_writes_loadable_rows(tmp_path):
     }
 
 
+def test_handoff_manifest_carries_sglang_hicache_page_keys(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    manifest_path = tmp_path / "handoffs.json"
+    output_path = tmp_path / "bio.enriched.jsonl"
+    input_path.write_text(json.dumps(record()) + "\n", encoding="utf-8")
+    handoffs = manifest(entry(sglang_hicache_page_keys=("page-a", "page-b")))
+    manifest_path.write_text(
+        json.dumps(benchmark_handoff_manifest_to_record(handoffs)),
+        encoding="utf-8",
+    )
+
+    count = enrich_benchmark_jsonl_with_handoffs(input_path, manifest_path, output_path)
+    loaded = load_benchmark_jsonl(output_path, dataset="biography", require_dataset=True)
+
+    assert count == 1
+    assert loaded[0].kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] == ["page-a", "page-b"]
+    assert benchmark_handoff_manifest_to_record(handoffs)["entries"][0]["sglang_hicache_page_keys"] == [
+        "page-a",
+        "page-b",
+    ]
+
+
 def test_build_manifest_from_jsonl_reads_handoff_records(tmp_path):
     input_path = tmp_path / "bio.jsonl"
     input_path.write_text(
@@ -284,6 +308,32 @@ def test_build_manifest_from_jsonl_can_override_payload_uri(tmp_path):
     )
 
     assert handoffs.entries[0].payload_uri == "disk:/tmp/cachet/biography/bio-1.kv"
+
+
+def test_build_manifest_from_jsonl_reads_sglang_page_key_json_template(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    handoff_path = tmp_path / "handoffs" / "biography" / "bio-1.handoff.json"
+    page_keys_path = tmp_path / "page-keys" / "biography" / "bio-1.json"
+    write_handoff_json(handoff_path, request_id="cachet-bio-1")
+    page_keys_path.parent.mkdir(parents=True, exist_ok=True)
+    page_keys_path.write_text(
+        json.dumps({DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["page-a", "page-b"]}),
+        encoding="utf-8",
+    )
+
+    handoffs = build_benchmark_handoff_manifest_from_jsonl(
+        input_path,
+        handoff_json_template=str(tmp_path / "handoffs" / "{dataset}" / "{example_id}.handoff.json"),
+        sglang_hicache_page_keys_json_template=str(tmp_path / "page-keys" / "{dataset}" / "{example_id}.json"),
+    )
+
+    assert handoffs.entries[0].sglang_hicache_page_keys == ("page-a", "page-b")
+
+
+def test_handoff_entry_rejects_malformed_sglang_page_keys():
+    with pytest.raises(TypeError, match="sglang_hicache_page_keys must be a sequence"):
+        entry(sglang_hicache_page_keys="page-a")
 
 
 def test_build_manifest_from_jsonl_rejects_missing_handoff_by_default(tmp_path):
@@ -726,6 +776,44 @@ def test_benchmark_handoff_manifest_record_is_stable():
             }
         ],
     }
+
+
+def test_benchmark_handoff_manifest_reads_schema_v1_records():
+    handoffs = benchmark_handoff_manifest_from_record(
+        {
+            "record_type": BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE,
+            "schema_version": 1,
+            "entries": [
+                {
+                    "dataset": "biography",
+                    "example_id": "bio-1",
+                    "request_id": "cachet-bio-1",
+                    "handoff_json": "/Volumes/catalog/schema/volume/cachet/cachet-bio-1.handoff.json",
+                }
+            ],
+        }
+    )
+
+    assert handoffs.entries[0].sglang_hicache_page_keys == ()
+
+
+def test_benchmark_handoff_manifest_rejects_sglang_page_keys_in_schema_v1():
+    with pytest.raises(ValueError, match="entries\\[0\\] has unsupported keys"):
+        benchmark_handoff_manifest_from_record(
+            {
+                "record_type": BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE,
+                "schema_version": 1,
+                "entries": [
+                    {
+                        "dataset": "biography",
+                        "example_id": "bio-1",
+                        "request_id": "cachet-bio-1",
+                        "handoff_json": "/Volumes/catalog/schema/volume/cachet/cachet-bio-1.handoff.json",
+                        "sglang_hicache_page_keys": ["page-a"],
+                    }
+                ],
+            }
+        )
 
 
 def test_enrich_records_rejects_duplicate_manifest_entries():

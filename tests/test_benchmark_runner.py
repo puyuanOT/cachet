@@ -23,6 +23,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
@@ -267,8 +268,18 @@ def test_benchmark_example_validates_kv_transfer_params():
         kv_transfer_params={
             DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
             DOCUMENT_KV_HANDOFF_RECORD_PARAM: inline_handoff_record(request_id="cachet-bio-1"),
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: ["page-a", "page-b"],
         }
     )
+
+    with pytest.raises(ValueError, match="document_kv.sglang_hicache_page_keys must be a sequence"):
+        example(
+            kv_transfer_params={
+                DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+                DOCUMENT_KV_HANDOFF_RECORD_PARAM: inline_handoff_record(request_id="cachet-bio-1"),
+                DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: "page-a",
+            }
+        )
 
     with pytest.raises(ValueError, match="handoff_record.request_id must match"):
         example(

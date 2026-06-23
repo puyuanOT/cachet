@@ -17,6 +17,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     answer_found,
     baseline_prefill_arm,
     build_prompt_parts,
@@ -172,15 +173,19 @@ def live_check_kv_transfer_params(
     handoff_record: Mapping[str, Any] | None = None,
     request_id: str | None = None,
     payload_uri: str | None = None,
+    sglang_hicache_page_keys: Sequence[str] = (),
     expected_backend: ServingBackend | str | None = None,
 ) -> dict[str, Any]:
     """Build strict Cachet handoff params for live endpoint smoke checks."""
 
+    page_keys = _string_tuple(sglang_hicache_page_keys, field_name="sglang_hicache_page_keys")
     if handoff_json and handoff_record is not None:
         raise ValueError("live check handoff params must use only one of handoff_json or handoff_record")
     if handoff_json is None and handoff_record is None:
-        if request_id is not None or payload_uri is not None:
-            raise ValueError("request_id and payload_uri require handoff_json or handoff_record")
+        if request_id is not None or payload_uri is not None or page_keys:
+            raise ValueError(
+                "request_id, payload_uri, and sglang_hicache_page_keys require handoff_json or handoff_record"
+            )
         return {}
     if handoff_json is not None:
         record = read_engine_adapter_request_json(
@@ -208,6 +213,8 @@ def live_check_kv_transfer_params(
     resolved_payload_uri = _resolve_payload_uri(payload_uri, record)
     if resolved_payload_uri is not None:
         params[DOCUMENT_KV_PAYLOAD_URI_PARAM] = resolved_payload_uri
+    if page_keys:
+        params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = list(page_keys)
     build_live_server_check_request(use_cache_arm=True, kv_transfer_params=params)
     return params
 
@@ -297,6 +304,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Optional request id override; must match the handoff record request id when provided.",
     )
     parser.add_argument(
+        "--sglang-hicache-page-keys-json",
+        help=(
+            "Optional JSON array of expected SGLang HiCache page keys to attach to kv_transfer_params."
+        ),
+    )
+    parser.add_argument(
         "--expected-backend",
         choices=[ServingBackend.VLLM.value, ServingBackend.SGLANG.value],
         help="Validate the live handoff against a specific serving backend before sending it.",
@@ -308,11 +321,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not isinstance(extra_body, Mapping):
             raise ValueError("--extra-body-json must decode to a JSON object")
         handoff_record = _json_object_option(args.handoff_record_json, "--handoff-record-json")
+        sglang_hicache_page_keys = _json_string_array_option(
+            args.sglang_hicache_page_keys_json,
+            "--sglang-hicache-page-keys-json",
+        )
         kv_transfer_params = live_check_kv_transfer_params(
             handoff_json=args.handoff_json,
             handoff_record=handoff_record,
             request_id=args.request_id,
             payload_uri=args.payload_uri,
+            sglang_hicache_page_keys=sglang_hicache_page_keys,
             expected_backend=args.expected_backend,
         )
         result = run_openai_compatible_live_check(
@@ -379,6 +397,25 @@ def _json_object_option(value: str | None, option_name: str) -> Mapping[str, Any
     if not isinstance(decoded, Mapping):
         raise ValueError(f"{option_name} must decode to a JSON object")
     return decoded
+
+
+def _json_string_array_option(value: str | None, option_name: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    decoded = json.loads(value)
+    return _string_tuple(decoded, field_name=option_name)
+
+
+def _string_tuple(values: object, *, field_name: str) -> tuple[str, ...]:
+    if isinstance(values, (str, bytes, bytearray)):
+        raise ValueError(f"{field_name} must be a sequence of strings")
+    if not isinstance(values, Sequence):
+        raise ValueError(f"{field_name} must be a sequence of strings")
+    items = tuple(values)
+    for index, item in enumerate(items):
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{field_name}[{index}] must be a non-empty string")
+    return items
 
 
 if __name__ == "__main__":  # pragma: no cover

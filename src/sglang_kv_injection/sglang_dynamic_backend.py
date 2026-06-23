@@ -20,6 +20,7 @@ from document_kv_cache.engine_adapters import (
     read_engine_adapter_request_json,
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
+from document_kv_cache.benchmarks import DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM
 
 
 def _load_sglang_hicache_storage_base() -> type:
@@ -48,7 +49,6 @@ _DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 _DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 _DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 _DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
-DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 DOCUMENT_KV_HICACHE_RUNTIME_METHODS = (
     "register_mem_pool_host",
     "register_mem_host_pool_v2",

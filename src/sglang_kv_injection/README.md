@@ -4,6 +4,9 @@ This package defines the SGLang-facing document KV-cache integration contract.
 
 - `protocol.py` re-exports `KVLayout`, `KVSegment`, and `KVCacheHandle` from `cachet-kv`.
 - `record.py` defines `SGLangCacheRecord` and deterministic SGLang prefix-key construction.
+- `hicache_keys.py` mirrors SGLang's chained HiCache SHA-256 page-key
+  algorithm so benchmark prep can attach exact
+  `document_kv.sglang_hicache_page_keys` metadata without importing SGLang.
 - `connector.py` defines the payload-aware connector protocol and an in-memory test double.
 - `sglang_adapter.py` converts a document `EngineReadyRequest` into connector stage/attach/release calls for a patched SGLang runtime.
 - `sglang_dynamic_backend.py` exposes `DocumentKVHiCacheBackend`, the
