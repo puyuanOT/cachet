@@ -844,6 +844,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "still needs target AWS g6/L4 or Unity Catalog evidence in the release bundle",
         "previous complete g5-enriched strict bundle",
         "next complete strict bundle refresh",
+        "PR #427 PR-evidence sidecar",
         "426398182137665",
         "315109189523858",
         "cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main",
@@ -927,6 +928,7 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
         "still needs to be bundled before publication",
         "previous g5-enriched strict bundle",
         "next complete bundle refresh",
+        "PR #427 evidence sidecar",
         "426398182137665",
         "315109189523858",
         "cachet_vllm_hot_payload_9ec0657_20260623_053557_repeat3_cache8g_current_main",
@@ -944,6 +946,7 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
     assert "g5-enriched strict bundle validates with 23 artifacts" in compact_remaining_v1_work
+    assert "current release-gate PR evidence sidecar" in compact_remaining_v1_work
     assert "compatibility_databricks_run_status" in compact_remaining_v1_work
     assert "GitHub governance sidecar" in compact_remaining_v1_work
     assert "Current governance evidence is green" in compact_remaining_v1_work
