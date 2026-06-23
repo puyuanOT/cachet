@@ -1,0 +1,44 @@
+{
+  "files": {
+    "pr-evidence/live-check-handoff-params/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 review found no blocking issues. The reviewer confirmed the live_server handoff path, request_id and payload_uri handling, expected_backend validation, public export/stub, and README language are consistent with moving toward live SGLang decode-time prefix-binding evidence without adding a solver or overclaiming benchmark evidence. GitHub would not allow the reviewer process to approve because it authenticated as the PR author, so the clean result was posted as a review comment.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 445,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/445",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "src/document_kv_cache/live_server.py",
+        "tests/test_live_server.py",
+        "src/document_kv_cache/__init__.py",
+        "src/cachet/__init__.pyi",
+        "tests/test_public_package.py",
+        "README.md",
+        "src/document_kv_cache/README.md"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_live_server.py -q -> 14 passed",
+        "poetry run pytest tests/test_live_server.py tests/test_public_package.py -q -> 28 passed",
+        "poetry run pytest tests/test_project_governance.py -q -> 50 passed",
+        "poetry run pytest -q -> 1794 passed",
+        "poetry check && poetry check --lock -> All set! / All set!",
+        "git diff --check -> clean",
+        "poetry run python -m document_kv_cache.live_server --help shows --handoff-json, --handoff-record-json, --payload-uri, --request-id, and --expected-backend",
+        "GitHub CI Test and build passed on initial PR head 6d2c7a45b918e2532f69ccaf5865eb9a77dc100d",
+        "GPT-5.5 reviewer found no blocking issues and posted a COMMENTED review because GitHub rejected self-approval by the PR author identity"
+      ],
+      "what_changed": [
+        "Added strict live-check handoff parameter construction from validated engine-adapter handoff JSON or inline handoff records.",
+        "Attached Cachet kv_transfer_params and request_id to cache-arm OpenAI-compatible live endpoint checks.",
+        "Documented the SGLang live validation command and updated the Cachet public export and typing stub."
+      ],
+      "why": "The existing live endpoint smoke could label a request as cache-arm but could not send Cachet handoff metadata. This moves SGLang validation toward a real live decode-time prefix-binding run without adding a custom solver or claiming new benchmark evidence."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
