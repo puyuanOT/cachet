@@ -26,6 +26,7 @@ from document_kv_cache.native_probe_factories import (
     SGLANG_NATIVE_PROBE_FACTORY,
     VLLM_NATIVE_PROBE_DELEGATE_ENV,
     VLLM_NATIVE_PROBE_FACTORY,
+    native_probe_adapter_contract_to_record,
 )
 from document_kv_cache._native_probe_metadata import (
     SGLANG_NATIVE_PROBE_DELEGATE_FACTORY,
@@ -793,6 +794,7 @@ def _validate_release_safe_probe_targets(
             target,
             label="engine probe matrix target",
         )
+        _DEFAULT_VALIDATE_RELEASE_SAFE_FIXTURE_PAYLOAD_MODE(target, label="engine probe matrix target")
         _DEFAULT_VALIDATE_RELEASE_SAFE_PROVIDER_BACKED_VLLM_PREFLIGHT(target, label="engine probe matrix target")
         _DEFAULT_VALIDATE_RELEASE_SAFE_SGLANG_RUNTIME_PREFLIGHT(target, label="engine probe matrix target")
 
@@ -808,6 +810,7 @@ def _validate_release_safe_probe_job(config: DatabricksEngineProbeJobConfig) -> 
         raise ValueError("release-safe engine probe jobs must not allow non-native probes")
     _DEFAULT_VALIDATE_RELEASE_SAFE_ACTIONS_OUTPUT(config, label="engine probe job")
     _DEFAULT_VALIDATE_RELEASE_SAFE_NATIVE_PROBE_FACTORIES_OUTPUT(config, label="engine probe job")
+    _DEFAULT_VALIDATE_RELEASE_SAFE_FIXTURE_PAYLOAD_MODE(config, label="engine probe job")
     _DEFAULT_VALIDATE_RELEASE_SAFE_PROVIDER_BACKED_VLLM_PREFLIGHT(config, label="engine probe job")
     _DEFAULT_VALIDATE_RELEASE_SAFE_SGLANG_RUNTIME_PREFLIGHT(config, label="engine probe job")
 
@@ -833,6 +836,21 @@ def _validate_release_safe_native_probe_factories_output(
         raise ValueError(
             f"release-safe {label} must set native_probe_factories_output_json so the Databricks "
             "runtime emits document_kv.native_probe_factories.v1 diagnostics"
+        )
+
+
+def _validate_release_safe_fixture_payload_mode(
+    config: DatabricksEngineProbeJobConfig | DatabricksEngineProbeTargetConfig,
+    *,
+    label: str,
+) -> None:
+    if config.fixture_output_dir is None:
+        return
+    expected = _native_probe_adapter_payload_mode()
+    if config.fixture_payload_mode != expected:
+        raise ValueError(
+            f"release-safe {label} fixture_payload_mode must be {expected.value!r} "
+            "to match the native probe adapter contract"
         )
 
 
@@ -1020,6 +1038,10 @@ def _payload_mode(value: PayloadMode | str) -> PayloadMode:
         raise ValueError(f"fixture_payload_mode must be one of: {supported}") from exc
 
 
+def _native_probe_adapter_payload_mode() -> PayloadMode:
+    return _payload_mode(str(native_probe_adapter_contract_to_record()["payload_mode"]))
+
+
 def _engine_probe_fixture_output_uri(fixture_output_dir: str, filename_key: str) -> str:
     return f"{fixture_output_dir.rstrip('/')}/{DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES[filename_key]}"
 
@@ -1200,6 +1222,7 @@ _DEFAULT_VALIDATE_RELEASE_SAFE_PROBE_JOB = _validate_release_safe_probe_job
 _DEFAULT_VALIDATE_VLLM_RUNTIME_PREFLIGHT_CONFIG = _validate_vllm_runtime_preflight_config
 _DEFAULT_VALIDATE_RELEASE_SAFE_PROVIDER_BACKED_VLLM_PREFLIGHT = _validate_release_safe_provider_backed_vllm_preflight
 _DEFAULT_VALIDATE_RELEASE_SAFE_ACTIONS_OUTPUT = _validate_release_safe_actions_output
+_DEFAULT_VALIDATE_RELEASE_SAFE_FIXTURE_PAYLOAD_MODE = _validate_release_safe_fixture_payload_mode
 _DEFAULT_VALIDATE_METADATA_ITEMS = _validate_metadata_items
 _DEFAULT_VALIDATE_KNOWN_NATIVE_DELEGATE_METADATA = _validate_known_native_delegate_metadata
 _DEFAULT_VALIDATE_WHEEL_URIS = _validate_wheel_uris
