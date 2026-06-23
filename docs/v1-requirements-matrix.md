@@ -23,7 +23,7 @@ mean:
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `315109189523858` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. | Publish the complete strict g6/L4 release bundle once GitHub governance is release-ready, and keep g5/A10G compatibility evidence refreshed when benchmark, model, or native connector contracts change. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. Successful QA Databricks status sidecars now exist for the benchmark run `426398182137665`, storage run `948365719597221`, and native engine-probe run `934698284395881` on the default AWS g6/L4 target; current g5/A10G compatibility benchmark run `315109189523858` completed on `g5.8xlarge` with release evidence `ok=true` when paired with the current storage and native engine sidecars. Release bundles can carry that g5 report as a `compatibility_benchmark` artifact without letting it substitute for the strict release target. | Publish the complete strict g6/L4 release bundle once GitHub governance is release-ready, and keep g5/A10G compatibility evidence refreshed when benchmark, model, or native connector contracts change. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
 | Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. QA benchmark run `426398182137665` produced `document_kv.benchmark_run.v1` evidence with 24 measurements, 4 comparisons, zero quality deltas, TTFT speedups from 5.18x to 6.78x, and time-to-completion speedups from 1.74x to 2.22x. | Bundle the refreshed benchmark report and run-status sidecar in the strict release bundle after GitHub governance is release-ready. |
 | Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. QA benchmark run `426398182137665` completed Biography, HotpotQA, MusiQue, and NIAH with release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, or native connector behavior changes. |
@@ -79,8 +79,9 @@ mean:
   server log recorded native `DocumentKVConnector` startup, payload-cache hits,
   successful Cachet layer loads (`document_kv_layers_loaded=36`), and zero load
   error blocks (`document_kv_load_error_blocks=0`). This compatibility evidence
-  does not replace the strict V1 publication target, which remains the default
-  AWS g6/L4 release bundle.
+  can be bundled through the optional `compatibility_benchmark` artifact role
+  and does not replace the strict V1 publication target, which remains the
+  default AWS g6/L4 release bundle.
 - Target g6/L4 UC storage-reader evidence exists for
   `cachet_readiness_20260621_095026` from QA Databricks run
   `948365719597221`: Memory, Disk, and Unity Catalog readers all completed with
@@ -97,14 +98,16 @@ mean:
 - Release-evidence validation over the target benchmark, storage, and fresh
   vLLM/SGLang native probe/action artifacts is `ok=true` with no issues. An
   enriched release bundle without GitHub governance built successfully with 20
-  artifacts, including the release evidence sidecar, preflight sidecar,
-  vLLM/SGLang native engine probe sidecars, vLLM/SGLang connector action
-  sidecars, vLLM/SGLang engine launch config sidecars, benchmark plan execution
-  sidecar, Databricks run-status sidecars for benchmark, storage, and
-  vLLM/SGLang engine-probe runs, tested package wheel, PR evidence sidecar, V1
-  requirements matrix, repository hygiene sidecar, and native probe factory
-  diagnostics sidecars emitted from the split vLLM/SGLang runtime probe
-  environments.
+  artifacts. A g5-enriched no-governance bundle also validates with
+  21 artifacts when the current `aws-g5-a10g` compatibility benchmark is added
+  via the `compatibility_benchmark` role. The bundled artifacts include the release
+  evidence sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
+  vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
+  sidecars, benchmark plan execution sidecar, Databricks run-status sidecars
+  for benchmark, storage, and vLLM/SGLang engine-probe runs, tested package
+  wheel, PR evidence sidecar, V1 requirements matrix, repository hygiene
+  sidecar, and native probe factory diagnostics sidecars emitted from the split
+  vLLM/SGLang runtime probe environments.
 - The complete strict release bundle still requires the GitHub governance
   sidecar to be release-ready. Current GitHub governance reports the repository
   as private, repository visibility as private, `allow_auto_merge=false`, and

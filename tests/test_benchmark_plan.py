@@ -123,6 +123,9 @@ def test_release_bundle_plan_config_keeps_existing_optional_field_positional_com
     field_names = [field.name for field in fields(ReleaseBundlePlanConfig)]
 
     assert field_names.index("requirements_matrix_md") > field_names.index("require_complete_v1")
+    assert field_names.index("compatibility_benchmark_jsons") > field_names.index(
+        "engine_launch_config_jsons"
+    )
 
 
 def test_main_help_describes_provider_backed_vllm_builtin_probe_path(capsys):
@@ -514,6 +517,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
                 str(tmp_path / "vllm-launch-config.json"),
                 str(tmp_path / "sglang-launch-config.json"),
             ),
+            compatibility_benchmark_jsons=(str(tmp_path / "g5-v1-benchmark.json"),),
             overwrite=True,
             require_complete_v1=True,
         ),
@@ -537,6 +541,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
             str(tmp_path / "databricks-run-status-storage.json"),
             str(tmp_path / "databricks-run-status-engine-probe.json"),
         ],
+        "compatibility_benchmark_jsons": [str(tmp_path / "g5-v1-benchmark.json")],
         "engine_probe_jsons": [
             str(tmp_path / "vllm-probe.json"),
             str(tmp_path / "sglang-probe.json"),
@@ -572,6 +577,9 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert bundle_command.argv[bundle_command.argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")
     assert bundle_command.argv[bundle_command.argv.index("--output-json") + 1] == str(
         tmp_path / "release-bundle-manifest.json"
+    )
+    assert bundle_command.argv[bundle_command.argv.index("--compatibility-benchmark-json") + 1] == str(
+        tmp_path / "g5-v1-benchmark.json"
     )
     assert bundle_command.argv.count("--engine-probe-json") == 2
     assert bundle_command.argv.count("--engine-actions-json") == 2
@@ -3696,6 +3704,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "databricks-run-status-engine-probe.json"),
             "--release-bundle-package-wheel",
             str(tmp_path / "dist" / "document_kv_cache-0.2.0-py3-none-any.whl"),
+            "--release-bundle-compatibility-benchmark-json",
+            str(tmp_path / "g5-v1-benchmark.json"),
             "--release-bundle-pr-evidence-json",
             str(tmp_path / "pr-evidence.json"),
             "--release-bundle-requirements-matrix-md",
@@ -3777,6 +3787,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
         str(tmp_path / "databricks-run-status-storage.json"),
         str(tmp_path / "databricks-run-status-engine-probe.json"),
     ]
+    assert record["release_bundle"]["compatibility_benchmark_jsons"] == [
+        str(tmp_path / "g5-v1-benchmark.json")
+    ]
     assert record["release_bundle"]["requirements_matrix_md"] == str(tmp_path / "v1-requirements-matrix.md")
     assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
     assert record["release_bundle"]["repository_hygiene_json"] == str(tmp_path / "repository-hygiene.json")
@@ -3819,6 +3832,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
     )
     assert bundle_argv[:3] == [sys.executable, "-m", "document_kv_cache.release_bundle"]
     assert bundle_argv.count("--engine-probe-json") == 2
+    assert bundle_argv[bundle_argv.index("--compatibility-benchmark-json") + 1] == str(
+        tmp_path / "g5-v1-benchmark.json"
+    )
     assert bundle_argv.count("--engine-actions-json") == 2
     assert bundle_argv.count("--engine-launch-config-json") == 2
     assert bundle_argv[bundle_argv.index("--output-dir") + 1] == str(tmp_path / "release-bundle")

@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import zipfile
@@ -133,6 +134,83 @@ def test_build_release_bundle_copies_artifacts_and_writes_checksummed_manifest(t
         assert bundled_payload == source_payload
         assert artifact["size_bytes"] == len(source_payload)
         assert artifact["sha256"] == hashlib.sha256(source_payload).hexdigest()
+
+
+def test_build_release_bundle_can_include_non_default_compatibility_benchmark(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    compatibility_benchmark = _write_json(
+        source_dir / "g5-v1-benchmark.json",
+        _v1_record(ok=True, hardware_target="aws-g5-a10g"),
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        compatibility_benchmark_jsons=(compatibility_benchmark,),
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        release_evidence_json=artifacts["evidence"],
+        preflight_json=artifacts["preflight"],
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "compatibility_benchmark",
+        "storage_benchmark",
+        "engine_probe",
+        "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
+        "release_evidence",
+        "preflight",
+    ]
+    compatibility_artifact = record["artifacts"][1]
+    assert compatibility_artifact["record_type"] == BENCHMARK_RUN_RECORD_TYPE
+    assert compatibility_artifact["bundled_path"] == "compatibility_benchmark_02_aws-g5-a10g.json"
+    bundled_record = json.loads((bundle_dir / compatibility_artifact["bundled_path"]).read_text(encoding="utf-8"))
+    assert bundled_record["suite"]["hardware_target"] == "aws-g5-a10g"
+
+
+def test_build_release_bundle_rejects_default_target_as_compatibility_benchmark(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    default_target_benchmark = _write_json(
+        source_dir / "default-target-v1-benchmark.json",
+        _v1_record(ok=True, hardware_target="aws-g6-l4"),
+    )
+
+    with pytest.raises(ValueError, match="compatibility benchmark hardware_target must not"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            compatibility_benchmark_jsons=(default_target_benchmark,),
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            output_dir=tmp_path / "default-target-compatibility-bundle",
+        )
+
+
+def test_build_release_bundle_rejects_non_release_ready_compatibility_benchmark(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    stale_compatibility_benchmark = _write_json(
+        source_dir / "stale-g5-v1-benchmark.json",
+        _v1_record(ok=False, hardware_target="aws-g5-a10g"),
+    )
+
+    with pytest.raises(ValueError, match="compatibility benchmark evidence: v1 benchmark evidence"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            compatibility_benchmark_jsons=(stale_compatibility_benchmark,),
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            output_dir=tmp_path / "stale-compatibility-bundle",
+        )
 
 
 def test_build_release_bundle_plan_execution_stays_out_of_release_sidecar_matching(tmp_path):
@@ -915,9 +993,10 @@ def test_build_release_bundle_rejects_requirements_matrix_missing_strict_artifac
     )
     missing_label = "vLLM/SGLang engine launch config sidecars"
     assert any(label == missing_label for _role, _count, label in STRICT_V1_RELEASE_REQUIRED_ARTIFACTS)
-    bad_matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8").replace(
-        missing_label,
+    bad_matrix_text = re.sub(
+        r"vLLM/SGLang engine launch config\s+sidecars",
         "tested package artifact",
+        (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8"),
     )
     bad_matrix = _write_text(source_dir / "stale-requirements-matrix.md", bad_matrix_text)
 
@@ -2884,6 +2963,10 @@ def test_release_bundle_dataclasses_validate_json_safe_schema():
 
 def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
     artifacts = _write_release_ready_artifacts(tmp_path / "sources")
+    compatibility_benchmark = _write_json(
+        tmp_path / "g5-v1-benchmark.json",
+        _v1_record(ok=True, hardware_target="aws-g5-a10g"),
+    )
     github_governance = _write_json(tmp_path / "github-governance.json", _github_governance_cli_record(ok=True))
     native_probe_factories = _write_json(
         tmp_path / "native-probe-factories.json",
@@ -2903,6 +2986,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
             "document_kv_cache.release_bundle",
             "--v1-benchmark-json",
             str(artifacts["v1"]),
+            "--compatibility-benchmark-json",
+            str(compatibility_benchmark),
             "--storage-benchmark-json",
             str(artifacts["storage"]),
             "--engine-probe-json",
@@ -2934,6 +3019,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
         (bundle_dir / RELEASE_BUNDLE_MANIFEST_FILENAME).read_text(encoding="utf-8")
     )
     record = json.loads(output_json.read_text(encoding="utf-8"))
+    assert record["artifacts"][1]["role"] == "compatibility_benchmark"
+    assert record["artifacts"][1]["record_type"] == BENCHMARK_RUN_RECORD_TYPE
     assert record["artifacts"][-2]["role"] == "github_governance"
     assert record["artifacts"][-2]["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
     assert record["artifacts"][-1]["role"] == "native_probe_factories"
@@ -3085,6 +3172,7 @@ def test_release_bundle_cli_help_documents_strict_release_requirements(module_na
     help_text = " ".join(completed.stdout.split())
 
     assert "--require-complete-v1" in completed.stdout
+    assert "--compatibility-benchmark-json" in completed.stdout
     assert "--requirements-matrix-md" in completed.stdout
     assert "Databricks status for benchmark/storage/engine-probe runs" in help_text
     assert "vLLM/SGLang native engine probes, connector actions, and launch configs" in help_text

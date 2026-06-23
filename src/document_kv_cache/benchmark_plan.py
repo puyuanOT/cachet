@@ -209,6 +209,7 @@ class ReleaseBundlePlanConfig:
     require_complete_v1: bool = False
     requirements_matrix_md: str | None = None
     engine_launch_config_jsons: tuple[str, ...] = ()
+    compatibility_benchmark_jsons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -235,11 +236,18 @@ class ReleaseBundlePlanConfig:
             raise ValueError("release bundle native_probe_factories_jsons entries must be non-empty")
         if any(not path for path in self.engine_launch_config_jsons):
             raise ValueError("release bundle engine_launch_config_jsons entries must be non-empty")
+        if any(not path for path in self.compatibility_benchmark_jsons):
+            raise ValueError("release bundle compatibility_benchmark_jsons entries must be non-empty")
         canonical_launch_config_paths = tuple(
             _canonical_artifact_path(path) for path in self.engine_launch_config_jsons
         )
         if len(set(canonical_launch_config_paths)) != len(canonical_launch_config_paths):
             raise ValueError("release bundle engine_launch_config_jsons entries must be distinct")
+        canonical_compatibility_paths = tuple(
+            _canonical_artifact_path(path) for path in self.compatibility_benchmark_jsons
+        )
+        if len(set(canonical_compatibility_paths)) != len(canonical_compatibility_paths):
+            raise ValueError("release bundle compatibility_benchmark_jsons entries must be distinct")
         if type(self.overwrite) is not bool:
             raise ValueError("release bundle overwrite must be boolean")
         if type(self.require_complete_v1) is not bool:
@@ -249,6 +257,7 @@ class ReleaseBundlePlanConfig:
         object.__setattr__(self, "pr_evidence_jsons", tuple(self.pr_evidence_jsons))
         object.__setattr__(self, "native_probe_factories_jsons", tuple(self.native_probe_factories_jsons))
         object.__setattr__(self, "engine_launch_config_jsons", tuple(self.engine_launch_config_jsons))
+        object.__setattr__(self, "compatibility_benchmark_jsons", tuple(self.compatibility_benchmark_jsons))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1162,6 +1171,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
         "--output-json",
         bundle_config.output_json,
     )
+    for compatibility_benchmark_json in bundle_config.compatibility_benchmark_jsons:
+        argv = (*argv, "--compatibility-benchmark-json", compatibility_benchmark_json)
     for engine_probe_json in _release_engine_probe_jsons(config):
         argv = (*argv, "--engine-probe-json", engine_probe_json)
     for engine_action_json in _release_engine_action_jsons(config):
@@ -1207,6 +1218,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "output_dir": bundle_config.output_dir,
         "output_json": bundle_config.output_json,
         "v1_benchmark_json": config.benchmark_output_json,
+        "compatibility_benchmark_jsons": list(bundle_config.compatibility_benchmark_jsons),
         "storage_benchmark_json": _release_storage_benchmark_json(config),
         "engine_probe_jsons": list(_release_engine_probe_jsons(config)),
         "engine_actions_jsons": list(_release_engine_action_jsons(config)),
@@ -2081,6 +2093,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--release-bundle-package-wheel", help="Tested document-kv-cache wheel to include.")
     parser.add_argument(
+        "--release-bundle-compatibility-benchmark-json",
+        action="append",
+        help=(
+            "Non-default V1 compatibility benchmark JSON to include in the release bundle. "
+            "Repeat for each compatibility target."
+        ),
+    )
+    parser.add_argument(
         "--release-bundle-pr-evidence-json",
         action="append",
         help="PR evidence sidecar to include in the release bundle. Repeat as needed.",
@@ -2587,6 +2607,7 @@ def _release_bundle_config_from_cli(
         plan_execution_jsons=tuple(args.release_bundle_plan_execution_json or ()),
         databricks_run_status_jsons=tuple(args.release_bundle_databricks_run_status_json or ()),
         package_wheel=args.release_bundle_package_wheel,
+        compatibility_benchmark_jsons=tuple(args.release_bundle_compatibility_benchmark_json or ()),
         pr_evidence_jsons=tuple(args.release_bundle_pr_evidence_json or ()),
         requirements_matrix_md=args.release_bundle_requirements_matrix_md,
         github_governance_json=args.release_bundle_github_governance_json,
@@ -2619,6 +2640,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_plan_execution_json is not None
         or args.release_bundle_databricks_run_status_json is not None
         or args.release_bundle_package_wheel is not None
+        or args.release_bundle_compatibility_benchmark_json is not None
         or args.release_bundle_pr_evidence_json is not None
         or args.release_bundle_requirements_matrix_md is not None
         or args.release_bundle_github_governance_json is not None

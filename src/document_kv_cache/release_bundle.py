@@ -114,6 +114,7 @@ RELEASE_BUNDLE_PACKAGE_TYPED_MARKER_PATHS = (
 )
 RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
+    "compatibility_benchmark",
     "storage_benchmark",
     "engine_probe",
     "engine_connector_actions",
@@ -201,6 +202,7 @@ _REQUIRED_REQUIREMENTS_MATRIX_SNIPPETS = (
     "**Remaining:**",
     "vLLM/SGLang handoff boundary",
     "Memory, Disk, UC Volume, and routed readers",
+    "g5/A10G compatibility evidence",
     "`qwen3:4b-instruct`",
     "Biography",
     "HotpotQA",
@@ -452,6 +454,7 @@ def build_release_bundle(
     v1_benchmark_json: str | Path,
     storage_benchmark_json: str | Path,
     output_dir: str | Path,
+    compatibility_benchmark_jsons: Sequence[str | Path] = (),
     engine_probe_jsons: Sequence[str | Path] = (),
     engine_actions_jsons: Sequence[str | Path] = (),
     engine_launch_config_jsons: Sequence[str | Path] = (),
@@ -478,6 +481,7 @@ def build_release_bundle(
     sources = _release_bundle_sources(
         v1_benchmark_json=v1_benchmark_json,
         storage_benchmark_json=storage_benchmark_json,
+        compatibility_benchmark_jsons=compatibility_benchmark_jsons,
         engine_probe_jsons=engine_probe_jsons,
         engine_actions_jsons=engine_actions_jsons,
         engine_launch_config_jsons=engine_launch_config_jsons,
@@ -556,6 +560,7 @@ def _release_bundle_sources(
     *,
     v1_benchmark_json: str | Path,
     storage_benchmark_json: str | Path,
+    compatibility_benchmark_jsons: Sequence[str | Path],
     engine_probe_jsons: Sequence[str | Path],
     engine_actions_jsons: Sequence[str | Path],
     engine_launch_config_jsons: Sequence[str | Path],
@@ -572,6 +577,7 @@ def _release_bundle_sources(
 ) -> tuple[tuple[str, str | Path], ...]:
     sources: list[tuple[str, str | Path]] = [
         ("v1_benchmark", v1_benchmark_json),
+        *(("compatibility_benchmark", path) for path in compatibility_benchmark_jsons),
         ("storage_benchmark", storage_benchmark_json),
     ]
     sources.extend(("engine_probe", path) for path in engine_probe_jsons)
@@ -739,6 +745,18 @@ def _validate_release_bundle_inputs(
                 issues.append("engine launch config sidecar must be JSON")
                 continue
             issues.extend(_engine_launch_config_sidecar_issues(artifact.record))
+        elif artifact.role == "compatibility_benchmark":
+            if artifact.record is None:
+                issues.append("compatibility benchmark sidecar must be JSON")
+                continue
+            issues.extend(
+                _compatibility_benchmark_sidecar_issues(
+                    artifact.record,
+                    storage_record=storage_record,
+                    engine_probe_records=engine_probe_records,
+                    engine_action_records=engine_action_records,
+                )
+            )
     issues.extend(_pr_evidence_repository_alignment_issues(artifacts))
     if issues:
         raise ValueError(f"Release bundle inputs are not release-ready: {'; '.join(issues)}")
@@ -1057,6 +1075,34 @@ def _single_record_for_role(
     if len(matches) != 1:
         raise ValueError(f"Release bundle requires exactly one {role} artifact")
     return matches[0]
+
+
+def _compatibility_benchmark_sidecar_issues(
+    record: Mapping[str, Any],
+    *,
+    storage_record: Mapping[str, Any],
+    engine_probe_records: Sequence[Mapping[str, Any]],
+    engine_action_records: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    issues: list[str] = []
+    evidence = evaluate_release_evidence(
+        record,
+        storage_record,
+        engine_probe_records=engine_probe_records,
+        engine_action_records=engine_action_records,
+    )
+    issues.extend(f"compatibility benchmark evidence: {issue}" for issue in evidence.issues)
+    hardware_target = _strict_v1_benchmark_hardware_target(record)
+    if hardware_target == DEFAULT_HARDWARE_TARGET:
+        issues.append(
+            f"compatibility benchmark hardware_target must not be the strict V1 release target "
+            f"{DEFAULT_HARDWARE_TARGET!r}"
+        )
+    elif hardware_target not in SUPPORTED_V1_HARDWARE_TARGETS:
+        issues.append(
+            f"compatibility benchmark hardware_target must be one of {SUPPORTED_V1_HARDWARE_TARGETS!r}"
+        )
+    return tuple(issues)
 
 
 def _release_evidence_sidecar_issues(
@@ -2344,6 +2390,10 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return f"engine_launch_config_{index + 1:02d}_{backend}.json"
     if role == "v1_benchmark":
         return "v1_benchmark.json"
+    if role == "compatibility_benchmark":
+        hardware_target = _strict_v1_benchmark_hardware_target(record) if record is not None else None
+        suffix = _path_safe_label(hardware_target or f"record_{index + 1:02d}")
+        return f"compatibility_benchmark_{index + 1:02d}_{suffix}.json"
     if role == "storage_benchmark":
         return "storage_benchmark.json"
     if role == "release_evidence":
@@ -2420,6 +2470,10 @@ def _matches_required_backend_set(value: Any) -> bool:
     return len(value) == len(REQUIRED_ENGINE_PROBE_BACKENDS) and set(value) == set(REQUIRED_ENGINE_PROBE_BACKENDS)
 
 
+def _path_safe_label(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", value).strip("-._") or "record"
+
+
 def _dedupe_strings(values: Sequence[str]) -> tuple[str, ...]:
     deduped = []
     for value in values:
@@ -2438,6 +2492,15 @@ def _same_path(left: Path, right: Path) -> bool:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build a checksummed Document KV release evidence bundle.")
     parser.add_argument("--v1-benchmark-json", required=True)
+    parser.add_argument(
+        "--compatibility-benchmark-json",
+        action="append",
+        default=[],
+        help=(
+            "Optional non-default V1 compatibility benchmark JSON to carry in the release bundle. "
+            "Repeat for each supported compatibility hardware target."
+        ),
+    )
     parser.add_argument("--storage-benchmark-json", required=True)
     parser.add_argument("--engine-probe-json", action="append", default=[])
     parser.add_argument("--engine-actions-json", action="append", default=[])
@@ -2468,6 +2531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle = build_release_bundle(
         v1_benchmark_json=args.v1_benchmark_json,
         storage_benchmark_json=args.storage_benchmark_json,
+        compatibility_benchmark_jsons=args.compatibility_benchmark_json,
         engine_probe_jsons=args.engine_probe_json,
         engine_actions_jsons=args.engine_actions_json,
         engine_launch_config_jsons=args.engine_launch_config_json,
