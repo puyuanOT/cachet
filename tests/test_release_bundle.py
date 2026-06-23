@@ -1009,6 +1009,29 @@ def test_build_release_bundle_strict_v1_requires_compatibility_status_for_compat
     assert any(artifact["role"] == "compatibility_benchmark" for artifact in record["artifacts"])
     assert any(artifact["role"] == "compatibility_databricks_run_status" for artifact in record["artifacts"])
 
+    migration_evidence = _write_json(
+        source_dir / "legacy-migration.json",
+        _legacy_migration_evidence_record(ok=True),
+    )
+    bundle_with_migration = build_release_bundle(
+        **{
+            **release_kwargs,
+            "compatibility_benchmark_jsons": (compatibility_benchmark,),
+            "compatibility_databricks_run_status_jsons": (compatibility_status,),
+            "legacy_migration_evidence_jsons": (migration_evidence,),
+        },
+        output_dir=tmp_path / "strict-complete-with-compatibility-and-migration",
+        require_complete_v1=True,
+    )
+    record_with_migration = release_bundle_to_record(bundle_with_migration)
+
+    assert record_with_migration["ok"] is True
+    assert record_with_migration["artifact_count"] == 24
+    assert any(
+        artifact["role"] == "legacy_migration_evidence"
+        for artifact in record_with_migration["artifacts"]
+    )
+
 
 def test_build_release_bundle_strict_v1_rejects_databricks_hardware_target_mismatch(tmp_path):
     source_dir = tmp_path / "sources"

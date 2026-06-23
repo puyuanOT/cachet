@@ -1216,6 +1216,7 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "summary arrays match the task summaries" in compact_text
     assert "V1 requirements matrix" in compact_text
     assert "--compatibility-databricks-run-status-json" in compact_text
+    assert "--legacy-migration-evidence-json" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
     assert "g5-enriched strict bundle validates with 24 artifacts" in compact_remaining_v1_work

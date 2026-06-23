@@ -1424,6 +1424,7 @@ python -m document_kv_cache.release_bundle \
   --compatibility-databricks-run-status-json databricks-run-status-g5-benchmark.json \
   --package-wheel dist/cachet_kv-0.2.0-py3-none-any.whl \
   --pr-evidence-json pr-evidence/release-provenance.json \
+  --legacy-migration-evidence-json evidence/legacy-migration/current/legacy-migration-evidence.json \
   --requirements-matrix-md docs/v1-requirements-matrix.md \
   --github-governance-json github-governance.json \
   --repository-hygiene-json repository-hygiene.json \
@@ -1439,10 +1440,12 @@ backend where applicable, package name/version for wheel artifacts, size, and
 SHA-256 for every artifact. Add
 `--plan-execution-json` to include the command execution summary that identifies
 the exact benchmark plan JSON, `--package-wheel` to include the exact wheel
-tested on the target AWS g6/L4 runtime, and repeat `--pr-evidence-json` to carry PR
-traceability records alongside the benchmark, storage, engine-probe,
-connector-action, engine-launch-config, release-evidence, and preflight
-artifacts. Add
+tested on the target AWS g6/L4 runtime, repeat `--pr-evidence-json` to carry PR
+traceability records, and add `--legacy-migration-evidence-json` when the
+release includes package-surface cleanup evidence such as the removed
+restaurant facade. Those sidecars travel alongside the benchmark, storage,
+engine-probe, connector-action, engine-launch-config, release-evidence, and
+preflight artifacts. Add
 `--compatibility-benchmark-json` to carry non-default supported V1 benchmark
 evidence such as AWS g5/A10G compatibility runs; the bundle validates each
 compatibility benchmark against the same storage/native probe/action sidecars
