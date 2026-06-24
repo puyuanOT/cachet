@@ -2019,9 +2019,24 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         ]
         == 655273897262076
     )
+    assert (
+        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
+            "result_state"
+        ]
+        == "FAILED"
+    )
+    assert (
+        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
+            "succeeded"
+        ]
+        is False
+    )
     assert sglang_canary_flush_cache_hit_quality_failure_failed_run["task"][
         "run_id"
     ] == 541340270733865
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["task"][
+        "result_state"
+    ] == "FAILED"
     assert sglang_canary_flush_cache_hit_quality_failure_failed_run["package_wheel"][
         "sha256"
     ] == "43185087ca4cd8148102bd7b813dded530ec9cd0e882b7496641ad9acc952c48"
@@ -2050,6 +2065,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "new_tokens": 36,
         "total_prompt_tokens": 36,
     }
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
+        "ok"
+    ] is False
     assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
         "model_quality_canary_ok"
     ] is True
