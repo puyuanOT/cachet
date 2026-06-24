@@ -226,14 +226,23 @@ class OpenAICompatibleCompletionEngine:
     def generate(self, request: BenchmarkEngineRequest) -> BenchmarkGeneration:
         started = self.clock()
         payload = self._payload(request)
+        payload_metadata = _payload_shape_metadata(self.config.endpoint, payload)
         response = self._post_json(payload)
         try:
             if payload["stream"]:
                 return self._stream_generation(
-                    request, response, started, cache_salt=payload.get("cache_salt")
+                    request,
+                    response,
+                    started,
+                    cache_salt=payload.get("cache_salt"),
+                    payload_metadata=payload_metadata,
                 )
             return self._completion_generation(
-                request, response, started, cache_salt=payload.get("cache_salt")
+                request,
+                response,
+                started,
+                cache_salt=payload.get("cache_salt"),
+                payload_metadata=payload_metadata,
             )
         finally:
             close = getattr(response, "close", None)
@@ -350,6 +359,7 @@ class OpenAICompatibleCompletionEngine:
         started: float,
         *,
         cache_salt: Any,
+        payload_metadata: Mapping[str, str],
     ) -> BenchmarkGeneration:
         first_token_at: float | None = None
         output_parts: list[str] = []
@@ -385,6 +395,7 @@ class OpenAICompatibleCompletionEngine:
                 prompt_token_source=prompt_token_source,
                 token_metadata=token_metadata,
                 cache_salt=cache_salt,
+                payload_metadata=payload_metadata,
             ),
         )
 
@@ -395,6 +406,7 @@ class OpenAICompatibleCompletionEngine:
         started: float,
         *,
         cache_salt: Any,
+        payload_metadata: Mapping[str, str],
     ) -> BenchmarkGeneration:
         data = json.loads(response.read().decode("utf-8"))
         _raise_for_api_error(data)
@@ -418,6 +430,7 @@ class OpenAICompatibleCompletionEngine:
                 prompt_token_source=prompt_token_source,
                 token_metadata=token_metadata,
                 cache_salt=cache_salt,
+                payload_metadata=payload_metadata,
             ),
         )
 
@@ -429,6 +442,7 @@ class OpenAICompatibleCompletionEngine:
         prompt_token_source: str,
         token_metadata: Mapping[str, str],
         cache_salt: Any,
+        payload_metadata: Mapping[str, str],
     ) -> dict[str, str]:
         metadata = {
             "server": "openai-compatible",
@@ -440,6 +454,7 @@ class OpenAICompatibleCompletionEngine:
                 "true" if request.kv_transfer_params else "false"
             ),
             **token_metadata,
+            **payload_metadata,
         }
         if isinstance(cache_salt, str) and cache_salt:
             metadata["prefix_cache_salt_attached"] = "true"
@@ -496,6 +511,91 @@ def _iter_sse_events(response: Any) -> Iterator[str]:
 
 def _active_urlopen() -> Callable[..., Any]:
     return _urlopen
+
+
+def _payload_shape_metadata(
+    endpoint: str | None, payload: Mapping[str, Any]
+) -> dict[str, str]:
+    metadata = {
+        "request_payload_endpoint": endpoint or "unknown",
+        "request_payload_keys": _joined_mapping_keys(payload),
+        "request_payload_max_token_fields": _joined_present_keys(
+            payload, ("max_completion_tokens", "max_tokens")
+        ),
+    }
+    if "max_completion_tokens" in payload:
+        metadata["request_payload_max_completion_tokens"] = str(
+            payload["max_completion_tokens"]
+        )
+    if "max_tokens" in payload:
+        metadata["request_payload_max_tokens"] = str(payload["max_tokens"])
+    if "prompt" in payload:
+        metadata["request_payload_prompt_chars"] = str(
+            _json_content_char_count(payload["prompt"])
+        )
+    messages = payload.get("messages")
+    if isinstance(messages, Sequence) and not isinstance(
+        messages, (str, bytes, bytearray, memoryview)
+    ):
+        metadata.update(_message_shape_metadata(messages))
+    kv_transfer_params = payload.get("kv_transfer_params")
+    if isinstance(kv_transfer_params, Mapping):
+        metadata["request_payload_kv_transfer_param_keys"] = _joined_mapping_keys(
+            kv_transfer_params
+        )
+    custom_params = payload.get("custom_params")
+    if isinstance(custom_params, Mapping):
+        metadata["request_payload_custom_param_keys"] = _joined_mapping_keys(
+            custom_params
+        )
+        nested_kv_transfer_params = custom_params.get("kv_transfer_params")
+        if isinstance(nested_kv_transfer_params, Mapping):
+            metadata["request_payload_kv_transfer_param_keys"] = (
+                _joined_mapping_keys(nested_kv_transfer_params)
+            )
+    return metadata
+
+
+def _message_shape_metadata(messages: Sequence[Any]) -> dict[str, str]:
+    roles: list[str] = []
+    content_chars: list[str] = []
+    for message in messages:
+        if isinstance(message, Mapping):
+            role = message.get("role")
+            content = message.get("content")
+        else:
+            role = None
+            content = None
+        roles.append(role if isinstance(role, str) and role else "unknown")
+        content_chars.append(str(_json_content_char_count(content)))
+    return {
+        "request_payload_message_count": str(len(messages)),
+        "request_payload_message_roles": ",".join(roles) if roles else "none",
+        "request_payload_message_content_chars": (
+            ",".join(content_chars) if content_chars else "none"
+        ),
+    }
+
+
+def _json_content_char_count(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    try:
+        return len(json.dumps(value, sort_keys=True, separators=(",", ":")))
+    except (TypeError, ValueError):
+        return len(str(type(value).__name__))
+
+
+def _joined_present_keys(payload: Mapping[str, Any], keys: Sequence[str]) -> str:
+    present = [key for key in keys if key in payload]
+    return ",".join(present) if present else "none"
+
+
+def _joined_mapping_keys(value: Mapping[Any, Any]) -> str:
+    keys = sorted(key for key in value if isinstance(key, str))
+    return ",".join(keys) if keys else "none"
 
 
 def _choice_text(data: Mapping[str, Any]) -> str:
