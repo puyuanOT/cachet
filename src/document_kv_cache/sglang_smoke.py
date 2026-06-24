@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import gc
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -80,6 +81,13 @@ DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
+DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.7
+DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY = {
+    "top_p": 0.8,
+    "top_k": 20,
+    "min_p": 0,
+    "presence_penalty": 1.0,
+}
 MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO = 0.8
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
@@ -111,6 +119,8 @@ __all__ = [
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD",
     "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT",
+    "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE",
+    "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY",
     "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
     "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
     "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
@@ -198,6 +208,8 @@ class SGLangSmokeBenchmarkConfig:
     baseline_only: bool = False
     cache_prompt_text_mode: PromptTextMode = "logical"
     live_check_prompt_format: LiveCheckPromptFormat = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    live_check_temperature: float = DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    live_check_extra_body: Mapping[str, Any] = field(default_factory=lambda: dict(DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY))
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
@@ -256,6 +268,20 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
         if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
             raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
+        if (
+            not isinstance(self.live_check_temperature, (int, float))
+            or isinstance(self.live_check_temperature, bool)
+            or not math.isfinite(self.live_check_temperature)
+            or self.live_check_temperature < 0
+        ):
+            raise ValueError("live_check_temperature must be a non-negative finite number")
+        if not isinstance(self.live_check_extra_body, Mapping):
+            raise ValueError("live_check_extra_body must be a mapping")
+        live_check_extra_body = dict(self.live_check_extra_body)
+        try:
+            json.dumps(live_check_extra_body)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("live_check_extra_body must be JSON-serializable") from exc
         if self.handoff_json and self.handoff_record is not None:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record")
         if self.handoff_record is not None and not isinstance(self.handoff_record, Mapping):
@@ -307,6 +333,7 @@ class SGLangSmokeBenchmarkConfig:
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         object.__setattr__(self, "local_root", Path(self.local_root))
         object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
+        object.__setattr__(self, "live_check_extra_body", live_check_extra_body)
         if self.handoff_generation is not None and self.hicache_page_size is None:
             object.__setattr__(self, "hicache_page_size", self.handoff_generation.page_size)
         if self.handoff_record is not None:
@@ -451,6 +478,8 @@ def build_metadata(
         "requires_kv_transfer_params": not config.baseline_only,
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
         "live_check_prompt_format": config.live_check_prompt_format,
+        "live_check_temperature": config.live_check_temperature,
+        "live_check_extra_body": dict(config.live_check_extra_body),
         "kv_transfer_params_transport": "custom_params",
         "generates_live_handoff": config.handoff_generation is not None,
         "live_handoff_generation": (
@@ -1021,12 +1050,14 @@ def run_live_checks(
                 use_cache_arm=True,
                 prompt_text_mode=config.cache_prompt_text_mode,
                 prompt_format=config.live_check_prompt_format,
+                temperature=config.live_check_temperature,
                 prompt_token_accounting="server_usage",
                 kv_transfer_params_transport="custom_params",
                 kv_transfer_params=sglang_live_kv_transfer_params(config),
                 max_tokens=config.max_tokens,
                 timeout_seconds=config.timeout_seconds,
                 stream=config.stream,
+                extra_body=config.live_check_extra_body,
             )
         )
         cache_record = cache.to_record()
@@ -1041,7 +1072,9 @@ def run_live_checks(
             timeout_seconds=config.timeout_seconds,
             stream=config.stream,
             prompt_format=config.live_check_prompt_format,
+            temperature=config.live_check_temperature,
             prompt_token_accounting="server_usage",
+            extra_body=config.live_check_extra_body,
         )
     )
     baseline_record = baseline.to_record()
@@ -1073,6 +1106,8 @@ def run_live_checks(
         "requires_kv_transfer_params": not config.baseline_only,
         "kv_transfer_params_transport": "custom_params",
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
+        "live_check_temperature": config.live_check_temperature,
+        "live_check_extra_body": dict(config.live_check_extra_body),
         "cache_prefill_log_start_index": cache_prefill_log_start_index,
         "baseline": baseline_record,
         "cache": cache_record,

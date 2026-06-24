@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -68,6 +69,7 @@ class LiveServerCheckConfig:
     kv_transfer_params_transport: KVTransferParamsTransport = "top_level"
     stream: bool = True
     max_tokens: int = 32
+    temperature: float = 0.0
     timeout_seconds: float = 120.0
     expected_answer: str = DEFAULT_LIVE_CHECK_ANSWER
     prompt_format: LiveCheckPromptFormat = DEFAULT_LIVE_CHECK_PROMPT_FORMAT
@@ -80,6 +82,13 @@ class LiveServerCheckConfig:
             raise ValueError("base_url must be non-empty")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        if (
+            not isinstance(self.temperature, (int, float))
+            or isinstance(self.temperature, bool)
+            or not math.isfinite(self.temperature)
+            or self.temperature < 0
+        ):
+            raise ValueError("temperature must be a non-negative finite number")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if self.prompt_text_mode == "runtime" and not self.use_cache_arm:
@@ -250,6 +259,7 @@ def run_openai_compatible_live_check(
             api_key=config.api_key,
             timeout_seconds=config.timeout_seconds,
             max_tokens=config.max_tokens,
+            temperature=config.temperature,
             stream=config.stream,
             prompt_text_mode=config.prompt_text_mode,
             prompt_token_accounting=config.prompt_token_accounting,

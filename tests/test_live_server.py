@@ -297,6 +297,14 @@ def test_live_server_check_config_rejects_invalid_kv_transfer_transport():
         )
 
 
+def test_live_server_check_config_rejects_invalid_temperature():
+    with pytest.raises(ValueError, match="temperature"):
+        LiveServerCheckConfig(
+            base_url="http://localhost:8000",
+            temperature=float("nan"),
+        )
+
+
 def test_live_check_reports_failed_quality_when_expected_answer_is_missing():
     result = run_openai_compatible_live_check(
         LiveServerCheckConfig(base_url="http://localhost:8000"),

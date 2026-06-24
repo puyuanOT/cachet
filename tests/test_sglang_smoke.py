@@ -30,7 +30,9 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
+    DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     HF_MODEL_ID,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
@@ -380,6 +382,34 @@ def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp
     assert config.hicache_page_size == 2
     assert config.sglang_hicache_page_keys == ()
     assert config.live_handoff_generation_path == tmp_path / "out" / "sglang-live-handoff-generation.json"
+    assert config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert config.live_check_extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+
+
+def test_sglang_smoke_rejects_invalid_live_check_sampling(tmp_path):
+    with pytest.raises(ValueError, match="live_check_temperature"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            live_check_temperature=True,
+        )
+
+    with pytest.raises(ValueError, match="live_check_extra_body"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            live_check_extra_body=[],
+        )
+
+    with pytest.raises(ValueError, match="live_check_extra_body"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            live_check_extra_body={"bad": object()},
+        )
 
 
 def test_sglang_smoke_rejects_generated_live_handoff_with_explicit_fields(tmp_path):
@@ -919,6 +949,8 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["kv_transfer_params_transport"] == "custom_params"
     assert metadata["cache_prompt_text_mode"] == "logical"
     assert metadata["live_check_prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    assert metadata["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert metadata["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["cache_arm_supported"] is False
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
@@ -1001,6 +1033,8 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkey
     assert len(seen_configs) == 1
     assert seen_configs[0].model_id == SERVED_MODEL_NAME
     assert seen_configs[0].use_cache_arm is False
+    assert seen_configs[0].temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert seen_configs[0].extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
     assert seen_configs[0].prompt_text_mode == "logical"
     assert record["cache"] is None
     assert record["requires_kv_transfer_params"] is False
@@ -1065,6 +1099,10 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert seen_configs[1].model_id == SERVED_MODEL_NAME
     assert seen_configs[0].use_cache_arm is True
     assert seen_configs[1].use_cache_arm is False
+    assert seen_configs[0].temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert seen_configs[1].temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert seen_configs[0].extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+    assert seen_configs[1].extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
     assert seen_configs[0].kv_transfer_params_transport == "custom_params"
     assert seen_configs[0].prompt_text_mode == "logical"
     assert seen_configs[0].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM] == "cachet-live-sglang-1"
@@ -1081,6 +1119,8 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert record["cache_arm_blocker"] is None
     assert record["requires_kv_transfer_params"] is True
     assert record["live_request_metadata_bridge_ok"] is True
+    assert record["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert record["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"]["request_id"] == "cachet-live-sglang-1"
 
