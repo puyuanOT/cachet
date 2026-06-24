@@ -38,6 +38,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
+    DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
     SGLANG_ATTENTION_BACKEND_CHOICES,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
@@ -138,6 +139,7 @@ class DatabricksSGLangSmokeJobConfig:
     flush_cache_before_cache_arm: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM
     flush_cache_before_canary: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
     flush_cache_timeout_seconds: float = DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
+    live_benchmark_repeats: int = DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS
     handoff_json: str | None = None
     handoff_record_json: str | None = None
     payload_uri: str | None = None
@@ -275,6 +277,14 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError(
                 "flush_cache_timeout_seconds must be a positive finite number"
             )
+        if (
+            isinstance(self.live_benchmark_repeats, bool)
+            or not isinstance(self.live_benchmark_repeats, int)
+            or self.live_benchmark_repeats < 0
+        ):
+            raise ValueError(
+                "live_benchmark_repeats must be a non-negative integer"
+            )
         if self.handoff_json and self.handoff_record_json:
             raise ValueError(
                 "SGLang smoke handoff params must use only one of handoff_json or handoff_record_json"
@@ -329,6 +339,8 @@ class DatabricksSGLangSmokeJobConfig:
             )
         )
         if self.baseline_only:
+            if self.live_benchmark_repeats:
+                raise ValueError("live_benchmark_repeats requires cache-arm SGLang smoke")
             if (
                 has_handoff_fields
                 or self.generate_live_handoff
@@ -512,6 +524,10 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
             str(config.flush_cache_timeout_seconds),
         ]
     )
+    if config.live_benchmark_repeats:
+        parameters.extend(
+            ["--live-benchmark-repeats", str(config.live_benchmark_repeats)]
+        )
     if config.sglang_attention_backend is not None:
         parameters.extend(["--sglang-attention-backend", config.sglang_attention_backend])
     if config.sglang_sampling_backend is not None:
@@ -677,6 +693,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
         help="SGLang /flush_cache idle-wait and HTTP timeout before cache-arm and canary checks.",
     )
+    parser.add_argument(
+        "--live-benchmark-repeats",
+        type=int,
+        default=DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
+        help="Run this many post-smoke live baseline/cache benchmark repeats.",
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -765,6 +787,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             flush_cache_before_cache_arm=not args.no_flush_cache_before_cache_arm,
             flush_cache_before_canary=not args.no_flush_cache_before_canary,
             flush_cache_timeout_seconds=args.flush_cache_timeout_seconds,
+            live_benchmark_repeats=args.live_benchmark_repeats,
             handoff_json=args.handoff_json,
             handoff_record_json=args.handoff_record_json,
             payload_uri=args.payload_uri,

@@ -40,6 +40,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
+    DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     HF_MODEL_ID,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
@@ -49,6 +50,7 @@ from document_kv_cache.sglang_smoke import (
     SGLANG_QUALITY_CANARY_ANSWER,
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+    SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
     SGLANG_VERSION,
     SGLangSmokeBenchmarkConfig,
     build_metadata,
@@ -64,6 +66,7 @@ from document_kv_cache.sglang_smoke import (
     prepare_generated_live_handoff,
     require_sglang_cache_hit,
     run_live_checks,
+    run_sglang_live_benchmark,
     run_sglang_quality_canary,
     sglang_cache_hit_validation_record,
     sglang_cached_token_counts,
@@ -510,6 +513,11 @@ def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp
         config.flush_cache_timeout_seconds
         == DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
     )
+    assert config.live_benchmark_repeats == DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS
+    assert (
+        config.live_benchmark_output_path
+        == tmp_path / "out" / "sglang-live-benchmark.json"
+    )
 
 
 def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
@@ -567,6 +575,22 @@ def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
             output_dir=tmp_path / "out",
             baseline_only=True,
             flush_cache_timeout_seconds=0,
+        )
+
+    with pytest.raises(ValueError, match="live_benchmark_repeats"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            live_benchmark_repeats=-1,
+        )
+
+    with pytest.raises(ValueError, match="live_benchmark_repeats"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            live_benchmark_repeats=1,
         )
 
 
@@ -1396,6 +1420,8 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["flush_cache_timeout_seconds"] == (
         DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
     )
+    assert metadata["live_benchmark_repeats"] == DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS
+    assert metadata["live_benchmark_output_path"] is None
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["cache_arm_supported"] is False
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
@@ -1863,6 +1889,163 @@ def test_run_live_checks_can_skip_cache_arm_cache_flush(monkeypatch, tmp_path):
     assert written["cache_arm_cache_flush"]["skipped"] is True
 
 
+def test_run_sglang_live_benchmark_writes_repeat_measurements(
+    monkeypatch, tmp_path
+):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(
+        handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-benchmark-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+        live_benchmark_repeats=2,
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    events = []
+
+    def fake_flush(live_config, *, reason):
+        events.append(f"flush:{reason}")
+        return fake_flush_record(reason=reason)
+
+    def fake_live_check(live_config):
+        cache_arm = live_config.use_cache_arm
+        events.append("cache" if cache_arm else "baseline")
+        prompt_tokens = 205
+        completion_tokens = 1
+        if cache_arm:
+            with config.server_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "[INFO] Prefill batch, #new-token: 30, #cached-token: 175\n"
+                )
+            ttft_seconds = 0.1
+            time_to_completion_seconds = 0.2
+        else:
+            with config.server_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "[INFO] Prefill batch, #new-token: 205, #cached-token: 0\n"
+                )
+            ttft_seconds = 0.4
+            time_to_completion_seconds = 0.6
+        request = public_sglang_smoke.build_live_server_check_request(
+            model_id=SERVED_MODEL_NAME,
+            hardware_target=live_config.hardware_target,
+            use_cache_arm=cache_arm,
+            prompt_format=public_sglang_smoke._live_check_request_prompt_format(
+                live_config.prompt_format,
+                request_mode=live_config.request_mode,
+            ),
+            kv_transfer_params=(
+                live_config.kv_transfer_params if cache_arm else None
+            ),
+        )
+        return public_sglang_smoke.LiveServerCheckResult(
+            request=request,
+            generation=BenchmarkGeneration(
+                output_text="otkv7391",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                ttft_seconds=ttft_seconds,
+                time_to_completion_seconds=time_to_completion_seconds,
+                metadata={
+                    "prompt_token_source": "server_usage",
+                    "server_usage_prompt_tokens": str(prompt_tokens),
+                },
+            ),
+            prompt_text_mode=live_config.prompt_text_mode,
+            request_mode=live_config.request_mode,
+            prompt_format=live_config.prompt_format,
+            answer_found=True,
+        )
+
+    monkeypatch.setattr(public_sglang_smoke, "flush_sglang_cache", fake_flush)
+    monkeypatch.setattr(
+        public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check
+    )
+
+    record = run_sglang_live_benchmark(config)
+
+    assert record["ok"] is True
+    assert record["record_type"] == SGLANG_LIVE_BENCHMARK_RECORD_TYPE
+    assert record["suite"] == {
+        "suite_id": "sglang-live-synthetic-niah",
+        "scope": "live_synthetic_niah",
+        "datasets": ["niah"],
+        "examples": 1,
+        "repeats": 2,
+        "release_v1_suite": False,
+    }
+    assert events == [
+        "flush:before_live_benchmark_baseline_repeat_1",
+        "baseline",
+        "flush:before_live_benchmark_cache_repeat_1",
+        "cache",
+        "flush:before_live_benchmark_baseline_repeat_2",
+        "baseline",
+        "flush:before_live_benchmark_cache_repeat_2",
+        "cache",
+    ]
+    assert len(record["measurements"]) == 4
+    assert [row["requests"] for row in record["report_rows"]] == [2, 2]
+    assert record["comparisons"][0]["dataset"] == "niah"
+    assert record["comparisons"][0]["ttft_speedup"] == 4.0
+    assert len(record["cache_hit_validations"]) == 2
+    assert all(item["ok"] is True for item in record["cache_hit_validations"])
+    assert [
+        item["cache_request_cached_tokens"]
+        for item in record["cache_hit_validations"]
+    ] == [175, 175]
+    written = json.loads(config.live_benchmark_output_path.read_text(encoding="utf-8"))
+    assert written == record
+
+
+def test_run_sglang_live_benchmark_records_request_failures(monkeypatch, tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(
+        handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-benchmark-failure",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a",),
+        live_benchmark_repeats=1,
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "flush_sglang_cache",
+        lambda live_config, *, reason: fake_flush_record(reason=reason),
+    )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_openai_compatible_live_check",
+        lambda live_config: (_ for _ in ()).throw(TimeoutError("timed out")),
+    )
+
+    record = run_sglang_live_benchmark(config)
+
+    assert record["ok"] is False
+    assert len(record["measurements"]) == 2
+    assert record["measurements"][0]["error"] == "timed out"
+    assert record["measurements"][1]["error"] == "timed out"
+    assert record["cache_hit_validations"][0]["ok"] is False
+    assert any("timed out" in issue for issue in record["issues"])
+    written = json.loads(config.live_benchmark_output_path.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+
+
 def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_path):
     handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
     payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
@@ -2242,6 +2425,7 @@ def test_require_sglang_cache_hit_rejects_zero_cache_tokens(tmp_path):
         handoff_generation=SGLangLiveHandoffGenerationConfig(
             output_dir=tmp_path / "generated-live"
         ),
+        live_benchmark_repeats=1,
     )
     config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
     config.server_log_path.write_text(
@@ -2371,6 +2555,7 @@ def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(
         payload_uri=f"disk:{tmp_path / 'generated-live' / 'sglang-live.kv'}",
         request_id="cachet-live-sglang-generated-run",
         sglang_hicache_page_keys=("page-a",),
+        live_benchmark_repeats=1,
     )
 
     class FakeServer:
@@ -2450,6 +2635,14 @@ def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(
     monkeypatch.setattr(public_sglang_smoke, "run_live_checks", fake_run_live_checks)
     monkeypatch.setattr(
         public_sglang_smoke,
+        "run_sglang_live_benchmark",
+        lambda seen_config: (
+            events.append("benchmark")
+            or {"ok": True, "issues": [], "benchmark_id": seen_config.benchmark_id}
+        ),
+    )
+    monkeypatch.setattr(
+        public_sglang_smoke,
         "terminate_process",
         lambda server: events.append("terminate"),
     )
@@ -2457,6 +2650,7 @@ def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(
     public_sglang_smoke.run_sglang_live_smoke(config)
 
     assert events.index("prepare") < events.index("start") < events.index("live")
+    assert events.index("live") < events.index("benchmark") < events.index("terminate")
     metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
     assert metadata["generated_live_handoff"] is True
     assert metadata["generated_live_handoff_page_keys"] == 1
@@ -2590,6 +2784,7 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
     assert config.stream is False
     assert config.cache_prompt_text_mode == "logical"
     assert config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert config.live_benchmark_repeats == DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS
 
     with pytest.raises(ValueError) as exc:
         parse_args(
@@ -2605,6 +2800,48 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
         )
 
     assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
+
+
+def test_parse_args_accepts_live_benchmark_repeats_for_cache_arm(tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(
+        handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri
+    )
+
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "sglang-benchmark-1",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--handoff-json",
+            str(handoff_path),
+            "--payload-uri",
+            payload_uri,
+            "--request-id",
+            "cachet-live-sglang-1",
+            "--sglang-hicache-page-keys-json",
+            '["page-a"]',
+            "--live-benchmark-repeats",
+            "3",
+        ]
+    )
+
+    assert config.live_benchmark_repeats == 3
+
+    with pytest.raises(ValueError, match="live_benchmark_repeats"):
+        parse_args(
+            [
+                "--benchmark-id",
+                "sglang-baseline-1",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--baseline-only",
+                "--live-benchmark-repeats",
+                "1",
+            ]
+        )
 
 
 def test_probe_sglang_import_writes_timeout_artifact(monkeypatch, tmp_path):
