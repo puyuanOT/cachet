@@ -1025,6 +1025,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(
         encoding="utf-8"
     )
+    benchmark_template_readme = (
+        benchmark_root / "_template" / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_live_smoke_readme = (
         benchmark_root / "sglang" / "2026-06-23-g6-l4-live-handoff-smoke" / "README.md"
     ).read_text(encoding="utf-8")
@@ -1312,6 +1315,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_sglang_readme = " ".join(sglang_readme.split())
     compact_storage_readme = " ".join(storage_readme.split())
     compact_native_engine_readme = " ".join(native_engine_readme.split())
+    compact_benchmark_template_readme = " ".join(benchmark_template_readme.split())
     compact_sglang_live_benchmark_success_readme = " ".join(
         sglang_live_benchmark_success_readme.split()
     )
@@ -1331,6 +1335,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "[`sglang/`](sglang/)" in root_readme
     assert "[`storage/`](storage/)" in root_readme
     assert "[`native-engine/`](native-engine/)" in root_readme
+    assert "[`_template/`](./_template/)" in root_readme
     assert "[`databricks/CURRENT.md`](databricks/CURRENT.md)" in root_readme
     assert "[`CURRENT.md`](CURRENT.md)" in databricks_readme
     assert "`../benchmarks/README.md`" in docs_readme
@@ -1368,7 +1373,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "synthetic live benchmark validates decode-time prefix binding" in compact_snapshot
     assert "They are not latency, throughput, or quality benchmark measurements" in compact_snapshot
     assert "Folders with `v1_benchmark.json` are latency and quality benchmark reports" in root_readme
-    assert "SGLang `sglang-live-benchmark.json` files are synthetic live endpoint" in root_readme
+    assert "scope=live_synthetic_niah" in root_readme
+    assert "scope=live_v1_release" in root_readme
+    assert "not a replacement for canonical `v1_benchmark.json`" in compact_root_readme
     assert "native-engine probe folder is integration evidence only" in compact_root_readme
     assert "Folders containing `v1_benchmark.json` are full V1 latency" in databricks_readme
     assert "cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint" in databricks_readme
@@ -2703,8 +2710,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Native Engine Integration Evidence" in native_engine_readme
     assert "Provider-backed dynamic HiCache probe succeeded" in native_engine_readme
     assert "not latency, throughput, or quality benchmark measurements" in compact_native_engine_readme
+    assert "Benchmark Report Template" in benchmark_template_readme
+    assert "Do not include Databricks tokens" in compact_benchmark_template_readme
+    assert "`pr-evidence/` only for PR validation" in compact_benchmark_template_readme
 
     expected_files = {
+        "_template/README.md",
         "databricks/CURRENT.md",
         "README.md",
         "native-engine/README.md",

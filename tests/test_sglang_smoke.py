@@ -15,6 +15,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
+    SUPPORTED_V1_DATASETS,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -51,8 +52,10 @@ from document_kv_cache.sglang_smoke import (
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
     SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+    SGLANG_PREPARED_V1_LIVE_BENCHMARK_SCOPE,
     SGLANG_VERSION,
     SGLangSmokeBenchmarkConfig,
+    benchmark_dataset_paths,
     build_metadata,
     flush_sglang_cache,
     build_sglang_quality_canary_request,
@@ -63,6 +66,7 @@ from document_kv_cache.sglang_smoke import (
     install_document_kv_package,
     install_sglang,
     parse_args,
+    prepared_sglang_benchmark_handoff_coverage_record,
     prepare_generated_live_handoff,
     require_sglang_cache_hit,
     run_live_checks,
@@ -72,6 +76,7 @@ from document_kv_cache.sglang_smoke import (
     sglang_cached_token_counts,
     sglang_prefill_token_counts,
     sglang_hicache_config_for_smoke,
+    validate_prepared_sglang_benchmark_handoffs,
 )
 from document_kv_cache.storage import local_path
 from document_kv_cache.workflow import SourceDocument
@@ -118,6 +123,53 @@ def write_handoff_json(path: Path, *, request_id: str, payload_uri: str) -> None
         ),
         encoding="utf-8",
     )
+
+
+def write_prepared_sglang_v1_datasets(
+    root: Path,
+    *,
+    missing_page_keys_for: str | None = None,
+) -> tuple[str, ...]:
+    specs: list[str] = []
+    for dataset in SUPPORTED_V1_DATASETS:
+        request_id = f"cachet-{dataset}-prepared-1"
+        handoff_path = root / "handoffs" / dataset / "example-1.handoff.json"
+        payload_uri = f"disk:{root / 'payloads' / dataset / 'example-1.kv'}"
+        write_handoff_json(handoff_path, request_id=request_id, payload_uri=payload_uri)
+        kv_transfer_params: dict[str, object] = {
+            DOCUMENT_KV_REQUEST_ID_PARAM: request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: payload_uri,
+        }
+        if dataset != missing_page_keys_for:
+            kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = [
+                f"{dataset}-page-1",
+                f"{dataset}-page-2",
+            ]
+        dataset_path = root / "datasets" / f"{dataset}.jsonl"
+        dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        dataset_path.write_text(
+            json.dumps(
+                {
+                    "dataset": dataset,
+                    "example_id": f"{dataset}-example-1",
+                    "documents": [
+                        {
+                            "document_id": f"{dataset}-doc-1",
+                            "text": f"{dataset} document contains answer-{dataset}.",
+                        }
+                    ],
+                    "query": f"What answer is in the {dataset} document?",
+                    "expected_answer": f"answer-{dataset}",
+                    "kv_transfer_params": kv_transfer_params,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        specs.append(f"{dataset}={dataset_path}")
+    return tuple(specs)
 
 
 class FakeLiveResult:
@@ -592,6 +644,140 @@ def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
             baseline_only=True,
             live_benchmark_repeats=1,
         )
+
+
+def test_sglang_smoke_accepts_prepared_v1_dataset_specs_for_live_benchmark(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
+
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "sglang-prepared-v1",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--live-benchmark-repeats",
+            "1",
+            *[
+                item
+                for spec in dataset_specs
+                for item in ("--dataset", spec)
+            ],
+        ]
+    )
+
+    assert config.uses_prepared_datasets is True
+    assert config.dataset_specs == dataset_specs
+    assert config.live_benchmark_repeats == 1
+    assert config.prepared_handoff_coverage_path == (
+        tmp_path / "out" / "prepared-sglang-handoff-coverage.json"
+    )
+    assert tuple(benchmark_dataset_paths(config)) == SUPPORTED_V1_DATASETS
+
+
+def test_sglang_smoke_rejects_invalid_prepared_v1_dataset_specs(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
+
+    with pytest.raises(ValueError, match="missing required V1 datasets"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-prepared-v1",
+            output_dir=tmp_path / "out",
+            dataset_specs=dataset_specs[:-1],
+            live_benchmark_repeats=1,
+        )
+
+    with pytest.raises(ValueError, match="cache-arm SGLang live benchmark"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-prepared-v1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            dataset_specs=dataset_specs,
+            live_benchmark_repeats=0,
+        )
+
+    with pytest.raises(ValueError, match="dataset specs require live_benchmark_repeats"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-prepared-v1",
+            output_dir=tmp_path / "out",
+            dataset_specs=dataset_specs,
+        )
+
+    with pytest.raises(ValueError, match="must not be combined"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-prepared-v1",
+            output_dir=tmp_path / "out",
+            dataset_specs=dataset_specs,
+            live_benchmark_repeats=1,
+            handoff_generation=SGLangLiveHandoffGenerationConfig(
+                output_dir=tmp_path / "generated-live"
+            ),
+        )
+
+
+def test_prepared_sglang_benchmark_handoff_coverage_requires_page_keys(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+    )
+
+    record = prepared_sglang_benchmark_handoff_coverage_record(
+        config,
+        benchmark_dataset_paths(config),
+    )
+
+    assert record["ok"] is True
+    assert record["release_v1_suite"] is True
+    assert record["datasets"] == {dataset: 1 for dataset in SUPPORTED_V1_DATASETS}
+    assert record["examples"] == len(SUPPORTED_V1_DATASETS)
+    assert record["examples_with_kv_transfer_params"] == len(SUPPORTED_V1_DATASETS)
+    assert record["examples_with_loadable_sglang_handoff_references"] == len(
+        SUPPORTED_V1_DATASETS
+    )
+    assert record["missing_kv_transfer_params"] == []
+    assert record["invalid_handoff_references"] == []
+    validated = validate_prepared_sglang_benchmark_handoffs(
+        config,
+        benchmark_dataset_paths(config),
+    )
+    assert validated == record
+    assert json.loads(
+        config.prepared_handoff_coverage_path.read_text(encoding="utf-8")
+    ) == record
+
+    invalid_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared-missing-page-keys",
+        missing_page_keys_for="niah",
+    )
+    invalid_config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "invalid-out",
+        dataset_specs=invalid_specs,
+        live_benchmark_repeats=1,
+    )
+
+    invalid_record = prepared_sglang_benchmark_handoff_coverage_record(
+        invalid_config,
+        benchmark_dataset_paths(invalid_config),
+    )
+
+    assert invalid_record["ok"] is False
+    assert invalid_record["missing_kv_transfer_params"] == []
+    assert len(invalid_record["invalid_handoff_references"]) == 1
+    invalid_reference = invalid_record["invalid_handoff_references"][0]
+    assert invalid_reference["dataset"] == "niah"
+    assert invalid_reference["example_id"] == "niah-example-1"
+    assert DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM in invalid_reference["error"]
+
+    with pytest.raises(ValueError, match="must be enriched with Cachet"):
+        validate_prepared_sglang_benchmark_handoffs(
+            invalid_config,
+            benchmark_dataset_paths(invalid_config),
+        )
+    assert json.loads(
+        invalid_config.prepared_handoff_coverage_path.read_text(encoding="utf-8")
+    ) == invalid_record
 
 
 def test_parse_args_accepts_live_check_extra_body_json(tmp_path):
@@ -1982,13 +2168,13 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
         "release_v1_suite": False,
     }
     assert events == [
-        "flush:before_live_benchmark_baseline_repeat_1",
+        "flush:before_live_benchmark_baseline_niah/live-niah-synthetic-nonce_repeat_1",
         "baseline",
-        "flush:before_live_benchmark_cache_repeat_1",
+        "flush:before_live_benchmark_cache_niah/live-niah-synthetic-nonce_repeat_1",
         "cache",
-        "flush:before_live_benchmark_baseline_repeat_2",
+        "flush:before_live_benchmark_baseline_niah/live-niah-synthetic-nonce_repeat_2",
         "baseline",
-        "flush:before_live_benchmark_cache_repeat_2",
+        "flush:before_live_benchmark_cache_niah/live-niah-synthetic-nonce_repeat_2",
         "cache",
     ]
     assert len(record["measurements"]) == 4
@@ -2001,6 +2187,119 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
         item["cache_request_cached_tokens"]
         for item in record["cache_hit_validations"]
     ] == [175, 175]
+    written = json.loads(config.live_benchmark_output_path.read_text(encoding="utf-8"))
+    assert written == record
+
+
+def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
+    monkeypatch, tmp_path
+):
+    dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    events = []
+
+    def fake_flush(live_config, *, reason):
+        del live_config
+        events.append(f"flush:{reason}")
+        return fake_flush_record(reason=reason)
+
+    def fake_benchmark_request(live_config, *, request, use_cache_arm):
+        events.append(
+            f"{request.example.dataset}:{'cache' if use_cache_arm else 'baseline'}"
+        )
+        prompt_tokens = 12
+        completion_tokens = 2
+        expected_answer = request.example.expected_answer or ""
+        if use_cache_arm:
+            with live_config.server_log_path.open("a", encoding="utf-8") as handle:
+                handle.write("[INFO] Prefill batch, #new-token: 10, #cached-token: 2\n")
+            ttft_seconds = 0.1
+            time_to_completion_seconds = 0.2
+        else:
+            with live_config.server_log_path.open("a", encoding="utf-8") as handle:
+                handle.write("[INFO] Prefill batch, #new-token: 12, #cached-token: 0\n")
+            ttft_seconds = 0.4
+            time_to_completion_seconds = 0.6
+        return public_sglang_smoke.LiveServerCheckResult(
+            request=request,
+            generation=BenchmarkGeneration(
+                output_text=f"The answer is {expected_answer}.",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                ttft_seconds=ttft_seconds,
+                time_to_completion_seconds=time_to_completion_seconds,
+                metadata={
+                    "prompt_token_source": "server_usage",
+                    "server_usage_prompt_tokens": str(prompt_tokens),
+                },
+            ),
+            prompt_text_mode=(
+                live_config.cache_prompt_text_mode if use_cache_arm else "logical"
+            ),
+            request_mode=live_config.live_check_request_mode,
+            prompt_format=live_config.live_check_prompt_format,
+            answer_found=True,
+        )
+
+    monkeypatch.setattr(public_sglang_smoke, "flush_sglang_cache", fake_flush)
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "_run_sglang_live_benchmark_request",
+        fake_benchmark_request,
+    )
+
+    record = run_sglang_live_benchmark(config)
+
+    assert record["ok"] is True
+    assert record["suite"] == {
+        "suite_id": "sglang-prepared-v1",
+        "scope": SGLANG_PREPARED_V1_LIVE_BENCHMARK_SCOPE,
+        "datasets": list(SUPPORTED_V1_DATASETS),
+        "examples": len(SUPPORTED_V1_DATASETS),
+        "repeats": 1,
+        "release_v1_suite": True,
+    }
+    assert len(record["measurements"]) == len(SUPPORTED_V1_DATASETS) * 2
+    assert len(record["comparisons"]) == len(SUPPORTED_V1_DATASETS)
+    assert {
+        comparison["dataset"]
+        for comparison in record["comparisons"]
+    } == set(SUPPORTED_V1_DATASETS)
+    assert all(
+        comparison["ttft_speedup"] == 4.0
+        for comparison in record["comparisons"]
+    )
+    assert len(record["cache_hit_validations"]) == len(SUPPORTED_V1_DATASETS)
+    assert all(item["ok"] is True for item in record["cache_hit_validations"])
+    assert {
+        item["dataset"]
+        for item in record["cache_hit_validations"]
+    } == set(SUPPORTED_V1_DATASETS)
+    assert [
+        item["minimum_cached_tokens"]
+        for item in record["cache_hit_validations"]
+    ] == [2, 2, 2, 2]
+    assert [
+        item["cache_request_cached_tokens"]
+        for item in record["cache_hit_validations"]
+    ] == [2, 2, 2, 2]
+    assert events == [
+        item
+        for dataset in SUPPORTED_V1_DATASETS
+        for item in (
+            f"flush:before_live_benchmark_baseline_{dataset}/{dataset}-example-1_repeat_1",
+            f"{dataset}:baseline",
+            f"flush:before_live_benchmark_cache_{dataset}/{dataset}-example-1_repeat_1",
+            f"{dataset}:cache",
+        )
+    ]
     written = json.loads(config.live_benchmark_output_path.read_text(encoding="utf-8"))
     assert written == record
 
