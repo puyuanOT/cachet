@@ -2016,12 +2016,15 @@ users keep inline type annotations after installation.
   benchmark, storage, connector action descriptors, and native engine block managers
   is green for the current `cachet-kv` wheel. The native engine block managers
   remain owned by vLLM and SGLang rather than Cachet. The latest validated
-  strict-bundle snapshot, built after PR #511 with the current wheel, validates
-  with 34 artifacts after adding the successful raw SGLang live V1 sidecar from
+  strict-bundle snapshot, built after PR #513 with the current wheel, validates
+  with 37 artifacts after adding the successful raw SGLang live V1 sidecar from
   run `48413356233422`, the current g6 benchmark status sidecar, current
   `aws-g5-a10g` compatibility benchmark, matching `aws-g5-a10g` Databricks
-  run-status sidecar, PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511 evidence, and
-  `legacy_migration_evidence` for the removed restaurant facade.
+  run-status sidecar, PR
+  #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence,
+  `legacy_migration_evidence` for the removed restaurant facade, and
+  `dependency_freshness` evidence for the current package/runtime dependency
+  policy.
   Traceability-only PR evidence added after that snapshot must be included in
   the next publication bundle refresh. The required artifact set remains:
   release evidence

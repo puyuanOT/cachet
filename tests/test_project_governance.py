@@ -886,6 +886,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     stale_release_blockers = (
         "no-governance",
         "21 artifacts",
+        "34 artifacts",
         "allow_auto_merge=false",
         "repository as private",
         "repository visibility as private",
@@ -935,7 +936,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "strict V1 publication target",
         "compatibility_benchmark",
         "compatibility_databricks_run_status",
-        "34 artifacts",
+        "37 artifacts",
         "872615985402004",
         "566743786103032",
         "cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main",
@@ -959,9 +960,10 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     )
     assert "cannot substitute for the strict release target" in matrix_text
     assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "latest validated strict-bundle snapshot was built after PR #511 with the current wheel" in compact_matrix
-    assert "validates with 34 artifacts" in compact_matrix
-    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511 evidence" in compact_matrix
+    assert "latest validated strict-bundle snapshot was built after PR #513 with the current wheel" in compact_matrix
+    assert "validates with 37 artifacts" in compact_matrix
+    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_matrix
+    assert "`dependency_freshness` evidence" in compact_matrix
     assert "Traceability-only PR evidence added after that snapshot must be included" in compact_matrix
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
     assert "compatibility Databricks run-status sidecar" in compact_matrix
@@ -3439,6 +3441,7 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     stale_release_blockers = (
         "no-governance",
         "21 artifacts",
+        "34 artifacts",
         "allow_auto_merge=false",
         "repository as private",
         "repository visibility as private",
@@ -3464,9 +3467,10 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "--legacy-migration-evidence-json" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "latest validated strict-bundle snapshot, built after PR #511 with the current wheel" in compact_remaining_v1_work
-    assert "validates with 34 artifacts" in compact_remaining_v1_work
-    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511 evidence" in compact_remaining_v1_work
+    assert "latest validated strict-bundle snapshot, built after PR #513 with the current wheel" in compact_remaining_v1_work
+    assert "validates with 37 artifacts" in compact_remaining_v1_work
+    assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_remaining_v1_work
+    assert "`dependency_freshness` evidence" in compact_remaining_v1_work
     assert "Traceability-only PR evidence added after that snapshot must be included" in compact_remaining_v1_work
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_remaining_v1_work
     assert "compatibility_databricks_run_status" in compact_remaining_v1_work
