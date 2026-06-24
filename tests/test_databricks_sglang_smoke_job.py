@@ -215,6 +215,9 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         default_config.hicache_storage_prefetch_threshold
         == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
     )
+    assert default_config.sglang_attention_backend is None
+    assert default_config.sglang_sampling_backend is None
+    assert default_config.sglang_enable_deterministic_inference is False
 
     config = DatabricksSGLangSmokeJobConfig(
         benchmark_id="v1-sglang-generated-001",
@@ -230,6 +233,9 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         live_handoff_align_bytes=8,
         sglang_hicache_page_size=2,
         live_handoff_generation_timeout_seconds=12.5,
+        sglang_attention_backend="triton",
+        sglang_sampling_backend="pytorch",
+        sglang_enable_deterministic_inference=True,
         spark_env_vars={"CACHET_TRANSFORMERS_DEVICE": "cuda"},
     )
 
@@ -248,6 +254,9 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     )
     assert parameters[parameters.index("--live-check-temperature") + 1] == "0.25"
+    assert parameters[parameters.index("--sglang-attention-backend") + 1] == "triton"
+    assert parameters[parameters.index("--sglang-sampling-backend") + 1] == "pytorch"
+    assert "--sglang-enable-deterministic-inference" in parameters
     assert parameters[parameters.index("--live-handoff-output-dir") + 1].endswith(
         "/live-handoff"
     )
@@ -371,6 +380,35 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         (
             {"hicache_storage_prefetch_threshold": 0, "baseline_only": True},
             "hicache_storage_prefetch_threshold",
+        ),
+        (
+            {"sglang_attention_backend": "flash-attention", "baseline_only": True},
+            "sglang_attention_backend",
+        ),
+        (
+            {"sglang_sampling_backend": "flash-attention", "baseline_only": True},
+            "sglang_sampling_backend",
+        ),
+        (
+            {"sglang_enable_deterministic_inference": True, "baseline_only": True},
+            "sglang_attention_backend",
+        ),
+        (
+            {
+                "sglang_attention_backend": "flashinfer",
+                "sglang_enable_deterministic_inference": True,
+                "baseline_only": True,
+            },
+            "sglang_attention_backend",
+        ),
+        (
+            {
+                "sglang_attention_backend": "triton",
+                "sglang_sampling_backend": "flashinfer",
+                "sglang_enable_deterministic_inference": True,
+                "baseline_only": True,
+            },
+            "sglang_sampling_backend",
         ),
         (
             {"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}, "baseline_only": True},
@@ -549,6 +587,11 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
             "--baseline-only",
             "--live-check-temperature",
             "0.25",
+            "--sglang-attention-backend",
+            "triton",
+            "--sglang-sampling-backend",
+            "pytorch",
+            "--sglang-enable-deterministic-inference",
             "--spark-env-var",
             "CACHET_SGLANG_TRACE=1",
             "--output-json",
@@ -567,6 +610,9 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
     ]
     parameters = task["spark_python_task"]["parameters"]
     assert parameters[parameters.index("--live-check-temperature") + 1] == "0.25"
+    assert parameters[parameters.index("--sglang-attention-backend") + 1] == "triton"
+    assert parameters[parameters.index("--sglang-sampling-backend") + 1] == "pytorch"
+    assert "--sglang-enable-deterministic-inference" in parameters
     assert task["new_cluster"]["spark_env_vars"] == {"CACHET_SGLANG_TRACE": "1"}
     assert "sglang_smoke" in runner_path.read_text(encoding="utf-8")
 

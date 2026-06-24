@@ -111,6 +111,28 @@ DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY = {
     "reasoning_effort": "none",
     "chat_template_kwargs": dict(SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS),
 }
+SGLANG_ATTENTION_BACKEND_CHOICES = (
+    "triton",
+    "torch_native",
+    "flex_attention",
+    "nsa",
+    "cutlass_mla",
+    "fa3",
+    "fa4",
+    "flashinfer",
+    "flashmla",
+    "trtllm_mla",
+    "trtllm_mha",
+    "dual_chunk_flash_attn",
+    "aiter",
+    "wave",
+    "intel_amx",
+    "ascend",
+    "intel_xpu",
+)
+SGLANG_SAMPLING_BACKEND_CHOICES = ("flashinfer", "pytorch", "ascend")
+SGLANG_DETERMINISTIC_ATTENTION_BACKEND_CHOICES = ("flashinfer", "fa3", "triton")
+SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES = ("fa3", "triton")
 MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO = 0.8
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
@@ -147,6 +169,10 @@ __all__ = [
     "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE",
     "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE",
     "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY",
+    "SGLANG_ATTENTION_BACKEND_CHOICES",
+    "SGLANG_SAMPLING_BACKEND_CHOICES",
+    "SGLANG_DETERMINISTIC_ATTENTION_BACKEND_CHOICES",
+    "SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES",
     "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
     "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
     "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
@@ -239,6 +265,9 @@ class SGLangSmokeBenchmarkConfig:
     client_host: str = SERVER_HOST
     context_length: int = 4096
     mem_fraction_static: float = 0.85
+    sglang_attention_backend: str | None = None
+    sglang_sampling_backend: str | None = None
+    sglang_enable_deterministic_inference: bool = False
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     stream: bool = True
     package_install_spec: str | None = None
@@ -302,6 +331,36 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("context_length must be positive")
         if not 0 < self.mem_fraction_static <= 1:
             raise ValueError("mem_fraction_static must be in (0, 1]")
+        sglang_attention_backend = _validated_optional_choice(
+            self.sglang_attention_backend,
+            choices=SGLANG_ATTENTION_BACKEND_CHOICES,
+            field_name="sglang_attention_backend",
+        )
+        sglang_sampling_backend = _validated_optional_choice(
+            self.sglang_sampling_backend,
+            choices=SGLANG_SAMPLING_BACKEND_CHOICES,
+            field_name="sglang_sampling_backend",
+        )
+        if type(self.sglang_enable_deterministic_inference) is not bool:
+            raise ValueError("sglang_enable_deterministic_inference must be a boolean")
+        if self.sglang_enable_deterministic_inference:
+            if sglang_sampling_backend not in {None, "pytorch"}:
+                raise ValueError(
+                    "sglang_sampling_backend must be 'pytorch' when deterministic "
+                    "inference is enabled"
+                )
+            if (
+                sglang_attention_backend
+                not in SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES
+            ):
+                supported = ", ".join(
+                    repr(value)
+                    for value in SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES
+                )
+                raise ValueError(
+                    "sglang_attention_backend must be one of "
+                    f"{supported} when deterministic inference is enabled"
+                )
         if type(self.stream) is not bool:
             raise ValueError("stream must be a boolean")
         if type(self.baseline_only) is not bool:
@@ -410,6 +469,10 @@ class SGLangSmokeBenchmarkConfig:
                     raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         object.__setattr__(self, "local_root", Path(self.local_root))
+        object.__setattr__(
+            self, "sglang_attention_backend", sglang_attention_backend
+        )
+        object.__setattr__(self, "sglang_sampling_backend", sglang_sampling_backend)
         object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
         object.__setattr__(self, "live_check_extra_body", live_check_extra_body)
         if self.handoff_generation is not None and self.hicache_page_size is None:
@@ -562,6 +625,18 @@ def build_metadata(
         "dependency_constraints": dependency_constraints(),
         "context_length": config.context_length,
         "mem_fraction_static": config.mem_fraction_static,
+        "sglang_attention_backend": config.sglang_attention_backend,
+        "sglang_sampling_backend": config.sglang_sampling_backend,
+        "sglang_enable_deterministic_inference": (
+            config.sglang_enable_deterministic_inference
+        ),
+        "sglang_server_backend_options": {
+            "attention_backend": config.sglang_attention_backend,
+            "sampling_backend": config.sglang_sampling_backend,
+            "enable_deterministic_inference": (
+                config.sglang_enable_deterministic_inference
+            ),
+        },
         "hardware_target": config.hardware_target,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "baseline_only": config.baseline_only,
@@ -1086,6 +1161,25 @@ def _json_object_copy(value: Mapping[str, Any], *, field_name: str) -> dict[str,
     if not isinstance(copied, dict):
         raise ValueError(f"{field_name} must be a mapping")
     return copied
+
+
+def _validated_optional_choice(
+    value: str | None,
+    *,
+    choices: Sequence[str],
+    field_name: str,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string when provided")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be non-empty when provided")
+    if normalized not in choices:
+        supported = ", ".join(repr(choice) for choice in choices)
+        raise ValueError(f"{field_name} must be one of {supported}")
+    return normalized
 
 
 def _source_document_with_text(
@@ -1723,6 +1817,12 @@ def build_sglang_server_args(
         str(config.mem_fraction_static),
         "--trust-remote-code",
     ]
+    if config.sglang_attention_backend is not None:
+        args.extend(["--attention-backend", config.sglang_attention_backend])
+    if config.sglang_sampling_backend is not None:
+        args.extend(["--sampling-backend", config.sglang_sampling_backend])
+    if config.sglang_enable_deterministic_inference:
+        args.append("--enable-deterministic-inference")
     extra_config: dict[str, Any] = {}
     if config.hicache_page_store_uri is not None:
         extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = (
@@ -2042,6 +2142,13 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--client-host", default=SERVER_HOST)
     parser.add_argument("--context-length", type=int, default=4096)
     parser.add_argument("--mem-fraction-static", type=float, default=0.85)
+    parser.add_argument(
+        "--sglang-attention-backend", choices=SGLANG_ATTENTION_BACKEND_CHOICES
+    )
+    parser.add_argument(
+        "--sglang-sampling-backend", choices=SGLANG_SAMPLING_BACKEND_CHOICES
+    )
+    parser.add_argument("--sglang-enable-deterministic-inference", action="store_true")
     parser.add_argument("--hardware-target", default=DEFAULT_HARDWARE_TARGET)
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--package-install-spec")
@@ -2117,6 +2224,9 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         client_host=args.client_host,
         context_length=args.context_length,
         mem_fraction_static=args.mem_fraction_static,
+        sglang_attention_backend=args.sglang_attention_backend,
+        sglang_sampling_backend=args.sglang_sampling_backend,
+        sglang_enable_deterministic_inference=args.sglang_enable_deterministic_inference,
         hardware_target=args.hardware_target,
         stream=not args.no_stream,
         package_install_spec=args.package_install_spec,
