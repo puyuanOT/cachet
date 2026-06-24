@@ -35,12 +35,15 @@ result.
 
 ## Source Artifacts
 
-The sanitized source records live in
-[`../../databricks/2026-06-23-g6-l4-v1/`](../../databricks/2026-06-23-g6-l4-v1/):
+The sanitized source records are committed beside this README:
 
 - `v1_benchmark.json`
 - `databricks_run_status.json`
 - `release_evidence.json`
+
+The same records are mirrored under
+[`../../databricks/2026-06-23-g6-l4-v1/`](../../databricks/2026-06-23-g6-l4-v1/)
+for release-bundle and Databricks run-status audits.
 
 ## Artifact Boundary
 

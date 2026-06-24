@@ -877,8 +877,9 @@ benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and
 native vLLM/SGLang probe artifacts without relying on the PR-only
 `pr-evidence/` tree or ignored local `databricks-runs/` output. Every durable
 Databricks benchmark or benchmark-readiness run should get its own dated
-standalone folder with a `README.md`; `pr-evidence/` stays reserved for
-machine-readable PR validation and release-audit sidecars.
+standalone folder with a `README.md` and compact sanitized evidence committed
+beside it; `pr-evidence/` stays reserved for machine-readable PR validation and
+release-audit sidecars.
 
 The full release-suite latency and quality benchmark rows are vLLM benchmark
 runs. The current SGLang artifacts include provider-backed native HiCache probe

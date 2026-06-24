@@ -20,15 +20,17 @@ Category folders own the human-facing report pages. Dated subfolders such as
 [`storage/2026-06-21-g6-l4-storage-readers/`](storage/2026-06-21-g6-l4-storage-readers/),
 and
 [`native-engine/2026-06-23-g6-l4-native-engine-probes/`](native-engine/2026-06-23-g6-l4-native-engine-probes/)
-are the standalone benchmark reports to read and cite. The Databricks artifact
-index remains available at [`databricks/CURRENT.md`](databricks/CURRENT.md);
-its dated folders hold the sanitized JSON source records needed to audit the
-claims.
+are the standalone benchmark reports to read and cite. Each standalone dated
+folder should include the compact sanitized JSON records needed to audit the
+claims beside its `README.md`. The Databricks artifact index remains available
+at [`databricks/CURRENT.md`](databricks/CURRENT.md); its dated folders mirror
+the release-bundle source records and Databricks run-status sidecars.
 
 Use this boundary when adding or reviewing benchmark output:
 
 - `benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
-  `benchmarks/native-engine/` are standalone human-readable report folders.
+  `benchmarks/native-engine/` are standalone human-readable report folders
+  with compact sanitized evidence committed beside each dated report README.
 - New benchmark runs should get a dated standalone folder with a concise
   `README.md` before they are cited as results. Start from
   [`_template/README.md`](_template/README.md) so every folder includes the
@@ -38,9 +40,10 @@ Use this boundary when adding or reviewing benchmark output:
 - Pending live-readiness runs can live under the relevant engine folder, such
   as `benchmarks/sglang/2026-06-23-g6-l4-live-handoff-smoke/`, when they are
   useful to review before a terminal benchmark result exists.
-- `benchmarks/databricks/CURRENT.md` is the current human-readable summary.
+- `benchmarks/databricks/CURRENT.md` is the current Databricks evidence
+  summary and cross-benchmark index.
 - `benchmarks/databricks/<date>-<target>-<purpose>/README.md` is the
-  run-specific human-readable source-artifact report.
+  run-specific release-source mirror for Databricks status and bundle audits.
 - Folders with `v1_benchmark.json` are latency and quality benchmark reports.
 - SGLang `sglang-live-benchmark.json` files with `scope=live_synthetic_niah`
   are synthetic live endpoint measurements and do not replace full V1 benchmark

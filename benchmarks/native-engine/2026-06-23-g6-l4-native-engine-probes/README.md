@@ -33,14 +33,17 @@ latency or quality. vLLM latency and quality results live under
 
 ## Source Artifacts
 
-The sanitized source records live in
-[`../../databricks/2026-06-23-g6-l4-native-engine-probes/`](../../databricks/2026-06-23-g6-l4-native-engine-probes/):
+The sanitized source records are committed beside this README:
 
 - `databricks_run_status.json`
 - `vllm_engine_probe.json`
 - `sglang_engine_probe.json`
 - `vllm_connector_actions.json`
 - `sglang_connector_actions.json`
+
+The same records are mirrored under
+[`../../databricks/2026-06-23-g6-l4-native-engine-probes/`](../../databricks/2026-06-23-g6-l4-native-engine-probes/)
+for release-bundle and Databricks run-status audits.
 
 ## Artifact Boundary
 
