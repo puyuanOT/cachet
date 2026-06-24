@@ -13,6 +13,8 @@ files are the validated records copied from the strict release-bundle evidence
 set:
 
 - `document_kv.benchmark_run.v1` for V1 latency and quality benchmarks.
+- `cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint
+  measurements.
 - `document_kv.storage_benchmark.v1` for Memory, Disk, and Unity Catalog reader
   benchmarks.
 - `document_kv.databricks_run_status.v1` summaries for terminal successful QA
@@ -21,10 +23,14 @@ set:
   `document_kv.engine_kv_connector_actions.v1` for native vLLM/SGLang connector
   probes.
 
-Only folders containing `v1_benchmark.json` should be cited as latency and
-quality benchmark reports. The native-engine probe folder proves provider-backed
-vLLM/SGLang integration against engine-owned KV block managers, but it does not
-publish SGLang latency, throughput, or quality benchmark results.
+Folders containing `v1_benchmark.json` are full V1 latency and quality
+benchmark reports. SGLang live benchmark folders under `../sglang/` can be
+cited as scoped synthetic live endpoint measurements when they include
+sanitized `cachet.sglang_live_benchmark.v1` evidence, but they do not replace
+full V1 benchmark reports. The native-engine probe folder proves
+provider-backed vLLM/SGLang integration against engine-owned KV block managers,
+but it does not publish full SGLang release latency, throughput, or quality
+benchmark results.
 
 Live-readiness folders, such as the generated-handoff SGLang smoke under
 [`../sglang/`](../sglang/), can track pending or failed Databricks attempts

@@ -10,7 +10,7 @@ Start with the standalone report folders:
 | Folder | Purpose | Current status |
 | --- | --- | --- |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
-| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke now passes on g6/L4 with clean baseline isolation, `/flush_cache` before cache arm, full 175-token external cache hit, matching baseline/cache outputs, and a passing post-flush model-quality canary; opt-in `cachet.sglang_live_benchmark.v1` synthetic live measurements are wired, with full release latency and throughput suite pending |
+| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke passes on g6/L4, and opt-in `cachet.sglang_live_benchmark.v1` synthetic live measurements now publish repeated SGLang baseline/cache rows; the first tiny-prompt result validates 175-token cache hits and quality but shows no speedup, with the full release latency and throughput suite still pending |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 
@@ -53,11 +53,18 @@ generated dataset payloads, or cluster-local scratch output here.
 | [`databricks/2026-06-21-g6-l4-storage-readers`](databricks/2026-06-21-g6-l4-storage-readers/) | Memory, Disk, and Unity Catalog storage readers | `948365719597221` | `aws-g6-l4` / `g6.8xlarge` | `ok=true`; real UC Volume; zero reader errors |
 | [`databricks/2026-06-23-g6-l4-native-engine-probes`](databricks/2026-06-23-g6-l4-native-engine-probes/) | vLLM and SGLang native connector probes, not latency benchmarks | `934698284395881` | `aws-g6-l4` / `g6.8xlarge` | `ok=true`; provider-backed native probes succeeded |
 
+SGLang synthetic live benchmark evidence is tracked in
+[`sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/`](sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/):
+run `238535418152934` on `aws-g6-l4` / `g6.8xlarge`, `ok=true`, two
+baseline/cache repeats, 175 cached tokens in each cache repeat, unchanged
+quality, and no speedup on the tiny synthetic prompt.
+
 SGLang live-readiness evidence is tracked in standalone folders under
 [`sglang/`](sglang/), including the current baseline-isolated successful smoke
 at
 [`sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/)
-and earlier failed smokes that document the blocker history.
+with a full 175-token external cache hit, plus earlier failed smokes that
+document the blocker history.
 
 The strict V1 publication target remains AWS g6/L4. The g5 folder is retained
 only as compatibility evidence and cannot replace the g6/L4 release target.

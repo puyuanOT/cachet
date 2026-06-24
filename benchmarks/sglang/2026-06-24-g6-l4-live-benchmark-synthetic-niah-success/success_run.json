@@ -1,0 +1,251 @@
+{
+  "benchmark_id": "v1_sglang_live_benchmark_20260624_050451",
+  "benchmark_limitation": "This is an opt-in SGLang synthetic live endpoint benchmark for one generated NIAH handoff prompt. It validates repeated Cachet-backed cache hits and quality on g6/L4, but it is not the full four-dataset V1 release latency/throughput benchmark suite.",
+  "benchmark_result": "synthetic_live_benchmark_pass_no_speedup",
+  "cachet_commit": "eff801d",
+  "databricks_run": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "SUCCESS",
+    "run_id": 238535418152934,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/12995434830160/run/238535418152934",
+    "state_message": "",
+    "succeeded": true,
+    "terminal": true
+  },
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cache_prompt_text_mode": "logical",
+    "cuda_device_name": "NVIDIA L4",
+    "document_kv_cache_version": "0.2.0",
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_provider_type": "sglang_kv_injection.sglang_dynamic_backend.DocumentKVHiCachePageProvider",
+    "document_kv_request_metadata_bridge_ok": true,
+    "flush_cache_before_cache_arm": true,
+    "flush_cache_before_canary": true,
+    "flush_cache_timeout_seconds": 30.0,
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 175,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "hicache_storage_prefetch_threshold": 1,
+    "kv_transfer_params_transport": "custom_params",
+    "live_benchmark_repeats": 2,
+    "live_check_extra_body": {
+      "chat_template_kwargs": {
+        "enable_thinking": false,
+        "thinking": false
+      },
+      "reasoning_effort": "none"
+    },
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.0,
+    "live_request_metadata_bridge_ok": true,
+    "sglang_attention_backend": "triton",
+    "sglang_enable_deterministic_inference": true,
+    "sglang_import_probe_ok": true,
+    "sglang_sampling_backend": "pytorch",
+    "sglang_version": "0.5.10.post1",
+    "torch_version": "2.9.1+cu128"
+  },
+  "interpretation": {
+    "answer_found_delta": 0.0,
+    "cache_hits_validated": true,
+    "exact_match_delta": 0.0,
+    "performance_result": "cache_arm_slower_on_tiny_synthetic_prompt",
+    "quality_passed": true,
+    "time_to_completion_speedup": 0.9257808239257902,
+    "ttft_speedup": 0.8745573213595708
+  },
+  "live_benchmark": {
+    "baseline_prefill": {
+      "answer_found_rate": 1.0,
+      "arm_id": "baseline_prefill",
+      "completion_tokens_mean": 7.0,
+      "dataset": "niah",
+      "errors": 0,
+      "exact_match_rate": 1.0,
+      "output_tokens_per_second": 12.588222172324107,
+      "prompt_tokens_mean": 92.0,
+      "requests": 2,
+      "time_to_completion": {
+        "count": 2,
+        "mean": 0.5560753460000001,
+        "p50": 0.5560753460000001,
+        "p95": 0.5585170532000518
+      },
+      "ttft": {
+        "count": 2,
+        "mean": 0.30290231650002397,
+        "p50": 0.30290231650002397,
+        "p95": 0.30510346225007084
+      }
+    },
+    "cache_hit_validations": [
+      {
+        "cache_request_cached_tokens": 175,
+        "cache_request_prefill_index": 6,
+        "cache_request_prefill_start_index": 6,
+        "cache_request_prompt_tokens": 205,
+        "issue": null,
+        "minimum_cached_tokens": 175,
+        "ok": true,
+        "repeat_index": 1
+      },
+      {
+        "cache_request_cached_tokens": 175,
+        "cache_request_prefill_index": 8,
+        "cache_request_prefill_start_index": 8,
+        "cache_request_prompt_tokens": 205,
+        "issue": null,
+        "minimum_cached_tokens": 175,
+        "ok": true,
+        "repeat_index": 2
+      }
+    ],
+    "comparisons": [
+      {
+        "answer_found_delta": 0.0,
+        "baseline_arm_id": "baseline_prefill",
+        "cache_arm_id": "document_kv_cache",
+        "dataset": "niah",
+        "exact_match_delta": 0.0,
+        "time_to_completion_speedup": 0.9257808239257902,
+        "ttft_speedup": 0.8745573213595708
+      }
+    ],
+    "document_kv_cache": {
+      "answer_found_rate": 1.0,
+      "arm_id": "document_kv_cache",
+      "completion_tokens_mean": 7.0,
+      "dataset": "niah",
+      "errors": 0,
+      "exact_match_rate": 1.0,
+      "output_tokens_per_second": 11.653934694455112,
+      "prompt_tokens_mean": 92.0,
+      "requests": 2,
+      "time_to_completion": {
+        "count": 2,
+        "mean": 0.6006555024999898,
+        "p50": 0.6006555024999898,
+        "p95": 0.617364281949972
+      },
+      "ttft": {
+        "count": 2,
+        "mean": 0.3463493004999805,
+        "p50": 0.3463493004999805,
+        "p95": 0.36305771185001845
+      }
+    },
+    "issues": [],
+    "measurement_count": 4,
+    "ok": true,
+    "record_type": "cachet.sglang_live_benchmark.v1",
+    "report_rows": [
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "baseline_prefill",
+        "completion_tokens_mean": 7.0,
+        "dataset": "niah",
+        "errors": 0,
+        "exact_match_rate": 1.0,
+        "output_tokens_per_second": 12.588222172324107,
+        "prompt_tokens_mean": 92.0,
+        "requests": 2,
+        "time_to_completion": {
+          "count": 2,
+          "mean": 0.5560753460000001,
+          "p50": 0.5560753460000001,
+          "p95": 0.5585170532000518
+        },
+        "ttft": {
+          "count": 2,
+          "mean": 0.30290231650002397,
+          "p50": 0.30290231650002397,
+          "p95": 0.30510346225007084
+        }
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "document_kv_cache",
+        "completion_tokens_mean": 7.0,
+        "dataset": "niah",
+        "errors": 0,
+        "exact_match_rate": 1.0,
+        "output_tokens_per_second": 11.653934694455112,
+        "prompt_tokens_mean": 92.0,
+        "requests": 2,
+        "time_to_completion": {
+          "count": 2,
+          "mean": 0.6006555024999898,
+          "p50": 0.6006555024999898,
+          "p95": 0.617364281949972
+        },
+        "ttft": {
+          "count": 2,
+          "mean": 0.3463493004999805,
+          "p50": 0.3463493004999805,
+          "p95": 0.36305771185001845
+        }
+      }
+    ],
+    "suite": {
+      "datasets": [
+        "niah"
+      ],
+      "examples": 1,
+      "release_v1_suite": false,
+      "repeats": 2,
+      "scope": "live_synthetic_niah",
+      "suite_id": "sglang-live-synthetic-niah"
+    }
+  },
+  "live_handoff_generation": {
+    "cache_prefix_full_pages": 175,
+    "cache_prefix_source_tokens": 176,
+    "cache_prefix_token_stable": false,
+    "cache_prefix_token_stable_ratio": 0.9943181818181818,
+    "cache_prefix_tokens": 175,
+    "chat_template_rendered": true,
+    "dtype": "bfloat16",
+    "generator_factory": "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator",
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "ok": true,
+    "page_key_count": 175,
+    "runtime_prompt_tokens": 205,
+    "sglang_hicache_page_size": 1
+  },
+  "mode": "generated_live_handoff_baseline_isolated_cache_arm_with_two_live_benchmark_repeats",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "c30e1cc64ae58796df4b2973dbef78d6ad708e8168133fa28d4acb0ea4e2fa4e"
+  },
+  "record_type": "cachet.benchmark_successful_sglang_live_benchmark.v1",
+  "smoke": {
+    "baseline_ok": true,
+    "baseline_output_text": "otkv7391",
+    "cache_arm_cache_flush_ok": true,
+    "cache_hit_validation_ok": true,
+    "cache_ok": true,
+    "cache_output_text": "otkv7391",
+    "cache_request_cached_tokens": 175,
+    "cache_request_prompt_tokens": 205,
+    "canary_cache_flush_ok": true,
+    "issues": [],
+    "minimum_cached_tokens": 175,
+    "model_quality_canary_ok": true,
+    "model_quality_canary_output_text": "cachet-green",
+    "ok": true
+  },
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "cluster_id": "0624-110605-4s1s9kaq",
+    "life_cycle_state": "TERMINATED",
+    "result_state": "SUCCESS",
+    "run_id": 760304813051328,
+    "task_key": "document_kv_sglang_smoke"
+  }
+}

@@ -2,13 +2,14 @@
 
 This folder is the standalone, human-readable entry point for Cachet SGLang
 benchmark status. There is now a successful live SGLang handoff smoke on
-g6/L4, but there is not yet a published SGLang latency or throughput benchmark
-suite.
+g6/L4 and a synthetic live SGLang benchmark artifact, but there is not yet a
+published full SGLang latency or throughput benchmark suite.
 
 ## Current Status
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
+| Latest synthetic live benchmark | `238535418152934` | [`2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/`](2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/) | The PR #492 wheel was present, import probe and request metadata bridge passed, generated live handoff creation used deterministic no-thinking Qwen-chat controls, the smoke passed baseline/cache/canary quality gates, the opt-in live benchmark wrote `cachet.sglang_live_benchmark.v1`, both cache repeats validated 175 cached tokens, and quality stayed unchanged. This tiny synthetic prompt did not show a speedup: TTFT speedup was `0.875x` and time-to-completion speedup was `0.926x`. It is not the full four-dataset release benchmark suite. |
 | Latest successful live handoff smoke | `134006212072875` | [`2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/) | The PR #490 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used deterministic no-thinking controls, the smoke ran a clean baseline first, `/flush_cache` returned HTTP 200 before the cache arm, SGLang reported a full 175-token cache-arm hit covering the generated prefix, baseline and cache-arm outputs both returned `otkv7391`, `/flush_cache` returned HTTP 200 before the canary, and the canary produced `cachet-green` with zero cached tokens. This is a readiness pass, not a latency or throughput benchmark suite. |
 | Previous failed live handoff smoke | `655273897262076` | [`2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/) | The PR #488 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with deterministic no-thinking controls, SGLang reported a full 175-token cache-arm hit covering that generated prefix, `/flush_cache` returned HTTP 200 before the post-live-check canary, and the canary passed with zero cached tokens, but baseline and cache-arm quality still failed. It is not a benchmark result. |
 | Failed live handoff smoke | `419314952937106` | [`2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/) | The PR #486 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with deterministic no-thinking controls, SGLang accepted `--attention-backend triton`, `--sampling-backend pytorch`, and `--enable-deterministic-inference`, the model-quality canary now ran after cache/baseline checks, and SGLang reported a full 175-token cache-arm hit covering that generated prefix, but baseline, cache-arm, and post-live-check canary quality all failed. It is not a benchmark result. |
@@ -28,7 +29,7 @@ suite.
 | Failed live handoff smoke | `201402713679607` | [`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/) | Generated handoff preparation completed, but SGLang rejected the colon-containing served-model name before live requests. It is not a benchmark result. |
 | Failed live handoff smoke | `13763847664432` | [`2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/) | SGLang launched with the safe served-model name and request metadata bridge validation passed, but the cache arm used suffix-only runtime prompt text and did not answer from the generated prefix. It is not a benchmark result. |
 | Failed live handoff smoke | `476596508869043` | [`2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/) | SGLang launched with logical prompt text and answered both arms, but the cache arm reported zero cached tokens; the later cached-token line was ordinary SGLang prefix-cache reuse. It is not a benchmark result. |
-| Pending latency and throughput benchmark suite | Not available yet | Not available yet | The successful live smoke validates decode-time prefix binding and quality for one generated handoff prompt. The SGLang runner can now opt in to repeated live baseline/cache measurements with `--live-benchmark-repeats`, but no Databricks run has published that artifact yet, and Cachet still needs the four-dataset SGLang benchmark suite before publishing release latency or throughput numbers. |
+| Pending full latency and throughput benchmark suite | Not available yet | Not available yet | The synthetic live benchmark validates repeated Cachet-backed SGLang cache hits, quality, and latency rows for one generated prompt. Cachet still needs the four-dataset SGLang benchmark suite before publishing release latency or throughput numbers. |
 | Native HiCache integration evidence | `934698284395881` | [`../databricks/2026-06-23-g6-l4-native-engine-probes/`](../databricks/2026-06-23-g6-l4-native-engine-probes/) | Provider-backed native probe and connector-action records succeeded on AWS g6/L4, but these records are integration evidence, not benchmark measurements. |
 
 ## Live Smoke Helper
@@ -56,10 +57,11 @@ suite. The current successful generated-handoff Databricks smoke is tracked in
 Pass `--live-benchmark-repeats N` on a handoff-backed smoke to run repeated
 post-smoke baseline/cache measurements in the same SGLang server lifetime and
 write `sglang-live-benchmark.json` with record type
-`cachet.sglang_live_benchmark.v1`. That artifact is scoped to the synthetic
-live NIAH prompt and includes per-repeat flush records, measurements, aggregate
-comparison rows, and cache-hit validations; it is not the full V1 release
-benchmark suite.
+`cachet.sglang_live_benchmark.v1`. The first successful artifact is tracked in
+[`2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/`](2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/).
+That artifact is scoped to the synthetic live NIAH prompt and includes
+aggregate report rows, comparisons, and per-repeat cache-hit validations in a
+compact sanitized snapshot; it is not the full V1 release benchmark suite.
 Earlier generated-handoff attempts are tracked in
 [`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/)
 and
@@ -125,9 +127,9 @@ total. It then flushes `/flush_cache` again before the model-quality canary,
 which runs with zero cached tokens and produces `cachet-green`. Manual handoff
 inputs remain supported when callers already have a validated SGLang handoff
 plus `document_kv.sglang_hicache_page_keys` metadata. This report remains
-pending for latency and throughput publication until a Databricks g6/L4 or
-g5/A10G run writes a multi-measurement benchmark record using the same
-benchmark schema as the vLLM report.
+pending for full release latency and throughput publication until a Databricks
+g6/L4 or g5/A10G run writes a multi-dataset benchmark record covering the V1
+release suite.
 
 ## Benchmark Gate
 

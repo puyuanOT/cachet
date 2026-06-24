@@ -880,11 +880,13 @@ Databricks benchmark or benchmark-readiness run should get its own dated
 standalone folder with a `README.md`; `pr-evidence/` stays reserved for
 machine-readable PR validation and release-audit sidecars.
 
-The latency and quality benchmark rows are vLLM benchmark runs. The current
-SGLang artifacts are provider-backed native HiCache probe and connector-action
-records; they are integration evidence, not SGLang latency or quality
-benchmark results. Treat SGLang benchmark publication as pending until a live
-SGLang deployment validates decode-time prefix binding with Cachet handoffs.
+The full release-suite latency and quality benchmark rows are vLLM benchmark
+runs. The current SGLang artifacts include provider-backed native HiCache probe
+and connector-action records plus a synthetic live SGLang benchmark that
+validates repeated Cachet-backed cache hits and quality for one generated NIAH
+prompt. Treat full SGLang benchmark publication as pending until a live SGLang
+deployment publishes multi-dataset release-suite latency and throughput
+evidence.
 
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
