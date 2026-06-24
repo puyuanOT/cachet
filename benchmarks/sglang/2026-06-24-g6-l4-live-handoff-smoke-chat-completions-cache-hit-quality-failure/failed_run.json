@@ -1,0 +1,176 @@
+{
+  "benchmark_id": "v1_sglang_live_chat_20260624_062417",
+  "benchmark_result": "not_published",
+  "blocker": "The PR #473 wheel switched SGLang live checks to the /v1/chat/completions request path. The wheel was present, the import probe and request metadata bridge passed, generated Qwen-chat handoff creation succeeded, Cachet hydrated the full generated 175-token prefix, and the cache-arm request reported 175 cached tokens, but both baseline and cache live quality checks returned repeated filler text instead of the expected NIAH answer. This run is readiness evidence only and not a benchmark result.",
+  "cachet_commit": "ff868a4",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 163920824964705,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/778537209198731/run/163920824964705",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure_type": "sglang_live_quality_failure_with_chat_completions_cache_hit",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cache_prompt_text_mode": "logical",
+    "chat_template_rendered": true,
+    "document_kv_request_metadata_bridge_ok": true,
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 175,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "live_check_extra_body": {
+      "min_p": 0,
+      "presence_penalty": 1.0,
+      "top_k": 20,
+      "top_p": 0.8
+    },
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.7,
+    "prefetch_threshold": 1,
+    "sglang_import_probe_ok": true,
+    "storage_hit_query_patched": true
+  },
+  "live_handoff_generation": {
+    "backend": "sglang",
+    "cache_prefix_full_pages": 175,
+    "cache_prefix_source_tokens": 176,
+    "cache_prefix_token_stable": false,
+    "cache_prefix_token_stable_ratio": 0.9943181818181818,
+    "cache_prefix_token_stable_truncated": true,
+    "cache_prefix_tokens": 175,
+    "chat_template_rendered": true,
+    "ok": true,
+    "runtime_prompt_tokens": 205,
+    "sglang_hicache_page_size": 1
+  },
+  "mode": "generated-live-handoff-logical-prompt-qwen-chat-chat-completions-token-stable-qwen-sampling-wait-complete",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "e63df00a226da6a19aefbf24b1b1bb8e12bca1fa72c3b2e59753eed01c87b9db"
+  },
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "server_hicache_binding_events": [
+    {
+      "binding_key_count": 128,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 128,
+      "key_count": 128,
+      "last_hash_present": false,
+      "prefix_keys": 0,
+      "reason": "pages_hydrated",
+      "runtime_key_count": 128
+    },
+    {
+      "binding_key_count": 47,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 47,
+      "key_count": 77,
+      "last_hash_present": true,
+      "prefix_keys": 0,
+      "reason": "pages_hydrated",
+      "runtime_key_count": 77
+    },
+    {
+      "binding_key_count": 128,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 128,
+      "key_count": 128,
+      "last_hash_present": false,
+      "operation": "batch_get_v1",
+      "prefix_keys": 0,
+      "reason": "pages_already_hydrated",
+      "runtime_key_count": 128
+    },
+    {
+      "binding_key_count": 47,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 47,
+      "key_count": 47,
+      "last_hash_present": false,
+      "operation": "batch_get_v1",
+      "prefix_keys": 0,
+      "reason": "pages_already_hydrated",
+      "runtime_key_count": 47
+    }
+  ],
+  "server_prefill_token_counts": [
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 6,
+      "total_prompt_tokens": 6
+    },
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 1,
+      "total_prompt_tokens": 1
+    },
+    {
+      "cached_tokens": 175,
+      "classification": "cache_arm_external_chat_completions_handoff",
+      "new_tokens": 30,
+      "total_prompt_tokens": 205
+    },
+    {
+      "cached_tokens": 204,
+      "classification": "baseline_after_cache_arm_prefix_cache",
+      "new_tokens": 1,
+      "total_prompt_tokens": 205
+    }
+  ],
+  "smoke": {
+    "baseline_answer_found": false,
+    "baseline_ok": false,
+    "baseline_prompt_tokens": 92,
+    "baseline_server_usage_prompt_tokens": 205,
+    "baseline_time_to_completion_seconds": 1.1213273380000146,
+    "baseline_ttft_seconds": 0.09941318799997134,
+    "cache_answer_found": false,
+    "cache_ok": false,
+    "cache_prompt_text_mode": "logical",
+    "cache_prompt_tokens": 92,
+    "cache_request_cached_tokens_from_server_log": 175,
+    "cache_request_minimum_cached_tokens": 175,
+    "cache_runtime_prompt_chars": 131,
+    "cache_server_usage_prompt_tokens": 205,
+    "cache_time_to_completion_seconds": 89.85637373000009,
+    "cache_ttft_seconds": 88.83387366700003,
+    "issues": [
+      "baseline live check failed",
+      "cache-arm live check failed"
+    ],
+    "live_check_extra_body": {
+      "min_p": 0,
+      "presence_penalty": 1.0,
+      "top_k": 20,
+      "top_p": 0.8
+    },
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.7,
+    "model_id": "qwen3:4b-instruct",
+    "served_model_name": "qwen3-4b-instruct",
+    "server_cached_token_validation": "positive_chat_completions_generated_prefix_cache_hit_but_smoke_failed_quality"
+  },
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 412030078319178,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}
