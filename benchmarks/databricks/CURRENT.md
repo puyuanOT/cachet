@@ -43,14 +43,16 @@ the token-stable cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/),
 the Qwen-chat cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/),
-and the current Qwen-sampling cache-hit quality failure tracked at
-[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/).
+the Qwen-sampling cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/),
+and the current chat-completions cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
 decode-time prefix binding with Cachet handoffs, hydrates all matching
 generated page-key chunks, records a positive cache-arm cached-token
 validation covering the generated handoff prefix, and passes the live quality
-gate with a Qwen3/SGLang-compatible completion request.
+gate with a Qwen3/SGLang-compatible request.
 
 ## V1 Latency And Quality
 
