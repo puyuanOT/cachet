@@ -1,0 +1,40 @@
+{
+  "files": {
+    "pr-evidence/recent-traceability-evidence/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "clean",
+      "gpt55_review_summary": "GPT-5.5 reviewer approved with no findings; reviewer verified the six new pr-evidence files matched PR #503/#504, validated under schema, contained no token matches or hidden/bidi characters, and preserved the benchmark boundary.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 505,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/505",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "pr-evidence/self-contained-benchmark-reports/",
+        "pr-evidence/cachet-adapter-native-import-aliases/"
+      ],
+      "verification": [
+        "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/self-contained-benchmark-reports --output-json /tmp/self-contained-benchmark-reports-validation.json",
+        "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/cachet-adapter-native-import-aliases --output-json /tmp/cachet-adapter-native-import-aliases-validation.json",
+        "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence --output-json /tmp/cachet-pr-evidence-validation.json -> ok=true, file_count=295",
+        "poetry run pytest tests/test_pr_evidence.py -q -> 20 passed",
+        "poetry run pytest tests/test_release_bundle.py::test_build_release_bundle_can_include_package_wheel_pr_evidence_and_github_governance tests/test_release_bundle.py::test_public_release_bundle_cli_rejects_pr_evidence_without_pull_request_identity -q -> 2 passed",
+        "poetry run pytest -q -> 1876 passed, 5 skipped",
+        "git diff --check",
+        "new evidence token-pattern scan returned 0 matches",
+        "GitHub CI Test and build succeeded",
+        "GPT-5.5 reviewer approved with no findings"
+      ],
+      "what_changed": [
+        "Added validated PR evidence sidecars for PR #503, which made benchmark reports self-contained, and PR #504, which documented/tested Cachet-branded native adapter aliases.",
+        "Added README documentation for the new PR-evidence folders so traceability evidence remains separated from human-facing benchmark reports.",
+        "Preserved the benchmark boundary: benchmarks/ owns report content, while pr-evidence/ owns release-audit traceability."
+      ],
+      "why": "Release bundles require machine-checkable PR evidence with PR identity, Refactor-skill application, GPT-5.5 review status, scope, and verification; the recent benchmark-folder and Cachet adapter alias PRs needed committed sidecars before the next release refresh."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
