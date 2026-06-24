@@ -23,6 +23,7 @@ from document_kv_cache.engine_adapters import (
 from document_kv_cache.engine_probe import read_engine_adapter_payload
 from document_kv_cache.benchmarks import DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM
 from sglang_kv_injection.sglang_request_metadata_bridge import (
+    DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY,
     SGLangRequestMetadataBridgeStatus,
     install_sglang_request_metadata_bridge,
 )
@@ -82,6 +83,7 @@ __all__ = [
     "DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY",
     "DOCUMENT_KV_HICACHE_REQUEST_CONTEXT_KWARG",
     "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
+    "DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY",
     "DOCUMENT_KV_HICACHE_RUNTIME_METHODS",
     "DocumentKVHiCacheBackend",
     "DocumentKVHiCachePageProvider",
@@ -143,6 +145,7 @@ class DocumentKVHiCacheRequestContext:
     handoff_record: Mapping[str, Any] | None = None
     prompt_text_mode: str | None = None
     sglang_hicache_page_keys: tuple[str, ...] = ()
+    sglang_hicache_last_hash: str | None = None
     prefix_keys: tuple[str, ...] = ()
     raw_extra_info: Mapping[str, Any] | None = None
 
@@ -810,6 +813,7 @@ def document_kv_request_context_from_extra_info(extra_info: object | None) -> Do
         handoff_record=_optional_mapping(kv_transfer_params.get(_DOCUMENT_KV_HANDOFF_RECORD_PARAM)),
         prompt_text_mode=_optional_string(kv_transfer_params.get(_DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM)),
         sglang_hicache_page_keys=_sglang_hicache_page_keys_from_params(kv_transfer_params),
+        sglang_hicache_last_hash=_sglang_hicache_last_hash_from_extra_info(raw_extra_info),
         prefix_keys=_prefix_keys_from_extra_info(extra_info),
         raw_extra_info=raw_extra_info,
     )
@@ -875,7 +879,30 @@ def _sglang_hicache_page_binding(
             expected_page_keys,
             first_page_index,
         )
+    last_hash = request_context.sglang_hicache_last_hash
+    if last_hash is not None:
+        return _sglang_hicache_page_binding_after_last_hash(
+            runtime_keys,
+            expected_page_keys,
+            last_hash,
+        )
     return _sglang_hicache_page_binding_by_runtime_keys(runtime_keys, expected_page_keys)
+
+
+def _sglang_hicache_page_binding_after_last_hash(
+    runtime_keys: tuple[str, ...],
+    expected_page_keys: tuple[str, ...],
+    last_hash: str,
+) -> tuple[int, int] | None:
+    try:
+        first_page_index = expected_page_keys.index(last_hash) + 1
+    except ValueError:
+        return None
+    return _sglang_hicache_page_binding_from_chained_offset(
+        runtime_keys,
+        expected_page_keys,
+        first_page_index,
+    )
 
 
 def _sglang_hicache_page_binding_by_runtime_keys(
@@ -896,6 +923,18 @@ def _sglang_hicache_page_binding_by_runtime_keys(
         if binding is not None:
             return binding
     return None
+
+
+def _sglang_hicache_page_binding_from_chained_offset(
+    runtime_keys: tuple[str, ...],
+    expected_page_keys: tuple[str, ...],
+    first_page_index: int,
+) -> tuple[int, int] | None:
+    available_count = len(expected_page_keys) - first_page_index
+    key_count = min(len(runtime_keys), available_count)
+    if key_count <= 0:
+        return None
+    return first_page_index, key_count
 
 
 def _sglang_hicache_page_binding_from_offset(
@@ -930,12 +969,14 @@ def _log_sglang_handoff_operation(
         return
     _LOGGER.info(
         "Cachet SGLang HiCache handoff operation: operation=%s key_count=%d "
-        "expected_page_keys=%d prefix_keys=%d hydrated_count=%d has_handoff_json=%s "
-        "has_inline_handoff=%s has_payload_uri=%s prompt_text_mode=%s host_indices_present=%s",
+        "expected_page_keys=%d prefix_keys=%d last_hash_present=%s hydrated_count=%d "
+        "has_handoff_json=%s has_inline_handoff=%s has_payload_uri=%s prompt_text_mode=%s "
+        "host_indices_present=%s",
         operation,
         key_count,
         len(request_context.sglang_hicache_page_keys),
         len(request_context.prefix_keys),
+        request_context.sglang_hicache_last_hash is not None,
         hydrated_count,
         request_context.handoff_json is not None,
         request_context.handoff_record is not None,
@@ -959,14 +1000,15 @@ def _log_sglang_handoff_hydration(
     _LOGGER.log(
         level,
         "Cachet SGLang HiCache handoff hydration: reason=%s key_count=%d runtime_key_count=%d "
-        "expected_page_keys=%d prefix_keys=%d binding_key_count=%d hydrated_count=%d "
-        "full_page_count=%s has_handoff_json=%s has_inline_handoff=%s has_payload_uri=%s "
-        "prompt_text_mode=%s",
+        "expected_page_keys=%d prefix_keys=%d last_hash_present=%s binding_key_count=%d "
+        "hydrated_count=%d full_page_count=%s has_handoff_json=%s has_inline_handoff=%s "
+        "has_payload_uri=%s prompt_text_mode=%s",
         reason,
         len(keys),
         runtime_key_count,
         len(request_context.sglang_hicache_page_keys),
         len(request_context.prefix_keys),
+        request_context.sglang_hicache_last_hash is not None,
         binding_key_count,
         hydrated_count,
         full_page_count,
@@ -1221,6 +1263,13 @@ def _prefix_keys_from_extra_info(extra_info: object | None) -> tuple[str, ...]:
     if not items or not all(isinstance(item, str) and item for item in items):
         return ()
     return tuple(items)
+
+
+def _sglang_hicache_last_hash_from_extra_info(extra_info: Mapping[str, Any]) -> str | None:
+    value = extra_info.get(DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY)
+    if not isinstance(value, str) or not value:
+        return None
+    return value
 
 
 def _sglang_hicache_page_keys_from_params(params: Mapping[str, Any]) -> tuple[str, ...]:

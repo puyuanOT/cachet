@@ -1046,6 +1046,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_chained_hash_binding_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1075,6 +1081,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             benchmark_root
             / "sglang"
             / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
+    sglang_chained_hash_binding_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
@@ -1158,16 +1172,20 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "13763847664432" in sglang_readme
     assert "476596508869043" in sglang_readme
     assert "521023980659718" in sglang_readme
+    assert "476430354490832" in sglang_readme
     assert "suffix-only runtime prompt text" in compact_sglang_readme
     assert "zero cached tokens" in compact_sglang_readme
     assert "partial page-binding blocker" in compact_sglang_readme
+    assert "chained `last_hash` HiCache page binding" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding" in sglang_readme
+    assert "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding" in sglang_readme
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
     assert "partial page-binding blocker" in compact_snapshot
+    assert "chained `last_hash` page-binding blocker" in compact_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1183,6 +1201,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "prefetch_threshold=1" in sglang_partial_page_binding_readme
     assert "hicache_storage_prefetch_policy=wait_complete" in sglang_partial_page_binding_readme
     assert "SGLang reported 128 cached tokens" in sglang_partial_page_binding_readme
+    assert "Chained Hash Binding Blocker" in sglang_chained_hash_binding_readme
+    assert "PR #464 wheel was present" in sglang_chained_hash_binding_readme
+    assert "runtime `last_hash`" in sglang_chained_hash_binding_readme
     assert sglang_failed_run == {
         "benchmark_result": "not_published",
         "blocker": (
@@ -1494,6 +1515,54 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "cache-arm live check failed",
     ]
     assert sglang_partial_page_binding_failed_run["smoke"]["cache_request_cached_tokens_from_server_log"] == 128
+    assert sglang_chained_hash_binding_failed_run["record_type"] == (
+        "cachet.benchmark_failed_databricks_smoke.v1"
+    )
+    assert sglang_chained_hash_binding_failed_run["benchmark_result"] == "not_published"
+    assert sglang_chained_hash_binding_failed_run["failure_type"] == (
+        "sglang_chained_hicache_page_binding"
+    )
+    assert sglang_chained_hash_binding_failed_run["cachet_commit"] == "73f051b"
+    assert sglang_chained_hash_binding_failed_run["benchmark_id"] == (
+        "v1_sglang_live_split_binding_20260624_030020"
+    )
+    assert sglang_chained_hash_binding_failed_run["databricks_run"]["run_id"] == 476430354490832
+    assert sglang_chained_hash_binding_failed_run["task"]["run_id"] == 331512280797427
+    assert sglang_chained_hash_binding_failed_run["integration_checks"] == {
+        "cache_prompt_text_mode": "logical",
+        "document_kv_hicache_provider_ok": True,
+        "document_kv_request_metadata_bridge_ok": True,
+        "generated_live_handoff": True,
+        "generated_live_handoff_page_keys": 150,
+        "hicache_storage_prefetch_policy": "wait_complete",
+        "prefetch_threshold": 1,
+        "sglang_import_probe_ok": True,
+        "split_runtime_key_binding_code_present": True,
+    }
+    assert sglang_chained_hash_binding_failed_run["package_wheel"]["sha256"] == (
+        "48de72c7cc3c9fa6be22606eb1d05619c2627524bf63bc0b4f4e68fdadd36c52"
+    )
+    assert sglang_chained_hash_binding_failed_run["server_hicache_binding_events"][1] == {
+        "binding_key_count": 0,
+        "expected_page_keys": 150,
+        "full_page_count": None,
+        "hydrated_count": 0,
+        "key_count": 46,
+        "prefix_keys": 0,
+        "reason": "binding_miss",
+        "runtime_key_count": 46,
+    }
+    assert sglang_chained_hash_binding_failed_run["server_prefill_token_counts"][2] == {
+        "cached_tokens": 128,
+        "classification": "cache_arm_external_partial_handoff",
+        "new_tokens": 46,
+        "total_prompt_tokens": 174,
+    }
+    assert sglang_chained_hash_binding_failed_run["smoke"]["issues"] == [
+        "baseline live check failed",
+        "cache-arm live check failed",
+    ]
+    assert sglang_chained_hash_binding_failed_run["smoke"]["cache_request_cached_tokens_from_server_log"] == 128
     assert "must not be cited as SGLang latency, throughput, or quality benchmark results" in compact_sglang_readme
     assert "948365719597221" in storage_readme
     assert "unity_catalog" in storage_readme
@@ -1514,6 +1583,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/failed_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
