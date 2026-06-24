@@ -1978,6 +1978,11 @@ one such isolated local-NVMe environment and pins `vllm==0.23.0`.
 SGLang so future smoke/probe jobs share the same install boundary.
 The committed `poetry.lock` records the resolver output for the base package,
 Databricks extras, and test extras; CI validates it with `poetry check --lock`.
+Dependency freshness is also recorded under
+`evidence/dependency-freshness/current/`: direct package metadata pins must
+match the supplied latest stable versions, while non-latest isolated runtime
+profile pins and resolver-held transitive packages must carry explicit
+compatibility or Databricks-validation reasons before the evidence can pass.
 
 ```bash
 poetry check --lock
