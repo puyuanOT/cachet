@@ -31,6 +31,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
+    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
@@ -118,6 +119,7 @@ class DatabricksSGLangSmokeJobConfig:
     stream: bool = True
     baseline_only: bool = False
     cache_prompt_text_mode: str = "logical"
+    live_check_prompt_format: str = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
     handoff_json: str | None = None
     handoff_record_json: str | None = None
     payload_uri: str | None = None
@@ -191,6 +193,8 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("baseline_only must be a boolean")
         if self.cache_prompt_text_mode not in {"logical", "runtime"}:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
+        if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
+            raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
         if self.handoff_json and self.handoff_record_json:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record_json")
         if self.handoff_record_json is not None:
@@ -355,6 +359,8 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         str(config.hardware_target),
         "--cache-prompt-text-mode",
         config.cache_prompt_text_mode,
+        "--live-check-prompt-format",
+        config.live_check_prompt_format,
     ]
     if not config.stream:
         parameters.append("--no-stream")
@@ -447,6 +453,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--baseline-only", action="store_true")
     parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical")
+    parser.add_argument(
+        "--live-check-prompt-format",
+        choices=("plain", "qwen3_chat"),
+        default=DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -513,6 +524,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             stream=not args.no_stream,
             baseline_only=args.baseline_only,
             cache_prompt_text_mode=args.cache_prompt_text_mode,
+            live_check_prompt_format=args.live_check_prompt_format,
             handoff_json=args.handoff_json,
             handoff_record_json=args.handoff_record_json,
             payload_uri=args.payload_uri,

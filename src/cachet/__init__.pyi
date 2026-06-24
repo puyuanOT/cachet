@@ -305,7 +305,9 @@ from document_kv_cache.engine_protocol import (
 )
 
 from document_kv_cache.live_server import (
+    DEFAULT_LIVE_CHECK_PROMPT_FORMAT as DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
     LIVE_CHECK_SUITE_ID as LIVE_CHECK_SUITE_ID,
+    LiveCheckPromptFormat as LiveCheckPromptFormat,
     LiveServerCheckConfig as LiveServerCheckConfig,
     LiveServerCheckResult as LiveServerCheckResult,
     build_live_server_check_request as build_live_server_check_request,
@@ -314,6 +316,7 @@ from document_kv_cache.live_server import (
 )
 
 from document_kv_cache.sglang_smoke import (
+    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT as DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     SGLangSmokeBenchmarkConfig as SGLangSmokeBenchmarkConfig,
     build_sglang_hicache_provider_probe_record as build_sglang_hicache_provider_probe_record,
     build_sglang_server_args as build_sglang_server_args,

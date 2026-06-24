@@ -24,6 +24,7 @@ from document_kv_cache.engine_adapters import (
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.live_server import (
     DEFAULT_LIVE_CHECK_ANSWER,
+    DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
     LIVE_CHECK_SUITE_ID,
     LiveServerCheckConfig,
     build_live_server_check_request,
@@ -89,6 +90,18 @@ def test_build_live_server_check_request_defaults_to_baseline_full_prompt_contra
     assert request.arm.arm_id == BASELINE_PREFILL_ARM
     assert request.logical_prompt_text == request.prompt_text
     assert DEFAULT_LIVE_CHECK_ANSWER in request.logical_prompt_text
+    assert DEFAULT_LIVE_CHECK_ANSWER not in request.cache_suffix_text
+    assert request.cache_prefix_text + request.cache_suffix_text == request.logical_prompt_text
+
+
+def test_build_live_server_check_request_can_use_qwen3_chat_prompt_format():
+    request = build_live_server_check_request(prompt_format="qwen3_chat", use_cache_arm=True)
+
+    assert request.logical_prompt_text.startswith("<|im_start|>system\n")
+    assert request.logical_prompt_text.rstrip().endswith("<|im_start|>assistant")
+    assert "<|im_start|>user" in request.cache_prefix_text
+    assert "<|im_end|>\n<|im_start|>assistant" in request.cache_suffix_text
+    assert DEFAULT_LIVE_CHECK_ANSWER in request.cache_prefix_text
     assert DEFAULT_LIVE_CHECK_ANSWER not in request.cache_suffix_text
     assert request.cache_prefix_text + request.cache_suffix_text == request.logical_prompt_text
 
@@ -231,6 +244,7 @@ def test_run_openai_compatible_live_check_returns_json_ready_record():
         "arm_id": BASELINE_PREFILL_ARM,
         "request_id": None,
         "prompt_text_mode": "logical",
+        "prompt_format": DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
         "kv_transfer_params_present": False,
         "kv_transfer_param_keys": [],
         "logical_prompt_chars": len(engine.requests[0].logical_prompt_text),
