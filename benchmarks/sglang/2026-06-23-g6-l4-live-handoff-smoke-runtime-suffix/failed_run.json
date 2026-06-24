@@ -1,0 +1,60 @@
+{
+  "benchmark_result": "not_published",
+  "blocker": "The generated-handoff smoke cleared SGLang server launch and request-metadata bridge validation, but the cache arm used prompt_text_mode=runtime. Stock SGLang HiCache needs the logical prefix tokens present to compute prefix page keys, so the suffix-only cache request did not answer from the generated handoff prefix.",
+  "cachet_commit": "425ee36",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 13763847664432,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/296959417583262/run/13763847664432",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure_type": "sglang_runtime_suffix_missing_prefix_binding",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 150,
+    "live_request_metadata_bridge_ok": true,
+    "sglang_import_probe_ok": true
+  },
+  "live_handoff_generation": {
+    "backend": "sglang",
+    "cache_prefix_tokens": 150,
+    "ok": true,
+    "sglang_hicache_page_size": 1
+  },
+  "mode": "generated-live-handoff",
+  "node_type": "g6.8xlarge",
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "snapshot_date": "2026-06-23",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "smoke": {
+    "baseline_answer_found": true,
+    "baseline_ok": true,
+    "baseline_prompt_tokens": 92,
+    "baseline_server_usage_prompt_tokens": 174,
+    "cache_answer_found": false,
+    "cache_ok": false,
+    "cache_prompt_text_mode": "runtime",
+    "cache_prompt_tokens": 19,
+    "cache_runtime_prompt_chars": 131,
+    "cache_server_usage_prompt_tokens": 25,
+    "issues": [
+      "cache-arm live check failed"
+    ],
+    "model_id": "qwen3:4b-instruct",
+    "served_model_name": "qwen3-4b-instruct",
+    "server_cached_token_validation": "not_recorded_by_this_run"
+  },
+  "task": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 79214966879931,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}

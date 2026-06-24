@@ -22,12 +22,15 @@ inspect `pr-evidence/` or ignored local `databricks-runs/` output.
 
 The latency and quality results in this snapshot are vLLM benchmark runs. SGLang
 currently has provider-backed native HiCache probe and connector-action evidence
-in this benchmark tree, plus a failed generated-handoff live smoke attempt tracked
-under
-[`../sglang/2026-06-23-g6-l4-live-handoff-smoke/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke/).
+in this benchmark tree, plus failed generated-handoff live smoke attempts
+tracked under
+[`../sglang/2026-06-23-g6-l4-live-handoff-smoke/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke/)
+and
+[`../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
-decode-time prefix binding with Cachet handoffs.
+decode-time prefix binding with Cachet handoffs and records a positive
+cache-arm cached-token validation.
 
 ## V1 Latency And Quality
 

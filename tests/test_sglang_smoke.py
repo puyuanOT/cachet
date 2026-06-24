@@ -47,7 +47,10 @@ from document_kv_cache.sglang_smoke import (
     install_sglang,
     parse_args,
     prepare_generated_live_handoff,
+    require_sglang_cache_hit,
     run_live_checks,
+    sglang_cache_hit_validation_record,
+    sglang_cached_token_counts,
     sglang_hicache_config_for_smoke,
 )
 from document_kv_cache.storage import local_path
@@ -594,7 +597,7 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["served_model_name"] == SERVED_MODEL_NAME
     assert metadata["hardware_target"] == "aws-g5-a10g"
     assert metadata["kv_transfer_params_transport"] == "custom_params"
-    assert metadata["cache_prompt_text_mode"] == "runtime"
+    assert metadata["cache_prompt_text_mode"] == "logical"
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["cache_arm_supported"] is False
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
@@ -730,12 +733,12 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert len(seen_configs) == 2
     assert seen_configs[0].model_id == SERVED_MODEL_NAME
     assert seen_configs[1].model_id == SERVED_MODEL_NAME
-    assert seen_configs[0].use_cache_arm is False
-    assert seen_configs[1].use_cache_arm is True
-    assert seen_configs[1].kv_transfer_params_transport == "custom_params"
-    assert seen_configs[1].prompt_text_mode == "runtime"
-    assert seen_configs[1].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM] == "cachet-live-sglang-1"
-    assert seen_configs[1].kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] == [
+    assert seen_configs[0].use_cache_arm is True
+    assert seen_configs[1].use_cache_arm is False
+    assert seen_configs[0].kv_transfer_params_transport == "custom_params"
+    assert seen_configs[0].prompt_text_mode == "logical"
+    assert seen_configs[0].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM] == "cachet-live-sglang-1"
+    assert seen_configs[0].kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] == [
         "page-a",
         "page-b",
     ]
@@ -784,6 +787,62 @@ def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_pa
     assert "request metadata bridge not verified" in written["issues"]
 
 
+def test_sglang_cache_hit_validation_reads_cache_arm_cached_tokens(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 25, #cached-token: 150\n"
+        "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n",
+        encoding="utf-8",
+    )
+
+    assert sglang_cached_token_counts(log_path.read_text(encoding="utf-8")) == (150, 0)
+    record = sglang_cache_hit_validation_record(log_path)
+
+    assert record["ok"] is True
+    assert record["cached_token_counts"] == [150, 0]
+    assert record["cache_request_cached_tokens"] == 150
+    assert record["issue"] is None
+
+
+def test_sglang_cache_hit_validation_rejects_later_baseline_warm_hit(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 25, #cached-token: 150\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(log_path)
+
+    assert record["ok"] is False
+    assert record["cached_token_counts"] == [0, 150]
+    assert record["cache_request_cached_tokens"] == 0
+    assert record["issue"] == "SGLang cache arm reported zero cached tokens"
+
+
+def test_require_sglang_cache_hit_rejects_zero_cache_tokens(tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(output_dir=tmp_path / "generated-live"),
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    config.server_log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="zero cached tokens"):
+        require_sglang_cache_hit(config, {"ok": True, "issues": []})
+
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+    assert written["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 0
+    assert "SGLang cache arm reported zero cached tokens" in written["issues"]
+
+
 def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(monkeypatch, tmp_path):
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-generated-run",
@@ -821,7 +880,13 @@ def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(monkeypatc
         events.append("live")
         assert seen_config is runtime_config
         assert import_probe_record["document_kv_request_metadata_bridge_ok"] is True
-        return {"ok": True}
+        runtime_config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_config.server_log_path.write_text(
+            "[INFO] Prefill batch, #new-token: 25, #cached-token: 150\n"
+            "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n",
+            encoding="utf-8",
+        )
+        return {"ok": True, "issues": []}
 
     monkeypatch.setattr(public_sglang_smoke, "create_venv", lambda path: events.append("venv"))
     monkeypatch.setattr(public_sglang_smoke, "install_sglang", lambda python: events.append("install-sglang"))
@@ -849,6 +914,8 @@ def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(monkeypatc
     metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
     assert metadata["generated_live_handoff"] is True
     assert metadata["generated_live_handoff_page_keys"] == 1
+    record = json.loads(runtime_config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert record["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 150
 
 
 def test_parse_args_builds_baseline_only_config(tmp_path):
@@ -868,6 +935,7 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
     assert config.baseline_only is True
     assert config.hardware_target == "aws-g5-a10g"
     assert config.stream is False
+    assert config.cache_prompt_text_mode == "logical"
 
     with pytest.raises(ValueError) as exc:
         parse_args(
