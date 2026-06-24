@@ -8,7 +8,8 @@ benchmark result.
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
-| Latest failed live handoff smoke | `163920824964705` | [`2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/) | The PR #473 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template, the live request used `/v1/chat/completions`, and SGLang reported a positive 175-token cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
+| Latest failed live handoff smoke | `417035094778538` | [`2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/) | The PR #476 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with no-thinking controls, the live request used `/v1/chat/completions`, and SGLang reported a positive 175-token cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
+| Failed live handoff smoke | `163920824964705` | [`2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/) | The PR #473 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template, the live request used `/v1/chat/completions`, and SGLang reported a positive 175-token cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
 | Failed live handoff smoke | `585131634686228` | [`2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/) | The PR #471 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation produced a token-stable 175-token prefix, Qwen sampling parameters reached the live request path, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
 | Failed live handoff smoke | `897276220223990` | [`2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/) | The PR #470 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation produced a token-stable 175-token prefix, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
 | Failed live handoff smoke | `995284076545208` | [`2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/) | The PR #469 wheel was present, import probe and request metadata bridge passed, generated handoff creation produced a token-stable 149-token prefix, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
@@ -65,8 +66,10 @@ the Qwen-chat cache-hit quality failure in
 [`2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/),
 the Qwen-sampling cache-hit quality failure in
 [`2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/),
-and the current chat-completions cache-hit quality failure in
-[`2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/).
+the chat-completions cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/),
+and the current no-thinking cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/).
 Use
 `--baseline-only` for provider/server bring-up. For handoff-backed smoke,
 prefer `--generate-live-handoff`, which generates the synthetic live Cachet
@@ -82,17 +85,18 @@ Qwen sampling parameters through the live request path. Recent runs show that
 attach-time hash tracking installs successfully and that SGLang can report a
 positive cache-arm external hit. Recent runs validate token-stable generated
 prefixes and positive SGLang cached-token validation, including the current
-175-token chat-completions generated prefix on g6/L4, but the live prompt still
-fails quality for both baseline and cache arms. A publishable live run must
-make the Qwen3/SGLang request pass quality while still hydrating
-matching generated page-key chunks and recording positive SGLang cached-token
-validation. That validation must identify the cache-arm request itself by its
-prompt-token total, rather than warmup requests or a later baseline request
-that benefits from ordinary SGLang prefix-cache reuse. Manual handoff inputs
-remain supported when callers already have a validated SGLang handoff plus
-`document_kv.sglang_hicache_page_keys` metadata. This report remains pending
-until a Databricks g6/L4 or g5/A10G run writes `sglang-live-smoke.json` with a
-passing handoff-backed cache arm.
+175-token chat-completions generated prefix on g6/L4. The latest run also
+disables thinking through both `reasoning_effort=none` and
+`chat_template_kwargs`, but the live prompt still fails quality for both
+baseline and cache arms. A publishable live run must make the Qwen3/SGLang
+request pass quality while still hydrating matching generated page-key chunks
+and recording positive SGLang cached-token validation. That validation must
+identify the cache-arm request itself by its prompt-token total, rather than
+warmup requests or a later baseline request that benefits from ordinary SGLang
+prefix-cache reuse. Manual handoff inputs remain supported when callers already
+have a validated SGLang handoff plus `document_kv.sglang_hicache_page_keys`
+metadata. This report remains pending until a Databricks g6/L4 or g5/A10G run
+writes `sglang-live-smoke.json` with a passing handoff-backed cache arm.
 
 ## Benchmark Gate
 
