@@ -10,7 +10,7 @@ Start with the standalone report folders:
 | Folder | Purpose | Current status |
 | --- | --- | --- |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
-| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smokes reached a positive 175-token external cache hit covering a generated Qwen-chat prefix through the chat-completions path with deterministic no-thinking controls and explicit Triton/PyTorch backend controls; latest blocker is the failed Qwen3/SGLang live quality gate; live latency and quality benchmark pending |
+| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smokes reached a positive 175-token external cache hit covering a generated Qwen-chat prefix through the chat-completions path with deterministic no-thinking controls, explicit Triton/PyTorch backend controls, and a minimal no-thinking request body; latest blocker is the failed Qwen3/SGLang live quality gate; live latency and quality benchmark pending |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 
@@ -52,9 +52,9 @@ generated dataset payloads, or cluster-local scratch output here.
 | [`databricks/2026-06-23-g6-l4-native-engine-probes`](databricks/2026-06-23-g6-l4-native-engine-probes/) | vLLM and SGLang native connector probes, not latency benchmarks | `934698284395881` | `aws-g6-l4` / `g6.8xlarge` | `ok=true`; provider-backed native probes succeeded |
 
 SGLang live-readiness failures are tracked in standalone folders under
-[`sglang/`](sglang/), including the latest Triton/PyTorch deterministic
-chat-completions cache-hit quality failure at
-[`sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/`](sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/).
+[`sglang/`](sglang/), including the latest minimal no-thinking cache-hit
+quality failure at
+[`sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/`](sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/).
 
 The strict V1 publication target remains AWS g6/L4. The g5 folder is retained
 only as compatibility evidence and cannot replace the g6/L4 release target.

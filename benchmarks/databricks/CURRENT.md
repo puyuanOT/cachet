@@ -51,9 +51,10 @@ the no-thinking cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/),
 the deterministic no-thinking cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/),
-and the current Triton/PyTorch deterministic cache-hit quality failure tracked
-at
-[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/).
+the Triton/PyTorch deterministic cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/),
+and the current minimal no-thinking cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
 decode-time prefix binding with Cachet handoffs, hydrates all matching
