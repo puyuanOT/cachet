@@ -1445,9 +1445,11 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
         baseline_only=True,
     )
     seen_configs = []
+    events = []
 
     def fake_live_check(live_config):
         seen_configs.append(live_config)
+        events.append("cache" if live_config.use_cache_arm else "baseline")
         return FakeLiveResult(
             ok=True,
             request_id=live_config.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
@@ -1459,10 +1461,15 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     monkeypatch.setattr(
         public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check
     )
+
+    def fake_canary(live_config):
+        events.append("canary")
+        return fake_canary_record()
+
     monkeypatch.setattr(
         public_sglang_smoke,
         "run_sglang_quality_canary",
-        lambda live_config: fake_canary_record(),
+        fake_canary,
     )
 
     record = run_live_checks(config)
@@ -1471,6 +1478,7 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     assert record["model_id"] == CACHET_MODEL_ID
     assert record["served_model_name"] == SERVED_MODEL_NAME
     assert len(seen_configs) == 1
+    assert events == ["baseline", "canary"]
     assert seen_configs[0].model_id == SERVED_MODEL_NAME
     assert seen_configs[0].use_cache_arm is False
     assert seen_configs[0].temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
@@ -1515,9 +1523,11 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
         encoding="utf-8",
     )
     seen_configs = []
+    events = []
 
     def fake_live_check(live_config):
         seen_configs.append(live_config)
+        events.append("cache" if live_config.use_cache_arm else "baseline")
         return FakeLiveResult(
             ok=True,
             request_id=live_config.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
@@ -1529,10 +1539,15 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     monkeypatch.setattr(
         public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check
     )
+
+    def fake_canary(live_config):
+        events.append("canary")
+        return fake_canary_record()
+
     monkeypatch.setattr(
         public_sglang_smoke,
         "run_sglang_quality_canary",
-        lambda live_config: fake_canary_record(),
+        fake_canary,
     )
 
     record = run_live_checks(
@@ -1549,6 +1564,7 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert record["model_id"] == CACHET_MODEL_ID
     assert record["served_model_name"] == SERVED_MODEL_NAME
     assert len(seen_configs) == 2
+    assert events == ["cache", "baseline", "canary"]
     assert seen_configs[0].model_id == SERVED_MODEL_NAME
     assert seen_configs[1].model_id == SERVED_MODEL_NAME
     assert seen_configs[0].use_cache_arm is True
