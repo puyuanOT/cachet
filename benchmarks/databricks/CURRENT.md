@@ -9,7 +9,7 @@ inspect `pr-evidence/` or ignored local `databricks-runs/` output.
 
 | Field | Current value |
 | --- | --- |
-| Snapshot date | 2026-06-23 |
+| Snapshot date | 2026-06-24 |
 | Strict publication target | AWS g6/L4, `aws-g6-l4`, `g6.8xlarge` |
 | Compatibility target | AWS g5/A10G, `aws-g5-a10g`, `g5.8xlarge` |
 | Model | `qwen3:4b-instruct` |
@@ -28,11 +28,14 @@ tracked under
 and
 [`../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/),
 with the latest logical-prompt zero-cache-hit blocker tracked at
-[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/).
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/)
+and the current `wait_complete` partial page-binding blocker tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
 decode-time prefix binding with Cachet handoffs and records a positive
-cache-arm cached-token validation.
+cache-arm cached-token validation across all matching generated page-key
+chunks.
 
 ## V1 Latency And Quality
 
