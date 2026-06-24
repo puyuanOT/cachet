@@ -27,12 +27,17 @@ from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    BenchmarkComparison,
     BenchmarkExample,
     BenchmarkPromptParts,
+    BenchmarkReportRow,
+    InferenceMeasurement,
     answer_found,
     baseline_prefill_arm,
     benchmark_cache_request,
     benchmark_cache_source_document,
+    compare_to_baseline,
+    summarize_measurements,
     validate_v1_hardware_target,
 )
 from document_kv_cache.engine_adapters import (
@@ -44,6 +49,7 @@ from document_kv_cache.engine_probe import write_engine_adapter_handoff_bundle
 from document_kv_cache.live_server import (
     LiveCheckPromptFormat,
     LiveServerCheckConfig,
+    LiveServerCheckResult,
     _live_check_chat_messages,
     _live_check_request_prompt_format,
     build_live_server_check_request,
@@ -108,6 +114,9 @@ DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.0
 DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM = True
 DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY = True
 DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS = 30.0
+DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS = 0
+SGLANG_LIVE_BENCHMARK_RECORD_TYPE = "cachet.sglang_live_benchmark.v1"
+SGLANG_LIVE_BENCHMARK_SUITE_ID = "sglang-live-synthetic-niah"
 SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS = {
     "thinking": False,
     "enable_thinking": False,
@@ -184,6 +193,9 @@ __all__ = [
     "DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM",
     "DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY",
     "DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS",
+    "DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS",
+    "SGLANG_LIVE_BENCHMARK_RECORD_TYPE",
+    "SGLANG_LIVE_BENCHMARK_SUITE_ID",
     "SGLANG_QUALITY_CANARY_ANSWER",
     "SGLANG_ATTENTION_BACKEND_CHOICES",
     "SGLANG_SAMPLING_BACKEND_CHOICES",
@@ -208,6 +220,7 @@ __all__ = [
     "release_live_handoff_generation_resources",
     "require_sglang_cache_hit",
     "run_sglang_quality_canary",
+    "run_sglang_live_benchmark",
     "flush_sglang_cache",
     "run_sglang_live_smoke",
     "sglang_cache_hit_validation_record",
@@ -308,6 +321,7 @@ class SGLangSmokeBenchmarkConfig:
     flush_cache_before_cache_arm: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM
     flush_cache_before_canary: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
     flush_cache_timeout_seconds: float = DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
+    live_benchmark_repeats: int = DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
@@ -431,6 +445,14 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError(
                 "flush_cache_timeout_seconds must be a positive finite number"
             )
+        if (
+            isinstance(self.live_benchmark_repeats, bool)
+            or not isinstance(self.live_benchmark_repeats, int)
+            or self.live_benchmark_repeats < 0
+        ):
+            raise ValueError(
+                "live_benchmark_repeats must be a non-negative integer"
+            )
         if self.handoff_json and self.handoff_record is not None:
             raise ValueError(
                 "SGLang smoke handoff params must use only one of handoff_json or handoff_record"
@@ -489,6 +511,8 @@ class SGLangSmokeBenchmarkConfig:
                 "hicache_page_size must match live handoff generation page_size"
             )
         if self.baseline_only:
+            if self.live_benchmark_repeats:
+                raise ValueError("live_benchmark_repeats requires cache-arm SGLang smoke")
             if has_handoff_fields or self.handoff_generation is not None:
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
@@ -565,6 +589,10 @@ class SGLangSmokeBenchmarkConfig:
     def live_handoff_generation_path(self) -> Path:
         return self.output_dir / "sglang-live-handoff-generation.json"
 
+    @property
+    def live_benchmark_output_path(self) -> Path:
+        return self.output_dir / "sglang-live-benchmark.json"
+
 
 def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     """Create an isolated SGLang env, start Qwen3, and run strict live checks."""
@@ -632,7 +660,16 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
         except RuntimeError:
             record_sglang_cache_hit_after_failed_live_checks(runtime_config)
             raise
-        require_sglang_cache_hit(runtime_config, live_record)
+        live_record = require_sglang_cache_hit(runtime_config, live_record)
+        if runtime_config.live_benchmark_repeats:
+            benchmark_record = run_sglang_live_benchmark(runtime_config)
+            if benchmark_record.get("ok") is not True:
+                issues = benchmark_record.get("issues")
+                if isinstance(issues, Sequence) and not isinstance(issues, str):
+                    message = "; ".join(str(issue) for issue in issues)
+                else:
+                    message = "SGLang live benchmark failed"
+                raise RuntimeError(f"SGLang live benchmark failed: {message}")
     finally:
         terminate_process(server)
         copy_file_if_exists(
@@ -695,6 +732,12 @@ def build_metadata(
         "flush_cache_before_cache_arm": config.flush_cache_before_cache_arm,
         "flush_cache_before_canary": config.flush_cache_before_canary,
         "flush_cache_timeout_seconds": config.flush_cache_timeout_seconds,
+        "live_benchmark_repeats": config.live_benchmark_repeats,
+        "live_benchmark_output_path": (
+            str(config.live_benchmark_output_path)
+            if config.live_benchmark_repeats
+            else None
+        ),
         "kv_transfer_params_transport": "custom_params",
         "generates_live_handoff": config.handoff_generation is not None,
         "live_handoff_generation": (
@@ -1608,6 +1651,352 @@ def run_live_checks(
     return record
 
 
+def run_sglang_live_benchmark(
+    config: SGLangSmokeBenchmarkConfig,
+) -> dict[str, object]:
+    """Run repeated live baseline/cache measurements against an active SGLang server."""
+
+    if config.baseline_only:
+        raise ValueError("SGLang live benchmark requires cache-arm SGLang smoke")
+    repeats = config.live_benchmark_repeats
+    if repeats <= 0:
+        raise ValueError("live_benchmark_repeats must be positive")
+
+    measurements: list[InferenceMeasurement] = []
+    flushes: list[dict[str, object]] = []
+    cache_hit_validations: list[dict[str, object]] = []
+    issues: list[str] = []
+
+    minimum_cached_tokens = _generated_live_handoff_cache_prefix_tokens(
+        config.live_handoff_generation_path
+    )
+    for repeat_index in range(1, repeats + 1):
+        baseline_flush = flush_sglang_cache(
+            config, reason=f"before_live_benchmark_baseline_repeat_{repeat_index}"
+        )
+        flushes.append(
+            _live_benchmark_flush_record(
+                baseline_flush,
+                arm_id="baseline_prefill",
+                repeat_index=repeat_index,
+            )
+        )
+        if baseline_flush.get("ok") is not True:
+            issues.append(f"baseline repeat {repeat_index} cache flush failed")
+        baseline_measurement, _ = _run_sglang_live_benchmark_check(
+            config,
+            use_cache_arm=False,
+            repeat_index=repeat_index,
+        )
+        measurements.append(baseline_measurement)
+
+        cache_flush = flush_sglang_cache(
+            config, reason=f"before_live_benchmark_cache_repeat_{repeat_index}"
+        )
+        flushes.append(
+            _live_benchmark_flush_record(
+                cache_flush,
+                arm_id="document_kv_cache",
+                repeat_index=repeat_index,
+            )
+        )
+        if cache_flush.get("ok") is not True:
+            issues.append(f"cache repeat {repeat_index} cache flush failed")
+        cache_prefill_start_index = _server_prefill_log_count(config.server_log_path)
+        cache_measurement, cache_record = _run_sglang_live_benchmark_check(
+            config,
+            use_cache_arm=True,
+            repeat_index=repeat_index,
+        )
+        measurements.append(cache_measurement)
+        cache_hit_validation = _live_benchmark_cache_hit_validation(
+            config,
+            cache_record=cache_record,
+            cache_request_prefill_start_index=cache_prefill_start_index,
+            minimum_cached_tokens=minimum_cached_tokens,
+            repeat_index=repeat_index,
+        )
+        cache_hit_validations.append(cache_hit_validation)
+        if cache_hit_validation.get("ok") is not True:
+            issue = cache_hit_validation.get("issue") or "cache hit validation failed"
+            issues.append(f"cache repeat {repeat_index}: {issue}")
+
+    for measurement in measurements:
+        measurement_label = (
+            f"{measurement.arm_id} repeat {measurement.metadata.get('repeat_index', '?')}"
+        )
+        if measurement.error is not None:
+            issues.append(f"{measurement_label} failed: {measurement.error}")
+        elif measurement.answer_found is not True:
+            issues.append(f"{measurement_label} did not return the expected answer")
+
+    report_rows = summarize_measurements(measurements)
+    comparisons = compare_to_baseline(report_rows)
+    record: dict[str, object] = {
+        "record_type": SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+        "ok": not issues,
+        "benchmark_id": config.benchmark_id,
+        "engine": "sglang",
+        "model_id": CACHET_MODEL_ID,
+        "served_model_name": SERVED_MODEL_NAME,
+        "hardware_target": config.hardware_target,
+        "suite": {
+            "suite_id": SGLANG_LIVE_BENCHMARK_SUITE_ID,
+            "scope": "live_synthetic_niah",
+            "datasets": ["niah"],
+            "examples": 1,
+            "repeats": repeats,
+            "release_v1_suite": False,
+        },
+        "cache_prompt_text_mode": config.cache_prompt_text_mode,
+        "live_check_prompt_format": config.live_check_prompt_format,
+        "live_check_request_mode": config.live_check_request_mode,
+        "live_check_temperature": config.live_check_temperature,
+        "kv_transfer_params_transport": "custom_params",
+        "flushes": flushes,
+        "measurements": [
+            _inference_measurement_to_record(measurement)
+            for measurement in measurements
+        ],
+        "report_rows": [
+            _benchmark_report_row_to_record(row)
+            for row in report_rows
+        ],
+        "comparisons": [
+            _benchmark_comparison_to_record(comparison)
+            for comparison in comparisons
+        ],
+        "cache_hit_validations": cache_hit_validations,
+        "issues": issues,
+    }
+    write_json(config.live_benchmark_output_path, record)
+    return record
+
+
+def _run_sglang_live_benchmark_check(
+    config: SGLangSmokeBenchmarkConfig,
+    *,
+    use_cache_arm: bool,
+    repeat_index: int,
+) -> tuple[InferenceMeasurement, dict[str, object] | None]:
+    label = "document_kv_cache" if use_cache_arm else "baseline_prefill"
+    request = _build_sglang_live_benchmark_request(
+        config, use_cache_arm=use_cache_arm
+    )
+    try:
+        result = run_openai_compatible_live_check(
+            _sglang_live_benchmark_check_config(config, use_cache_arm=use_cache_arm)
+        )
+    except Exception as exc:  # pragma: no cover - concrete types are runtime-specific.
+        return (
+            InferenceMeasurement(
+                example_id=request.example.example_id,
+                dataset=request.example.dataset,
+                arm_id=request.arm.arm_id,
+                prompt_tokens=0,
+                completion_tokens=0,
+                ttft_seconds=0.0,
+                time_to_completion_seconds=0.0,
+                output_text="",
+                expected_answer=request.example.expected_answer,
+                error=str(exc) or type(exc).__name__,
+                metadata={
+                    "engine": "sglang",
+                    "served_model_name": SERVED_MODEL_NAME,
+                    "label": label,
+                    "repeat_index": str(repeat_index),
+                    "error_type": type(exc).__name__,
+                },
+            ),
+            None,
+        )
+    record = result.to_record()
+    _record_logical_and_served_model_ids(record)
+    record["label"] = label
+    record["repeat_index"] = repeat_index
+    return (
+        _live_check_result_to_measurement(
+            result,
+            label=label,
+            repeat_index=repeat_index,
+        ),
+        record,
+    )
+
+
+def _sglang_live_benchmark_check_config(
+    config: SGLangSmokeBenchmarkConfig,
+    *,
+    use_cache_arm: bool,
+) -> LiveServerCheckConfig:
+    kwargs: dict[str, object] = {
+        "base_url": config.server_base_url,
+        "model_id": SERVED_MODEL_NAME,
+        "hardware_target": config.hardware_target,
+        "use_cache_arm": use_cache_arm,
+        "prompt_format": config.live_check_prompt_format,
+        "request_mode": config.live_check_request_mode,
+        "temperature": config.live_check_temperature,
+        "prompt_token_accounting": "server_usage",
+        "max_tokens": config.max_tokens,
+        "timeout_seconds": config.timeout_seconds,
+        "stream": config.stream,
+        "extra_body": config.live_check_extra_body,
+    }
+    if use_cache_arm:
+        kwargs.update(
+            {
+                "prompt_text_mode": config.cache_prompt_text_mode,
+                "kv_transfer_params_transport": "custom_params",
+                "kv_transfer_params": sglang_live_kv_transfer_params(config),
+            }
+        )
+    return LiveServerCheckConfig(**kwargs)
+
+
+def _build_sglang_live_benchmark_request(
+    config: SGLangSmokeBenchmarkConfig,
+    *,
+    use_cache_arm: bool,
+) -> BenchmarkEngineRequest:
+    return build_live_server_check_request(
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+        use_cache_arm=use_cache_arm,
+        prompt_format=_live_check_request_prompt_format(
+            config.live_check_prompt_format,
+            request_mode=config.live_check_request_mode,
+        ),
+        kv_transfer_params=(
+            sglang_live_kv_transfer_params(config) if use_cache_arm else None
+        ),
+    )
+
+
+def _live_check_result_to_measurement(
+    result: LiveServerCheckResult,
+    *,
+    label: str,
+    repeat_index: int,
+) -> InferenceMeasurement:
+    metadata = {
+        **dict(result.generation.metadata),
+        "engine": "sglang",
+        "served_model_name": SERVED_MODEL_NAME,
+        "label": label,
+        "repeat_index": str(repeat_index),
+        "prompt_text_mode": result.prompt_text_mode,
+        "request_mode": result.request_mode,
+        "prompt_format": result.prompt_format,
+    }
+    return InferenceMeasurement(
+        example_id=result.request.example.example_id,
+        dataset=result.request.example.dataset,
+        arm_id=result.request.arm.arm_id,
+        prompt_tokens=result.generation.prompt_tokens,
+        completion_tokens=result.generation.completion_tokens,
+        ttft_seconds=result.generation.ttft_seconds,
+        time_to_completion_seconds=result.generation.time_to_completion_seconds,
+        output_text=result.generation.output_text,
+        expected_answer=result.request.example.expected_answer,
+        metadata=metadata,
+    )
+
+
+def _live_benchmark_cache_hit_validation(
+    config: SGLangSmokeBenchmarkConfig,
+    *,
+    cache_record: Mapping[str, object] | None,
+    cache_request_prefill_start_index: int,
+    minimum_cached_tokens: int | None,
+    repeat_index: int,
+) -> dict[str, object]:
+    validation = sglang_cache_hit_validation_record(
+        config.server_log_path,
+        cache_request_prompt_tokens=_cache_request_prompt_tokens(
+            {"cache": cache_record or {}}
+        ),
+        cache_prompt_text_mode=config.cache_prompt_text_mode,
+        cache_request_prefill_start_index=cache_request_prefill_start_index,
+        minimum_cached_tokens=minimum_cached_tokens,
+    )
+    validation["repeat_index"] = repeat_index
+    validation["arm_id"] = "document_kv_cache"
+    return validation
+
+
+def _live_benchmark_flush_record(
+    flush: Mapping[str, object],
+    *,
+    arm_id: str,
+    repeat_index: int,
+) -> dict[str, object]:
+    return {
+        **dict(flush),
+        "arm_id": arm_id,
+        "repeat_index": repeat_index,
+    }
+
+
+def _inference_measurement_to_record(
+    measurement: InferenceMeasurement,
+) -> dict[str, object]:
+    return {
+        "example_id": measurement.example_id,
+        "dataset": measurement.dataset,
+        "arm_id": measurement.arm_id,
+        "prompt_tokens": measurement.prompt_tokens,
+        "completion_tokens": measurement.completion_tokens,
+        "ttft_seconds": measurement.ttft_seconds,
+        "time_to_completion_seconds": measurement.time_to_completion_seconds,
+        "output_text": measurement.output_text,
+        "expected_answer": measurement.expected_answer,
+        "exact_match": measurement.exact_match,
+        "answer_found": measurement.answer_found,
+        "error": measurement.error,
+        "metadata": dict(measurement.metadata),
+    }
+
+
+def _benchmark_report_row_to_record(row: BenchmarkReportRow) -> dict[str, object]:
+    return {
+        "dataset": row.dataset,
+        "arm_id": row.arm_id,
+        "requests": row.requests,
+        "errors": row.errors,
+        "prompt_tokens_mean": row.prompt_tokens_mean,
+        "completion_tokens_mean": row.completion_tokens_mean,
+        "ttft": _latency_summary_to_record(row.ttft),
+        "time_to_completion": _latency_summary_to_record(row.time_to_completion),
+        "exact_match_rate": row.exact_match_rate,
+        "answer_found_rate": row.answer_found_rate,
+        "output_tokens_per_second": row.output_tokens_per_second,
+    }
+
+
+def _benchmark_comparison_to_record(
+    comparison: BenchmarkComparison,
+) -> dict[str, object]:
+    return {
+        "dataset": comparison.dataset,
+        "baseline_arm_id": comparison.baseline_arm_id,
+        "cache_arm_id": comparison.cache_arm_id,
+        "ttft_speedup": comparison.ttft_speedup,
+        "time_to_completion_speedup": comparison.time_to_completion_speedup,
+        "exact_match_delta": comparison.exact_match_delta,
+        "answer_found_delta": comparison.answer_found_delta,
+    }
+
+
+def _latency_summary_to_record(summary: object) -> dict[str, object]:
+    return {
+        "count": getattr(summary, "count"),
+        "mean": getattr(summary, "mean"),
+        "p50": getattr(summary, "p50"),
+        "p95": getattr(summary, "p95"),
+    }
+
+
 def require_sglang_cache_hit(
     config: SGLangSmokeBenchmarkConfig,
     record: Mapping[str, object],
@@ -2434,6 +2823,15 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         default=DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
         help="SGLang /flush_cache idle-wait and HTTP timeout before cache-arm and canary checks.",
     )
+    parser.add_argument(
+        "--live-benchmark-repeats",
+        type=int,
+        default=DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
+        help=(
+            "Run this many post-smoke live baseline/cache measurement repeats "
+            "and write sglang-live-benchmark.json."
+        ),
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -2509,6 +2907,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         flush_cache_before_cache_arm=not args.no_flush_cache_before_cache_arm,
         flush_cache_before_canary=not args.no_flush_cache_before_canary,
         flush_cache_timeout_seconds=args.flush_cache_timeout_seconds,
+        live_benchmark_repeats=args.live_benchmark_repeats,
         handoff_json=args.handoff_json,
         handoff_record=_json_object_option(
             args.handoff_record_json, "--handoff-record-json"

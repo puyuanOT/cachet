@@ -28,7 +28,7 @@ suite.
 | Failed live handoff smoke | `201402713679607` | [`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/) | Generated handoff preparation completed, but SGLang rejected the colon-containing served-model name before live requests. It is not a benchmark result. |
 | Failed live handoff smoke | `13763847664432` | [`2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/) | SGLang launched with the safe served-model name and request metadata bridge validation passed, but the cache arm used suffix-only runtime prompt text and did not answer from the generated prefix. It is not a benchmark result. |
 | Failed live handoff smoke | `476596508869043` | [`2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/) | SGLang launched with logical prompt text and answered both arms, but the cache arm reported zero cached tokens; the later cached-token line was ordinary SGLang prefix-cache reuse. It is not a benchmark result. |
-| Pending latency and throughput benchmark suite | Not available yet | Not available yet | The successful live smoke validates decode-time prefix binding and quality for one generated handoff prompt; Cachet still needs a multi-measurement SGLang benchmark suite before publishing latency or throughput numbers. |
+| Pending latency and throughput benchmark suite | Not available yet | Not available yet | The successful live smoke validates decode-time prefix binding and quality for one generated handoff prompt. The SGLang runner can now opt in to repeated live baseline/cache measurements with `--live-benchmark-repeats`, but no Databricks run has published that artifact yet, and Cachet still needs the four-dataset SGLang benchmark suite before publishing release latency or throughput numbers. |
 | Native HiCache integration evidence | `934698284395881` | [`../databricks/2026-06-23-g6-l4-native-engine-probes/`](../databricks/2026-06-23-g6-l4-native-engine-probes/) | Provider-backed native probe and connector-action records succeeded on AWS g6/L4, but these records are integration evidence, not benchmark measurements. |
 
 ## Live Smoke Helper
@@ -53,6 +53,13 @@ when all patch points install.
 Those helpers are a live readiness path, not a latency or throughput benchmark
 suite. The current successful generated-handoff Databricks smoke is tracked in
 [`2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/).
+Pass `--live-benchmark-repeats N` on a handoff-backed smoke to run repeated
+post-smoke baseline/cache measurements in the same SGLang server lifetime and
+write `sglang-live-benchmark.json` with record type
+`cachet.sglang_live_benchmark.v1`. That artifact is scoped to the synthetic
+live NIAH prompt and includes per-repeat flush records, measurements, aggregate
+comparison rows, and cache-hit validations; it is not the full V1 release
+benchmark suite.
 Earlier generated-handoff attempts are tracked in
 [`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/)
 and
@@ -142,8 +149,10 @@ Treat SGLang benchmark publication as pending until all of these are true:
 - The model-quality canary passes after the baseline and cache-arm live checks.
 - The cached-token validation is matched to the cache-arm request, not to server
   warmup traffic or later baseline prefix-cache reuse.
-- Latency, throughput, and quality measurements are recorded with the same
-  benchmark schema used by the vLLM report.
+- Latency, throughput, and quality measurements are recorded for the full
+  release suite. A `cachet.sglang_live_benchmark.v1` synthetic live record can
+  provide near-term SGLang latency evidence, but it does not replace the full
+  V1 benchmark publication gate.
 
 ## Evidence Boundary
 

@@ -100,6 +100,7 @@ Tracked benchmark folders contain README summaries plus sanitized JSON records
 needed to audit the claims. Keep these artifacts here:
 
 - `document_kv.benchmark_run.v1`
+- `cachet.sglang_live_benchmark.v1`
 - `document_kv.storage_benchmark.v1`
 - `document_kv.databricks_run_status.v1`
 - `document_kv.engine_kv_connector_probe.v1`

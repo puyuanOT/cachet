@@ -10,7 +10,7 @@ Start with the standalone report folders:
 | Folder | Purpose | Current status |
 | --- | --- | --- |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
-| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke now passes on g6/L4 with clean baseline isolation, `/flush_cache` before cache arm, full 175-token external cache hit, matching baseline/cache outputs, and a passing post-flush model-quality canary; live latency and throughput benchmark suite pending |
+| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke now passes on g6/L4 with clean baseline isolation, `/flush_cache` before cache arm, full 175-token external cache hit, matching baseline/cache outputs, and a passing post-flush model-quality canary; opt-in `cachet.sglang_live_benchmark.v1` synthetic live measurements are wired, with full release latency and throughput suite pending |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 
@@ -30,6 +30,8 @@ Use this boundary when adding or reviewing benchmark output:
 - `benchmarks/databricks/<date>-<target>-<purpose>/README.md` is the
   run-specific human-readable source-artifact report.
 - Folders with `v1_benchmark.json` are latency and quality benchmark reports.
+- SGLang `sglang-live-benchmark.json` files are synthetic live endpoint
+  measurements and do not replace full V1 benchmark reports.
 - The native-engine probe folder is integration evidence only; it is not a
   vLLM or SGLang latency/quality benchmark report.
 - JSON files beside each report are sanitized, schema-validated source records

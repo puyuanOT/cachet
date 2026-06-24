@@ -25,6 +25,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
+    DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
@@ -235,6 +236,10 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         default_config.flush_cache_timeout_seconds
         == DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
     )
+    assert (
+        default_config.live_benchmark_repeats
+        == DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS
+    )
 
     config = DatabricksSGLangSmokeJobConfig(
         benchmark_id="v1-sglang-generated-001",
@@ -257,6 +262,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         flush_cache_before_cache_arm=False,
         flush_cache_before_canary=False,
         flush_cache_timeout_seconds=12.5,
+        live_benchmark_repeats=3,
         spark_env_vars={"CACHET_TRANSFORMERS_DEVICE": "cuda"},
     )
 
@@ -285,6 +291,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert "--no-flush-cache-before-cache-arm" in parameters
     assert "--no-flush-cache-before-canary" in parameters
     assert parameters[parameters.index("--flush-cache-timeout-seconds") + 1] == "12.5"
+    assert parameters[parameters.index("--live-benchmark-repeats") + 1] == "3"
     assert parameters[parameters.index("--live-handoff-output-dir") + 1].endswith(
         "/live-handoff"
     )
@@ -348,6 +355,14 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         (
             {"flush_cache_timeout_seconds": 0, "baseline_only": True},
             "flush_cache_timeout_seconds",
+        ),
+        (
+            {"live_benchmark_repeats": -1, "baseline_only": True},
+            "live_benchmark_repeats",
+        ),
+        (
+            {"live_benchmark_repeats": 1, "baseline_only": True},
+            "live_benchmark_repeats",
         ),
         (
             {
