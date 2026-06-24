@@ -367,6 +367,61 @@ def test_databricks_sglang_smoke_config_supports_prepared_v1_datasets():
     ]
     assert [parameters[index + 1] for index in dataset_positions] == list(DATASET_SPECS)
 
+    generated_config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="v1-sglang-prepared-generated",
+        output_dir="/Volumes/catalog/schema/volume/v1-sglang-prepared-generated",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        dataset_specs=DATASET_SPECS,
+        live_benchmark_repeats=1,
+        benchmark_handoff_generator_factory="module:factory",
+        benchmark_handoff_output_dir=(
+            "/Volumes/catalog/schema/volume/v1-sglang-prepared-generated/handoffs"
+        ),
+        benchmark_handoff_dtype="float16",
+        benchmark_handoff_align_bytes=8,
+        benchmark_handoff_generation_timeout_seconds=12.5,
+    )
+
+    generated_parameters = build_databricks_sglang_smoke_run_submit_payload(
+        generated_config
+    )["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert generated_config.sglang_hicache_page_size == (
+        DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+    )
+    assert generated_parameters[
+        generated_parameters.index("--sglang-hicache-page-size") + 1
+    ] == str(DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE)
+    assert (
+        generated_parameters[
+            generated_parameters.index("--benchmark-handoff-generator-factory") + 1
+        ]
+        == "module:factory"
+    )
+    assert generated_parameters[
+        generated_parameters.index("--benchmark-handoff-output-dir") + 1
+    ].endswith("/handoffs")
+    assert (
+        generated_parameters[generated_parameters.index("--benchmark-handoff-dtype") + 1]
+        == "float16"
+    )
+    assert (
+        generated_parameters[
+            generated_parameters.index("--benchmark-handoff-align-bytes") + 1
+        ]
+        == "8"
+    )
+    assert (
+        generated_parameters[
+            generated_parameters.index(
+                "--benchmark-handoff-generation-timeout-seconds"
+            )
+            + 1
+        ]
+        == "12.5"
+    )
+
 
 def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
     invalid_cases = [
@@ -437,6 +492,39 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
                 "baseline_only": False,
             },
             "prepared SGLang benchmark datasets must not be combined",
+        ),
+        (
+            {
+                "benchmark_handoff_generator_factory": "module:factory",
+                "baseline_only": False,
+            },
+            "requires prepared dataset specs",
+        ),
+        (
+            {
+                "benchmark_handoff_output_dir": "/Volumes/catalog/schema/volume/handoffs",
+                "baseline_only": False,
+            },
+            "requires benchmark_handoff_generator_factory",
+        ),
+        (
+            {
+                "dataset_specs": DATASET_SPECS,
+                "live_benchmark_repeats": 1,
+                "benchmark_handoff_generator_factory": "",
+                "baseline_only": False,
+            },
+            "benchmark_handoff_generator_factory",
+        ),
+        (
+            {
+                "dataset_specs": DATASET_SPECS,
+                "live_benchmark_repeats": 1,
+                "benchmark_handoff_generator_factory": "module:factory",
+                "benchmark_handoff_align_bytes": 0,
+                "baseline_only": False,
+            },
+            "benchmark_handoff_align_bytes",
         ),
         (
             {

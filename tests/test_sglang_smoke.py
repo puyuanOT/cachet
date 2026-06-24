@@ -56,6 +56,7 @@ from document_kv_cache.sglang_smoke import (
     SGLANG_PREPARED_V1_LIVE_BENCHMARK_SCOPE,
     SGLANG_VERSION,
     SGLangSmokeBenchmarkConfig,
+    SGLangPreparedHandoffGenerationConfig,
     benchmark_dataset_paths,
     build_metadata,
     flush_sglang_cache,
@@ -68,6 +69,7 @@ from document_kv_cache.sglang_smoke import (
     install_sglang,
     parse_args,
     prepared_sglang_benchmark_handoff_coverage_record,
+    prepare_generated_sglang_benchmark_handoffs,
     prepare_generated_live_handoff,
     require_sglang_cache_hit,
     run_live_checks,
@@ -162,6 +164,7 @@ def write_handoff_json(
 def write_prepared_sglang_v1_datasets(
     root: Path,
     *,
+    include_handoffs: bool = True,
     missing_page_keys_for: str | None = None,
     page_key_count: int = 2,
 ) -> tuple[str, ...]:
@@ -172,40 +175,44 @@ def write_prepared_sglang_v1_datasets(
         request_id = f"cachet-{dataset}-prepared-1"
         handoff_path = root / "handoffs" / dataset / "example-1.handoff.json"
         payload_uri = f"disk:{root / 'payloads' / dataset / 'example-1.kv'}"
-        write_handoff_json(
-            handoff_path,
-            request_id=request_id,
-            payload_uri=payload_uri,
-            block_size=layout.block_size,
-            total_tokens=total_tokens,
-        )
-        kv_transfer_params: dict[str, object] = {
-            DOCUMENT_KV_REQUEST_ID_PARAM: request_id,
-            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
-            DOCUMENT_KV_PAYLOAD_URI_PARAM: payload_uri,
-        }
-        if dataset != missing_page_keys_for:
-            kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = [
-                f"{dataset}-page-{index}"
-                for index in range(1, page_key_count + 1)
-            ]
+        kv_transfer_params: dict[str, object] | None = None
+        if include_handoffs:
+            write_handoff_json(
+                handoff_path,
+                request_id=request_id,
+                payload_uri=payload_uri,
+                block_size=layout.block_size,
+                total_tokens=total_tokens,
+            )
+            kv_transfer_params = {
+                DOCUMENT_KV_REQUEST_ID_PARAM: request_id,
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+                DOCUMENT_KV_PAYLOAD_URI_PARAM: payload_uri,
+            }
+            if dataset != missing_page_keys_for:
+                kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = [
+                    f"{dataset}-page-{index}"
+                    for index in range(1, page_key_count + 1)
+                ]
         dataset_path = root / "datasets" / f"{dataset}.jsonl"
         dataset_path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "dataset": dataset,
+            "example_id": f"{dataset}-example-1",
+            "documents": [
+                {
+                    "document_id": f"{dataset}-doc-1",
+                    "text": f"{dataset} document contains answer-{dataset}.",
+                }
+            ],
+            "query": f"What answer is in the {dataset} document?",
+            "expected_answer": f"answer-{dataset}",
+        }
+        if kv_transfer_params is not None:
+            row["kv_transfer_params"] = kv_transfer_params
         dataset_path.write_text(
             json.dumps(
-                {
-                    "dataset": dataset,
-                    "example_id": f"{dataset}-example-1",
-                    "documents": [
-                        {
-                            "document_id": f"{dataset}-doc-1",
-                            "text": f"{dataset} document contains answer-{dataset}.",
-                        }
-                    ],
-                    "query": f"What answer is in the {dataset} document?",
-                    "expected_answer": f"answer-{dataset}",
-                    "kv_transfer_params": kv_transfer_params,
-                },
+                row,
                 sort_keys=True,
             )
             + "\n",
@@ -720,6 +727,11 @@ def test_sglang_smoke_accepts_prepared_v1_dataset_specs_for_live_benchmark(tmp_p
 
 def test_sglang_smoke_rejects_invalid_prepared_v1_dataset_specs(tmp_path):
     dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
+    generation = SGLangPreparedHandoffGenerationConfig(
+        output_dir=tmp_path / "generated-handoffs",
+        generator_factory="module:factory",
+        page_size=DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
+    )
 
     with pytest.raises(ValueError, match="missing required V1 datasets"):
         SGLangSmokeBenchmarkConfig(
@@ -755,6 +767,50 @@ def test_sglang_smoke_rejects_invalid_prepared_v1_dataset_specs(tmp_path):
                 output_dir=tmp_path / "generated-live"
             ),
         )
+
+    with pytest.raises(ValueError, match="requires prepared dataset specs"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-prepared-v1",
+            output_dir=tmp_path / "out",
+            prepared_handoff_generation=generation,
+        )
+
+    with pytest.raises(ValueError, match="must match prepared handoff generation"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-prepared-v1",
+            output_dir=tmp_path / "out",
+            dataset_specs=dataset_specs,
+            live_benchmark_repeats=1,
+            prepared_handoff_generation=generation,
+            hicache_page_size=1,
+        )
+
+
+def test_sglang_smoke_accepts_prepared_handoff_generation(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+    generation = SGLangPreparedHandoffGenerationConfig(
+        output_dir=tmp_path / "generated-handoffs",
+        generator_factory="module:factory",
+        page_size=2,
+    )
+
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+        prepared_handoff_generation=generation,
+    )
+
+    assert config.prepared_handoff_generation == generation
+    assert config.hicache_page_size == 2
+    assert (
+        config.prepared_handoff_generation_path
+        == tmp_path / "out" / "prepared-sglang-handoff-generation.json"
+    )
 
 
 def test_prepared_sglang_benchmark_handoff_coverage_requires_page_keys(tmp_path):
@@ -863,6 +919,142 @@ def test_prepared_sglang_benchmark_handoff_coverage_requires_page_keys(tmp_path)
     assert "has 1 keys" in short_page_key_record["invalid_handoff_references"][0][
         "error"
     ]
+
+
+def test_prepare_generated_sglang_benchmark_handoffs_writes_enriched_inputs(
+    tmp_path, monkeypatch
+):
+    module = ModuleType("cachet_test_sglang_prepared_handoff_generator")
+    module.build_generator = TinySGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-generated",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+        prepared_handoff_generation=SGLangPreparedHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-handoffs",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=2,
+        ),
+    )
+
+    generated_paths = prepare_generated_sglang_benchmark_handoffs(
+        config,
+        benchmark_dataset_paths(config),
+    )
+    coverage = validate_prepared_sglang_benchmark_handoffs(
+        config,
+        generated_paths,
+    )
+
+    assert set(generated_paths) == set(SUPPORTED_V1_DATASETS)
+    assert all(path.exists() for path in generated_paths.values())
+    assert coverage["ok"] is True
+    generation_record = json.loads(
+        config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+    )
+    assert generation_record["ok"] is True
+    assert generation_record["backend"] == "sglang"
+    assert generation_record["sglang_hicache_page_size"] == 2
+    assert generation_record["datasets"]["niah"]["enriched_rows"] == 1
+    row = json.loads(generated_paths["niah"].read_text(encoding="utf-8"))
+    params = row["kv_transfer_params"]
+    assert params[DOCUMENT_KV_REQUEST_ID_PARAM].startswith(
+        "cachet-niah-niah-example-1-"
+    )
+    assert len(params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM]) == 2
+    handoff = read_engine_adapter_request_json(
+        params[DOCUMENT_KV_HANDOFF_JSON_PARAM],
+        require_external_payload_uri=False,
+    )
+    assert handoff["backend"] == "sglang"
+    assert handoff["handle"]["layout"]["block_size"] == 2
+    assert local_path(params[DOCUMENT_KV_PAYLOAD_URI_PARAM]).exists()
+
+
+def test_prepare_generated_sglang_benchmark_handoffs_uses_sglang_venv(
+    tmp_path, monkeypatch
+):
+    generation = SGLangPreparedHandoffGenerationConfig(
+        output_dir=tmp_path / "generated-handoffs",
+        generator_factory="module:factory",
+        dtype="bfloat16",
+        align_bytes=1,
+        page_size=3,
+        timeout_seconds=1234.0,
+    )
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-venv",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+        prepared_handoff_generation=generation,
+    )
+    config.venv_python.parent.mkdir(parents=True)
+    config.venv_python.write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    calls = []
+
+    def fake_run(argv, *, check, capture_output, text, timeout, env):
+        calls.append((argv, check, capture_output, text, timeout, env))
+        assert argv[0] == str(config.venv_python)
+        assert argv[1] == "-c"
+        assert "SGLangPreparedHandoffGenerationConfig,\n" in argv[2]
+        input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
+        assert input_payload["benchmark_id"] == "sglang-prepared-venv"
+        assert (
+            input_payload["handoff_generation"]["generator_factory"]
+            == "module:factory"
+        )
+        assert input_payload["handoff_generation"]["sglang_hicache_page_size"] == 3
+        generated_paths = {}
+        for dataset in SUPPORTED_V1_DATASETS:
+            output_jsonl = tmp_path / "worker-generated" / f"{dataset}.jsonl"
+            output_jsonl.parent.mkdir(parents=True, exist_ok=True)
+            output_jsonl.write_text("{}\n", encoding="utf-8")
+            generated_paths[dataset] = str(output_jsonl)
+        Path(argv[4]).parent.mkdir(parents=True, exist_ok=True)
+        Path(argv[4]).write_text(
+            json.dumps(
+                {
+                    "generated_paths": generated_paths,
+                    "record": {
+                        "ok": True,
+                        "generator_python": str(config.venv_python),
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout="worker ok", stderr="")
+
+    monkeypatch.setattr(public_sglang_smoke.subprocess, "run", fake_run)
+
+    generated_paths = prepare_generated_sglang_benchmark_handoffs(
+        config,
+        benchmark_dataset_paths(config),
+    )
+
+    assert set(generated_paths) == set(SUPPORTED_V1_DATASETS)
+    generation_record = json.loads(
+        config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+    )
+    assert generation_record["generator_python"] == str(config.venv_python)
+    assert len(calls) == 1
+    assert calls[0][4] == 1234.0
+    assert calls[0][5]["HF_HOME"] == str(config.hf_cache_dir)
 
 
 def test_parse_args_accepts_live_check_extra_body_json(tmp_path):
@@ -1650,6 +1842,95 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
         == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
     )
     assert seen_configs[0].hicache_storage_prefetch_threshold == 3
+
+
+def test_sglang_smoke_cli_rejects_zero_live_handoff_page_size(tmp_path):
+    with pytest.raises(ValueError, match="sglang_hicache_page_size"):
+        parse_args(
+            [
+                "--benchmark-id",
+                "sglang-generated-zero",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--generate-live-handoff",
+                "--sglang-hicache-page-size",
+                "0",
+            ]
+        )
+
+
+def test_sglang_smoke_cli_accepts_prepared_handoff_generation(
+    monkeypatch, tmp_path
+):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+    seen_configs = []
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_sglang_live_smoke",
+        lambda config: seen_configs.append(config),
+    )
+
+    exit_code = public_sglang_smoke.main(
+        [
+            "--benchmark-id",
+            "sglang-prepared-generated",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--live-benchmark-repeats",
+            "1",
+            *(item for spec in dataset_specs for item in ("--dataset", spec)),
+            "--benchmark-handoff-generator-factory",
+            "module:factory",
+            "--benchmark-handoff-output-dir",
+            str(tmp_path / "generated-handoffs"),
+            "--benchmark-handoff-dtype",
+            "float16",
+            "--benchmark-handoff-align-bytes",
+            "8",
+            "--benchmark-handoff-generation-timeout-seconds",
+            "12.5",
+        ]
+    )
+
+    assert exit_code == 0
+    assert len(seen_configs) == 1
+    config = seen_configs[0]
+    generation = config.prepared_handoff_generation
+    assert generation is not None
+    assert generation.output_dir == tmp_path / "generated-handoffs"
+    assert generation.generator_factory == "module:factory"
+    assert generation.dtype == "float16"
+    assert generation.align_bytes == 8
+    assert generation.page_size == DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+    assert generation.timeout_seconds == 12.5
+    assert config.hicache_page_size == DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+
+
+def test_sglang_smoke_cli_rejects_zero_prepared_handoff_page_size(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+
+    with pytest.raises(ValueError, match="sglang_hicache_page_size"):
+        parse_args(
+            [
+                "--benchmark-id",
+                "sglang-prepared-zero",
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--live-benchmark-repeats",
+                "1",
+                *(item for spec in dataset_specs for item in ("--dataset", spec)),
+                "--benchmark-handoff-generator-factory",
+                "module:factory",
+                "--sglang-hicache-page-size",
+                "0",
+            ]
+        )
 
 
 def test_build_metadata_records_custom_params_transport(tmp_path):
