@@ -21,13 +21,15 @@ inspect `pr-evidence/` or ignored local `databricks-runs/` output.
 ## Scope
 
 The latency and quality results in this snapshot are vLLM benchmark runs. SGLang
-currently has provider-backed native HiCache probe and connector-action evidence
-in this benchmark tree, plus failed generated-handoff live smoke attempts
-tracked under
+currently has provider-backed native HiCache probe and connector-action
+evidence in this benchmark tree, plus a successful generated-handoff live smoke
+tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/).
+Earlier failed generated-handoff live smoke attempts remain tracked under
 [`../sglang/2026-06-23-g6-l4-live-handoff-smoke/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke/)
 and
 [`../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/),
-with the latest logical-prompt zero-cache-hit blocker tracked at
+with the logical-prompt zero-cache-hit blocker tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/),
 the `wait_complete` partial page-binding blocker tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/),
@@ -57,15 +59,16 @@ the minimal no-thinking cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/),
 the canary-after-cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/),
-and the current canary-flush cache-hit quality failure tracked at
+and the canary-flush cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/).
-It does not yet have a published live SGLang latency/quality benchmark. Treat
-SGLang benchmark evidence as pending until a live SGLang endpoint validates
-decode-time prefix binding with Cachet handoffs, hydrates all matching
-generated page-key chunks, records a positive cache-arm cached-token
-validation covering the generated handoff prefix, and passes the live baseline
-and cache-arm quality gates with a Qwen3/SGLang-compatible request. The
-post-live-check canary now passes after the explicit SGLang cache flush.
+It does not yet have a published live SGLang latency/throughput benchmark
+suite. The successful smoke validates decode-time prefix binding with Cachet
+handoffs, hydrates matching generated page-key chunks, records a positive
+cache-arm cached-token validation covering the generated handoff prefix, passes
+the live baseline and cache-arm quality gates, and passes the post-flush
+model-quality canary. Treat SGLang latency and throughput evidence as pending
+until a multi-measurement SGLang benchmark record is produced with the same
+schema used by the vLLM report.
 
 ## V1 Latency And Quality
 

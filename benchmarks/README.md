@@ -10,7 +10,7 @@ Start with the standalone report folders:
 | Folder | Purpose | Current status |
 | --- | --- | --- |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
-| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smokes reached a full 175-token external cache hit covering a generated Qwen-chat prefix through the chat-completions path with deterministic no-thinking controls, explicit Triton/PyTorch backend controls, a minimal no-thinking request body, and a passing post-flush model-quality canary; latest blocker is failed Qwen3/SGLang baseline and cache-arm quality; live latency and quality benchmark pending |
+| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke now passes on g6/L4 with clean baseline isolation, `/flush_cache` before cache arm, full 175-token external cache hit, matching baseline/cache outputs, and a passing post-flush model-quality canary; live latency and throughput benchmark suite pending |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 
@@ -51,10 +51,11 @@ generated dataset payloads, or cluster-local scratch output here.
 | [`databricks/2026-06-21-g6-l4-storage-readers`](databricks/2026-06-21-g6-l4-storage-readers/) | Memory, Disk, and Unity Catalog storage readers | `948365719597221` | `aws-g6-l4` / `g6.8xlarge` | `ok=true`; real UC Volume; zero reader errors |
 | [`databricks/2026-06-23-g6-l4-native-engine-probes`](databricks/2026-06-23-g6-l4-native-engine-probes/) | vLLM and SGLang native connector probes, not latency benchmarks | `934698284395881` | `aws-g6-l4` / `g6.8xlarge` | `ok=true`; provider-backed native probes succeeded |
 
-SGLang live-readiness failures are tracked in standalone folders under
-[`sglang/`](sglang/), including the latest canary-flush cache-hit quality
-failure at
-[`sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/).
+SGLang live-readiness evidence is tracked in standalone folders under
+[`sglang/`](sglang/), including the current baseline-isolated successful smoke
+at
+[`sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/)
+and earlier failed smokes that document the blocker history.
 
 The strict V1 publication target remains AWS g6/L4. The g5 folder is retained
 only as compatibility evidence and cannot replace the g6/L4 release target.
