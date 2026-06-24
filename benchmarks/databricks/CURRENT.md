@@ -27,6 +27,12 @@ live benchmark tracked at
 [`../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/`](../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/)
 and a successful generated-handoff live smoke tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/).
+The latest prepared four-dataset SGLang V1 attempt is tracked at
+[`../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/`](../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/):
+run `514040136831626` on `aws-g6-l4` / `g6.8xlarge`, where import probe,
+request metadata bridge, and prepared handoff generation succeeded, but the
+runner failed before SGLang server launch because generated prepared datasets
+were combined with single live handoff fields.
 Earlier failed generated-handoff live smoke attempts remain tracked under
 [`../sglang/2026-06-23-g6-l4-live-handoff-smoke/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke/)
 and
