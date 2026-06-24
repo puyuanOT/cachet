@@ -37,6 +37,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
+    DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
@@ -188,10 +189,12 @@ def fake_canary_record(*, ok: bool = True) -> dict[str, object]:
     }
 
 
-def fake_flush_record(*, ok: bool = True) -> dict[str, object]:
+def fake_flush_record(
+    *, ok: bool = True, reason: str = "before_model_quality_canary"
+) -> dict[str, object]:
     return {
         "ok": ok,
-        "reason": "before_model_quality_canary",
+        "reason": reason,
         "endpoint": "/flush_cache",
         "timeout_seconds": DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
         "http_status": 200 if ok else 400,
@@ -498,6 +501,10 @@ def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp
     assert config.sglang_attention_backend is None
     assert config.sglang_sampling_backend is None
     assert config.sglang_enable_deterministic_inference is False
+    assert (
+        config.flush_cache_before_cache_arm
+        is DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM
+    )
     assert config.flush_cache_before_canary is DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
     assert (
         config.flush_cache_timeout_seconds
@@ -536,6 +543,14 @@ def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
             output_dir=tmp_path / "out",
             baseline_only=True,
             live_check_extra_body={"bad": object()},
+        )
+
+    with pytest.raises(ValueError, match="flush_cache_before_cache_arm"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            flush_cache_before_cache_arm="yes",
         )
 
     with pytest.raises(ValueError, match="flush_cache_before_canary"):
@@ -581,7 +596,7 @@ def test_parse_args_accepts_live_check_extra_body_json(tmp_path):
     }
 
 
-def test_parse_args_can_disable_canary_cache_flush(tmp_path):
+def test_parse_args_can_disable_cache_flushes(tmp_path):
     config = parse_args(
         [
             "--benchmark-id",
@@ -589,12 +604,14 @@ def test_parse_args_can_disable_canary_cache_flush(tmp_path):
             "--output-dir",
             str(tmp_path / "out"),
             "--baseline-only",
+            "--no-flush-cache-before-cache-arm",
             "--no-flush-cache-before-canary",
             "--flush-cache-timeout-seconds",
             "12.5",
         ]
     )
 
+    assert config.flush_cache_before_cache_arm is False
     assert config.flush_cache_before_canary is False
     assert config.flush_cache_timeout_seconds == 12.5
 
@@ -1374,6 +1391,7 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
         "thinking": False,
         "enable_thinking": False,
     }
+    assert metadata["flush_cache_before_cache_arm"] is True
     assert metadata["flush_cache_before_canary"] is True
     assert metadata["flush_cache_timeout_seconds"] == (
         DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
@@ -1600,7 +1618,7 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
 
     def fake_flush(live_config, *, reason):
         events.append(f"flush:{reason}")
-        return fake_flush_record()
+        return fake_flush_record(reason=reason)
 
     monkeypatch.setattr(public_sglang_smoke, "flush_sglang_cache", fake_flush)
 
@@ -1628,8 +1646,10 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     assert seen_configs[0].prompt_text_mode == "logical"
     assert seen_configs[0].request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert record["cache"] is None
+    assert record["cache_arm_cache_flush"] is None
     assert record["model_quality_canary"]["ok"] is True
     assert record["canary_cache_flush"]["ok"] is True
+    assert record["flush_cache_before_cache_arm"] is True
     assert record["flush_cache_before_canary"] is True
     assert record["flush_cache_timeout_seconds"] == (
         DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
@@ -1643,6 +1663,7 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     assert record["cache_prefill_log_start_index"] is None
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"] is None
+    assert written["cache_arm_cache_flush"] is None
     assert written["model_quality_canary"]["ok"] is True
     assert written["canary_cache_flush"]["ok"] is True
     assert written["baseline"]["model_id"] == CACHET_MODEL_ID
@@ -1690,7 +1711,7 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
 
     def fake_flush(live_config, *, reason):
         events.append(f"flush:{reason}")
-        return fake_flush_record()
+        return fake_flush_record(reason=reason)
 
     monkeypatch.setattr(public_sglang_smoke, "flush_sglang_cache", fake_flush)
 
@@ -1719,34 +1740,37 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert record["served_model_name"] == SERVED_MODEL_NAME
     assert len(seen_configs) == 2
     assert events == [
-        "cache",
         "baseline",
+        "flush:before_cache_arm",
+        "cache",
         "flush:before_model_quality_canary",
         "canary",
     ]
     assert seen_configs[0].model_id == SERVED_MODEL_NAME
     assert seen_configs[1].model_id == SERVED_MODEL_NAME
-    assert seen_configs[0].use_cache_arm is True
-    assert seen_configs[1].use_cache_arm is False
+    assert seen_configs[0].use_cache_arm is False
+    assert seen_configs[1].use_cache_arm is True
     assert seen_configs[0].temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert seen_configs[1].temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert seen_configs[0].extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
     assert seen_configs[1].extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
-    assert seen_configs[0].kv_transfer_params_transport == "custom_params"
-    assert seen_configs[0].prompt_text_mode == "logical"
+    assert seen_configs[1].kv_transfer_params_transport == "custom_params"
+    assert seen_configs[1].prompt_text_mode == "logical"
     assert seen_configs[0].request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert seen_configs[1].request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert (
-        seen_configs[0].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM]
+        seen_configs[1].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM]
         == "cachet-live-sglang-1"
     )
-    assert seen_configs[0].kv_transfer_params[
+    assert seen_configs[1].kv_transfer_params[
         DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM
     ] == [
         "page-a",
         "page-b",
     ]
     assert record["cache"]["arm_id"] == "document_kv_cache"
+    assert record["cache_arm_cache_flush"]["ok"] is True
+    assert record["cache_arm_cache_flush"]["reason"] == "before_cache_arm"
     assert record["canary_cache_flush"]["ok"] is True
     assert record["model_quality_canary"]["ok"] is True
     assert record["baseline"]["model_id"] == CACHET_MODEL_ID
@@ -1761,6 +1785,7 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert record["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert record["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert record["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+    assert record["flush_cache_before_cache_arm"] is True
     assert record["flush_cache_before_canary"] is True
     assert record["live_check_chat_template_kwargs"] == {
         "reasoning_effort": "none",
@@ -1769,6 +1794,73 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     }
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"]["request_id"] == "cachet-live-sglang-1"
+    assert written["cache_arm_cache_flush"]["ok"] is True
+
+
+def test_run_live_checks_can_skip_cache_arm_cache_flush(monkeypatch, tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(
+        handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+        flush_cache_before_cache_arm=False,
+    )
+    events = []
+
+    def fake_live_check(live_config):
+        events.append("cache" if live_config.use_cache_arm else "baseline")
+        return FakeLiveResult(
+            ok=True,
+            request_id=live_config.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
+            prompt_text_mode=live_config.prompt_text_mode,
+            request_mode=live_config.request_mode,
+            cache_arm=live_config.use_cache_arm,
+        )
+
+    monkeypatch.setattr(
+        public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check
+    )
+
+    def fake_flush(live_config, *, reason):
+        events.append(f"flush:{reason}")
+        return fake_flush_record(reason=reason)
+
+    monkeypatch.setattr(public_sglang_smoke, "flush_sglang_cache", fake_flush)
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_sglang_quality_canary",
+        lambda live_config: fake_canary_record(),
+    )
+
+    record = run_live_checks(
+        config,
+        import_probe_record={
+            "ok": True,
+            "document_kv_request_metadata_bridge_ok": True,
+            "document_kv_request_metadata_bridge": {"ok": True},
+        },
+    )
+
+    assert record["ok"] is True
+    assert events == ["baseline", "cache", "flush:before_model_quality_canary"]
+    assert record["flush_cache_before_cache_arm"] is False
+    assert record["cache_arm_cache_flush"] == {
+        "ok": None,
+        "reason": "before_cache_arm",
+        "endpoint": "/flush_cache",
+        "skipped": True,
+        "skip_reason": "disabled",
+    }
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["cache_arm_cache_flush"]["skipped"] is True
 
 
 def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_path):
@@ -1805,7 +1897,7 @@ def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_pa
     monkeypatch.setattr(
         public_sglang_smoke,
         "flush_sglang_cache",
-        lambda live_config, *, reason: fake_flush_record(),
+        lambda live_config, *, reason: fake_flush_record(reason=reason),
     )
 
     with pytest.raises(RuntimeError, match="request metadata bridge not verified"):
@@ -1813,9 +1905,65 @@ def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_pa
 
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["ok"] is False
+    assert written["cache_arm_cache_flush"]["ok"] is True
     assert written["canary_cache_flush"]["ok"] is True
     assert written["model_quality_canary"]["ok"] is True
     assert "request metadata bridge not verified" in written["issues"]
+
+
+def test_run_live_checks_records_cache_arm_cache_flush_failure(monkeypatch, tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(
+        handoff_path, request_id="cachet-live-sglang-1", payload_uri=payload_uri
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-1",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+    )
+
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_openai_compatible_live_check",
+        lambda live_config: FakeLiveResult(
+            ok=True,
+            request_id=live_config.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
+            prompt_text_mode=live_config.prompt_text_mode,
+            request_mode=live_config.request_mode,
+            cache_arm=live_config.use_cache_arm,
+        ),
+    )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_sglang_quality_canary",
+        lambda live_config: fake_canary_record(),
+    )
+
+    def fake_flush(live_config, *, reason):
+        return fake_flush_record(ok=reason != "before_cache_arm", reason=reason)
+
+    monkeypatch.setattr(public_sglang_smoke, "flush_sglang_cache", fake_flush)
+
+    with pytest.raises(RuntimeError, match="cache-arm cache flush failed"):
+        run_live_checks(
+            config,
+            import_probe_record={
+                "ok": True,
+                "document_kv_request_metadata_bridge_ok": True,
+                "document_kv_request_metadata_bridge": {"ok": True},
+            },
+        )
+
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+    assert written["cache_arm_cache_flush"]["ok"] is False
+    assert written["cache_arm_cache_flush"]["reason"] == "before_cache_arm"
+    assert written["canary_cache_flush"]["ok"] is True
+    assert "cache-arm cache flush failed" in written["issues"]
 
 
 def test_run_live_checks_records_model_quality_canary_failure(monkeypatch, tmp_path):
@@ -1833,7 +1981,7 @@ def test_run_live_checks_records_model_quality_canary_failure(monkeypatch, tmp_p
     monkeypatch.setattr(
         public_sglang_smoke,
         "flush_sglang_cache",
-        lambda live_config, *, reason: fake_flush_record(),
+        lambda live_config, *, reason: fake_flush_record(reason=reason),
     )
     monkeypatch.setattr(
         public_sglang_smoke,
@@ -1872,7 +2020,7 @@ def test_run_live_checks_records_canary_cache_flush_failure(monkeypatch, tmp_pat
     monkeypatch.setattr(
         public_sglang_smoke,
         "flush_sglang_cache",
-        lambda live_config, *, reason: fake_flush_record(ok=False),
+        lambda live_config, *, reason: fake_flush_record(ok=False, reason=reason),
     )
     monkeypatch.setattr(
         public_sglang_smoke,

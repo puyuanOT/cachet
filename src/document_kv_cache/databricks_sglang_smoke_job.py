@@ -35,6 +35,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
+    DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
     SGLANG_ATTENTION_BACKEND_CHOICES,
@@ -134,6 +135,7 @@ class DatabricksSGLangSmokeJobConfig:
     live_check_request_mode: str = DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     live_check_temperature: float = DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     live_check_extra_body_json: str | None = None
+    flush_cache_before_cache_arm: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM
     flush_cache_before_canary: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
     flush_cache_timeout_seconds: float = DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
     handoff_json: str | None = None
@@ -260,6 +262,8 @@ class DatabricksSGLangSmokeJobConfig:
             _json_object_from_text(
                 self.live_check_extra_body_json, "live_check_extra_body_json"
             )
+        if type(self.flush_cache_before_cache_arm) is not bool:
+            raise ValueError("flush_cache_before_cache_arm must be a boolean")
         if type(self.flush_cache_before_canary) is not bool:
             raise ValueError("flush_cache_before_canary must be a boolean")
         if (
@@ -498,6 +502,8 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         parameters.extend(
             ["--live-check-extra-body-json", config.live_check_extra_body_json]
         )
+    if not config.flush_cache_before_cache_arm:
+        parameters.append("--no-flush-cache-before-cache-arm")
     if not config.flush_cache_before_canary:
         parameters.append("--no-flush-cache-before-canary")
     parameters.extend(
@@ -656,6 +662,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Non-secret JSON object merged into SGLang live check requests.",
     )
     parser.add_argument(
+        "--no-flush-cache-before-cache-arm",
+        action="store_true",
+        help="Do not flush SGLang's in-memory prefix cache between baseline and cache-arm live checks.",
+    )
+    parser.add_argument(
         "--no-flush-cache-before-canary",
         action="store_true",
         help="Do not flush SGLang's in-memory prefix cache before the model-quality canary.",
@@ -664,7 +675,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--flush-cache-timeout-seconds",
         type=float,
         default=DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
-        help="SGLang /flush_cache idle-wait and HTTP timeout before the model-quality canary.",
+        help="SGLang /flush_cache idle-wait and HTTP timeout before cache-arm and canary checks.",
     )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
@@ -751,6 +762,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             live_check_request_mode=args.live_check_request_mode,
             live_check_temperature=args.live_check_temperature,
             live_check_extra_body_json=args.live_check_extra_body_json,
+            flush_cache_before_cache_arm=not args.no_flush_cache_before_cache_arm,
             flush_cache_before_canary=not args.no_flush_cache_before_canary,
             flush_cache_timeout_seconds=args.flush_cache_timeout_seconds,
             handoff_json=args.handoff_json,

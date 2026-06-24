@@ -325,6 +325,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     'DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT': ('document_kv_cache.sglang_smoke', 'DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT'),
     'DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE': ('document_kv_cache.sglang_smoke', 'DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE'),
     'DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE': ('document_kv_cache.sglang_smoke', 'DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE'),
+    'DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM': ('document_kv_cache.sglang_smoke', 'DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM'),
     'DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY': ('document_kv_cache.sglang_smoke', 'DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY'),
     'DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS': ('document_kv_cache.sglang_smoke', 'DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS'),
     'SGLangSmokeBenchmarkConfig': ('document_kv_cache.sglang_smoke', 'SGLangSmokeBenchmarkConfig'),
