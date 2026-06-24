@@ -20,8 +20,9 @@ also validate the connector action descriptors required by strict release
 evidence.
 
 For vLLM, latency and quality benchmark numbers live in `../vllm/`. For SGLang,
-latency and quality benchmark numbers remain pending until a live SGLang
-endpoint validates decode-time prefix binding with Cachet handoffs.
+the current prepared live V1 benchmark lives in
+`../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/`; native-engine
+records remain integration evidence only.
 
 ## Evidence Boundary
 

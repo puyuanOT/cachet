@@ -25,13 +25,13 @@ from the strict release-bundle evidence set:
 
 Folders containing `v1_benchmark.json` are full V1 latency and quality
 benchmark reports. SGLang live benchmark folders under `../sglang/` can be
-cited as scoped synthetic live endpoint measurements or pre-publication
-prepared V1 attempt evidence when they include sanitized
-`cachet.sglang_live_benchmark.v1` records, but they do not replace full V1
-benchmark reports. The native-engine probe folder proves
+cited as scoped synthetic live endpoint measurements, prepared V1 live
+benchmark evidence, or pre-publication prepared attempt evidence when they
+include sanitized `cachet.sglang_live_benchmark.v1` records. They remain a
+distinct SGLang live report surface rather than canonical
+`document_kv.benchmark_run.v1` release-bundle inputs. The native-engine probe folder proves
 provider-backed vLLM/SGLang integration against engine-owned KV block managers,
-but it does not publish full SGLang release latency, throughput, or quality
-benchmark results.
+but it does not publish latency, throughput, or quality benchmark results.
 
 Live-readiness folders, such as the generated-handoff SGLang smoke under
 [`../sglang/`](../sglang/), can track pending or failed Databricks attempts

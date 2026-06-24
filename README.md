@@ -884,11 +884,10 @@ The full release-suite latency and quality benchmark rows are vLLM benchmark
 runs. The current SGLang artifacts include provider-backed native HiCache probe
 and connector-action records, a synthetic live SGLang benchmark that validates
 repeated Cachet-backed cache hits and quality for one generated NIAH prompt,
-and a prepared four-dataset V1 attempt that wrote live measurement rows but
-failed publication validation on padded SGLang prompt-token totals. Treat full
-SGLang benchmark publication as pending until a live SGLang deployment
-publishes multi-dataset release-suite latency and throughput evidence that
-passes the cache-hit gate.
+and a prepared four-dataset V1 live benchmark that passes cache-hit and quality
+gates on g6/L4. The SGLang prepared V1 cache arm is slower on the short prepared
+prompts, and the artifact remains the SGLang live benchmark record type rather
+than the canonical `document_kv.benchmark_run.v1` release-bundle input.
 
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
