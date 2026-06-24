@@ -1025,6 +1025,51 @@ def test_native_engine_integration_doc_examples_are_validated():
     ] == "sglang"
 
 
+def test_repository_map_and_evidence_policy_are_documented():
+    root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    repo_map = (REPO_ROOT / "docs" / "repo-map.md").read_text(encoding="utf-8")
+    evidence_policy = (REPO_ROOT / "docs" / "evidence-policy.md").read_text(encoding="utf-8")
+    compact_repo_map = " ".join(repo_map.split())
+    compact_evidence_policy = " ".join(evidence_policy.split())
+
+    assert "[`docs/repo-map.md`](docs/repo-map.md)" in root_readme
+    assert "[`docs/evidence-policy.md`](docs/evidence-policy.md)" in root_readme
+    assert "`repo-map.md` is the human navigation map" in docs_readme
+    assert "`evidence-policy.md` defines which machine-readable records belong" in docs_readme
+    assert "one project and one distribution package" in compact_repo_map
+    for required_path in (
+        "../src/cachet/",
+        "../src/document_kv_cache/",
+        "../src/vllm_kv_injection/",
+        "../src/sglang_kv_injection/",
+        "../benchmarks/",
+        "../evidence/",
+        "../pr-evidence/",
+        "../databricks/",
+        "../databricks-runs/",
+    ):
+        assert required_path in repo_map
+    assert "current benchmark answer" in repo_map
+    assert "For release readiness" in repo_map
+    for required_boundary in (
+        "Human-readable benchmark reports",
+        "Durable release-governance records",
+        "Valid `document_kv.pr_evidence.v1` sidecars",
+        "Ignored local scratch output only",
+        "Never commit credentials",
+        "Databricks tokens",
+        "raw Jobs API responses",
+        "package wheels",
+        "generated datasets",
+        "repository hygiene",
+    ):
+        assert required_boundary in compact_evidence_policy
+    assert "Keep exploratory run payloads and task status files under ignored `databricks-runs/`" in (
+        compact_evidence_policy
+    )
+
+
 def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     benchmark_root = REPO_ROOT / "benchmarks"
     databricks_root = benchmark_root / "databricks"
