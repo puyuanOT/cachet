@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
-from types import ModuleType
 import json
+import logging
 import sys
 from pathlib import Path
+from types import ModuleType
 from types import SimpleNamespace
 
 import pytest
@@ -909,6 +910,80 @@ def test_document_kv_hicache_page_provider_rejects_mismatched_runtime_page_keys(
 
     assert provider.batch_exists(["wrong-live-page-0"], document_kv_request_context=context) == 0
     assert provider.get("wrong-live-page-0") is None
+
+
+def test_document_kv_hicache_page_provider_logs_sanitized_binding_miss(tmp_path, caplog):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: [
+                "expected-page-0",
+                "expected-page-1",
+            ],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("expected-page-0", "expected-page-1"),
+        prompt_text_mode="logical",
+    )
+
+    caplog.set_level(logging.INFO, logger=sglang_dynamic_backend.__name__)
+
+    assert provider.batch_exists(["wrong-live-page-0"], document_kv_request_context=context) == 0
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "reason=binding_miss" in messages
+    assert "expected_page_keys=2" in messages
+    assert "prefix_keys=0" in messages
+    assert "prompt_text_mode=logical" in messages
+    assert "wrong-live-page-0" not in messages
+    assert "expected-page-0" not in messages
+    assert str(handoff_path) not in messages
+    assert str(payload_path) not in messages
+
+
+def test_document_kv_hicache_page_provider_logs_sanitized_successful_handoff(tmp_path, caplog):
+    ready = sglang_ready_request()
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: [
+                "sglang-hash-page-0",
+                "sglang-hash-page-1",
+            ],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=("sglang-hash-page-0", "sglang-hash-page-1"),
+        prompt_text_mode="logical",
+    )
+
+    caplog.set_level(logging.INFO, logger=sglang_dynamic_backend.__name__)
+
+    assert provider.batch_exists(
+        ["sglang-hash-page-0", "sglang-hash-page-1"],
+        document_kv_request_context=context,
+    ) == 2
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "reason=pages_hydrated" in messages
+    assert "operation=batch_exists" in messages
+    assert "hydrated_count=2" in messages
+    assert "has_payload_uri=True" in messages
+    assert "sglang-hash-page-0" not in messages
+    assert str(handoff_path) not in messages
+    assert str(payload_path) not in messages
 
 
 def test_document_kv_hicache_page_provider_rejects_wrong_backend_handoff(tmp_path):

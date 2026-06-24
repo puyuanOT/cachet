@@ -1,5 +1,5 @@
-from pathlib import Path
 import json
+from pathlib import Path
 import subprocess
 import sys
 from types import ModuleType
@@ -51,6 +51,7 @@ from document_kv_cache.sglang_smoke import (
     run_live_checks,
     sglang_cache_hit_validation_record,
     sglang_cached_token_counts,
+    sglang_prefill_token_counts,
     sglang_hicache_config_for_smoke,
 )
 from document_kv_cache.storage import local_path
@@ -97,19 +98,35 @@ def write_handoff_json(path: Path, *, request_id: str, payload_uri: str) -> None
 
 
 class FakeLiveResult:
-    def __init__(self, *, ok: bool, request_id: str | None, prompt_text_mode: str, cache_arm: bool) -> None:
+    def __init__(
+        self,
+        *,
+        ok: bool,
+        request_id: str | None,
+        prompt_text_mode: str,
+        cache_arm: bool,
+        server_usage_prompt_tokens: int | None = None,
+    ) -> None:
         self.ok = ok
         self.request_id = request_id
         self.prompt_text_mode = prompt_text_mode
         self.cache_arm = cache_arm
+        self.server_usage_prompt_tokens = server_usage_prompt_tokens
 
     def to_record(self):
-        return {
+        record = {
             "ok": self.ok,
             "request_id": self.request_id,
             "prompt_text_mode": self.prompt_text_mode,
             "arm_id": "document_kv_cache" if self.cache_arm else "baseline_prefill",
         }
+        if self.server_usage_prompt_tokens is not None:
+            record["prompt_tokens"] = self.server_usage_prompt_tokens
+            record["metadata"] = {
+                "server_usage_prompt_tokens": str(self.server_usage_prompt_tokens),
+                "server_usage_prompt_tokens_present": "true",
+            }
+        return record
 
 
 class TinyTokenizer:
@@ -687,6 +704,7 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkey
     assert record["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
     assert record["live_request_metadata_bridge_required"] is True
     assert record["live_request_metadata_bridge_ok"] is False
+    assert record["cache_prefill_log_start_index"] is None
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"] is None
     assert written["baseline"]["model_id"] == CACHET_MODEL_ID
@@ -700,10 +718,17 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
         output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
         handoff_json=str(handoff_path),
         payload_uri=payload_uri,
         request_id="cachet-live-sglang-1",
         sglang_hicache_page_keys=("page-a", "page-b"),
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    config.server_log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 6, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 0\n",
+        encoding="utf-8",
     )
     seen_configs = []
 
@@ -728,6 +753,7 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     )
 
     assert record["ok"] is True
+    assert record["cache_prefill_log_start_index"] == 2
     assert record["model_id"] == CACHET_MODEL_ID
     assert record["served_model_name"] == SERVED_MODEL_NAME
     assert len(seen_configs) == 2
@@ -790,16 +816,26 @@ def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_pa
 def test_sglang_cache_hit_validation_reads_cache_arm_cached_tokens(tmp_path):
     log_path = tmp_path / "sglang-server.log"
     log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 6, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 0\n"
         "[INFO] Prefill batch, #new-token: 25, #cached-token: 150\n"
-        "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n",
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 174\n",
         encoding="utf-8",
     )
 
-    assert sglang_cached_token_counts(log_path.read_text(encoding="utf-8")) == (150, 0)
-    record = sglang_cache_hit_validation_record(log_path)
+    assert sglang_cached_token_counts(log_path.read_text(encoding="utf-8")) == (0, 0, 150, 174)
+    assert sglang_prefill_token_counts(log_path.read_text(encoding="utf-8")) == (
+        {"new_tokens": 6, "cached_tokens": 0, "total_prompt_tokens": 6},
+        {"new_tokens": 1, "cached_tokens": 0, "total_prompt_tokens": 1},
+        {"new_tokens": 25, "cached_tokens": 150, "total_prompt_tokens": 175},
+        {"new_tokens": 1, "cached_tokens": 174, "total_prompt_tokens": 175},
+    )
+    record = sglang_cache_hit_validation_record(log_path, cache_request_prompt_tokens=175)
 
     assert record["ok"] is True
-    assert record["cached_token_counts"] == [150, 0]
+    assert record["cached_token_counts"] == [0, 0, 150, 174]
+    assert record["cache_request_prompt_tokens"] == 175
+    assert record["cache_request_prefill_index"] == 2
     assert record["cache_request_cached_tokens"] == 150
     assert record["issue"] is None
 
@@ -808,16 +844,121 @@ def test_sglang_cache_hit_validation_rejects_later_baseline_warm_hit(tmp_path):
     log_path = tmp_path / "sglang-server.log"
     log_path.write_text(
         "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 173\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(log_path, cache_request_prompt_tokens=174)
+
+    assert record["ok"] is False
+    assert record["cached_token_counts"] == [0, 173]
+    assert record["cache_request_prompt_tokens"] == 174
+    assert record["cache_request_prompt_match_field"] == "total_prompt_tokens"
+    assert record["cache_request_prefill_index"] == 0
+    assert record["cache_request_cached_tokens"] == 0
+    assert record["issue"] == "SGLang cache arm reported zero cached tokens"
+
+
+def test_sglang_cache_hit_validation_matches_cache_arm_after_warmups(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 6, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 173\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(
+        log_path,
+        cache_request_prompt_tokens=174,
+        cache_request_prefill_start_index=2,
+    )
+
+    assert record["ok"] is False
+    assert record["cache_request_prefill_start_index"] == 2
+    assert record["cache_request_prefill_index"] == 2
+    assert record["cache_request_cached_tokens"] == 0
+    assert record["prefill_token_counts"] == [
+        {"new_tokens": 6, "cached_tokens": 0, "total_prompt_tokens": 6},
+        {"new_tokens": 1, "cached_tokens": 0, "total_prompt_tokens": 1},
+        {"new_tokens": 174, "cached_tokens": 0, "total_prompt_tokens": 174},
+        {"new_tokens": 1, "cached_tokens": 173, "total_prompt_tokens": 174},
+    ]
+    assert record["issue"] == "SGLang cache arm reported zero cached tokens"
+
+
+def test_sglang_cache_hit_validation_uses_log_offset_to_skip_matching_warmup_total(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 24, #cached-token: 150\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(
+        log_path,
+        cache_request_prompt_tokens=174,
+        cache_request_prefill_start_index=1,
+    )
+
+    assert record["ok"] is True
+    assert record["cache_request_prefill_start_index"] == 1
+    assert record["cache_request_prefill_index"] == 1
+    assert record["cache_request_cached_tokens"] == 150
+
+
+def test_sglang_cache_hit_validation_matches_runtime_prompt_mode_by_new_tokens(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
         "[INFO] Prefill batch, #new-token: 25, #cached-token: 150\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(
+        log_path,
+        cache_request_prompt_tokens=25,
+        cache_prompt_text_mode="runtime",
+    )
+
+    assert record["ok"] is True
+    assert record["cache_prompt_text_mode"] == "runtime"
+    assert record["cache_request_prompt_match_field"] == "new_tokens"
+    assert record["cache_request_prefill_index"] == 0
+    assert record["cache_request_cached_tokens"] == 150
+
+
+def test_sglang_cache_hit_validation_requires_cache_request_prompt_tokens(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 2, #cached-token: 173\n",
         encoding="utf-8",
     )
 
     record = sglang_cache_hit_validation_record(log_path)
 
     assert record["ok"] is False
-    assert record["cached_token_counts"] == [0, 150]
-    assert record["cache_request_cached_tokens"] == 0
-    assert record["issue"] == "SGLang cache arm reported zero cached tokens"
+    assert record["cache_request_prefill_index"] is None
+    assert record["cache_request_cached_tokens"] is None
+    assert (
+        record["issue"]
+        == "SGLang cache request prompt token count unavailable; cannot verify cache-arm cached tokens"
+    )
+
+
+def test_sglang_cache_hit_validation_rejects_missing_cache_request_prompt_total(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 2, #cached-token: 173\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(log_path, cache_request_prompt_tokens=174)
+
+    assert record["ok"] is False
+    assert record["cache_request_prefill_index"] is None
+    assert record["cache_request_cached_tokens"] is None
+    assert record["issue"] == "SGLang server log did not report cache request prompt token count"
 
 
 def test_require_sglang_cache_hit_rejects_zero_cache_tokens(tmp_path):
@@ -835,12 +976,57 @@ def test_require_sglang_cache_hit_rejects_zero_cache_tokens(tmp_path):
     )
 
     with pytest.raises(RuntimeError, match="zero cached tokens"):
-        require_sglang_cache_hit(config, {"ok": True, "issues": []})
+        require_sglang_cache_hit(
+            config,
+            {
+                "ok": True,
+                "issues": [],
+                "cache": {
+                    "metadata": {
+                        "server_usage_prompt_tokens": "174",
+                    },
+                    "prompt_tokens": 92,
+                },
+            },
+        )
 
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["ok"] is False
     assert written["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 0
     assert "SGLang cache arm reported zero cached tokens" in written["issues"]
+
+
+def test_require_sglang_cache_hit_requires_server_usage_prompt_tokens(tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(output_dir=tmp_path / "generated-live"),
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    config.server_log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 173\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="prompt token count unavailable"):
+        require_sglang_cache_hit(
+            config,
+            {
+                "ok": True,
+                "issues": [],
+                "cache": {
+                    "prompt_tokens": 92,
+                },
+            },
+        )
+
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+    assert (
+        written["sglang_cache_hit_validation"]["issue"]
+        == "SGLang cache request prompt token count unavailable; cannot verify cache-arm cached tokens"
+    )
 
 
 def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(monkeypatch, tmp_path):
@@ -886,7 +1072,17 @@ def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(monkeypatc
             "[INFO] Prefill batch, #new-token: 174, #cached-token: 0\n",
             encoding="utf-8",
         )
-        return {"ok": True, "issues": []}
+        return {
+            "ok": True,
+            "issues": [],
+            "cache_prefill_log_start_index": 0,
+            "cache": {
+                "metadata": {
+                    "server_usage_prompt_tokens": "175",
+                },
+                "prompt_tokens": 92,
+            },
+        }
 
     monkeypatch.setattr(public_sglang_smoke, "create_venv", lambda path: events.append("venv"))
     monkeypatch.setattr(public_sglang_smoke, "install_sglang", lambda python: events.append("install-sglang"))

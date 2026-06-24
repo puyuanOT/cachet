@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import inspect
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -71,6 +72,7 @@ DOCUMENT_KV_HICACHE_RUNTIME_METHODS = (
     "get_stats",
 )
 _SGLANG_HICACHE_STORAGE_BASE = _load_sglang_hicache_storage_base()
+_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "DOCUMENT_KV_HICACHE_BACKEND_CLASS",
@@ -216,6 +218,12 @@ class DocumentKVHiCachePageProvider:
         key_list = list(keys)
         hydrated_count = self._hydrate_request_pages(key_list, document_kv_request_context)
         if _requires_strict_handoff_binding(document_kv_request_context):
+            _log_sglang_handoff_operation(
+                "batch_exists",
+                key_count=len(key_list),
+                request_context=document_kv_request_context,
+                hydrated_count=hydrated_count,
+            )
             if hydrated_count <= 0:
                 return 0
             for index, key in enumerate(key_list[:hydrated_count]):
@@ -239,6 +247,14 @@ class DocumentKVHiCachePageProvider:
         key_list = list(keys)
         hydrated_count = self._hydrate_request_pages(key_list, document_kv_request_context)
         strict_handoff = _requires_strict_handoff_binding(document_kv_request_context)
+        if strict_handoff:
+            _log_sglang_handoff_operation(
+                "batch_get_v1",
+                key_count=len(key_list),
+                request_context=document_kv_request_context,
+                hydrated_count=hydrated_count,
+                host_indices_present=host_indices is not None,
+            )
         if strict_handoff and hydrated_count <= 0:
             if host_indices is None:
                 return [None] * len(key_list)
@@ -360,28 +376,75 @@ class DocumentKVHiCachePageProvider:
             return 0
         binding = _sglang_hicache_page_binding(keys, request_context)
         if binding is None:
+            if _requires_strict_handoff_binding(request_context):
+                _log_sglang_handoff_hydration(
+                    "binding_miss",
+                    keys=keys,
+                    request_context=request_context,
+                    level=logging.WARNING,
+                )
             return 0
         first_page_index, key_count = binding
         handoff_plan = self._handoff_plan_for_context(request_context)
         if handoff_plan is None:
+            _log_sglang_handoff_hydration(
+                "handoff_missing",
+                keys=keys,
+                request_context=request_context,
+                binding_key_count=key_count,
+                level=logging.WARNING,
+            )
             return 0
         plan, payload_uri = handoff_plan
-        if first_page_index + key_count > _sglang_hicache_full_page_count(plan):
+        full_page_count = _sglang_hicache_full_page_count(plan)
+        if first_page_index + key_count > full_page_count:
+            _log_sglang_handoff_hydration(
+                "binding_exceeds_handoff_pages",
+                keys=keys,
+                request_context=request_context,
+                binding_key_count=key_count,
+                full_page_count=full_page_count,
+                level=logging.WARNING,
+            )
             return 0
         binding_keys = keys[:key_count]
         if all(self.exists(key) for key in binding_keys):
+            _log_sglang_handoff_hydration(
+                "pages_already_hydrated",
+                keys=keys,
+                request_context=request_context,
+                binding_key_count=key_count,
+                hydrated_count=key_count,
+                full_page_count=full_page_count,
+            )
             return key_count
         pages = _sglang_hicache_payload_pages(
             plan,
             read_engine_adapter_payload(payload_uri, expected_bytes=plan.total_bytes),
         )
         if not pages:
+            _log_sglang_handoff_hydration(
+                "payload_has_no_full_pages",
+                keys=keys,
+                request_context=request_context,
+                binding_key_count=key_count,
+                full_page_count=full_page_count,
+                level=logging.WARNING,
+            )
             return 0
         for offset, key in enumerate(binding_keys):
             page_index = first_page_index + offset
             if self.exists(key):
                 continue
             self._write_page(key, pages[page_index])
+        _log_sglang_handoff_hydration(
+            "pages_hydrated",
+            keys=keys,
+            request_context=request_context,
+            binding_key_count=key_count,
+            hydrated_count=key_count,
+            full_page_count=full_page_count,
+        )
         return key_count
 
     def _handoff_plan_for_context(
@@ -819,6 +882,65 @@ def _sglang_hicache_page_binding(
     if runtime_keys[:key_count] != expected_runtime_keys:
         return None
     return first_page_index, key_count
+
+
+def _log_sglang_handoff_operation(
+    operation: str,
+    *,
+    key_count: int,
+    request_context: DocumentKVHiCacheRequestContext | None,
+    hydrated_count: int,
+    host_indices_present: bool | None = None,
+) -> None:
+    if request_context is None:
+        return
+    _LOGGER.info(
+        "Cachet SGLang HiCache handoff operation: operation=%s key_count=%d "
+        "expected_page_keys=%d prefix_keys=%d hydrated_count=%d has_handoff_json=%s "
+        "has_inline_handoff=%s has_payload_uri=%s prompt_text_mode=%s host_indices_present=%s",
+        operation,
+        key_count,
+        len(request_context.sglang_hicache_page_keys),
+        len(request_context.prefix_keys),
+        hydrated_count,
+        request_context.handoff_json is not None,
+        request_context.handoff_record is not None,
+        request_context.payload_uri is not None,
+        request_context.prompt_text_mode,
+        host_indices_present,
+    )
+
+
+def _log_sglang_handoff_hydration(
+    reason: str,
+    *,
+    keys: list[object],
+    request_context: DocumentKVHiCacheRequestContext,
+    binding_key_count: int = 0,
+    hydrated_count: int = 0,
+    full_page_count: int | None = None,
+    level: int = logging.INFO,
+) -> None:
+    runtime_key_count = len(_runtime_hicache_keys(keys) or ())
+    _LOGGER.log(
+        level,
+        "Cachet SGLang HiCache handoff hydration: reason=%s key_count=%d runtime_key_count=%d "
+        "expected_page_keys=%d prefix_keys=%d binding_key_count=%d hydrated_count=%d "
+        "full_page_count=%s has_handoff_json=%s has_inline_handoff=%s has_payload_uri=%s "
+        "prompt_text_mode=%s",
+        reason,
+        len(keys),
+        runtime_key_count,
+        len(request_context.sglang_hicache_page_keys),
+        len(request_context.prefix_keys),
+        binding_key_count,
+        hydrated_count,
+        full_page_count,
+        request_context.handoff_json is not None,
+        request_context.handoff_record is not None,
+        request_context.payload_uri is not None,
+        request_context.prompt_text_mode,
+    )
 
 
 def _runtime_hicache_keys(keys: list[object]) -> tuple[str, ...] | None:
