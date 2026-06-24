@@ -1,0 +1,126 @@
+{
+  "direct_pins": [
+    {
+      "current": true,
+      "latest_version": "2.4.1",
+      "package": "poetry-core",
+      "pinned_version": "2.4.1",
+      "source": "build-system.requires"
+    },
+    {
+      "current": true,
+      "latest_version": "26.2",
+      "package": "packaging",
+      "pinned_version": "26.2",
+      "source": "project.dependencies"
+    },
+    {
+      "current": true,
+      "latest_version": "4.1.2",
+      "package": "pyspark",
+      "pinned_version": "4.1.2",
+      "source": "project.optional-dependencies.databricks"
+    },
+    {
+      "current": true,
+      "latest_version": "0.118.0",
+      "package": "databricks-sdk",
+      "pinned_version": "0.118.0",
+      "source": "project.optional-dependencies.databricks"
+    },
+    {
+      "current": true,
+      "latest_version": "9.1.1",
+      "package": "pytest",
+      "pinned_version": "9.1.1",
+      "source": "project.optional-dependencies.test"
+    }
+  ],
+  "issues": [],
+  "ok": true,
+  "pyproject_path": "pyproject.toml",
+  "record_type": "document_kv.dependency_freshness.v1",
+  "runtime_pins": [
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.23.0",
+      "package": "vllm",
+      "pinned_version": "0.23.0",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "5.12.1",
+      "package": "transformers",
+      "pinned_version": "5.12.1",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "1.20.1",
+      "package": "huggingface-hub",
+      "pinned_version": "1.20.1",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allowed": true,
+      "current": false,
+      "latest_version": "0.23.1",
+      "package": "tokenizers",
+      "pinned_version": "0.22.2",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allowed": true,
+      "current": false,
+      "latest_version": "2.5.0",
+      "package": "numpy",
+      "pinned_version": "2.3.5",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allowed": true,
+      "current": false,
+      "latest_version": "0.138.0",
+      "package": "fastapi",
+      "pinned_version": "0.136.0",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.",
+      "allowed": true,
+      "current": false,
+      "latest_version": "8.0.2",
+      "package": "prometheus-fastapi-instrumentator",
+      "pinned_version": "8.0.0",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "Pinned to the latest g6/L4 Databricks-validated Cachet SGLang HiCache provider profile; upgrading requires a fresh native/live Databricks validation.",
+      "allowed": true,
+      "current": false,
+      "latest_version": "0.5.13.post1",
+      "package": "sglang",
+      "pinned_version": "0.5.10.post1",
+      "source": "serving_env.sglang"
+    }
+  ],
+  "transitive_outdated": [
+    {
+      "allowed": true,
+      "latest_version": "7.35.1",
+      "locked_version": "6.33.6",
+      "package": "protobuf",
+      "reason": "databricks-sdk==0.118.0 currently resolves protobuf <7.0, so Poetry keeps protobuf 6.33.6 even though PyPI has 7.35.1."
+    }
+  ]
+}

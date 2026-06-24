@@ -1,0 +1,49 @@
+{
+  "files": {
+    "pr-evidence/dependency-freshness-evidence/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 review found that strict release bundles did not require dependency freshness evidence, allow reasons were only non-empty checks, committed evidence was not reproducibility-tested, and the evidence README had a blank line at EOF; all findings were resolved.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 513,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/513",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "docs/v1-requirements-matrix.md",
+        "evidence/dependency-freshness/",
+        "src/document_kv_cache/dependency_freshness.py",
+        "src/document_kv_cache/release_bundle.py",
+        "src/document_kv_cache/__init__.py",
+        "src/cachet/__init__.pyi",
+        "tests/test_dependency_freshness.py",
+        "tests/test_release_bundle.py",
+        "tests/test_public_package.py",
+        "tests/test_project_governance.py",
+        "pr-evidence/dependency-freshness-evidence/"
+      ],
+      "verification": [
+        "poetry run pytest -q tests/test_dependency_freshness.py tests/test_release_bundle.py tests/test_public_package.py tests/test_project_governance.py::test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates tests/test_project_governance.py::test_document_package_readme_lists_public_modules_and_console_scripts -> 105 passed",
+        "poetry check --lock -> All set",
+        "git diff --check -> no issues",
+        "poetry run pytest -q -> 1885 passed, 5 skipped",
+        "poetry run cachet-dependency-freshness --help -> ok",
+        "poetry run document-kv-dependency-freshness --help -> ok",
+        "poetry run cachet-release-bundle --help -> includes --dependency-freshness-json",
+        "poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/dependency-freshness-evidence --output-json pr-evidence/dependency-freshness-evidence/pr-evidence-validation.json -> ok=true"
+      ],
+      "what_changed": [
+        "Added dependency freshness evidence generation, public Cachet/document facades, and committed current evidence for direct package pins, runtime serving-profile pins, and resolver-held transitive drift.",
+        "Added a strict dependency-freshness sidecar validator and wired it into release bundles, strict V1 completeness, the release-bundle CLI, package console-script checks, README guidance, and the V1 requirements matrix.",
+        "Hardened runtime and transitive allow reasons so stale serving-profile runtime pins require Databricks, compatibility, or runtime validation context and transitive holds require resolver or dependency-constraint context.",
+        "Added focused tests for committed evidence reproducibility, release-bundle acceptance/rejection, weak allow reasons, public package exports, CLI behavior, and governance docs."
+      ],
+      "why": "Dependency freshness should be release-auditable in Cachet without relying on ad hoc notes; strict release bundles must not publish with stale package pins or weakly justified runtime holds."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}

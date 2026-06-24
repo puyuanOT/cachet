@@ -12,6 +12,9 @@ notes under `src/`.
   the source-only `restaurant_kv_serving` compatibility directory was removed;
   the current downstream migration evidence lives under
   `../evidence/legacy-migration/current/`.
+- `../evidence/dependency-freshness/current/README.md` explains the current
+  direct dependency, serving-profile, and resolver-held transitive freshness
+  evidence.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
 - `../benchmarks/current/README.md` is the human-facing current benchmark

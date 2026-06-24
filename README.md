@@ -1577,9 +1577,11 @@ the exact benchmark plan JSON, `--package-wheel` to include the exact wheel
 tested on the target AWS g6/L4 runtime, repeat `--pr-evidence-json` to carry PR
 traceability records, and add `--legacy-migration-evidence-json` when the
 release includes package-surface cleanup evidence such as the removed
-restaurant facade. Those sidecars travel alongside the benchmark, storage,
-engine-probe, connector-action, engine-launch-config, release-evidence, and
-preflight artifacts. Add
+restaurant facade. Add `--dependency-freshness-json` to carry the current
+dependency freshness sidecar for exact package pins, serving-profile runtime
+holds, and resolver-held transitive drift. Those sidecars travel alongside the
+benchmark, storage, engine-probe, connector-action, engine-launch-config,
+release-evidence, and preflight artifacts. Add
 `--compatibility-benchmark-json` to carry non-default supported V1 benchmark
 evidence such as AWS g5/A10G compatibility runs; the bundle validates each
 compatibility benchmark against the same storage/native probe/action sidecars
@@ -1596,14 +1598,14 @@ build a V1 bundle unless the release evidence, preflight, vLLM/SGLang native
 engine-probe, connector-action, and engine-launch-config sidecars,
 SGLang live V1 benchmark sidecar, benchmark-plan execution, Databricks
 run-status sidecars for benchmark,
-storage, and engine-probe runs, tested wheel, PR evidence, V1 requirements
-matrix, GitHub governance, repository hygiene, and native-probe factory
-diagnostics sidecars are all present; the release bundle also verifies exactly
-one Databricks sidecar for the benchmark and storage purposes plus one vLLM and
-one SGLang engine-probe status, either split across backend runs or grouped in
-an engine-probe matrix run. The native factory diagnostics must also report
-supported built-in vLLM and SGLang factory entry points across the bundled
-diagnostics sidecars.
+storage, and engine-probe runs, tested wheel, PR evidence, dependency
+freshness sidecar, V1 requirements matrix, GitHub governance, repository
+hygiene, and native-probe factory diagnostics sidecars are all present; the
+release bundle also verifies exactly one Databricks sidecar for the benchmark
+and storage purposes plus one vLLM and one SGLang engine-probe status, either
+split across backend runs or grouped in an engine-probe matrix run. The native
+factory diagnostics must also report supported built-in vLLM and SGLang
+factory entry points across the bundled diagnostics sidecars.
 Benchmark-plan execution sidecars are validated as closed schemas, including
 each command entry and the embedded plan-source provenance record, before they
 are copied into the release bundle. Add
@@ -1978,6 +1980,11 @@ one such isolated local-NVMe environment and pins `vllm==0.23.0`.
 SGLang so future smoke/probe jobs share the same install boundary.
 The committed `poetry.lock` records the resolver output for the base package,
 Databricks extras, and test extras; CI validates it with `poetry check --lock`.
+Dependency freshness is also recorded under
+`evidence/dependency-freshness/current/`: direct package metadata pins must
+match the supplied latest stable versions, while non-latest isolated runtime
+profile pins and resolver-held transitive packages must carry explicit
+compatibility or Databricks-validation reasons before the evidence can pass.
 
 ```bash
 poetry check --lock
@@ -2023,9 +2030,10 @@ users keep inline type annotations after installation.
   sidecars, SGLang live V1 benchmark sidecar, benchmark plan execution sidecar,
   Databricks run-status
   sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs, tested
-  package wheel, PR evidence sidecar, legacy migration evidence sidecar, V1
-  requirements matrix, GitHub governance sidecar, repository hygiene sidecar,
-  native probe factory diagnostics sidecar entries from both runtime
+  package wheel, PR evidence sidecar, dependency freshness sidecar, legacy
+  migration evidence sidecar, V1 requirements matrix, GitHub governance
+  sidecar, repository hygiene sidecar, native probe factory diagnostics
+  sidecar entries from both runtime
   environments, and the current `aws-g5-a10g` benchmark/status evidence carried
   through the `compatibility_benchmark` and
   `compatibility_databricks_run_status` roles.

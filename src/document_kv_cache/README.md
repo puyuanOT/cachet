@@ -65,6 +65,10 @@ return as a production dependency.
 - `databricks_sglang_smoke_job.py` owns standalone Qwen3/SGLang live smoke run
   payloads that target AWS g5/g6 Databricks clusters.
 - `databricks_vllm_smoke_job.py` owns standalone Qwen3/vLLM smoke run payloads.
+- `dependency_freshness.py` emits release-governance evidence that direct
+  package metadata pins are current, serving-profile runtime pins are exact,
+  and any non-latest runtime or resolver-held transitive dependency has an
+  explicit compatibility reason.
 - `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and NIAH
   normalization into canonical benchmark JSONL.
 - `engine.py` builds engine-ready payload handles from materialized KV.
@@ -171,6 +175,7 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-release-evidence`
 - `document-kv-release-bundle`
 - `document-kv-pr-evidence`
+- `document-kv-dependency-freshness`
 - `document-kv-github-governance`
 - `document-kv-repository-hygiene`
 - `document-kv-serving-env`
@@ -202,6 +207,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-release-evidence`
 - `cachet-release-bundle`
 - `cachet-pr-evidence`
+- `cachet-dependency-freshness`
 - `cachet-github-governance`
 - `cachet-repository-hygiene`
 - `cachet-serving-env`

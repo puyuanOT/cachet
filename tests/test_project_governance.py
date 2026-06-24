@@ -902,6 +902,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 
     assert "docs/v1-requirements-matrix.md" in readme_text
     assert "`v1-requirements-matrix.md`" in docs_readme
+    assert "`../evidence/dependency-freshness/current/README.md`" in docs_readme
     assert "Status values" in matrix_text
     assert "**Implemented:**" in matrix_text
     assert "**Bundle-refresh pending:**" in matrix_text
@@ -943,6 +944,10 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "docs/native-engine-integration.md",
         "legacy restaurant facade",
         "core runtime model layer no longer retains restaurant request",
+        "dependency_freshness.py",
+        "evidence/dependency-freshness/current/dependency-freshness-evidence.json",
+        "resolver-held `protobuf==6.33.6` drift",
+        "Databricks-validation upgrade reasons",
     ):
         assert required in matrix_text
 

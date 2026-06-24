@@ -196,6 +196,20 @@ from document_kv_cache.databricks_vllm_smoke_job import (
     write_databricks_vllm_smoke_runner_script as write_databricks_vllm_smoke_runner_script,
 )
 
+from document_kv_cache.dependency_freshness import (
+    DEPENDENCY_FRESHNESS_RECORD_TYPE as DEPENDENCY_FRESHNESS_RECORD_TYPE,
+    DependencyFreshnessEvidence as DependencyFreshnessEvidence,
+    DirectDependencyPin as DirectDependencyPin,
+    RuntimeDependencyPin as RuntimeDependencyPin,
+    TransitiveDependencyDrift as TransitiveDependencyDrift,
+    dependency_freshness_record_issues as dependency_freshness_record_issues,
+    dependency_freshness_to_record as dependency_freshness_to_record,
+    evaluate_dependency_freshness as evaluate_dependency_freshness,
+    pyproject_direct_dependency_pins as pyproject_direct_dependency_pins,
+    serving_profile_runtime_pins as serving_profile_runtime_pins,
+    write_dependency_freshness_json as write_dependency_freshness_json,
+)
+
 from document_kv_cache.dataset_prep import (
     DEFAULT_NIAH_QUERY as DEFAULT_NIAH_QUERY,
     build_niah_record as build_niah_record,

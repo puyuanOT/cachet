@@ -51,6 +51,7 @@ from document_kv_cache.databricks_runs import (
     databricks_run_status_record,
     databricks_run_status_sidecar_issues,
 )
+from document_kv_cache.dependency_freshness import dependency_freshness_record_issues
 from document_kv_cache.databricks_storage_benchmark_job import (
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE,
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,
@@ -138,6 +139,7 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "cachet-benchmark-plan": "cachet.benchmark_plan:main",
     "cachet-databricks-job": "cachet.databricks_job:main",
     "cachet-databricks-runs": "cachet.databricks_runs:main",
+    "cachet-dependency-freshness": "cachet.dependency_freshness:main",
     "cachet-engine-launch-config": "cachet.engine_launch_config:main",
     "cachet-engine-probe": "cachet.engine_probe:main",
     "cachet-engine-probe-databricks-job": "cachet.databricks_engine_probe_job:main",
@@ -164,6 +166,7 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
     "document-kv-benchmark-plan": "document_kv_cache.benchmark_plan:main",
     "document-kv-databricks-job": "document_kv_cache.databricks_job:main",
     "document-kv-databricks-runs": "document_kv_cache.databricks_runs:main",
+    "document-kv-dependency-freshness": "document_kv_cache.dependency_freshness:main",
     "document-kv-engine-launch-config": "document_kv_cache.engine_launch_config:main",
     "document-kv-engine-probe": "document_kv_cache.engine_probe:main",
     "document-kv-engine-probe-databricks-job": "document_kv_cache.databricks_engine_probe_job:main",
@@ -201,6 +204,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "package_wheel",
     "pr_evidence",
     "legacy_migration_evidence",
+    "dependency_freshness",
     "requirements_matrix",
     "github_governance",
     "repository_hygiene",
@@ -221,6 +225,7 @@ STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ),
     ("package_wheel", 1, "tested package wheel"),
     ("pr_evidence", 1, "PR evidence sidecar"),
+    ("dependency_freshness", 1, "dependency freshness sidecar"),
     ("requirements_matrix", 1, "V1 requirements matrix"),
     ("github_governance", 1, "GitHub governance sidecar"),
     ("repository_hygiene", 1, "repository hygiene sidecar"),
@@ -262,8 +267,9 @@ STRICT_V1_RELEASE_HELP = (
     "Require the full V1 release artifact set: release/preflight sidecars, "
     "vLLM/SGLang native engine probes, connector actions, and launch configs, "
     "plan execution, Databricks status for benchmark/storage/engine-probe runs, "
-    "tested wheel, PR evidence, governance, repository hygiene, and supported "
-    "native probe factory diagnostics, plus the V1 requirements matrix. "
+    "tested wheel, PR evidence, dependency freshness, governance, repository "
+    "hygiene, and supported native probe factory diagnostics, plus the V1 "
+    "requirements matrix. "
     "Compatibility benchmarks bundled with strict releases also require matching "
     "compatibility Databricks benchmark run-status evidence."
 )
@@ -546,6 +552,7 @@ def build_release_bundle(
     package_wheel: str | Path | None = None,
     pr_evidence_jsons: Sequence[str | Path] = (),
     legacy_migration_evidence_jsons: Sequence[str | Path] = (),
+    dependency_freshness_json: str | Path | None = None,
     requirements_matrix_md: str | Path | None = None,
     github_governance_json: str | Path | None = None,
     repository_hygiene_json: str | Path | None = None,
@@ -576,6 +583,7 @@ def build_release_bundle(
         package_wheel=package_wheel,
         pr_evidence_jsons=pr_evidence_jsons,
         legacy_migration_evidence_jsons=legacy_migration_evidence_jsons,
+        dependency_freshness_json=dependency_freshness_json,
         requirements_matrix_md=requirements_matrix_md,
         github_governance_json=github_governance_json,
         repository_hygiene_json=repository_hygiene_json,
@@ -658,6 +666,7 @@ def _release_bundle_sources(
     package_wheel: str | Path | None,
     pr_evidence_jsons: Sequence[str | Path],
     legacy_migration_evidence_jsons: Sequence[str | Path],
+    dependency_freshness_json: str | Path | None,
     requirements_matrix_md: str | Path | None,
     github_governance_json: str | Path | None,
     repository_hygiene_json: str | Path | None,
@@ -686,6 +695,8 @@ def _release_bundle_sources(
         sources.append(("package_wheel", package_wheel))
     sources.extend(("pr_evidence", path) for path in pr_evidence_jsons)
     sources.extend(("legacy_migration_evidence", path) for path in legacy_migration_evidence_jsons)
+    if dependency_freshness_json is not None:
+        sources.append(("dependency_freshness", dependency_freshness_json))
     if requirements_matrix_md is not None:
         sources.append(("requirements_matrix", requirements_matrix_md))
     if github_governance_json is not None:
@@ -797,6 +808,11 @@ def _validate_release_bundle_inputs(
                 issues.append("legacy migration evidence sidecar must be JSON")
                 continue
             issues.extend(_legacy_migration_evidence_sidecar_issues(artifact.record))
+        elif artifact.role == "dependency_freshness":
+            if artifact.record is None:
+                issues.append("dependency freshness sidecar must be JSON")
+                continue
+            issues.extend(_dependency_freshness_sidecar_issues(artifact.record))
         elif artifact.role == "requirements_matrix":
             issues.extend(_requirements_matrix_issues(artifact.source_path, artifact.payload))
         elif artifact.role == "github_governance":
@@ -1964,6 +1980,10 @@ def _native_probe_factories_sidecar_issues(record: Mapping[str, Any]) -> tuple[s
     return native_probe_factories_record_issues(record)
 
 
+def _dependency_freshness_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    return dependency_freshness_record_issues(record)
+
+
 def _engine_launch_config_sidecar_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     return engine_launch_config_record_issues(record)
 
@@ -2794,6 +2814,8 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return f"pr_evidence_{index + 1:02d}.json"
     if role == "legacy_migration_evidence":
         return f"legacy_migration_evidence_{index + 1:02d}.json"
+    if role == "dependency_freshness":
+        return "dependency_freshness.json"
     if role == "requirements_matrix":
         return "v1_requirements_matrix.md"
     if role == "github_governance":
@@ -2946,6 +2968,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--requirements-matrix-md")
     parser.add_argument("--github-governance-json")
     parser.add_argument("--repository-hygiene-json")
+    parser.add_argument("--dependency-freshness-json")
     parser.add_argument("--native-probe-factories-json", action="append", default=[])
     parser.add_argument(
         "--require-complete-v1",
@@ -2976,6 +2999,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         package_wheel=args.package_wheel,
         pr_evidence_jsons=args.pr_evidence_json,
         legacy_migration_evidence_jsons=args.legacy_migration_evidence_json,
+        dependency_freshness_json=args.dependency_freshness_json,
         requirements_matrix_md=args.requirements_matrix_md,
         github_governance_json=args.github_governance_json,
         repository_hygiene_json=args.repository_hygiene_json,
