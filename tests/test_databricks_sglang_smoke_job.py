@@ -16,6 +16,7 @@ from document_kv_cache.databricks_sglang_smoke_job import (
 )
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
@@ -106,6 +107,8 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
             "/local_disk0/cachet/sglang-hicache",
             "--hicache-size-gb",
             "4",
+            "--hicache-storage-prefetch-threshold",
+            str(DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD),
             "--package-wheel-uri",
             WHEEL_URI,
         ],
@@ -182,6 +185,10 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert default_config.cache_prompt_text_mode == "logical"
     assert default_config.live_handoff_generator_factory == DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
     assert default_config.sglang_hicache_page_size == DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+    assert (
+        default_config.hicache_storage_prefetch_threshold
+        == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
+    )
 
     config = DatabricksSGLangSmokeJobConfig(
         benchmark_id="v1-sglang-generated-001",
@@ -215,6 +222,9 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert parameters[parameters.index("--live-handoff-align-bytes") + 1] == "8"
     assert parameters[parameters.index("--sglang-hicache-page-size") + 1] == "2"
     assert parameters[parameters.index("--live-handoff-generation-timeout-seconds") + 1] == "12.5"
+    assert parameters[parameters.index("--hicache-storage-prefetch-threshold") + 1] == str(
+        DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
+    )
 
 
 def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
@@ -262,6 +272,10 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         ({"generate_live_handoff": True, "live_handoff_generator_factory": "", "baseline_only": False}, "factory"),
         ({"generate_live_handoff": True, "live_handoff_align_bytes": 0, "baseline_only": False}, "align"),
         ({"generate_live_handoff": True, "sglang_hicache_page_size": 0, "baseline_only": False}, "page_size"),
+        (
+            {"hicache_storage_prefetch_threshold": 0, "baseline_only": True},
+            "hicache_storage_prefetch_threshold",
+        ),
         ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}, "baseline_only": True}, "looks secret-bearing"),
     ]
 

@@ -75,6 +75,7 @@ DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
 )
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
+DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
 SGLANG_SERVER_PREFILL_TOKEN_PATTERN = re.compile(r"#new-token:\s*(\d+),\s*#cached-token:\s*(\d+)")
@@ -102,6 +103,7 @@ __all__ = [
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY",
     "DEFAULT_SGLANG_HICACHE_PAGE_SIZE",
+    "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD",
     "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
     "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
     "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
@@ -201,6 +203,9 @@ class SGLangSmokeBenchmarkConfig:
     hicache_io_backend: str | None = None
     hicache_mem_layout: str | None = None
     hicache_storage_prefetch_policy: str | None = None
+    hicache_storage_prefetch_threshold: int | None = (
+        DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
+    )
     hicache_write_policy: str | None = None
 
     def __post_init__(self) -> None:
@@ -260,6 +265,15 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("hicache_page_size must be a positive integer when provided")
         if self.hicache_page_size is not None and self.hicache_page_size <= 0:
             raise ValueError("hicache_page_size must be a positive integer when provided")
+        if (
+            self.hicache_storage_prefetch_threshold is not None
+            and (
+                isinstance(self.hicache_storage_prefetch_threshold, bool)
+                or not isinstance(self.hicache_storage_prefetch_threshold, int)
+                or self.hicache_storage_prefetch_threshold <= 0
+            )
+        ):
+            raise ValueError("hicache_storage_prefetch_threshold must be a positive integer when provided")
         if (
             self.handoff_generation is not None
             and self.hicache_page_size is not None
@@ -438,6 +452,8 @@ def sglang_hicache_config_for_smoke(config: SGLangSmokeBenchmarkConfig) -> dict[
     extra_config: dict[str, Any] = {}
     if config.hicache_page_store_uri is not None:
         extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = config.hicache_page_store_uri
+    if config.hicache_storage_prefetch_threshold is not None:
+        extra_config["prefetch_threshold"] = config.hicache_storage_prefetch_threshold
     return sglang_hicache_launch_config(
         extra_config=extra_config,
         page_size=config.hicache_page_size,
@@ -1142,6 +1158,8 @@ def build_sglang_server_args(config: SGLangSmokeBenchmarkConfig, python_executab
     extra_config: dict[str, Any] = {}
     if config.hicache_page_store_uri is not None:
         extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = config.hicache_page_store_uri
+    if config.hicache_storage_prefetch_threshold is not None:
+        extra_config["prefetch_threshold"] = config.hicache_storage_prefetch_threshold
     args.extend(
         sglang_hicache_cli_args(
             extra_config=extra_config,
@@ -1441,6 +1459,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--hicache-io-backend")
     parser.add_argument("--hicache-mem-layout")
     parser.add_argument("--hicache-storage-prefetch-policy")
+    parser.add_argument(
+        "--hicache-storage-prefetch-threshold",
+        type=int,
+        default=DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
+    )
     parser.add_argument("--hicache-write-policy")
     args = parser.parse_args(argv)
 
@@ -1482,6 +1505,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         hicache_io_backend=args.hicache_io_backend,
         hicache_mem_layout=args.hicache_mem_layout,
         hicache_storage_prefetch_policy=args.hicache_storage_prefetch_policy,
+        hicache_storage_prefetch_threshold=args.hicache_storage_prefetch_threshold,
         hicache_write_policy=args.hicache_write_policy,
     )
 
