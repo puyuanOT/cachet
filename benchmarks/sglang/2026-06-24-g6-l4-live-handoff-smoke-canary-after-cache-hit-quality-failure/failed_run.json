@@ -1,0 +1,226 @@
+{
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "snapshot_date": "2026-06-24",
+  "benchmark_result": "not_published",
+  "failure_type": "sglang_live_quality_failure_with_post_live_check_canary_after_full_cache_hit",
+  "benchmark_id": "v1_sglang_live_canary_after_20260624_032624",
+  "mode": "generated-live-handoff-logical-prompt-qwen-chat-minimal-no-thinking-triton-pytorch-deterministic-wait-complete-canary-after-live-checks",
+  "cachet_commit": "16a8085",
+  "hardware_target": "aws-g6-l4",
+  "node_type": "g6.8xlarge",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 419314952937106,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/305406171200908/run/419314952937106",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "task": {
+    "cluster_id": "0624-092705-dvgx2jgy",
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 42608288205489,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  },
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "de79f5c8b91b333c4279b47ee85676f42ead3f4db4a317820632216384a93d5c"
+  },
+  "integration_checks": {
+    "sglang_import_probe_ok": true,
+    "document_kv_request_metadata_bridge_ok": true,
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_provider_type": "sglang_kv_injection.sglang_dynamic_backend.DocumentKVHiCachePageProvider",
+    "cuda_device_name": "NVIDIA L4",
+    "sglang_version": "0.5.10.post1",
+    "document_kv_cache_version": "0.2.0",
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 175,
+    "kv_transfer_params_transport": "custom_params",
+    "cache_prompt_text_mode": "logical",
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.0,
+    "live_check_extra_body": {
+      "chat_template_kwargs": {
+        "enable_thinking": false,
+        "thinking": false
+      },
+      "reasoning_effort": "none"
+    },
+    "sglang_attention_backend": "triton",
+    "sglang_sampling_backend": "pytorch",
+    "sglang_enable_deterministic_inference": true,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "prefetch_threshold": 1
+  },
+  "live_handoff_generation": {
+    "ok": true,
+    "backend": "sglang",
+    "chat_template_rendered": true,
+    "sglang_hicache_page_size": 1,
+    "cache_prefix_tokens": 175,
+    "cache_prefix_source_tokens": 176,
+    "runtime_prompt_tokens": 205,
+    "cache_prefix_full_pages": 175,
+    "cache_prefix_token_stable": false,
+    "cache_prefix_token_stable_ratio": 0.9943181818181818,
+    "cache_prefix_token_stable_truncated": true
+  },
+  "request_shape": {
+    "cache_endpoint": "/v1/chat/completions",
+    "cache_request_payload_keys": "chat_template_kwargs,custom_params,max_completion_tokens,messages,model,reasoning_effort,stream,stream_options,temperature",
+    "cache_message_roles": "system,user",
+    "cache_message_count": 2,
+    "cache_message_content_chars": "104,774",
+    "cache_max_token_fields": "max_completion_tokens",
+    "cache_max_completion_tokens": 32,
+    "cache_custom_param_keys": "kv_transfer_params",
+    "cache_kv_transfer_param_keys": [
+      "document_kv.handoff_json",
+      "document_kv.payload_uri",
+      "document_kv.prompt_text_mode",
+      "document_kv.request_id",
+      "document_kv.sglang_hicache_page_keys"
+    ],
+    "baseline_endpoint": "/v1/chat/completions",
+    "baseline_message_roles": "system,user",
+    "baseline_message_count": 2,
+    "baseline_message_content_chars": "104,774",
+    "canary_endpoint": "/v1/chat/completions",
+    "canary_message_roles": "system,user",
+    "canary_message_count": 2,
+    "canary_message_content_chars": "67,43",
+    "canary_kv_transfer_params_present": false
+  },
+  "sglang_cache_hit_validation": {
+    "ok": true,
+    "cache_request_cached_tokens": 175,
+    "minimum_cached_tokens": 175,
+    "cache_request_prompt_tokens": 205,
+    "cache_request_prefill_index": 2,
+    "cache_request_prompt_match_field": "total_prompt_tokens",
+    "issue": null
+  },
+  "server_prefill_token_counts": [
+    {
+      "classification": "server_warmup",
+      "new_tokens": 6,
+      "cached_tokens": 0,
+      "total_prompt_tokens": 6
+    },
+    {
+      "classification": "server_warmup",
+      "new_tokens": 1,
+      "cached_tokens": 0,
+      "total_prompt_tokens": 1
+    },
+    {
+      "classification": "cache_arm_external_handoff",
+      "new_tokens": 30,
+      "cached_tokens": 175,
+      "total_prompt_tokens": 205
+    },
+    {
+      "classification": "baseline_after_cache_arm_prefix_cache",
+      "new_tokens": 1,
+      "cached_tokens": 204,
+      "total_prompt_tokens": 205
+    },
+    {
+      "classification": "model_quality_canary_after_live_checks",
+      "new_tokens": 30,
+      "cached_tokens": 6,
+      "total_prompt_tokens": 36
+    }
+  ],
+  "server_hicache_binding_events": [
+    {
+      "reason": "pages_hydrated",
+      "key_count": 128,
+      "runtime_key_count": 128,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": false,
+      "binding_key_count": 128,
+      "hydrated_count": 128,
+      "full_page_count": 175
+    },
+    {
+      "reason": "pages_hydrated",
+      "key_count": 77,
+      "runtime_key_count": 77,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": true,
+      "binding_key_count": 47,
+      "hydrated_count": 47,
+      "full_page_count": 175
+    },
+    {
+      "reason": "pages_already_hydrated",
+      "key_count": 128,
+      "runtime_key_count": 128,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": false,
+      "binding_key_count": 128,
+      "hydrated_count": 128,
+      "full_page_count": 175
+    },
+    {
+      "reason": "pages_already_hydrated",
+      "key_count": 47,
+      "runtime_key_count": 47,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": false,
+      "binding_key_count": 47,
+      "hydrated_count": 47,
+      "full_page_count": 175
+    }
+  ],
+  "smoke": {
+    "ok": false,
+    "issues": [
+      "model quality canary failed",
+      "baseline live check failed",
+      "cache-arm live check failed"
+    ],
+    "model_id": "qwen3:4b-instruct",
+    "served_model_name": "qwen3-4b-instruct",
+    "cache_prompt_text_mode": "logical",
+    "cache_ok": false,
+    "cache_answer_found": false,
+    "cache_output_text_prefix": " or or or Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover or or Cover Cover Cover Cover Cover",
+    "cache_prompt_tokens": 92,
+    "cache_server_usage_prompt_tokens": 205,
+    "cache_ttft_seconds": 1.4210271770000418,
+    "cache_time_to_completion_seconds": 2.7632575280000538,
+    "baseline_ok": false,
+    "baseline_answer_found": false,
+    "baseline_output_text_prefix": " or or or Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover or or Cover Cover Cover Cover Cover",
+    "baseline_prompt_tokens": 92,
+    "baseline_server_usage_prompt_tokens": 205,
+    "baseline_ttft_seconds": 0.23385213599999588,
+    "baseline_time_to_completion_seconds": 1.573551633999955,
+    "model_quality_canary_ok": false,
+    "model_quality_canary_answer_found": false,
+    "model_quality_canary_expected_answer": "cachet-green",
+    "model_quality_canary_output_text_prefix": "\\n\\n\\n\\n\\n\\n\\n the\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n\\n",
+    "model_quality_canary_prompt_tokens": 17,
+    "model_quality_canary_server_usage_prompt_tokens": 36,
+    "server_cached_token_validation": "positive_generated_prefix_cache_hit_but_live_quality_and_post_check_canary_failed"
+  },
+  "related_diagnostic": {
+    "canary_first_run_id": 808580153752981,
+    "canary_first_result": "model-quality canary passed when run before cache/baseline checks, but that ordering perturbed cache-arm validation"
+  },
+  "blocker": "PR #486 fixed the canary ordering so the cache-arm request now reports 175 cached tokens for the 175-token generated handoff prefix, and Cachet hydrated all expected SGLang pages through the live custom_params request path. The run is still not a publishable SGLang benchmark because baseline and cache live quality returned identical repeated filler output, and the model-quality canary failed when run after cache/baseline checks. A previous canary-first diagnostic passed the canary before perturbing cache validation, so the remaining blocker appears to be SGLang/Qwen generation quality or prefix-cache state/order after live checks, not Cachet handoff hydration."
+}
