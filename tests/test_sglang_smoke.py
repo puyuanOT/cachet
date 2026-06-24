@@ -7,6 +7,7 @@ from types import ModuleType
 import pytest
 
 import document_kv_cache.sglang_smoke as public_sglang_smoke
+from document_kv_cache.benchmark_runner import BenchmarkGeneration
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
@@ -40,11 +41,13 @@ from document_kv_cache.sglang_smoke import (
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SERVED_MODEL_NAME,
     SGLangLiveHandoffGenerationConfig,
+    SGLANG_QUALITY_CANARY_ANSWER,
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
     SGLANG_VERSION,
     SGLangSmokeBenchmarkConfig,
     build_metadata,
+    build_sglang_quality_canary_request,
     build_sglang_hicache_provider_probe_record,
     build_sglang_server_args,
     dependency_constraints,
@@ -55,6 +58,7 @@ from document_kv_cache.sglang_smoke import (
     prepare_generated_live_handoff,
     require_sglang_cache_hit,
     run_live_checks,
+    run_sglang_quality_canary,
     sglang_cache_hit_validation_record,
     sglang_cached_token_counts,
     sglang_prefill_token_counts,
@@ -140,6 +144,43 @@ class FakeLiveResult:
                 "server_usage_prompt_tokens_present": "true",
             }
         return record
+
+
+class FakeCanaryEngine:
+    def __init__(self, output_text: str | None = None) -> None:
+        self.output_text = (
+            f"The token is {SGLANG_QUALITY_CANARY_ANSWER}."
+            if output_text is None
+            else output_text
+        )
+        self.requests = []
+
+    def generate(self, request):
+        self.requests.append(request)
+        return BenchmarkGeneration(
+            output_text=self.output_text,
+            prompt_tokens=7,
+            completion_tokens=3,
+            ttft_seconds=0.1,
+            time_to_completion_seconds=0.2,
+            metadata={
+                "server": "fake-canary",
+                "prompt_token_source": "server_usage",
+                "request_payload_endpoint": "/v1/chat/completions",
+            },
+        )
+
+
+def fake_canary_record(*, ok: bool = True) -> dict[str, object]:
+    return {
+        "ok": ok,
+        "label": "model_quality_canary",
+        "model_id": CACHET_MODEL_ID,
+        "served_model_name": SERVED_MODEL_NAME,
+        "answer_found": ok,
+        "output_text": SGLANG_QUALITY_CANARY_ANSWER if ok else "wrong",
+        "metadata": {},
+    }
 
 
 class TinyTokenizer:
@@ -1343,6 +1384,58 @@ def test_build_metadata_records_cache_arm_support_for_handoff_smoke(tmp_path):
     assert metadata["document_kv_request_metadata_bridge"] == {"ok": True}
 
 
+def test_sglang_quality_canary_request_uses_baseline_prompt_contract(tmp_path):
+    request = build_sglang_quality_canary_request(
+        model_id=SERVED_MODEL_NAME,
+        hardware_target="aws-g6-l4",
+    )
+
+    assert request.suite_id == "sglang-quality-canary"
+    assert request.model_id == SERVED_MODEL_NAME
+    assert request.arm.uses_cache is False
+    assert request.request_id is None
+    assert request.kv_transfer_params == {}
+    assert SGLANG_QUALITY_CANARY_ANSWER in request.logical_prompt_text
+    assert request.prompt_text == request.logical_prompt_text
+
+
+def test_run_sglang_quality_canary_records_model_sanity_result(tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        baseline_only=True,
+    )
+    engine = FakeCanaryEngine()
+
+    record = run_sglang_quality_canary(config, engine=engine)
+
+    assert record["ok"] is True
+    assert record["model_id"] == CACHET_MODEL_ID
+    assert record["served_model_name"] == SERVED_MODEL_NAME
+    assert record["request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
+    assert record["prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    assert record["expected_answer"] == SGLANG_QUALITY_CANARY_ANSWER
+    assert record["answer_found"] is True
+    assert record["metadata"]["request_payload_endpoint"] == "/v1/chat/completions"
+    assert engine.requests[0].suite_id == "sglang-quality-canary"
+
+
+def test_run_sglang_quality_canary_records_failed_model_sanity_result(tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        baseline_only=True,
+    )
+
+    record = run_sglang_quality_canary(
+        config, engine=FakeCanaryEngine(output_text="wrong token")
+    )
+
+    assert record["ok"] is False
+    assert record["answer_found"] is False
+    assert record["output_text"] == "wrong token"
+
+
 def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     monkeypatch, tmp_path
 ):
@@ -1366,6 +1459,11 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     monkeypatch.setattr(
         public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check
     )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_sglang_quality_canary",
+        lambda live_config: fake_canary_record(),
+    )
 
     record = run_live_checks(config)
 
@@ -1380,6 +1478,7 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     assert seen_configs[0].prompt_text_mode == "logical"
     assert seen_configs[0].request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert record["cache"] is None
+    assert record["model_quality_canary"]["ok"] is True
     assert record["requires_kv_transfer_params"] is False
     assert record["cache_arm_supported"] is False
     assert record["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
@@ -1389,6 +1488,7 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(
     assert record["cache_prefill_log_start_index"] is None
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"] is None
+    assert written["model_quality_canary"]["ok"] is True
     assert written["baseline"]["model_id"] == CACHET_MODEL_ID
     assert written["baseline"]["served_model_name"] == SERVED_MODEL_NAME
 
@@ -1429,6 +1529,11 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     monkeypatch.setattr(
         public_sglang_smoke, "run_openai_compatible_live_check", fake_live_check
     )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_sglang_quality_canary",
+        lambda live_config: fake_canary_record(),
+    )
 
     record = run_live_checks(
         config,
@@ -1467,6 +1572,7 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
         "page-b",
     ]
     assert record["cache"]["arm_id"] == "document_kv_cache"
+    assert record["model_quality_canary"]["ok"] is True
     assert record["baseline"]["model_id"] == CACHET_MODEL_ID
     assert record["cache"]["model_id"] == CACHET_MODEL_ID
     assert record["baseline"]["served_model_name"] == SERVED_MODEL_NAME
@@ -1514,13 +1620,52 @@ def test_run_live_checks_requires_bridge_probe_for_cache_arm(monkeypatch, tmp_pa
             cache_arm=live_config.use_cache_arm,
         ),
     )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_sglang_quality_canary",
+        lambda live_config: fake_canary_record(),
+    )
 
     with pytest.raises(RuntimeError, match="request metadata bridge not verified"):
         run_live_checks(config)
 
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["ok"] is False
+    assert written["model_quality_canary"]["ok"] is True
     assert "request metadata bridge not verified" in written["issues"]
+
+
+def test_run_live_checks_records_model_quality_canary_failure(monkeypatch, tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        baseline_only=True,
+    )
+
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_sglang_quality_canary",
+        lambda live_config: fake_canary_record(ok=False),
+    )
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "run_openai_compatible_live_check",
+        lambda live_config: FakeLiveResult(
+            ok=True,
+            request_id=None,
+            prompt_text_mode=live_config.prompt_text_mode,
+            request_mode=live_config.request_mode,
+            cache_arm=live_config.use_cache_arm,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="model quality canary failed"):
+        run_live_checks(config)
+
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+    assert written["model_quality_canary"]["ok"] is False
+    assert "model quality canary failed" in written["issues"]
 
 
 def test_sglang_cache_hit_validation_reads_cache_arm_cached_tokens(tmp_path):

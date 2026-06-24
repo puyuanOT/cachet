@@ -22,11 +22,15 @@ import urllib.error
 import urllib.request
 
 from document_kv_cache.benchmark_handoffs import load_benchmark_kv_chunk_generator
-from document_kv_cache.benchmark_runner import BenchmarkEngineRequest
+from document_kv_cache.benchmark_runner import BenchmarkEngine, BenchmarkEngineRequest
 from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    BenchmarkExample,
+    BenchmarkPromptParts,
+    answer_found,
+    baseline_prefill_arm,
     benchmark_cache_request,
     benchmark_cache_source_document,
     validate_v1_hardware_target,
@@ -52,6 +56,8 @@ from document_kv_cache.model_profiles import (
     layout_for_model,
 )
 from document_kv_cache.openai_compatible import (
+    OpenAICompatibleCompletionEngine,
+    OpenAICompatibleEngineConfig,
     OpenAICompatibleRequestMode,
     PromptTextMode,
 )
@@ -107,6 +113,13 @@ DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY = {
     "reasoning_effort": "none",
     "chat_template_kwargs": dict(SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS),
 }
+SGLANG_QUALITY_CANARY_ANSWER = "cachet-green"
+SGLANG_QUALITY_CANARY_SYSTEM_PROMPT = (
+    "You are a strict benchmark canary. Return only the requested token."
+)
+SGLANG_QUALITY_CANARY_USER_PROMPT = (
+    f"Reply with exactly this token: {SGLANG_QUALITY_CANARY_ANSWER}"
+)
 SGLANG_ATTENTION_BACKEND_CHOICES = (
     "triton",
     "torch_native",
@@ -165,6 +178,7 @@ __all__ = [
     "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE",
     "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE",
     "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY",
+    "SGLANG_QUALITY_CANARY_ANSWER",
     "SGLANG_ATTENTION_BACKEND_CHOICES",
     "SGLANG_SAMPLING_BACKEND_CHOICES",
     "SGLANG_DETERMINISTIC_ATTENTION_BACKEND_CHOICES",
@@ -176,6 +190,7 @@ __all__ = [
     "SGLangLiveHandoffGenerationConfig",
     "SGLangSmokeBenchmarkConfig",
     "build_metadata",
+    "build_sglang_quality_canary_request",
     "build_sglang_hicache_provider_probe_record",
     "build_sglang_server_args",
     "dependency_constraints",
@@ -186,6 +201,7 @@ __all__ = [
     "prepare_generated_live_handoff",
     "release_live_handoff_generation_resources",
     "require_sglang_cache_hit",
+    "run_sglang_quality_canary",
     "run_sglang_live_smoke",
     "sglang_cache_hit_validation_record",
     "sglang_cached_token_counts",
@@ -1433,6 +1449,7 @@ def run_live_checks(
     *,
     import_probe_record: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
+    model_quality_canary = run_sglang_quality_canary(config)
     cache_record: dict[str, object] | None = None
     cache_prefill_log_start_index: int | None = None
     if not config.baseline_only:
@@ -1483,6 +1500,8 @@ def run_live_checks(
     baseline_record["label"] = "baseline_prefill"
 
     issues = []
+    if model_quality_canary.get("ok") is not True:
+        issues.append("model quality canary failed")
     if baseline_record.get("ok") is not True:
         issues.append("baseline live check failed")
     if not config.baseline_only and (
@@ -1528,6 +1547,7 @@ def run_live_checks(
             config.live_check_extra_body
         ),
         "cache_prefill_log_start_index": cache_prefill_log_start_index,
+        "model_quality_canary": model_quality_canary,
         "baseline": baseline_record,
         "cache": cache_record,
         "issues": issues,
@@ -1789,6 +1809,111 @@ def _nonnegative_int(value: object) -> int | None:
 def _record_logical_and_served_model_ids(record: dict[str, object]) -> None:
     record["served_model_name"] = SERVED_MODEL_NAME
     record["model_id"] = CACHET_MODEL_ID
+
+
+def build_sglang_quality_canary_request(
+    *,
+    model_id: str = SERVED_MODEL_NAME,
+    hardware_target: str = DEFAULT_HARDWARE_TARGET,
+) -> BenchmarkEngineRequest:
+    """Build a non-cache model-quality canary request for SGLang smoke runs."""
+
+    example = BenchmarkExample(
+        example_id="sglang-quality-canary",
+        dataset="niah",
+        documents=(
+            SourceDocument.from_text(
+                document_id="sglang-quality-canary",
+                text="This placeholder document is not needed for the canary.",
+            ),
+        ),
+        query=SGLANG_QUALITY_CANARY_USER_PROMPT,
+        expected_answer=SGLANG_QUALITY_CANARY_ANSWER,
+    )
+    return BenchmarkEngineRequest(
+        suite_id="sglang-quality-canary",
+        model_id=model_id,
+        hardware_target=hardware_target,
+        example=example,
+        arm=baseline_prefill_arm(),
+        prompt_parts=BenchmarkPromptParts(
+            system_prompt=SGLANG_QUALITY_CANARY_SYSTEM_PROMPT,
+            document_context="",
+            user_prompt=SGLANG_QUALITY_CANARY_USER_PROMPT,
+        ),
+    )
+
+
+def run_sglang_quality_canary(
+    config: SGLangSmokeBenchmarkConfig,
+    *,
+    engine: BenchmarkEngine | None = None,
+) -> dict[str, object]:
+    """Check whether the served SGLang model can answer a tiny prompt at all."""
+
+    request = build_sglang_quality_canary_request(
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+    )
+    active_engine = engine or OpenAICompatibleCompletionEngine(
+        OpenAICompatibleEngineConfig(
+            base_url=config.server_base_url,
+            model_id=SERVED_MODEL_NAME,
+            timeout_seconds=config.timeout_seconds,
+            max_tokens=config.max_tokens,
+            temperature=config.live_check_temperature,
+            stream=config.stream,
+            prompt_token_accounting="server_usage",
+            request_mode=config.live_check_request_mode,
+            extra_body=config.live_check_extra_body,
+        ),
+        chat_messages_factory=(
+            _sglang_quality_canary_chat_messages
+            if config.live_check_request_mode == "chat"
+            else None
+        ),
+    )
+    generation = active_engine.generate(request)
+    found = answer_found(generation.output_text, SGLANG_QUALITY_CANARY_ANSWER)
+    record: dict[str, object] = {
+        "ok": bool(generation.output_text.strip()) and found,
+        "suite_id": request.suite_id,
+        "label": "model_quality_canary",
+        "model_id": CACHET_MODEL_ID,
+        "served_model_name": SERVED_MODEL_NAME,
+        "hardware_target": request.hardware_target,
+        "dataset": request.example.dataset,
+        "arm_id": request.arm.arm_id,
+        "request_id": request.request_id,
+        "prompt_text_mode": "logical",
+        "request_mode": config.live_check_request_mode,
+        "prompt_format": config.live_check_prompt_format,
+        "kv_transfer_params_present": False,
+        "kv_transfer_param_keys": [],
+        "logical_prompt_chars": len(request.logical_prompt_text),
+        "runtime_prompt_chars": len(request.runtime_prompt_text),
+        "prompt_tokens": generation.prompt_tokens,
+        "prompt_token_source": generation.metadata.get(
+            "prompt_token_source", "unknown"
+        ),
+        "completion_tokens": generation.completion_tokens,
+        "ttft_seconds": generation.ttft_seconds,
+        "time_to_completion_seconds": generation.time_to_completion_seconds,
+        "expected_answer": SGLANG_QUALITY_CANARY_ANSWER,
+        "answer_found": found,
+        "output_text": generation.output_text,
+        "metadata": dict(generation.metadata),
+    }
+    return record
+
+
+def _sglang_quality_canary_chat_messages(
+    request: BenchmarkEngineRequest,
+) -> tuple[dict[str, str], ...]:
+    return (
+        {"role": "system", "content": SGLANG_QUALITY_CANARY_SYSTEM_PROMPT},
+        {"role": "user", "content": request.prompt_parts.user_prompt},
+    )
 
 
 def build_sglang_server_args(
