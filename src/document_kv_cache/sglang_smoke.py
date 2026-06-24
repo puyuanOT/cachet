@@ -9,6 +9,7 @@ import gc
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -75,6 +76,7 @@ DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
 )
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
+SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
 SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
     "SGLang handoff-backed live smoke requires handoff_json or handoff_record "
     "plus explicit sglang_hicache_page_keys metadata so Cachet can bind the "
@@ -115,7 +117,10 @@ __all__ = [
     "parse_args",
     "prepare_generated_live_handoff",
     "release_live_handoff_generation_resources",
+    "require_sglang_cache_hit",
     "run_sglang_live_smoke",
+    "sglang_cache_hit_validation_record",
+    "sglang_cached_token_counts",
     "sglang_hicache_config_for_smoke",
     "sglang_live_kv_transfer_params",
     "write_json",
@@ -180,7 +185,7 @@ class SGLangSmokeBenchmarkConfig:
     stream: bool = True
     package_install_spec: str | None = None
     baseline_only: bool = False
-    cache_prompt_text_mode: PromptTextMode = "runtime"
+    cache_prompt_text_mode: PromptTextMode = "logical"
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
@@ -377,7 +382,8 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
             timeout_seconds=runtime_config.server_start_timeout_seconds,
         )
         copy_file_if_exists(runtime_config.server_log_path, runtime_config.server_log_copy_path)
-        run_live_checks(runtime_config, import_probe_record=import_probe_record)
+        live_record = run_live_checks(runtime_config, import_probe_record=import_probe_record)
+        require_sglang_cache_hit(runtime_config, live_record)
     finally:
         terminate_process(server)
         copy_file_if_exists(runtime_config.server_log_path, runtime_config.server_log_copy_path)
@@ -836,22 +842,10 @@ def run_live_checks(
     *,
     import_probe_record: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
-    baseline = run_openai_compatible_live_check(
-        LiveServerCheckConfig(
-            base_url=config.server_base_url,
-            model_id=SERVED_MODEL_NAME,
-            hardware_target=config.hardware_target,
-            max_tokens=config.max_tokens,
-            timeout_seconds=config.timeout_seconds,
-            stream=config.stream,
-            prompt_token_accounting="server_usage",
-        )
-    )
-    baseline_record = baseline.to_record()
-    _record_logical_and_served_model_ids(baseline_record)
-    baseline_record["label"] = "baseline_prefill"
     cache_record: dict[str, object] | None = None
     if not config.baseline_only:
+        # Run the cache arm first so SGLang's ordinary prefix cache cannot be
+        # warmed by the baseline before cache-hit validation reads server logs.
         cache = run_openai_compatible_live_check(
             LiveServerCheckConfig(
                 base_url=config.server_base_url,
@@ -870,6 +864,20 @@ def run_live_checks(
         cache_record = cache.to_record()
         _record_logical_and_served_model_ids(cache_record)
         cache_record["label"] = "document_kv_cache"
+    baseline = run_openai_compatible_live_check(
+        LiveServerCheckConfig(
+            base_url=config.server_base_url,
+            model_id=SERVED_MODEL_NAME,
+            hardware_target=config.hardware_target,
+            max_tokens=config.max_tokens,
+            timeout_seconds=config.timeout_seconds,
+            stream=config.stream,
+            prompt_token_accounting="server_usage",
+        )
+    )
+    baseline_record = baseline.to_record()
+    _record_logical_and_served_model_ids(baseline_record)
+    baseline_record["label"] = "baseline_prefill"
 
     issues = []
     if baseline_record.get("ok") is not True:
@@ -904,6 +912,68 @@ def run_live_checks(
     if issues:
         raise RuntimeError(f"SGLang live smoke failed: {'; '.join(issues)}")
     return record
+
+
+def require_sglang_cache_hit(
+    config: SGLangSmokeBenchmarkConfig,
+    record: Mapping[str, object],
+) -> dict[str, object]:
+    """Require SGLang to report non-zero cached tokens for handoff-backed smoke."""
+
+    if config.baseline_only:
+        return dict(record)
+    validation = sglang_cache_hit_validation_record(config.server_log_path)
+    updated = dict(record)
+    issues = list(updated.get("issues") or [])
+    issue = validation.get("issue")
+    if issue is not None and issue not in issues:
+        issues.append(str(issue))
+    updated["sglang_cache_hit_validation"] = validation
+    updated["issues"] = issues
+    updated["ok"] = bool(updated.get("ok") is True and validation.get("ok") is True and not issues)
+    write_json(config.live_smoke_output_path, updated)
+    if validation.get("ok") is not True:
+        raise RuntimeError(f"SGLang live smoke failed: {issue}")
+    return updated
+
+
+def sglang_cache_hit_validation_record(server_log_path: Path) -> dict[str, object]:
+    if not server_log_path.exists():
+        return {
+            "ok": False,
+            "server_log_path": str(server_log_path),
+            "cached_token_counts": [],
+            "cache_request_cached_tokens": None,
+            "issue": "SGLang server log missing; cannot verify cache-arm cached tokens",
+        }
+    try:
+        counts = sglang_cached_token_counts(server_log_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return {
+            "ok": False,
+            "server_log_path": str(server_log_path),
+            "cached_token_counts": [],
+            "cache_request_cached_tokens": None,
+            "issue": "SGLang server log unreadable; cannot verify cache-arm cached tokens",
+        }
+    cache_request_cached_tokens = counts[0] if counts else None
+    ok = cache_request_cached_tokens is not None and cache_request_cached_tokens > 0
+    issue = None
+    if cache_request_cached_tokens is None:
+        issue = "SGLang server log did not report cached-token counts"
+    elif cache_request_cached_tokens <= 0:
+        issue = "SGLang cache arm reported zero cached tokens"
+    return {
+        "ok": ok,
+        "server_log_path": str(server_log_path),
+        "cached_token_counts": list(counts),
+        "cache_request_cached_tokens": cache_request_cached_tokens,
+        "issue": issue,
+    }
+
+
+def sglang_cached_token_counts(log_text: str) -> tuple[int, ...]:
+    return tuple(int(match.group(1)) for match in SGLANG_SERVER_CACHED_TOKEN_PATTERN.finditer(log_text))
 
 
 def _record_logical_and_served_model_ids(record: dict[str, object]) -> None:
@@ -1207,7 +1277,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--package-install-spec")
     parser.add_argument("--baseline-only", action="store_true")
-    parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="runtime")
+    parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical")
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")

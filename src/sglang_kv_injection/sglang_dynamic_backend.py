@@ -214,9 +214,14 @@ class DocumentKVHiCachePageProvider:
     ) -> int:
         del extra_info
         key_list = list(keys)
-        hydrated = self._hydrate_request_pages(key_list, document_kv_request_context)
-        if _requires_strict_handoff_binding(document_kv_request_context) and not hydrated:
-            return 0
+        hydrated_count = self._hydrate_request_pages(key_list, document_kv_request_context)
+        if _requires_strict_handoff_binding(document_kv_request_context):
+            if hydrated_count <= 0:
+                return 0
+            for index, key in enumerate(key_list[:hydrated_count]):
+                if not self.exists(key):
+                    return index
+            return hydrated_count
         for index, key in enumerate(key_list):
             if not self.exists(key):
                 return index
@@ -232,20 +237,37 @@ class DocumentKVHiCachePageProvider:
     ) -> list[object | None] | list[bool]:
         del extra_info
         key_list = list(keys)
-        hydrated = self._hydrate_request_pages(key_list, document_kv_request_context)
-        if _requires_strict_handoff_binding(document_kv_request_context) and not hydrated:
+        hydrated_count = self._hydrate_request_pages(key_list, document_kv_request_context)
+        strict_handoff = _requires_strict_handoff_binding(document_kv_request_context)
+        if strict_handoff and hydrated_count <= 0:
             if host_indices is None:
                 return [None] * len(key_list)
             return [False] * len(key_list)
         if host_indices is None:
+            if strict_handoff and hydrated_count < len(key_list):
+                values: list[object | None] = [None] * len(key_list)
+                for index, key in enumerate(key_list[:hydrated_count]):
+                    values[index] = self.get(key)
+                return values
             return [self.get(key) for key in key_list]
+        load_count = hydrated_count if strict_handoff else len(key_list)
         mem_pool_host = self.mem_pool_host
-        if mem_pool_host is None or not _host_indices_cover_pages(host_indices, len(key_list), mem_pool_host):
+        host_indices_cover_pages = (
+            _host_indices_cover_at_least_pages
+            if strict_handoff and load_count < len(key_list)
+            else _host_indices_cover_pages
+        )
+        if mem_pool_host is None or not host_indices_cover_pages(host_indices, load_count, mem_pool_host):
             return [False] * len(key_list)
-        return [
-            _load_host_page(self, key, mem_pool_host, _host_page_offset(host_indices, index, mem_pool_host))
-            for index, key in enumerate(key_list)
-        ]
+        loaded = [False] * len(key_list)
+        for index, key in enumerate(key_list[:load_count]):
+            loaded[index] = _load_host_page(
+                self,
+                key,
+                mem_pool_host,
+                _host_page_offset(host_indices, index, mem_pool_host),
+            )
+        return loaded
 
     def batch_set_v1(
         self,
@@ -333,32 +355,34 @@ class DocumentKVHiCachePageProvider:
         self,
         keys: list[object],
         request_context: DocumentKVHiCacheRequestContext | None,
-    ) -> bool:
+    ) -> int:
         if not keys or request_context is None:
-            return False
-        first_page_index = _sglang_hicache_page_binding_start(keys, request_context)
-        if first_page_index is None:
-            return False
+            return 0
+        binding = _sglang_hicache_page_binding(keys, request_context)
+        if binding is None:
+            return 0
+        first_page_index, key_count = binding
         handoff_plan = self._handoff_plan_for_context(request_context)
         if handoff_plan is None:
-            return False
+            return 0
         plan, payload_uri = handoff_plan
-        if first_page_index + len(keys) > _sglang_hicache_full_page_count(plan):
-            return False
-        if all(self.exists(key) for key in keys):
-            return True
+        if first_page_index + key_count > _sglang_hicache_full_page_count(plan):
+            return 0
+        binding_keys = keys[:key_count]
+        if all(self.exists(key) for key in binding_keys):
+            return key_count
         pages = _sglang_hicache_payload_pages(
             plan,
             read_engine_adapter_payload(payload_uri, expected_bytes=plan.total_bytes),
         )
         if not pages:
-            return False
-        for offset, key in enumerate(keys):
+            return 0
+        for offset, key in enumerate(binding_keys):
             page_index = first_page_index + offset
             if self.exists(key):
                 continue
             self._write_page(key, pages[page_index])
-        return True
+        return key_count
 
     def _handoff_plan_for_context(
         self,
@@ -766,10 +790,10 @@ def _requires_strict_handoff_binding(
     return request_context.handoff_json is not None or request_context.handoff_record is not None
 
 
-def _sglang_hicache_page_binding_start(
+def _sglang_hicache_page_binding(
     keys: list[object],
     request_context: DocumentKVHiCacheRequestContext,
-) -> int | None:
+) -> tuple[int, int] | None:
     expected_page_keys = request_context.sglang_hicache_page_keys
     if not expected_page_keys:
         return None
@@ -778,14 +802,23 @@ def _sglang_hicache_page_binding_start(
         return None
     prefix_keys = request_context.prefix_keys
     first_page_index = len(prefix_keys)
-    end_page_index = first_page_index + len(runtime_keys)
-    if first_page_index > len(expected_page_keys) or end_page_index > len(expected_page_keys):
+    if first_page_index > len(expected_page_keys):
         return None
     if prefix_keys != expected_page_keys[:first_page_index]:
         return None
-    if runtime_keys != expected_page_keys[first_page_index:end_page_index]:
+    available_count = len(expected_page_keys) - first_page_index
+    key_count = min(len(runtime_keys), available_count)
+    if key_count <= 0:
         return None
-    return first_page_index
+    if len(runtime_keys) <= available_count:
+        expected_runtime_keys = expected_page_keys[first_page_index : first_page_index + len(runtime_keys)]
+        if runtime_keys != expected_runtime_keys:
+            return None
+        return first_page_index, len(runtime_keys)
+    expected_runtime_keys = expected_page_keys[first_page_index:]
+    if runtime_keys[:key_count] != expected_runtime_keys:
+        return None
+    return first_page_index, key_count
 
 
 def _runtime_hicache_keys(keys: list[object]) -> tuple[str, ...] | None:
@@ -1282,6 +1315,18 @@ def _host_indices_cover_pages(host_indices: object, page_count: int, host_pool: 
         return int(numel()) == expected
     try:
         return len(host_indices) == expected  # type: ignore[arg-type]
+    except TypeError:
+        return False
+
+
+def _host_indices_cover_at_least_pages(host_indices: object, page_count: int, host_pool: object) -> bool:
+    page_size = int(getattr(host_pool, "page_size", 1) or 1)
+    expected = page_count * page_size
+    numel = getattr(host_indices, "numel", None)
+    if callable(numel):
+        return int(numel()) >= expected
+    try:
+        return len(host_indices) >= expected  # type: ignore[arg-type]
     except TypeError:
         return False
 

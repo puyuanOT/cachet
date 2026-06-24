@@ -115,7 +115,7 @@ class DatabricksSGLangSmokeJobConfig:
     mem_fraction_static: float = 0.85
     stream: bool = True
     baseline_only: bool = False
-    cache_prompt_text_mode: str = "runtime"
+    cache_prompt_text_mode: str = "logical"
     handoff_json: str | None = None
     handoff_record_json: str | None = None
     payload_uri: str | None = None
@@ -423,7 +423,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--mem-fraction-static", type=float, default=0.85)
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--baseline-only", action="store_true")
-    parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="runtime")
+    parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical")
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")

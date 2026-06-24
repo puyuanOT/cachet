@@ -97,10 +97,10 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
             "--mem-fraction-static",
             "0.72",
             "--hardware-target",
-            "aws-g6-l4",
-            "--cache-prompt-text-mode",
-            "runtime",
-            "--no-stream",
+                "aws-g6-l4",
+                "--cache-prompt-text-mode",
+                "logical",
+                "--no-stream",
             "--baseline-only",
             "--hicache-page-store-uri",
             "/local_disk0/cachet/sglang-hicache",
@@ -179,6 +179,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         single_user_name=SINGLE_USER_NAME,
         generate_live_handoff=True,
     )
+    assert default_config.cache_prompt_text_mode == "logical"
     assert default_config.live_handoff_generator_factory == DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
     assert default_config.sglang_hicache_page_size == DEFAULT_SGLANG_HICACHE_PAGE_SIZE
 

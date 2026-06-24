@@ -1028,11 +1028,25 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     sglang_live_smoke_readme = (
         benchmark_root / "sglang" / "2026-06-23-g6-l4-live-handoff-smoke" / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_runtime_suffix_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
             / "sglang"
             / "2026-06-23-g6-l4-live-handoff-smoke"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
+    sglang_runtime_suffix_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
@@ -1113,12 +1127,19 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Native HiCache integration evidence" in sglang_readme
     assert "Failed live handoff smoke" in sglang_readme
     assert "201402713679607" in sglang_readme
+    assert "13763847664432" in sglang_readme
+    assert "suffix-only runtime prompt text" in compact_sglang_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
-    assert "failed generated-handoff live smoke attempt" in compact_snapshot
+    assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
+    assert "failed generated-handoff live smoke attempts" in compact_snapshot
+    assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
     assert "Do not cite this folder as a completed benchmark" in sglang_live_smoke_readme
     assert "colon is reserved for `model:adapter` syntax" in sglang_live_smoke_readme
+    assert "Runtime Suffix Blocker" in sglang_runtime_suffix_readme
+    assert "cache_prompt_text_mode=runtime" in sglang_runtime_suffix_readme
+    assert "positive SGLang cache-hit validation" in sglang_runtime_suffix_readme
     assert sglang_failed_run == {
         "benchmark_result": "not_published",
         "blocker": (
@@ -1158,6 +1179,75 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             "task_key": "document_kv_sglang_smoke",
         },
     }
+    assert sglang_runtime_suffix_failed_run == {
+        "benchmark_result": "not_published",
+        "blocker": (
+            "The generated-handoff smoke cleared SGLang server launch and request-metadata bridge "
+            "validation, but the cache arm used prompt_text_mode=runtime. Stock SGLang HiCache "
+            "needs the logical prefix tokens present to compute prefix page keys, so the suffix-only "
+            "cache request did not answer from the generated handoff prefix."
+        ),
+        "cachet_commit": "425ee36",
+        "databricks_run": {
+            "active_task_key": None,
+            "life_cycle_state": "INTERNAL_ERROR",
+            "result_state": "FAILED",
+            "run_id": 13763847664432,
+            "run_name": "document-kv-sglang-smoke",
+            "run_page_url": (
+                "https://dbc-21120bc8-ecb0.cloud.databricks.com/"
+                "?o=413991477208516#job/296959417583262/run/13763847664432"
+            ),
+            "state_message": (
+                "Task document_kv_sglang_smoke failed with message: "
+                "Workload failed, see run output for details."
+            ),
+            "succeeded": False,
+            "terminal": True,
+        },
+        "failure_type": "sglang_runtime_suffix_missing_prefix_binding",
+        "hardware_target": "aws-g6-l4",
+        "integration_checks": {
+            "generated_live_handoff": True,
+            "generated_live_handoff_page_keys": 150,
+            "live_request_metadata_bridge_ok": True,
+            "sglang_import_probe_ok": True,
+        },
+        "live_handoff_generation": {
+            "backend": "sglang",
+            "cache_prefix_tokens": 150,
+            "ok": True,
+            "sglang_hicache_page_size": 1,
+        },
+        "mode": "generated-live-handoff",
+        "node_type": "g6.8xlarge",
+        "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+        "snapshot_date": "2026-06-23",
+        "spark_version": "15.4.x-gpu-ml-scala2.12",
+        "smoke": {
+            "baseline_answer_found": True,
+            "baseline_ok": True,
+            "baseline_prompt_tokens": 92,
+            "baseline_server_usage_prompt_tokens": 174,
+            "cache_answer_found": False,
+            "cache_ok": False,
+            "cache_prompt_text_mode": "runtime",
+            "cache_prompt_tokens": 19,
+            "cache_runtime_prompt_chars": 131,
+            "cache_server_usage_prompt_tokens": 25,
+            "issues": ["cache-arm live check failed"],
+            "model_id": "qwen3:4b-instruct",
+            "served_model_name": "qwen3-4b-instruct",
+            "server_cached_token_validation": "not_recorded_by_this_run",
+        },
+        "task": {
+            "life_cycle_state": "TERMINATED",
+            "result_state": "FAILED",
+            "run_id": 79214966879931,
+            "state_message": "Workload failed, see run output for details",
+            "task_key": "document_kv_sglang_smoke",
+        },
+    }
     assert "must not be cited as SGLang latency, throughput, or quality benchmark results" in compact_sglang_readme
     assert "948365719597221" in storage_readme
     assert "unity_catalog" in storage_readme
@@ -1172,6 +1262,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "native-engine/README.md",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/failed_run.json",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/README.md",
+        "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/failed_run.json",
+        "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
