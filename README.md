@@ -1382,12 +1382,14 @@ helper generates the synthetic live Cachet handoff and exact SGLang HiCache
 page keys inside the isolated SGLang runtime before starting the server. Manual
 handoff inputs remain supported by passing a validated SGLang handoff plus
 `--sglang-hicache-page-keys-json`. In either non-baseline mode, the smoke runs
-both baseline and handoff-backed cache arms and records decode-time prefix
-binding. After those live checks, it flushes SGLang's in-memory prefix cache
-through `/flush_cache` before running the model-quality canary, so the canary
-tests fresh Qwen3 generation rather than ordinary prefix-cache state left by
-the cache/baseline probes. Use `--no-flush-cache-before-canary` only for
-diagnostics that intentionally compare against the previous ordering.
+a clean baseline first, then flushes SGLang's in-memory prefix cache through
+`/flush_cache` before the handoff-backed cache arm. That keeps baseline quality
+independent while preventing ordinary prefix-cache state from warming the
+cache-hit validation. The smoke flushes again before the model-quality canary,
+so the canary tests fresh Qwen3 generation rather than prefix-cache state left
+by the live probes. Use `--no-flush-cache-before-cache-arm` or
+`--no-flush-cache-before-canary` only for diagnostics that intentionally compare
+against previous ordering.
 
 ```bash
 python -m document_kv_cache.sglang_smoke \

@@ -105,6 +105,7 @@ DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
 DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE: OpenAICompatibleRequestMode = "chat"
 DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.0
+DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM = True
 DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY = True
 DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS = 30.0
 SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS = {
@@ -180,6 +181,7 @@ __all__ = [
     "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE",
     "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE",
     "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY",
+    "DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM",
     "DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY",
     "DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS",
     "SGLANG_QUALITY_CANARY_ANSWER",
@@ -303,6 +305,7 @@ class SGLangSmokeBenchmarkConfig:
             field_name="live_check_extra_body",
         )
     )
+    flush_cache_before_cache_arm: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM
     flush_cache_before_canary: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
     flush_cache_timeout_seconds: float = DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
     handoff_json: str | None = None
@@ -415,6 +418,8 @@ class SGLangSmokeBenchmarkConfig:
         live_check_extra_body = _json_object_copy(
             self.live_check_extra_body, field_name="live_check_extra_body"
         )
+        if type(self.flush_cache_before_cache_arm) is not bool:
+            raise ValueError("flush_cache_before_cache_arm must be a boolean")
         if type(self.flush_cache_before_canary) is not bool:
             raise ValueError("flush_cache_before_canary must be a boolean")
         if (
@@ -687,6 +692,7 @@ def build_metadata(
         "live_check_chat_template_kwargs": _sglang_live_check_chat_template_kwargs(
             config.live_check_extra_body
         ),
+        "flush_cache_before_cache_arm": config.flush_cache_before_cache_arm,
         "flush_cache_before_canary": config.flush_cache_before_canary,
         "flush_cache_timeout_seconds": config.flush_cache_timeout_seconds,
         "kv_transfer_params_transport": "custom_params",
@@ -1470,10 +1476,36 @@ def run_live_checks(
     import_probe_record: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     cache_record: dict[str, object] | None = None
+    cache_arm_cache_flush: dict[str, object] | None = None
     cache_prefill_log_start_index: int | None = None
+    baseline = run_openai_compatible_live_check(
+        LiveServerCheckConfig(
+            base_url=config.server_base_url,
+            model_id=SERVED_MODEL_NAME,
+            hardware_target=config.hardware_target,
+            max_tokens=config.max_tokens,
+            timeout_seconds=config.timeout_seconds,
+            stream=config.stream,
+            prompt_format=config.live_check_prompt_format,
+            request_mode=config.live_check_request_mode,
+            temperature=config.live_check_temperature,
+            prompt_token_accounting="server_usage",
+            extra_body=config.live_check_extra_body,
+        )
+    )
+    baseline_record = baseline.to_record()
+    _record_logical_and_served_model_ids(baseline_record)
+    baseline_record["label"] = "baseline_prefill"
     if not config.baseline_only:
-        # Run the cache arm first so SGLang's ordinary prefix cache cannot be
-        # warmed by the baseline before cache-hit validation reads server logs.
+        # Run a clean baseline first, then flush ordinary prefix-cache state so
+        # cache-hit validation still measures Cachet-backed external pages.
+        cache_arm_cache_flush = (
+            flush_sglang_cache(config, reason="before_cache_arm")
+            if config.flush_cache_before_cache_arm
+            else skipped_sglang_cache_flush(
+                reason="before_cache_arm", skip_reason="disabled"
+            )
+        )
         cache_prefill_log_start_index = _server_prefill_log_count(
             config.server_log_path
         )
@@ -1499,38 +1531,18 @@ def run_live_checks(
         cache_record = cache.to_record()
         _record_logical_and_served_model_ids(cache_record)
         cache_record["label"] = "document_kv_cache"
-    baseline = run_openai_compatible_live_check(
-        LiveServerCheckConfig(
-            base_url=config.server_base_url,
-            model_id=SERVED_MODEL_NAME,
-            hardware_target=config.hardware_target,
-            max_tokens=config.max_tokens,
-            timeout_seconds=config.timeout_seconds,
-            stream=config.stream,
-            prompt_format=config.live_check_prompt_format,
-            request_mode=config.live_check_request_mode,
-            temperature=config.live_check_temperature,
-            prompt_token_accounting="server_usage",
-            extra_body=config.live_check_extra_body,
-        )
-    )
-    baseline_record = baseline.to_record()
-    _record_logical_and_served_model_ids(baseline_record)
-    baseline_record["label"] = "baseline_prefill"
     canary_cache_flush = (
         flush_sglang_cache(config, reason="before_model_quality_canary")
         if config.flush_cache_before_canary
-        else {
-            "ok": None,
-            "reason": "before_model_quality_canary",
-            "endpoint": "/flush_cache",
-            "skipped": True,
-            "skip_reason": "disabled",
-        }
+        else skipped_sglang_cache_flush(
+            reason="before_model_quality_canary", skip_reason="disabled"
+        )
     )
     model_quality_canary = run_sglang_quality_canary(config)
 
     issues = []
+    if cache_arm_cache_flush is not None and cache_arm_cache_flush.get("ok") is False:
+        issues.append("cache-arm cache flush failed")
     if canary_cache_flush.get("ok") is False:
         issues.append("model quality canary cache flush failed")
     if model_quality_canary.get("ok") is not True:
@@ -1579,8 +1591,10 @@ def run_live_checks(
         "live_check_chat_template_kwargs": _sglang_live_check_chat_template_kwargs(
             config.live_check_extra_body
         ),
+        "flush_cache_before_cache_arm": config.flush_cache_before_cache_arm,
         "flush_cache_before_canary": config.flush_cache_before_canary,
         "flush_cache_timeout_seconds": config.flush_cache_timeout_seconds,
+        "cache_arm_cache_flush": cache_arm_cache_flush,
         "canary_cache_flush": canary_cache_flush,
         "cache_prefill_log_start_index": cache_prefill_log_start_index,
         "model_quality_canary": model_quality_canary,
@@ -1845,6 +1859,20 @@ def _nonnegative_int(value: object) -> int | None:
 def _record_logical_and_served_model_ids(record: dict[str, object]) -> None:
     record["served_model_name"] = SERVED_MODEL_NAME
     record["model_id"] = CACHET_MODEL_ID
+
+
+def skipped_sglang_cache_flush(
+    *,
+    reason: str,
+    skip_reason: str,
+) -> dict[str, object]:
+    return {
+        "ok": None,
+        "reason": reason,
+        "endpoint": "/flush_cache",
+        "skipped": True,
+        "skip_reason": skip_reason,
+    }
 
 
 def flush_sglang_cache(
@@ -2391,6 +2419,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--no-flush-cache-before-cache-arm",
+        action="store_true",
+        help="Do not flush SGLang's in-memory prefix cache between baseline and cache-arm live checks.",
+    )
+    parser.add_argument(
         "--no-flush-cache-before-canary",
         action="store_true",
         help="Do not flush SGLang's in-memory prefix cache before the model-quality canary.",
@@ -2399,7 +2432,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         "--flush-cache-timeout-seconds",
         type=float,
         default=DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
-        help="SGLang /flush_cache idle-wait and HTTP timeout before the model-quality canary.",
+        help="SGLang /flush_cache idle-wait and HTTP timeout before cache-arm and canary checks.",
     )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
@@ -2473,6 +2506,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
             if live_check_extra_body is not None
             else DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
         ),
+        flush_cache_before_cache_arm=not args.no_flush_cache_before_cache_arm,
         flush_cache_before_canary=not args.no_flush_cache_before_canary,
         flush_cache_timeout_seconds=args.flush_cache_timeout_seconds,
         handoff_json=args.handoff_json,

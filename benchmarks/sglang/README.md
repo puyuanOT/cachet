@@ -112,13 +112,16 @@ and cache arms. The previous run moved the model-quality canary after the live
 cache and baseline checks; that restored full cache-arm validation, but the
 canary also failed quality. The current run flushes SGLang's in-memory prefix
 cache before the canary; that flush returned HTTP 200, the canary ran with zero
-cached tokens, and it produced `cachet-green`. A publishable live run must
-still make the Qwen3/SGLang request pass baseline and cache-arm quality while
-hydrating matching generated page-key chunks and recording positive SGLang
-cached-token validation. That validation must identify the cache-arm request
-itself by its prompt-token total, rather than warmup requests or a later
-baseline request that benefits from ordinary SGLang prefix-cache reuse. Manual
-handoff inputs remain supported when callers already have a validated SGLang handoff plus
+cached tokens, and it produced `cachet-green`. The next smoke path runs the
+clean baseline first, then flushes `/flush_cache` before the cache arm so the
+baseline result is independent and cache-hit validation is not warmed by
+ordinary SGLang prefix-cache state. A publishable live run must still make the
+Qwen3/SGLang request pass baseline and cache-arm quality while hydrating
+matching generated page-key chunks and recording positive SGLang cached-token
+validation. That validation must identify the cache-arm request itself by its
+prompt-token total, rather than warmup requests or a later baseline request
+that benefits from ordinary SGLang prefix-cache reuse. Manual handoff inputs
+remain supported when callers already have a validated SGLang handoff plus
 `document_kv.sglang_hicache_page_keys` metadata. This report remains pending
 until a Databricks g6/L4 or g5/A10G run writes `sglang-live-smoke.json` with a
 passing handoff-backed cache arm.
@@ -140,7 +143,7 @@ Treat SGLang benchmark publication as pending until all of these are true:
 - The cache-arm request reports positive SGLang cached-token validation.
 - The live prompt format is valid for Qwen3/SGLang and passes the baseline and
   cache-arm quality checks.
-- The model-quality canary passes after the cache and baseline live checks.
+- The model-quality canary passes after the baseline and cache-arm live checks.
 - The cached-token validation is matched to the cache-arm request, not to server
   warmup traffic or later baseline prefix-cache reuse.
 - Latency, throughput, and quality measurements are recorded with the same

@@ -22,6 +22,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
+    DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM,
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
@@ -223,6 +224,10 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert default_config.sglang_sampling_backend is None
     assert default_config.sglang_enable_deterministic_inference is False
     assert (
+        default_config.flush_cache_before_cache_arm
+        is DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CACHE_ARM
+    )
+    assert (
         default_config.flush_cache_before_canary
         is DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
     )
@@ -249,6 +254,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         sglang_attention_backend="triton",
         sglang_sampling_backend="pytorch",
         sglang_enable_deterministic_inference=True,
+        flush_cache_before_cache_arm=False,
         flush_cache_before_canary=False,
         flush_cache_timeout_seconds=12.5,
         spark_env_vars={"CACHET_TRANSFORMERS_DEVICE": "cuda"},
@@ -276,6 +282,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert parameters[parameters.index("--sglang-attention-backend") + 1] == "triton"
     assert parameters[parameters.index("--sglang-sampling-backend") + 1] == "pytorch"
     assert "--sglang-enable-deterministic-inference" in parameters
+    assert "--no-flush-cache-before-cache-arm" in parameters
     assert "--no-flush-cache-before-canary" in parameters
     assert parameters[parameters.index("--flush-cache-timeout-seconds") + 1] == "12.5"
     assert parameters[parameters.index("--live-handoff-output-dir") + 1].endswith(
@@ -329,6 +336,10 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         (
             {"live_check_extra_body_json": "{", "baseline_only": True},
             "live_check_extra_body_json must decode",
+        ),
+        (
+            {"flush_cache_before_cache_arm": "yes", "baseline_only": True},
+            "flush_cache_before_cache_arm",
         ),
         (
             {"flush_cache_before_canary": "yes", "baseline_only": True},
