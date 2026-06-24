@@ -3,8 +3,8 @@
     "pr-evidence/current-benchmark-results-index/pr-evidence.json": {
       "gpt55_review_completed": true,
       "gpt55_review_findings_resolved": true,
-      "gpt55_review_outcome": "clean",
-      "gpt55_review_summary": "GPT-5.5 reviewer approved the final PR #511 diff with no findings, including the current benchmark index and this self-contained PR-evidence sidecar.",
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found that the initial PR evidence sidecar prematurely claimed a clean completed review before any PR review/comment existed. The finding was resolved by updating this sidecar to record the actual findings-resolved outcome and by posting the reviewer finding and resolution to PR #511.",
       "issues": [],
       "ok": true,
       "pull_request_number": 511,
