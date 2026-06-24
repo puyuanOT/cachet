@@ -5,6 +5,7 @@ import cachet.dependency_freshness as cachet_dependency_freshness
 import document_kv_cache.dependency_freshness as public_dependency_freshness
 from document_kv_cache.dependency_freshness import (
     DEPENDENCY_FRESHNESS_RECORD_TYPE,
+    dependency_freshness_record_issues,
     dependency_freshness_to_record,
     evaluate_dependency_freshness,
     pyproject_direct_dependency_pins,
@@ -14,6 +15,13 @@ from document_kv_cache.dependency_freshness import (
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+CURRENT_EVIDENCE_PATH = (
+    REPO_ROOT
+    / "evidence"
+    / "dependency-freshness"
+    / "current"
+    / "dependency-freshness-evidence.json"
+)
 CURRENT_LATEST_VERSIONS = {
     "poetry-core": "2.4.1",
     "packaging": "26.2",
@@ -98,6 +106,7 @@ def test_dependency_freshness_accepts_current_repo_direct_pins_with_explicit_run
         }
     ]
     assert record["issues"] == []
+    assert dependency_freshness_record_issues(record) == ()
 
 
 def test_dependency_freshness_rejects_stale_direct_pins_and_unallowed_runtime_pins(tmp_path):
@@ -127,8 +136,62 @@ dependencies = ["packaging>=26"]
     assert "direct dependency poetry-core pinned to 2.4.0, latest is 2.4.1" in evidence.issues
     assert (
         "runtime dependency sglang pinned to 0.5.10.post1, latest is 0.5.13.post1, "
-        "and no allow reason was provided"
+        "and no valid allow reason was provided"
     ) in evidence.issues
+
+
+def test_dependency_freshness_rejects_weak_allow_reasons(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[build-system]
+requires = ["poetry-core==2.4.1"]
+build-backend = "poetry.core.masonry.api"
+""",
+        encoding="utf-8",
+    )
+
+    evidence = evaluate_dependency_freshness(
+        pyproject_path=pyproject,
+        latest_versions={
+            "poetry-core": "2.4.1",
+            "sglang": "0.5.13.post1",
+            "protobuf": "7.35.1",
+        },
+        runtime_pins=(("test-runtime", "sglang==0.5.10.post1"),),
+        allowed_runtime_pins={"sglang": "temporary hold"},
+        transitive_outdated={"protobuf": ("6.33.6", "7.35.1")},
+        allowed_transitive_outdated={"protobuf": "temporary hold"},
+    )
+    record = dependency_freshness_to_record(evidence)
+
+    assert not evidence.ok
+    assert (
+        "runtime dependency sglang pinned to 0.5.10.post1, latest is 0.5.13.post1, "
+        "and no valid allow reason was provided"
+    ) in evidence.issues
+    assert (
+        "transitive dependency protobuf locked to 6.33.6, latest is 7.35.1, "
+        "and no valid allow reason was provided"
+    ) in evidence.issues
+    assert "runtime_pins[0].allow_reason" in " ".join(dependency_freshness_record_issues(record))
+    assert "transitive_outdated[0].reason" in " ".join(dependency_freshness_record_issues(record))
+
+
+def test_committed_dependency_freshness_evidence_matches_generator():
+    committed_record = json.loads(CURRENT_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    evidence = evaluate_dependency_freshness(
+        pyproject_path=REPO_ROOT / "pyproject.toml",
+        latest_versions=CURRENT_LATEST_VERSIONS,
+        allowed_runtime_pins=CURRENT_RUNTIME_PIN_ALLOWANCES,
+        transitive_outdated={"protobuf": ("6.33.6", "7.35.1")},
+        allowed_transitive_outdated=CURRENT_TRANSITIVE_ALLOWANCES,
+    )
+    generated_record = dependency_freshness_to_record(evidence)
+    generated_record["pyproject_path"] = "pyproject.toml"
+
+    assert committed_record == generated_record
+    assert dependency_freshness_record_issues(committed_record) == ()
 
 
 def test_dependency_freshness_cli_and_writer_emit_records(tmp_path, capsys):

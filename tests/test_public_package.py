@@ -176,6 +176,7 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'DirectDependencyPin',
     'RuntimeDependencyPin',
     'TransitiveDependencyDrift',
+    'dependency_freshness_record_issues',
     'dependency_freshness_to_record',
     'evaluate_dependency_freshness',
     'pyproject_direct_dependency_pins',

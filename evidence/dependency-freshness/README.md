@@ -6,4 +6,3 @@ separate from `benchmarks/`, which holds benchmark reports, and from
 
 Use [`current/`](current/) for the latest generated
 `document_kv.dependency_freshness.v1` record.
-

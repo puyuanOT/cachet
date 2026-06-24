@@ -202,6 +202,7 @@ from document_kv_cache.dependency_freshness import (
     DirectDependencyPin as DirectDependencyPin,
     RuntimeDependencyPin as RuntimeDependencyPin,
     TransitiveDependencyDrift as TransitiveDependencyDrift,
+    dependency_freshness_record_issues as dependency_freshness_record_issues,
     dependency_freshness_to_record as dependency_freshness_to_record,
     evaluate_dependency_freshness as evaluate_dependency_freshness,
     pyproject_direct_dependency_pins as pyproject_direct_dependency_pins,

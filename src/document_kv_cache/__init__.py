@@ -229,6 +229,7 @@ _DOCUMENT_ROOT_EXPORTS = {
     'DirectDependencyPin': ('document_kv_cache.dependency_freshness', 'DirectDependencyPin'),
     'RuntimeDependencyPin': ('document_kv_cache.dependency_freshness', 'RuntimeDependencyPin'),
     'TransitiveDependencyDrift': ('document_kv_cache.dependency_freshness', 'TransitiveDependencyDrift'),
+    'dependency_freshness_record_issues': ('document_kv_cache.dependency_freshness', 'dependency_freshness_record_issues'),
     'dependency_freshness_to_record': ('document_kv_cache.dependency_freshness', 'dependency_freshness_to_record'),
     'evaluate_dependency_freshness': ('document_kv_cache.dependency_freshness', 'evaluate_dependency_freshness'),
     'pyproject_direct_dependency_pins': ('document_kv_cache.dependency_freshness', 'pyproject_direct_dependency_pins'),

@@ -19,6 +19,49 @@ from document_kv_cache.storage import local_path
 
 
 DEPENDENCY_FRESHNESS_RECORD_TYPE = "document_kv.dependency_freshness.v1"
+_DEPENDENCY_FRESHNESS_RECORD_KEYS = frozenset(
+    {
+        "record_type",
+        "ok",
+        "pyproject_path",
+        "direct_pins",
+        "runtime_pins",
+        "transitive_outdated",
+        "issues",
+    }
+)
+_DIRECT_PIN_RECORD_KEYS = frozenset(
+    {
+        "package",
+        "pinned_version",
+        "latest_version",
+        "source",
+        "current",
+    }
+)
+_RUNTIME_PIN_RECORD_KEYS = frozenset(
+    {
+        "package",
+        "pinned_version",
+        "latest_version",
+        "source",
+        "current",
+        "allowed",
+        "allow_reason",
+    }
+)
+_TRANSITIVE_DRIFT_RECORD_KEYS = frozenset(
+    {
+        "package",
+        "locked_version",
+        "latest_version",
+        "allowed",
+        "reason",
+    }
+)
+_RUNTIME_ALLOW_REASON_CONTEXT_TERMS = ("databricks", "compatib", "runtime", "serving")
+_RUNTIME_ALLOW_REASON_VALIDATION_TERMS = ("validat", "verified", "run", "benchmark", "profile")
+_TRANSITIVE_ALLOW_REASON_TERMS = ("resolver", "resolve", "constraint", "constrain", "requires", "requirement")
 
 __all__ = [
     "DEPENDENCY_FRESHNESS_RECORD_TYPE",
@@ -26,6 +69,7 @@ __all__ = [
     "DirectDependencyPin",
     "RuntimeDependencyPin",
     "TransitiveDependencyDrift",
+    "dependency_freshness_record_issues",
     "dependency_freshness_to_record",
     "evaluate_dependency_freshness",
     "pyproject_direct_dependency_pins",
@@ -76,7 +120,7 @@ class RuntimeDependencyPin:
 
     @property
     def allowed(self) -> bool:
-        return self.current or bool(self.allow_reason)
+        return self.current or _runtime_allow_reason_ok(self.allow_reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,11 +374,123 @@ def _transitive_dependency_drifts(
                 package=package,
                 locked_version=str(locked_version),
                 latest_version=str(latest_version),
-                allowed=bool(reason),
+                allowed=_transitive_allow_reason_ok(reason),
                 reason=reason,
             )
         )
     return tuple(drifts), tuple(issues)
+
+
+def dependency_freshness_record_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return release-blocking issues for a dependency freshness sidecar."""
+
+    if not isinstance(record, Mapping):
+        return ("dependency freshness sidecar must be an object",)
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _DEPENDENCY_FRESHNESS_RECORD_KEYS, "dependency freshness sidecar"))
+    if record.get("record_type") != DEPENDENCY_FRESHNESS_RECORD_TYPE:
+        issues.append(
+            f"dependency freshness sidecar record_type must be {DEPENDENCY_FRESHNESS_RECORD_TYPE!r}"
+        )
+    if record.get("ok") is not True:
+        issues.append("dependency freshness sidecar ok must be true")
+    issues.extend(_required_str_field(record, "pyproject_path", "dependency freshness sidecar"))
+    if record.get("issues") != []:
+        issues.append("dependency freshness sidecar issues must be an empty array")
+
+    direct_pins = record.get("direct_pins")
+    if not _is_json_array(direct_pins) or not direct_pins:
+        issues.append("dependency freshness sidecar direct_pins must be a non-empty array")
+    else:
+        for index, pin in enumerate(direct_pins):
+            issues.extend(_direct_pin_record_issues(pin, index=index))
+
+    runtime_pins = record.get("runtime_pins")
+    if not _is_json_array(runtime_pins) or not runtime_pins:
+        issues.append("dependency freshness sidecar runtime_pins must be a non-empty array")
+    else:
+        for index, pin in enumerate(runtime_pins):
+            issues.extend(_runtime_pin_record_issues(pin, index=index))
+
+    transitive_drifts = record.get("transitive_outdated")
+    if not _is_json_array(transitive_drifts):
+        issues.append("dependency freshness sidecar transitive_outdated must be an array")
+    else:
+        for index, drift in enumerate(transitive_drifts):
+            issues.extend(_transitive_drift_record_issues(drift, index=index))
+    return _dedupe_strings(issues)
+
+
+def _direct_pin_record_issues(record: Any, *, index: int) -> tuple[str, ...]:
+    label = f"dependency freshness sidecar direct_pins[{index}]"
+    if not isinstance(record, Mapping):
+        return (f"{label} must be an object",)
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _DIRECT_PIN_RECORD_KEYS, label))
+    issues.extend(_required_package_field(record, "package", label))
+    issues.extend(_required_str_field(record, "pinned_version", label))
+    issues.extend(_required_str_field(record, "latest_version", label))
+    issues.extend(_required_str_field(record, "source", label))
+    if record.get("current") is not True:
+        issues.append(f"{label}.current must be true")
+    if _string_value(record.get("pinned_version")) and _string_value(record.get("latest_version")):
+        if not _versions_equal(record["pinned_version"], record["latest_version"]):
+            issues.append(f"{label}.pinned_version must match latest_version")
+    return tuple(issues)
+
+
+def _runtime_pin_record_issues(record: Any, *, index: int) -> tuple[str, ...]:
+    label = f"dependency freshness sidecar runtime_pins[{index}]"
+    if not isinstance(record, Mapping):
+        return (f"{label} must be an object",)
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _RUNTIME_PIN_RECORD_KEYS, label))
+    issues.extend(_required_package_field(record, "package", label))
+    issues.extend(_required_str_field(record, "pinned_version", label))
+    issues.extend(_required_str_field(record, "latest_version", label))
+    issues.extend(_required_str_field(record, "source", label))
+    issues.extend(_optional_str_field(record, "allow_reason", label))
+    current = record.get("current")
+    allowed = record.get("allowed")
+    if type(current) is not bool:
+        issues.append(f"{label}.current must be boolean")
+    if allowed is not True:
+        issues.append(f"{label}.allowed must be true")
+    if (
+        current is True
+        and _string_value(record.get("pinned_version"))
+        and _string_value(record.get("latest_version"))
+        and not _versions_equal(record["pinned_version"], record["latest_version"])
+    ):
+        issues.append(f"{label}.current true requires pinned_version to match latest_version")
+    if current is False and not _runtime_allow_reason_ok(str(record.get("allow_reason", ""))):
+        issues.append(
+            f"{label}.allow_reason must mention Databricks, compatibility, or runtime validation context"
+        )
+    return tuple(issues)
+
+
+def _transitive_drift_record_issues(record: Any, *, index: int) -> tuple[str, ...]:
+    label = f"dependency freshness sidecar transitive_outdated[{index}]"
+    if not isinstance(record, Mapping):
+        return (f"{label} must be an object",)
+    issues: list[str] = []
+    issues.extend(_unexpected_keys(record, _TRANSITIVE_DRIFT_RECORD_KEYS, label))
+    issues.extend(_required_package_field(record, "package", label))
+    issues.extend(_required_str_field(record, "locked_version", label))
+    issues.extend(_required_str_field(record, "latest_version", label))
+    issues.extend(_required_str_field(record, "reason", label))
+    if record.get("allowed") is not True:
+        issues.append(f"{label}.allowed must be true")
+    if not _transitive_allow_reason_ok(str(record.get("reason", ""))):
+        issues.append(f"{label}.reason must mention resolver or dependency constraint context")
+    if (
+        _string_value(record.get("locked_version"))
+        and _string_value(record.get("latest_version"))
+        and _versions_equal(record["locked_version"], record["latest_version"])
+    ):
+        issues.append(f"{label}.locked_version must differ from latest_version")
+    return tuple(issues)
 
 
 def _pyproject_requirement_texts(pyproject: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
@@ -398,15 +554,27 @@ def _semantic_issues(
         if not pin.allowed:
             issues.append(
                 f"runtime dependency {pin.package} pinned to {pin.pinned_version}, "
-                f"latest is {pin.latest_version or 'unknown'}, and no allow reason was provided"
+                f"latest is {pin.latest_version or 'unknown'}, and no valid allow reason was provided"
             )
     for drift in transitive_outdated:
         if not drift.allowed:
             issues.append(
                 f"transitive dependency {drift.package} locked to {drift.locked_version}, "
-                f"latest is {drift.latest_version}, and no allow reason was provided"
+                f"latest is {drift.latest_version}, and no valid allow reason was provided"
             )
     return tuple(issues)
+
+
+def _runtime_allow_reason_ok(reason: str) -> bool:
+    text = reason.strip().casefold()
+    return bool(text) and any(term in text for term in _RUNTIME_ALLOW_REASON_CONTEXT_TERMS) and any(
+        term in text for term in _RUNTIME_ALLOW_REASON_VALIDATION_TERMS
+    )
+
+
+def _transitive_allow_reason_ok(reason: str) -> bool:
+    text = reason.strip().casefold()
+    return bool(text) and any(term in text for term in _TRANSITIVE_ALLOW_REASON_TERMS)
 
 
 def _versions_equal(left: str, right: str) -> bool:
@@ -442,6 +610,10 @@ def _string_or_empty(value: Any, field_name: str) -> str:
     return value.strip()
 
 
+def _string_value(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _string_tuple(values: Sequence[str], field_name: str) -> tuple[str, ...]:
     if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
         raise TypeError(f"{field_name} must be a sequence of strings")
@@ -459,6 +631,43 @@ def _dedupe_strings(values: Sequence[str]) -> tuple[str, ...]:
         if value not in deduped:
             deduped.append(value)
     return tuple(deduped)
+
+
+def _is_json_array(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)) and not isinstance(
+        value,
+        Mapping,
+    )
+
+
+def _unexpected_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], label: str) -> tuple[str, ...]:
+    unexpected = sorted(str(key) for key in record.keys() if key not in allowed_keys)
+    if not unexpected:
+        return ()
+    return (f"{label} contains unsupported keys: {', '.join(unexpected)}",)
+
+
+def _required_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    if not _string_value(record.get(field_name)):
+        return (f"{label}.{field_name} must be non-empty",)
+    return ()
+
+
+def _optional_str_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    if field_name in record and not isinstance(record.get(field_name), str):
+        return (f"{label}.{field_name} must be a string",)
+    return ()
+
+
+def _required_package_field(record: Mapping[str, Any], field_name: str, label: str) -> tuple[str, ...]:
+    raw_value = record.get(field_name)
+    if not _string_value(raw_value):
+        return (f"{label}.{field_name} must be non-empty",)
+    try:
+        _normalized_package(raw_value)
+    except ValueError:
+        return (f"{label}.{field_name} must be non-empty",)
+    return ()
 
 
 def _parse_key_value(values: Sequence[str], *, option: str) -> dict[str, str]:

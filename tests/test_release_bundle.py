@@ -20,6 +20,10 @@ from document_kv_cache.databricks_runs import (
     DATABRICKS_RUN_STATUS_RECORD_TYPE,
     DATABRICKS_RUN_SUBMIT_PAYLOAD_RECORD_TYPE,
 )
+from document_kv_cache.dependency_freshness import (
+    DEPENDENCY_FRESHNESS_RECORD_TYPE,
+    dependency_freshness_record_issues,
+)
 from document_kv_cache.databricks_storage_benchmark_job import (
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_PURPOSE,
     DEFAULT_DATABRICKS_STORAGE_BENCHMARK_TASK_KEY,
@@ -377,6 +381,68 @@ def test_build_release_bundle_rejects_invalid_legacy_migration_evidence(tmp_path
             engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
             legacy_migration_evidence_jsons=(migration_evidence,),
             output_dir=tmp_path / "invalid-legacy-migration-bundle",
+        )
+
+
+def test_build_release_bundle_can_include_dependency_freshness(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    dependency_freshness = _write_json(
+        source_dir / "dependency-freshness.json",
+        _dependency_freshness_record(ok=True),
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        dependency_freshness_json=dependency_freshness,
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    artifact = record["artifacts"][-1]
+    assert artifact["role"] == "dependency_freshness"
+    assert artifact["record_type"] == DEPENDENCY_FRESHNESS_RECORD_TYPE
+    assert artifact["bundled_path"] == "dependency_freshness.json"
+    bundled_record = json.loads((bundle_dir / "dependency_freshness.json").read_text(encoding="utf-8"))
+    assert dependency_freshness_record_issues(bundled_record) == ()
+
+
+def test_build_release_bundle_rejects_invalid_dependency_freshness(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    failed_freshness = _write_json(
+        source_dir / "failed-dependency-freshness.json",
+        _dependency_freshness_record(ok=False),
+    )
+
+    with pytest.raises(ValueError, match="dependency freshness sidecar ok must be true"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            dependency_freshness_json=failed_freshness,
+            output_dir=tmp_path / "failed-dependency-freshness-bundle",
+        )
+
+    weak_runtime_reason_record = _dependency_freshness_record(ok=True)
+    weak_runtime_reason_record["runtime_pins"][1]["allow_reason"] = "temporary hold"
+    weak_runtime_reason = _write_json(
+        source_dir / "weak-runtime-reason-dependency-freshness.json",
+        weak_runtime_reason_record,
+    )
+    with pytest.raises(ValueError, match=r"runtime_pins\[1\]\.allow_reason"):
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            dependency_freshness_json=weak_runtime_reason,
+            output_dir=tmp_path / "weak-runtime-reason-dependency-freshness-bundle",
         )
 
 
@@ -1006,6 +1072,7 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "databricks_run_status",
         "package_wheel",
         "pr_evidence",
+        "dependency_freshness",
         "requirements_matrix",
         "github_governance",
         "repository_hygiene",
@@ -1079,7 +1146,7 @@ def test_build_release_bundle_strict_v1_requires_compatibility_status_for_compat
     record = release_bundle_to_record(bundle)
 
     assert record["ok"] is True
-    assert record["artifact_count"] == 24
+    assert record["artifact_count"] == 25
     assert any(artifact["role"] == "compatibility_benchmark" for artifact in record["artifacts"])
     assert any(artifact["role"] == "compatibility_databricks_run_status" for artifact in record["artifacts"])
 
@@ -1100,7 +1167,7 @@ def test_build_release_bundle_strict_v1_requires_compatibility_status_for_compat
     record_with_migration = release_bundle_to_record(bundle_with_migration)
 
     assert record_with_migration["ok"] is True
-    assert record_with_migration["artifact_count"] == 25
+    assert record_with_migration["artifact_count"] == 26
     assert any(
         artifact["role"] == "legacy_migration_evidence"
         for artifact in record_with_migration["artifacts"]
@@ -1200,6 +1267,21 @@ def test_build_release_bundle_strict_v1_requires_requirements_matrix(tmp_path):
         build_release_bundle(
             **{**release_kwargs, "requirements_matrix_md": None},
             output_dir=tmp_path / "strict-missing-requirements-matrix",
+            require_complete_v1=True,
+        )
+
+
+def test_build_release_bundle_strict_v1_requires_dependency_freshness(tmp_path):
+    source_dir = tmp_path / "sources"
+    release_kwargs = _strict_v1_release_bundle_kwargs(
+        source_dir,
+        databricks_run_status_jsons=_strict_v1_databricks_run_status_paths(source_dir),
+    )
+
+    with pytest.raises(ValueError, match="dependency freshness sidecar"):
+        build_release_bundle(
+            **{**release_kwargs, "dependency_freshness_json": None},
+            output_dir=tmp_path / "strict-missing-dependency-freshness",
             require_complete_v1=True,
         )
 
@@ -3438,6 +3520,10 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
         _databricks_run_status_cli_record(succeeded=True, node_type_id="g5.8xlarge"),
     )
     github_governance = _write_json(tmp_path / "github-governance.json", _github_governance_cli_record(ok=True))
+    dependency_freshness = _write_json(
+        tmp_path / "dependency-freshness.json",
+        _dependency_freshness_record(ok=True),
+    )
     native_probe_factories = _write_json(
         tmp_path / "native-probe-factories.json",
         _native_probe_factories_record(),
@@ -3472,6 +3558,8 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
             str(artifacts["sglang_actions"]),
             "--github-governance-json",
             str(github_governance),
+            "--dependency-freshness-json",
+            str(dependency_freshness),
             "--native-probe-factories-json",
             str(native_probe_factories),
             "--output-dir",
@@ -3493,8 +3581,10 @@ def test_public_release_bundle_cli_writes_manifest_and_output_json(tmp_path):
     record = json.loads(output_json.read_text(encoding="utf-8"))
     assert record["artifacts"][1]["role"] == "compatibility_benchmark"
     assert record["artifacts"][1]["record_type"] == BENCHMARK_RUN_RECORD_TYPE
-    assert record["artifacts"][-3]["role"] == "compatibility_databricks_run_status"
-    assert record["artifacts"][-3]["record_type"] == DATABRICKS_RUN_STATUS_RECORD_TYPE
+    assert record["artifacts"][-4]["role"] == "compatibility_databricks_run_status"
+    assert record["artifacts"][-4]["record_type"] == DATABRICKS_RUN_STATUS_RECORD_TYPE
+    assert record["artifacts"][-3]["role"] == "dependency_freshness"
+    assert record["artifacts"][-3]["record_type"] == DEPENDENCY_FRESHNESS_RECORD_TYPE
     assert record["artifacts"][-2]["role"] == "github_governance"
     assert record["artifacts"][-2]["record_type"] == GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
     assert record["artifacts"][-1]["role"] == "native_probe_factories"
@@ -4071,6 +4161,10 @@ def _strict_v1_release_bundle_kwargs(
         _plan_execution_record(ok=True, suite_id=suite_id, hardware_target=hardware_target),
     )
     pr_evidence = _write_json(source_dir / "pr-evidence.json", _pr_evidence_record(ok=True))
+    dependency_freshness = _write_json(
+        source_dir / "dependency-freshness.json",
+        _dependency_freshness_record(ok=True),
+    )
     requirements_matrix = _write_requirements_matrix(source_dir / "v1-requirements-matrix.md")
     github_governance = _write_json(source_dir / "github-governance.json", _github_governance_cli_record(ok=True))
     repository_hygiene = _write_json(source_dir / "repository-hygiene.json", _repository_hygiene_record(ok=True))
@@ -4091,6 +4185,7 @@ def _strict_v1_release_bundle_kwargs(
         "databricks_run_status_jsons": databricks_run_status_jsons,
         "package_wheel": package_wheel,
         "pr_evidence_jsons": (pr_evidence,),
+        "dependency_freshness_json": dependency_freshness,
         "requirements_matrix_md": requirements_matrix,
         "github_governance_json": github_governance,
         "repository_hygiene_json": repository_hygiene,
@@ -4387,6 +4482,53 @@ def _repository_hygiene_record(*, ok: bool):
         "missing_directory_documentation_paths": [],
         "untracked_path_count": 0,
         "issues": [] if ok else ["forbidden generated or secret-like tracked artifacts"],
+    }
+
+
+def _dependency_freshness_record(*, ok: bool):
+    return {
+        "record_type": DEPENDENCY_FRESHNESS_RECORD_TYPE,
+        "ok": ok,
+        "pyproject_path": "pyproject.toml",
+        "direct_pins": [
+            {
+                "package": "poetry-core",
+                "pinned_version": "2.4.1" if ok else "2.4.0",
+                "latest_version": "2.4.1",
+                "source": "build-system.requires",
+                "current": ok,
+            }
+        ],
+        "runtime_pins": [
+            {
+                "package": "vllm",
+                "pinned_version": "0.23.0",
+                "latest_version": "0.23.0",
+                "source": "serving_env.vllm",
+                "current": True,
+                "allowed": True,
+                "allow_reason": "",
+            },
+            {
+                "package": "sglang",
+                "pinned_version": "0.5.10.post1",
+                "latest_version": "0.5.13.post1",
+                "source": "serving_env.sglang",
+                "current": False,
+                "allowed": True,
+                "allow_reason": "Pinned to the Databricks-validated SGLang runtime profile.",
+            },
+        ],
+        "transitive_outdated": [
+            {
+                "package": "protobuf",
+                "locked_version": "6.33.6",
+                "latest_version": "7.35.1",
+                "allowed": True,
+                "reason": "databricks-sdk resolves protobuf through a <7.0 dependency constraint.",
+            }
+        ],
+        "issues": [] if ok else ["direct dependency poetry-core pinned to 2.4.0, latest is 2.4.1"],
     }
 
 
