@@ -1,0 +1,46 @@
+{
+  "benchmark_id": "v1_sglang_live_batch_prior_20260624_035220",
+  "benchmark_result": "not_published",
+  "blocker": "The PR #466 wheel was present and the provider factory loaded, but the request metadata bridge failed during import probe because the install-time hash-tracking gate looked for get_hash_str in HiCacheController.__init__. SGLang 0.5.10.post1 assigns self.get_hash_str in attach_storage_backend before constructing the dynamic backend, so Cachet must validate and patch that attach-time shape while still wrapping the active controller instance at _storage_hit_query runtime.",
+  "cachet_commit": "1c7084f",
+  "databricks_run": {
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 672750124167579,
+    "run_name": "document-kv-sglang-smoke",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure_type": "sglang_attach_time_hash_tracking_gate",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_request_metadata_bridge_ok": false,
+    "generated_live_handoff": false,
+    "import_probe_error_type": "SGLangRequestMetadataBridgeUnavailable",
+    "request_metadata_bridge_error": "TypeError: SGLang HiCacheController.get_hash_str is not patchable",
+    "sglang_import_probe_ok": false
+  },
+  "mode": "generated-live-handoff-logical-prompt-wait-complete-batch-prior-hash",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "c8b6f85dbd6a9f5e3087b94a408a2d0de54124695a59866404fb77a434bce147"
+  },
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 178988370465155,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  },
+  "written_artifacts": [
+    "metadata.json",
+    "sglang-import-probe.json",
+    "sglang-launch-config.json"
+  ]
+}

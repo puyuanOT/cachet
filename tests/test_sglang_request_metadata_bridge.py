@@ -246,8 +246,11 @@ def test_sglang_request_metadata_bridge_forwards_split_batch_prior_hash(monkeypa
     _scheduler_module, cache_controller_module = install_fake_sglang_bridge_modules(monkeypatch)
 
     status = install_sglang_request_metadata_bridge()
+    second_status = install_sglang_request_metadata_bridge()
     assert status.installed is True
     assert status.controller_hash_tracking_patched is True
+    assert second_status.installed is True
+    assert second_status.controller_hash_tracking_patched is True
 
     controller = cache_controller_module.HiCacheController()
     controller.page_size = 1
@@ -279,6 +282,67 @@ def test_sglang_request_metadata_bridge_forwards_split_batch_prior_hash(monkeypa
         **expected_extra_info,
         DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY: "hash-hash-root-101-102",
     }
+
+
+def test_sglang_request_metadata_bridge_accepts_attach_time_hash_provider(monkeypatch):
+    _scheduler_module, cache_controller_module = install_fake_sglang_bridge_modules(monkeypatch)
+    original_get_hash_str = cache_controller_module.HiCacheController.get_hash_str
+    delattr(cache_controller_module.HiCacheController, "get_hash_str")
+
+    def attach_storage_backend(self):
+        self.get_hash_str = original_get_hash_str.__get__(self, type(self))
+        return "attached"
+
+    cache_controller_module.HiCacheController.attach_storage_backend = attach_storage_backend
+
+    status = install_sglang_request_metadata_bridge()
+    assert status.installed is True
+    assert status.controller_hash_tracking_patched is True
+
+    controller = cache_controller_module.HiCacheController()
+    assert controller.attach_storage_backend() == "attached"
+    controller.page_size = 1
+    controller.storage_batch_size = 2
+    operation = cache_controller_module.PrefetchOperation(
+        "cachet-sglang-request-split",
+        [0, 1, 2, 3],
+        [101, 102, 103, 104],
+        None,
+        None,
+    )
+    expected_extra_info = {
+        "custom_params": {
+            "kv_transfer_params": {
+                "document_kv.request_id": "cachet-sglang-request-split",
+            },
+        },
+    }
+    operation.document_kv_extra_info = expected_extra_info
+
+    controller._storage_hit_query(operation)
+
+    assert controller.storage_backend.exists_extra_info[1].extra_info == {
+        **expected_extra_info,
+        DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY: "hash-hash-root-101-102",
+    }
+
+
+def test_sglang_request_metadata_bridge_rejects_attach_hook_without_hash_provider(monkeypatch):
+    _scheduler_module, cache_controller_module = install_fake_sglang_bridge_modules(monkeypatch)
+    delattr(cache_controller_module.HiCacheController, "get_hash_str")
+
+    def attach_storage_backend(self):
+        self.storage_backend_attached = True
+        return "attached"
+
+    cache_controller_module.HiCacheController.attach_storage_backend = attach_storage_backend
+
+    status = install_sglang_request_metadata_bridge()
+    record = sglang_request_metadata_bridge_status_to_record(status)
+
+    assert status.installed is False
+    assert record["ok"] is False
+    assert "get_hash_str" in record["error"]
 
 
 def test_sglang_request_metadata_bridge_is_idempotent(monkeypatch):

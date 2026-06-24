@@ -33,8 +33,10 @@ the `wait_complete` partial page-binding blocker tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/),
 the chained `last_hash` page-binding blocker tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/),
-and the current batch prior-hash metadata blocker tracked at
-[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/).
+the batch prior-hash metadata blocker tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/),
+and the current attach-time hash tracking blocker tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
 decode-time prefix binding with Cachet handoffs and records a positive

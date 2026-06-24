@@ -258,36 +258,50 @@ def _patch_controller_prefetch(controller_cls: type) -> bool:
 
 
 def _patch_controller_hash_tracking(controller_cls: type) -> bool:
-    original = getattr(controller_cls, "__init__", None)
-    if not callable(original):
-        raise TypeError("SGLang HiCacheController.__init__ is not callable")
+    original = getattr(controller_cls, "attach_storage_backend", None)
     if getattr(original, _HASH_TRACKING_PATCH_MARKER, False) is True:
         return True
     if not _controller_hash_tracking_installable(controller_cls):
         raise TypeError("SGLang HiCacheController.get_hash_str is not patchable")
+    if not callable(original):
+        return True
 
     @functools.wraps(original)
-    def patched_controller_init(self: object, *args: object, **kwargs: object) -> None:
-        original(self, *args, **kwargs)
+    def patched_attach_storage_backend(self: object, *args: object, **kwargs: object) -> object:
+        result = original(self, *args, **kwargs)
         if not _ensure_hicache_hash_tracking(self):
             raise TypeError("SGLang HiCacheController.get_hash_str is not patchable")
-        return None
+        return result
 
-    setattr(patched_controller_init, _HASH_TRACKING_PATCH_MARKER, True)
-    setattr(patched_controller_init, _HASH_TRACKING_ORIGINAL_ATTR, original)
-    setattr(controller_cls, "__init__", patched_controller_init)
+    setattr(patched_attach_storage_backend, _HASH_TRACKING_PATCH_MARKER, True)
+    setattr(patched_attach_storage_backend, _HASH_TRACKING_ORIGINAL_ATTR, original)
+    setattr(controller_cls, "attach_storage_backend", patched_attach_storage_backend)
     return True
 
 
 def _controller_hash_tracking_installable(controller_cls: type) -> bool:
-    if callable(getattr(controller_cls, "get_hash_str", None)):
-        return True
-    controller_init = getattr(controller_cls, "__init__", None)
-    try:
-        source = inspect.getsource(controller_init)
-    except (OSError, TypeError):
+    attach_storage_backend = getattr(controller_cls, "attach_storage_backend", None)
+    has_hash_provider = callable(getattr(controller_cls, "get_hash_str", None)) or (
+        callable(attach_storage_backend)
+        and _callable_references_get_hash_str(attach_storage_backend)
+    )
+    if not has_hash_provider:
         return False
-    return "get_hash_str" in source and "self.get_hash_str" in source
+    storage_hit_query = getattr(controller_cls, "_storage_hit_query", None)
+    if getattr(storage_hit_query, _PATCH_MARKER, False) is True:
+        storage_hit_query = getattr(storage_hit_query, _ORIGINAL_ATTR, storage_hit_query)
+    return _callable_references_get_hash_str(storage_hit_query)
+
+
+def _callable_references_get_hash_str(handler: object) -> bool:
+    if not callable(handler):
+        return False
+    try:
+        source = inspect.getsource(handler)
+    except (OSError, TypeError):
+        code = getattr(handler, "__code__", None)
+        return code is not None and "get_hash_str" in code.co_names
+    return "self.get_hash_str" in source
 
 
 def _patch_prefetch_operation(prefetch_operation_cls: type) -> bool:
