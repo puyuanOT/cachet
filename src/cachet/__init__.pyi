@@ -316,7 +316,9 @@ from document_kv_cache.live_server import (
 )
 
 from document_kv_cache.sglang_smoke import (
+    DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY as DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT as DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE as DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     SGLangSmokeBenchmarkConfig as SGLangSmokeBenchmarkConfig,
     build_sglang_hicache_provider_probe_record as build_sglang_hicache_provider_probe_record,
     build_sglang_server_args as build_sglang_server_args,
