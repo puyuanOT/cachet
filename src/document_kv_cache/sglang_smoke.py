@@ -742,6 +742,7 @@ import sys
 from pathlib import Path
 
 from document_kv_cache.sglang_smoke import (
+    DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     SGLangLiveHandoffGenerationConfig,

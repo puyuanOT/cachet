@@ -836,11 +836,16 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         calls.append((argv, check, capture_output, text, timeout, env))
         assert argv[0] == str(config.venv_python)
         assert argv[1] == "-c"
+        assert "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,\n" in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,\n" in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,\n" in argv[2]
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "sglang-generated-venv"
         assert input_payload["live_check_prompt_format"] == "plain"
+        assert (
+            input_payload["live_check_extra_body"]
+            == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+        )
         assert (
             input_payload["live_check_request_mode"]
             == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
