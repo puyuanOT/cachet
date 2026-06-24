@@ -87,9 +87,11 @@ The synthetic live benchmark validates decode-time prefix binding with Cachet
 handoffs, hydrates matching generated page-key chunks, records positive
 cache-arm cached-token validation covering the generated handoff prefix across
 two repeats, keeps a post-flush model-quality canary, and preserves live
-quality. It did not show a speedup on the tiny synthetic prompt. Treat full
-SGLang canonical release-bundle consumption as pending until release validation
-explicitly consumes the prepared live V1 record type.
+quality. It did not show a speedup on the tiny synthetic prompt. Prepared raw
+SGLang live V1 release-suite sidecars are consumed by strict release bundles
+through the dedicated `sglang_live_v1_benchmark` artifact role; the standalone
+benchmark folder remains a compact human-readable snapshot, while the synthetic
+live benchmark remains scoped endpoint evidence.
 
 ## V1 Latency And Quality
 

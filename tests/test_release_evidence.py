@@ -31,6 +31,8 @@ from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_RECORD_TYPE,
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
     REQUIRED_ENGINE_PROBE_BACKENDS,
+    SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+    SGLANG_LIVE_V1_BENCHMARK_SCOPE,
     ReleaseEvidence,
     ReleaseEvidenceArtifactSource,
     ReleaseEvidenceInputFileStatus,
@@ -40,6 +42,7 @@ from document_kv_cache.release_evidence import (
     inspect_release_evidence_input_files,
     release_evidence_input_status_to_record,
     release_evidence_to_record,
+    sglang_live_v1_benchmark_issues,
 )
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.serving_env import serving_environment_profile
@@ -124,6 +127,55 @@ def test_evaluate_release_evidence_accepts_explicit_g5_a10g_hardware_target():
 
     assert evidence.ok
     assert not any("hardware_target" in issue for issue in evidence.issues)
+
+
+def test_sglang_live_v1_benchmark_issues_accept_release_suite_record():
+    record = _sglang_live_v1_benchmark_record()
+
+    assert sglang_live_v1_benchmark_issues(record) == ()
+
+
+def test_sglang_live_v1_benchmark_issues_reject_synthetic_or_unvalidated_records():
+    record = _sglang_live_v1_benchmark_record()
+    record["ok"] = False
+    record["issues"] = ["hotpotqa cache repeat 1: cache hit validation failed"]
+    record["suite"] = {
+        **record["suite"],
+        "scope": "live_synthetic_niah",
+        "release_v1_suite": False,
+    }
+    record["cache_prompt_text_mode"] = "runtime"
+    record["cache_hit_validations"][0] = {
+        **record["cache_hit_validations"][0],
+        "arm_id": "baseline_prefill",
+        "example_id": "synthetic-niah-example",
+        "ok": False,
+        "issue": "expected cached tokens",
+        "minimum_cached_tokens": 96,
+        "cache_request_cached_tokens": 0,
+    }
+
+    issues = sglang_live_v1_benchmark_issues(record)
+
+    assert "SGLang live V1 benchmark: hotpotqa cache repeat 1: cache hit validation failed" in issues
+    assert any("suite.scope" in issue for issue in issues)
+    assert "SGLang live V1 benchmark suite release_v1_suite must be true" in issues
+    assert "SGLang live V1 benchmark cache_prompt_text_mode must be 'logical'" in issues
+    assert any("cache_hit_validations[0].arm_id must be 'document_kv_cache'" in issue for issue in issues)
+    assert any("cache_hit_validations[0] must match a measured cache-arm request" in issue for issue in issues)
+    assert any("cache_hit_validations[0].ok must be true" in issue for issue in issues)
+    assert any("cache_request_cached_tokens must be a positive integer" in issue for issue in issues)
+
+
+def test_sglang_live_v1_benchmark_issues_require_cache_hit_measurement_bindings():
+    record = _sglang_live_v1_benchmark_record()
+    for measurement in record["measurements"]:
+        if measurement["arm_id"] == "document_kv_cache":
+            measurement["metadata"].pop("repeat_index")
+
+    issues = sglang_live_v1_benchmark_issues(record)
+
+    assert any("cache_hit_validations[0] must match a measured cache-arm request" in issue for issue in issues)
 
 
 def test_evaluate_release_evidence_rejects_unsupported_g5_hardware_target():
@@ -2354,6 +2406,101 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g6-l4", model_id: str = 
             "unexpected_datasets": [],
             "issues": [] if ok else ["missing report rows: hotpotqa:baseline_prefill"],
         },
+    }
+
+
+def _sglang_live_v1_benchmark_record(*, ok: bool = True):
+    datasets = ("biography", "hotpotqa", "musique", "niah")
+    arms = ("baseline_prefill", "document_kv_cache")
+    repeats = 2
+    return {
+        "record_type": SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+        "ok": ok,
+        "benchmark_id": "sglang-prepared-v1-g6-test",
+        "engine": "sglang",
+        "model_id": "qwen3:4b-instruct",
+        "served_model_name": "qwen3-4b-instruct",
+        "hardware_target": "aws-g6-l4",
+        "suite": {
+            "suite_id": "sglang-prepared-v1-g6-test",
+            "scope": SGLANG_LIVE_V1_BENCHMARK_SCOPE,
+            "datasets": list(datasets),
+            "examples": len(datasets),
+            "repeats": repeats,
+            "release_v1_suite": True,
+        },
+        "cache_prompt_text_mode": "logical",
+        "live_check_prompt_format": "plain",
+        "live_check_request_mode": "completion",
+        "live_check_temperature": 0.0,
+        "kv_transfer_params_transport": "custom_params",
+        "flushes": [],
+        "measurements": [
+            _v1_measurement_record(dataset, arm)
+            | {
+                "example_id": f"{dataset}-1",
+                "metadata": {
+                    **_v1_measurement_metadata(arm),
+                    "repeat_index": str(repeat),
+                },
+            }
+            for dataset in datasets
+            for repeat in range(1, repeats + 1)
+            for arm in arms
+        ],
+        "report_rows": [_sglang_live_v1_report_row_record(dataset, arm) for dataset in datasets for arm in arms],
+        "comparisons": [
+            {
+                "dataset": dataset,
+                "baseline_arm_id": "baseline_prefill",
+                "cache_arm_id": "document_kv_cache",
+                "ttft_speedup": 1.0,
+                "time_to_completion_speedup": 1.0,
+                "exact_match_delta": 0.0,
+                "answer_found_delta": 0.0,
+            }
+            for dataset in datasets
+        ],
+        "cache_hit_validations": [
+            _sglang_live_v1_cache_hit_validation(dataset, repeat)
+            for dataset in datasets
+            for repeat in range(1, repeats + 1)
+        ],
+        "issues": [] if ok else ["cache hit validation failed"],
+    }
+
+
+def _sglang_live_v1_report_row_record(dataset: str, arm: str):
+    row = _v1_report_row_record(dataset, arm)
+    return {
+        **row,
+        "requests": 2,
+        "ttft": {**row["ttft"], "count": 2},
+        "time_to_completion": {**row["time_to_completion"], "count": 2},
+    }
+
+
+def _sglang_live_v1_cache_hit_validation(dataset: str, repeat: int):
+    return {
+        "dataset": dataset,
+        "example_id": f"{dataset}-1",
+        "arm_id": "document_kv_cache",
+        "repeat_index": repeat,
+        "ok": True,
+        "issue": None,
+        "minimum_cached_tokens": 128,
+        "cache_request_cached_tokens": 128,
+        "cache_request_prompt_tokens": 1024,
+        "cache_request_match_reason": "minimum_cached_tokens",
+        "cache_request_prefill_index": 0,
+        "prefill_token_counts": [
+            {
+                "cached_tokens": 128,
+                "new_tokens": 896,
+                "total_prompt_tokens": 1024,
+            }
+        ],
+        "cached_token_counts": [128],
     }
 
 

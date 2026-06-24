@@ -168,6 +168,7 @@ def strict_release_bundle_plan_config(tmp_path, *, bundle_overrides=None, config
             str(tmp_path / "vllm-launch-config.json"),
             str(tmp_path / "sglang-launch-config.json"),
         ),
+        "sglang_live_v1_benchmark_jsons": (str(tmp_path / "sglang-live-v1-benchmark.json"),),
         "require_complete_v1": True,
     }
     if bundle_overrides is not None:
@@ -511,6 +512,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
                 str(tmp_path / "vllm-launch-config.json"),
                 str(tmp_path / "sglang-launch-config.json"),
             ),
+            sglang_live_v1_benchmark_jsons=(str(tmp_path / "sglang-live-v1-benchmark.json"),),
             compatibility_benchmark_jsons=(str(tmp_path / "g5-v1-benchmark.json"),),
             compatibility_databricks_run_status_jsons=(str(tmp_path / "g5-run-status.json"),),
             overwrite=True,
@@ -563,6 +565,7 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
         "release_evidence_json": str(tmp_path / "release-evidence.json"),
         "repository_hygiene_json": str(tmp_path / "repository-hygiene.json"),
         "require_complete_v1": True,
+        "sglang_live_v1_benchmark_jsons": [str(tmp_path / "sglang-live-v1-benchmark.json")],
         "storage_benchmark_json": str(tmp_path / "storage.json"),
         "v1_benchmark_json": str(tmp_path / "results.json"),
     }
@@ -580,6 +583,9 @@ def test_build_v1_benchmark_plan_can_append_release_bundle_after_release_evidenc
     assert bundle_command.argv[
         bundle_command.argv.index("--compatibility-databricks-run-status-json") + 1
     ] == str(tmp_path / "g5-run-status.json")
+    assert bundle_command.argv[bundle_command.argv.index("--sglang-live-v1-benchmark-json") + 1] == str(
+        tmp_path / "sglang-live-v1-benchmark.json"
+    )
     assert bundle_command.argv.count("--engine-probe-json") == 2
     assert bundle_command.argv.count("--engine-actions-json") == 2
     assert bundle_command.argv.count("--engine-launch-config-json") == 2
@@ -678,6 +684,7 @@ def test_build_v1_benchmark_plan_omits_strict_release_bundle_flag_by_default(tmp
         ({"repository_hygiene_json": None}, None, "repository hygiene sidecar"),
         ({"native_probe_factories_jsons": ()}, None, "native probe factory diagnostics sidecar"),
         ({"engine_launch_config_jsons": ()}, None, "vLLM/SGLang engine launch config sidecars"),
+        ({"sglang_live_v1_benchmark_jsons": ()}, None, "SGLang live V1 benchmark sidecar"),
         (
             {"engine_launch_config_jsons": ("vllm-launch-config.json",)},
             None,
@@ -3478,6 +3485,8 @@ def test_main_can_include_release_bundle_command(tmp_path):
             str(tmp_path / "g5-v1-benchmark.json"),
             "--release-bundle-compatibility-databricks-run-status-json",
             str(tmp_path / "g5-run-status.json"),
+            "--release-bundle-sglang-live-v1-benchmark-json",
+            str(tmp_path / "sglang-live-v1-benchmark.json"),
             "--release-bundle-pr-evidence-json",
             str(tmp_path / "pr-evidence.json"),
             "--release-bundle-requirements-matrix-md",
@@ -3565,6 +3574,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert record["release_bundle"]["compatibility_databricks_run_status_jsons"] == [
         str(tmp_path / "g5-run-status.json")
     ]
+    assert record["release_bundle"]["sglang_live_v1_benchmark_jsons"] == [
+        str(tmp_path / "sglang-live-v1-benchmark.json")
+    ]
     assert record["release_bundle"]["requirements_matrix_md"] == str(tmp_path / "v1-requirements-matrix.md")
     assert record["release_bundle"]["github_governance_json"] == str(tmp_path / "github-governance.json")
     assert record["release_bundle"]["repository_hygiene_json"] == str(tmp_path / "repository-hygiene.json")
@@ -3629,6 +3641,9 @@ def test_main_can_include_release_bundle_command(tmp_path):
     assert bundle_argv.count("--repository-hygiene-json") == 1
     assert bundle_argv[bundle_argv.index("--native-probe-factories-json") + 1] == str(
         tmp_path / "native-probe-factories.json"
+    )
+    assert bundle_argv[bundle_argv.index("--sglang-live-v1-benchmark-json") + 1] == str(
+        tmp_path / "sglang-live-v1-benchmark.json"
     )
     assert "--require-complete-v1" in bundle_argv
     assert "--overwrite" in bundle_argv

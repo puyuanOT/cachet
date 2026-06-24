@@ -24,17 +24,22 @@ audit the report claims:
   probes.
 
 Some records are canonical release-bundle inputs, such as
-`document_kv.benchmark_run.v1`; others are scoped SGLang live benchmark or
-integration records that remain separate from release-bundle consumption until
-validators explicitly ingest those record types.
+`document_kv.benchmark_run.v1`; raw prepared SGLang live V1 records are
+dedicated release-bundle inputs through the `sglang_live_v1_benchmark` role.
+Synthetic SGLang live benchmark and integration records remain separate from
+release-bundle consumption unless validators explicitly ingest those scoped
+record types.
 
 Folders containing `v1_benchmark.json` are full V1 latency and quality
 benchmark reports. SGLang live benchmark folders under `../sglang/` can be
 cited as scoped synthetic live endpoint measurements, prepared V1 live
 benchmark evidence, or pre-publication prepared attempt evidence when they
-include sanitized `cachet.sglang_live_benchmark.v1` records. They remain a
-distinct SGLang live report surface rather than canonical
-`document_kv.benchmark_run.v1` release-bundle inputs. The native-engine probe folder proves
+include sanitized `cachet.sglang_live_benchmark.v1` records. Prepared
+`scope=live_v1_release` records remain a distinct SGLang live report surface
+rather than canonical `document_kv.benchmark_run.v1` release-bundle inputs, but
+strict bundles validate raw sidecars through `sglang_live_v1_benchmark`. The
+standalone report JSON can be compacted for human review. The native-engine
+probe folder proves
 provider-backed vLLM/SGLang integration against engine-owned KV block managers,
 but it does not publish latency, throughput, or quality benchmark results.
 

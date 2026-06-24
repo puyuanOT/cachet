@@ -27,6 +27,7 @@ from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_RECORD_TYPE,
     REQUIRED_ENGINE_PROBE_BACKENDS,
     evaluate_release_evidence,
+    sglang_live_v1_benchmark_issues,
 )
 from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
@@ -186,6 +187,7 @@ RELEASE_BUNDLE_PACKAGE_CONSOLE_SCRIPTS = {
 }
 RELEASE_BUNDLE_ARTIFACT_ROLES = (
     "v1_benchmark",
+    "sglang_live_v1_benchmark",
     "compatibility_benchmark",
     "storage_benchmark",
     "engine_probe",
@@ -207,6 +209,7 @@ RELEASE_BUNDLE_ARTIFACT_ROLES = (
 STRICT_V1_RELEASE_REQUIRED_ARTIFACTS = (
     ("release_evidence", 1, "release evidence sidecar"),
     ("preflight", 1, "preflight sidecar"),
+    ("sglang_live_v1_benchmark", 1, "SGLang live V1 benchmark sidecar"),
     ("engine_probe", 2, "vLLM/SGLang native engine probe sidecars"),
     ("engine_connector_actions", 2, "vLLM/SGLang connector action sidecars"),
     ("engine_launch_config", 2, "vLLM/SGLang engine launch config sidecars"),
@@ -529,6 +532,7 @@ def build_release_bundle(
     *,
     v1_benchmark_json: str | Path,
     storage_benchmark_json: str | Path,
+    sglang_live_v1_benchmark_jsons: Sequence[str | Path] = (),
     output_dir: str | Path,
     compatibility_benchmark_jsons: Sequence[str | Path] = (),
     engine_probe_jsons: Sequence[str | Path] = (),
@@ -559,6 +563,7 @@ def build_release_bundle(
     sources = _release_bundle_sources(
         v1_benchmark_json=v1_benchmark_json,
         storage_benchmark_json=storage_benchmark_json,
+        sglang_live_v1_benchmark_jsons=sglang_live_v1_benchmark_jsons,
         compatibility_benchmark_jsons=compatibility_benchmark_jsons,
         engine_probe_jsons=engine_probe_jsons,
         engine_actions_jsons=engine_actions_jsons,
@@ -640,6 +645,7 @@ def _release_bundle_sources(
     *,
     v1_benchmark_json: str | Path,
     storage_benchmark_json: str | Path,
+    sglang_live_v1_benchmark_jsons: Sequence[str | Path],
     compatibility_benchmark_jsons: Sequence[str | Path],
     engine_probe_jsons: Sequence[str | Path],
     engine_actions_jsons: Sequence[str | Path],
@@ -659,6 +665,7 @@ def _release_bundle_sources(
 ) -> tuple[tuple[str, str | Path], ...]:
     sources: list[tuple[str, str | Path]] = [
         ("v1_benchmark", v1_benchmark_json),
+        *(("sglang_live_v1_benchmark", path) for path in sglang_live_v1_benchmark_jsons),
         *(("compatibility_benchmark", path) for path in compatibility_benchmark_jsons),
         ("storage_benchmark", storage_benchmark_json),
     ]
@@ -865,6 +872,11 @@ def _validate_release_bundle_inputs(
                     engine_action_records=engine_action_records,
                 )
             )
+        elif artifact.role == "sglang_live_v1_benchmark":
+            if artifact.record is None:
+                issues.append("SGLang live V1 benchmark sidecar must be JSON")
+                continue
+            issues.extend(_sglang_live_v1_benchmark_sidecar_issues(artifact.record))
     issues.extend(_pr_evidence_repository_alignment_issues(artifacts))
     if issues:
         raise ValueError(f"Release bundle inputs are not release-ready: {'; '.join(issues)}")
@@ -1229,6 +1241,12 @@ def _compatibility_benchmark_sidecar_issues(
             f"compatibility benchmark hardware_target must be one of {SUPPORTED_V1_HARDWARE_TARGETS!r}"
         )
     return tuple(issues)
+
+
+def _sglang_live_v1_benchmark_sidecar_issues(
+    record: Mapping[str, Any],
+) -> tuple[str, ...]:
+    return sglang_live_v1_benchmark_issues(record)
 
 
 def _compatibility_databricks_run_status_sidecar_issues(
@@ -2749,6 +2767,9 @@ def _artifact_filename(prepared: _PreparedReleaseBundleArtifact) -> str:
         return f"engine_launch_config_{index + 1:02d}_{backend}.json"
     if role == "v1_benchmark":
         return "v1_benchmark.json"
+    if role == "sglang_live_v1_benchmark":
+        suffix = _path_safe_label(_strict_v1_benchmark_suite_id(record) or f"record_{index + 1:02d}")
+        return f"sglang_live_v1_benchmark_{index + 1:02d}_{suffix}.json"
     if role == "compatibility_benchmark":
         hardware_target = _strict_v1_benchmark_hardware_target(record) if record is not None else None
         suffix = _path_safe_label(hardware_target or f"record_{index + 1:02d}")
@@ -2874,6 +2895,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build a checksummed Document KV release evidence bundle.")
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument(
+        "--sglang-live-v1-benchmark-json",
+        action="append",
+        default=[],
+        help=(
+            "SGLang cachet.sglang_live_benchmark.v1 prepared live V1 benchmark "
+            "JSON to carry in the release bundle. Repeat for additional scoped "
+            "SGLang release-suite records."
+        ),
+    )
+    parser.add_argument(
         "--compatibility-benchmark-json",
         action="append",
         default=[],
@@ -2932,6 +2963,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     bundle = build_release_bundle(
         v1_benchmark_json=args.v1_benchmark_json,
         storage_benchmark_json=args.storage_benchmark_json,
+        sglang_live_v1_benchmark_jsons=args.sglang_live_v1_benchmark_json,
         compatibility_benchmark_jsons=args.compatibility_benchmark_json,
         engine_probe_jsons=args.engine_probe_json,
         engine_actions_jsons=args.engine_actions_json,

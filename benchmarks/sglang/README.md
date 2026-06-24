@@ -33,7 +33,7 @@ quality gates, but it does not show a speedup on the short prepared prompts.
 | Failed live handoff smoke | `201402713679607` | [`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/) | Generated handoff preparation completed, but SGLang rejected the colon-containing served-model name before live requests. It is not a benchmark result. |
 | Failed live handoff smoke | `13763847664432` | [`2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/) | SGLang launched with the safe served-model name and request metadata bridge validation passed, but the cache arm used suffix-only runtime prompt text and did not answer from the generated prefix. It is not a benchmark result. |
 | Failed live handoff smoke | `476596508869043` | [`2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/) | SGLang launched with logical prompt text and answered both arms, but the cache arm reported zero cached tokens; the later cached-token line was ordinary SGLang prefix-cache reuse. It is not a benchmark result. |
-| Canonical release-bundle consumption | Latest benchmark `48413356233422` | [`2026-06-24-g6-l4-prepared-v1-release-suite-success/`](2026-06-24-g6-l4-prepared-v1-release-suite-success/) | The prepared live V1 benchmark now passes on g6/L4, but it is recorded as `cachet.sglang_live_benchmark.v1`. Existing release-bundle validators still consume canonical `document_kv.benchmark_run.v1` inputs for vLLM. |
+| Release-bundle consumption | Latest benchmark `48413356233422` | [`2026-06-24-g6-l4-prepared-v1-release-suite-success/`](2026-06-24-g6-l4-prepared-v1-release-suite-success/) | The prepared live V1 benchmark now passes on g6/L4. Strict release bundles validate raw `cachet.sglang_live_benchmark.v1` sidecars through the dedicated `sglang_live_v1_benchmark` role; this folder's `success_run.json` is a compact human-readable snapshot, not the bundle sidecar itself. |
 | Native HiCache integration evidence | `934698284395881` | [`../databricks/2026-06-23-g6-l4-native-engine-probes/`](../databricks/2026-06-23-g6-l4-native-engine-probes/) | Provider-backed native probe and connector-action records succeeded on AWS g6/L4, but these records are integration evidence, not benchmark measurements. |
 
 ## Live Smoke Helper
@@ -171,8 +171,9 @@ SGLang benchmark evidence is publishable only when all of these are true:
 - Latency, throughput, and quality measurements are recorded for the full
   release suite. The current prepared V1 run `48413356233422` satisfies this
   gate through the `cachet.sglang_live_benchmark.v1` live SGLang record surface.
-  Canonical release-bundle consumption remains separate until validators ingest
-  that record type directly.
+  Strict release bundles validate the raw live benchmark sidecar through the
+  dedicated `sglang_live_v1_benchmark` artifact role; standalone report JSON is
+  compacted for human review.
 
 ## Evidence Boundary
 

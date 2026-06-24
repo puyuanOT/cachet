@@ -48,9 +48,10 @@ Use this boundary when adding or reviewing benchmark output:
 - SGLang `sglang-live-benchmark.json` files with `scope=live_v1_release` and
   `release_v1_suite=true` are prepared live V1 SGLang benchmark evidence for
   rows that carry validated Cachet handoffs and SGLang HiCache page keys. They
-  remain a distinct live SGLang report surface and are not a replacement for
-  canonical `v1_benchmark.json` release-bundle inputs until release validation
-  explicitly consumes that record type.
+  remain a distinct live SGLang report surface. Raw sidecars feed strict release
+  bundles through the dedicated `sglang_live_v1_benchmark` role; compact
+  standalone report JSON is not a replacement for canonical `v1_benchmark.json`
+  release-bundle inputs.
 - The native-engine probe folder is integration evidence only; it is not a
   vLLM or SGLang latency/quality benchmark report.
 - JSON files beside each report are sanitized, schema-validated source records
