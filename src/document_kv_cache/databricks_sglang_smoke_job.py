@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -33,6 +34,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
+    DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
@@ -122,6 +124,7 @@ class DatabricksSGLangSmokeJobConfig:
     cache_prompt_text_mode: str = "logical"
     live_check_prompt_format: str = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
     live_check_request_mode: str = DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
+    live_check_temperature: float = DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     handoff_json: str | None = None
     handoff_record_json: str | None = None
     payload_uri: str | None = None
@@ -199,6 +202,15 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
         if self.live_check_request_mode not in {"completion", "chat"}:
             raise ValueError("live_check_request_mode must be 'completion' or 'chat'")
+        if (
+            not isinstance(self.live_check_temperature, (int, float))
+            or isinstance(self.live_check_temperature, bool)
+            or not math.isfinite(self.live_check_temperature)
+            or self.live_check_temperature < 0
+        ):
+            raise ValueError(
+                "live_check_temperature must be a non-negative finite number"
+            )
         if self.handoff_json and self.handoff_record_json:
             raise ValueError(
                 "SGLang smoke handoff params must use only one of handoff_json or handoff_record_json"
@@ -400,6 +412,8 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         config.live_check_prompt_format,
         "--live-check-request-mode",
         config.live_check_request_mode,
+        "--live-check-temperature",
+        str(config.live_check_temperature),
     ]
     if not config.stream:
         parameters.append("--no-stream")
@@ -528,6 +542,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("completion", "chat"),
         default=DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     )
+    parser.add_argument(
+        "--live-check-temperature",
+        type=float,
+        default=DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -608,6 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cache_prompt_text_mode=args.cache_prompt_text_mode,
             live_check_prompt_format=args.live_check_prompt_format,
             live_check_request_mode=args.live_check_request_mode,
+            live_check_temperature=args.live_check_temperature,
             handoff_json=args.handoff_json,
             handoff_record_json=args.handoff_record_json,
             payload_uri=args.payload_uri,
