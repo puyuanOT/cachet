@@ -77,6 +77,7 @@ DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
+SGLANG_SERVER_PREFILL_TOKEN_PATTERN = re.compile(r"#new-token:\s*(\d+),\s*#cached-token:\s*(\d+)")
 SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
     "SGLang handoff-backed live smoke requires handoff_json or handoff_record "
     "plus explicit sglang_hicache_page_keys metadata so Cachet can bind the "
@@ -121,6 +122,7 @@ __all__ = [
     "run_sglang_live_smoke",
     "sglang_cache_hit_validation_record",
     "sglang_cached_token_counts",
+    "sglang_prefill_token_counts",
     "sglang_hicache_config_for_smoke",
     "sglang_live_kv_transfer_params",
     "write_json",
@@ -843,9 +845,11 @@ def run_live_checks(
     import_probe_record: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
     cache_record: dict[str, object] | None = None
+    cache_prefill_log_start_index: int | None = None
     if not config.baseline_only:
         # Run the cache arm first so SGLang's ordinary prefix cache cannot be
         # warmed by the baseline before cache-hit validation reads server logs.
+        cache_prefill_log_start_index = _server_prefill_log_count(config.server_log_path)
         cache = run_openai_compatible_live_check(
             LiveServerCheckConfig(
                 base_url=config.server_base_url,
@@ -904,6 +908,7 @@ def run_live_checks(
         "requires_kv_transfer_params": not config.baseline_only,
         "kv_transfer_params_transport": "custom_params",
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
+        "cache_prefill_log_start_index": cache_prefill_log_start_index,
         "baseline": baseline_record,
         "cache": cache_record,
         "issues": issues,
@@ -922,7 +927,12 @@ def require_sglang_cache_hit(
 
     if config.baseline_only:
         return dict(record)
-    validation = sglang_cache_hit_validation_record(config.server_log_path)
+    validation = sglang_cache_hit_validation_record(
+        config.server_log_path,
+        cache_request_prompt_tokens=_cache_request_prompt_tokens(record),
+        cache_prompt_text_mode=config.cache_prompt_text_mode,
+        cache_request_prefill_start_index=_cache_prefill_log_start_index(record),
+    )
     updated = dict(record)
     issues = list(updated.get("issues") or [])
     issue = validation.get("issue")
@@ -937,36 +947,78 @@ def require_sglang_cache_hit(
     return updated
 
 
-def sglang_cache_hit_validation_record(server_log_path: Path) -> dict[str, object]:
+def sglang_cache_hit_validation_record(
+    server_log_path: Path,
+    *,
+    cache_request_prompt_tokens: int | None = None,
+    cache_prompt_text_mode: PromptTextMode = "logical",
+    cache_request_prefill_start_index: int = 0,
+) -> dict[str, object]:
+    cache_prompt_match_field = _cache_prompt_match_field(cache_prompt_text_mode)
+    cache_request_prefill_start_index = max(cache_request_prefill_start_index, 0)
     if not server_log_path.exists():
         return {
             "ok": False,
             "server_log_path": str(server_log_path),
             "cached_token_counts": [],
+            "prefill_token_counts": [],
+            "cache_request_prompt_tokens": cache_request_prompt_tokens,
+            "cache_prompt_text_mode": cache_prompt_text_mode,
+            "cache_request_prompt_match_field": cache_prompt_match_field,
+            "cache_request_prefill_start_index": cache_request_prefill_start_index,
+            "cache_request_prefill_index": None,
             "cache_request_cached_tokens": None,
             "issue": "SGLang server log missing; cannot verify cache-arm cached tokens",
         }
     try:
-        counts = sglang_cached_token_counts(server_log_path.read_text(encoding="utf-8", errors="replace"))
+        log_text = server_log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return {
             "ok": False,
             "server_log_path": str(server_log_path),
             "cached_token_counts": [],
+            "prefill_token_counts": [],
+            "cache_request_prompt_tokens": cache_request_prompt_tokens,
+            "cache_prompt_text_mode": cache_prompt_text_mode,
+            "cache_request_prompt_match_field": cache_prompt_match_field,
+            "cache_request_prefill_start_index": cache_request_prefill_start_index,
+            "cache_request_prefill_index": None,
             "cache_request_cached_tokens": None,
             "issue": "SGLang server log unreadable; cannot verify cache-arm cached tokens",
         }
-    cache_request_cached_tokens = counts[0] if counts else None
+    prefill_counts = sglang_prefill_token_counts(log_text)
+    counts = tuple(row["cached_tokens"] for row in prefill_counts)
+    cache_request_prefill_index = _cache_request_prefill_index(
+        prefill_counts,
+        cache_request_prompt_tokens=cache_request_prompt_tokens,
+        match_field=cache_prompt_match_field,
+        start_index=cache_request_prefill_start_index,
+    )
+    cache_request_cached_tokens = (
+        prefill_counts[cache_request_prefill_index]["cached_tokens"]
+        if cache_request_prefill_index is not None
+        else None
+    )
     ok = cache_request_cached_tokens is not None and cache_request_cached_tokens > 0
     issue = None
-    if cache_request_cached_tokens is None:
+    if cache_request_prompt_tokens is None:
+        issue = "SGLang cache request prompt token count unavailable; cannot verify cache-arm cached tokens"
+    elif not prefill_counts:
         issue = "SGLang server log did not report cached-token counts"
+    elif cache_request_cached_tokens is None:
+        issue = "SGLang server log did not report cache request prompt token count"
     elif cache_request_cached_tokens <= 0:
         issue = "SGLang cache arm reported zero cached tokens"
     return {
         "ok": ok,
         "server_log_path": str(server_log_path),
         "cached_token_counts": list(counts),
+        "prefill_token_counts": list(prefill_counts),
+        "cache_request_prompt_tokens": cache_request_prompt_tokens,
+        "cache_prompt_text_mode": cache_prompt_text_mode,
+        "cache_request_prompt_match_field": cache_prompt_match_field,
+        "cache_request_prefill_start_index": cache_request_prefill_start_index,
+        "cache_request_prefill_index": cache_request_prefill_index,
         "cache_request_cached_tokens": cache_request_cached_tokens,
         "issue": issue,
     }
@@ -974,6 +1026,92 @@ def sglang_cache_hit_validation_record(server_log_path: Path) -> dict[str, objec
 
 def sglang_cached_token_counts(log_text: str) -> tuple[int, ...]:
     return tuple(int(match.group(1)) for match in SGLANG_SERVER_CACHED_TOKEN_PATTERN.finditer(log_text))
+
+
+def sglang_prefill_token_counts(log_text: str) -> tuple[dict[str, int], ...]:
+    counts: list[dict[str, int]] = []
+    for match in SGLANG_SERVER_PREFILL_TOKEN_PATTERN.finditer(log_text):
+        new_tokens = int(match.group(1))
+        cached_tokens = int(match.group(2))
+        counts.append(
+            {
+                "new_tokens": new_tokens,
+                "cached_tokens": cached_tokens,
+                "total_prompt_tokens": new_tokens + cached_tokens,
+            }
+        )
+    return tuple(counts)
+
+
+def _cache_request_prefill_index(
+    prefill_counts: Sequence[Mapping[str, int]],
+    *,
+    cache_request_prompt_tokens: int | None,
+    match_field: str,
+    start_index: int,
+) -> int | None:
+    if cache_request_prompt_tokens is None:
+        return None
+    for index, row in enumerate(prefill_counts[start_index:], start=start_index):
+        if row[match_field] == cache_request_prompt_tokens:
+            return index
+    return None
+
+
+def _cache_prompt_match_field(cache_prompt_text_mode: PromptTextMode) -> str:
+    if cache_prompt_text_mode == "runtime":
+        return "new_tokens"
+    return "total_prompt_tokens"
+
+
+def _cache_request_prompt_tokens(record: Mapping[str, object]) -> int | None:
+    cache_record = record.get("cache")
+    if not isinstance(cache_record, Mapping):
+        return None
+    metadata = cache_record.get("metadata")
+    if isinstance(metadata, Mapping):
+        parsed = _positive_int(metadata.get("server_usage_prompt_tokens"))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _cache_prefill_log_start_index(record: Mapping[str, object]) -> int:
+    parsed = _nonnegative_int(record.get("cache_prefill_log_start_index"))
+    return 0 if parsed is None else parsed
+
+
+def _server_prefill_log_count(server_log_path: Path) -> int:
+    try:
+        log_text = server_log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return 0
+    return len(sglang_prefill_token_counts(log_text))
+
+
+def _positive_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdecimal():
+            parsed = int(stripped)
+            return parsed if parsed > 0 else None
+    return None
+
+
+def _nonnegative_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdecimal():
+            return int(stripped)
+    return None
 
 
 def _record_logical_and_served_model_ids(record: dict[str, object]) -> None:
