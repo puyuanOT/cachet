@@ -427,6 +427,7 @@ def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp
     )
     assert config.live_check_request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    assert DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE == 0.0
     assert config.live_check_extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
     assert config.live_check_extra_body["reasoning_effort"] == "none"
     assert config.live_check_extra_body["chat_template_kwargs"] == {
@@ -826,6 +827,7 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
         live_check_prompt_format="plain",
+        live_check_temperature=0.25,
         handoff_generation=generation,
     )
     config.venv_python.parent.mkdir(parents=True)
@@ -839,9 +841,11 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
         assert "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,\n" in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,\n" in argv[2]
         assert "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,\n" in argv[2]
+        assert "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,\n" in argv[2]
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "sglang-generated-venv"
         assert input_payload["live_check_prompt_format"] == "plain"
+        assert input_payload["live_check_temperature"] == 0.25
         assert (
             input_payload["live_check_extra_body"]
             == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
@@ -1099,6 +1103,8 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
             "plain",
             "--live-check-request-mode",
             "completion",
+            "--live-check-temperature",
+            "0.25",
             "--hicache-storage-prefetch-threshold",
             "3",
             "--live-handoff-generation-timeout-seconds",
@@ -1118,6 +1124,7 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
     assert generation.timeout_seconds == 12.5
     assert seen_configs[0].live_check_prompt_format == "plain"
     assert seen_configs[0].live_check_request_mode == "completion"
+    assert seen_configs[0].live_check_temperature == 0.25
     assert seen_configs[0].hicache_page_size == 2
     assert (
         seen_configs[0].hicache_storage_prefetch_policy
@@ -1934,6 +1941,7 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
     assert config.hardware_target == "aws-g5-a10g"
     assert config.stream is False
     assert config.cache_prompt_text_mode == "logical"
+    assert config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
 
     with pytest.raises(ValueError) as exc:
         parse_args(

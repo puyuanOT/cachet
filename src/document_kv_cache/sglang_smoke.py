@@ -98,7 +98,7 @@ DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
 DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE: OpenAICompatibleRequestMode = "chat"
-DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.7
+DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.0
 SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS = {
     "thinking": False,
     "enable_thinking": False,
@@ -732,6 +732,7 @@ def _generate_live_handoff_inputs_in_subprocess(
         "hardware_target": config.hardware_target,
         "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
+        "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
         "handoff_generation": generation.to_metadata(),
     }
@@ -745,6 +746,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
+    DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     SGLangLiveHandoffGenerationConfig,
     SGLangSmokeBenchmarkConfig,
     _generate_live_handoff_inputs,
@@ -771,6 +773,7 @@ config = SGLangSmokeBenchmarkConfig(
     hardware_target=payload["hardware_target"],
     live_check_prompt_format=payload.get("live_check_prompt_format", DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT),
     live_check_request_mode=payload.get("live_check_request_mode", DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE),
+    live_check_temperature=float(payload.get("live_check_temperature", DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE)),
     live_check_extra_body=payload.get("live_check_extra_body", DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY),
     handoff_generation=generation,
 )
@@ -2056,6 +2059,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         choices=("completion", "chat"),
         default=DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     )
+    parser.add_argument(
+        "--live-check-temperature",
+        type=float,
+        default=DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -2116,6 +2124,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         cache_prompt_text_mode=args.cache_prompt_text_mode,
         live_check_prompt_format=args.live_check_prompt_format,
         live_check_request_mode=args.live_check_request_mode,
+        live_check_temperature=args.live_check_temperature,
         handoff_json=args.handoff_json,
         handoff_record=_json_object_option(
             args.handoff_record_json, "--handoff-record-json"

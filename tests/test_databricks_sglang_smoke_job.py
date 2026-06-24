@@ -21,6 +21,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
+    DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
@@ -108,6 +109,8 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
             DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
             "--live-check-request-mode",
             DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
+            "--live-check-temperature",
+            str(DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE),
             "--no-stream",
             "--baseline-only",
             "--hicache-page-store-uri",
@@ -198,6 +201,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert (
         default_config.live_check_request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     )
+    assert default_config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert (
         default_config.live_handoff_generator_factory
         == DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
@@ -221,6 +225,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         generate_live_handoff=True,
         live_handoff_output_dir="/Volumes/catalog/schema/volume/v1-sglang-generated/live-handoff",
         live_handoff_generator_factory="module:factory",
+        live_check_temperature=0.25,
         live_handoff_dtype="float16",
         live_handoff_align_bytes=8,
         sglang_hicache_page_size=2,
@@ -242,6 +247,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         parameters[parameters.index("--live-check-request-mode") + 1]
         == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     )
+    assert parameters[parameters.index("--live-check-temperature") + 1] == "0.25"
     assert parameters[parameters.index("--live-handoff-output-dir") + 1].endswith(
         "/live-handoff"
     )
@@ -281,6 +287,10 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         (
             {"live_check_request_mode": "responses", "baseline_only": True},
             "live_check_request_mode",
+        ),
+        (
+            {"live_check_temperature": True, "baseline_only": True},
+            "live_check_temperature",
         ),
         (
             {
@@ -537,6 +547,8 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
             "--wheel-uri",
             WHEEL_URI,
             "--baseline-only",
+            "--live-check-temperature",
+            "0.25",
             "--spark-env-var",
             "CACHET_SGLANG_TRACE=1",
             "--output-json",
@@ -553,6 +565,8 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
         "--package-wheel-uri",
         WHEEL_URI,
     ]
+    parameters = task["spark_python_task"]["parameters"]
+    assert parameters[parameters.index("--live-check-temperature") + 1] == "0.25"
     assert task["new_cluster"]["spark_env_vars"] == {"CACHET_SGLANG_TRACE": "1"}
     assert "sglang_smoke" in runner_path.read_text(encoding="utf-8")
 
