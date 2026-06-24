@@ -1449,7 +1449,6 @@ def run_live_checks(
     *,
     import_probe_record: Mapping[str, Any] | None = None,
 ) -> dict[str, object]:
-    model_quality_canary = run_sglang_quality_canary(config)
     cache_record: dict[str, object] | None = None
     cache_prefill_log_start_index: int | None = None
     if not config.baseline_only:
@@ -1498,6 +1497,7 @@ def run_live_checks(
     baseline_record = baseline.to_record()
     _record_logical_and_served_model_ids(baseline_record)
     baseline_record["label"] = "baseline_prefill"
+    model_quality_canary = run_sglang_quality_canary(config)
 
     issues = []
     if model_quality_canary.get("ok") is not True:
