@@ -863,13 +863,50 @@ def test_cachet_adapter_submodules_delegate_to_vendored_compatibility_submodules
     for cachet_module_name, adapter_module_name in (
         ("cachet.adapters.vllm.probe", "vllm_kv_injection.probe"),
         ("cachet.adapters.vllm.protocol", "vllm_kv_injection.protocol"),
+        (
+            "cachet.adapters.vllm.vllm_dynamic_connector",
+            "vllm_kv_injection.vllm_dynamic_connector",
+        ),
+        (
+            "cachet.adapters.vllm.vllm_native_provider",
+            "vllm_kv_injection.vllm_native_provider",
+        ),
         ("cachet.adapters.sglang.probe", "sglang_kv_injection.probe"),
         ("cachet.adapters.sglang.protocol", "sglang_kv_injection.protocol"),
+        (
+            "cachet.adapters.sglang.sglang_dynamic_backend",
+            "sglang_kv_injection.sglang_dynamic_backend",
+        ),
+        (
+            "cachet.adapters.sglang.sglang_request_metadata_bridge",
+            "sglang_kv_injection.sglang_request_metadata_bridge",
+        ),
     ):
         cachet_module = importlib.import_module(cachet_module_name)
         adapter_module = importlib.import_module(adapter_module_name)
 
         assert cachet_module is adapter_module
+
+
+def test_cachet_adapter_facades_expose_native_runtime_symbols():
+    from cachet.adapters.sglang.sglang_dynamic_backend import (
+        DocumentKVHiCacheBackend as CachetSGLangBackend,
+    )
+    from cachet.adapters.vllm.vllm_dynamic_connector import (
+        DocumentKVConnector as CachetVLLMConnector,
+    )
+    from cachet.adapters.vllm.vllm_native_provider import (
+        DocumentKVNativeProvider as CachetVLLMProvider,
+    )
+    from sglang_kv_injection.sglang_dynamic_backend import (
+        DocumentKVHiCacheBackend,
+    )
+    from vllm_kv_injection.vllm_dynamic_connector import DocumentKVConnector
+    from vllm_kv_injection.vllm_native_provider import DocumentKVNativeProvider
+
+    assert CachetVLLMConnector is DocumentKVConnector
+    assert CachetVLLMProvider is DocumentKVNativeProvider
+    assert CachetSGLangBackend is DocumentKVHiCacheBackend
 
 
 def test_cachet_adapter_submodules_reuse_preloaded_vendored_submodules():
@@ -884,9 +921,15 @@ def test_cachet_adapter_submodules_reuse_preloaded_vendored_submodules():
                 "sglang_target = importlib.import_module('sglang_kv_injection.probe'); "
                 "vllm_alias = importlib.import_module('cachet.adapters.vllm.probe'); "
                 "sglang_alias = importlib.import_module('cachet.adapters.sglang.probe'); "
+                "vllm_provider_target = importlib.import_module('vllm_kv_injection.vllm_native_provider'); "
+                "sglang_backend_target = importlib.import_module('sglang_kv_injection.sglang_dynamic_backend'); "
+                "vllm_provider_alias = importlib.import_module('cachet.adapters.vllm.vllm_native_provider'); "
+                "sglang_backend_alias = importlib.import_module('cachet.adapters.sglang.sglang_dynamic_backend'); "
                 "print(json.dumps({"
                 "'vllm': vllm_alias is vllm_target, "
-                "'sglang': sglang_alias is sglang_target"
+                "'sglang': sglang_alias is sglang_target, "
+                "'vllm_provider': vllm_provider_alias is vllm_provider_target, "
+                "'sglang_backend': sglang_backend_alias is sglang_backend_target"
                 "}, sort_keys=True))"
             ),
         ],
@@ -896,7 +939,12 @@ def test_cachet_adapter_submodules_reuse_preloaded_vendored_submodules():
         env=env,
     )
 
-    assert json.loads(result.stdout) == {"sglang": True, "vllm": True}
+    assert json.loads(result.stdout) == {
+        "sglang": True,
+        "sglang_backend": True,
+        "vllm": True,
+        "vllm_provider": True,
+    }
 
 
 def test_public_document_submodules_have_curated_star_import_surfaces():

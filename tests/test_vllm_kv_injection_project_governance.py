@@ -33,6 +33,10 @@ def test_vllm_adapter_readme_keeps_engine_boundary_in_cachet_monorepo():
     assert "keep this package close to vllm internals" in package_readme
     assert "vllm.py` aliases the compatibility package `vllm_kv_injection`" in cachet_adapters_readme
     assert "`cachet.adapters.vllm.probe`" in cachet_adapters_readme
+    assert "`cachet.adapters.vllm.vllm_native_provider`" in cachet_adapters_readme
+    assert "`cachet.adapters.sglang.sglang_dynamic_backend`" in cachet_adapters_readme
+    assert "`DocumentKVNativeProvider`" in cachet_adapters_readme
+    assert "`DocumentKVHiCacheBackend`" in cachet_adapters_readme
     assert "same module objects as the vendored compatibility paths" in compact_cachet_adapters_readme
     for out_of_scope_term in (
         "document retrieval",
