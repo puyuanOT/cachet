@@ -29,6 +29,7 @@ from document_kv_cache.databricks_job import (
 )
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
@@ -152,7 +153,7 @@ class DatabricksSGLangSmokeJobConfig:
     live_handoff_generator_factory: str = DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
     live_handoff_dtype: str = "bfloat16"
     live_handoff_align_bytes: int = 4096
-    sglang_hicache_page_size: int = DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+    sglang_hicache_page_size: int | None = None
     live_handoff_generation_timeout_seconds: float = 1800.0
     hicache_page_store_uri: str | None = None
     hicache_ratio: float | None = None
@@ -322,12 +323,19 @@ class DatabricksSGLangSmokeJobConfig:
             or self.live_handoff_align_bytes <= 0
         ):
             raise ValueError("live_handoff_align_bytes must be a positive integer")
-        if (
+        if self.sglang_hicache_page_size is not None and (
             isinstance(self.sglang_hicache_page_size, bool)
             or not isinstance(self.sglang_hicache_page_size, int)
             or self.sglang_hicache_page_size <= 0
         ):
             raise ValueError("sglang_hicache_page_size must be a positive integer")
+        sglang_hicache_page_size = self.sglang_hicache_page_size
+        if sglang_hicache_page_size is None:
+            sglang_hicache_page_size = (
+                DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+                if dataset_specs
+                else DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+            )
         if self.live_handoff_generation_timeout_seconds <= 0:
             raise ValueError("live_handoff_generation_timeout_seconds must be positive")
         sglang_hicache_page_keys: tuple[str, ...] | None = None
@@ -393,6 +401,7 @@ class DatabricksSGLangSmokeJobConfig:
             self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars)
         )
         object.__setattr__(self, "dataset_specs", dataset_specs)
+        object.__setattr__(self, "sglang_hicache_page_size", sglang_hicache_page_size)
         _DEFAULT_CLUSTER_CONFIG_FROM_SGLANG_SMOKE_JOB(self)
 
 
@@ -744,9 +753,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--live-handoff-dtype", default="bfloat16")
     parser.add_argument("--live-handoff-align-bytes", type=int, default=4096)
-    parser.add_argument(
-        "--sglang-hicache-page-size", type=int, default=DEFAULT_SGLANG_HICACHE_PAGE_SIZE
-    )
+    parser.add_argument("--sglang-hicache-page-size", type=int)
     parser.add_argument(
         "--live-handoff-generation-timeout-seconds", type=float, default=1800.0
     )

@@ -31,6 +31,7 @@ from document_kv_cache.models import KVCacheKey
 from document_kv_cache.sglang_smoke import (
     CACHET_MODEL_ID,
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
@@ -91,34 +92,67 @@ from sglang_kv_injection.sglang_dynamic_backend import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def handoff_record(*, request_id: str, payload_uri: str) -> dict[str, object]:
+def handoff_record(
+    *,
+    request_id: str,
+    payload_uri: str,
+    block_size: int = 2,
+    total_tokens: int = 4,
+) -> dict[str, object]:
+    total_bytes = total_tokens * 4
     layout = KVLayout(
         model_id="tiny-test-model",
         lora_id="base",
         layout_version="standard-v1",
         dtype="int8",
         num_layers=1,
-        block_size=2,
+        block_size=block_size,
         bytes_per_token=4,
     )
     handle = KVCacheHandle(
         request_id=request_id,
         handle_uri=f"document-kv://{request_id}",
         layout=layout,
-        segments=(KVSegment("doc-1", "document_static", "static", 0, 1, 0, 4),),
-        total_tokens=1,
-        total_bytes=4,
+        segments=(
+            KVSegment(
+                "doc-1",
+                "document_static",
+                "static",
+                0,
+                total_tokens,
+                0,
+                total_bytes,
+            ),
+        ),
+        total_tokens=total_tokens,
+        total_bytes=total_bytes,
     )
-    ready = EngineReadyRequest(handle=handle, payload=b"data", estimated_gpu_bytes=4)
+    ready = EngineReadyRequest(
+        handle=handle,
+        payload=b"\0" * total_bytes,
+        estimated_gpu_bytes=total_bytes,
+    )
     adapter_request = build_engine_adapter_request(ready, spec=sglang_adapter_spec())
     return engine_adapter_request_to_record(adapter_request, payload_uri=payload_uri)
 
 
-def write_handoff_json(path: Path, *, request_id: str, payload_uri: str) -> None:
+def write_handoff_json(
+    path: Path,
+    *,
+    request_id: str,
+    payload_uri: str,
+    block_size: int = 2,
+    total_tokens: int = 4,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            handoff_record(request_id=request_id, payload_uri=payload_uri),
+            handoff_record(
+                request_id=request_id,
+                payload_uri=payload_uri,
+                block_size=block_size,
+                total_tokens=total_tokens,
+            ),
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -129,13 +163,22 @@ def write_prepared_sglang_v1_datasets(
     root: Path,
     *,
     missing_page_keys_for: str | None = None,
+    page_key_count: int = 2,
 ) -> tuple[str, ...]:
+    layout = layout_for_model(CACHET_MODEL_ID)
+    total_tokens = layout.block_size * 2
     specs: list[str] = []
     for dataset in SUPPORTED_V1_DATASETS:
         request_id = f"cachet-{dataset}-prepared-1"
         handoff_path = root / "handoffs" / dataset / "example-1.handoff.json"
         payload_uri = f"disk:{root / 'payloads' / dataset / 'example-1.kv'}"
-        write_handoff_json(handoff_path, request_id=request_id, payload_uri=payload_uri)
+        write_handoff_json(
+            handoff_path,
+            request_id=request_id,
+            payload_uri=payload_uri,
+            block_size=layout.block_size,
+            total_tokens=total_tokens,
+        )
         kv_transfer_params: dict[str, object] = {
             DOCUMENT_KV_REQUEST_ID_PARAM: request_id,
             DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
@@ -143,8 +186,8 @@ def write_prepared_sglang_v1_datasets(
         }
         if dataset != missing_page_keys_for:
             kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = [
-                f"{dataset}-page-1",
-                f"{dataset}-page-2",
+                f"{dataset}-page-{index}"
+                for index in range(1, page_key_count + 1)
             ]
         dataset_path = root / "datasets" / f"{dataset}.jsonl"
         dataset_path.parent.mkdir(parents=True, exist_ok=True)
@@ -668,6 +711,7 @@ def test_sglang_smoke_accepts_prepared_v1_dataset_specs_for_live_benchmark(tmp_p
     assert config.uses_prepared_datasets is True
     assert config.dataset_specs == dataset_specs
     assert config.live_benchmark_repeats == 1
+    assert config.hicache_page_size == DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
     assert config.prepared_handoff_coverage_path == (
         tmp_path / "out" / "prepared-sglang-handoff-coverage.json"
     )
@@ -778,6 +822,47 @@ def test_prepared_sglang_benchmark_handoff_coverage_requires_page_keys(tmp_path)
     assert json.loads(
         invalid_config.prepared_handoff_coverage_path.read_text(encoding="utf-8")
     ) == invalid_record
+
+    mismatch_config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "mismatch-out",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+        hicache_page_size=1,
+    )
+    mismatch_record = prepared_sglang_benchmark_handoff_coverage_record(
+        mismatch_config,
+        benchmark_dataset_paths(mismatch_config),
+    )
+    assert mismatch_record["ok"] is False
+    assert len(mismatch_record["invalid_handoff_references"]) == len(
+        SUPPORTED_V1_DATASETS
+    )
+    assert "must match handoff handle.layout.block_size" in mismatch_record[
+        "invalid_handoff_references"
+    ][0]["error"]
+
+    short_page_key_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared-short-page-keys",
+        page_key_count=1,
+    )
+    short_page_key_config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "short-page-keys-out",
+        dataset_specs=short_page_key_specs,
+        live_benchmark_repeats=1,
+    )
+    short_page_key_record = prepared_sglang_benchmark_handoff_coverage_record(
+        short_page_key_config,
+        benchmark_dataset_paths(short_page_key_config),
+    )
+    assert short_page_key_record["ok"] is False
+    assert len(short_page_key_record["invalid_handoff_references"]) == len(
+        SUPPORTED_V1_DATASETS
+    )
+    assert "has 1 keys" in short_page_key_record["invalid_handoff_references"][0][
+        "error"
+    ]
 
 
 def test_parse_args_accepts_live_check_extra_body_json(tmp_path):
@@ -2214,17 +2299,17 @@ def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
         events.append(
             f"{request.example.dataset}:{'cache' if use_cache_arm else 'baseline'}"
         )
-        prompt_tokens = 12
+        prompt_tokens = 40
         completion_tokens = 2
         expected_answer = request.example.expected_answer or ""
         if use_cache_arm:
             with live_config.server_log_path.open("a", encoding="utf-8") as handle:
-                handle.write("[INFO] Prefill batch, #new-token: 10, #cached-token: 2\n")
+                handle.write("[INFO] Prefill batch, #new-token: 8, #cached-token: 32\n")
             ttft_seconds = 0.1
             time_to_completion_seconds = 0.2
         else:
             with live_config.server_log_path.open("a", encoding="utf-8") as handle:
-                handle.write("[INFO] Prefill batch, #new-token: 12, #cached-token: 0\n")
+                handle.write("[INFO] Prefill batch, #new-token: 40, #cached-token: 0\n")
             ttft_seconds = 0.4
             time_to_completion_seconds = 0.6
         return public_sglang_smoke.LiveServerCheckResult(
@@ -2285,11 +2370,11 @@ def test_run_sglang_live_benchmark_uses_prepared_v1_dataset_requests(
     assert [
         item["minimum_cached_tokens"]
         for item in record["cache_hit_validations"]
-    ] == [2, 2, 2, 2]
+    ] == [32, 32, 32, 32]
     assert [
         item["cache_request_cached_tokens"]
         for item in record["cache_hit_validations"]
-    ] == [2, 2, 2, 2]
+    ] == [32, 32, 32, 32]
     assert events == [
         item
         for dataset in SUPPORTED_V1_DATASETS

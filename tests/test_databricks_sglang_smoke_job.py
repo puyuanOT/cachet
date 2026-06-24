@@ -17,6 +17,7 @@ from document_kv_cache.databricks_sglang_smoke_job import (
 )
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
@@ -320,6 +321,26 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
 
 
 def test_databricks_sglang_smoke_config_supports_prepared_v1_datasets():
+    default_config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="v1-sglang-prepared-defaults",
+        output_dir="/Volumes/catalog/schema/volume/v1-sglang-prepared",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        dataset_specs=DATASET_SPECS,
+        live_benchmark_repeats=1,
+    )
+    default_parameters = build_databricks_sglang_smoke_run_submit_payload(
+        default_config
+    )["tasks"][0]["spark_python_task"]["parameters"]
+
+    assert (
+        default_config.sglang_hicache_page_size
+        == DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+    )
+    assert default_parameters[
+        default_parameters.index("--sglang-hicache-page-size") + 1
+    ] == str(DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE)
+
     config = DatabricksSGLangSmokeJobConfig(
         benchmark_id="v1-sglang-prepared",
         output_dir="/Volumes/catalog/schema/volume/v1-sglang-prepared",
@@ -790,7 +811,9 @@ def test_main_writes_prepared_v1_dataset_parameters(tmp_path):
     ]
     assert [parameters[index + 1] for index in dataset_positions] == list(DATASET_SPECS)
     assert parameters[parameters.index("--live-benchmark-repeats") + 1] == "1"
-    assert parameters[parameters.index("--sglang-hicache-page-size") + 1] == "1"
+    assert parameters[parameters.index("--sglang-hicache-page-size") + 1] == str(
+        DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+    )
     assert "--baseline-only" not in parameters
     assert "--generate-live-handoff" not in parameters
 

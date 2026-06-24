@@ -982,10 +982,14 @@ cachet-benchmark-handoff-bundles \
 
 These generated keys match the standard V1 plain cache prefix assembled by
 Cachet's benchmark dataset helpers. The HiCache page size must match the KV
-layout block size, and Cachet emits keys only for full payload pages. Run the
-prepared SGLang live path with the matching plain prompt format, or provide
-prompt-format-specific page-key metadata through the manifest template when the
-runtime prompt uses a chat template.
+layout block size, and Cachet emits keys only for full payload pages. The
+prepared SGLang smoke defaults its runtime HiCache page size to the built-in
+Qwen3 V1 layout block size (`16`) and fails before server startup if any
+prepared handoff uses a different block size or a page-key count that does not
+cover every full payload page. Run the prepared SGLang live path with the
+matching plain prompt format, or provide prompt-format-specific page-key
+metadata through the manifest template when the runtime prompt uses a chat
+template.
 
 The bundle CLI derives the default `qwen3:4b-instruct` layout from the built-in
 model profile. For custom models, pass the complete manual layout flags:
@@ -1453,7 +1457,9 @@ python -m document_kv_cache.databricks_sglang_smoke_job \
 Use `--baseline-only` instead of `--generate-live-handoff` for provider/server
 bring-up, or pass `--handoff-json`/`--handoff-record-json` plus
 `--sglang-hicache-page-keys-json` when reusing an already validated SGLang
-handoff bundle.
+handoff bundle. For prepared V1 datasets, the Databricks helper uses the same
+Qwen3 V1 page-size default (`16`) unless `--sglang-hicache-page-size` is passed
+explicitly.
 
 After the real V1 benchmark, storage benchmark, and native vLLM/SGLang probe
 runs complete, validate the collected release artifacts:
