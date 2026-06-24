@@ -864,11 +864,45 @@ def _sglang_hicache_page_binding(
     if runtime_keys is None:
         return None
     prefix_keys = request_context.prefix_keys
-    first_page_index = len(prefix_keys)
-    if first_page_index > len(expected_page_keys):
+    if prefix_keys:
+        first_page_index = len(prefix_keys)
+        if first_page_index > len(expected_page_keys):
+            return None
+        if prefix_keys != expected_page_keys[:first_page_index]:
+            return None
+        return _sglang_hicache_page_binding_from_offset(
+            runtime_keys,
+            expected_page_keys,
+            first_page_index,
+        )
+    return _sglang_hicache_page_binding_by_runtime_keys(runtime_keys, expected_page_keys)
+
+
+def _sglang_hicache_page_binding_by_runtime_keys(
+    runtime_keys: tuple[str, ...],
+    expected_page_keys: tuple[str, ...],
+) -> tuple[int, int] | None:
+    if not runtime_keys:
         return None
-    if prefix_keys != expected_page_keys[:first_page_index]:
-        return None
+    first_runtime_key = runtime_keys[0]
+    for first_page_index, expected_page_key in enumerate(expected_page_keys):
+        if first_runtime_key != expected_page_key:
+            continue
+        binding = _sglang_hicache_page_binding_from_offset(
+            runtime_keys,
+            expected_page_keys,
+            first_page_index,
+        )
+        if binding is not None:
+            return binding
+    return None
+
+
+def _sglang_hicache_page_binding_from_offset(
+    runtime_keys: tuple[str, ...],
+    expected_page_keys: tuple[str, ...],
+    first_page_index: int,
+) -> tuple[int, int] | None:
     available_count = len(expected_page_keys) - first_page_index
     key_count = min(len(runtime_keys), available_count)
     if key_count <= 0:
