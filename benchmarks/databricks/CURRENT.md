@@ -47,8 +47,10 @@ the Qwen-sampling cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/),
 the chat-completions cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/),
-and the current no-thinking cache-hit quality failure tracked at
-[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/).
+the no-thinking cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/),
+and the current deterministic no-thinking cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
 decode-time prefix binding with Cachet handoffs, hydrates all matching
