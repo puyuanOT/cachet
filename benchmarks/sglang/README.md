@@ -9,6 +9,7 @@ published full SGLang latency or throughput benchmark suite.
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
+| Latest prepared V1 attempt | `514040136831626` | [`2026-06-24-g6-l4-prepared-v1-config-swap-failure/`](2026-06-24-g6-l4-prepared-v1-config-swap-failure/) | The PR #497 wheel was present, import probe and request metadata bridge passed on an NVIDIA L4, and prepared handoff generation succeeded for Biography, HotpotQA, MusiQue, and NIAH. The run failed before SGLang server launch and before benchmark rows were written because the generated prepared dataset config swap preserved normalized single-request handoff fields. It is not a benchmark result; it identifies the next local code fix before rerunning Databricks. |
 | Latest synthetic live benchmark | `238535418152934` | [`2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/`](2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/) | The PR #492 wheel was present, import probe and request metadata bridge passed, generated live handoff creation used deterministic no-thinking Qwen-chat controls, the smoke passed baseline/cache/canary quality gates, the opt-in live benchmark wrote `cachet.sglang_live_benchmark.v1`, both cache repeats validated 175 cached tokens, and quality stayed unchanged. This tiny synthetic prompt did not show a speedup: TTFT speedup was `0.875x` and time-to-completion speedup was `0.926x`. It is not the full four-dataset release benchmark suite. |
 | Latest successful live handoff smoke | `134006212072875` | [`2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/) | The PR #490 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used deterministic no-thinking controls, the smoke ran a clean baseline first, `/flush_cache` returned HTTP 200 before the cache arm, SGLang reported a full 175-token cache-arm hit covering the generated prefix, baseline and cache-arm outputs both returned `otkv7391`, `/flush_cache` returned HTTP 200 before the canary, and the canary produced `cachet-green` with zero cached tokens. This is a readiness pass, not a latency or throughput benchmark suite. |
 | Previous failed live handoff smoke | `655273897262076` | [`2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/) | The PR #488 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with deterministic no-thinking controls, SGLang reported a full 175-token cache-arm hit covering that generated prefix, `/flush_cache` returned HTTP 200 before the post-live-check canary, and the canary passed with zero cached tokens, but baseline and cache-arm quality still failed. It is not a benchmark result. |
@@ -54,6 +55,11 @@ when all patch points install.
 Those helpers are a live readiness path, not a latency or throughput benchmark
 suite. The current successful generated-handoff Databricks smoke is tracked in
 [`2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/).
+The current prepared four-dataset SGLang V1 Databricks attempt is tracked in
+[`2026-06-24-g6-l4-prepared-v1-config-swap-failure/`](2026-06-24-g6-l4-prepared-v1-config-swap-failure/):
+it generated all prepared handoffs on g6/L4, then failed before server launch
+because the generated prepared dataset config swap carried single-request
+handoff fields into prepared dataset validation.
 Pass `--live-benchmark-repeats N` on a handoff-backed smoke to run repeated
 post-smoke baseline/cache measurements in the same SGLang server lifetime and
 write `sglang-live-benchmark.json` with record type

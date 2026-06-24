@@ -1160,6 +1160,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-benchmark-synthetic-niah-success"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_prepared_v1_config_swap_failure_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1320,6 +1326,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             / "success_run.json"
         ).read_text(encoding="utf-8")
     )
+    sglang_prepared_v1_config_swap_failure_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1337,6 +1351,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_benchmark_template_readme = " ".join(benchmark_template_readme.split())
     compact_sglang_live_benchmark_success_readme = " ".join(
         sglang_live_benchmark_success_readme.split()
+    )
+    compact_sglang_prepared_v1_config_swap_failure_readme = " ".join(
+        sglang_prepared_v1_config_swap_failure_readme.split()
     )
     compact_databricks_readme = " ".join(databricks_readme.split())
     compact_matrix_text = " ".join(matrix_text.split())
@@ -2195,6 +2212,65 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         sglang_live_benchmark_success_readme
     )
     assert "Raw Databricks API responses" in compact_sglang_live_benchmark_success_readme
+    assert "Prepared V1 Attempt: Config Swap Failure" in (
+        sglang_prepared_v1_config_swap_failure_readme
+    )
+    assert "standalone benchmark-readiness evidence, not `pr-evidence/`" in (
+        compact_sglang_prepared_v1_config_swap_failure_readme
+    )
+    assert "generate SGLang prepared handoff JSONLs for Biography, HotpotQA" in (
+        compact_sglang_prepared_v1_config_swap_failure_readme
+    )
+    assert "before server launch" in sglang_prepared_v1_config_swap_failure_readme
+    assert "generated prepared-dataset config swap" in (
+        sglang_prepared_v1_config_swap_failure_readme
+    )
+    assert (
+        "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
+        in compact_sglang_readme
+    )
+    assert (
+        "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
+        in compact_snapshot
+    )
+    assert sglang_prepared_v1_config_swap_failure_run["record_type"] == (
+        "cachet.benchmark_failed_databricks_smoke.v1"
+    )
+    assert sglang_prepared_v1_config_swap_failure_run["benchmark_result"] == (
+        "not_published"
+    )
+    assert sglang_prepared_v1_config_swap_failure_run["failure_type"] == (
+        "sglang_prepared_v1_generated_dataset_config_swap"
+    )
+    assert sglang_prepared_v1_config_swap_failure_run["cachet_commit"] == "054b721"
+    assert (
+        sglang_prepared_v1_config_swap_failure_run["databricks_run"]["run_id"]
+        == 514040136831626
+    )
+    assert (
+        sglang_prepared_v1_config_swap_failure_run["task"]["run_id"]
+        == 799338455029344
+    )
+    assert sglang_prepared_v1_config_swap_failure_run["integration_checks"][
+        "document_kv_request_metadata_bridge_ok"
+    ] is True
+    assert sglang_prepared_v1_config_swap_failure_run["integration_checks"][
+        "cuda_device_name"
+    ] == "NVIDIA L4"
+    assert sglang_prepared_v1_config_swap_failure_run[
+        "prepared_handoff_generation"
+    ]["ok"] is True
+    assert sglang_prepared_v1_config_swap_failure_run[
+        "prepared_handoff_generation"
+    ]["datasets"] == {
+        "biography": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
+        "hotpotqa": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
+        "musique": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
+        "niah": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
+    }
+    assert sglang_prepared_v1_config_swap_failure_run["server_launch"][
+        "attempted"
+    ] is False
     assert sglang_live_benchmark_success_run["record_type"] == (
         "cachet.benchmark_successful_sglang_live_benchmark.v1"
     )
@@ -2797,6 +2873,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/README.md",
         "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/success_run.json",
         "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/README.md",
+        "sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/failed_run.json",
+        "sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/README.md",
         "sglang/README.md",
         "storage/README.md",
         "storage/2026-06-21-g6-l4-storage-readers/README.md",

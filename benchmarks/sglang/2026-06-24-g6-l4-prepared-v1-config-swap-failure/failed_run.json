@@ -1,0 +1,99 @@
+{
+  "benchmark_result": "not_published",
+  "blocker": "Prepared handoff generation succeeded for all four SGLang V1 datasets, but run_sglang_live_smoke preserved normalized single-request handoff fields while swapping to the generated prepared dataset specs. Prepared dataset validation rejected the mixed config before SGLang server launch and before benchmark rows were written.",
+  "cachet_commit": "054b721",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 514040136831626,
+    "run_name": "Cachet SGLang prepared V1 sglang-prepared-v1-g6-054b721-20260624_122945",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/1091662645502666/run/514040136831626",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure": {
+    "error": "prepared SGLang benchmark datasets must not be combined with single live handoff fields",
+    "error_type": "ValueError",
+    "phase": "post_generation_pre_server_config_validation"
+  },
+  "failure_type": "sglang_prepared_v1_generated_dataset_config_swap",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cuda_available": true,
+    "cuda_device_count": 1,
+    "cuda_device_name": "NVIDIA L4",
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_provider_factory": "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider",
+    "document_kv_provider_type": "sglang_kv_injection.sglang_dynamic_backend.DocumentKVHiCachePageProvider",
+    "document_kv_request_metadata_bridge_ok": true,
+    "document_kv_requires_native_runtime": true,
+    "sglang_import_probe_ok": true,
+    "sglang_version": "0.5.10.post1",
+    "torch_version": "2.9.1+cu128"
+  },
+  "mode": "prepared-sglang-v1-generated-handoffs",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "1bcb3b3f9cff17dfa5a9a6267a9341aa1749377f843afeff43e3846d095fb5b1"
+  },
+  "prepared_handoff_generation": {
+    "align_bytes": 4096,
+    "backend": "sglang",
+    "datasets": {
+      "biography": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      },
+      "hotpotqa": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      },
+      "musique": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      },
+      "niah": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      }
+    },
+    "dtype": "bfloat16",
+    "ok": true,
+    "page_size": 16
+  },
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "request_shape": {
+    "live_benchmark_repeats": 2,
+    "live_check_prompt_format": "plain",
+    "live_check_request_mode": "completion",
+    "sglang_attention_backend": "triton",
+    "sglang_enable_deterministic_inference": true,
+    "sglang_hicache_page_size": 16,
+    "sglang_sampling_backend": "pytorch"
+  },
+  "server_launch": {
+    "attempted": false,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "hicache_storage_prefetch_threshold": 1,
+    "page_size": 16
+  },
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "cluster_id": "0624-123009-hvnjfe36",
+    "driver_node_type_id": "g6.8xlarge",
+    "life_cycle_state": "TERMINATED",
+    "node_type_id": "g6.8xlarge",
+    "result_state": "FAILED",
+    "run_id": 799338455029344,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}
