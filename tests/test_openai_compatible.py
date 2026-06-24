@@ -158,6 +158,12 @@ def test_streaming_completion_engine_measures_ttft_and_uses_logical_prompt_by_de
     assert generation.metadata["logical_prompt_tokens"] == "99"
     assert generation.metadata["runtime_prompt_tokens"] == "99"
     assert generation.metadata["kv_transfer_params_attached"] == "false"
+    assert generation.metadata["request_payload_endpoint"] == "/v1/completions"
+    assert generation.metadata["request_payload_max_token_fields"] == "max_tokens"
+    assert generation.metadata["request_payload_max_tokens"] == "32"
+    assert generation.metadata["request_payload_prompt_chars"] == str(
+        len(benchmark_request().logical_prompt_text)
+    )
     assert "request_id" not in generation.metadata
     request_body = engine.payloads[0]
     assert request_body["prompt"] == benchmark_request().logical_prompt_text
@@ -227,6 +233,10 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
     assert engine.payloads[0]["cache_salt"] == "cachet-kv-cache"
     assert generation.metadata["kv_transfer_params_attached"] == "true"
     assert generation.metadata["request_id"] == "cachet-bio-1"
+    assert generation.metadata["request_payload_kv_transfer_param_keys"] == (
+        "document_kv.handoff_json,document_kv.payload_uri,"
+        "document_kv.prompt_text_mode,document_kv.request_id"
+    )
     assert generation.metadata["prefix_cache_salt_attached"] == "true"
     assert generation.metadata["prefix_cache_salt"] == "cachet-kv-cache"
 
@@ -265,6 +275,13 @@ def test_custom_params_transport_sends_sglang_compatible_kv_transfer_params():
     }
     assert generation.metadata["kv_transfer_params_attached"] == "true"
     assert generation.metadata["request_id"] == "cachet-bio-1"
+    assert generation.metadata["request_payload_custom_param_keys"] == (
+        "existing,kv_transfer_params"
+    )
+    assert generation.metadata["request_payload_kv_transfer_param_keys"] == (
+        "document_kv.handoff_json,document_kv.payload_uri,"
+        "document_kv.prompt_text_mode,document_kv.request_id"
+    )
 
 
 def test_chat_request_mode_sends_chat_completions_payload():
@@ -307,6 +324,17 @@ def test_chat_request_mode_sends_chat_completions_payload():
     assert generation.output_text == "Ada Lovelace"
     assert generation.metadata["request_mode"] == "chat"
     assert generation.metadata["server_usage_prompt_tokens"] == "17"
+    assert generation.metadata["request_payload_endpoint"] == "/v1/chat/completions"
+    assert (
+        generation.metadata["request_payload_max_token_fields"]
+        == "max_completion_tokens"
+    )
+    assert generation.metadata["request_payload_max_completion_tokens"] == "9"
+    assert generation.metadata["request_payload_message_count"] == "2"
+    assert generation.metadata["request_payload_message_roles"] == "system,user"
+    assert generation.metadata["request_payload_message_content_chars"] == (
+        f"14,{len(benchmark_request().logical_prompt_text)}"
+    )
 
 
 def test_chat_request_mode_preserves_sglang_custom_params_transport():
@@ -350,6 +378,15 @@ def test_chat_request_mode_preserves_sglang_custom_params_transport():
     assert generation.metadata["request_mode"] == "chat"
     assert generation.metadata["kv_transfer_params_attached"] == "true"
     assert generation.metadata["request_id"] == "cachet-bio-1"
+    assert generation.metadata["request_payload_message_count"] == "1"
+    assert generation.metadata["request_payload_message_roles"] == "user"
+    assert generation.metadata["request_payload_custom_param_keys"] == (
+        "existing,kv_transfer_params"
+    )
+    assert generation.metadata["request_payload_kv_transfer_param_keys"] == (
+        "document_kv.handoff_json,document_kv.payload_uri,"
+        "document_kv.prompt_text_mode,document_kv.request_id"
+    )
 
 
 def test_extra_body_factory_can_vary_prefix_cache_salt_per_request():
