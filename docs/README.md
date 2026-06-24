@@ -8,6 +8,12 @@ notes under `src/`.
 
 - `v1-requirements-matrix.md` maps the generalized document KV-cache goal to
   current repository evidence and remaining V1 release gaps.
+- `repo-map.md` is the human navigation map for source packages, benchmarks,
+  durable evidence, PR traceability, Databricks templates, and ignored local
+  run output.
+- `evidence-policy.md` defines which machine-readable records belong in
+  `benchmarks/`, `evidence/`, `pr-evidence/`, release bundles, or ignored
+  `databricks-runs/` scratch space.
 - `legacy-compatibility-removal.md` records the machine-checkable proof that
   the source-only `restaurant_kv_serving` compatibility directory was removed;
   the current downstream migration evidence lives under

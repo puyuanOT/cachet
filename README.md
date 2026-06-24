@@ -73,6 +73,23 @@ Source-checkout compatibility import paths remain temporarily for migration
 history, but legacy command aliases are not part of built wheels. New
 user-facing code should start with `cachet` and `cachet-*`.
 
+## Repository Navigation
+
+Cachet keeps the core package, thin serving-engine adapters, benchmark reports,
+and release evidence in one repository. The human entry points are:
+
+- [`docs/repo-map.md`](docs/repo-map.md) explains the top-level folders and the
+  preferred reading paths for users, serving maintainers, and release operators.
+- [`docs/evidence-policy.md`](docs/evidence-policy.md) explains what belongs in
+  `benchmarks/`, `evidence/`, `pr-evidence/`, release bundles, and ignored
+  `databricks-runs/` scratch output.
+- [`benchmarks/current/README.md`](benchmarks/current/) is the concise current
+  benchmark answer; [`benchmarks/README.md`](benchmarks/README.md) indexes the
+  standalone human-readable benchmark report folders.
+- [`src/cachet/README.md`](src/cachet/) describes the Cachet-branded public
+  facade; [`src/document_kv_cache/README.md`](src/document_kv_cache/) describes
+  the implementation package and migration boundary.
+
 ## Purpose And Scope
 
 Cachet targets applications that repeatedly serve long, mostly stable document

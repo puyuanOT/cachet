@@ -1,0 +1,42 @@
+{
+  "files": {
+    "pr-evidence/repository-information-architecture/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "Banach the 3rd found that the newly linked docs were untracked, that docs/repo-map.md used ambiguous 'one package' wording, and that the new policy docs lacked governance coverage. The docs will be tracked with the PR, wording now says one project and one distribution package, and tests/test_project_governance.py pins the new repository-map and evidence-policy boundaries.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": null,
+      "pull_request_url": "",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "docs/README.md",
+        "docs/repo-map.md",
+        "docs/evidence-policy.md",
+        "tests/test_project_governance.py",
+        "pr-evidence/repository-information-architecture"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_project_governance.py::test_repository_map_and_evidence_policy_are_documented -q -> 1 passed",
+        "poetry run pytest tests/test_project_governance.py -q -> 51 passed",
+        "poetry check --lock -> All set",
+        "git diff --check -> passed",
+        "local markdown link check over README.md, docs/README.md, docs/repo-map.md, and docs/evidence-policy.md -> all local links resolve",
+        "poetry run cachet-pr-evidence --validate-directory pr-evidence --output-json /tmp/cachet-pr-evidence-validation-docs.json -> ok=true, 306 files",
+        "Banach the 3rd review found untracked-doc, wording, and test-coverage notes; wording and coverage were fixed, and the new docs will be tracked with this PR"
+      ],
+      "what_changed": [
+        "Added docs/repo-map.md as the top-level navigation map for Cachet source packages, adapters, benchmarks, durable evidence, PR evidence, Databricks templates, and ignored run scratch output.",
+        "Added docs/evidence-policy.md to define which sanitized records belong in benchmarks, evidence, pr-evidence, release bundles, or ignored databricks-runs output.",
+        "Linked the new navigation and evidence-policy docs from the root README and docs index.",
+        "Added governance coverage pinning the new docs and their benchmark/evidence/pr-evidence/databricks-runs boundaries."
+      ],
+      "why": "Make Cachet easier to navigate as a one-repository project without deleting durable release evidence or forcing users to inspect machine-readable PR traceability folders."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
