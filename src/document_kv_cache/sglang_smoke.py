@@ -45,7 +45,7 @@ from document_kv_cache.serving_env import (
     SGLANG_SERVING_ENVIRONMENT_PROFILE,
     SGLANG_VERSION,
 )
-from document_kv_cache.workflow import CacheBuildConfig, DocumentKVWorkflow
+from document_kv_cache.workflow import CacheBuildConfig, DocumentKVWorkflow, SourceDocument
 from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_BACKEND_CLASS,
@@ -77,6 +77,7 @@ DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
+MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO = 0.8
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
 SGLANG_SERVER_PREFILL_TOKEN_PATTERN = re.compile(r"#new-token:\s*(\d+),\s*#cached-token:\s*(\d+)")
@@ -672,9 +673,19 @@ def _generate_live_handoff_inputs(
         live_request.example,
         prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX,
     )
+    original_source_chunk = source_document.chunks[0]
+    source_token_ids = _token_ids_for_generator(generator, original_source_chunk.text)
+    runtime_token_ids = _token_ids_for_generator(generator, live_request.logical_prompt_text)
+    source_document, cache_prefix_token_ids = _token_stable_handoff_source_document(
+        generator,
+        source_document=source_document,
+        source_token_ids=source_token_ids,
+        runtime_token_ids=runtime_token_ids,
+        page_size=generation.page_size,
+    )
     source_chunk = source_document.chunks[0]
     page_keys = sglang_hicache_page_keys(
-        _token_ids_for_generator(generator, source_chunk.text),
+        cache_prefix_token_ids,
         page_size=generation.page_size,
     )
     if not page_keys:
@@ -735,7 +746,14 @@ def _generate_live_handoff_inputs(
         "sglang_hicache_page_keys": list(page_keys),
         "sglang_hicache_page_size": generation.page_size,
         "cache_prefix_chars": len(source_chunk.text),
+        "cache_prefix_source_chars": len(original_source_chunk.text),
         "cache_prefix_tokens": ready.handle.total_tokens,
+        "cache_prefix_source_tokens": len(source_token_ids),
+        "runtime_prompt_tokens": len(runtime_token_ids),
+        "cache_prefix_full_pages": len(cache_prefix_token_ids) // generation.page_size,
+        "cache_prefix_token_stable_ratio": len(cache_prefix_token_ids) / len(source_token_ids),
+        "cache_prefix_token_stable": len(cache_prefix_token_ids) == len(source_token_ids),
+        "cache_prefix_token_stable_truncated": len(cache_prefix_token_ids) < len(source_token_ids),
         "generator_factory": generation.generator_factory,
         "output_dir": str(generation.output_dir),
         "dtype": generation.dtype,
@@ -787,6 +805,98 @@ def _config_with_generated_live_handoff(
         sglang_hicache_page_keys=page_keys,
         handoff_generation=None,
     )
+
+
+def _token_stable_handoff_source_document(
+    generator: object,
+    *,
+    source_document: SourceDocument,
+    source_token_ids: tuple[int, ...],
+    runtime_token_ids: tuple[int, ...],
+    page_size: int,
+) -> tuple[SourceDocument, tuple[int, ...]]:
+    if page_size <= 0:
+        raise ValueError("SGLang live handoff page_size must be positive")
+    stable_token_ids = _common_token_prefix(source_token_ids, runtime_token_ids)
+    if not stable_token_ids:
+        raise RuntimeError("SGLang live handoff prefix is not a token prefix of the runtime prompt")
+    stable_token_ids = _full_page_token_prefix(stable_token_ids, page_size=page_size)
+    if not stable_token_ids:
+        raise RuntimeError("SGLang live handoff token-stable prefix has no full HiCache pages")
+    _require_minimum_stable_token_ratio(stable_token_ids, source_token_ids)
+    if len(stable_token_ids) == len(source_token_ids):
+        return source_document, stable_token_ids
+    stable_text, stable_token_ids = _decode_round_trippable_token_prefix(
+        generator,
+        stable_token_ids,
+        page_size=page_size,
+    )
+    _require_minimum_stable_token_ratio(stable_token_ids, source_token_ids)
+    source_chunk = source_document.chunks[0]
+    return (
+        SourceDocument.from_text(
+            document_id=source_document.document_id,
+            text=stable_text,
+            chunk_id=source_chunk.chunk_id,
+            chunk_type=source_chunk.chunk_type,
+            metadata=source_document.metadata,
+            chunk_metadata=source_chunk.metadata,
+        ),
+        stable_token_ids,
+    )
+
+
+def _common_token_prefix(left: Sequence[int], right: Sequence[int]) -> tuple[int, ...]:
+    common: list[int] = []
+    for left_token, right_token in zip(left, right):
+        if left_token != right_token:
+            break
+        common.append(left_token)
+    return tuple(common)
+
+
+def _full_page_token_prefix(token_ids: tuple[int, ...], *, page_size: int) -> tuple[int, ...]:
+    token_count = len(token_ids) - (len(token_ids) % page_size)
+    return token_ids[:token_count]
+
+
+def _require_minimum_stable_token_ratio(
+    stable_token_ids: tuple[int, ...],
+    source_token_ids: tuple[int, ...],
+) -> None:
+    stable_ratio = len(stable_token_ids) / len(source_token_ids)
+    if stable_ratio < MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO:
+        raise RuntimeError(
+            "SGLang live handoff token-stable prefix is too small: "
+            f"{len(stable_token_ids)}/{len(source_token_ids)} tokens "
+            f"({stable_ratio:.3f}) is below required ratio "
+            f"{MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO:.3f}"
+        )
+
+
+def _decode_round_trippable_token_prefix(
+    generator: object,
+    token_ids: tuple[int, ...],
+    *,
+    page_size: int,
+) -> tuple[str, tuple[int, ...]]:
+    for end in range(len(token_ids), 0, -page_size):
+        candidate_token_ids = token_ids[:end]
+        text = _decode_token_ids_for_generator(generator, candidate_token_ids)
+        if _token_ids_for_generator(generator, text) == candidate_token_ids:
+            return text, candidate_token_ids
+    raise RuntimeError("SGLang live handoff stable token prefix cannot be decoded losslessly")
+
+
+def _decode_token_ids_for_generator(generator: object, token_ids: Sequence[int]) -> str:
+    tokenizer = getattr(generator, "tokenizer", None)
+    decode = getattr(tokenizer, "decode", None)
+    if not callable(decode):
+        raise TypeError("SGLang live handoff tokenizer must expose decode for token-stable prefixes")
+    text = decode(list(token_ids), skip_special_tokens=False)
+    if not isinstance(text, str) or not text:
+        raise ValueError("SGLang live handoff tokenizer decode must return non-empty text")
+    return text
 
 
 def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
@@ -956,6 +1066,7 @@ def require_sglang_cache_hit(
         cache_request_prompt_tokens=_cache_request_prompt_tokens(record),
         cache_prompt_text_mode=config.cache_prompt_text_mode,
         cache_request_prefill_start_index=_cache_prefill_log_start_index(record),
+        minimum_cached_tokens=_generated_live_handoff_cache_prefix_tokens(config.live_handoff_generation_path),
     )
     updated = dict(record)
     issues = list(updated.get("issues") or [])
@@ -991,9 +1102,11 @@ def sglang_cache_hit_validation_record(
     cache_request_prompt_tokens: int | None = None,
     cache_prompt_text_mode: PromptTextMode = "logical",
     cache_request_prefill_start_index: int = 0,
+    minimum_cached_tokens: int | None = None,
 ) -> dict[str, object]:
     cache_prompt_match_field = _cache_prompt_match_field(cache_prompt_text_mode)
     cache_request_prefill_start_index = max(cache_request_prefill_start_index, 0)
+    minimum_cached_tokens = _positive_int(minimum_cached_tokens)
     if not server_log_path.exists():
         return {
             "ok": False,
@@ -1004,6 +1117,7 @@ def sglang_cache_hit_validation_record(
             "cache_prompt_text_mode": cache_prompt_text_mode,
             "cache_request_prompt_match_field": cache_prompt_match_field,
             "cache_request_prefill_start_index": cache_request_prefill_start_index,
+            "minimum_cached_tokens": minimum_cached_tokens,
             "cache_request_prefill_index": None,
             "cache_request_cached_tokens": None,
             "issue": "SGLang server log missing; cannot verify cache-arm cached tokens",
@@ -1020,6 +1134,7 @@ def sglang_cache_hit_validation_record(
             "cache_prompt_text_mode": cache_prompt_text_mode,
             "cache_request_prompt_match_field": cache_prompt_match_field,
             "cache_request_prefill_start_index": cache_request_prefill_start_index,
+            "minimum_cached_tokens": minimum_cached_tokens,
             "cache_request_prefill_index": None,
             "cache_request_cached_tokens": None,
             "issue": "SGLang server log unreadable; cannot verify cache-arm cached tokens",
@@ -1038,6 +1153,8 @@ def sglang_cache_hit_validation_record(
         else None
     )
     ok = cache_request_cached_tokens is not None and cache_request_cached_tokens > 0
+    if ok and minimum_cached_tokens is not None:
+        ok = cache_request_cached_tokens >= minimum_cached_tokens
     issue = None
     if cache_request_prompt_tokens is None:
         issue = "SGLang cache request prompt token count unavailable; cannot verify cache-arm cached tokens"
@@ -1047,6 +1164,8 @@ def sglang_cache_hit_validation_record(
         issue = "SGLang server log did not report cache request prompt token count"
     elif cache_request_cached_tokens <= 0:
         issue = "SGLang cache arm reported zero cached tokens"
+    elif minimum_cached_tokens is not None and cache_request_cached_tokens < minimum_cached_tokens:
+        issue = "SGLang cache arm cached fewer tokens than the generated handoff prefix"
     return {
         "ok": ok,
         "server_log_path": str(server_log_path),
@@ -1056,6 +1175,7 @@ def sglang_cache_hit_validation_record(
         "cache_prompt_text_mode": cache_prompt_text_mode,
         "cache_request_prompt_match_field": cache_prompt_match_field,
         "cache_request_prefill_start_index": cache_request_prefill_start_index,
+        "minimum_cached_tokens": minimum_cached_tokens,
         "cache_request_prefill_index": cache_request_prefill_index,
         "cache_request_cached_tokens": cache_request_cached_tokens,
         "issue": issue,
@@ -1125,6 +1245,13 @@ def _server_prefill_log_count(server_log_path: Path) -> int:
     except OSError:
         return 0
     return len(sglang_prefill_token_counts(log_text))
+
+
+def _generated_live_handoff_cache_prefix_tokens(path: Path) -> int | None:
+    record = _live_smoke_record(path)
+    if record is None:
+        return None
+    return _positive_int(record.get("cache_prefix_tokens"))
 
 
 def _live_smoke_record(path: Path) -> dict[str, object] | None:
