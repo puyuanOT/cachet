@@ -2007,13 +2007,16 @@ users keep inline type annotations after installation.
   engine-probe Databricks runs have succeeded, and release evidence over the
   benchmark, storage, connector action descriptors, and native engine block managers
   is green for the current `cachet-kv` wheel. The native engine block managers
-  remain owned by vLLM and SGLang rather than Cachet. The post-#505
-  current-wheel g5-enriched strict bundle validates with 27 artifacts after
-  adding the successful raw SGLang live V1 sidecar from run `48413356233422`,
-  the current g6 benchmark status sidecar, current `aws-g5-a10g`
-  compatibility benchmark, matching `aws-g5-a10g` Databricks run-status
-  sidecar, PR #442/#503/#504 evidence, and `legacy_migration_evidence` for the
-  removed restaurant facade. The required artifact set remains: release evidence
+  remain owned by vLLM and SGLang rather than Cachet. The latest validated
+  strict-bundle snapshot, built after PR #505 with the current wheel, validates
+  with 27 artifacts after adding the successful raw SGLang live V1 sidecar from
+  run `48413356233422`, the current g6 benchmark status sidecar, current
+  `aws-g5-a10g` compatibility benchmark, matching `aws-g5-a10g` Databricks
+  run-status sidecar, PR #442/#503/#504 evidence, and
+  `legacy_migration_evidence` for the removed restaurant facade.
+  Traceability-only PR evidence added after that snapshot must be included in
+  the next publication bundle refresh. The required artifact set remains:
+  release evidence
   sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, SGLang live V1 benchmark sidecar, benchmark plan execution sidecar,
