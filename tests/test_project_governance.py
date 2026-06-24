@@ -1106,6 +1106,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_triton_deterministic_cache_hit_quality_failure_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1218,6 +1224,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
+    sglang_triton_deterministic_cache_hit_quality_failure_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1309,6 +1323,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "163920824964705" in sglang_readme
     assert "417035094778538" in sglang_readme
     assert "647563677081667" in sglang_readme
+    assert "585529688094161" in sglang_readme
     assert "suffix-only runtime prompt text" in compact_sglang_readme
     assert "zero cached tokens" in compact_sglang_readme
     assert "partial page-binding blocker" in compact_sglang_readme
@@ -1327,6 +1342,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure" in sglang_readme
+    assert (
+        "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
+        in sglang_readme
+    )
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
     assert "partial page-binding blocker" in compact_snapshot
@@ -1338,6 +1357,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "chat-completions cache-hit quality failure" in current_databricks_snapshot
     assert "no-thinking cache-hit quality failure" in current_databricks_snapshot
     assert "deterministic no-thinking cache-hit quality failure" in current_databricks_snapshot
+    assert "Triton/PyTorch deterministic cache-hit quality failure" in current_databricks_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1406,6 +1426,19 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "PR #478" in sglang_deterministic_cache_hit_quality_failure_readme
     assert "`temperature=0.0`" in sglang_deterministic_cache_hit_quality_failure_readme
     assert "reported 175 cached" in sglang_deterministic_cache_hit_quality_failure_readme
+    assert "Triton Deterministic Cache Hit With Quality Failure" in (
+        sglang_triton_deterministic_cache_hit_quality_failure_readme
+    )
+    assert "PR #480" in sglang_triton_deterministic_cache_hit_quality_failure_readme
+    assert "`--attention-backend triton`" in (
+        sglang_triton_deterministic_cache_hit_quality_failure_readme
+    )
+    assert "`--sampling-backend pytorch`" in (
+        sglang_triton_deterministic_cache_hit_quality_failure_readme
+    )
+    assert "175 cached tokens out of 205 prompt tokens" in (
+        sglang_triton_deterministic_cache_hit_quality_failure_readme
+    )
     assert sglang_attach_hash_tracking_failed_run["failure_type"] == (
         "sglang_attach_time_hash_tracking_gate"
     )
@@ -1674,6 +1707,62 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     ][2] == {
         "cached_tokens": 175,
         "classification": "cache_arm_external_chat_completions_handoff",
+        "new_tokens": 30,
+        "total_prompt_tokens": 205,
+    }
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "record_type"
+    ] == "cachet.benchmark_failed_databricks_smoke.v1"
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "benchmark_result"
+    ] == "not_published"
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "failure_type"
+    ] == "sglang_live_quality_failure_with_triton_deterministic_cache_hit"
+    assert (
+        sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+            "cachet_commit"
+        ]
+        == "2923463"
+    )
+    assert (
+        sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+            "databricks_run"
+        ]["run_id"]
+        == 585529688094161
+    )
+    assert (
+        sglang_triton_deterministic_cache_hit_quality_failure_failed_run["task"][
+            "run_id"
+        ]
+        == 415140625002539
+    )
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "package_wheel"
+    ]["sha256"] == "c67fcef45b67f466a3abb6310d773532e6c6d86c02e7f1f6123b654a762195a4"
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "integration_checks"
+    ]["sglang_attention_backend"] == "triton"
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "integration_checks"
+    ]["sglang_sampling_backend"] == "pytorch"
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "integration_checks"
+    ]["sglang_enable_deterministic_inference"] is True
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "live_handoff_generation"
+    ]["cache_prefix_tokens"] == 175
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run["smoke"][
+        "cache_request_cached_tokens_from_server_log"
+    ] == 175
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run["smoke"][
+        "server_cached_token_validation"
+    ] == "positive_triton_deterministic_generated_prefix_cache_hit_but_smoke_failed_quality"
+    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
+        "server_prefill_token_counts"
+    ][2] == {
+        "cached_tokens": 175,
+        "classification": "cache_arm_external_triton_deterministic_handoff",
         "new_tokens": 30,
         "total_prompt_tokens": 205,
     }
@@ -2121,6 +2210,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/failed_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
