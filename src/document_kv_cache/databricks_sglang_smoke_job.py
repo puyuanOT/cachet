@@ -48,6 +48,7 @@ from document_kv_cache.sglang_smoke import (
     SGLANG_SAMPLING_BACKEND_CHOICES,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+    parse_dataset_specs,
 )
 
 
@@ -130,6 +131,7 @@ class DatabricksSGLangSmokeJobConfig:
     sglang_sampling_backend: str | None = None
     sglang_enable_deterministic_inference: bool = False
     stream: bool = True
+    dataset_specs: tuple[str, ...] = ()
     baseline_only: bool = False
     cache_prompt_text_mode: str = "logical"
     live_check_prompt_format: str = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
@@ -243,6 +245,12 @@ class DatabricksSGLangSmokeJobConfig:
         object.__setattr__(self, "sglang_sampling_backend", sglang_sampling_backend)
         if type(self.stream) is not bool:
             raise ValueError("stream must be a boolean")
+        dataset_specs = tuple(self.dataset_specs)
+        for spec in dataset_specs:
+            if not isinstance(spec, str) or "=" not in spec:
+                raise ValueError("dataset specs must use DATASET=JSONL_PATH syntax")
+        if dataset_specs:
+            parse_dataset_specs(dataset_specs)
         if type(self.baseline_only) is not bool:
             raise ValueError("baseline_only must be a boolean")
         if self.cache_prompt_text_mode not in {"logical", "runtime"}:
@@ -341,6 +349,8 @@ class DatabricksSGLangSmokeJobConfig:
         if self.baseline_only:
             if self.live_benchmark_repeats:
                 raise ValueError("live_benchmark_repeats requires cache-arm SGLang smoke")
+            if dataset_specs:
+                raise ValueError("dataset specs require cache-arm SGLang live benchmark")
             if (
                 has_handoff_fields
                 or self.generate_live_handoff
@@ -348,7 +358,18 @@ class DatabricksSGLangSmokeJobConfig:
             ):
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
-            if self.generate_live_handoff:
+            if dataset_specs:
+                if not self.live_benchmark_repeats:
+                    raise ValueError("dataset specs require live_benchmark_repeats")
+                if (
+                    has_handoff_fields
+                    or self.generate_live_handoff
+                    or self.live_handoff_output_dir is not None
+                ):
+                    raise ValueError(
+                        "prepared SGLang benchmark datasets must not be combined with single live handoff fields"
+                    )
+            elif self.generate_live_handoff:
                 if has_handoff_fields:
                     raise ValueError(
                         SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE
@@ -371,6 +392,7 @@ class DatabricksSGLangSmokeJobConfig:
         object.__setattr__(
             self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars)
         )
+        object.__setattr__(self, "dataset_specs", dataset_specs)
         _DEFAULT_CLUSTER_CONFIG_FROM_SGLANG_SMOKE_JOB(self)
 
 
@@ -536,6 +558,12 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         parameters.append("--sglang-enable-deterministic-inference")
     if not config.stream:
         parameters.append("--no-stream")
+    if not config.baseline_only:
+        parameters.extend(
+            ["--sglang-hicache-page-size", str(config.sglang_hicache_page_size)]
+        )
+    for dataset_spec in config.dataset_specs:
+        parameters.extend(["--dataset", dataset_spec])
     if config.baseline_only:
         parameters.append("--baseline-only")
     if config.handoff_json is not None:
@@ -564,8 +592,6 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
                 config.live_handoff_dtype,
                 "--live-handoff-align-bytes",
                 str(config.live_handoff_align_bytes),
-                "--sglang-hicache-page-size",
-                str(config.sglang_hicache_page_size),
                 "--live-handoff-generation-timeout-seconds",
                 str(config.live_handoff_generation_timeout_seconds),
             ]
@@ -654,6 +680,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--sglang-enable-deterministic-inference", action="store_true")
     parser.add_argument("--no-stream", action="store_true")
+    parser.add_argument(
+        "--dataset",
+        action="append",
+        default=None,
+        help="Prepared V1 SGLang benchmark dataset in DATASET=JSONL_PATH form. Repeat for all four V1 datasets.",
+    )
     parser.add_argument("--baseline-only", action="store_true")
     parser.add_argument(
         "--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical"
@@ -778,6 +810,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sglang_sampling_backend=args.sglang_sampling_backend,
             sglang_enable_deterministic_inference=args.sglang_enable_deterministic_inference,
             stream=not args.no_stream,
+            dataset_specs=tuple(args.dataset or ()),
             baseline_only=args.baseline_only,
             cache_prompt_text_mode=args.cache_prompt_text_mode,
             live_check_prompt_format=args.live_check_prompt_format,

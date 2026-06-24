@@ -13,6 +13,7 @@ Start with the standalone report folders:
 | [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke passes on g6/L4, and opt-in `cachet.sglang_live_benchmark.v1` synthetic live measurements now publish repeated SGLang baseline/cache rows; the first tiny-prompt result validates 175-token cache hits and quality but shows no speedup, with the full release latency and throughput suite still pending |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
+| [`_template/`](./_template/) | New standalone benchmark report template | Use for future human-readable run folders |
 
 The Databricks artifact index remains available at
 [`databricks/CURRENT.md`](databricks/CURRENT.md). Each benchmark run gets a
@@ -23,6 +24,10 @@ Use this boundary when adding or reviewing benchmark output:
 
 - `benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
   `benchmarks/native-engine/` are standalone human-readable report folders.
+- New benchmark runs should get a dated standalone folder with a concise
+  `README.md` before they are cited as results. Start from
+  [`_template/README.md`](_template/README.md) so every folder includes the
+  target, run id, scope, result, and artifact boundary.
 - Pending live-readiness runs can live under the relevant engine folder, such
   as `benchmarks/sglang/2026-06-23-g6-l4-live-handoff-smoke/`, when they are
   useful to review before a terminal benchmark result exists.
@@ -30,8 +35,15 @@ Use this boundary when adding or reviewing benchmark output:
 - `benchmarks/databricks/<date>-<target>-<purpose>/README.md` is the
   run-specific human-readable source-artifact report.
 - Folders with `v1_benchmark.json` are latency and quality benchmark reports.
-- SGLang `sglang-live-benchmark.json` files are synthetic live endpoint
-  measurements and do not replace full V1 benchmark reports.
+- SGLang `sglang-live-benchmark.json` files with `scope=live_synthetic_niah`
+  are synthetic live endpoint measurements and do not replace full V1 benchmark
+  reports.
+- SGLang `sglang-live-benchmark.json` files with `scope=live_v1_release` and
+  `release_v1_suite=true` are prepared live V1 SGLang benchmark evidence for
+  rows that carry validated Cachet handoffs and SGLang HiCache page keys. They
+  remain a distinct live SGLang report surface and are not a replacement for
+  canonical `v1_benchmark.json` release-bundle inputs until release validation
+  explicitly consumes that record type.
 - The native-engine probe folder is integration evidence only; it is not a
   vLLM or SGLang latency/quality benchmark report.
 - JSON files beside each report are sanitized, schema-validated source records

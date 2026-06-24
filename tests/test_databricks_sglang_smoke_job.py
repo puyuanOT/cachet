@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 
+from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
 from document_kv_cache.databricks_sglang_smoke_job import (
     DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE,
     DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME,
@@ -36,6 +37,10 @@ WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.
 SINGLE_USER_NAME = "user@example.com"
 HANDOFF_JSON = "/Volumes/catalog/schema/volume/live/sglang-live.handoff.json"
 PAGE_KEYS_JSON = '["page-a","page-b"]'
+DATASET_SPECS = tuple(
+    f"{dataset}=/Volumes/catalog/schema/volume/v1/{dataset}.jsonl"
+    for dataset in SUPPORTED_V1_DATASETS
+)
 
 
 def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
@@ -314,6 +319,34 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     ] == str(DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD)
 
 
+def test_databricks_sglang_smoke_config_supports_prepared_v1_datasets():
+    config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="v1-sglang-prepared",
+        output_dir="/Volumes/catalog/schema/volume/v1-sglang-prepared",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        dataset_specs=DATASET_SPECS,
+        live_benchmark_repeats=1,
+        sglang_hicache_page_size=2,
+    )
+
+    parameters = build_databricks_sglang_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+
+    assert "--baseline-only" not in parameters
+    assert "--generate-live-handoff" not in parameters
+    assert "--handoff-json" not in parameters
+    assert parameters[parameters.index("--live-benchmark-repeats") + 1] == "1"
+    assert parameters[parameters.index("--sglang-hicache-page-size") + 1] == "2"
+    dataset_positions = [
+        index
+        for index, value in enumerate(parameters)
+        if value == "--dataset"
+    ]
+    assert [parameters[index + 1] for index in dataset_positions] == list(DATASET_SPECS)
+
+
 def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
     invalid_cases = [
         (
@@ -363,6 +396,42 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         (
             {"live_benchmark_repeats": 1, "baseline_only": True},
             "live_benchmark_repeats",
+        ),
+        (
+            {
+                "dataset_specs": DATASET_SPECS,
+                "baseline_only": True,
+            },
+            "dataset specs require cache-arm SGLang live benchmark",
+        ),
+        (
+            {"dataset_specs": DATASET_SPECS, "baseline_only": False},
+            "dataset specs require live_benchmark_repeats",
+        ),
+        (
+            {
+                "dataset_specs": DATASET_SPECS,
+                "generate_live_handoff": True,
+                "live_benchmark_repeats": 1,
+                "baseline_only": False,
+            },
+            "prepared SGLang benchmark datasets must not be combined",
+        ),
+        (
+            {
+                "dataset_specs": ("biography",),
+                "live_benchmark_repeats": 1,
+                "baseline_only": False,
+            },
+            "dataset specs must use DATASET=JSONL_PATH syntax",
+        ),
+        (
+            {
+                "dataset_specs": (DATASET_SPECS[0],),
+                "live_benchmark_repeats": 1,
+                "baseline_only": False,
+            },
+            "dataset specs missing required V1 datasets",
         ),
         (
             {
@@ -681,6 +750,49 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
     assert "--sglang-enable-deterministic-inference" in parameters
     assert task["new_cluster"]["spark_env_vars"] == {"CACHET_SGLANG_TRACE": "1"}
     assert "sglang_smoke" in runner_path.read_text(encoding="utf-8")
+
+
+def test_main_writes_prepared_v1_dataset_parameters(tmp_path):
+    payload_path = tmp_path / "payload.json"
+
+    exit_code = main(
+        [
+            "--benchmark-id",
+            "v1-sglang-prepared",
+            "--output-dir",
+            "/Volumes/catalog/schema/volume/v1-sglang-prepared",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_sglang_smoke.py",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--wheel-uri",
+            WHEEL_URI,
+            "--live-benchmark-repeats",
+            "1",
+            *[
+                item
+                for spec in DATASET_SPECS
+                for item in ("--dataset", spec)
+            ],
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    assert exit_code == 0
+    parameters = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    dataset_positions = [
+        index
+        for index, value in enumerate(parameters)
+        if value == "--dataset"
+    ]
+    assert [parameters[index + 1] for index in dataset_positions] == list(DATASET_SPECS)
+    assert parameters[parameters.index("--live-benchmark-repeats") + 1] == "1"
+    assert parameters[parameters.index("--sglang-hicache-page-size") + 1] == "1"
+    assert "--baseline-only" not in parameters
+    assert "--generate-live-handoff" not in parameters
 
 
 def test_main_derives_sglang_smoke_node_type_from_g5_hardware_target(tmp_path):
