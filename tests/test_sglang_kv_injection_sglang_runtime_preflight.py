@@ -238,6 +238,7 @@ def install_storage_backend_factory_module(monkeypatch: pytest.MonkeyPatch) -> N
             return operation
 
         def _storage_hit_query(self, operation):
+            self.get_hash_str([], None)
             return [], 0
 
         def _page_transfer(self, operation):

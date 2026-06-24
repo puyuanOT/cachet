@@ -1058,6 +1058,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_attach_hash_tracking_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1103,6 +1109,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             benchmark_root
             / "sglang"
             / "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
+    sglang_attach_hash_tracking_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
@@ -1189,20 +1203,24 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "521023980659718" in sglang_readme
     assert "476430354490832" in sglang_readme
     assert "73938470896039" in sglang_readme
+    assert "672750124167579" in sglang_readme
     assert "suffix-only runtime prompt text" in compact_sglang_readme
     assert "zero cached tokens" in compact_sglang_readme
     assert "partial page-binding blocker" in compact_sglang_readme
     assert "per-batch `prior_hash` metadata" in root_readme
+    assert "attach-time `get_hash_str` patchability" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata" in sglang_readme
+    assert "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking" in sglang_readme
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
     assert "partial page-binding blocker" in compact_snapshot
     assert "batch prior-hash metadata blocker" in compact_snapshot
+    assert "attach-time hash tracking blocker" in compact_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1224,6 +1242,20 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Batch Prior-Hash Metadata Blocker" in sglang_batch_prior_metadata_readme
     assert "PR #465 wheel was present" in sglang_batch_prior_metadata_readme
     assert "per-batch prior hash" in sglang_batch_prior_metadata_readme
+    assert "Attach-Time Hash Tracking Gate" in sglang_attach_hash_tracking_readme
+    assert "PR #466 wheel was present" in sglang_attach_hash_tracking_readme
+    assert "attach_storage_backend" in sglang_attach_hash_tracking_readme
+    assert sglang_attach_hash_tracking_failed_run["failure_type"] == (
+        "sglang_attach_time_hash_tracking_gate"
+    )
+    assert sglang_attach_hash_tracking_failed_run["databricks_run"]["run_id"] == 672750124167579
+    assert sglang_attach_hash_tracking_failed_run["task"]["run_id"] == 178988370465155
+    assert sglang_attach_hash_tracking_failed_run["integration_checks"][
+        "document_kv_hicache_provider_ok"
+    ] is True
+    assert sglang_attach_hash_tracking_failed_run["integration_checks"][
+        "document_kv_request_metadata_bridge_ok"
+    ] is False
     assert sglang_failed_run == {
         "benchmark_result": "not_published",
         "blocker": (
@@ -1652,6 +1684,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/failed_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
