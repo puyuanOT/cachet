@@ -402,7 +402,11 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
             timeout_seconds=runtime_config.server_start_timeout_seconds,
         )
         copy_file_if_exists(runtime_config.server_log_path, runtime_config.server_log_copy_path)
-        live_record = run_live_checks(runtime_config, import_probe_record=import_probe_record)
+        try:
+            live_record = run_live_checks(runtime_config, import_probe_record=import_probe_record)
+        except RuntimeError:
+            record_sglang_cache_hit_after_failed_live_checks(runtime_config)
+            raise
         require_sglang_cache_hit(runtime_config, live_record)
     finally:
         terminate_process(server)
@@ -967,6 +971,20 @@ def require_sglang_cache_hit(
     return updated
 
 
+def record_sglang_cache_hit_after_failed_live_checks(config: SGLangSmokeBenchmarkConfig) -> None:
+    """Attach cache-hit validation to a failed live smoke record when possible."""
+
+    if config.baseline_only:
+        return
+    record = _live_smoke_record(config.live_smoke_output_path)
+    if record is None:
+        return
+    try:
+        require_sglang_cache_hit(config, record)
+    except RuntimeError:
+        return
+
+
 def sglang_cache_hit_validation_record(
     server_log_path: Path,
     *,
@@ -1107,6 +1125,16 @@ def _server_prefill_log_count(server_log_path: Path) -> int:
     except OSError:
         return 0
     return len(sglang_prefill_token_counts(log_text))
+
+
+def _live_smoke_record(path: Path) -> dict[str, object] | None:
+    try:
+        decoded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(decoded, Mapping):
+        return None
+    return dict(decoded)
 
 
 def _positive_int(value: object) -> int | None:

@@ -1145,6 +1145,80 @@ def test_run_sglang_live_smoke_uses_generated_handoff_for_live_checks(monkeypatc
     assert record["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 150
 
 
+def test_run_sglang_live_smoke_records_cache_hit_when_quality_fails(monkeypatch, tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-quality-failure-run",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(output_dir=tmp_path / "generated-live"),
+    )
+    runtime_config = SGLangSmokeBenchmarkConfig(
+        benchmark_id=config.benchmark_id,
+        output_dir=config.output_dir,
+        local_root=config.local_root,
+        handoff_json=str(tmp_path / "generated-live" / "sglang-live.handoff.json"),
+        payload_uri=f"disk:{tmp_path / 'generated-live' / 'sglang-live.kv'}",
+        request_id="cachet-live-sglang-quality-failure-run",
+        sglang_hicache_page_keys=("page-a",),
+    )
+
+    class FakeServer:
+        pass
+
+    def fake_run_live_checks(seen_config, *, import_probe_record):
+        assert seen_config is runtime_config
+        assert import_probe_record["document_kv_request_metadata_bridge_ok"] is True
+        runtime_config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_config.server_log_path.write_text(
+            "[INFO] Prefill batch, #new-token: 46, #cached-token: 128\n",
+            encoding="utf-8",
+        )
+        public_sglang_smoke.write_json(
+            runtime_config.live_smoke_output_path,
+            {
+                "ok": False,
+                "issues": ["baseline live check failed", "cache-arm live check failed"],
+                "cache_prefill_log_start_index": 0,
+                "cache": {
+                    "metadata": {
+                        "server_usage_prompt_tokens": "174",
+                    },
+                    "prompt_tokens": 92,
+                },
+            },
+        )
+        raise RuntimeError("SGLang live smoke failed: baseline live check failed; cache-arm live check failed")
+
+    monkeypatch.setattr(public_sglang_smoke, "create_venv", lambda path: None)
+    monkeypatch.setattr(public_sglang_smoke, "install_sglang", lambda python: None)
+    monkeypatch.setattr(public_sglang_smoke, "install_document_kv_package", lambda python, spec: None)
+    monkeypatch.setattr(public_sglang_smoke, "installed_versions", lambda python: {})
+    monkeypatch.setattr(
+        public_sglang_smoke,
+        "probe_sglang_import",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "document_kv_request_metadata_bridge_ok": True,
+            "document_kv_request_metadata_bridge": {"ok": True},
+        },
+    )
+    monkeypatch.setattr(public_sglang_smoke, "prepare_generated_live_handoff", lambda seen_config: runtime_config)
+    monkeypatch.setattr(public_sglang_smoke, "start_sglang_server", lambda *args, **kwargs: FakeServer())
+    monkeypatch.setattr(public_sglang_smoke, "wait_for_sglang_server", lambda *args, **kwargs: None)
+    monkeypatch.setattr(public_sglang_smoke, "copy_file_if_exists", lambda *args, **kwargs: None)
+    monkeypatch.setattr(public_sglang_smoke, "run_live_checks", fake_run_live_checks)
+    monkeypatch.setattr(public_sglang_smoke, "terminate_process", lambda server: None)
+
+    with pytest.raises(RuntimeError, match="baseline live check failed"):
+        public_sglang_smoke.run_sglang_live_smoke(config)
+
+    record = json.loads(runtime_config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["issues"] == ["baseline live check failed", "cache-arm live check failed"]
+    assert record["sglang_cache_hit_validation"]["ok"] is True
+    assert record["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 128
+
+
 def test_parse_args_builds_baseline_only_config(tmp_path):
     config = parse_args(
         [

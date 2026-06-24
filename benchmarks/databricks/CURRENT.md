@@ -35,13 +35,15 @@ the chained `last_hash` page-binding blocker tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/),
 the batch prior-hash metadata blocker tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/),
-and the current attach-time hash tracking blocker tracked at
-[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/).
+the attach-time hash tracking blocker tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/),
+and the current cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
-decode-time prefix binding with Cachet handoffs and records a positive
-cache-arm cached-token validation across all matching generated page-key
-chunks.
+decode-time prefix binding with Cachet handoffs, hydrates all matching
+generated page-key chunks, records a positive cache-arm cached-token
+validation, and passes the live quality gate.
 
 ## V1 Latency And Quality
 
