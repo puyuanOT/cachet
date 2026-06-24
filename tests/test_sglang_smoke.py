@@ -57,6 +57,7 @@ from document_kv_cache.sglang_smoke import (
     sglang_hicache_config_for_smoke,
 )
 from document_kv_cache.storage import local_path
+from document_kv_cache.workflow import SourceDocument
 from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
@@ -132,7 +133,7 @@ class FakeLiveResult:
 
 
 class TinyTokenizer:
-    token_ids = (11, 12, 13)
+    token_ids = (11, 12, 13, 14)
 
     def __call__(self, text, *, return_tensors, add_special_tokens):
         assert text
@@ -170,6 +171,95 @@ class TinySGLangLiveKVGenerator:
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
+
+
+class BoundaryDriftTokenizer:
+    prefix_text = "prefix-alone"
+    stable_text = "stable-prefix"
+
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert text
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        if text == self.prefix_text:
+            token_ids = [11, 12, 13, 14, 15]
+        elif text == self.stable_text:
+            token_ids = [11, 12, 13, 14]
+        else:
+            token_ids = [11, 12, 13, 14, 99, 20]
+        return {"input_ids": [token_ids]}
+
+    def decode(self, token_ids, *, skip_special_tokens):
+        assert skip_special_tokens is False
+        if list(token_ids) == [11, 12, 13, 14]:
+            return self.stable_text
+        return "not-round-trippable"
+
+
+class BoundaryDriftSGLangLiveKVGenerator:
+    tokenizer = BoundaryDriftTokenizer()
+    add_special_tokens = False
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = layout_for_model(
+            config.model_id,
+            dtype=config.dtype,
+            lora_id=config.lora_id,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+        token_ids = self.tokenizer(
+            chunk.text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"][0]
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=b"\0" * (len(token_ids) * layout.bytes_per_token),
+            token_count=len(token_ids),
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class PageAlignmentFallbackTokenizer:
+    non_page_text = "lossless-nine-token-prefix"
+    small_page_text = "lossless-five-token-prefix"
+
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert text
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        if text == self.non_page_text:
+            token_ids = list(range(1, 10))
+        elif text == self.small_page_text:
+            token_ids = list(range(1, 6))
+        else:
+            token_ids = [99]
+        return {"input_ids": [token_ids]}
+
+    def decode(self, token_ids, *, skip_special_tokens):
+        assert skip_special_tokens is False
+        token_ids = list(token_ids)
+        if token_ids == list(range(1, 9 + 1)):
+            return self.non_page_text
+        if token_ids == list(range(1, 5 + 1)):
+            return self.small_page_text
+        return "not-round-trippable"
+
+
+class PageAlignmentFallbackSGLangLiveKVGenerator:
+    tokenizer = PageAlignmentFallbackTokenizer()
+    add_special_tokens = False
 
 
 def test_dependency_constraints_match_pinned_sglang_stack():
@@ -385,6 +475,90 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(tmp_path, 
     assert generation["ok"] is True
     assert generation["cache_prefix_tokens"] == len(TinyTokenizer.token_ids)
     assert generation["sglang_hicache_page_size"] == 2
+
+
+def test_prepare_generated_live_handoff_uses_token_stable_runtime_prefix(tmp_path, monkeypatch):
+    module = ModuleType("cachet_test_sglang_live_handoff_drift_generator")
+    module.build_generator = BoundaryDriftSGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    original_source_document = public_sglang_smoke.benchmark_cache_source_document
+
+    def drifted_source_document(example, *, prefix):
+        source_document = original_source_document(example, prefix=prefix)
+        source_chunk = source_document.chunks[0]
+        return SourceDocument.from_text(
+            document_id=source_document.document_id,
+            text=BoundaryDriftTokenizer.prefix_text,
+            chunk_id=source_chunk.chunk_id,
+            chunk_type=source_chunk.chunk_type,
+            metadata=source_document.metadata,
+            chunk_metadata=source_chunk.metadata,
+        )
+
+    monkeypatch.setattr(public_sglang_smoke, "benchmark_cache_source_document", drifted_source_document)
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-token-stable-generated",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-live",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=2,
+        ),
+    )
+
+    runtime_config = prepare_generated_live_handoff(config)
+
+    assert runtime_config.sglang_hicache_page_keys == sglang_hicache_page_keys(
+        (11, 12, 13, 14),
+        page_size=2,
+    )
+    handoff = read_engine_adapter_request_json(runtime_config.handoff_json, require_external_payload_uri=False)
+    assert handoff["handle"]["total_tokens"] == 4
+    generation = json.loads(config.live_handoff_generation_path.read_text(encoding="utf-8"))
+    assert generation["cache_prefix_tokens"] == 4
+    assert generation["cache_prefix_source_tokens"] == 5
+    assert generation["runtime_prompt_tokens"] == 6
+    assert generation["cache_prefix_full_pages"] == 2
+    assert generation["cache_prefix_token_stable_ratio"] == 0.8
+    assert generation["cache_prefix_token_stable"] is False
+    assert generation["cache_prefix_token_stable_truncated"] is True
+    assert generation["cache_prefix_chars"] == len(BoundaryDriftTokenizer.stable_text)
+    assert generation["cache_prefix_source_chars"] == len(BoundaryDriftTokenizer.prefix_text)
+
+
+def test_token_stable_handoff_rejects_tiny_runtime_prefix():
+    source_document = SourceDocument.from_text(
+        document_id="cachet-live-short-prefix",
+        text=BoundaryDriftTokenizer.prefix_text,
+    )
+
+    with pytest.raises(RuntimeError, match="token-stable prefix is too small"):
+        public_sglang_smoke._token_stable_handoff_source_document(
+            BoundaryDriftSGLangLiveKVGenerator(),
+            source_document=source_document,
+            source_token_ids=(11, 12, 13, 14, 15),
+            runtime_token_ids=(11, 99, 20),
+            page_size=1,
+        )
+
+
+def test_token_stable_handoff_rejects_non_page_aligned_decode_fallback():
+    source_document = SourceDocument.from_text(
+        document_id="cachet-live-page-align",
+        text="source-prefix",
+    )
+
+    with pytest.raises(RuntimeError, match="token-stable prefix is too small"):
+        public_sglang_smoke._token_stable_handoff_source_document(
+            PageAlignmentFallbackSGLangLiveKVGenerator(),
+            source_document=source_document,
+            source_token_ids=tuple(range(1, 12)),
+            runtime_token_ids=(*range(1, 11), 99),
+            page_size=5,
+        )
 
 
 def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(tmp_path, monkeypatch):
@@ -871,6 +1045,25 @@ def test_sglang_cache_hit_validation_reads_cache_arm_cached_tokens(tmp_path):
     assert record["issue"] is None
 
 
+def test_sglang_cache_hit_validation_requires_generated_prefix_minimum(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 46, #cached-token: 128\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(
+        log_path,
+        cache_request_prompt_tokens=174,
+        minimum_cached_tokens=150,
+    )
+
+    assert record["ok"] is False
+    assert record["minimum_cached_tokens"] == 150
+    assert record["cache_request_cached_tokens"] == 128
+    assert record["issue"] == "SGLang cache arm cached fewer tokens than the generated handoff prefix"
+
+
 def test_sglang_cache_hit_validation_rejects_later_baseline_warm_hit(tmp_path):
     log_path = tmp_path / "sglang-server.log"
     log_path.write_text(
@@ -1025,6 +1218,46 @@ def test_require_sglang_cache_hit_rejects_zero_cache_tokens(tmp_path):
     assert written["ok"] is False
     assert written["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 0
     assert "SGLang cache arm reported zero cached tokens" in written["issues"]
+
+
+def test_require_sglang_cache_hit_rejects_partial_generated_handoff_hit(tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(output_dir=tmp_path / "generated-live"),
+    )
+    config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
+    config.server_log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 46, #cached-token: 128\n",
+        encoding="utf-8",
+    )
+    public_sglang_smoke.write_json(
+        config.live_handoff_generation_path,
+        {"ok": True, "cache_prefix_tokens": 150},
+    )
+
+    with pytest.raises(RuntimeError, match="fewer tokens"):
+        require_sglang_cache_hit(
+            config,
+            {
+                "ok": True,
+                "issues": [],
+                "cache_prefill_log_start_index": 0,
+                "cache": {
+                    "metadata": {
+                        "server_usage_prompt_tokens": "174",
+                    },
+                    "prompt_tokens": 92,
+                },
+            },
+        )
+
+    written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
+    assert written["ok"] is False
+    assert written["sglang_cache_hit_validation"]["minimum_cached_tokens"] == 150
+    assert written["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 128
+    assert "SGLang cache arm cached fewer tokens than the generated handoff prefix" in written["issues"]
 
 
 def test_require_sglang_cache_hit_requires_server_usage_prompt_tokens(tmp_path):
