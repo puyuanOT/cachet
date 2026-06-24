@@ -99,11 +99,17 @@ DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
 DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE: OpenAICompatibleRequestMode = "chat"
 DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.7
+SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS = {
+    "thinking": False,
+    "enable_thinking": False,
+}
 DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY = {
     "top_p": 0.8,
     "top_k": 20,
     "min_p": 0,
     "presence_penalty": 1.0,
+    "reasoning_effort": "none",
+    "chat_template_kwargs": dict(SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS),
 }
 MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO = 0.8
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
@@ -246,7 +252,10 @@ class SGLangSmokeBenchmarkConfig:
     )
     live_check_temperature: float = DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     live_check_extra_body: Mapping[str, Any] = field(
-        default_factory=lambda: dict(DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY)
+        default_factory=lambda: _json_object_copy(
+            DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
+            field_name="live_check_extra_body",
+        )
     )
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
@@ -325,11 +334,9 @@ class SGLangSmokeBenchmarkConfig:
             )
         if not isinstance(self.live_check_extra_body, Mapping):
             raise ValueError("live_check_extra_body must be a mapping")
-        live_check_extra_body = dict(self.live_check_extra_body)
-        try:
-            json.dumps(live_check_extra_body)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("live_check_extra_body must be JSON-serializable") from exc
+        live_check_extra_body = _json_object_copy(
+            self.live_check_extra_body, field_name="live_check_extra_body"
+        )
         if self.handoff_json and self.handoff_record is not None:
             raise ValueError(
                 "SGLang smoke handoff params must use only one of handoff_json or handoff_record"
@@ -572,6 +579,9 @@ def build_metadata(
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
+        "live_check_chat_template_kwargs": _sglang_live_check_chat_template_kwargs(
+            config.live_check_extra_body
+        ),
         "kv_transfer_params_transport": "custom_params",
         "generates_live_handoff": config.handoff_generation is not None,
         "live_handoff_generation": (
@@ -722,6 +732,7 @@ def _generate_live_handoff_inputs_in_subprocess(
         "hardware_target": config.hardware_target,
         "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
+        "live_check_extra_body": dict(config.live_check_extra_body),
         "handoff_generation": generation.to_metadata(),
     }
     write_json(input_path, payload)
@@ -759,6 +770,7 @@ config = SGLangSmokeBenchmarkConfig(
     hardware_target=payload["hardware_target"],
     live_check_prompt_format=payload.get("live_check_prompt_format", DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT),
     live_check_request_mode=payload.get("live_check_request_mode", DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE),
+    live_check_extra_body=payload.get("live_check_extra_body", DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY),
     handoff_generation=generation,
 )
 try:
@@ -839,12 +851,16 @@ def _generate_live_handoff_inputs(
         live_request, prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX
     )
     runtime_prompt_text = live_request.logical_prompt_text
+    chat_template_kwargs = _sglang_live_check_chat_template_kwargs(
+        config.live_check_extra_body
+    )
     chat_template_rendered = False
     if _should_render_live_handoff_chat_template(config):
         runtime_prompt_text, rendered_cache_prefix_text = (
             _render_qwen3_chat_live_handoff_prompt(
                 generator,
                 live_request,
+                chat_template_kwargs=chat_template_kwargs,
             )
         )
         source_document = _source_document_with_text(
@@ -929,6 +945,7 @@ def _generate_live_handoff_inputs(
         "sglang_hicache_page_size": generation.page_size,
         "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
+        "live_check_chat_template_kwargs": dict(chat_template_kwargs),
         "live_handoff_prompt_format": _live_check_request_prompt_format(
             config.live_check_prompt_format,
             request_mode=config.live_check_request_mode,
@@ -987,6 +1004,8 @@ def _should_render_live_handoff_chat_template(
 def _render_qwen3_chat_live_handoff_prompt(
     generator: object,
     live_request: BenchmarkEngineRequest,
+    *,
+    chat_template_kwargs: Mapping[str, Any],
 ) -> tuple[str, str]:
     tokenizer = getattr(generator, "tokenizer", None)
     apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
@@ -998,6 +1017,7 @@ def _render_qwen3_chat_live_handoff_prompt(
         list(_live_check_chat_messages(live_request, prompt_text_mode="logical")),
         tokenize=False,
         add_generation_prompt=True,
+        **dict(chat_template_kwargs),
     )
     if not isinstance(rendered, str) or not rendered:
         raise ValueError(
@@ -1020,6 +1040,48 @@ def _render_qwen3_chat_live_handoff_prompt(
     ):
         raise RuntimeError("SGLang chat live handoff rendered cache prefix is invalid")
     return rendered, rendered_prefix
+
+
+def _sglang_live_check_chat_template_kwargs(
+    extra_body: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Mirror SGLang's chat template kwargs derived from an OpenAI request body."""
+
+    chat_template_kwargs_value = extra_body.get("chat_template_kwargs")
+    if chat_template_kwargs_value is None:
+        chat_template_kwargs: dict[str, Any] = {}
+    elif isinstance(chat_template_kwargs_value, Mapping):
+        chat_template_kwargs = dict(chat_template_kwargs_value)
+    else:
+        raise ValueError("live_check_extra_body.chat_template_kwargs must be a mapping")
+
+    nested_reasoning_effort = chat_template_kwargs.pop("reasoning_effort", None)
+    reasoning_effort = (
+        nested_reasoning_effort
+        if nested_reasoning_effort is not None
+        else extra_body.get("reasoning_effort")
+    )
+    if reasoning_effort == "none":
+        chat_template_kwargs.setdefault("thinking", False)
+        chat_template_kwargs.setdefault("enable_thinking", False)
+
+    template_kwargs: dict[str, Any] = {}
+    if reasoning_effort is not None:
+        template_kwargs["reasoning_effort"] = reasoning_effort
+    template_kwargs.update(chat_template_kwargs)
+    return template_kwargs
+
+
+def _json_object_copy(value: Mapping[str, Any], *, field_name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping")
+    try:
+        copied = json.loads(json.dumps(dict(value)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be JSON-serializable") from exc
+    if not isinstance(copied, dict):
+        raise ValueError(f"{field_name} must be a mapping")
+    return copied
 
 
 def _source_document_with_text(
@@ -1368,6 +1430,9 @@ def run_live_checks(
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
+        "live_check_chat_template_kwargs": _sglang_live_check_chat_template_kwargs(
+            config.live_check_extra_body
+        ),
         "cache_prefill_log_start_index": cache_prefill_log_start_index,
         "baseline": baseline_record,
         "cache": cache_record,

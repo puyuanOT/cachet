@@ -151,9 +151,16 @@ class TinyTokenizer:
         assert add_special_tokens is False
         return {"input_ids": [list(self.token_ids)]}
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, **template_kwargs
+    ):
         assert tokenize is False
         assert add_generation_prompt is True
+        assert template_kwargs == {
+            "reasoning_effort": "none",
+            "thinking": False,
+            "enable_thinking": False,
+        }
         rendered = "".join(
             f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
             for message in messages
@@ -198,6 +205,7 @@ class PromptFormatTokenizer:
     plain_token_ids = (91, 92, 93, 94)
     seen_texts: list[str] = []
     seen_templates: list[list[dict[str, str]]] = []
+    seen_template_kwargs: list[dict[str, object]] = []
 
     def __call__(self, text, *, return_tensors, add_special_tokens):
         assert text
@@ -214,10 +222,13 @@ class PromptFormatTokenizer:
             token_ids = (7, 8, 9, 10)
         return {"input_ids": [list(token_ids)]}
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(
+        self, messages, *, tokenize, add_generation_prompt, **template_kwargs
+    ):
         assert tokenize is False
         assert add_generation_prompt is True
         self.seen_templates.append([dict(message) for message in messages])
+        self.seen_template_kwargs.append(dict(template_kwargs))
         rendered = "".join(
             f"<|im_start|>{message['role']}\n{message['content']}<|im_end|>\n"
             for message in messages
@@ -417,6 +428,11 @@ def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp
     assert config.live_check_request_mode == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert config.live_check_extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+    assert config.live_check_extra_body["reasoning_effort"] == "none"
+    assert config.live_check_extra_body["chat_template_kwargs"] == {
+        "thinking": False,
+        "enable_thinking": False,
+    }
 
 
 def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
@@ -620,6 +636,11 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(
         generation["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     )
     assert generation["chat_template_rendered"] is True
+    assert generation["live_check_chat_template_kwargs"] == {
+        "reasoning_effort": "none",
+        "thinking": False,
+        "enable_thinking": False,
+    }
     assert generation["cache_prefix_tokens"] == len(TinyTokenizer.token_ids)
     assert generation["sglang_hicache_page_size"] == 2
 
@@ -632,6 +653,7 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
     monkeypatch.setitem(sys.modules, module.__name__, module)
     PromptFormatTokenizer.seen_texts.clear()
     PromptFormatTokenizer.seen_templates.clear()
+    PromptFormatTokenizer.seen_template_kwargs.clear()
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-generated-qwen-chat",
         output_dir=tmp_path / "out",
@@ -655,6 +677,13 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
     )
     assert PromptFormatTokenizer.seen_texts
     assert PromptFormatTokenizer.seen_templates
+    assert PromptFormatTokenizer.seen_template_kwargs == [
+        {
+            "reasoning_effort": "none",
+            "thinking": False,
+            "enable_thinking": False,
+        }
+    ]
     assert PromptFormatTokenizer.seen_templates[0][0]["role"] == "system"
     assert PromptFormatTokenizer.seen_templates[0][1]["role"] == "user"
     assert all(
@@ -670,6 +699,11 @@ def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(
     assert generation["live_check_request_mode"] == "chat"
     assert generation["live_handoff_prompt_format"] == "plain"
     assert generation["chat_template_rendered"] is True
+    assert generation["live_check_chat_template_kwargs"] == {
+        "reasoning_effort": "none",
+        "thinking": False,
+        "enable_thinking": False,
+    }
     assert generation["cache_prefix_tokens"] == len(
         PromptFormatTokenizer.source_token_ids
     )
@@ -1108,6 +1142,11 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert metadata["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert metadata["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+    assert metadata["live_check_chat_template_kwargs"] == {
+        "reasoning_effort": "none",
+        "thinking": False,
+        "enable_thinking": False,
+    }
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["cache_arm_supported"] is False
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
@@ -1309,6 +1348,11 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     assert record["live_check_request_mode"] == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     assert record["live_check_temperature"] == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert record["live_check_extra_body"] == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+    assert record["live_check_chat_template_kwargs"] == {
+        "reasoning_effort": "none",
+        "thinking": False,
+        "enable_thinking": False,
+    }
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"]["request_id"] == "cachet-live-sglang-1"
 
