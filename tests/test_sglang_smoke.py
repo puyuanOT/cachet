@@ -27,6 +27,7 @@ from document_kv_cache.models import KVCacheKey
 from document_kv_cache.sglang_smoke import (
     CACHET_MODEL_ID,
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     HF_MODEL_ID,
@@ -269,6 +270,24 @@ def test_sglang_smoke_accepts_baseline_only_without_handoff_fields(tmp_path):
     assert config.local_dir == Path("/local_disk0/document-kv-sglang-smoke-sglang-1")
 
 
+def test_sglang_smoke_rejects_invalid_hicache_prefetch_threshold(tmp_path):
+    with pytest.raises(ValueError, match="hicache_storage_prefetch_threshold"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            hicache_storage_prefetch_threshold=0,
+        )
+
+    with pytest.raises(ValueError, match="hicache_storage_prefetch_threshold"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            hicache_storage_prefetch_threshold=True,
+        )
+
+
 def test_sglang_smoke_rejects_handoff_fields_for_baseline_only(tmp_path):
     handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
     write_handoff_json(
@@ -502,6 +521,7 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
     assert extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY].endswith("/hicache-pages")
     assert extra_config[DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY]
     assert extra_config["document_kv.requires_native_runtime"] is True
+    assert extra_config["prefetch_threshold"] == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
 
 
 def test_sglang_hicache_provider_probe_rejects_noop_launch_config():
@@ -582,6 +602,8 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
             "8",
             "--sglang-hicache-page-size",
             "2",
+            "--hicache-storage-prefetch-threshold",
+            "3",
             "--live-handoff-generation-timeout-seconds",
             "12.5",
         ]
@@ -598,6 +620,7 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
     assert generation.page_size == 2
     assert generation.timeout_seconds == 12.5
     assert seen_configs[0].hicache_page_size == 2
+    assert seen_configs[0].hicache_storage_prefetch_threshold == 3
 
 
 def test_build_metadata_records_custom_params_transport(tmp_path):

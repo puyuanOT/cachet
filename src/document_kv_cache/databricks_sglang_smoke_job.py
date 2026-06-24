@@ -28,6 +28,7 @@ from document_kv_cache.databricks_job import (
 )
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
@@ -134,6 +135,9 @@ class DatabricksSGLangSmokeJobConfig:
     hicache_io_backend: str | None = None
     hicache_mem_layout: str | None = None
     hicache_storage_prefetch_policy: str | None = None
+    hicache_storage_prefetch_threshold: int | None = (
+        DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
+    )
     hicache_write_policy: str | None = None
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
@@ -240,6 +244,15 @@ class DatabricksSGLangSmokeJobConfig:
                     raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         if self.hicache_size_gb is not None and self.hicache_size_gb < 0:
             raise ValueError("hicache_size_gb must be non-negative")
+        if (
+            self.hicache_storage_prefetch_threshold is not None
+            and (
+                isinstance(self.hicache_storage_prefetch_threshold, bool)
+                or not isinstance(self.hicache_storage_prefetch_threshold, int)
+                or self.hicache_storage_prefetch_threshold <= 0
+            )
+        ):
+            raise ValueError("hicache_storage_prefetch_threshold must be a positive integer when provided")
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
         _DEFAULT_CLUSTER_CONFIG_FROM_SGLANG_SMOKE_JOB(self)
 
@@ -384,6 +397,13 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         parameters.extend(["--hicache-mem-layout", config.hicache_mem_layout])
     if config.hicache_storage_prefetch_policy is not None:
         parameters.extend(["--hicache-storage-prefetch-policy", config.hicache_storage_prefetch_policy])
+    if config.hicache_storage_prefetch_threshold is not None:
+        parameters.extend(
+            [
+                "--hicache-storage-prefetch-threshold",
+                str(config.hicache_storage_prefetch_threshold),
+            ]
+        )
     if config.hicache_write_policy is not None:
         parameters.extend(["--hicache-write-policy", config.hicache_write_policy])
     return parameters
@@ -445,6 +465,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hicache-io-backend")
     parser.add_argument("--hicache-mem-layout")
     parser.add_argument("--hicache-storage-prefetch-policy")
+    parser.add_argument(
+        "--hicache-storage-prefetch-threshold",
+        type=int,
+        default=DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
+    )
     parser.add_argument("--hicache-write-policy")
     parser.add_argument(
         "--spark-env-var",
@@ -500,6 +525,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             hicache_io_backend=args.hicache_io_backend,
             hicache_mem_layout=args.hicache_mem_layout,
             hicache_storage_prefetch_policy=args.hicache_storage_prefetch_policy,
+            hicache_storage_prefetch_threshold=args.hicache_storage_prefetch_threshold,
             hicache_write_policy=args.hicache_write_policy,
             spark_env_vars=_spark_env_vars_from_cli(args.spark_env_var or ()),
         )
