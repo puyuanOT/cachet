@@ -1,0 +1,357 @@
+{
+  "benchmark_result": "not_published",
+  "blocker": "The prepared SGLang V1 run wrote live benchmark rows for all four release datasets, but cache-hit validation matched server-log rows by exact prompt-token total. SGLang reported padded/page-rounded prompt totals while still reporting cached-token counts that met the generated handoff minimums.",
+  "cachet_commit": "06a9c76",
+  "databricks_run": {
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 918882025776007,
+    "run_name": "Cachet SGLang prepared V1 sglang-prepared-v1-g6-06a9c76-20260624_125434",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure": {
+    "error": "SGLang live benchmark failed because every cache-arm validation reported: SGLang server log did not report cache request prompt token count",
+    "error_type": "RuntimeError",
+    "phase": "live_benchmark_cache_hit_validation"
+  },
+  "failure_type": "sglang_prepared_v1_padded_prompt_token_validation",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cuda_available": true,
+    "cuda_device_count": 1,
+    "cuda_device_name": "NVIDIA L4",
+    "document_kv_cache_version": "0.2.0",
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_provider_factory": "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider",
+    "document_kv_provider_type": "sglang_kv_injection.sglang_dynamic_backend.DocumentKVHiCachePageProvider",
+    "document_kv_request_metadata_bridge_ok": true,
+    "document_kv_requires_native_runtime": true,
+    "sglang_import_probe_ok": true,
+    "sglang_version": "0.5.10.post1",
+    "torch_version": "2.9.1+cu128"
+  },
+  "live_benchmark": {
+    "cache_hit_validation": {
+      "candidate_rows": [
+        {
+          "cache_request_prompt_tokens": 120,
+          "dataset": "biography",
+          "minimum_cached_tokens": 96,
+          "observed_cached_tokens": 96,
+          "observed_new_tokens": 32,
+          "observed_total_prompt_tokens": 128,
+          "repeat_index": 1
+        },
+        {
+          "cache_request_prompt_tokens": 120,
+          "dataset": "biography",
+          "minimum_cached_tokens": 96,
+          "observed_cached_tokens": 96,
+          "observed_new_tokens": 32,
+          "observed_total_prompt_tokens": 128,
+          "repeat_index": 2
+        },
+        {
+          "cache_request_prompt_tokens": 184,
+          "dataset": "hotpotqa",
+          "minimum_cached_tokens": 144,
+          "observed_cached_tokens": 144,
+          "observed_new_tokens": 48,
+          "observed_total_prompt_tokens": 192,
+          "repeat_index": 1
+        },
+        {
+          "cache_request_prompt_tokens": 184,
+          "dataset": "hotpotqa",
+          "minimum_cached_tokens": 144,
+          "observed_cached_tokens": 144,
+          "observed_new_tokens": 48,
+          "observed_total_prompt_tokens": 192,
+          "repeat_index": 2
+        },
+        {
+          "cache_request_prompt_tokens": 189,
+          "dataset": "musique",
+          "minimum_cached_tokens": 144,
+          "observed_cached_tokens": 144,
+          "observed_new_tokens": 48,
+          "observed_total_prompt_tokens": 192,
+          "repeat_index": 1
+        },
+        {
+          "cache_request_prompt_tokens": 189,
+          "dataset": "musique",
+          "minimum_cached_tokens": 144,
+          "observed_cached_tokens": 144,
+          "observed_new_tokens": 48,
+          "observed_total_prompt_tokens": 192,
+          "repeat_index": 2
+        },
+        {
+          "cache_request_prompt_tokens": 132,
+          "dataset": "niah",
+          "minimum_cached_tokens": 96,
+          "observed_cached_tokens": 96,
+          "observed_new_tokens": 48,
+          "observed_total_prompt_tokens": 144,
+          "repeat_index": 1
+        },
+        {
+          "cache_request_prompt_tokens": 132,
+          "dataset": "niah",
+          "minimum_cached_tokens": 96,
+          "observed_cached_tokens": 96,
+          "observed_new_tokens": 48,
+          "observed_total_prompt_tokens": 144,
+          "repeat_index": 2
+        }
+      ],
+      "diagnosis": "The validation rows failed because exact prompt-token totals did not appear in the SGLang server log. The observed rows after each cache request reached the generated-handoff cached-token floor, but their total_prompt_tokens were page-rounded above the request prompt-token count.",
+      "failed_validations": 8,
+      "passed_validations": 0
+    },
+    "comparisons": [
+      {
+        "answer_found_delta": 0.0,
+        "baseline_arm_id": "baseline_prefill",
+        "cache_arm_id": "document_kv_cache",
+        "dataset": "biography",
+        "exact_match_delta": 0.0,
+        "time_to_completion_speedup": 0.9144047096917624,
+        "ttft_speedup": 0.8008415478194361
+      },
+      {
+        "answer_found_delta": 0.0,
+        "baseline_arm_id": "baseline_prefill",
+        "cache_arm_id": "document_kv_cache",
+        "dataset": "hotpotqa",
+        "exact_match_delta": 0.0,
+        "time_to_completion_speedup": 0.909525601292283,
+        "ttft_speedup": 0.35592874749006626
+      },
+      {
+        "answer_found_delta": 0.0,
+        "baseline_arm_id": "baseline_prefill",
+        "cache_arm_id": "document_kv_cache",
+        "dataset": "musique",
+        "exact_match_delta": 0.0,
+        "time_to_completion_speedup": 0.8926169249546978,
+        "ttft_speedup": 0.34126603651604204
+      },
+      {
+        "answer_found_delta": 0.0,
+        "baseline_arm_id": "baseline_prefill",
+        "cache_arm_id": "document_kv_cache",
+        "dataset": "niah",
+        "exact_match_delta": 0.0,
+        "time_to_completion_speedup": 0.8954572666646472,
+        "ttft_speedup": 0.3157804347191844
+      }
+    ],
+    "issues": [
+      "biography/biography-smoke-1 cache repeat 1: SGLang server log did not report cache request prompt token count",
+      "biography/biography-smoke-1 cache repeat 2: SGLang server log did not report cache request prompt token count",
+      "hotpotqa/hotpotqa-smoke-1 cache repeat 1: SGLang server log did not report cache request prompt token count",
+      "hotpotqa/hotpotqa-smoke-1 cache repeat 2: SGLang server log did not report cache request prompt token count",
+      "musique/musique-smoke-1 cache repeat 1: SGLang server log did not report cache request prompt token count",
+      "musique/musique-smoke-1 cache repeat 2: SGLang server log did not report cache request prompt token count",
+      "niah/niah-smoke-1 cache repeat 1: SGLang server log did not report cache request prompt token count",
+      "niah/niah-smoke-1 cache repeat 2: SGLang server log did not report cache request prompt token count"
+    ],
+    "measurement_count": 16,
+    "ok": false,
+    "record_type": "cachet.sglang_live_benchmark.v1",
+    "report_rows": [
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "baseline_prefill",
+        "completion_tokens_mean": 14.0,
+        "dataset": "biography",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 19.20707283445155,
+        "prompt_tokens_mean": 73.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 0.728898157499998,
+        "ttft_p50_seconds": 0.20352514499995777
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "document_kv_cache",
+        "completion_tokens_mean": 14.0,
+        "dataset": "biography",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 17.563037859215207,
+        "prompt_tokens_mean": 73.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 0.7971286124999324,
+        "ttft_p50_seconds": 0.25413909349998676
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "baseline_prefill",
+        "completion_tokens_mean": 32.0,
+        "dataset": "hotpotqa",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 22.854755098441796,
+        "prompt_tokens_mean": 100.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 1.400146265499984,
+        "ttft_p50_seconds": 0.07899195850001206
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "document_kv_cache",
+        "completion_tokens_mean": 32.0,
+        "dataset": "hotpotqa",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 20.78698487329814,
+        "prompt_tokens_mean": 100.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 1.539424798500022,
+        "ttft_p50_seconds": 0.22193194299995866
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "baseline_prefill",
+        "completion_tokens_mean": 32.0,
+        "dataset": "musique",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 22.63946159588019,
+        "prompt_tokens_mean": 103.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 1.4134611755000037,
+        "ttft_p50_seconds": 0.09030969399998412
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "document_kv_cache",
+        "completion_tokens_mean": 32.0,
+        "dataset": "musique",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 20.208366592344547,
+        "prompt_tokens_mean": 103.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 1.5835025485000074,
+        "ttft_p50_seconds": 0.2646313559999953
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "baseline_prefill",
+        "completion_tokens_mean": 32.0,
+        "dataset": "niah",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 22.910035862418383,
+        "prompt_tokens_mean": 84.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 1.396767782999973,
+        "ttft_p50_seconds": 0.07637535949999119
+      },
+      {
+        "answer_found_rate": 1.0,
+        "arm_id": "document_kv_cache",
+        "completion_tokens_mean": 32.0,
+        "dataset": "niah",
+        "errors": 0,
+        "exact_match_rate": 0.0,
+        "output_tokens_per_second": 20.51495809255021,
+        "prompt_tokens_mean": 84.0,
+        "requests": 2,
+        "time_to_completion_p50_seconds": 1.5598374539999895,
+        "ttft_p50_seconds": 0.24186222800000223
+      }
+    ],
+    "suite": {
+      "datasets": [
+        "biography",
+        "hotpotqa",
+        "musique",
+        "niah"
+      ],
+      "examples": 4,
+      "release_v1_suite": true,
+      "repeats": 2,
+      "scope": "live_v1_release",
+      "suite_id": "sglang-prepared-v1-g6-06a9c76-20260624_125434"
+    }
+  },
+  "mode": "prepared-sglang-v1-generated-handoffs-live-v1-release",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "fe8a92440264473a621303b8afd60d6f741f9d43b94b389069ad12f5398ea348"
+  },
+  "prepared_handoff_coverage": {
+    "datasets": {
+      "biography": 1,
+      "hotpotqa": 1,
+      "musique": 1,
+      "niah": 1
+    },
+    "examples": 4,
+    "examples_with_kv_transfer_params": 4,
+    "examples_with_loadable_sglang_handoff_references": 4,
+    "ok": true,
+    "release_v1_suite": true
+  },
+  "prepared_handoff_generation": {
+    "align_bytes": 4096,
+    "backend": "sglang",
+    "datasets": {
+      "biography": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      },
+      "hotpotqa": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      },
+      "musique": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      },
+      "niah": {
+        "cache_refs": 1,
+        "enriched_rows": 1,
+        "entries": 1
+      }
+    },
+    "dtype": "bfloat16",
+    "ok": true,
+    "page_size": 16
+  },
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "request_shape": {
+    "cache_prompt_text_mode": "logical",
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "hicache_storage_prefetch_threshold": 1,
+    "live_benchmark_repeats": 2,
+    "live_check_prompt_format": "plain",
+    "live_check_request_mode": "completion",
+    "sglang_attention_backend": "triton",
+    "sglang_enable_deterministic_inference": true,
+    "sglang_hicache_page_size": 16,
+    "sglang_sampling_backend": "pytorch"
+  },
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "cluster_id": "0624-125509-e8wmmxaq",
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 131444738323102,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}

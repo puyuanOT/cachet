@@ -1166,6 +1166,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_prepared_v1_padded_token_failure_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1334,6 +1340,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
+    sglang_prepared_v1_padded_token_failure_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1354,6 +1368,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     )
     compact_sglang_prepared_v1_config_swap_failure_readme = " ".join(
         sglang_prepared_v1_config_swap_failure_readme.split()
+    )
+    compact_sglang_prepared_v1_padded_token_failure_readme = " ".join(
+        sglang_prepared_v1_padded_token_failure_readme.split()
     )
     compact_databricks_readme = " ".join(databricks_readme.split())
     compact_matrix_text = " ".join(matrix_text.split())
@@ -2212,6 +2229,79 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         sglang_live_benchmark_success_readme
     )
     assert "Raw Databricks API responses" in compact_sglang_live_benchmark_success_readme
+    assert "Prepared V1 Attempt: Padded Token Validation Failure" in (
+        sglang_prepared_v1_padded_token_failure_readme
+    )
+    assert "standalone benchmark-readiness evidence, not `pr-evidence/`" in (
+        compact_sglang_prepared_v1_padded_token_failure_readme
+    )
+    assert "16 live measurement rows" in compact_sglang_prepared_v1_padded_token_failure_readme
+    assert "padded SGLang prompt-token totals" in (
+        compact_sglang_prepared_v1_padded_token_failure_readme
+    )
+    assert "not publication numbers" in (
+        compact_sglang_prepared_v1_padded_token_failure_readme
+    )
+    assert (
+        "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
+        in compact_sglang_readme
+    )
+    assert (
+        "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
+        in compact_snapshot
+    )
+    assert "918882025776007" in sglang_readme
+    assert "918882025776007" in current_databricks_snapshot
+    assert sglang_prepared_v1_padded_token_failure_run["record_type"] == (
+        "cachet.benchmark_failed_databricks_smoke.v1"
+    )
+    assert sglang_prepared_v1_padded_token_failure_run["benchmark_result"] == (
+        "not_published"
+    )
+    assert sglang_prepared_v1_padded_token_failure_run["failure_type"] == (
+        "sglang_prepared_v1_padded_prompt_token_validation"
+    )
+    assert sglang_prepared_v1_padded_token_failure_run["cachet_commit"] == "06a9c76"
+    assert (
+        sglang_prepared_v1_padded_token_failure_run["databricks_run"]["run_id"]
+        == 918882025776007
+    )
+    assert (
+        sglang_prepared_v1_padded_token_failure_run["task"]["run_id"]
+        == 131444738323102
+    )
+    assert sglang_prepared_v1_padded_token_failure_run["integration_checks"][
+        "document_kv_request_metadata_bridge_ok"
+    ] is True
+    assert sglang_prepared_v1_padded_token_failure_run["integration_checks"][
+        "cuda_device_name"
+    ] == "NVIDIA L4"
+    assert sglang_prepared_v1_padded_token_failure_run[
+        "prepared_handoff_generation"
+    ]["ok"] is True
+    assert sglang_prepared_v1_padded_token_failure_run[
+        "prepared_handoff_coverage"
+    ]["release_v1_suite"] is True
+    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"][
+        "measurement_count"
+    ] == 16
+    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"]["suite"][
+        "scope"
+    ] == "live_v1_release"
+    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"][
+        "cache_hit_validation"
+    ]["failed_validations"] == 8
+    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"][
+        "cache_hit_validation"
+    ]["candidate_rows"][0] == {
+        "cache_request_prompt_tokens": 120,
+        "dataset": "biography",
+        "minimum_cached_tokens": 96,
+        "observed_cached_tokens": 96,
+        "observed_new_tokens": 32,
+        "observed_total_prompt_tokens": 128,
+        "repeat_index": 1,
+    }
     assert "Prepared V1 Attempt: Config Swap Failure" in (
         sglang_prepared_v1_config_swap_failure_readme
     )
@@ -2873,6 +2963,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/README.md",
         "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/success_run.json",
         "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/README.md",
+        "sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/failed_run.json",
+        "sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/README.md",
         "sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/failed_run.json",
         "sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/README.md",
         "sglang/README.md",

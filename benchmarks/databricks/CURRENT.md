@@ -28,11 +28,18 @@ live benchmark tracked at
 and a successful generated-handoff live smoke tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/).
 The latest prepared four-dataset SGLang V1 attempt is tracked at
+[`../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/`](../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/):
+run `918882025776007` on `aws-g6-l4` / `g6.8xlarge`, where import probe,
+request metadata bridge, prepared handoff generation, prepared handoff
+coverage, SGLang server launch, and live measurement writing succeeded. The
+run wrote 16 `cachet.sglang_live_benchmark.v1` rows for Biography, HotpotQA,
+MusiQue, and NIAH, but publication validation failed because SGLang logged
+padded/page-rounded prompt-token totals for cache-arm prefill rows. The
+previous config-swap failure is tracked at
 [`../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/`](../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/):
-run `514040136831626` on `aws-g6-l4` / `g6.8xlarge`, where import probe,
-request metadata bridge, and prepared handoff generation succeeded, but the
-runner failed before SGLang server launch because generated prepared datasets
-were combined with single live handoff fields.
+run `514040136831626`, which generated all prepared handoffs but failed before
+SGLang server launch because generated prepared datasets were combined with
+single live handoff fields.
 Earlier failed generated-handoff live smoke attempts remain tracked under
 [`../sglang/2026-06-23-g6-l4-live-handoff-smoke/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke/)
 and
@@ -97,6 +104,13 @@ does not replace the strict AWS g6/L4 publication target.
 This SGLang artifact is scoped to one synthetic NIAH live prompt. It validates
 two Cachet-backed cache repeats with 175 cached tokens each, but it does not
 replace the full V1 release benchmark suite.
+
+## SGLang Prepared V1 Attempts
+
+| Target | Folder | Databricks run | Measurements | Result |
+| --- | --- | --- | ---: | --- |
+| Prepared g6/L4 | [`../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure`](../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/) | `918882025776007` | 16 | Not published; cache-hit validation failed on padded SGLang prompt-token totals |
+| Prepared g6/L4 | [`../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure`](../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/) | `514040136831626` | 0 | Not published; failed before SGLang server launch |
 
 ## Storage And Native Engine Evidence
 

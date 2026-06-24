@@ -2971,6 +2971,7 @@ def test_sglang_cache_hit_validation_reads_cache_arm_cached_tokens(tmp_path):
     assert record["cache_request_prompt_tokens"] == 175
     assert record["cache_request_prefill_index"] == 2
     assert record["cache_request_cached_tokens"] == 150
+    assert record["cache_request_match_reason"] == "prompt_tokens"
     assert record["issue"] is None
 
 
@@ -2996,6 +2997,57 @@ def test_sglang_cache_hit_validation_requires_generated_prefix_minimum(tmp_path)
     )
 
 
+def test_sglang_cache_hit_validation_accepts_padded_prepared_prompt_total(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 128, #cached-token: 0\n"
+        "[INFO] Prefill batch, #new-token: 32, #cached-token: 96\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(
+        log_path,
+        cache_request_prompt_tokens=120,
+        cache_request_prefill_start_index=1,
+        minimum_cached_tokens=96,
+    )
+
+    assert record["ok"] is True
+    assert record["cache_request_prompt_tokens"] == 120
+    assert record["cache_request_prefill_index"] == 1
+    assert record["cache_request_cached_tokens"] == 96
+    assert record["cache_request_match_reason"] == "minimum_cached_tokens"
+    assert record["issue"] is None
+    assert record["prefill_token_counts"][1] == {
+        "new_tokens": 32,
+        "cached_tokens": 96,
+        "total_prompt_tokens": 128,
+    }
+
+
+def test_sglang_cache_hit_validation_rejects_short_minimum_cached_row(tmp_path):
+    log_path = tmp_path / "sglang-server.log"
+    log_path.write_text(
+        "[INFO] Prefill batch, #new-token: 1, #cached-token: 144\n",
+        encoding="utf-8",
+    )
+
+    record = sglang_cache_hit_validation_record(
+        log_path,
+        cache_request_prompt_tokens=184,
+        minimum_cached_tokens=144,
+    )
+
+    assert record["ok"] is False
+    assert record["cache_request_prefill_index"] is None
+    assert record["cache_request_cached_tokens"] is None
+    assert record["cache_request_match_reason"] is None
+    assert (
+        record["issue"]
+        == "SGLang server log did not report cache request prompt token count"
+    )
+
+
 def test_sglang_cache_hit_validation_rejects_later_baseline_warm_hit(tmp_path):
     log_path = tmp_path / "sglang-server.log"
     log_path.write_text(
@@ -3005,7 +3057,9 @@ def test_sglang_cache_hit_validation_rejects_later_baseline_warm_hit(tmp_path):
     )
 
     record = sglang_cache_hit_validation_record(
-        log_path, cache_request_prompt_tokens=174
+        log_path,
+        cache_request_prompt_tokens=174,
+        minimum_cached_tokens=150,
     )
 
     assert record["ok"] is False
@@ -3014,6 +3068,7 @@ def test_sglang_cache_hit_validation_rejects_later_baseline_warm_hit(tmp_path):
     assert record["cache_request_prompt_match_field"] == "total_prompt_tokens"
     assert record["cache_request_prefill_index"] == 0
     assert record["cache_request_cached_tokens"] == 0
+    assert record["cache_request_match_reason"] == "prompt_tokens"
     assert record["issue"] == "SGLang cache arm reported zero cached tokens"
 
 
@@ -3066,6 +3121,7 @@ def test_sglang_cache_hit_validation_uses_log_offset_to_skip_matching_warmup_tot
     assert record["cache_request_prefill_start_index"] == 1
     assert record["cache_request_prefill_index"] == 1
     assert record["cache_request_cached_tokens"] == 150
+    assert record["cache_request_match_reason"] == "prompt_tokens"
 
 
 def test_sglang_cache_hit_validation_matches_runtime_prompt_mode_by_new_tokens(
@@ -3088,6 +3144,7 @@ def test_sglang_cache_hit_validation_matches_runtime_prompt_mode_by_new_tokens(
     assert record["cache_request_prompt_match_field"] == "new_tokens"
     assert record["cache_request_prefill_index"] == 0
     assert record["cache_request_cached_tokens"] == 150
+    assert record["cache_request_match_reason"] == "prompt_tokens"
 
 
 def test_sglang_cache_hit_validation_requires_cache_request_prompt_tokens(tmp_path):
@@ -3097,11 +3154,12 @@ def test_sglang_cache_hit_validation_requires_cache_request_prompt_tokens(tmp_pa
         encoding="utf-8",
     )
 
-    record = sglang_cache_hit_validation_record(log_path)
+    record = sglang_cache_hit_validation_record(log_path, minimum_cached_tokens=96)
 
     assert record["ok"] is False
     assert record["cache_request_prefill_index"] is None
     assert record["cache_request_cached_tokens"] is None
+    assert record["cache_request_match_reason"] is None
     assert (
         record["issue"]
         == "SGLang cache request prompt token count unavailable; cannot verify cache-arm cached tokens"

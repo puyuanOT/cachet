@@ -14,7 +14,7 @@ from the strict release-bundle evidence set:
 
 - `document_kv.benchmark_run.v1` for V1 latency and quality benchmarks.
 - `cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint
-  measurements.
+  measurements and prepared V1 live attempts.
 - `document_kv.storage_benchmark.v1` for Memory, Disk, and Unity Catalog reader
   benchmarks.
 - `document_kv.databricks_run_status.v1` summaries for terminal successful QA
@@ -25,9 +25,10 @@ from the strict release-bundle evidence set:
 
 Folders containing `v1_benchmark.json` are full V1 latency and quality
 benchmark reports. SGLang live benchmark folders under `../sglang/` can be
-cited as scoped synthetic live endpoint measurements when they include
-sanitized `cachet.sglang_live_benchmark.v1` evidence, but they do not replace
-full V1 benchmark reports. The native-engine probe folder proves
+cited as scoped synthetic live endpoint measurements or pre-publication
+prepared V1 attempt evidence when they include sanitized
+`cachet.sglang_live_benchmark.v1` records, but they do not replace full V1
+benchmark reports. The native-engine probe folder proves
 provider-backed vLLM/SGLang integration against engine-owned KV block managers,
 but it does not publish full SGLang release latency, throughput, or quality
 benchmark results.
