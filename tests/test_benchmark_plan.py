@@ -310,7 +310,7 @@ def test_build_v1_benchmark_plan_generates_handoff_bundles_before_enrichment(tmp
         benchmark_handoff_generator_factory="my_runtime.kv_generator:create_generator",
         benchmark_handoff_output_dir=str(tmp_path / "handoff-bundles"),
         benchmark_handoff_backend="sglang",
-        benchmark_handoff_sglang_hicache_page_size=4,
+        benchmark_handoff_sglang_hicache_page_size=16,
     )
 
     plan = build_v1_benchmark_plan(config)
@@ -343,7 +343,7 @@ def test_build_v1_benchmark_plan_generates_handoff_bundles_before_enrichment(tmp
         "--model-id",
         "qwen3:4b-instruct",
         "--sglang-hicache-page-size",
-        "4",
+        "16",
     )
     assert enrich_command.name == "enrich-biography-handoffs"
 
@@ -2727,7 +2727,7 @@ def test_main_can_plan_sglang_generated_benchmark_handoff_page_keys(tmp_path):
             "--benchmark-handoff-backend",
             "sglang",
             "--benchmark-handoff-sglang-hicache-page-size",
-            "4",
+            "16",
             "--plan-output-json",
             str(plan_json),
         ]
@@ -2739,9 +2739,9 @@ def test_main_can_plan_sglang_generated_benchmark_handoff_page_keys(tmp_path):
 
     assert exit_code == 0
     assert bundle_argv[bundle_argv.index("--backend") + 1] == "sglang"
-    assert bundle_argv[bundle_argv.index("--sglang-hicache-page-size") + 1] == "4"
+    assert bundle_argv[bundle_argv.index("--sglang-hicache-page-size") + 1] == "16"
     assert record["benchmark_handoff_backend"] == "sglang"
-    assert record["benchmark_handoff_sglang_hicache_page_size"] == 4
+    assert record["benchmark_handoff_sglang_hicache_page_size"] == 16
 
 
 def test_main_can_use_explicit_benchmark_handoff_output_jsonl(tmp_path):
@@ -3996,7 +3996,7 @@ def test_main_rejects_sglang_hicache_page_size_without_handoff_generator(capsys,
             "--benchmark-handoff-backend",
             "sglang",
             "--benchmark-handoff-sglang-hicache-page-size",
-            "4",
+            "16",
         ]
     )
 
@@ -4022,7 +4022,7 @@ def test_main_rejects_sglang_hicache_page_size_for_vllm_handoff_backend(capsys, 
             "--benchmark-handoff-backend",
             "vllm",
             "--benchmark-handoff-sglang-hicache-page-size",
-            "4",
+            "16",
         ]
     )
 

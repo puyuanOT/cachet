@@ -976,15 +976,16 @@ cachet-benchmark-handoff-bundles \
   --output-manifest-json /data/handoffs/biography-sglang-manifest.json \
   --generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
   --backend sglang \
-  --sglang-hicache-page-size 1 \
+  --sglang-hicache-page-size 16 \
   --dtype bfloat16
 ```
 
 These generated keys match the standard V1 plain cache prefix assembled by
-Cachet's benchmark dataset helpers. Run the prepared SGLang live path with the
-matching plain prompt format, or provide prompt-format-specific page-key
-metadata through the manifest template when the runtime prompt uses a chat
-template.
+Cachet's benchmark dataset helpers. The HiCache page size must match the KV
+layout block size, and Cachet emits keys only for full payload pages. Run the
+prepared SGLang live path with the matching plain prompt format, or provide
+prompt-format-specific page-key metadata through the manifest template when the
+runtime prompt uses a chat template.
 
 The bundle CLI derives the default `qwen3:4b-instruct` layout from the built-in
 model profile. For custom models, pass the complete manual layout flags:

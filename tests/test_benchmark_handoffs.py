@@ -548,15 +548,16 @@ def test_generate_sglang_handoff_bundles_can_emit_hicache_page_keys(tmp_path):
     input_path = tmp_path / "bio.jsonl"
     input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
     manifest_path = tmp_path / "bundle-manifest.json"
+    layout = tiny_layout()
 
     result = generate_benchmark_handoff_bundles(
         input_path,
         output_dir=tmp_path / "bundles",
         generator=PageKeyGenerator(),
-        layout=tiny_layout(),
+        layout=layout,
         backend="sglang",
         manifest_json=manifest_path,
-        sglang_hicache_page_size=4,
+        sglang_hicache_page_size=layout.block_size,
         align_bytes=1,
     )
 
@@ -567,7 +568,12 @@ def test_generate_sglang_handoff_bundles_can_emit_hicache_page_keys(tmp_path):
         return_tensors="pt",
         add_special_tokens=False,
     )["input_ids"][0]
-    expected_page_keys = sglang_hicache_page_keys(token_ids, page_size=4)
+    assert len(token_ids) % layout.block_size != 0
+    full_page_token_ids = token_ids[: (len(token_ids) // layout.block_size) * layout.block_size]
+    expected_page_keys = sglang_hicache_page_keys(
+        full_page_token_ids,
+        page_size=layout.block_size,
+    )
     entry = result.manifest.entries[0]
 
     assert entry.sglang_hicache_page_keys == expected_page_keys
@@ -593,6 +599,22 @@ def test_generate_sglang_handoff_page_keys_requires_tokenizer(tmp_path):
             generator=AlignedGenerator(),
             layout=tiny_layout(),
             backend="sglang",
+            sglang_hicache_page_size=tiny_layout().block_size,
+            align_bytes=1,
+        )
+
+
+def test_generate_sglang_handoff_page_keys_requires_layout_block_size(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must match layout.block_size"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=tmp_path / "bundles",
+            generator=PageKeyGenerator(),
+            layout=tiny_layout(),
+            backend="sglang",
             sglang_hicache_page_size=4,
             align_bytes=1,
         )
@@ -609,7 +631,7 @@ def test_generate_sglang_handoff_page_keys_requires_sglang_backend(tmp_path):
             generator=PageKeyGenerator(),
             layout=tiny_layout(),
             backend="vllm",
-            sglang_hicache_page_size=4,
+            sglang_hicache_page_size=tiny_layout().block_size,
             align_bytes=1,
         )
 
@@ -851,7 +873,7 @@ def test_bundle_main_can_write_sglang_hicache_page_keys(tmp_path, monkeypatch, c
             "--bytes-per-token",
             "1",
             "--sglang-hicache-page-size",
-            "4",
+            "8",
             "--align-bytes",
             "1",
         ]

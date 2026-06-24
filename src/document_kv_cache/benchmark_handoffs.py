@@ -509,6 +509,7 @@ def generate_benchmark_handoff_bundles(
         )
         sglang_page_keys = _sglang_hicache_page_keys_for_handoff(
             generator,
+            layout=layout,
             source_document=source_document,
             page_size=sglang_hicache_page_size,
         )
@@ -963,15 +964,21 @@ def _sglang_hicache_page_keys_from_template(
 def _sglang_hicache_page_keys_for_handoff(
     generator: object,
     *,
+    layout: KVLayout,
     source_document: SourceDocument,
     page_size: int | None,
 ) -> tuple[str, ...]:
     if page_size is None:
         return ()
+    if page_size != layout.block_size:
+        raise ValueError("sglang_hicache_page_size must match layout.block_size")
     if len(source_document.chunks) != 1:
         raise ValueError("SGLang benchmark handoff source document must have one cache-prefix chunk")
     token_ids = _token_ids_for_generator(generator, source_document.chunks[0].text)
-    return sglang_hicache_page_keys(token_ids, page_size=page_size)
+    full_page_token_count = (len(token_ids) // page_size) * page_size
+    if full_page_token_count == 0:
+        raise ValueError("SGLang benchmark handoff source document must contain at least one full HiCache page")
+    return sglang_hicache_page_keys(token_ids[:full_page_token_count], page_size=page_size)
 
 
 def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
