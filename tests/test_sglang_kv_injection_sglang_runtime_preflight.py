@@ -16,6 +16,7 @@ from sglang_kv_injection.sglang_dynamic_backend import (
 )
 from sglang_kv_injection.sglang_hicache_config import sglang_hicache_launch_config
 from sglang_kv_injection.sglang_request_metadata_bridge import (
+    DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION,
     sglang_request_metadata_bridge_status_to_record,
 )
 from sglang_kv_injection.sglang_runtime_preflight import (
@@ -539,6 +540,29 @@ def test_sglang_runtime_preflight_accepts_upstream_bridge_without_cachet_patch(m
     assert record["request_metadata_bridge"]["ok"] is False
     assert document_kv_sglang_runtime_preflight_record_issues(record) == ()
     validate_document_kv_sglang_runtime_preflight_record(record)
+
+
+def test_sglang_request_metadata_bridge_record_rejects_stale_v1_schema(monkeypatch):
+    provider_factory = install_provider_module(monkeypatch)
+    install_storage_backend_factory_module(monkeypatch)
+    record = document_kv_sglang_runtime_preflight_to_record(
+        sglang_hicache_launch_config(provider_factory=provider_factory),
+        installed_contract=matching_installed_contract(),
+    )
+    stale_bridge = dict(record["request_metadata_bridge"])
+    assert stale_bridge["schema_version"] == DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION
+    stale_bridge["schema_version"] = DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION - 1
+    stale_bridge.pop("prefetch_operation_patched")
+    stale_bridge["ok"] = True
+    record["request_metadata_bridge"] = stale_bridge
+    record["dynamic_backend_factory"]["request_metadata_bridge"] = stale_bridge
+    record["live_request_metadata_bridge_ok"] = True
+    record["ok"] = True
+
+    issues = document_kv_sglang_runtime_preflight_record_issues(record)
+
+    assert any("schema_version" in issue for issue in issues)
+    assert any("prefetch_operation_patched" in issue for issue in issues)
 
 
 @pytest.mark.parametrize(
