@@ -31,24 +31,40 @@ from document_kv_cache.benchmarks import (
     benchmark_cache_source_document,
     validate_v1_hardware_target,
 )
-from document_kv_cache.engine_adapters import ServingBackend, build_engine_adapter_request, sglang_adapter_spec
+from document_kv_cache.engine_adapters import (
+    ServingBackend,
+    build_engine_adapter_request,
+    sglang_adapter_spec,
+)
 from document_kv_cache.engine_probe import write_engine_adapter_handoff_bundle
 from document_kv_cache.live_server import (
     LiveCheckPromptFormat,
     LiveServerCheckConfig,
+    _live_check_chat_messages,
+    _live_check_request_prompt_format,
     build_live_server_check_request,
     live_check_kv_transfer_params,
     run_openai_compatible_live_check,
 )
 from document_kv_cache.manifest import InMemoryManifestStore
-from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID, layout_for_model
-from document_kv_cache.openai_compatible import PromptTextMode
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_INSTRUCT_HF_MODEL_ID,
+    layout_for_model,
+)
+from document_kv_cache.openai_compatible import (
+    OpenAICompatibleRequestMode,
+    PromptTextMode,
+)
 from document_kv_cache.serving_env import (
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_SERVING_ENVIRONMENT_PROFILE,
     SGLANG_VERSION,
 )
-from document_kv_cache.workflow import CacheBuildConfig, DocumentKVWorkflow, SourceDocument
+from document_kv_cache.workflow import (
+    CacheBuildConfig,
+    DocumentKVWorkflow,
+    SourceDocument,
+)
 from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_BACKEND_CLASS,
@@ -81,6 +97,7 @@ DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
+DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE: OpenAICompatibleRequestMode = "chat"
 DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.7
 DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY = {
     "top_p": 0.8,
@@ -91,7 +108,9 @@ DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY = {
 MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO = 0.8
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
-SGLANG_SERVER_PREFILL_TOKEN_PATTERN = re.compile(r"#new-token:\s*(\d+),\s*#cached-token:\s*(\d+)")
+SGLANG_SERVER_PREFILL_TOKEN_PATTERN = re.compile(
+    r"#new-token:\s*(\d+),\s*#cached-token:\s*(\d+)"
+)
 SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE = (
     "SGLang handoff-backed live smoke requires handoff_json or handoff_record "
     "plus explicit sglang_hicache_page_keys metadata so Cachet can bind the "
@@ -119,6 +138,7 @@ __all__ = [
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD",
     "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT",
+    "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE",
     "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE",
     "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY",
     "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
@@ -163,13 +183,24 @@ class SGLangLiveHandoffGenerationConfig:
     def __post_init__(self) -> None:
         if self.output_dir is None:
             raise ValueError("live_handoff_output_dir must be provided")
-        if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
+        if (
+            not isinstance(self.generator_factory, str)
+            or not self.generator_factory.strip()
+        ):
             raise ValueError("live_handoff_generator_factory must be non-empty")
         if not isinstance(self.dtype, str) or not self.dtype.strip():
             raise ValueError("live_handoff_dtype must be non-empty")
-        if isinstance(self.align_bytes, bool) or not isinstance(self.align_bytes, int) or self.align_bytes <= 0:
+        if (
+            isinstance(self.align_bytes, bool)
+            or not isinstance(self.align_bytes, int)
+            or self.align_bytes <= 0
+        ):
             raise ValueError("live_handoff_align_bytes must be a positive integer")
-        if isinstance(self.page_size, bool) or not isinstance(self.page_size, int) or self.page_size <= 0:
+        if (
+            isinstance(self.page_size, bool)
+            or not isinstance(self.page_size, int)
+            or self.page_size <= 0
+        ):
             raise ValueError("sglang_hicache_page_size must be a positive integer")
         if self.timeout_seconds <= 0:
             raise ValueError("live_handoff_generation_timeout_seconds must be positive")
@@ -207,9 +238,16 @@ class SGLangSmokeBenchmarkConfig:
     package_install_spec: str | None = None
     baseline_only: bool = False
     cache_prompt_text_mode: PromptTextMode = "logical"
-    live_check_prompt_format: LiveCheckPromptFormat = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    live_check_prompt_format: LiveCheckPromptFormat = (
+        DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    )
+    live_check_request_mode: OpenAICompatibleRequestMode = (
+        DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
+    )
     live_check_temperature: float = DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
-    live_check_extra_body: Mapping[str, Any] = field(default_factory=lambda: dict(DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY))
+    live_check_extra_body: Mapping[str, Any] = field(
+        default_factory=lambda: dict(DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY)
+    )
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
@@ -259,22 +297,32 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("stream must be a boolean")
         if type(self.baseline_only) is not bool:
             raise ValueError("baseline_only must be a boolean")
-        if not isinstance(self.hardware_target, str) or not self.hardware_target.strip():
+        if (
+            not isinstance(self.hardware_target, str)
+            or not self.hardware_target.strip()
+        ):
             raise ValueError("hardware_target must be non-empty")
         validate_v1_hardware_target(self.hardware_target)
-        if self.package_install_spec is not None and not self.package_install_spec.strip():
+        if (
+            self.package_install_spec is not None
+            and not self.package_install_spec.strip()
+        ):
             raise ValueError("package_install_spec must be non-empty when provided")
         if self.cache_prompt_text_mode not in {"logical", "runtime"}:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
         if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
             raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
+        if self.live_check_request_mode not in {"completion", "chat"}:
+            raise ValueError("live_check_request_mode must be 'completion' or 'chat'")
         if (
             not isinstance(self.live_check_temperature, (int, float))
             or isinstance(self.live_check_temperature, bool)
             or not math.isfinite(self.live_check_temperature)
             or self.live_check_temperature < 0
         ):
-            raise ValueError("live_check_temperature must be a non-negative finite number")
+            raise ValueError(
+                "live_check_temperature must be a non-negative finite number"
+            )
         if not isinstance(self.live_check_extra_body, Mapping):
             raise ValueError("live_check_extra_body must be a mapping")
         live_check_extra_body = dict(self.live_check_extra_body)
@@ -283,48 +331,71 @@ class SGLangSmokeBenchmarkConfig:
         except (TypeError, ValueError) as exc:
             raise ValueError("live_check_extra_body must be JSON-serializable") from exc
         if self.handoff_json and self.handoff_record is not None:
-            raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record")
-        if self.handoff_record is not None and not isinstance(self.handoff_record, Mapping):
+            raise ValueError(
+                "SGLang smoke handoff params must use only one of handoff_json or handoff_record"
+            )
+        if self.handoff_record is not None and not isinstance(
+            self.handoff_record, Mapping
+        ):
             raise ValueError("handoff_record must be a JSON object")
         page_keys_provided = self.sglang_hicache_page_keys is not None
-        page_keys = _string_tuple(self.sglang_hicache_page_keys or (), field_name="sglang_hicache_page_keys")
-        has_handoff_fields = any(
-            value is not None
-            for value in (self.handoff_json, self.handoff_record, self.payload_uri, self.request_id)
-        ) or page_keys_provided
+        page_keys = _string_tuple(
+            self.sglang_hicache_page_keys or (), field_name="sglang_hicache_page_keys"
+        )
+        has_handoff_fields = (
+            any(
+                value is not None
+                for value in (
+                    self.handoff_json,
+                    self.handoff_record,
+                    self.payload_uri,
+                    self.request_id,
+                )
+            )
+            or page_keys_provided
+        )
         if self.handoff_generation is not None and not isinstance(
             self.handoff_generation, SGLangLiveHandoffGenerationConfig
         ):
-            raise TypeError("handoff_generation must be a SGLangLiveHandoffGenerationConfig")
-        if (
-            self.hicache_page_size is not None
-            and (isinstance(self.hicache_page_size, bool) or not isinstance(self.hicache_page_size, int))
-        ):
-            raise ValueError("hicache_page_size must be a positive integer when provided")
-        if self.hicache_page_size is not None and self.hicache_page_size <= 0:
-            raise ValueError("hicache_page_size must be a positive integer when provided")
-        if (
-            self.hicache_storage_prefetch_threshold is not None
-            and (
-                isinstance(self.hicache_storage_prefetch_threshold, bool)
-                or not isinstance(self.hicache_storage_prefetch_threshold, int)
-                or self.hicache_storage_prefetch_threshold <= 0
+            raise TypeError(
+                "handoff_generation must be a SGLangLiveHandoffGenerationConfig"
             )
+        if self.hicache_page_size is not None and (
+            isinstance(self.hicache_page_size, bool)
+            or not isinstance(self.hicache_page_size, int)
         ):
-            raise ValueError("hicache_storage_prefetch_threshold must be a positive integer when provided")
+            raise ValueError(
+                "hicache_page_size must be a positive integer when provided"
+            )
+        if self.hicache_page_size is not None and self.hicache_page_size <= 0:
+            raise ValueError(
+                "hicache_page_size must be a positive integer when provided"
+            )
+        if self.hicache_storage_prefetch_threshold is not None and (
+            isinstance(self.hicache_storage_prefetch_threshold, bool)
+            or not isinstance(self.hicache_storage_prefetch_threshold, int)
+            or self.hicache_storage_prefetch_threshold <= 0
+        ):
+            raise ValueError(
+                "hicache_storage_prefetch_threshold must be a positive integer when provided"
+            )
         if (
             self.handoff_generation is not None
             and self.hicache_page_size is not None
             and self.hicache_page_size != self.handoff_generation.page_size
         ):
-            raise ValueError("hicache_page_size must match live handoff generation page_size")
+            raise ValueError(
+                "hicache_page_size must match live handoff generation page_size"
+            )
         if self.baseline_only:
             if has_handoff_fields or self.handoff_generation is not None:
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
             if self.handoff_generation is not None:
                 if has_handoff_fields:
-                    raise ValueError(SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE)
+                    raise ValueError(
+                        SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE
+                    )
             else:
                 if self.handoff_json is None and self.handoff_record is None:
                     raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
@@ -335,7 +406,9 @@ class SGLangSmokeBenchmarkConfig:
         object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
         object.__setattr__(self, "live_check_extra_body", live_check_extra_body)
         if self.handoff_generation is not None and self.hicache_page_size is None:
-            object.__setattr__(self, "hicache_page_size", self.handoff_generation.page_size)
+            object.__setattr__(
+                self, "hicache_page_size", self.handoff_generation.page_size
+            )
         if self.handoff_record is not None:
             object.__setattr__(self, "handoff_record", dict(self.handoff_record))
 
@@ -402,7 +475,9 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
 
     create_venv(config.venv_dir)
     install_sglang(config.venv_python)
-    install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
+    install_document_kv_package(
+        config.venv_python, document_kv_package_install_spec(config)
+    )
     metadata.update(installed_versions(config.venv_python))
     write_json(config.metadata_path, metadata)
     import_probe_record = probe_sglang_import(
@@ -417,10 +492,14 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     runtime_config = prepare_generated_live_handoff(config)
     if runtime_config is not config:
         metadata["generated_live_handoff"] = True
-        metadata["live_handoff_generation_path"] = str(config.live_handoff_generation_path)
+        metadata["live_handoff_generation_path"] = str(
+            config.live_handoff_generation_path
+        )
         metadata["generated_live_handoff_json"] = runtime_config.handoff_json
         metadata["generated_live_handoff_payload_uri"] = runtime_config.payload_uri
-        metadata["generated_live_handoff_page_keys"] = len(runtime_config.sglang_hicache_page_keys or ())
+        metadata["generated_live_handoff_page_keys"] = len(
+            runtime_config.sglang_hicache_page_keys or ()
+        )
         write_json(config.metadata_path, metadata)
 
     metadata["sglang_server_local_log"] = str(runtime_config.server_log_path)
@@ -428,7 +507,9 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     metadata["live_smoke_output_path"] = str(runtime_config.live_smoke_output_path)
     write_json(config.metadata_path, metadata)
 
-    server = start_sglang_server(runtime_config, runtime_config.venv_python, runtime_config.server_log_path)
+    server = start_sglang_server(
+        runtime_config, runtime_config.venv_python, runtime_config.server_log_path
+    )
     try:
         wait_for_sglang_server(
             server,
@@ -436,16 +517,22 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
             runtime_config,
             timeout_seconds=runtime_config.server_start_timeout_seconds,
         )
-        copy_file_if_exists(runtime_config.server_log_path, runtime_config.server_log_copy_path)
+        copy_file_if_exists(
+            runtime_config.server_log_path, runtime_config.server_log_copy_path
+        )
         try:
-            live_record = run_live_checks(runtime_config, import_probe_record=import_probe_record)
+            live_record = run_live_checks(
+                runtime_config, import_probe_record=import_probe_record
+            )
         except RuntimeError:
             record_sglang_cache_hit_after_failed_live_checks(runtime_config)
             raise
         require_sglang_cache_hit(runtime_config, live_record)
     finally:
         terminate_process(server)
-        copy_file_if_exists(runtime_config.server_log_path, runtime_config.server_log_copy_path)
+        copy_file_if_exists(
+            runtime_config.server_log_path, runtime_config.server_log_copy_path
+        )
 
 
 def build_metadata(
@@ -472,32 +559,47 @@ def build_metadata(
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "baseline_only": config.baseline_only,
         "cache_arm_supported": not config.baseline_only,
-        "cache_arm_blocker": None if not config.baseline_only else SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        "cache_arm_blocker": (
+            None
+            if not config.baseline_only
+            else SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+        ),
         "live_request_metadata_bridge_required": True,
         "live_request_metadata_bridge_ok": False,
         "requires_kv_transfer_params": not config.baseline_only,
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
         "live_check_prompt_format": config.live_check_prompt_format,
+        "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
         "kv_transfer_params_transport": "custom_params",
         "generates_live_handoff": config.handoff_generation is not None,
         "live_handoff_generation": (
-            config.handoff_generation.to_metadata() if config.handoff_generation is not None else None
+            config.handoff_generation.to_metadata()
+            if config.handoff_generation is not None
+            else None
         ),
-        "live_handoff_generation_path": str(config.live_handoff_generation_path)
-        if config.handoff_generation is not None
-        else None,
-        "sglang_hicache_launch_config": dict(launch_config or sglang_hicache_config_for_smoke(config)),
+        "live_handoff_generation_path": (
+            str(config.live_handoff_generation_path)
+            if config.handoff_generation is not None
+            else None
+        ),
+        "sglang_hicache_launch_config": dict(
+            launch_config or sglang_hicache_config_for_smoke(config)
+        ),
     }
     metadata.update(_metadata_from_import_probe(import_probe_record))
     return metadata
 
 
-def sglang_hicache_config_for_smoke(config: SGLangSmokeBenchmarkConfig) -> dict[str, Any]:
+def sglang_hicache_config_for_smoke(
+    config: SGLangSmokeBenchmarkConfig,
+) -> dict[str, Any]:
     extra_config: dict[str, Any] = {}
     if config.hicache_page_store_uri is not None:
-        extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = config.hicache_page_store_uri
+        extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = (
+            config.hicache_page_store_uri
+        )
     if config.hicache_storage_prefetch_threshold is not None:
         extra_config["prefetch_threshold"] = config.hicache_storage_prefetch_threshold
     return sglang_hicache_launch_config(
@@ -550,7 +652,9 @@ def build_sglang_hicache_provider_probe_record(
     if isinstance(provider, NoOpDocumentKVHiCacheProvider):
         raise ValueError("SGLang smoke cannot run with NoOpDocumentKVHiCacheProvider")
     if getattr(provider, "document_kv_hicache_provider", False) is not True:
-        raise TypeError("SGLang smoke requires a runtime-facing document KV HiCache provider")
+        raise TypeError(
+            "SGLang smoke requires a runtime-facing document KV HiCache provider"
+        )
     request_metadata_bridge = sglang_request_metadata_bridge_status_to_record(
         getattr(backend, "request_metadata_bridge_status", None)
     )
@@ -561,14 +665,17 @@ def build_sglang_hicache_provider_probe_record(
         "document_kv_provider_type": f"{type(provider).__module__}.{type(provider).__qualname__}",
         "document_kv_backend_type": f"{type(backend).__module__}.{type(backend).__qualname__}",
         "document_kv_request_metadata_bridge": request_metadata_bridge,
-        "document_kv_request_metadata_bridge_ok": request_metadata_bridge.get("ok") is True,
+        "document_kv_request_metadata_bridge_ok": request_metadata_bridge.get("ok")
+        is True,
         "document_kv_requires_native_runtime": True,
         "document_kv_hicache_backend_module": DOCUMENT_KV_HICACHE_BACKEND_MODULE_PATH,
         "document_kv_hicache_backend_class": DOCUMENT_KV_HICACHE_BACKEND_CLASS,
     }
 
 
-def sglang_live_kv_transfer_params(config: SGLangSmokeBenchmarkConfig) -> dict[str, Any]:
+def sglang_live_kv_transfer_params(
+    config: SGLangSmokeBenchmarkConfig,
+) -> dict[str, Any]:
     if config.baseline_only:
         return {}
     params = live_check_kv_transfer_params(
@@ -582,7 +689,9 @@ def sglang_live_kv_transfer_params(config: SGLangSmokeBenchmarkConfig) -> dict[s
     return params
 
 
-def prepare_generated_live_handoff(config: SGLangSmokeBenchmarkConfig) -> SGLangSmokeBenchmarkConfig:
+def prepare_generated_live_handoff(
+    config: SGLangSmokeBenchmarkConfig,
+) -> SGLangSmokeBenchmarkConfig:
     """Generate the SGLang live-smoke handoff and page keys when requested."""
 
     generation = config.handoff_generation
@@ -612,6 +721,7 @@ def _generate_live_handoff_inputs_in_subprocess(
         "local_root": str(config.local_root),
         "hardware_target": config.hardware_target,
         "live_check_prompt_format": config.live_check_prompt_format,
+        "live_check_request_mode": config.live_check_request_mode,
         "handoff_generation": generation.to_metadata(),
     }
     write_json(input_path, payload)
@@ -622,6 +732,7 @@ from pathlib import Path
 
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     SGLangLiveHandoffGenerationConfig,
     SGLangSmokeBenchmarkConfig,
     _generate_live_handoff_inputs,
@@ -647,6 +758,7 @@ config = SGLangSmokeBenchmarkConfig(
     local_root=Path(payload["local_root"]),
     hardware_target=payload["hardware_target"],
     live_check_prompt_format=payload.get("live_check_prompt_format", DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT),
+    live_check_request_mode=payload.get("live_check_request_mode", DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE),
     handoff_generation=generation,
 )
 try:
@@ -663,7 +775,11 @@ write_json(output_path, record)
         str(input_path),
         str(output_path),
     ]
-    print("+", " ".join([argv[0], "-c", "<sglang live handoff generation>", *argv[3:]]), flush=True)
+    print(
+        "+",
+        " ".join([argv[0], "-c", "<sglang live handoff generation>", *argv[3:]]),
+        flush=True,
+    )
     try:
         completed = subprocess.run(
             argv,
@@ -684,12 +800,18 @@ write_json(output_path, record)
             f"stdout_tail={tail_text(completed.stdout)!r}; stderr_tail={tail_text(completed.stderr)!r}"
         )
     if not output_path.exists():
-        raise RuntimeError(f"SGLang live handoff generation did not write {output_path}")
+        raise RuntimeError(
+            f"SGLang live handoff generation did not write {output_path}"
+        )
     record = json.loads(output_path.read_text(encoding="utf-8"))
     if not isinstance(record, dict):
-        raise RuntimeError(f"SGLang live handoff generation wrote invalid result {output_path}")
+        raise RuntimeError(
+            f"SGLang live handoff generation wrote invalid result {output_path}"
+        )
     if record.get("ok") is not True:
-        raise RuntimeError(f"SGLang live handoff generation worker result was not ok in {output_path}")
+        raise RuntimeError(
+            f"SGLang live handoff generation worker result was not ok in {output_path}"
+        )
     return record
 
 
@@ -708,12 +830,32 @@ def _generate_live_handoff_inputs(
         model_id=CACHET_MODEL_ID,
         hardware_target=config.hardware_target,
         use_cache_arm=True,
-        prompt_format=config.live_check_prompt_format,
+        prompt_format=_live_check_request_prompt_format(
+            config.live_check_prompt_format,
+            request_mode=config.live_check_request_mode,
+        ),
     )
-    source_document = _live_handoff_cache_source_document(live_request, prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX)
+    source_document = _live_handoff_cache_source_document(
+        live_request, prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX
+    )
+    runtime_prompt_text = live_request.logical_prompt_text
+    chat_template_rendered = False
+    if _should_render_live_handoff_chat_template(config):
+        runtime_prompt_text, rendered_cache_prefix_text = (
+            _render_qwen3_chat_live_handoff_prompt(
+                generator,
+                live_request,
+            )
+        )
+        source_document = _source_document_with_text(
+            source_document,
+            rendered_cache_prefix_text,
+            prompt_source="tokenizer.apply_chat_template:qwen3_chat",
+        )
+        chat_template_rendered = True
     original_source_chunk = source_document.chunks[0]
     source_token_ids = _token_ids_for_generator(generator, original_source_chunk.text)
-    runtime_token_ids = _token_ids_for_generator(generator, live_request.logical_prompt_text)
+    runtime_token_ids = _token_ids_for_generator(generator, runtime_prompt_text)
     source_document, cache_prefix_token_ids = _token_stable_handoff_source_document(
         generator,
         source_document=source_document,
@@ -727,7 +869,9 @@ def _generate_live_handoff_inputs(
         page_size=generation.page_size,
     )
     if not page_keys:
-        raise RuntimeError("SGLang live handoff generation produced no HiCache page keys")
+        raise RuntimeError(
+            "SGLang live handoff generation produced no HiCache page keys"
+        )
 
     request_id = f"{LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX}-{config.benchmark_id}"
     document_request = benchmark_cache_request(
@@ -783,15 +927,25 @@ def _generate_live_handoff_inputs(
         "source_shard_uri": source_shard_uri,
         "sglang_hicache_page_keys": list(page_keys),
         "sglang_hicache_page_size": generation.page_size,
+        "live_check_prompt_format": config.live_check_prompt_format,
+        "live_check_request_mode": config.live_check_request_mode,
+        "live_handoff_prompt_format": _live_check_request_prompt_format(
+            config.live_check_prompt_format,
+            request_mode=config.live_check_request_mode,
+        ),
+        "chat_template_rendered": chat_template_rendered,
         "cache_prefix_chars": len(source_chunk.text),
         "cache_prefix_source_chars": len(original_source_chunk.text),
         "cache_prefix_tokens": ready.handle.total_tokens,
         "cache_prefix_source_tokens": len(source_token_ids),
         "runtime_prompt_tokens": len(runtime_token_ids),
         "cache_prefix_full_pages": len(cache_prefix_token_ids) // generation.page_size,
-        "cache_prefix_token_stable_ratio": len(cache_prefix_token_ids) / len(source_token_ids),
-        "cache_prefix_token_stable": len(cache_prefix_token_ids) == len(source_token_ids),
-        "cache_prefix_token_stable_truncated": len(cache_prefix_token_ids) < len(source_token_ids),
+        "cache_prefix_token_stable_ratio": len(cache_prefix_token_ids)
+        / len(source_token_ids),
+        "cache_prefix_token_stable": len(cache_prefix_token_ids)
+        == len(source_token_ids),
+        "cache_prefix_token_stable_truncated": len(cache_prefix_token_ids)
+        < len(source_token_ids),
         "generator_factory": generation.generator_factory,
         "output_dir": str(generation.output_dir),
         "dtype": generation.dtype,
@@ -804,7 +958,9 @@ def _live_handoff_cache_source_document(
     *,
     prefix: str,
 ) -> SourceDocument:
-    source_document = benchmark_cache_source_document(live_request.example, prefix=prefix)
+    source_document = benchmark_cache_source_document(
+        live_request.example, prefix=prefix
+    )
     source_chunk = source_document.chunks[0]
     return SourceDocument.from_text(
         document_id=source_document.document_id,
@@ -814,6 +970,73 @@ def _live_handoff_cache_source_document(
         metadata={
             **source_document.metadata,
             "cachet.benchmark.prompt_source": "live_request.cache_prefix_text",
+        },
+        chunk_metadata=source_chunk.metadata,
+    )
+
+
+def _should_render_live_handoff_chat_template(
+    config: SGLangSmokeBenchmarkConfig,
+) -> bool:
+    return (
+        config.live_check_request_mode == "chat"
+        and config.live_check_prompt_format == "qwen3_chat"
+    )
+
+
+def _render_qwen3_chat_live_handoff_prompt(
+    generator: object,
+    live_request: BenchmarkEngineRequest,
+) -> tuple[str, str]:
+    tokenizer = getattr(generator, "tokenizer", None)
+    apply_chat_template = getattr(tokenizer, "apply_chat_template", None)
+    if not callable(apply_chat_template):
+        raise TypeError(
+            "SGLang chat live handoff tokenizer must expose apply_chat_template"
+        )
+    rendered = apply_chat_template(
+        list(_live_check_chat_messages(live_request, prompt_text_mode="logical")),
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    if not isinstance(rendered, str) or not rendered:
+        raise ValueError(
+            "SGLang chat live handoff tokenizer apply_chat_template must return non-empty text"
+        )
+    prefix_text = live_request.cache_prefix_text
+    logical_prompt_text = live_request.logical_prompt_text
+    if prefix_text + live_request.cache_suffix_text != logical_prompt_text:
+        raise RuntimeError(
+            "SGLang chat live handoff prompt parts do not form a stable full prompt"
+        )
+    user_content_start = rendered.find(logical_prompt_text)
+    if user_content_start < 0:
+        raise RuntimeError(
+            "SGLang chat live handoff rendered prompt does not contain the logical prompt text"
+        )
+    rendered_prefix = rendered[: user_content_start + len(prefix_text)]
+    if not rendered.startswith(rendered_prefix) or len(rendered_prefix) >= len(
+        rendered
+    ):
+        raise RuntimeError("SGLang chat live handoff rendered cache prefix is invalid")
+    return rendered, rendered_prefix
+
+
+def _source_document_with_text(
+    source_document: SourceDocument,
+    text: str,
+    *,
+    prompt_source: str,
+) -> SourceDocument:
+    source_chunk = source_document.chunks[0]
+    return SourceDocument.from_text(
+        document_id=source_document.document_id,
+        text=text,
+        chunk_id=source_chunk.chunk_id,
+        chunk_type=source_chunk.chunk_type,
+        metadata={
+            **source_document.metadata,
+            "cachet.benchmark.prompt_source": prompt_source,
         },
         chunk_metadata=source_chunk.metadata,
     )
@@ -853,7 +1076,9 @@ def _config_with_generated_live_handoff(
         field_name="sglang_hicache_page_keys",
     )
     if not page_keys:
-        raise RuntimeError("SGLang live handoff generation must return at least one HiCache page key")
+        raise RuntimeError(
+            "SGLang live handoff generation must return at least one HiCache page key"
+        )
     return replace(
         config,
         handoff_json=handoff_json,
@@ -877,10 +1102,14 @@ def _token_stable_handoff_source_document(
         raise ValueError("SGLang live handoff page_size must be positive")
     stable_token_ids = _common_token_prefix(source_token_ids, runtime_token_ids)
     if not stable_token_ids:
-        raise RuntimeError("SGLang live handoff prefix is not a token prefix of the runtime prompt")
+        raise RuntimeError(
+            "SGLang live handoff prefix is not a token prefix of the runtime prompt"
+        )
     stable_token_ids = _full_page_token_prefix(stable_token_ids, page_size=page_size)
     if not stable_token_ids:
-        raise RuntimeError("SGLang live handoff token-stable prefix has no full HiCache pages")
+        raise RuntimeError(
+            "SGLang live handoff token-stable prefix has no full HiCache pages"
+        )
     _require_minimum_stable_token_ratio(stable_token_ids, source_token_ids)
     if len(stable_token_ids) == len(source_token_ids):
         return source_document, stable_token_ids
@@ -913,7 +1142,9 @@ def _common_token_prefix(left: Sequence[int], right: Sequence[int]) -> tuple[int
     return tuple(common)
 
 
-def _full_page_token_prefix(token_ids: tuple[int, ...], *, page_size: int) -> tuple[int, ...]:
+def _full_page_token_prefix(
+    token_ids: tuple[int, ...], *, page_size: int
+) -> tuple[int, ...]:
     token_count = len(token_ids) - (len(token_ids) % page_size)
     return token_ids[:token_count]
 
@@ -943,17 +1174,23 @@ def _decode_round_trippable_token_prefix(
         text = _decode_token_ids_for_generator(generator, candidate_token_ids)
         if _token_ids_for_generator(generator, text) == candidate_token_ids:
             return text, candidate_token_ids
-    raise RuntimeError("SGLang live handoff stable token prefix cannot be decoded losslessly")
+    raise RuntimeError(
+        "SGLang live handoff stable token prefix cannot be decoded losslessly"
+    )
 
 
 def _decode_token_ids_for_generator(generator: object, token_ids: Sequence[int]) -> str:
     tokenizer = getattr(generator, "tokenizer", None)
     decode = getattr(tokenizer, "decode", None)
     if not callable(decode):
-        raise TypeError("SGLang live handoff tokenizer must expose decode for token-stable prefixes")
+        raise TypeError(
+            "SGLang live handoff tokenizer must expose decode for token-stable prefixes"
+        )
     text = decode(list(token_ids), skip_special_tokens=False)
     if not isinstance(text, str) or not text:
-        raise ValueError("SGLang live handoff tokenizer decode must return non-empty text")
+        raise ValueError(
+            "SGLang live handoff tokenizer decode must return non-empty text"
+        )
     return text
 
 
@@ -979,7 +1216,9 @@ def _flatten_token_ids(value: object) -> tuple[int, ...]:
     flattened: list[int] = []
     _append_token_ids(flattened, value)
     if not flattened:
-        raise ValueError("SGLang live handoff tokenizer must return at least one token id")
+        raise ValueError(
+            "SGLang live handoff tokenizer must return at least one token id"
+        )
     return tuple(flattened)
 
 
@@ -1020,7 +1259,9 @@ def document_kv_package_install_spec(config: SGLangSmokeBenchmarkConfig) -> str:
     env_value = os.environ.get(DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV)
     if env_value is not None:
         if not env_value.strip():
-            raise ValueError(f"{DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV} must be non-empty when set")
+            raise ValueError(
+                f"{DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV} must be non-empty when set"
+            )
         return _cluster_file_path(env_value)
     source_root = _source_checkout_root()
     if source_root is not None:
@@ -1041,7 +1282,9 @@ def run_live_checks(
     if not config.baseline_only:
         # Run the cache arm first so SGLang's ordinary prefix cache cannot be
         # warmed by the baseline before cache-hit validation reads server logs.
-        cache_prefill_log_start_index = _server_prefill_log_count(config.server_log_path)
+        cache_prefill_log_start_index = _server_prefill_log_count(
+            config.server_log_path
+        )
         cache = run_openai_compatible_live_check(
             LiveServerCheckConfig(
                 base_url=config.server_base_url,
@@ -1050,6 +1293,7 @@ def run_live_checks(
                 use_cache_arm=True,
                 prompt_text_mode=config.cache_prompt_text_mode,
                 prompt_format=config.live_check_prompt_format,
+                request_mode=config.live_check_request_mode,
                 temperature=config.live_check_temperature,
                 prompt_token_accounting="server_usage",
                 kv_transfer_params_transport="custom_params",
@@ -1072,6 +1316,7 @@ def run_live_checks(
             timeout_seconds=config.timeout_seconds,
             stream=config.stream,
             prompt_format=config.live_check_prompt_format,
+            request_mode=config.live_check_request_mode,
             temperature=config.live_check_temperature,
             prompt_token_accounting="server_usage",
             extra_body=config.live_check_extra_body,
@@ -1084,10 +1329,15 @@ def run_live_checks(
     issues = []
     if baseline_record.get("ok") is not True:
         issues.append("baseline live check failed")
-    if not config.baseline_only and (cache_record is None or cache_record.get("ok") is not True):
+    if not config.baseline_only and (
+        cache_record is None or cache_record.get("ok") is not True
+    ):
         issues.append("cache-arm live check failed")
     import_probe_metadata = _metadata_from_import_probe(import_probe_record)
-    if not config.baseline_only and import_probe_metadata["live_request_metadata_bridge_ok"] is not True:
+    if (
+        not config.baseline_only
+        and import_probe_metadata["live_request_metadata_bridge_ok"] is not True
+    ):
         issues.append("request metadata bridge not verified")
     record = {
         "ok": not issues,
@@ -1098,14 +1348,24 @@ def run_live_checks(
         "hardware_target": config.hardware_target,
         "baseline_only": config.baseline_only,
         "cache_arm_supported": not config.baseline_only,
-        "cache_arm_blocker": None if not config.baseline_only else SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+        "cache_arm_blocker": (
+            None
+            if not config.baseline_only
+            else SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
+        ),
         "live_request_metadata_bridge_required": True,
-        "live_request_metadata_bridge_ok": import_probe_metadata["live_request_metadata_bridge_ok"],
+        "live_request_metadata_bridge_ok": import_probe_metadata[
+            "live_request_metadata_bridge_ok"
+        ],
         "sglang_import_probe_ok": import_probe_metadata["sglang_import_probe_ok"],
-        "document_kv_request_metadata_bridge": import_probe_metadata["document_kv_request_metadata_bridge"],
+        "document_kv_request_metadata_bridge": import_probe_metadata[
+            "document_kv_request_metadata_bridge"
+        ],
         "requires_kv_transfer_params": not config.baseline_only,
         "kv_transfer_params_transport": "custom_params",
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
+        "live_check_prompt_format": config.live_check_prompt_format,
+        "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
         "live_check_extra_body": dict(config.live_check_extra_body),
         "cache_prefill_log_start_index": cache_prefill_log_start_index,
@@ -1132,7 +1392,9 @@ def require_sglang_cache_hit(
         cache_request_prompt_tokens=_cache_request_prompt_tokens(record),
         cache_prompt_text_mode=config.cache_prompt_text_mode,
         cache_request_prefill_start_index=_cache_prefill_log_start_index(record),
-        minimum_cached_tokens=_generated_live_handoff_cache_prefix_tokens(config.live_handoff_generation_path),
+        minimum_cached_tokens=_generated_live_handoff_cache_prefix_tokens(
+            config.live_handoff_generation_path
+        ),
     )
     updated = dict(record)
     issues = list(updated.get("issues") or [])
@@ -1141,14 +1403,18 @@ def require_sglang_cache_hit(
         issues.append(str(issue))
     updated["sglang_cache_hit_validation"] = validation
     updated["issues"] = issues
-    updated["ok"] = bool(updated.get("ok") is True and validation.get("ok") is True and not issues)
+    updated["ok"] = bool(
+        updated.get("ok") is True and validation.get("ok") is True and not issues
+    )
     write_json(config.live_smoke_output_path, updated)
     if validation.get("ok") is not True:
         raise RuntimeError(f"SGLang live smoke failed: {issue}")
     return updated
 
 
-def record_sglang_cache_hit_after_failed_live_checks(config: SGLangSmokeBenchmarkConfig) -> None:
+def record_sglang_cache_hit_after_failed_live_checks(
+    config: SGLangSmokeBenchmarkConfig,
+) -> None:
     """Attach cache-hit validation to a failed live smoke record when possible."""
 
     if config.baseline_only:
@@ -1230,7 +1496,10 @@ def sglang_cache_hit_validation_record(
         issue = "SGLang server log did not report cache request prompt token count"
     elif cache_request_cached_tokens <= 0:
         issue = "SGLang cache arm reported zero cached tokens"
-    elif minimum_cached_tokens is not None and cache_request_cached_tokens < minimum_cached_tokens:
+    elif (
+        minimum_cached_tokens is not None
+        and cache_request_cached_tokens < minimum_cached_tokens
+    ):
         issue = "SGLang cache arm cached fewer tokens than the generated handoff prefix"
     return {
         "ok": ok,
@@ -1249,7 +1518,10 @@ def sglang_cache_hit_validation_record(
 
 
 def sglang_cached_token_counts(log_text: str) -> tuple[int, ...]:
-    return tuple(int(match.group(1)) for match in SGLANG_SERVER_CACHED_TOKEN_PATTERN.finditer(log_text))
+    return tuple(
+        int(match.group(1))
+        for match in SGLANG_SERVER_CACHED_TOKEN_PATTERN.finditer(log_text)
+    )
 
 
 def sglang_prefill_token_counts(log_text: str) -> tuple[dict[str, int], ...]:
@@ -1360,7 +1632,9 @@ def _record_logical_and_served_model_ids(record: dict[str, object]) -> None:
     record["model_id"] = CACHET_MODEL_ID
 
 
-def build_sglang_server_args(config: SGLangSmokeBenchmarkConfig, python_executable: Path) -> list[str]:
+def build_sglang_server_args(
+    config: SGLangSmokeBenchmarkConfig, python_executable: Path
+) -> list[str]:
     args = [
         str(python_executable),
         "-u",
@@ -1382,7 +1656,9 @@ def build_sglang_server_args(config: SGLangSmokeBenchmarkConfig, python_executab
     ]
     extra_config: dict[str, Any] = {}
     if config.hicache_page_store_uri is not None:
-        extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = config.hicache_page_store_uri
+        extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY] = (
+            config.hicache_page_store_uri
+        )
     if config.hicache_storage_prefetch_threshold is not None:
         extra_config["prefetch_threshold"] = config.hicache_storage_prefetch_threshold
     args.extend(
@@ -1409,7 +1685,13 @@ def start_sglang_server(
     argv = build_sglang_server_args(config, python_executable)
     print("+", " ".join(argv), flush=True)
     with log_path.open("w", encoding="utf-8") as log_handle:
-        return subprocess.Popen(argv, stdout=log_handle, stderr=subprocess.STDOUT, text=True, env=server_env(config))
+        return subprocess.Popen(
+            argv,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=server_env(config),
+        )
 
 
 def wait_for_sglang_server(
@@ -1425,15 +1707,25 @@ def wait_for_sglang_server(
     last_model_error = ""
     while time.monotonic() < deadline:
         if server.poll() is not None:
-            raise RuntimeError(f"SGLang server exited with {server.returncode}; log tail:\n{tail(log_path)}")
+            raise RuntimeError(
+                f"SGLang server exited with {server.returncode}; log tail:\n{tail(log_path)}"
+            )
         try:
             with urllib.request.urlopen(health_url, timeout=5) as response:
                 if 200 <= response.status < 300:
                     model_ids = fetch_served_model_ids(models_url)
                     if SERVED_MODEL_NAME in model_ids:
                         return
-                    last_model_error = f"health OK but served models were {sorted(model_ids)!r}"
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, TypeError) as exc:
+                    last_model_error = (
+                        f"health OK but served models were {sorted(model_ids)!r}"
+                    )
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+        ) as exc:
             last_model_error = str(exc)
         time.sleep(5)
     raise TimeoutError(
@@ -1453,7 +1745,18 @@ def fetch_served_model_ids(models_url: str) -> set[str]:
 
 
 def install_sglang(python_executable: Path) -> None:
-    run([str(python_executable), "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"])
+    run(
+        [
+            str(python_executable),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "pip",
+            "setuptools",
+            "wheel",
+        ]
+    )
     run([str(python_executable), "-m", "pip", "install", *dependency_constraints()])
 
 
@@ -1538,9 +1841,13 @@ print(json.dumps(payload, sort_keys=True), flush=True)
             record["error"] = "SGLang request metadata bridge did not report ok=true"
     write_json(output_path, record)
     if completed.returncode != 0:
-        raise RuntimeError(f"SGLang import probe failed with return code {completed.returncode}")
+        raise RuntimeError(
+            f"SGLang import probe failed with return code {completed.returncode}"
+        )
     if record.get("ok") is not True:
-        raise RuntimeError(str(record.get("error", "SGLang import probe failed release checks")))
+        raise RuntimeError(
+            str(record.get("error", "SGLang import probe failed release checks"))
+        )
     return record
 
 
@@ -1560,9 +1867,15 @@ def venv_python(venv_dir: Path) -> Path:
 
 def installed_versions(python_executable: Path) -> dict[str, str]:
     return {
-        "sglang_version_installed": installed_package_version(python_executable, "sglang"),
-        "document_kv_cache_version_installed": installed_package_version(python_executable, "cachet-kv"),
-        "torch_version_installed": installed_package_version(python_executable, "torch"),
+        "sglang_version_installed": installed_package_version(
+            python_executable, "sglang"
+        ),
+        "document_kv_cache_version_installed": installed_package_version(
+            python_executable, "cachet-kv"
+        ),
+        "torch_version_installed": installed_package_version(
+            python_executable, "torch"
+        ),
     }
 
 
@@ -1606,7 +1919,9 @@ def terminate_process(process: subprocess.Popen) -> None:
 
 def write_json(path: Path, payload: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def copy_file_if_exists(source_path: Path, target_path: Path) -> None:
@@ -1637,11 +1952,15 @@ def tail_text(text: str | bytes | None, *, max_chars: int = 12000) -> str:
 def tail(path: Path, *, lines: int = 120) -> str:
     if not path.exists():
         return "<missing log>"
-    return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+    return "\n".join(
+        path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:]
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
-    parser = argparse.ArgumentParser(description="Run a Qwen3/SGLang live Cachet smoke on Databricks g5/g6.")
+    parser = argparse.ArgumentParser(
+        description="Run a Qwen3/SGLang live Cachet smoke on Databricks g5/g6."
+    )
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--max-tokens", type=int, default=32)
@@ -1658,11 +1977,18 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--package-install-spec")
     parser.add_argument("--baseline-only", action="store_true")
-    parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical")
+    parser.add_argument(
+        "--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical"
+    )
     parser.add_argument(
         "--live-check-prompt-format",
         choices=("plain", "qwen3_chat"),
         default=DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    )
+    parser.add_argument(
+        "--live-check-request-mode",
+        choices=("completion", "chat"),
+        default=DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
@@ -1682,7 +2008,9 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--live-handoff-dtype", default="bfloat16")
     parser.add_argument("--live-handoff-align-bytes", type=int, default=4096)
     parser.add_argument("--sglang-hicache-page-size", type=int)
-    parser.add_argument("--live-handoff-generation-timeout-seconds", type=float, default=1800.0)
+    parser.add_argument(
+        "--live-handoff-generation-timeout-seconds", type=float, default=1800.0
+    )
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -1721,8 +2049,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         baseline_only=args.baseline_only,
         cache_prompt_text_mode=args.cache_prompt_text_mode,
         live_check_prompt_format=args.live_check_prompt_format,
+        live_check_request_mode=args.live_check_request_mode,
         handoff_json=args.handoff_json,
-        handoff_record=_json_object_option(args.handoff_record_json, "--handoff-record-json"),
+        handoff_record=_json_object_option(
+            args.handoff_record_json, "--handoff-record-json"
+        ),
         payload_uri=args.payload_uri,
         request_id=args.request_id,
         sglang_hicache_page_keys=_json_string_array_option(
@@ -1732,7 +2063,9 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         handoff_generation=handoff_generation,
         hicache_page_store_uri=args.hicache_page_store_uri,
         hicache_page_size=(
-            handoff_generation.page_size if handoff_generation is not None else args.sglang_hicache_page_size
+            handoff_generation.page_size
+            if handoff_generation is not None
+            else args.sglang_hicache_page_size
         ),
         hicache_ratio=args.hicache_ratio,
         hicache_size_gb=args.hicache_size_gb,
@@ -1748,7 +2081,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run_sglang_live_smoke(parse_args(argv))
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
+        print(
+            json.dumps(
+                {"ok": False, "error": str(exc), "error_type": type(exc).__name__},
+                sort_keys=True,
+            )
+        )
         return 1
     return 0
 
@@ -1760,11 +2098,15 @@ def _hicache_extra_config(config: Mapping[str, Any]) -> dict[str, Any]:
     else:
         decoded = raw
     if not isinstance(decoded, Mapping):
-        raise ValueError("hicache_storage_backend_extra_config must decode to a JSON object")
+        raise ValueError(
+            "hicache_storage_backend_extra_config must decode to a JSON object"
+        )
     return dict(decoded)
 
 
-def _json_object_option(value: str | None, option_name: str) -> Mapping[str, Any] | None:
+def _json_object_option(
+    value: str | None, option_name: str
+) -> Mapping[str, Any] | None:
     if value is None:
         return None
     decoded = json.loads(value)
@@ -1773,21 +2115,29 @@ def _json_object_option(value: str | None, option_name: str) -> Mapping[str, Any
     return decoded
 
 
-def _metadata_from_import_probe(import_probe_record: Mapping[str, Any] | None) -> dict[str, object]:
+def _metadata_from_import_probe(
+    import_probe_record: Mapping[str, Any] | None
+) -> dict[str, object]:
     bridge_record = None
     if import_probe_record is not None:
         bridge_record = import_probe_record.get("document_kv_request_metadata_bridge")
     return {
-        "sglang_import_probe_ok": import_probe_record is not None and import_probe_record.get("ok") is True,
+        "sglang_import_probe_ok": import_probe_record is not None
+        and import_probe_record.get("ok") is True,
         "live_request_metadata_bridge_ok": (
             import_probe_record is not None
-            and import_probe_record.get("document_kv_request_metadata_bridge_ok") is True
+            and import_probe_record.get("document_kv_request_metadata_bridge_ok")
+            is True
         ),
-        "document_kv_request_metadata_bridge": bridge_record if isinstance(bridge_record, Mapping) else None,
+        "document_kv_request_metadata_bridge": (
+            bridge_record if isinstance(bridge_record, Mapping) else None
+        ),
     }
 
 
-def _json_string_array_option(value: str | None, option_name: str) -> tuple[str, ...] | None:
+def _json_string_array_option(
+    value: str | None, option_name: str
+) -> tuple[str, ...] | None:
     if value is None:
         return None
     decoded = json.loads(value)
@@ -1800,10 +2150,16 @@ def _live_handoff_generation_from_args(
 ) -> SGLangLiveHandoffGenerationConfig | None:
     if not args.generate_live_handoff:
         if args.live_handoff_output_dir is not None:
-            raise ValueError("--live-handoff-output-dir requires --generate-live-handoff")
+            raise ValueError(
+                "--live-handoff-output-dir requires --generate-live-handoff"
+            )
         return None
     return SGLangLiveHandoffGenerationConfig(
-        output_dir=Path(args.live_handoff_output_dir) if args.live_handoff_output_dir else output_dir / "live-handoff",
+        output_dir=(
+            Path(args.live_handoff_output_dir)
+            if args.live_handoff_output_dir
+            else output_dir / "live-handoff"
+        ),
         generator_factory=args.live_handoff_generator_factory,
         dtype=args.live_handoff_dtype,
         align_bytes=args.live_handoff_align_bytes,
@@ -1832,7 +2188,9 @@ def _cluster_file_path(uri: str) -> str:
 
 def _source_checkout_root() -> Path | None:
     for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").exists() and (parent / "src" / "document_kv_cache").exists():
+        if (parent / "pyproject.toml").exists() and (
+            parent / "src" / "document_kv_cache"
+        ).exists():
             return parent
     return None
 

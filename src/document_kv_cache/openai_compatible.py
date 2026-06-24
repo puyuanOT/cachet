@@ -12,7 +12,10 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-from document_kv_cache.benchmark_runner import BenchmarkEngineRequest, BenchmarkGeneration
+from document_kv_cache.benchmark_runner import (
+    BenchmarkEngineRequest,
+    BenchmarkGeneration,
+)
 from document_kv_cache.benchmarks import DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM
 
 __all__ = [
@@ -20,6 +23,7 @@ __all__ = [
     "PromptTextMode",
     "PromptTokenAccounting",
     "KVTransferParamsTransport",
+    "OpenAICompatibleRequestMode",
     "WhitespaceTokenCounter",
     "OpenAICompatibleEngineConfig",
     "OpenAICompatibleCompletionEngine",
@@ -35,6 +39,10 @@ class TokenCounter(Protocol):
 PromptTextMode = Literal["logical", "runtime"]
 PromptTokenAccounting = Literal["logical", "server_usage"]
 KVTransferParamsTransport = Literal["top_level", "custom_params"]
+OpenAICompatibleRequestMode = Literal["completion", "chat"]
+
+_COMPLETIONS_ENDPOINT = "/v1/completions"
+_CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +54,7 @@ class WhitespaceTokenCounter:
 @dataclass(frozen=True, slots=True)
 class OpenAICompatibleEngineConfig:
     base_url: str
-    endpoint: str = "/v1/completions"
+    endpoint: str | None = None
     api_key: str | None = None
     timeout_seconds: float = 120.0
     max_tokens: int = 128
@@ -57,12 +65,20 @@ class OpenAICompatibleEngineConfig:
     prompt_text_mode: PromptTextMode = "logical"
     prompt_token_accounting: PromptTokenAccounting = "logical"
     kv_transfer_params_transport: KVTransferParamsTransport = "top_level"
+    request_mode: OpenAICompatibleRequestMode = "completion"
     extra_body: Mapping[str, Any] = field(default_factory=dict)
     extra_headers: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         _validate_non_empty_string(self.base_url, "base_url")
-        _validate_non_empty_string(self.endpoint, "endpoint")
+        if self.request_mode not in {"completion", "chat"}:
+            raise ValueError("request_mode must be 'completion' or 'chat'")
+        endpoint = (
+            _default_endpoint(self.request_mode)
+            if self.endpoint is None
+            else self.endpoint
+        )
+        _validate_non_empty_string(endpoint, "endpoint")
         if self.api_key is not None and not isinstance(self.api_key, str):
             raise ValueError("api_key must be a string when provided")
         _validate_positive_finite_number(self.timeout_seconds, "timeout_seconds")
@@ -77,11 +93,26 @@ class OpenAICompatibleEngineConfig:
         if self.prompt_text_mode not in {"logical", "runtime"}:
             raise ValueError("prompt_text_mode must be 'logical' or 'runtime'")
         if self.prompt_token_accounting not in {"logical", "server_usage"}:
-            raise ValueError("prompt_token_accounting must be 'logical' or 'server_usage'")
+            raise ValueError(
+                "prompt_token_accounting must be 'logical' or 'server_usage'"
+            )
         if self.kv_transfer_params_transport not in {"top_level", "custom_params"}:
-            raise ValueError("kv_transfer_params_transport must be 'top_level' or 'custom_params'")
-        object.__setattr__(self, "extra_body", _json_object_mapping(self.extra_body, "extra_body"))
-        object.__setattr__(self, "extra_headers", _string_mapping(self.extra_headers, "extra_headers"))
+            raise ValueError(
+                "kv_transfer_params_transport must be 'top_level' or 'custom_params'"
+            )
+        object.__setattr__(self, "endpoint", endpoint)
+        object.__setattr__(
+            self, "extra_body", _json_object_mapping(self.extra_body, "extra_body")
+        )
+        object.__setattr__(
+            self, "extra_headers", _string_mapping(self.extra_headers, "extra_headers")
+        )
+
+
+def _default_endpoint(request_mode: OpenAICompatibleRequestMode) -> str:
+    if request_mode == "chat":
+        return _CHAT_COMPLETIONS_ENDPOINT
+    return _COMPLETIONS_ENDPOINT
 
 
 def _validate_non_empty_string(value: Any, field_name: str) -> None:
@@ -149,9 +180,25 @@ def _json_compatible_value(value: Any, field_name: str) -> Any:
         return value
     if isinstance(value, Mapping):
         return _json_object_mapping(value, field_name)
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
-        return [_json_compatible_value(item, f"{field_name}[{index}]") for index, item in enumerate(value)]
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray, memoryview)
+    ):
+        return [
+            _json_compatible_value(item, f"{field_name}[{index}]")
+            for index, item in enumerate(value)
+        ]
     raise ValueError(f"{field_name} must be JSON-compatible")
+
+
+def _chat_message_mapping(value: Any, field_name: str) -> dict[str, Any]:
+    message = _json_object_mapping(value, field_name)
+    role = message.get("role")
+    content = message.get("content")
+    if not isinstance(role, str) or not role:
+        raise ValueError(f"{field_name}.role must be a non-empty string")
+    if not isinstance(content, str):
+        raise ValueError(f"{field_name}.content must be a string")
+    return message
 
 
 class OpenAICompatibleCompletionEngine:
@@ -161,12 +208,18 @@ class OpenAICompatibleCompletionEngine:
         self,
         config: OpenAICompatibleEngineConfig,
         *,
-        extra_body_factory: Callable[[BenchmarkEngineRequest], Mapping[str, Any]] | None = None,
+        extra_body_factory: (
+            Callable[[BenchmarkEngineRequest], Mapping[str, Any]] | None
+        ) = None,
+        chat_messages_factory: (
+            Callable[[BenchmarkEngineRequest], Sequence[Mapping[str, Any]]] | None
+        ) = None,
         token_counter: TokenCounter | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
         self.extra_body_factory = extra_body_factory
+        self.chat_messages_factory = chat_messages_factory
         self.token_counter = token_counter or WhitespaceTokenCounter()
         self.clock = clock
 
@@ -176,8 +229,12 @@ class OpenAICompatibleCompletionEngine:
         response = self._post_json(payload)
         try:
             if payload["stream"]:
-                return self._stream_generation(request, response, started, cache_salt=payload.get("cache_salt"))
-            return self._completion_generation(request, response, started, cache_salt=payload.get("cache_salt"))
+                return self._stream_generation(
+                    request, response, started, cache_salt=payload.get("cache_salt")
+                )
+            return self._completion_generation(
+                request, response, started, cache_salt=payload.get("cache_salt")
+            )
         finally:
             close = getattr(response, "close", None)
             if callable(close):
@@ -186,19 +243,27 @@ class OpenAICompatibleCompletionEngine:
     def _payload(self, request: BenchmarkEngineRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": self.config.model_id or request.model_id,
-            "prompt": self._prompt_text(request),
-            "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
             "stream": self.config.stream,
         }
+        if self.config.request_mode == "chat":
+            payload["messages"] = self._chat_messages(request)
+            payload["max_completion_tokens"] = self.config.max_tokens
+        else:
+            payload["prompt"] = self._prompt_text(request)
+            payload["max_tokens"] = self.config.max_tokens
         if self.config.stream and self.config.include_usage:
             payload["stream_options"] = {"include_usage": True}
         payload.update(self._extra_body(request))
         if request.kv_transfer_params:
             kv_transfer_params = dict(request.kv_transfer_params)
-            kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = self.config.prompt_text_mode
+            kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = (
+                self.config.prompt_text_mode
+            )
             if self.config.kv_transfer_params_transport == "custom_params":
-                custom_params = _json_object_mapping(payload.get("custom_params") or {}, "custom_params")
+                custom_params = _json_object_mapping(
+                    payload.get("custom_params") or {}, "custom_params"
+                )
                 custom_params["kv_transfer_params"] = kv_transfer_params
                 payload["custom_params"] = custom_params
             else:
@@ -210,7 +275,11 @@ class OpenAICompatibleCompletionEngine:
     def _extra_body(self, request: BenchmarkEngineRequest) -> dict[str, Any]:
         extra_body = dict(self.config.extra_body)
         if self.extra_body_factory is not None:
-            extra_body.update(_json_object_mapping(self.extra_body_factory(request), "extra_body_factory"))
+            extra_body.update(
+                _json_object_mapping(
+                    self.extra_body_factory(request), "extra_body_factory"
+                )
+            )
         return extra_body
 
     def _prompt_text(self, request: BenchmarkEngineRequest) -> str:
@@ -218,9 +287,35 @@ class OpenAICompatibleCompletionEngine:
             return request.prompt_text
         return request.logical_prompt_text
 
+    def _chat_messages(self, request: BenchmarkEngineRequest) -> list[dict[str, Any]]:
+        if self.chat_messages_factory is None:
+            raw_messages: Sequence[Mapping[str, Any]] = (
+                {"role": "user", "content": self._prompt_text(request)},
+            )
+        else:
+            raw_messages = self.chat_messages_factory(request)
+        if isinstance(raw_messages, (str, bytes, bytearray)) or not isinstance(
+            raw_messages, Sequence
+        ):
+            raise ValueError(
+                "chat_messages_factory must return a sequence of JSON object messages"
+            )
+        messages = [
+            _chat_message_mapping(message, f"chat_messages[{index}]")
+            for index, message in enumerate(raw_messages)
+        ]
+        if not messages:
+            raise ValueError("chat_messages_factory must return at least one message")
+        return messages
+
     def _post_json(self, payload: Mapping[str, Any]) -> Any:
+        endpoint = self.config.endpoint
+        if endpoint is None:
+            raise RuntimeError("OpenAI-compatible endpoint was not configured")
         request = _urlrequest.Request(
-            _urlparse.urljoin(self.config.base_url.rstrip("/") + "/", self.config.endpoint.lstrip("/")),
+            _urlparse.urljoin(
+                self.config.base_url.rstrip("/") + "/", endpoint.lstrip("/")
+            ),
             data=json.dumps(payload).encode("utf-8"),
             headers=self._headers(),
             method="POST",
@@ -234,9 +329,13 @@ class OpenAICompatibleCompletionEngine:
                 close = getattr(exc, "close", None)
                 if callable(close):
                     close()
-            raise RuntimeError(f"OpenAI-compatible server returned HTTP {exc.code}: {detail}") from exc
+            raise RuntimeError(
+                f"OpenAI-compatible server returned HTTP {exc.code}: {detail}"
+            ) from exc
         except _urlerror.URLError as exc:
-            raise RuntimeError(f"OpenAI-compatible server request failed: {exc.reason}") from exc
+            raise RuntimeError(
+                f"OpenAI-compatible server request failed: {exc.reason}"
+            ) from exc
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", **self.config.extra_headers}
@@ -269,11 +368,15 @@ class OpenAICompatibleCompletionEngine:
         completed = self.clock()
         output_text = "".join(output_parts)
         ttft = (first_token_at or completed) - started
-        prompt_tokens, prompt_token_source, token_metadata = self._prompt_token_count(request, usage)
+        prompt_tokens, prompt_token_source, token_metadata = self._prompt_token_count(
+            request, usage
+        )
         return BenchmarkGeneration(
             output_text=output_text,
             prompt_tokens=prompt_tokens,
-            completion_tokens=_usage_count(usage, "completion_tokens", self.token_counter.count(output_text)),
+            completion_tokens=_usage_count(
+                usage, "completion_tokens", self.token_counter.count(output_text)
+            ),
             ttft_seconds=ttft,
             time_to_completion_seconds=completed - started,
             metadata=self._generation_metadata(
@@ -298,11 +401,15 @@ class OpenAICompatibleCompletionEngine:
         completed = self.clock()
         output_text = _choice_text(data)
         usage = data.get("usage") or {}
-        prompt_tokens, prompt_token_source, token_metadata = self._prompt_token_count(request, usage)
+        prompt_tokens, prompt_token_source, token_metadata = self._prompt_token_count(
+            request, usage
+        )
         return BenchmarkGeneration(
             output_text=output_text,
             prompt_tokens=prompt_tokens,
-            completion_tokens=_usage_count(usage, "completion_tokens", self.token_counter.count(output_text)),
+            completion_tokens=_usage_count(
+                usage, "completion_tokens", self.token_counter.count(output_text)
+            ),
             ttft_seconds=completed - started,
             time_to_completion_seconds=completed - started,
             metadata=self._generation_metadata(
@@ -326,9 +433,12 @@ class OpenAICompatibleCompletionEngine:
         metadata = {
             "server": "openai-compatible",
             "stream": "true" if stream else "false",
+            "request_mode": self.config.request_mode,
             "prompt_text_mode": self.config.prompt_text_mode,
             "prompt_token_source": prompt_token_source,
-            "kv_transfer_params_attached": "true" if request.kv_transfer_params else "false",
+            "kv_transfer_params_attached": (
+                "true" if request.kv_transfer_params else "false"
+            ),
             **token_metadata,
         }
         if isinstance(cache_salt, str) and cache_salt:
@@ -345,7 +455,11 @@ class OpenAICompatibleCompletionEngine:
     ) -> tuple[int, str, dict[str, str]]:
         logical_count = self.token_counter.count(request.logical_prompt_text)
         runtime_count = self.token_counter.count(self._prompt_text(request))
-        context_count = runtime_count if self.config.prompt_text_mode == "runtime" else logical_count
+        context_count = (
+            runtime_count
+            if self.config.prompt_text_mode == "runtime"
+            else logical_count
+        )
         context_source = self.config.prompt_text_mode
         metadata = {
             "logical_prompt_tokens": str(logical_count),
@@ -391,12 +505,12 @@ def _choice_text(data: Mapping[str, Any]) -> str:
     choice = choices[0]
     if "text" in choice:
         return str(choice["text"])
-    delta = choice.get("delta") or {}
-    if isinstance(delta, Mapping):
-        return str(delta.get("content") or "")
-    message = choice.get("message") or {}
+    message = choice.get("message")
     if isinstance(message, Mapping):
         return str(message.get("content") or "")
+    delta = choice.get("delta")
+    if isinstance(delta, Mapping):
+        return str(delta.get("content") or "")
     return ""
 
 

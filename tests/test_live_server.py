@@ -35,7 +35,9 @@ from document_kv_cache.live_server import (
 
 
 class FakeEngine:
-    def __init__(self, output_text: str = f"The code is {DEFAULT_LIVE_CHECK_ANSWER}.") -> None:
+    def __init__(
+        self, output_text: str = f"The code is {DEFAULT_LIVE_CHECK_ANSWER}."
+    ) -> None:
         self.output_text = output_text
         self.requests = []
 
@@ -51,7 +53,9 @@ class FakeEngine:
         )
 
 
-def handoff_record(*, request_id: str, payload_uri: str, backend: str = "sglang") -> dict[str, object]:
+def handoff_record(
+    *, request_id: str, payload_uri: str, backend: str = "sglang"
+) -> dict[str, object]:
     layout = KVLayout(
         model_id="tiny-test-model",
         lora_id="base",
@@ -75,10 +79,17 @@ def handoff_record(*, request_id: str, payload_uri: str, backend: str = "sglang"
     return engine_adapter_request_to_record(adapter_request, payload_uri=payload_uri)
 
 
-def write_handoff_json(path, *, request_id: str, payload_uri: str, backend: str = "sglang") -> None:
+def write_handoff_json(
+    path, *, request_id: str, payload_uri: str, backend: str = "sglang"
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(handoff_record(request_id=request_id, payload_uri=payload_uri, backend=backend), sort_keys=True),
+        json.dumps(
+            handoff_record(
+                request_id=request_id, payload_uri=payload_uri, backend=backend
+            ),
+            sort_keys=True,
+        ),
         encoding="utf-8",
     )
 
@@ -91,11 +102,16 @@ def test_build_live_server_check_request_defaults_to_baseline_full_prompt_contra
     assert request.logical_prompt_text == request.prompt_text
     assert DEFAULT_LIVE_CHECK_ANSWER in request.logical_prompt_text
     assert DEFAULT_LIVE_CHECK_ANSWER not in request.cache_suffix_text
-    assert request.cache_prefix_text + request.cache_suffix_text == request.logical_prompt_text
+    assert (
+        request.cache_prefix_text + request.cache_suffix_text
+        == request.logical_prompt_text
+    )
 
 
 def test_build_live_server_check_request_can_use_qwen3_chat_prompt_format():
-    request = build_live_server_check_request(prompt_format="qwen3_chat", use_cache_arm=True)
+    request = build_live_server_check_request(
+        prompt_format="qwen3_chat", use_cache_arm=True
+    )
 
     assert request.logical_prompt_text.startswith("<|im_start|>system\n")
     assert request.logical_prompt_text.rstrip().endswith("<|im_start|>assistant")
@@ -103,7 +119,10 @@ def test_build_live_server_check_request_can_use_qwen3_chat_prompt_format():
     assert "<|im_end|>\n<|im_start|>assistant" in request.cache_suffix_text
     assert DEFAULT_LIVE_CHECK_ANSWER in request.cache_prefix_text
     assert DEFAULT_LIVE_CHECK_ANSWER not in request.cache_suffix_text
-    assert request.cache_prefix_text + request.cache_suffix_text == request.logical_prompt_text
+    assert (
+        request.cache_prefix_text + request.cache_suffix_text
+        == request.logical_prompt_text
+    )
 
 
 def test_build_live_server_check_request_can_use_cache_arm_for_kv_aware_proxy():
@@ -129,7 +148,9 @@ def test_live_check_kv_transfer_params_from_sglang_handoff_json(tmp_path):
         handoff_json=str(handoff_path),
         expected_backend="sglang",
     )
-    request = build_live_server_check_request(use_cache_arm=True, kv_transfer_params=params)
+    request = build_live_server_check_request(
+        use_cache_arm=True, kv_transfer_params=params
+    )
 
     assert params == {
         DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-sglang-1",
@@ -194,7 +215,10 @@ def test_live_check_kv_transfer_params_rejects_malformed_sglang_page_keys(tmp_pa
 
 
 def test_live_check_kv_transfer_params_rejects_page_keys_without_handoff():
-    with pytest.raises(ValueError, match="sglang_hicache_page_keys require handoff_json or handoff_record"):
+    with pytest.raises(
+        ValueError,
+        match="sglang_hicache_page_keys require handoff_json or handoff_record",
+    ):
         live_check_kv_transfer_params(sglang_hicache_page_keys=("page-a",))
 
 
@@ -208,10 +232,14 @@ def test_live_check_kv_transfer_params_rejects_backend_mismatch(tmp_path):
     )
 
     with pytest.raises(ValueError, match="does not match expected_backend"):
-        live_check_kv_transfer_params(handoff_json=str(handoff_path), expected_backend="sglang")
+        live_check_kv_transfer_params(
+            handoff_json=str(handoff_path), expected_backend="sglang"
+        )
 
 
-def test_build_live_server_check_request_requires_cache_arm_for_handoff_params(tmp_path):
+def test_build_live_server_check_request_requires_cache_arm_for_handoff_params(
+    tmp_path,
+):
     params = {
         DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-live-1",
         DOCUMENT_KV_HANDOFF_RECORD_PARAM: handoff_record(
@@ -244,6 +272,7 @@ def test_run_openai_compatible_live_check_returns_json_ready_record():
         "arm_id": BASELINE_PREFILL_ARM,
         "request_id": None,
         "prompt_text_mode": "logical",
+        "request_mode": "completion",
         "prompt_format": DEFAULT_LIVE_CHECK_PROMPT_FORMAT,
         "kv_transfer_params_present": False,
         "kv_transfer_param_keys": [],
@@ -289,6 +318,24 @@ def test_run_openai_compatible_live_check_attaches_kv_transfer_params(tmp_path):
     assert result.to_record()["kv_transfer_param_keys"] == sorted(params)
 
 
+def test_chat_qwen_live_check_uses_plain_request_and_records_chat_mode():
+    engine = FakeEngine()
+
+    result = run_openai_compatible_live_check(
+        LiveServerCheckConfig(
+            base_url="http://localhost:8000",
+            request_mode="chat",
+            prompt_format="qwen3_chat",
+        ),
+        engine=engine,
+    )
+
+    assert engine.requests[0].logical_prompt_text.startswith("Benchmark:")
+    assert not engine.requests[0].logical_prompt_text.startswith("<|im_start|>system")
+    assert result.to_record()["request_mode"] == "chat"
+    assert result.to_record()["prompt_format"] == "qwen3_chat"
+
+
 def test_live_server_check_config_rejects_invalid_kv_transfer_transport():
     with pytest.raises(ValueError, match="kv_transfer_params_transport"):
         LiveServerCheckConfig(
@@ -302,6 +349,14 @@ def test_live_server_check_config_rejects_invalid_temperature():
         LiveServerCheckConfig(
             base_url="http://localhost:8000",
             temperature=float("nan"),
+        )
+
+
+def test_live_server_check_config_rejects_invalid_request_mode():
+    with pytest.raises(ValueError, match="request_mode"):
+        LiveServerCheckConfig(
+            base_url="http://localhost:8000",
+            request_mode="responses",  # type: ignore[arg-type]
         )
 
 
@@ -375,7 +430,9 @@ def test_cli_reports_json_error_for_handoff_without_cache_arm(tmp_path, capsys):
     assert "kv_transfer_params require use_cache_arm" in payload["error"]
 
 
-def test_cli_sends_validated_handoff_params_for_cache_arm(tmp_path, monkeypatch, capsys):
+def test_cli_sends_validated_handoff_params_for_cache_arm(
+    tmp_path, monkeypatch, capsys
+):
     handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
     payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
     write_handoff_json(
@@ -390,7 +447,9 @@ def test_cli_sends_validated_handoff_params_for_cache_arm(tmp_path, monkeypatch,
         captured["config"] = config
         return run_openai_compatible_live_check(config, engine=FakeEngine())
 
-    monkeypatch.setattr(public_live_server, "run_openai_compatible_live_check", fake_run)
+    monkeypatch.setattr(
+        public_live_server, "run_openai_compatible_live_check", fake_run
+    )
 
     exit_code = main(
         [
