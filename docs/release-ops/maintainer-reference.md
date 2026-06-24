@@ -1722,6 +1722,26 @@ python -m document_kv_cache.github_governance \
   --output-json github-governance.json
 ```
 
+Apply the branch-protection payload from a maintainer shell with repository
+administration rights before treating `main` as GitHub-enforced:
+
+```bash
+curl -L -X PUT \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  https://api.github.com/repos/OWNER/cachet/branches/main/protection \
+  --data @.github/main-branch-protection.json
+```
+
+GitHub may require the repository to be public or the owner account to have a
+plan that supports private-repository branch protection before this API accepts
+the payload. Until that protection is active, direct pushes to `main` remain a
+process violation even though GitHub cannot reject them automatically. Because
+the payload enables `required_linear_history`, repository settings must also
+keep squash or rebase merging enabled, enable GitHub auto-merge, and delete head
+branches after merge before applying the payload.
+
 Use an explicit `GITHUB_TOKEN` in CI and Databricks jobs. For hermetic checks
 that should fail instead of reading the local GitHub CLI keyring, add
 `--no-gh-auth-token-fallback`.

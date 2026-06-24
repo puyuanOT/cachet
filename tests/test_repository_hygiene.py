@@ -206,6 +206,32 @@ def test_repository_hygiene_skips_tooling_output_directories_for_documentation(t
     assert record["untracked_path_count"] == 3
 
 
+def test_repository_hygiene_skips_front_doorless_metadata_directories(tmp_path):
+    (tmp_path / "README.md").write_text("documented root\n", encoding="utf-8")
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "README.md").write_text(
+        "documented workflow metadata\n",
+        encoding="utf-8",
+    )
+
+    evidence = evaluate_repository_hygiene_paths(
+        repository_root=tmp_path,
+        tracked_paths=(
+            ".github/main-branch-protection.json",
+            ".github/workflows/README.md",
+        ),
+        gitignore_lines=REQUIRED_GITIGNORE_PATTERNS,
+    )
+    record = repository_hygiene_to_record(evidence)
+
+    assert record["ok"] is True
+    assert record["documentation_checked_directory_paths"] == [
+        ".",
+        ".github/workflows",
+    ]
+    assert record["missing_directory_documentation_paths"] == []
+
+
 def test_repository_hygiene_rejects_checkpoint_artifacts_without_requiring_directory_docs(tmp_path):
     (tmp_path / "README.md").write_text("documented root\n", encoding="utf-8")
     checkpoint = "notebooks/.ipynb_checkpoints/exploration-checkpoint.ipynb"
