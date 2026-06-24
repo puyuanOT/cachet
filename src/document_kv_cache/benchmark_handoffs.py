@@ -49,7 +49,9 @@ from document_kv_cache.workflow import (
     CacheGenerationResult,
     DocumentKVWorkflow,
     KVChunkGenerator,
+    SourceDocument,
 )
+from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 
 
 BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE = "document_kv.benchmark_handoffs.v1"
@@ -386,6 +388,7 @@ def generate_benchmark_handoff_bundles(
     segmented: bool = False,
     align_bytes: int = 4096,
     kv_gpu_bytes_per_payload_byte: float | None = None,
+    sglang_hicache_page_size: int | None = None,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
     disk_root: str | Path | None = None,
     uc_volume_root: str | Path | None = None,
@@ -404,6 +407,12 @@ def generate_benchmark_handoff_bundles(
     if limit is not None and limit < 0:
         raise ValueError("limit must be non-negative")
     backend = _backend_from_value(backend)
+    sglang_hicache_page_size = _optional_positive_int(
+        sglang_hicache_page_size,
+        field_name="sglang_hicache_page_size",
+    )
+    if sglang_hicache_page_size is not None and backend != ServingBackend.SGLANG:
+        raise ValueError("sglang_hicache_page_size requires backend='sglang'")
     output_base = _bundle_output_base(output_dir)
     shard_uri_text = _default_bundle_shard_uri(output_base, shard_uri=shard_uri)
     resolved_model_id = _optional_string(model_id, default=layout.model_id, field_name="model_id")
@@ -478,7 +487,7 @@ def generate_benchmark_handoff_bundles(
     handoff_json_paths: list[str] = []
     payload_uris: list[str] = []
     adapter_spec = _adapter_spec(backend)
-    for target in bundle_targets:
+    for target, source_document in zip(bundle_targets, source_documents, strict=True):
         ready = workflow.prepare_for_engine(
             target.request,
             layout=layout,
@@ -498,6 +507,12 @@ def generate_benchmark_handoff_bundles(
             payload_uri=target.payload_uri,
             require_external_payload_uri=True,
         )
+        sglang_page_keys = _sglang_hicache_page_keys_for_handoff(
+            generator,
+            layout=layout,
+            source_document=source_document,
+            page_size=sglang_hicache_page_size,
+        )
         entries.append(
             BenchmarkHandoffEntry(
                 dataset=target.example.dataset,
@@ -505,6 +520,7 @@ def generate_benchmark_handoff_bundles(
                 request_id=target.request.request_id,
                 handoff_json=target.handoff_json,
                 payload_uri=target.payload_uri,
+                sglang_hicache_page_keys=sglang_page_keys,
             )
         )
         handoff_json_paths.append(target.handoff_json)
@@ -667,6 +683,14 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--segmented", action="store_true", help="Write segmented payload handoffs.")
     parser.add_argument("--align-bytes", type=int, default=4096)
     parser.add_argument("--kv-gpu-bytes-per-payload-byte", type=float)
+    parser.add_argument(
+        "--sglang-hicache-page-size",
+        type=int,
+        help=(
+            "When set, compute SGLang HiCache page keys for each materialized "
+            "cache prefix using this page size and include them in the manifest."
+        ),
+    )
     parser.add_argument("--prefix", default=BENCHMARK_CACHE_ARTIFACT_PREFIX)
     parser.add_argument("--disk-root", help="Optional disk root for relative kvpack shard URIs.")
     parser.add_argument("--uc-volume-root", help="Optional UC Volume root for relative kvpack shard URIs.")
@@ -693,6 +717,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             segmented=args.segmented,
             align_bytes=args.align_bytes,
             kv_gpu_bytes_per_payload_byte=args.kv_gpu_bytes_per_payload_byte,
+            sglang_hicache_page_size=args.sglang_hicache_page_size,
             prefix=args.prefix,
             disk_root=args.disk_root,
             uc_volume_root=args.uc_volume_root,
@@ -934,6 +959,83 @@ def _sglang_hicache_page_keys_from_template(
                 f"{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM!r} or 'sglang_hicache_page_keys'"
             )
     return _string_tuple(decoded, field_name=f"sglang_hicache_page_keys_json[{dataset}/{example_id}]")
+
+
+def _sglang_hicache_page_keys_for_handoff(
+    generator: object,
+    *,
+    layout: KVLayout,
+    source_document: SourceDocument,
+    page_size: int | None,
+) -> tuple[str, ...]:
+    if page_size is None:
+        return ()
+    if page_size != layout.block_size:
+        raise ValueError("sglang_hicache_page_size must match layout.block_size")
+    if len(source_document.chunks) != 1:
+        raise ValueError("SGLang benchmark handoff source document must have one cache-prefix chunk")
+    token_ids = _token_ids_for_generator(generator, source_document.chunks[0].text)
+    full_page_token_count = (len(token_ids) // page_size) * page_size
+    if full_page_token_count == 0:
+        raise ValueError("SGLang benchmark handoff source document must contain at least one full HiCache page")
+    return sglang_hicache_page_keys(token_ids[:full_page_token_count], page_size=page_size)
+
+
+def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
+    tokenizer = getattr(generator, "tokenizer", None)
+    if tokenizer is None:
+        raise TypeError(
+            "SGLang HiCache page-key generation requires generator.tokenizer"
+        )
+    encoded = tokenizer(
+        text,
+        return_tensors="pt",
+        add_special_tokens=bool(getattr(generator, "add_special_tokens", False)),
+    )
+    if isinstance(encoded, Mapping):
+        input_ids = encoded.get("input_ids")
+    else:
+        input_ids = getattr(encoded, "input_ids", None)
+    if input_ids is None:
+        raise ValueError("SGLang HiCache page-key tokenizer output must include input_ids")
+    return _flatten_token_ids(input_ids)
+
+
+def _flatten_token_ids(value: object) -> tuple[int, ...]:
+    flattened: list[int] = []
+    _append_token_ids(flattened, value)
+    if not flattened:
+        raise ValueError(
+            "SGLang HiCache page-key tokenizer must return at least one token id"
+        )
+    return tuple(flattened)
+
+
+def _append_token_ids(flattened: list[int], value: object) -> None:
+    detach = getattr(value, "detach", None)
+    if callable(detach):
+        value = detach()
+    cpu = getattr(value, "cpu", None)
+    if callable(cpu):
+        value = cpu()
+    reshape = getattr(value, "reshape", None)
+    if callable(reshape):
+        try:
+            value = reshape(-1)
+        except TypeError:
+            pass
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        value = tolist()
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError("SGLang HiCache page-key token ids must be integers")
+    if isinstance(value, Sequence):
+        for item in value:
+            _append_token_ids(flattened, item)
+        return
+    if type(value) is not int:
+        raise ValueError("SGLang HiCache page-key token ids must be integers")
+    flattened.append(value)
 
 
 def _format_benchmark_handoff_template(
@@ -1275,6 +1377,14 @@ def _optional_string(value: str | None, *, default: str, field_name: str) -> str
     if value is None:
         return default
     return _required_string(value, field_name=field_name)
+
+
+def _optional_positive_int(value: int | None, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return value
 
 
 def _string_tuple(values: Iterable[str], *, field_name: str) -> tuple[str, ...]:

@@ -1,6 +1,6 @@
 # Benchmark Reports
 
-This directory contains curated, human-readable Cachet benchmark reports and
+This directory contains durable, human-readable Cachet benchmark reports and
 the sanitized artifacts that back them. It is separate from `pr-evidence/`,
 which records PR review and validation history, and from `databricks-runs/`,
 which remains ignored local scratch output.
@@ -15,10 +15,15 @@ Start with the standalone report folders:
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 | [`_template/`](./_template/) | New standalone benchmark report template | Use for future human-readable run folders |
 
-The Databricks artifact index remains available at
-[`databricks/CURRENT.md`](databricks/CURRENT.md). Each benchmark run gets a
-dated folder under `databricks/` with a human-readable `README.md` plus the
-sanitized JSON artifacts needed to audit the claim.
+Category folders own the human-facing report pages. Dated subfolders such as
+[`vllm/2026-06-23-g6-l4-v1/`](vllm/2026-06-23-g6-l4-v1/),
+[`storage/2026-06-21-g6-l4-storage-readers/`](storage/2026-06-21-g6-l4-storage-readers/),
+and
+[`native-engine/2026-06-23-g6-l4-native-engine-probes/`](native-engine/2026-06-23-g6-l4-native-engine-probes/)
+are the standalone benchmark reports to read and cite. The Databricks artifact
+index remains available at [`databricks/CURRENT.md`](databricks/CURRENT.md);
+its dated folders hold the sanitized JSON source records needed to audit the
+claims.
 
 Use this boundary when adding or reviewing benchmark output:
 
@@ -28,6 +33,8 @@ Use this boundary when adding or reviewing benchmark output:
   `README.md` before they are cited as results. Start from
   [`_template/README.md`](_template/README.md) so every folder includes the
   target, run id, scope, result, and artifact boundary.
+- Dated folders under the category directories are durable benchmark reports,
+  not temporary package-development evidence.
 - Pending live-readiness runs can live under the relevant engine folder, such
   as `benchmarks/sglang/2026-06-23-g6-l4-live-handoff-smoke/`, when they are
   useful to review before a terminal benchmark result exists.

@@ -310,6 +310,7 @@ def test_build_v1_benchmark_plan_generates_handoff_bundles_before_enrichment(tmp
         benchmark_handoff_generator_factory="my_runtime.kv_generator:create_generator",
         benchmark_handoff_output_dir=str(tmp_path / "handoff-bundles"),
         benchmark_handoff_backend="sglang",
+        benchmark_handoff_sglang_hicache_page_size=16,
     )
 
     plan = build_v1_benchmark_plan(config)
@@ -341,6 +342,8 @@ def test_build_v1_benchmark_plan_generates_handoff_bundles_before_enrichment(tmp
         "sglang",
         "--model-id",
         "qwen3:4b-instruct",
+        "--sglang-hicache-page-size",
+        "16",
     )
     assert enrich_command.name == "enrich-biography-handoffs"
 
@@ -2707,6 +2710,40 @@ def test_main_can_plan_generated_benchmark_handoff_bundles(tmp_path):
     assert record["datasets"][0]["handoff_jsonl"] == str(expected_handoff_jsonl)
 
 
+def test_main_can_plan_sglang_generated_benchmark_handoff_page_keys(tmp_path):
+    plan_json = tmp_path / "plan.json"
+
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-generator-factory",
+            "my_runtime.kv_generator:create_generator",
+            "--benchmark-handoff-backend",
+            "sglang",
+            "--benchmark-handoff-sglang-hicache-page-size",
+            "16",
+            "--plan-output-json",
+            str(plan_json),
+        ]
+    )
+
+    record = json.loads(plan_json.read_text(encoding="utf-8"))
+    command_names = [command["name"] for command in record["commands"]]
+    bundle_argv = record["commands"][command_names.index("generate-biography-handoff-bundles")]["argv"]
+
+    assert exit_code == 0
+    assert bundle_argv[bundle_argv.index("--backend") + 1] == "sglang"
+    assert bundle_argv[bundle_argv.index("--sglang-hicache-page-size") + 1] == "16"
+    assert record["benchmark_handoff_backend"] == "sglang"
+    assert record["benchmark_handoff_sglang_hicache_page_size"] == 16
+
+
 def test_main_can_use_explicit_benchmark_handoff_output_jsonl(tmp_path):
     plan_json = tmp_path / "plan.json"
     handoff_jsonl = tmp_path / "benchmarks" / "biography.enriched.jsonl"
@@ -3944,6 +3981,56 @@ def test_main_rejects_benchmark_handoff_generation_options_without_factory(capsy
     assert exit_code == 1
     assert record["ok"] is False
     assert "--benchmark-handoff-generator-factory" in record["error"]
+
+
+def test_main_rejects_sglang_hicache_page_size_without_handoff_generator(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-backend",
+            "sglang",
+            "--benchmark-handoff-sglang-hicache-page-size",
+            "16",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "--benchmark-handoff-generator-factory" in record["error"]
+
+
+def test_main_rejects_sglang_hicache_page_size_for_vllm_handoff_backend(capsys, tmp_path):
+    exit_code = main(
+        [
+            "--raw-dataset",
+            f"biography={tmp_path / 'raw' / 'biography.jsonl'}",
+            "--prepared-dir",
+            str(tmp_path / "prepared"),
+            "--base-url",
+            "http://localhost:8000",
+            "--allow-partial",
+            "--benchmark-handoff-generator-factory",
+            "my_runtime.kv_generator:create_generator",
+            "--benchmark-handoff-backend",
+            "vllm",
+            "--benchmark-handoff-sglang-hicache-page-size",
+            "16",
+        ]
+    )
+
+    record = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert record["ok"] is False
+    assert "requires benchmark_handoff_backend='sglang'" in record["error"]
 
 
 def test_main_rejects_benchmark_handoff_output_overwriting_prepared_jsonl(capsys, tmp_path):

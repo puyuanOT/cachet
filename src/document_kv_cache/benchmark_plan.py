@@ -422,6 +422,7 @@ class BenchmarkPlanConfig:
     benchmark_handoff_output_dir: str | None = None
     benchmark_handoff_dtype: str | None = None
     benchmark_handoff_backend: ServingBackend | str = ServingBackend.VLLM
+    benchmark_handoff_sglang_hicache_page_size: int | None = None
     storage_benchmark: StorageBenchmarkPlanConfig | None = None
     engine_probes: tuple[EngineProbePlanConfig, ...] = ()
     release_evidence: ReleaseEvidencePlanConfig | None = None
@@ -493,6 +494,17 @@ class BenchmarkPlanConfig:
                 "engine_launch_config_sglang_provider_factory for SGLang runtime preflight sidecars"
             )
         object.__setattr__(self, "benchmark_handoff_backend", ServingBackend(self.benchmark_handoff_backend))
+        if self.benchmark_handoff_sglang_hicache_page_size is not None:
+            if (
+                type(self.benchmark_handoff_sglang_hicache_page_size) is not int
+                or self.benchmark_handoff_sglang_hicache_page_size <= 0
+            ):
+                raise ValueError("benchmark_handoff_sglang_hicache_page_size must be a positive integer")
+            if self.benchmark_handoff_backend != ServingBackend.SGLANG:
+                raise ValueError(
+                    "benchmark_handoff_sglang_hicache_page_size requires "
+                    "benchmark_handoff_backend='sglang'"
+                )
         if self.benchmark_handoff_generator_factory is not None and not self.benchmark_handoff_generator_factory:
             raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
         if self.benchmark_handoff_output_dir is not None and not self.benchmark_handoff_output_dir:
@@ -756,6 +768,9 @@ def benchmark_job_plan_to_record(plan: BenchmarkJobPlan) -> dict[str, Any]:
         "benchmark_handoff_output_dir": plan.config.benchmark_handoff_output_dir,
         "benchmark_handoff_dtype": plan.config.benchmark_handoff_dtype,
         "benchmark_handoff_backend": plan.config.benchmark_handoff_backend.value,
+        "benchmark_handoff_sglang_hicache_page_size": (
+            plan.config.benchmark_handoff_sglang_hicache_page_size
+        ),
         "planned_engine_probes": [_planned_engine_probe_to_record(probe) for probe in plan.config.engine_probes],
         "notes": list(plan.notes),
     }
@@ -900,6 +915,12 @@ def _benchmark_handoff_bundle_command(
     )
     if config.benchmark_handoff_dtype is not None:
         argv = (*argv, "--dtype", config.benchmark_handoff_dtype)
+    if config.benchmark_handoff_sglang_hicache_page_size is not None:
+        argv = (
+            *argv,
+            "--sglang-hicache-page-size",
+            str(config.benchmark_handoff_sglang_hicache_page_size),
+        )
     return BenchmarkCommand(
         name=f"generate-{dataset_path.dataset}-handoff-bundles",
         argv=argv,
@@ -1941,6 +1962,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Adapter backend for generated benchmark handoff bundles. Defaults to vllm when generation is enabled.",
     )
     parser.add_argument(
+        "--benchmark-handoff-sglang-hicache-page-size",
+        type=int,
+        help=(
+            "When planning generated SGLang handoff bundles, include "
+            "document_kv.sglang_hicache_page_keys computed with this HiCache page size."
+        ),
+    )
+    parser.add_argument(
         "--storage-benchmark-workspace-dir",
         help="Enable the storage-reader benchmark and use this workspace directory for synthetic shards.",
     )
@@ -2243,6 +2272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_handoff_output_dir=benchmark_handoff_output_dir,
             benchmark_handoff_dtype=args.benchmark_handoff_dtype,
             benchmark_handoff_backend=args.benchmark_handoff_backend or ServingBackend.VLLM,
+            benchmark_handoff_sglang_hicache_page_size=args.benchmark_handoff_sglang_hicache_page_size,
             benchmark_output_json=args.benchmark_output_json
             or str(prepared_dir / f"{args.suite_id}-results.json"),
             storage_benchmark=_storage_benchmark_config_from_cli(args, prepared_dir=prepared_dir),
@@ -2683,6 +2713,7 @@ def _benchmark_handoff_output_dir_from_cli(args: argparse.Namespace, *, prepared
             args.benchmark_handoff_output_dir is not None
             or args.benchmark_handoff_dtype is not None
             or args.benchmark_handoff_backend is not None
+            or args.benchmark_handoff_sglang_hicache_page_size is not None
         ):
             raise ValueError(
                 "benchmark handoff bundle generation options require --benchmark-handoff-generator-factory"
