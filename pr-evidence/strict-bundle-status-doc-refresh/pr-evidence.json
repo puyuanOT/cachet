@@ -1,0 +1,35 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer approved with no findings; reviewer verified the README/matrix/test updates accurately reflected the local post-#505 strict bundle, preserved the SGLang live benchmark boundary, avoided token matches, and did not claim ignored databricks-runs artifacts were committed.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 506,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/506",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/v1-requirements-matrix.md",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "Generated fresh GitHub governance and repository hygiene sidecars under ignored scratch; both reported ok=true",
+    "Built post-#505 strict release bundle locally with --require-complete-v1; manifest ok=true, artifact_count=27",
+    "Verified manifest includes sglang_live_v1_benchmark and PR #442/#503/#504 evidence",
+    "post-#505 strict bundle token-pattern scan returned 0 matches",
+    "poetry run pytest tests/test_project_governance.py::test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates tests/test_project_governance.py::test_readme_release_bundle_documents_artifact_validation_contracts tests/test_release_bundle.py::test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set -q -> 3 passed",
+    "git diff --check",
+    "tracked token-pattern scan returned 0 matches",
+    "poetry run pytest -q -> 1876 passed, 5 skipped",
+    "GitHub CI Test and build succeeded",
+    "GPT-5.5 reviewer approved with no findings"
+  ],
+  "what_changed": [
+    "Updated README and docs/v1-requirements-matrix.md from the stale post-#442 24-artifact strict bundle wording to the post-#505 27-artifact bundle status.",
+    "Recorded that the refreshed strict bundle includes the successful raw SGLang live V1 sidecar from Databricks run 48413356233422 plus PR #442/#503/#504 evidence.",
+    "Updated governance tests that pin the release-readiness wording."
+  ],
+  "why": "The strict release-bundle validator now requires the SGLang live V1 benchmark sidecar, and docs should reflect the validated post-#505 27-artifact bundle instead of overclaiming the older 24-artifact state."
+}
