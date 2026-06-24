@@ -123,6 +123,9 @@ DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
 )
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
+DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE = layout_for_model(
+    CACHET_MODEL_ID
+).block_size
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
@@ -203,6 +206,7 @@ __all__ = [
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY",
     "DEFAULT_SGLANG_HICACHE_PAGE_SIZE",
+    "DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD",
     "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT",
@@ -572,10 +576,17 @@ class SGLangSmokeBenchmarkConfig:
         object.__setattr__(self, "sglang_sampling_backend", sglang_sampling_backend)
         object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
         object.__setattr__(self, "live_check_extra_body", live_check_extra_body)
-        if self.handoff_generation is not None and self.hicache_page_size is None:
-            object.__setattr__(
-                self, "hicache_page_size", self.handoff_generation.page_size
-            )
+        if self.hicache_page_size is None:
+            if dataset_specs:
+                object.__setattr__(
+                    self,
+                    "hicache_page_size",
+                    DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
+                )
+            elif self.handoff_generation is not None:
+                object.__setattr__(
+                    self, "hicache_page_size", self.handoff_generation.page_size
+                )
         if self.handoff_record is not None:
             object.__setattr__(self, "handoff_record", dict(self.handoff_record))
 
@@ -901,7 +912,7 @@ def prepared_sglang_benchmark_handoff_coverage_record(
         issue
         for example in suite.examples
         if example.kv_transfer_params
-        for issue in (_prepared_sglang_handoff_reference_issue(example),)
+        for issue in (_prepared_sglang_handoff_reference_issue(config, example),)
         if issue is not None
     )
     counts_by_dataset: dict[str, int] = {}
@@ -932,6 +943,7 @@ def prepared_sglang_benchmark_handoff_coverage_record(
 
 
 def _prepared_sglang_handoff_reference_issue(
+    config: SGLangSmokeBenchmarkConfig,
     example: BenchmarkExample,
 ) -> dict[str, object] | None:
     params = example.kv_transfer_params
@@ -985,6 +997,11 @@ def _prepared_sglang_handoff_reference_issue(
             raise ValueError(
                 f"kv_transfer_params.{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM} must be non-empty"
             )
+        _validate_prepared_sglang_handoff_page_coverage(
+            record,
+            page_keys=page_keys,
+            runtime_page_size=config.hicache_page_size,
+        )
     except Exception as exc:
         record: dict[str, object] = {
             "dataset": example.dataset,
@@ -996,6 +1013,47 @@ def _prepared_sglang_handoff_reference_issue(
             record["handoff_json"] = handoff_json
         return record
     return None
+
+
+def _validate_prepared_sglang_handoff_page_coverage(
+    record: Mapping[str, Any],
+    *,
+    page_keys: Sequence[str],
+    runtime_page_size: int | None,
+) -> None:
+    page_size = _positive_int(runtime_page_size)
+    if page_size is None:
+        raise ValueError("hicache_page_size must resolve to a positive integer")
+    handle = record.get("handle")
+    if not isinstance(handle, Mapping):
+        raise ValueError("handoff handle must be an object")
+    layout = handle.get("layout")
+    if not isinstance(layout, Mapping):
+        raise ValueError("handoff handle.layout must be an object")
+    block_size = _positive_int(layout.get("block_size"))
+    if block_size is None:
+        raise ValueError("handoff handle.layout.block_size must be a positive integer")
+    if page_size != block_size:
+        raise ValueError(
+            "hicache_page_size "
+            f"{page_size} must match handoff handle.layout.block_size {block_size}"
+        )
+    total_tokens = _nonnegative_int(handle.get("total_tokens"))
+    if total_tokens is None:
+        raise ValueError("handoff handle.total_tokens must be a non-negative integer")
+    expected_page_count = total_tokens // block_size
+    if expected_page_count <= 0:
+        raise ValueError(
+            "handoff handle.total_tokens must contain at least one full "
+            "SGLang HiCache page"
+        )
+    if len(page_keys) != expected_page_count:
+        raise ValueError(
+            f"kv_transfer_params.{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM} "
+            f"has {len(page_keys)} keys but handoff handle.total_tokens "
+            f"{total_tokens} with block_size {block_size} requires "
+            f"{expected_page_count}"
+        )
 
 
 def sglang_hicache_config_for_smoke(
