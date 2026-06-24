@@ -1022,6 +1022,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     benchmark_root = REPO_ROOT / "benchmarks"
     databricks_root = benchmark_root / "databricks"
     root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
+    current_readme = (benchmark_root / "current" / "README.md").read_text(
+        encoding="utf-8"
+    )
     vllm_readme = (benchmark_root / "vllm" / "README.md").read_text(encoding="utf-8")
     sglang_readme = (benchmark_root / "sglang" / "README.md").read_text(encoding="utf-8")
     storage_readme = (benchmark_root / "storage" / "README.md").read_text(encoding="utf-8")
@@ -1397,13 +1400,16 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_project_readme = " ".join(project_readme.split())
     compact_docs_readme = " ".join(docs_readme.split())
     compact_snapshot = " ".join(current_databricks_snapshot.split())
+    compact_current_readme = " ".join(current_readme.split())
 
     assert "[`benchmarks/`](benchmarks/README.md)" in project_readme
+    assert "[`benchmarks/current/`](benchmarks/current/)" in project_readme
     assert "[`vLLM`](benchmarks/vllm/)" in project_readme
     assert "[`SGLang`](benchmarks/sglang/)" in project_readme
     assert "[`storage`](benchmarks/storage/)" in project_readme
     assert "[`native-engine`](benchmarks/native-engine/)" in project_readme
     assert "[`benchmarks/databricks/CURRENT.md`](benchmarks/databricks/CURRENT.md)" in project_readme
+    assert "[`current/`](current/)" in root_readme
     assert "[`vllm/`](vllm/)" in root_readme
     assert "[`sglang/`](sglang/)" in root_readme
     assert "[`storage/`](storage/)" in root_readme
@@ -1419,10 +1425,30 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     )
     assert "[`_template/`](./_template/)" in root_readme
     assert "[`databricks/CURRENT.md`](databricks/CURRENT.md)" in root_readme
+    assert "Current Benchmark Results" in current_readme
+    assert "human-facing front door for Cachet benchmark results" in compact_current_readme
+    assert "`pr-evidence/`" in current_readme
+    assert (
+        "[`../vllm/2026-06-23-g6-l4-v1/`](../vllm/2026-06-23-g6-l4-v1/)"
+        in current_readme
+    )
+    assert (
+        "[`../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/`](../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/)"
+        in current_readme
+    )
+    assert (
+        "[`../storage/2026-06-21-g6-l4-storage-readers/`](../storage/2026-06-21-g6-l4-storage-readers/)"
+        in current_readme
+    )
+    assert "5.27x-6.97x TTFT speedup" in current_readme
+    assert "8/8 Cachet cache-hit validations" in current_readme
+    assert "not as the benchmark report surface" in compact_current_readme
     assert "[`CURRENT.md`](CURRENT.md)" in databricks_readme
     assert "`../benchmarks/README.md`" in docs_readme
+    assert "`../benchmarks/current/README.md`" in docs_readme
     assert "standalone, human-readable benchmark report folders" in compact_docs_readme
     assert "Standalone human-readable benchmark report folders" in matrix_text
+    assert "`benchmarks/current/` is the concise human-facing benchmark index" in matrix_text
     assert "`benchmarks/vllm/`" in matrix_text
     assert "`benchmarks/sglang/`" in matrix_text
     assert "`benchmarks/storage/`" in matrix_text
@@ -3130,6 +3156,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
 
     expected_files = {
         "_template/README.md",
+        "current/README.md",
         "databricks/CURRENT.md",
         "README.md",
         "native-engine/README.md",

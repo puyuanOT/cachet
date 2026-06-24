@@ -5,10 +5,14 @@ the sanitized artifacts that back them. It is separate from `pr-evidence/`,
 which records PR review and validation history, and from `databricks-runs/`,
 which remains ignored local scratch output.
 
-Start with the standalone report folders:
+Start with [`current/`](current/) when you want the concise human-facing answer,
+then open the linked standalone dated report folders for the underlying
+sanitized evidence. The category folders remain the durable benchmark report
+surface:
 
 | Folder | Purpose | Current status |
 | --- | --- | --- |
+| [`current/`](current/) | Current human-facing benchmark index | Start here for the latest benchmark folders and headline results |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
 | [`sglang/`](sglang/) | SGLang benchmark status and live benchmark folders | Prepared SGLang V1 live benchmark now passes on g6/L4 with 16 rows, 8/8 validated Cachet-backed cache hits, and unchanged quality; the Cachet arm is slower on the short prepared prompts, so this is a correctness and integration benchmark result rather than a speedup result |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
@@ -28,6 +32,9 @@ the release-bundle source records and Databricks run-status sidecars.
 
 Use this boundary when adding or reviewing benchmark output:
 
+- `benchmarks/current/` is the small human-facing index for the current
+  benchmark set; it links to the standalone folders and does not replace their
+  colocated evidence.
 - `benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
   `benchmarks/native-engine/` are standalone human-readable report folders
   with compact sanitized evidence committed beside each dated report README.

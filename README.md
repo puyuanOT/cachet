@@ -866,11 +866,12 @@ runs. It defines a common schema for comparing the no-cache prefill baseline
 with document KV-cache reuse:
 
 Curated, human-readable benchmark reports are tracked under
-[`benchmarks/`](benchmarks/README.md). Start with the standalone report folders
-for [`vLLM`](benchmarks/vllm/), [`SGLang`](benchmarks/sglang/),
-[`storage`](benchmarks/storage/), and
-[`native-engine`](benchmarks/native-engine/) status, then use the Databricks
-artifact snapshot at
+[`benchmarks/`](benchmarks/README.md). Start with
+[`benchmarks/current/`](benchmarks/current/) for the concise current result
+index, then open the standalone report folders for
+[`vLLM`](benchmarks/vllm/), [`SGLang`](benchmarks/sglang/),
+[`storage`](benchmarks/storage/), and [`native-engine`](benchmarks/native-engine/)
+status. Use the Databricks artifact snapshot at
 [`benchmarks/databricks/CURRENT.md`](benchmarks/databricks/CURRENT.md) for
 sanitized source records. Those folders contain the current g6/L4 target
 benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and

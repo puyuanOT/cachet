@@ -1,0 +1,41 @@
+{
+  "files": {
+    "pr-evidence/current-benchmark-results-index/pr-evidence.json": {
+      "gpt55_review_completed": true,
+      "gpt55_review_findings_resolved": true,
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found that the initial PR evidence sidecar prematurely claimed a clean completed review before any PR review/comment existed. The finding was resolved by updating this sidecar to record the actual findings-resolved outcome and by posting the reviewer finding and resolution to PR #511.",
+      "issues": [],
+      "ok": true,
+      "pull_request_number": 511,
+      "pull_request_url": "https://github.com/puyuanOT/cachet/pull/511",
+      "record_type": "document_kv.pr_evidence.v1",
+      "refactor_skill_applied": true,
+      "scope": [
+        "README.md",
+        "benchmarks/README.md",
+        "benchmarks/current/",
+        "docs/README.md",
+        "docs/v1-requirements-matrix.md",
+        "tests/test_project_governance.py",
+        "pr-evidence/current-benchmark-results-index/"
+      ],
+      "verification": [
+        "poetry run pytest tests/test_project_governance.py -> 50 passed",
+        "poetry run pytest -q -> 1876 passed, 5 skipped",
+        "git diff --check -> no issues",
+        "poetry run ruff check tests/test_project_governance.py -> unavailable because ruff is not installed in the Poetry environment",
+        "new benchmark docs token-pattern scan returned no Databricks PAT matches",
+        "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/current-benchmark-results-index --output-json pr-evidence/current-benchmark-results-index/pr-evidence-validation.json -> ok=true"
+      ],
+      "what_changed": [
+        "Added benchmarks/current/README.md as the concise human-facing index for the current Cachet Databricks benchmark results.",
+        "Updated README.md, benchmarks/README.md, docs/README.md, and docs/v1-requirements-matrix.md so readers start with benchmarks/current/ before drilling into standalone dated report folders.",
+        "Extended project-governance tests to pin the current benchmark index, standalone folder links, and the boundary that pr-evidence/ is PR validation rather than benchmark output."
+      ],
+      "why": "Benchmark results should be easy to inspect without treating the large machine-readable pr-evidence/ tree as the human benchmark report surface."
+    }
+  },
+  "ok": true,
+  "record_type": "document_kv.pr_evidence_validation.v1"
+}
