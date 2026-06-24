@@ -1,0 +1,193 @@
+{
+  "benchmark_id": "v1_sglang_live_baseline_isolated_20260624_103119",
+  "benchmark_limitation": "This is a live SGLang handoff smoke/readiness pass. It validates generated handoff binding, cache-hit behavior, and quality gates for one synthetic prompt; it is not yet a latency/throughput benchmark suite comparable to the published vLLM V1 benchmark.",
+  "benchmark_result": "readiness_pass",
+  "cache_arm_cache_flush": {
+    "endpoint": "/flush_cache",
+    "http_status": 200,
+    "ok": true,
+    "reason": "before_cache_arm",
+    "response_text_tail": "Cache flushed.\nPlease check backend logs for more details. (When there are running or waiting requests, the operation will not be performed.)\n",
+    "timeout_seconds": 30.0
+  },
+  "cachet_commit": "b33b3f4",
+  "canary_cache_flush": {
+    "endpoint": "/flush_cache",
+    "http_status": 200,
+    "ok": true,
+    "reason": "before_model_quality_canary",
+    "response_text_tail": "Cache flushed.\nPlease check backend logs for more details. (When there are running or waiting requests, the operation will not be performed.)\n",
+    "timeout_seconds": 30.0
+  },
+  "databricks_run": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "SUCCESS",
+    "run_id": 134006212072875,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/894780364041496/run/134006212072875",
+    "state_message": "",
+    "succeeded": true,
+    "terminal": true
+  },
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cache_prompt_text_mode": "logical",
+    "cuda_device_name": "NVIDIA L4",
+    "document_kv_cache_version": "0.2.0",
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_provider_type": "sglang_kv_injection.sglang_dynamic_backend.DocumentKVHiCachePageProvider",
+    "document_kv_request_metadata_bridge_ok": true,
+    "flush_cache_before_cache_arm": true,
+    "flush_cache_before_canary": true,
+    "flush_cache_timeout_seconds": 30.0,
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 175,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "hicache_storage_prefetch_threshold": 1,
+    "kv_transfer_params_transport": "custom_params",
+    "live_check_extra_body": {
+      "chat_template_kwargs": {
+        "enable_thinking": false,
+        "thinking": false
+      },
+      "reasoning_effort": "none"
+    },
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.0,
+    "live_request_metadata_bridge_ok": true,
+    "sglang_attention_backend": "triton",
+    "sglang_enable_deterministic_inference": true,
+    "sglang_sampling_backend": "pytorch",
+    "sglang_version": "0.5.10.post1",
+    "torch_version": "2.9.1+cu128"
+  },
+  "live_handoff_generation": {
+    "cache_prefix_full_pages": 175,
+    "cache_prefix_source_tokens": 176,
+    "cache_prefix_token_stable": false,
+    "cache_prefix_token_stable_ratio": 0.9943181818181818,
+    "cache_prefix_tokens": 175,
+    "chat_template_rendered": true,
+    "dtype": "bfloat16",
+    "generator_factory": "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator",
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "ok": true,
+    "runtime_prompt_tokens": 205,
+    "sglang_hicache_page_size": 1
+  },
+  "mode": "generated_live_handoff_baseline_isolated_cache_arm",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "10ca1684238f40e437a0a1b565cdfa5e0ecdb105169ad3d704c98a56f9cb9053"
+  },
+  "record_type": "cachet.benchmark_successful_databricks_smoke.v1",
+  "server_flush_events": [
+    "[2026-06-24 10:43:09] Cache flushed successfully!",
+    "[2026-06-24 10:43:09] INFO:     127.0.0.1:44956 - \"POST /flush_cache?timeout=30 HTTP/1.1\" 200 OK",
+    "[2026-06-24 10:43:11] Cache flushed successfully!",
+    "[2026-06-24 10:43:11] INFO:     127.0.0.1:44980 - \"POST /flush_cache?timeout=30 HTTP/1.1\" 200 OK"
+  ],
+  "server_prefill_token_counts": [
+    {
+      "cached_tokens": 0,
+      "new_tokens": 6,
+      "total_prompt_tokens": 6
+    },
+    {
+      "cached_tokens": 0,
+      "new_tokens": 1,
+      "total_prompt_tokens": 1
+    },
+    {
+      "cached_tokens": 0,
+      "new_tokens": 205,
+      "total_prompt_tokens": 205
+    },
+    {
+      "cached_tokens": 175,
+      "new_tokens": 30,
+      "total_prompt_tokens": 205
+    },
+    {
+      "cached_tokens": 0,
+      "new_tokens": 36,
+      "total_prompt_tokens": 36
+    }
+  ],
+  "sglang_cache_hit_validation": {
+    "cache_prompt_text_mode": "logical",
+    "cache_request_cached_tokens": 175,
+    "cache_request_prefill_index": 3,
+    "cache_request_prefill_start_index": 3,
+    "cache_request_prompt_match_field": "total_prompt_tokens",
+    "cache_request_prompt_tokens": 205,
+    "cached_token_counts": [
+      0,
+      0,
+      0,
+      175,
+      0
+    ],
+    "issue": null,
+    "minimum_cached_tokens": 175,
+    "ok": true,
+    "prefill_token_counts": [
+      {
+        "cached_tokens": 0,
+        "new_tokens": 6,
+        "total_prompt_tokens": 6
+      },
+      {
+        "cached_tokens": 0,
+        "new_tokens": 1,
+        "total_prompt_tokens": 1
+      },
+      {
+        "cached_tokens": 0,
+        "new_tokens": 205,
+        "total_prompt_tokens": 205
+      },
+      {
+        "cached_tokens": 175,
+        "new_tokens": 30,
+        "total_prompt_tokens": 205
+      },
+      {
+        "cached_tokens": 0,
+        "new_tokens": 36,
+        "total_prompt_tokens": 36
+      }
+    ],
+    "server_log_path": "/local_disk0/document-kv-sglang-smoke-v1_sglang_live_baseline_isolated_20260624_103119/sglang-server.log"
+  },
+  "smoke": {
+    "baseline_completion_tokens": 7,
+    "baseline_ok": true,
+    "baseline_output_text": "otkv7391",
+    "baseline_prompt_tokens": 92,
+    "cache_completion_tokens": 7,
+    "cache_ok": true,
+    "cache_output_text": "otkv7391",
+    "cache_prompt_tokens": 92,
+    "cache_request_id": "cachet-live-v1_sglang_live_baseline_isolated_20260624_103119",
+    "issues": [],
+    "model_quality_canary_answer_found": true,
+    "model_quality_canary_ok": true,
+    "model_quality_canary_output_text": "cachet-green",
+    "ok": true
+  },
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "driver_node_type_id": "g6.8xlarge",
+    "life_cycle_state": "TERMINATED",
+    "node_type_id": "g6.8xlarge",
+    "result_state": "SUCCESS",
+    "run_id": 342507441509485,
+    "state_message": "",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}
