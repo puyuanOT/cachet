@@ -8,7 +8,8 @@ benchmark result.
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
-| Latest failed live handoff smoke | `897276220223990` | [`2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/) | The PR #470 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation produced a token-stable 175-token prefix, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
+| Latest failed live handoff smoke | `585131634686228` | [`2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/) | The PR #471 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation produced a token-stable 175-token prefix, Qwen sampling parameters reached the live request path, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
+| Failed live handoff smoke | `897276220223990` | [`2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/) | The PR #470 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation produced a token-stable 175-token prefix, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
 | Failed live handoff smoke | `995284076545208` | [`2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/) | The PR #469 wheel was present, import probe and request metadata bridge passed, generated handoff creation produced a token-stable 149-token prefix, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
 | Failed live handoff smoke | `348824841142825` | [`2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/) | The PR #467 wheel was present, import probe and request metadata bridge passed, and SGLang reported a positive 128-token external cache hit, but the later 46-key split query still missed and both live quality checks failed. It is not a benchmark result. |
 | Failed live handoff smoke | `672750124167579` | [`2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/`](2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/) | The PR #466 wheel was present, but the request metadata bridge failed during import probe because the strict hash-tracking gate looked for `get_hash_str` in the wrong SGLang controller lifecycle hook. It is not a benchmark result. |
@@ -59,8 +60,10 @@ the cache-hit quality failure in
 [`2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/),
 the token-stable cache-hit quality failure in
 [`2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/),
-and the current Qwen-chat cache-hit quality failure in
-[`2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/).
+the Qwen-chat cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/),
+and the current Qwen-sampling cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/).
 Use
 `--baseline-only` for provider/server bring-up. For handoff-backed smoke,
 prefer `--generate-live-handoff`, which generates the synthetic live Cachet
@@ -71,14 +74,15 @@ stock SGLang can compute the cached prefix page keys. The latest run also sets
 for Cachet-backed page hydration before prefill. Recent failures show that
 later split queries can be chained from SGLang's runtime hash state, and that
 the relevant anchor is the first per-batch `prior_hash` passed to SGLang's
-`get_hash_str`, not merely `operation.last_hash`. Recent runs show that
+`get_hash_str`, not merely `operation.last_hash`. The latest run also carries
+Qwen sampling parameters through the live request path. Recent runs show that
 attach-time hash tracking installs successfully and that SGLang can report a
 positive cache-arm external hit. Recent runs validate token-stable generated
 prefixes and positive SGLang cached-token validation, including the current
-175-token Qwen-chat generated prefix on g6/L4, but the live prompt still fails
-quality for both baseline and cache arms. A publishable live run must make the
-Qwen3/SGLang completion request pass quality while still hydrating matching
-generated page-key chunks and recording positive SGLang cached-token
+175-token Qwen-sampling generated prefix on g6/L4, but the live prompt still
+fails quality for both baseline and cache arms. A publishable live run must
+make the Qwen3/SGLang completion request pass quality while still hydrating
+matching generated page-key chunks and recording positive SGLang cached-token
 validation. That validation must identify the cache-arm request itself by its
 prompt-token total, rather than warmup requests or a later baseline request
 that benefits from ordinary SGLang prefix-cache reuse. Manual handoff inputs

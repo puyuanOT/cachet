@@ -1082,6 +1082,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_qwen_sampling_cache_hit_quality_failure_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1159,6 +1165,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             benchmark_root
             / "sglang"
             / "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
+    sglang_qwen_sampling_cache_hit_quality_failure_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
@@ -1249,6 +1263,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "348824841142825" in sglang_readme
     assert "995284076545208" in sglang_readme
     assert "897276220223990" in sglang_readme
+    assert "585131634686228" in sglang_readme
     assert "suffix-only runtime prompt text" in compact_sglang_readme
     assert "zero cached tokens" in compact_sglang_readme
     assert "partial page-binding blocker" in compact_sglang_readme
@@ -1263,6 +1278,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure" in sglang_readme
+    assert "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure" in sglang_readme
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
     assert "partial page-binding blocker" in compact_snapshot
@@ -1270,6 +1286,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "cache-hit quality failure" in compact_snapshot
     assert "token-stable cache-hit quality failure" in compact_snapshot
     assert "Qwen-chat cache-hit quality failure" in current_databricks_snapshot
+    assert "Qwen-sampling cache-hit quality failure" in current_databricks_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1308,6 +1325,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "PR #470" in sglang_qwen_chat_cache_hit_quality_failure_readme
     assert "positive SGLang cached-token validation" in sglang_qwen_chat_cache_hit_quality_failure_readme
     assert "175-token full-page prefix" in sglang_qwen_chat_cache_hit_quality_failure_readme
+    assert "Qwen Sampling Cache Hit With Quality Failure" in (
+        sglang_qwen_sampling_cache_hit_quality_failure_readme
+    )
+    assert "PR #471" in sglang_qwen_sampling_cache_hit_quality_failure_readme
+    assert "Qwen sampling parameters reached the live request path" in (
+        sglang_qwen_sampling_cache_hit_quality_failure_readme
+    )
+    assert "175-token full-page prefix" in sglang_qwen_sampling_cache_hit_quality_failure_readme
     assert sglang_attach_hash_tracking_failed_run["failure_type"] == (
         "sglang_attach_time_hash_tracking_gate"
     )
@@ -1394,6 +1419,43 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "cache_request_cached_tokens_from_server_log"
     ] == 175
     assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["smoke"][
+        "server_cached_token_validation"
+    ] == "positive_generated_prefix_cache_hit_but_smoke_failed_quality"
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["record_type"] == (
+        "cachet.benchmark_failed_databricks_smoke.v1"
+    )
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["benchmark_result"] == (
+        "not_published"
+    )
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["failure_type"] == (
+        "sglang_live_quality_failure_with_qwen_sampling_cache_hit"
+    )
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["cachet_commit"] == "8856139"
+    assert (
+        sglang_qwen_sampling_cache_hit_quality_failure_failed_run["databricks_run"]["run_id"]
+        == 585131634686228
+    )
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["task"]["run_id"] == (
+        772265220177306
+    )
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["integration_checks"][
+        "live_check_temperature"
+    ] == 0.7
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["integration_checks"][
+        "live_check_extra_body"
+    ] == {
+        "min_p": 0,
+        "presence_penalty": 1.0,
+        "top_k": 20,
+        "top_p": 0.8,
+    }
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["live_handoff_generation"][
+        "cache_prefix_tokens"
+    ] == 175
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["smoke"][
+        "cache_request_cached_tokens_from_server_log"
+    ] == 175
+    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["smoke"][
         "server_cached_token_validation"
     ] == "positive_generated_prefix_cache_hit_but_smoke_failed_quality"
     assert sglang_failed_run == {
@@ -1832,6 +1894,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             "sglang/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/README.md",
             "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/failed_run.json",
             "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/README.md",
+            "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/failed_run.json",
+            "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/README.md",
             "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
