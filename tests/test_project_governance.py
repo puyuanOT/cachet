@@ -71,6 +71,9 @@ GENERATED_OR_TOOLING_DIRS = {
     "dist",
     "htmlcov",
 }
+RENDERED_README_EXEMPT_METADATA_DIRS = {
+    Path(".github"),
+}
 REPOSITORY_TEXT_FILE_SUFFIXES = {
     ".cfg",
     ".ini",
@@ -309,6 +312,8 @@ def test_repository_directories_have_readme_or_package_docstring():
     for path in sorted(_git_known_directories()):
         relative = path.relative_to(REPO_ROOT)
         if _is_ignored(relative):
+            continue
+        if relative in RENDERED_README_EXEMPT_METADATA_DIRS:
             continue
         if (path / "README.md").exists() or _package_docstring(path):
             continue
@@ -3645,6 +3650,13 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "V1 requirements matrix" in compact_text
     assert "--compatibility-databricks-run-status-json" in compact_text
     assert "--legacy-migration-evidence-json" in compact_text
+    assert "--data @.github/main-branch-protection.json" in text
+    assert "/repos/OWNER/cachet/branches/main/protection" in text
+    assert "private-repository branch protection" in text
+    assert "direct pushes to `main` remain a process violation" in compact_text
+    assert "squash or rebase merging enabled" in compact_text
+    assert "enable GitHub auto-merge" in compact_text
+    assert "delete head branches after merge" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
     assert "latest validated strict-bundle snapshot, built after PR #513 with the current wheel" in compact_remaining_v1_work
@@ -3754,24 +3766,22 @@ def test_github_main_branch_protection_payload_requires_pr_review_and_ci():
     }
 
 
-def test_github_docs_explain_branch_protection_application_and_plan_limit():
-    text = (REPO_ROOT / ".github" / "README.md").read_text(encoding="utf-8")
-    compact_text = " ".join(text.split())
+def test_github_metadata_folder_does_not_override_public_front_door():
+    assert not (REPO_ROOT / ".github" / "README.md").exists()
 
-    assert "not the Cachet project front page" in compact_text
-    assert "[`README.md`](../README.md)" in text
-    assert "product overview, install instructions, local quickstart, and next-step links" in compact_text
-    assert "public contributor-friendly PR description" in compact_text
-    assert "../docs/release-ops/" in text
-    assert "`main-branch-protection.json`" in text
-    assert "/branches/main/protection" in text
-    assert "--data @.github/main-branch-protection.json" in text
-    assert "Test and build" in text
-    assert "direct pushes to `main` remain a process violation" in compact_text
-    assert "private-repository branch protection" in text
-    assert "squash or rebase merging enabled" in compact_text
-    assert "auto-merge" in compact_text
-    assert "delete head branches after merge" in compact_text or "merged PR branches are deleted" in compact_text
+    root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    workflow_readme = (REPO_ROOT / ".github" / "workflows" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    issue_template_readme = (
+        REPO_ROOT / ".github" / "ISSUE_TEMPLATE" / "README.md"
+    ).read_text(encoding="utf-8")
+
+    assert "# Cachet" in root_readme
+    assert "pip install cachet-kv" in root_readme
+    assert "examples/quickstart_local.py" in root_readme
+    assert "GitHub Workflows" in workflow_readme
+    assert "Issue Templates" in issue_template_readme
 
 
 def test_github_ci_workflow_runs_pr_quality_gate():

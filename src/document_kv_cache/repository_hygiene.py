@@ -124,11 +124,13 @@ GENERATED_OR_TOOLING_DIRECTORY_NAMES = frozenset(
         "htmlcov",
     }
 )
+RENDERED_README_EXEMPT_METADATA_DIRECTORY_PATHS = frozenset({".github"})
 
 __all__ = [
     "ALLOWED_FORBIDDEN_TRACKED_ARTIFACTS",
     "FORBIDDEN_TRACKED_ARTIFACT_PATTERNS",
     "GENERATED_OR_TOOLING_DIRECTORY_NAMES",
+    "RENDERED_README_EXEMPT_METADATA_DIRECTORY_PATHS",
     "REPOSITORY_HYGIENE_RECORD_TYPE",
     "REQUIRED_GITIGNORE_PATTERNS",
     "RepositoryHygieneEvidence",
@@ -418,7 +420,14 @@ def _documentation_checked_directory_paths(repository_root: Path, paths: Sequenc
                 directories.add(".")
                 break
             directories.add(parent.as_posix())
-    return tuple(sorted(directory for directory in directories if (repository_root / directory).exists()))
+    return tuple(
+        sorted(
+            directory
+            for directory in directories
+            if directory not in RENDERED_README_EXEMPT_METADATA_DIRECTORY_PATHS
+            and (repository_root / directory).exists()
+        )
+    )
 
 
 def _directory_has_documentation(repository_root: Path, directory: str) -> bool:
