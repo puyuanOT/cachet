@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 
 from document_kv_cache.benchmark_handoffs import load_benchmark_kv_chunk_generator
+from document_kv_cache.benchmark_runner import BenchmarkEngineRequest
 from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
@@ -32,6 +33,7 @@ from document_kv_cache.benchmarks import (
 from document_kv_cache.engine_adapters import ServingBackend, build_engine_adapter_request, sglang_adapter_spec
 from document_kv_cache.engine_probe import write_engine_adapter_handoff_bundle
 from document_kv_cache.live_server import (
+    LiveCheckPromptFormat,
     LiveServerCheckConfig,
     build_live_server_check_request,
     live_check_kv_transfer_params,
@@ -77,6 +79,7 @@ DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
+DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
 MIN_SGLANG_LIVE_HANDOFF_STABLE_TOKEN_RATIO = 0.8
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
@@ -107,6 +110,7 @@ __all__ = [
     "DEFAULT_SGLANG_HICACHE_PAGE_SIZE",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD",
+    "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT",
     "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
     "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
     "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
@@ -193,6 +197,7 @@ class SGLangSmokeBenchmarkConfig:
     package_install_spec: str | None = None
     baseline_only: bool = False
     cache_prompt_text_mode: PromptTextMode = "logical"
+    live_check_prompt_format: LiveCheckPromptFormat = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
@@ -249,6 +254,8 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("package_install_spec must be non-empty when provided")
         if self.cache_prompt_text_mode not in {"logical", "runtime"}:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
+        if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
+            raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
         if self.handoff_json and self.handoff_record is not None:
             raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record")
         if self.handoff_record is not None and not isinstance(self.handoff_record, Mapping):
@@ -443,6 +450,7 @@ def build_metadata(
         "live_request_metadata_bridge_ok": False,
         "requires_kv_transfer_params": not config.baseline_only,
         "cache_prompt_text_mode": config.cache_prompt_text_mode,
+        "live_check_prompt_format": config.live_check_prompt_format,
         "kv_transfer_params_transport": "custom_params",
         "generates_live_handoff": config.handoff_generation is not None,
         "live_handoff_generation": (
@@ -574,6 +582,7 @@ def _generate_live_handoff_inputs_in_subprocess(
         "output_dir": str(config.output_dir),
         "local_root": str(config.local_root),
         "hardware_target": config.hardware_target,
+        "live_check_prompt_format": config.live_check_prompt_format,
         "handoff_generation": generation.to_metadata(),
     }
     write_json(input_path, payload)
@@ -583,6 +592,7 @@ import sys
 from pathlib import Path
 
 from document_kv_cache.sglang_smoke import (
+    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     SGLangLiveHandoffGenerationConfig,
     SGLangSmokeBenchmarkConfig,
     _generate_live_handoff_inputs,
@@ -607,6 +617,7 @@ config = SGLangSmokeBenchmarkConfig(
     output_dir=Path(payload["output_dir"]),
     local_root=Path(payload["local_root"]),
     hardware_target=payload["hardware_target"],
+    live_check_prompt_format=payload.get("live_check_prompt_format", DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT),
     handoff_generation=generation,
 )
 try:
@@ -668,11 +679,9 @@ def _generate_live_handoff_inputs(
         model_id=CACHET_MODEL_ID,
         hardware_target=config.hardware_target,
         use_cache_arm=True,
+        prompt_format=config.live_check_prompt_format,
     )
-    source_document = benchmark_cache_source_document(
-        live_request.example,
-        prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX,
-    )
+    source_document = _live_handoff_cache_source_document(live_request, prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX)
     original_source_chunk = source_document.chunks[0]
     source_token_ids = _token_ids_for_generator(generator, original_source_chunk.text)
     runtime_token_ids = _token_ids_for_generator(generator, live_request.logical_prompt_text)
@@ -759,6 +768,26 @@ def _generate_live_handoff_inputs(
         "dtype": generation.dtype,
         "align_bytes": generation.align_bytes,
     }
+
+
+def _live_handoff_cache_source_document(
+    live_request: BenchmarkEngineRequest,
+    *,
+    prefix: str,
+) -> SourceDocument:
+    source_document = benchmark_cache_source_document(live_request.example, prefix=prefix)
+    source_chunk = source_document.chunks[0]
+    return SourceDocument.from_text(
+        document_id=source_document.document_id,
+        text=live_request.cache_prefix_text,
+        chunk_id=source_chunk.chunk_id,
+        chunk_type=source_chunk.chunk_type,
+        metadata={
+            **source_document.metadata,
+            "cachet.benchmark.prompt_source": "live_request.cache_prefix_text",
+        },
+        chunk_metadata=source_chunk.metadata,
+    )
 
 
 def release_live_handoff_generation_resources() -> None:
@@ -991,6 +1020,7 @@ def run_live_checks(
                 hardware_target=config.hardware_target,
                 use_cache_arm=True,
                 prompt_text_mode=config.cache_prompt_text_mode,
+                prompt_format=config.live_check_prompt_format,
                 prompt_token_accounting="server_usage",
                 kv_transfer_params_transport="custom_params",
                 kv_transfer_params=sglang_live_kv_transfer_params(config),
@@ -1010,6 +1040,7 @@ def run_live_checks(
             max_tokens=config.max_tokens,
             timeout_seconds=config.timeout_seconds,
             stream=config.stream,
+            prompt_format=config.live_check_prompt_format,
             prompt_token_accounting="server_usage",
         )
     )
@@ -1593,6 +1624,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--package-install-spec")
     parser.add_argument("--baseline-only", action="store_true")
     parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical")
+    parser.add_argument(
+        "--live-check-prompt-format",
+        choices=("plain", "qwen3_chat"),
+        default=DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -1649,6 +1685,7 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         package_install_spec=args.package_install_spec,
         baseline_only=args.baseline_only,
         cache_prompt_text_mode=args.cache_prompt_text_mode,
+        live_check_prompt_format=args.live_check_prompt_format,
         handoff_json=args.handoff_json,
         handoff_record=_json_object_option(args.handoff_record_json, "--handoff-record-json"),
         payload_uri=args.payload_uri,

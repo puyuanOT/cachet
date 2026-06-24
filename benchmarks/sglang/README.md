@@ -8,7 +8,8 @@ benchmark result.
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
-| Latest failed live handoff smoke | `348824841142825` | [`2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/) | The PR #467 wheel was present, import probe and request metadata bridge passed, and SGLang reported a positive 128-token external cache hit, but the later 46-key split query still missed and both live quality checks failed. It is not a benchmark result. |
+| Latest failed live handoff smoke | `995284076545208` | [`2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/) | The PR #469 wheel was present, import probe and request metadata bridge passed, generated handoff creation produced a token-stable 149-token prefix, and SGLang reported a positive cache-arm hit covering that generated prefix, but both live quality checks returned repeated filler text. It is not a benchmark result. |
+| Failed live handoff smoke | `348824841142825` | [`2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/) | The PR #467 wheel was present, import probe and request metadata bridge passed, and SGLang reported a positive 128-token external cache hit, but the later 46-key split query still missed and both live quality checks failed. It is not a benchmark result. |
 | Failed live handoff smoke | `672750124167579` | [`2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/`](2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/) | The PR #466 wheel was present, but the request metadata bridge failed during import probe because the strict hash-tracking gate looked for `get_hash_str` in the wrong SGLang controller lifecycle hook. It is not a benchmark result. |
 | Failed live handoff smoke | `73938470896039` | [`2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/`](2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/) | The PR #465 wheel was present, but the later 46-key storage query still logged `last_hash_present=False` because SGLang keeps the per-batch prior hash in a local `_storage_hit_query` variable. It is not a benchmark result. |
 | Failed live handoff smoke | `476430354490832` | [`2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/`](2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/) | The PR #464 provider wheel was present and hydrated the first 128 runtime pages, but Cachet still missed the later 46-key storage query because SGLang chained it from runtime `last_hash`. It is not a benchmark result. |
@@ -53,8 +54,10 @@ the batch prior-hash metadata blocker in
 [`2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/`](2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/),
 the attach-time hash tracking gate in
 [`2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/`](2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/),
-and the current cache-hit quality failure in
-[`2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/).
+the cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/),
+and the current token-stable cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/).
 Use
 `--baseline-only` for provider/server bring-up. For handoff-backed smoke,
 prefer `--generate-live-handoff`, which generates the synthetic live Cachet
@@ -65,16 +68,17 @@ stock SGLang can compute the cached prefix page keys. The latest run also sets
 for Cachet-backed page hydration before prefill. Recent failures show that
 later split queries can be chained from SGLang's runtime hash state, and that
 the relevant anchor is the first per-batch `prior_hash` passed to SGLang's
-`get_hash_str`, not merely `operation.last_hash`. The latest run shows that
+`get_hash_str`, not merely `operation.last_hash`. Recent runs show that
 attach-time hash tracking installs successfully and that SGLang can report a
-positive cache-arm external hit, but the later 46-key query still missed and
-both live quality checks failed. A publishable live run must hydrate all
-matching generated page-key chunks and record a positive SGLang cached-token
-validation before it can be treated as successful. That validation must identify
-the cache-arm request itself by its prompt-token total, rather than warmup
-requests or a later baseline request that benefits from ordinary SGLang
-prefix-cache reuse. Manual handoff inputs remain supported when callers already
-have a validated SGLang handoff plus
+positive cache-arm external hit. The latest run validates a token-stable
+149-token generated prefix, but the plain completion-style live prompt failed
+quality for both baseline and cache arms. A publishable live run must use a
+Qwen3/SGLang prompt format that passes quality while still hydrating matching
+generated page-key chunks and recording positive SGLang cached-token
+validation. That validation must identify the cache-arm request itself by its
+prompt-token total, rather than warmup requests or a later baseline request
+that benefits from ordinary SGLang prefix-cache reuse. Manual handoff inputs
+remain supported when callers already have a validated SGLang handoff plus
 `document_kv.sglang_hicache_page_keys` metadata. This report remains pending
 until a Databricks g6/L4 or g5/A10G run writes `sglang-live-smoke.json` with a
 passing handoff-backed cache arm.
@@ -94,6 +98,8 @@ Treat SGLang benchmark publication as pending until all of these are true:
   page chunk, including later chunks anchored by the batch `prior_hash` used to
   compute SGLang's chained runtime keys.
 - The cache-arm request reports positive SGLang cached-token validation.
+- The live prompt format is valid for Qwen3/SGLang and passes the baseline and
+  cache-arm quality checks.
 - The cached-token validation is matched to the cache-arm request, not to server
   warmup traffic or later baseline prefix-cache reuse.
 - Latency, throughput, and quality measurements are recorded with the same

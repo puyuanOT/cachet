@@ -30,6 +30,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
+    DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     HF_MODEL_ID,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
@@ -167,6 +168,63 @@ class TinySGLangLiveKVGenerator:
             ),
             payload=b"\0" * (token_count * layout.bytes_per_token),
             token_count=token_count,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class PromptFormatTokenizer:
+    source_token_ids = (21, 22, 23, 24)
+    runtime_token_ids = (21, 22, 23, 24, 25, 26)
+    plain_token_ids = (91, 92, 93, 94)
+    seen_texts: list[str] = []
+
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert text
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        self.seen_texts.append(text)
+        if text.startswith("<|im_start|>system") and "<|im_start|>assistant" in text:
+            token_ids = self.runtime_token_ids
+        elif text.startswith("<|im_start|>system"):
+            token_ids = self.source_token_ids
+        elif text.startswith("Benchmark:"):
+            token_ids = self.plain_token_ids
+        else:
+            token_ids = (7, 8, 9, 10)
+        return {"input_ids": [list(token_ids)]}
+
+
+class PromptFormatSGLangLiveKVGenerator:
+    tokenizer = PromptFormatTokenizer()
+    add_special_tokens = False
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = layout_for_model(
+            config.model_id,
+            dtype=config.dtype,
+            lora_id=config.lora_id,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+        token_ids = self.tokenizer(
+            chunk.text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"][0]
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=b"\0" * (len(token_ids) * layout.bytes_per_token),
+            token_count=len(token_ids),
             dtype=config.dtype,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
@@ -477,14 +535,48 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(tmp_path, 
     assert generation["sglang_hicache_page_size"] == 2
 
 
+def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(tmp_path, monkeypatch):
+    module = ModuleType("cachet_test_sglang_live_handoff_prompt_format_generator")
+    module.build_generator = PromptFormatSGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    PromptFormatTokenizer.seen_texts.clear()
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-qwen-chat",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-live",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=2,
+        ),
+    )
+
+    runtime_config = prepare_generated_live_handoff(config)
+
+    assert config.live_check_prompt_format == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    assert runtime_config.sglang_hicache_page_keys == sglang_hicache_page_keys(
+        PromptFormatTokenizer.source_token_ids,
+        page_size=2,
+    )
+    assert PromptFormatTokenizer.seen_texts
+    assert all(text.startswith("<|im_start|>system") for text in PromptFormatTokenizer.seen_texts)
+    assert not any(text.startswith("Benchmark:") for text in PromptFormatTokenizer.seen_texts)
+    generation = json.loads(config.live_handoff_generation_path.read_text(encoding="utf-8"))
+    assert generation["cache_prefix_tokens"] == len(PromptFormatTokenizer.source_token_ids)
+    assert generation["runtime_prompt_tokens"] == len(PromptFormatTokenizer.runtime_token_ids)
+    assert generation["cache_prefix_token_stable"] is True
+
+
 def test_prepare_generated_live_handoff_uses_token_stable_runtime_prefix(tmp_path, monkeypatch):
     module = ModuleType("cachet_test_sglang_live_handoff_drift_generator")
     module.build_generator = BoundaryDriftSGLangLiveKVGenerator
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    original_source_document = public_sglang_smoke.benchmark_cache_source_document
+    original_source_document = public_sglang_smoke._live_handoff_cache_source_document
 
-    def drifted_source_document(example, *, prefix):
-        source_document = original_source_document(example, prefix=prefix)
+    def drifted_source_document(live_request, *, prefix):
+        source_document = original_source_document(live_request, prefix=prefix)
         source_chunk = source_document.chunks[0]
         return SourceDocument.from_text(
             document_id=source_document.document_id,
@@ -495,7 +587,7 @@ def test_prepare_generated_live_handoff_uses_token_stable_runtime_prefix(tmp_pat
             chunk_metadata=source_chunk.metadata,
         )
 
-    monkeypatch.setattr(public_sglang_smoke, "benchmark_cache_source_document", drifted_source_document)
+    monkeypatch.setattr(public_sglang_smoke, "_live_handoff_cache_source_document", drifted_source_document)
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-token-stable-generated",
         output_dir=tmp_path / "out",
@@ -574,6 +666,7 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(tmp_path
         benchmark_id="sglang-generated-venv",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
+        live_check_prompt_format="plain",
         handoff_generation=generation,
     )
     config.venv_python.parent.mkdir(parents=True)
@@ -584,8 +677,10 @@ def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(tmp_path
         calls.append((argv, check, capture_output, text, timeout, env))
         assert argv[0] == str(config.venv_python)
         assert argv[1] == "-c"
+        assert "DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,\n" in argv[2]
         input_payload = json.loads(Path(argv[3]).read_text(encoding="utf-8"))
         assert input_payload["benchmark_id"] == "sglang-generated-venv"
+        assert input_payload["live_check_prompt_format"] == "plain"
         assert input_payload["handoff_generation"]["generator_factory"] == "module:factory"
         assert input_payload["handoff_generation"]["sglang_hicache_page_size"] == 3
         Path(argv[4]).parent.mkdir(parents=True, exist_ok=True)
@@ -780,6 +875,8 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
             "8",
             "--sglang-hicache-page-size",
             "2",
+            "--live-check-prompt-format",
+            "plain",
             "--hicache-storage-prefetch-threshold",
             "3",
             "--live-handoff-generation-timeout-seconds",
@@ -797,6 +894,7 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
     assert generation.align_bytes == 8
     assert generation.page_size == 2
     assert generation.timeout_seconds == 12.5
+    assert seen_configs[0].live_check_prompt_format == "plain"
     assert seen_configs[0].hicache_page_size == 2
     assert (
         seen_configs[0].hicache_storage_prefetch_policy
@@ -820,6 +918,7 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["hardware_target"] == "aws-g5-a10g"
     assert metadata["kv_transfer_params_transport"] == "custom_params"
     assert metadata["cache_prompt_text_mode"] == "logical"
+    assert metadata["live_check_prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
     assert metadata["requires_kv_transfer_params"] is False
     assert metadata["cache_arm_supported"] is False
     assert metadata["cache_arm_blocker"] == SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE
