@@ -2,8 +2,8 @@
 
 This folder tracks the first generated-handoff SGLang live smoke that passed
 after isolating the baseline from the Cachet cache arm. It is standalone
-benchmark-readiness evidence, not `pr-evidence/` and not ignored local
-`databricks-runs/` scratch output.
+benchmark-readiness evidence, not `docs/release-ops/pr-evidence/` and not
+ignored local `databricks-runs/` scratch output.
 
 | Field | Value |
 | --- | --- |

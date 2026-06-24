@@ -412,7 +412,9 @@ def test_pr_evidence_validation_to_record_summarizes_per_file_evidence(tmp_path)
 
 
 def test_repository_pr_evidence_sidecars_are_valid():
-    evidence_by_file = evaluate_pr_evidence_directory(REPO_ROOT / "pr-evidence")
+    evidence_by_file = evaluate_pr_evidence_directory(
+        REPO_ROOT / "docs" / "release-ops" / "pr-evidence"
+    )
 
     assert evidence_by_file
     assert {path: evidence.issues for path, evidence in evidence_by_file.items() if not evidence.ok} == {}

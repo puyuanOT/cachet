@@ -1,0 +1,37 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Maxwell the 3rd reviewed the public UX diff and found three issues: public deliverables were untracked, the installed-wheel quickstart referenced a file that would not be packaged, and maintainer-only CLI classification was incomplete. The branch now tracks the new files, exposes python -m cachet.quickstart_local as a packaged quickstart, keeps examples/quickstart_local.py as a source wrapper, verifies the built wheel quickstart in a fresh venv, and documents all installed Cachet command families plus document-kv compatibility aliases under docs/release-ops.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 517,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/517",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md; docs/getting-started.md; docs/concepts.md; docs/production.md; examples/quickstart_local.py; src/cachet/quickstart_local.py",
+    "CONTRIBUTING.md; .github/ISSUE_TEMPLATE; ROADMAP.md; CHANGELOG.md; RELEASE_NOTES.md; docs/release-ops",
+    "benchmarks/current; benchmarks/sglang/archive; docs/release-ops/evidence; docs/release-ops/pr-evidence; tests/test_project_governance.py"
+  ],
+  "verification": [
+    "PYTHONPATH=src python -m cachet.quickstart_local -> generated chunks: 4; materialized bytes: 340; engine handle: document-kv://req-local",
+    "python examples/quickstart_local.py -> generated chunks: 4; materialized bytes: 340; engine handle: document-kv://req-local",
+    "poetry build -f wheel; install dist/cachet_kv-0.2.0-py3-none-any.whl in a fresh venv; python -m cachet.quickstart_local -> generated chunks: 4; materialized bytes: 340; engine handle: document-kv://req-local",
+    "poetry run pytest tests/test_project_governance.py -q -> 53 passed",
+    "poetry run pytest -q -> 1888 passed, 5 skipped",
+    "poetry check --lock -> All set",
+    "git diff --check -> passed",
+    "root README forbidden-term scan for PR evidence, GPT-5.5, branch protection, release bundle, and Databricks before advanced links -> no matches",
+    "changed-file secret scan for Databricks, GitHub, OpenAI, LangSmith, and private-key patterns -> no matches",
+    "Maxwell the 3rd reviewer found untracked public deliverables, an installed-wheel quickstart gap, and incomplete CLI audience classification; all findings were resolved"
+  ],
+  "what_changed": [
+    "Rewrote the root README into a short public Cachet landing page with install, audience fit, architecture flow, no-cloud quickstart, stable API surface, and next-step links.",
+    "Added beginner docs, concepts glossary, production guidance, issue templates, roadmap, changelog, release notes, and external-friendly contributing guidance.",
+    "Moved maintainer evidence and historical root README material under docs/release-ops while keeping human benchmark summaries under benchmarks/current and archiving failed SGLang run folders.",
+    "Added a packaged python -m cachet.quickstart_local local example and source-checkout wrapper so installed-wheel users have a real runnable quickstart.",
+    "Documented stable user commands separately from maintainer-only benchmark, Databricks, probe, smoke, release, governance, and compatibility CLI aliases."
+  ],
+  "why": "Make a clean-room user understand Cachet, install it, run a local example, and choose the right next document without needing Databricks, release evidence, PR sidecars, or benchmark/audit context."
+}

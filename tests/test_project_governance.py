@@ -1,9 +1,11 @@
 import ast
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from textwrap import dedent
 import tomllib
 
@@ -408,13 +410,15 @@ def test_legacy_source_package_directory_is_removed():
 
 
 def test_legacy_compatibility_removal_gate_is_documented():
-    root_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    maintainer_reference = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     matrix = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
     gate = (REPO_ROOT / "docs" / "legacy-compatibility-removal.md").read_text(encoding="utf-8")
     compact_gate = " ".join(gate.split())
 
-    assert "`docs/legacy-compatibility-removal.md`" in root_readme
+    assert "`docs/legacy-compatibility-removal.md`" in maintainer_reference
     assert "`legacy-compatibility-removal.md`" in docs_readme
     assert "`docs/legacy-compatibility-removal.md`" in matrix
     assert "one repository and one distribution package" in compact_gate
@@ -451,7 +455,7 @@ def test_legacy_compatibility_removal_gate_is_documented():
 
 
 def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
-    evidence_dir = REPO_ROOT / "evidence" / "legacy-migration" / "current"
+    evidence_dir = REPO_ROOT / "docs" / "release-ops" / "evidence" / "legacy-migration" / "current"
     scan_config_path = evidence_dir / "legacy-migration-scan-config.json"
     evidence_path = evidence_dir / "legacy-migration-evidence.json"
     validation_path = evidence_dir / "legacy-migration-validation.json"
@@ -471,7 +475,7 @@ def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
     assert evidence.ok is True
     assert evidence.issues == ()
     assert validation_record["ok"] is True
-    assert validation_record["files"][evidence_path.relative_to(REPO_ROOT).as_posix()] == committed_record
+    assert validation_record == committed_record
     assert {job["category"] for job in committed_record["checked_downstream_jobs"]} == set(
         LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES
     )
@@ -640,23 +644,32 @@ def test_python_source_files_do_not_repeat_literal_dict_keys():
     assert duplicates == []
 
 
-def test_contributing_doc_records_required_pr_workflow():
+def test_contributing_doc_is_friendly_to_external_contributors():
     text = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
+    maintainer_checklist = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-release-checklist.md"
+    ).read_text(encoding="utf-8")
     compact_text = " ".join(text.split())
+    compact_maintainer_checklist = " ".join(maintainer_checklist.split())
 
-    assert "Direct pushes to `main`" in compact_text
-    assert ".github/main-branch-protection.json" in text
-    assert "one approving review" in text
-    assert "Test and build" in text
-    assert "force-pushes" in text
+    assert "You do not need Databricks, GPUs, internal release evidence" in compact_text
+    assert "Good First Contributions" in text
+    assert "improvements to the local quickstart" in text
+    assert "Open An Issue" in text
+    assert "Open A Pull Request" in text
+    assert "python examples/quickstart_local.py" in text
     assert "pull requests" in text
-    assert "Refactor skill" in text
-    assert "GPT-5.5 review" in text
     assert "what changed and why" in text
-    assert "vLLM or SGLang" in text
-    assert "Do not add a proprietary request scheduler" in text
-    assert "custom serving solver" in text
-    assert "handoff/adapter boundary" in text
+    assert "vLLM or SGLang" in compact_text
+    assert "custom serving engine" in text
+    assert "handoff boundary" in text
+    assert "Maintainer-Only Release Gates" in text
+    assert "External contributors do not need to produce those artifacts" in compact_text
+    assert "Refactor skill" not in text
+    assert "GPT-5.5 review" not in text
+    assert "Direct pushes to `main`" not in compact_text
+    assert "Internal PR workflow gates such as Refactor-skill evidence" in compact_maintainer_checklist
+    assert "GPT-5.5 review" in maintainer_checklist
 
 
 def _markdown_section(text: str, heading: str) -> str:
@@ -682,83 +695,111 @@ def _first_bash_fence_after(text: str, marker: str) -> str:
     return text[code_start:fence_end]
 
 
-def test_readme_documents_cachet_brand_and_scope():
+def test_readme_documents_public_landing_page_and_scope():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    start_here = _markdown_section(text, "Start Here")
-    compact_start_here = " ".join(start_here.split())
-    purpose = _markdown_section(text, "Purpose And Scope")
-    compact_purpose = " ".join(purpose.split())
-
-    assert text.startswith("# Cachet: Document KV Cache")
     compact_text = " ".join(text.split())
-    assert "Cachet turns long, repeated document context into reusable KV-cache payloads" in text
-    assert "The serving engine still owns scheduling, decode, and native GPU KV blocks" in compact_text
+    public_intro = text[: text.index("## Where To Go Next")]
+
+    assert text.startswith("# Cachet\n")
+    assert 150 <= len(text.splitlines()) <= 300
     for required in (
-        "What do I install?",
-        "`cachet-kv`",
-        "What do I import?",
-        "`cachet`",
-        "Thin vLLM and SGLang adapter modules live here and ship with `cachet-kv`",
-        "Qwen3 4B Instruct on AWS g6/L4 Databricks",
-        "[`benchmarks/current/README.md`](benchmarks/current/)",
-        "5.27x-6.97x TTFT speedups",
-        "SGLang prepared V1 live serving currently proves cache-hit correctness",
-        "[`Cachet-First Quickstart`](#cachet-first-quickstart)",
-        "[`Benchmark Contract`](#benchmark-contract)",
-        "[`docs/repo-map.md`](docs/repo-map.md)",
-        "[`docs/evidence-policy.md`](docs/evidence-policy.md)",
+        "Cachet is a Python package for preparing reusable document KV-cache payloads",
+        "Cachet does **not** replace vLLM, SGLang, Transformers, or your inference",
+        "## Who It Is For",
+        "Use Cachet when you:",
+        "Cachet is probably not the right first tool when you:",
+        "source document",
+        "-> packed KV payloads",
+        "pip install cachet-kv",
+        "## 10-Minute Local Quickstart",
+        "python -m cachet.quickstart_local",
+        "python examples/quickstart_local.py",
+        "## Minimal API Shape",
+        "from cachet import",
+        "## Stable User Surface",
+        "The stable public import is `cachet`",
     ):
-        assert required in compact_start_here
-    assert "## Cachet-First Quickstart" in text
-    assert "## Benchmark Contract" in text
-    assert "Cachet is a reusable document KV-cache orchestration package" in text
-    assert "Cachet is the product brand and primary repository identity" in compact_text
-    assert "The package publishes through the Cachet-branded `cachet-kv` distribution name" in compact_text
-    assert "unrelated Cachet API client" in compact_text
-    assert "branded `cachet` root and `cachet.<module>` import facades" in compact_text
-    assert "canonical `document_kv_cache` implementation modules" in compact_text
-    assert "applications that repeatedly serve long, mostly stable document context" in compact_purpose
-    assert "Biography, HotpotQA, MusiQue, and Needle-in-a-Haystack" in compact_purpose
-    assert "standard no-cache prefill baseline" in compact_purpose
-    assert "vLLM, SGLang, or another established serving engine owns scheduling" in compact_purpose
+        assert required in text
+    for forbidden in (
+        "PR evidence",
+        "GPT-5.5",
+        "branch protection",
+        "release bundle",
+        "Databricks",
+    ):
+        assert forbidden not in public_intro
+    assert "document-kv-cache" not in public_intro
+    assert "restaurant_kv_serving" not in text
+    assert "package name on PyPI is owned by an unrelated project" in compact_text
 
 
-def test_readme_cachet_first_quickstart_uses_branded_imports_and_cli():
+def test_readme_local_quickstart_runs_without_cloud_or_gpu():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    quickstart = _markdown_section(text, "Cachet-First Quickstart")
+    quickstart = _markdown_section(text, "10-Minute Local Quickstart")
 
-    assert "from cachet import" in quickstart
-    assert "from cachet.engine_launch_config import" in quickstart
-    assert "cachet-benchmark-handoff-bundles --help" in quickstart
-    assert "cachet-benchmark-plan --help" in quickstart
-    assert "cachet-engine-launch-config build-vllm" in quickstart
-    assert "cachet-databricks-runs payload-summary --help" in quickstart
-    assert "legacy command aliases are not part of built wheels" in quickstart
-    assert "document_kv_cache" not in quickstart
-    assert "document-kv-" not in quickstart
-    assert "restaurant_kv_serving" not in quickstart
-    assert "restaurant-kv-" not in quickstart
+    assert "tiny fake KV generator" in quickstart
+    assert "python -m cachet.quickstart_local" in quickstart
+    assert "python examples/quickstart_local.py" in quickstart
+    assert "python quickstart_local.py" not in quickstart
+    assert "GPU" in quickstart
+    assert "cloud account" in quickstart
+    assert "Databricks" not in quickstart
 
-    example = _first_python_fence_after(text, "Use the Cachet-branded imports")
+    module_completed = subprocess.run(
+        [sys.executable, "-m", "cachet.quickstart_local"],
+        cwd=REPO_ROOT,
+        env={**os.environ, "PYTHONPATH": str(REPO_ROOT / "src")},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    example_completed = subprocess.run(
+        [sys.executable, "examples/quickstart_local.py"],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    for output in (module_completed.stdout, example_completed.stdout):
+        assert "generated chunks: 4" in output
+        assert "materialized bytes: 340" in output
+        assert "engine handle: document-kv://req-local" in output
+        assert "engine segments: 3" in output
+
+
+def test_readme_minimal_api_uses_cachet_public_imports():
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    minimal_api = _markdown_section(text, "Minimal API Shape")
+
+    assert "from cachet import" in minimal_api
+    assert "document_kv_cache" not in minimal_api
+    assert "document-kv-" not in minimal_api
+    assert "restaurant_kv_serving" not in minimal_api
+    assert "restaurant-kv-" not in minimal_api
+
+    example = _first_python_fence_after(text, "## Minimal API Shape")
     namespace: dict[str, object] = {}
     exec(compile(example, "README.md", "exec"), namespace)
 
     document = namespace["document"]
     request = namespace["request"]
     layout = namespace["layout"]
-    launch_config = namespace["vllm_launch_config"]
+    config = namespace["config"]
 
-    assert document.document_id == "policy-handbook"
+    assert document.document_id == "handbook"
     assert request.selected_document_ids == (document.document_id,)
     assert layout.layout_version == "qwen3-v1"
-    assert launch_config["kv_connector"] == "DocumentKVConnector"
-    assert launch_config["kv_connector_extra_config"]["document_kv.backend"] == "vllm"
+    assert config.layout_version == layout.layout_version
+    assert config.storage_layout == layout.storage_layout
 
 
-def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
+def test_maintainer_reference_engine_adapter_handoff_example_uses_public_payload_reader():
     import document_kv_cache
 
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     example = _first_python_fence_after(text, "For engine-specific integration code")
     tree = ast.parse(example)
     document_imports = {
@@ -778,8 +819,10 @@ def test_readme_engine_adapter_handoff_example_uses_public_payload_reader():
     assert missing_exports == []
 
 
-def test_readme_benchmark_plan_examples_include_release_actions_sidecars():
-    root_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_maintainer_reference_benchmark_plan_examples_include_release_actions_sidecars():
+    root_text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     compact_root_text = " ".join(root_text.split())
     root_example = _first_bash_fence_after(root_text, "To run the V1 benchmark contract")
 
@@ -795,10 +838,12 @@ def test_readme_benchmark_plan_examples_include_release_actions_sidecars():
     assert "--release-engine-actions-json" in compact_root_text
 
 
-def test_readme_model_profile_example_uses_portable_definition_artifact():
+def test_maintainer_reference_model_profile_example_uses_portable_definition_artifact():
     import document_kv_cache
 
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     example = _first_python_fence_after(text, "Future Qwen3.5, MiniMax")
     tree = ast.parse(example)
     document_imports = {
@@ -836,11 +881,7 @@ def test_readme_and_root_license_document_apache_2_license():
     license_section = _markdown_section(readme, "License")
 
     assert "Apache License 2.0" in license_section
-    assert "`Apache-2.0` SPDX expression" in license_section
     assert "`LICENSE`" in license_section
-    assert "`py.typed` markers" in license_section
-    assert "`cachet`" in license_section
-    assert "`document_kv_cache`" in license_section
     assert "`restaurant_kv_serving`" not in license_section
     assert license_text.startswith("Apache License\nVersion 2.0, January 2004")
     assert "https://www.apache.org/licenses/" in license_text
@@ -855,15 +896,13 @@ def test_project_metadata_exposes_repository_and_issue_urls():
     }
 
 
-def test_readme_development_commands_use_public_package_branding():
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    development_section = _markdown_section(text, "Development")
+def test_contributing_development_commands_use_public_package_branding():
+    text = (REPO_ROOT / "CONTRIBUTING.md").read_text(encoding="utf-8")
 
-    assert "poetry check --lock" in development_section
-    assert "poetry install -E test" in development_section
-    assert "poetry run pytest -q" in development_section
-    assert "python -m pip install -e '.[test]'" in development_section
-    assert "pytest tests -q" in development_section
+    assert "python -m cachet.quickstart_local" in text
+    assert "python examples/quickstart_local.py" in text
+    assert "poetry check --lock" in text
+    assert "poetry run pytest -q" in text
     assert "restaurant-kv-serving[test]" not in text
     assert "restaurant-kv-serving/tests" not in text
 
@@ -873,11 +912,12 @@ def test_readme_avoids_workspace_local_script_references():
 
     assert "../scripts" not in text
     assert "submit_document_kv_v1_benchmark.py" not in text
-    assert "Workspace-specific automation can wrap this handoff" in text
 
 
-def test_readme_manifest_schema_mentions_storage_layout():
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_maintainer_reference_manifest_schema_mentions_storage_layout():
+    text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     logical_model = _markdown_section(text, "Logical Model")
     manifest_start = logical_model.index("Manifest table:")
     fence_start = logical_model.rindex("```text", 0, manifest_start)
@@ -887,8 +927,10 @@ def test_readme_manifest_schema_mentions_storage_layout():
     assert "layout_version\n  storage_layout" in manifest_table
 
 
-def test_readme_remaining_work_keeps_serving_boundary_explicit():
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_maintainer_reference_remaining_work_keeps_serving_boundary_explicit():
+    text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     remaining_work = _markdown_section(text, "Remaining V1 Work")
 
     assert "connector action descriptors" in remaining_work
@@ -898,7 +940,9 @@ def test_readme_remaining_work_keeps_serving_boundary_explicit():
 
 
 def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
-    readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    maintainer_reference = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
     compact_matrix = " ".join(matrix_text.split())
@@ -922,9 +966,9 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "cachet_vllm_hot_payload_g5_01a6147_20260623_125720_repeat3_cache8g_current_main",
     )
 
-    assert "docs/v1-requirements-matrix.md" in readme_text
+    assert "docs/v1-requirements-matrix.md" in maintainer_reference
     assert "`v1-requirements-matrix.md`" in docs_readme
-    assert "`../evidence/dependency-freshness/current/README.md`" in docs_readme
+    assert "`release-ops/evidence/dependency-freshness/current/README.md`" in docs_readme
     assert "Status values" in matrix_text
     assert "**Implemented:**" in matrix_text
     assert "**Bundle-refresh pending:**" in matrix_text
@@ -967,7 +1011,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "legacy restaurant facade",
         "core runtime model layer no longer retains restaurant request",
         "dependency_freshness.py",
-        "evidence/dependency-freshness/current/dependency-freshness-evidence.json",
+        "docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json",
         "resolver-held `protobuf==6.33.6` drift",
         "Databricks-validation upgrade reasons",
     ):
@@ -1055,18 +1099,22 @@ def test_repository_map_and_evidence_policy_are_documented():
     compact_evidence_policy = " ".join(evidence_policy.split())
 
     assert "[`docs/repo-map.md`](docs/repo-map.md)" in root_readme
-    assert "[`docs/evidence-policy.md`](docs/evidence-policy.md)" in root_readme
-    assert "`repo-map.md` is the human navigation map" in docs_readme
     assert "`evidence-policy.md` defines which machine-readable records belong" in docs_readme
+    assert "`release-ops/` keeps maintainer-only release machinery" in docs_readme
+    assert "`repo-map.md` is the human navigation map" in docs_readme
     assert "one project and one distribution package" in compact_repo_map
     for required_path in (
+        "getting-started.md",
+        "concepts.md",
+        "production.md",
         "../src/cachet/",
         "../src/document_kv_cache/",
         "../src/vllm_kv_injection/",
         "../src/sglang_kv_injection/",
         "../benchmarks/",
-        "../evidence/",
-        "../pr-evidence/",
+        "release-ops/evidence/",
+        "release-ops/pr-evidence/",
+        "release-ops/",
         "../databricks/",
         "../databricks-runs/",
     ):
@@ -1089,6 +1137,23 @@ def test_repository_map_and_evidence_policy_are_documented():
     assert "Keep exploratory run payloads and task status files under ignored `databricks-runs/`" in (
         compact_evidence_policy
     )
+
+
+def test_release_ops_doc_classifies_installed_cli_surface():
+    release_ops = (REPO_ROOT / "docs" / "release-ops" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = pyproject["project"]["scripts"]
+    cachet_scripts = sorted(name for name in scripts if name.startswith("cachet-"))
+
+    assert "Stable user commands documented in the beginner path" in release_ops
+    assert "`python -m cachet.quickstart_local`" in release_ops
+    assert "`cachet-engine-launch-config`" in release_ops
+    for script_name in cachet_scripts:
+        assert f"`{script_name}`" in release_ops
+    assert "The `document-kv-*` console scripts are compatibility aliases" in release_ops
+    assert "Prefer `cachet-*` in new documentation" in release_ops
 
 
 def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
@@ -1123,108 +1188,126 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         benchmark_root / "_template" / "README.md"
     ).read_text(encoding="utf-8")
     sglang_live_smoke_readme = (
-        benchmark_root / "sglang" / "2026-06-23-g6-l4-live-handoff-smoke" / "README.md"
+        benchmark_root / "sglang" / "archive"
+            / "2026-06-23-g6-l4-live-handoff-smoke" / "README.md"
     ).read_text(encoding="utf-8")
     sglang_runtime_suffix_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
+        / "archive"
+            / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_zero_cache_hit_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_partial_page_binding_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_chained_hash_binding_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_batch_prior_metadata_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_attach_hash_tracking_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_quality_failure_cache_hit_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_token_stable_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_qwen_chat_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_qwen_sampling_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_chat_completions_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_no_thinking_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_deterministic_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_triton_deterministic_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_minimal_no_thinking_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_canary_after_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_canary_flush_cache_hit_quality_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_baseline_isolated_success_readme = (
@@ -1242,13 +1325,15 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     sglang_prepared_v1_config_swap_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_prepared_v1_padded_token_failure_readme = (
         benchmark_root
         / "sglang"
-        / "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
+        / "archive"
+            / "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
     sglang_prepared_v1_release_success_readme = (
@@ -1261,6 +1346,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-23-g6-l4-live-handoff-smoke"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1269,6 +1355,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1277,6 +1364,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1285,6 +1373,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1293,6 +1382,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1301,6 +1391,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1309,6 +1400,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1317,6 +1409,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1325,6 +1418,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1333,6 +1427,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1341,6 +1436,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1349,6 +1445,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1357,6 +1454,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1365,6 +1463,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1373,6 +1472,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1381,6 +1481,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1389,6 +1490,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1397,6 +1499,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1421,6 +1524,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1429,6 +1533,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         (
             benchmark_root
             / "sglang"
+            / "archive"
             / "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
@@ -1444,6 +1549,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    maintainer_reference = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
     compact_root_readme = " ".join(root_readme.split())
@@ -1470,18 +1578,21 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     )
     compact_databricks_readme = " ".join(databricks_readme.split())
     compact_matrix_text = " ".join(matrix_text.split())
-    compact_project_readme = " ".join(project_readme.split())
+    compact_maintainer_reference = " ".join(maintainer_reference.split())
     compact_docs_readme = " ".join(docs_readme.split())
     compact_snapshot = " ".join(current_databricks_snapshot.split())
     compact_current_readme = " ".join(current_readme.split())
 
-    assert "[`benchmarks/`](benchmarks/README.md)" in project_readme
-    assert "[`benchmarks/current/`](benchmarks/current/)" in project_readme
-    assert "[`vLLM`](benchmarks/vllm/)" in project_readme
-    assert "[`SGLang`](benchmarks/sglang/)" in project_readme
-    assert "[`storage`](benchmarks/storage/)" in project_readme
-    assert "[`native-engine`](benchmarks/native-engine/)" in project_readme
-    assert "[`benchmarks/databricks/CURRENT.md`](benchmarks/databricks/CURRENT.md)" in project_readme
+    assert "[`benchmarks/current/README.md`](benchmarks/current/)" in project_readme
+    assert "[`benchmarks/`](../../benchmarks/README.md)" in maintainer_reference
+    assert "[`vLLM`](../../benchmarks/vllm/)" in maintainer_reference
+    assert "[`SGLang`](../../benchmarks/sglang/)" in maintainer_reference
+    assert "[`storage`](../../benchmarks/storage/)" in maintainer_reference
+    assert "[`native-engine`](../../benchmarks/native-engine/)" in maintainer_reference
+    assert (
+        "[`benchmarks/databricks/CURRENT.md`](../../benchmarks/databricks/CURRENT.md)"
+        in maintainer_reference
+    )
     assert "[`current/`](current/)" in root_readme
     assert "[`vllm/`](vllm/)" in root_readme
     assert "[`sglang/`](sglang/)" in root_readme
@@ -1500,7 +1611,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "[`databricks/CURRENT.md`](databricks/CURRENT.md)" in root_readme
     assert "Current Benchmark Results" in current_readme
     assert "human-facing front door for Cachet benchmark results" in compact_current_readme
-    assert "`pr-evidence/`" in current_readme
+    assert "`docs/release-ops/pr-evidence/`" in current_readme
     assert (
         "[`../vllm/2026-06-23-g6-l4-v1/`](../vllm/2026-06-23-g6-l4-v1/)"
         in current_readme
@@ -1526,10 +1637,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`benchmarks/sglang/`" in matrix_text
     assert "`benchmarks/storage/`" in matrix_text
     assert "`benchmarks/native-engine/`" in matrix_text
-    assert "`pr-evidence/` tree" in compact_project_readme
-    assert "Every durable Databricks benchmark or benchmark-readiness run" in compact_project_readme
-    assert "compact sanitized evidence committed beside it" in compact_project_readme
-    assert "without requiring readers to inspect `pr-evidence/`" in compact_snapshot
+    assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
+    assert "Every durable Databricks benchmark or benchmark-readiness run" in compact_maintainer_reference
+    assert "compact sanitized evidence committed beside it" in compact_maintainer_reference
+    assert "without requiring readers to inspect `docs/release-ops/pr-evidence/`" in compact_snapshot
     assert "ignored local `databricks-runs/` output" in compact_snapshot
     assert "Raw local run directories stay under ignored `databricks-runs/`" in databricks_readme
     assert "[`../vllm/`](../vllm/)" in databricks_readme
@@ -1575,7 +1686,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "872615985402004" in vllm_readme
     assert "566743786103032" in vllm_readme
     assert "strict g6/L4 release target" in vllm_readme
-    assert "Do not use `../../pr-evidence/` as the benchmark report surface" in vllm_readme
+    assert "Do not use `../../docs/release-ops/pr-evidence/` as the benchmark" in vllm_readme
     assert "strict Cachet vLLM V1 benchmark" in compact_vllm_g6_report_readme
     assert "TTFT speedups ranged from 5.27x to 6.97x" in compact_vllm_g6_report_readme
     assert "Compatibility evidence; not the strict release target" in vllm_g5_report_readme
@@ -1615,7 +1726,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "zero cached tokens" in compact_sglang_readme
     assert "partial page-binding blocker" in compact_sglang_readme
     assert "full 175-token external cache hit" in root_readme
-    assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
+    assert "benchmarks/sglang/archive/" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding" in sglang_readme
@@ -2338,7 +2449,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "SGLang g6/L4 Live Synthetic NIAH Benchmark" in (
         sglang_live_benchmark_success_readme
     )
-    assert "standalone benchmark evidence, not `pr-evidence/`" in (
+    assert "standalone benchmark evidence, not `docs/release-ops/pr-evidence/`" in (
         compact_sglang_live_benchmark_success_readme
     )
     assert "not the full SGLang release benchmark suite" in (
@@ -2356,7 +2467,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "SGLang g6/L4 Prepared V1 Release Suite Benchmark" in (
         sglang_prepared_v1_release_success_readme
     )
-    assert "standalone benchmark evidence, not `pr-evidence/`" in (
+    assert "standalone benchmark evidence, not `docs/release-ops/pr-evidence/`" in (
         compact_sglang_prepared_v1_release_success_readme
     )
     assert "Prepared live V1 release-suite benchmark passed quality" in (
@@ -3225,7 +3336,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     )
     assert "Benchmark Report Template" in benchmark_template_readme
     assert "Do not include Databricks tokens" in compact_benchmark_template_readme
-    assert "`pr-evidence/` only for PR validation" in compact_benchmark_template_readme
+    assert "`docs/release-ops/pr-evidence/` only for PR validation" in compact_benchmark_template_readme
 
     expected_files = {
         "_template/README.md",
@@ -3239,52 +3350,53 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
         "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
         "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
-        "sglang/2026-06-23-g6-l4-live-handoff-smoke/failed_run.json",
-        "sglang/2026-06-23-g6-l4-live-handoff-smoke/README.md",
-        "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/failed_run.json",
-        "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/README.md",
+        "sglang/archive/README.md",
+        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke/failed_run.json",
+        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke/README.md",
+        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/failed_run.json",
+        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/success_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/README.md",
         "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/success_run.json",
         "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/README.md",
         "sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/success_run.json",
         "sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/README.md",
-        "sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/README.md",
-        "sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/failed_run.json",
-        "sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/README.md",
+        "sglang/archive/2026-06-24-g6-l4-prepared-v1-config-swap-failure/failed_run.json",
+        "sglang/archive/2026-06-24-g6-l4-prepared-v1-config-swap-failure/README.md",
         "sglang/README.md",
         "storage/README.md",
         "storage/2026-06-21-g6-l4-storage-readers/README.md",
@@ -3499,8 +3611,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         assert actions["backend"] == backend
 
 
-def test_readme_release_bundle_documents_artifact_validation_contracts():
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
+    text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     compact_text = " ".join(text.split())
     remaining_v1_work = _markdown_section(text, "Remaining V1 Work")
     compact_remaining_v1_work = " ".join(remaining_v1_work.split())
@@ -3554,8 +3668,10 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
         assert label in compact_remaining_v1_work
 
 
-def test_readme_native_probe_diagnostics_include_serving_environment_profile():
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_maintainer_reference_native_probe_diagnostics_include_serving_environment_profile():
+    text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     serving_handoff = _markdown_section(text, "Serving Engine Handoff")
     compact_serving_handoff = " ".join(serving_handoff.split())
 
@@ -3572,8 +3688,10 @@ def test_readme_native_probe_diagnostics_include_serving_environment_profile():
     assert "before native block-manager calls" in compact_serving_handoff
 
 
-def test_readme_workflow_api_shows_single_text_document_helper():
-    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+def test_maintainer_reference_workflow_api_shows_single_text_document_helper():
+    text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     storage_backends = _markdown_section(text, "Storage Backends")
     workflow_api = _markdown_section(text, "Workflow API")
 
@@ -3591,7 +3709,7 @@ def test_readme_workflow_api_shows_single_text_document_helper():
     assert 'document_id="doc-a"' in workflow_api
 
 
-def test_pull_request_template_captures_traceability_and_review_gates():
+def test_pull_request_template_is_public_contributor_friendly():
     text = (REPO_ROOT / ".github" / "pull_request_template.md").read_text(encoding="utf-8")
 
     for required in (
@@ -3600,15 +3718,15 @@ def test_pull_request_template_captures_traceability_and_review_gates():
         "# Scope",
         "Name the touched boundaries",
         "# Verification",
-        "## Refactor Skill Evidence",
-        "## GPT-5.5 Review Evidence",
-        "Refactor skill",
-        "GPT-5.5 review",
+        "# Contributor Checklist",
+        "# Maintainer Notes",
         "Every new folder has a README or package docstring",
         "no proprietary scheduler or custom solver",
         "no-cache prefill baseline",
     ):
         assert required in text
+    assert "Refactor Skill Evidence" not in text
+    assert "GPT-5.5 Review Evidence" not in text
 
 
 def test_github_main_branch_protection_payload_requires_pr_review_and_ci():
@@ -3642,7 +3760,9 @@ def test_github_docs_explain_branch_protection_application_and_plan_limit():
 
     assert "not the Cachet project front page" in compact_text
     assert "[`README.md`](../README.md)" in text
-    assert "product overview, quickstart, benchmark status, and repository map" in compact_text
+    assert "product overview, install instructions, local quickstart, and next-step links" in compact_text
+    assert "public contributor-friendly PR description" in compact_text
+    assert "../docs/release-ops/" in text
     assert "`main-branch-protection.json`" in text
     assert "/branches/main/protection" in text
     assert "--data @.github/main-branch-protection.json" in text

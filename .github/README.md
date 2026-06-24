@@ -2,7 +2,7 @@
 
 You are viewing the `.github/` metadata folder, not the Cachet project front
 page. Start at the root [`README.md`](../README.md) for the product overview,
-quickstart, benchmark status, and repository map.
+install instructions, local quickstart, and next-step links.
 
 This folder contains repository-level contribution automation and templates.
 
@@ -11,9 +11,9 @@ This folder contains repository-level contribution automation and templates.
   force-pushes, and branch deletion are blocked, pull-request review is
   required, stale approvals are dismissed, conversations must be resolved, and
   the CI `Test and build` check must pass against an up-to-date branch.
-- `pull_request_template.md` captures the required PR description, Refactor
-  skill evidence, GPT-5.5 review evidence, and test or benchmark evidence for
-  each logical development slice.
+- `pull_request_template.md` captures a public contributor-friendly PR
+  description, scope, verification notes, and safety checklist. Maintainer-only
+  release gates live in `../docs/release-ops/`.
 - `workflows/ci.yml` runs the automated pull-request quality gate and repeats
   the same safety check on pushes to `main`.
 

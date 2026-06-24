@@ -2,7 +2,7 @@
 
 This folder is the human-facing front door for Cachet benchmark results. Use it
 when you want the current Databricks benchmark answer without reading
-`pr-evidence/` or local `databricks-runs/` scratch output.
+`docs/release-ops/pr-evidence/` or local `databricks-runs/` scratch output.
 
 ## Read These First
 
@@ -23,9 +23,9 @@ beside each report. Those JSON records are the durable benchmark evidence to
 cite and audit.
 
 Use [`../databricks/CURRENT.md`](../databricks/CURRENT.md) when you need the
-Databricks release-source mirror and run-status snapshot. Use `pr-evidence/`
-only for PR validation and release-audit traceability, not as the benchmark
-report surface.
+Databricks release-source mirror and run-status snapshot. Use
+`docs/release-ops/pr-evidence/` only for PR validation and release-audit
+traceability, not as the benchmark report surface.
 
 Do not commit Databricks tokens, raw Jobs API responses, package wheels, logs,
 generated datasets, handoff payload blobs, or local scratch output here.

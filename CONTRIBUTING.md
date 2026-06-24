@@ -1,43 +1,86 @@
 # Contributing
 
-Document KV Cache is developed through small, reviewable pull requests. Direct
-pushes to `main` are not part of the project workflow. Before release
-publication, repository maintainers must apply `.github/main-branch-protection.json`
-to the `main` branch so GitHub requires pull requests, one approving review,
-resolved conversations, an up-to-date `Test and build` status check, linear
-history, and blocks force-pushes or branch deletion. If GitHub rejects that
-payload for a private repository, make the repository public or upgrade the
-owner plan before treating the release workflow as enforced.
+Thanks for helping improve Cachet. You do not need Databricks, GPUs, internal
+release evidence, or maintainer-only review tooling to open useful issues or
+pull requests.
 
-Each PR should include:
+## Good First Contributions
 
-- what changed and why it is needed
-- the affected package, storage, serving, benchmark, or documentation boundary
-- test and benchmark evidence, or a clear note when a benchmark is not relevant
-- confirmation that the Refactor skill was applied during the slice
-- GPT-5.5 review findings and the follow-up fixes, or an explicit clean review
+Good first contributions include:
 
-Use `document-kv-pr-evidence` to emit a JSON sidecar that captures the same
-traceability fields and fails closed when the Refactor skill or GPT-5.5 review
-gate is missing.
+- documentation fixes;
+- runnable examples;
+- clearer error messages;
+- small validation tests;
+- issue reproduction cases;
+- improvements to the local quickstart.
 
-Keep PRs focused. A useful slice should move one architectural requirement
-forward without mixing unrelated storage, serving, benchmark, and documentation
-changes. When a change touches runtime cache layout, model metadata, storage
-contracts, or public imports, include focused regression tests before broader
-suite verification.
+See [`ROADMAP.md`](ROADMAP.md) for current project direction.
 
-Serving changes must integrate with established engines such as vLLM or SGLang.
-Do not add a proprietary request scheduler, decoder, or custom serving solver to
-this package; keep engine-specific code at the handoff/adapter boundary.
+## Open An Issue
 
-Credentials must stay outside the repository. Use environment variables or the
+Use the GitHub issue templates for bugs, feature requests, or good-first-issue
+ideas. Please include:
+
+- what you tried;
+- what happened;
+- what you expected;
+- your Cachet and Python versions;
+- the smallest sanitized example that reproduces the issue.
+
+Do not paste credentials, tokens, private data, raw service responses, or
+customer documents into issues.
+
+## Open A Pull Request
+
+1. Fork the repository and create a branch.
+2. Keep the change focused.
+3. Add or update tests when behavior changes.
+4. Run the narrowest useful tests locally.
+5. Explain what changed and why in the PR description.
+
+Useful local checks:
+
+```bash
+python -m cachet.quickstart_local
+python examples/quickstart_local.py
+poetry run pytest tests/test_project_governance.py -q
+poetry run pytest -q
+poetry check --lock
+```
+
+If your change touches only docs, examples, or packaging, say so in the PR and
+list the checks you ran.
+
+## Serving Changes
+
+Serving changes should integrate with established engines such as vLLM or
+SGLang. Cachet should stay at the document KV preparation and handoff boundary;
+it should not grow its own scheduler, decoder, or custom serving engine.
+
+## Secrets And Generated Files
+
+Keep credentials outside the repository. Use environment variables or the
 target platform's secret store for Databricks tokens, OpenAI keys, private keys,
-and service credentials. Do not paste secrets into benchmark records, release
-evidence, PR evidence, notebooks, or generated Databricks runner scripts. Local
-`.env*`, PEM/key files, and logs are ignored so developers can test locally
-without making secret-bearing files easy to commit.
+and service credentials.
 
-Generated artifacts such as wheels, caches, and local benchmark outputs should
-not be committed. The source tree should remain reproducible from `pyproject.toml`
-and the documented benchmark/job commands.
+Do not commit:
+
+- `.env` files;
+- PEM/key files;
+- logs;
+- generated wheels;
+- raw benchmark outputs;
+- raw service responses;
+- local Databricks run payloads.
+
+Local scratch output belongs under ignored directories such as
+`databricks-runs/`.
+
+## Maintainer-Only Release Gates
+
+Maintainers run additional release checks, including PR traceability sidecars,
+repository hygiene, GitHub governance, release-bundle validation, and benchmark
+publication. Those gates are documented under
+[`docs/release-ops/`](docs/release-ops/README.md). External contributors do not
+need to produce those artifacts before opening a PR.

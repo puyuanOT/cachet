@@ -2,7 +2,8 @@
 
 This folder tracks the first successful Databricks prepared SGLang V1 live
 benchmark run for Cachet. It is standalone benchmark evidence, not
-`pr-evidence/` and not ignored local `databricks-runs/` scratch output.
+`docs/release-ops/pr-evidence/` and not ignored local `databricks-runs/`
+scratch output.
 
 | Field | Value |
 | --- | --- |

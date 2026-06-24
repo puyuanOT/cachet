@@ -17,6 +17,8 @@ from document_kv_cache.dependency_freshness import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CURRENT_EVIDENCE_PATH = (
     REPO_ROOT
+    / "docs"
+    / "release-ops"
     / "evidence"
     / "dependency-freshness"
     / "current"
