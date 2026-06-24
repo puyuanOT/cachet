@@ -1118,6 +1118,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_canary_after_cache_hit_quality_failure_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1246,6 +1252,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
+    sglang_canary_after_cache_hit_quality_failure_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1339,10 +1353,11 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "647563677081667" in sglang_readme
     assert "585529688094161" in sglang_readme
     assert "672927118707206" in sglang_readme
+    assert "419314952937106" in sglang_readme
     assert "suffix-only runtime prompt text" in compact_sglang_readme
     assert "zero cached tokens" in compact_sglang_readme
     assert "partial page-binding blocker" in compact_sglang_readme
-    assert "positive 175-token external cache hit" in root_readme
+    assert "full 175-token external cache hit" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit" in sglang_readme
@@ -1365,6 +1380,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
         in sglang_readme
     )
+    assert (
+        "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
+        in sglang_readme
+    )
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
     assert "partial page-binding blocker" in compact_snapshot
@@ -1378,6 +1397,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "deterministic no-thinking cache-hit quality failure" in current_databricks_snapshot
     assert "Triton/PyTorch deterministic cache-hit quality failure" in current_databricks_snapshot
     assert "minimal no-thinking cache-hit quality failure" in current_databricks_snapshot
+    assert "canary-after-cache-hit quality failure" in current_databricks_snapshot
+    assert "post-live-check canary quality gates" in current_databricks_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1471,6 +1492,19 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     )
     assert "175 cached tokens out of 205 prompt tokens" in (
         sglang_minimal_no_thinking_cache_hit_quality_failure_readme
+    )
+    assert "Canary After Cache Hit With Quality Failure" in (
+        sglang_canary_after_cache_hit_quality_failure_readme
+    )
+    assert "PR #486" in sglang_canary_after_cache_hit_quality_failure_readme
+    assert "The canary now runs" in (
+        sglang_canary_after_cache_hit_quality_failure_readme
+    )
+    assert "175 cached tokens out of 205 prompt tokens" in (
+        sglang_canary_after_cache_hit_quality_failure_readme
+    )
+    assert "post-live-check model-quality canary failed" in (
+        sglang_canary_after_cache_hit_quality_failure_readme
     )
     assert sglang_attach_hash_tracking_failed_run["failure_type"] == (
         "sglang_attach_time_hash_tracking_gate"
@@ -1864,6 +1898,81 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "new_tokens": 30,
         "total_prompt_tokens": 205,
     }
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "record_type"
+    ] == "cachet.benchmark_failed_databricks_smoke.v1"
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "benchmark_result"
+    ] == "not_published"
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "failure_type"
+    ] == "sglang_live_quality_failure_with_post_live_check_canary_after_full_cache_hit"
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "cachet_commit"
+    ] == "16a8085"
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "databricks_run"
+    ]["run_id"] == 419314952937106
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run["task"][
+        "run_id"
+    ] == 42608288205489
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "package_wheel"
+    ]["sha256"] == "de79f5c8b91b333c4279b47ee85676f42ead3f4db4a317820632216384a93d5c"
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "integration_checks"
+    ]["document_kv_hicache_provider_ok"] is True
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "integration_checks"
+    ]["live_check_extra_body"] == {
+        "chat_template_kwargs": {
+            "enable_thinking": False,
+            "thinking": False,
+        },
+        "reasoning_effort": "none",
+    }
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "live_handoff_generation"
+    ]["cache_prefix_tokens"] == 175
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "sglang_cache_hit_validation"
+    ] == {
+        "cache_request_cached_tokens": 175,
+        "cache_request_prefill_index": 2,
+        "cache_request_prompt_match_field": "total_prompt_tokens",
+        "cache_request_prompt_tokens": 205,
+        "issue": None,
+        "minimum_cached_tokens": 175,
+        "ok": True,
+    }
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "server_prefill_token_counts"
+    ][2] == {
+        "cached_tokens": 175,
+        "classification": "cache_arm_external_handoff",
+        "new_tokens": 30,
+        "total_prompt_tokens": 205,
+    }
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
+        "server_prefill_token_counts"
+    ][4] == {
+        "cached_tokens": 6,
+        "classification": "model_quality_canary_after_live_checks",
+        "new_tokens": 30,
+        "total_prompt_tokens": 36,
+    }
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run["smoke"][
+        "model_quality_canary_ok"
+    ] is False
+    assert sglang_canary_after_cache_hit_quality_failure_failed_run["request_shape"][
+        "cache_kv_transfer_param_keys"
+    ] == [
+        "document_kv.handoff_json",
+        "document_kv.payload_uri",
+        "document_kv.prompt_text_mode",
+        "document_kv.request_id",
+        "document_kv.sglang_hicache_page_keys",
+    ]
     assert sglang_failed_run == {
         "benchmark_result": "not_published",
         "blocker": (
@@ -2312,6 +2421,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/failed_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
