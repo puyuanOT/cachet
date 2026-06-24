@@ -2944,6 +2944,7 @@ def sglang_cache_hit_validation_record(
             "minimum_cached_tokens": minimum_cached_tokens,
             "cache_request_prefill_index": None,
             "cache_request_cached_tokens": None,
+            "cache_request_match_reason": None,
             "issue": "SGLang server log missing; cannot verify cache-arm cached tokens",
         }
     try:
@@ -2961,6 +2962,7 @@ def sglang_cache_hit_validation_record(
             "minimum_cached_tokens": minimum_cached_tokens,
             "cache_request_prefill_index": None,
             "cache_request_cached_tokens": None,
+            "cache_request_match_reason": None,
             "issue": "SGLang server log unreadable; cannot verify cache-arm cached tokens",
         }
     prefill_counts = sglang_prefill_token_counts(log_text)
@@ -2971,6 +2973,27 @@ def sglang_cache_hit_validation_record(
         match_field=cache_prompt_match_field,
         start_index=cache_request_prefill_start_index,
     )
+    cache_request_match_reason = (
+        "prompt_tokens" if cache_request_prefill_index is not None else None
+    )
+    if (
+        cache_request_prefill_index is None
+        and cache_request_prompt_tokens is not None
+    ):
+        cache_request_prefill_index = (
+            _cache_request_prefill_index_by_minimum_cached_tokens(
+                prefill_counts,
+                cache_request_prompt_tokens=cache_request_prompt_tokens,
+                match_field=cache_prompt_match_field,
+                minimum_cached_tokens=minimum_cached_tokens,
+                start_index=cache_request_prefill_start_index,
+            )
+        )
+        cache_request_match_reason = (
+            "minimum_cached_tokens"
+            if cache_request_prefill_index is not None
+            else None
+        )
     cache_request_cached_tokens = (
         prefill_counts[cache_request_prefill_index]["cached_tokens"]
         if cache_request_prefill_index is not None
@@ -3005,6 +3028,7 @@ def sglang_cache_hit_validation_record(
         "minimum_cached_tokens": minimum_cached_tokens,
         "cache_request_prefill_index": cache_request_prefill_index,
         "cache_request_cached_tokens": cache_request_cached_tokens,
+        "cache_request_match_reason": cache_request_match_reason,
         "issue": issue,
     }
 
@@ -3042,6 +3066,25 @@ def _cache_request_prefill_index(
         return None
     for index, row in enumerate(prefill_counts[start_index:], start=start_index):
         if row[match_field] == cache_request_prompt_tokens:
+            return index
+    return None
+
+
+def _cache_request_prefill_index_by_minimum_cached_tokens(
+    prefill_counts: Sequence[Mapping[str, int]],
+    *,
+    cache_request_prompt_tokens: int | None,
+    match_field: str,
+    minimum_cached_tokens: int | None,
+    start_index: int,
+) -> int | None:
+    if cache_request_prompt_tokens is None or minimum_cached_tokens is None:
+        return None
+    for index, row in enumerate(prefill_counts[start_index:], start=start_index):
+        if (
+            row["cached_tokens"] >= minimum_cached_tokens
+            and row[match_field] >= cache_request_prompt_tokens
+        ):
             return index
     return None
 
