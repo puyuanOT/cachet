@@ -20,10 +20,12 @@ inspect `pr-evidence/` or ignored local `databricks-runs/` output.
 
 ## Scope
 
-The latency and quality results in this snapshot are vLLM benchmark runs. SGLang
-currently has provider-backed native HiCache probe and connector-action
-evidence in this benchmark tree, plus a successful generated-handoff live smoke
-tracked at
+The full release latency and quality results in this snapshot are vLLM
+benchmark runs. SGLang currently has provider-backed native HiCache probe and
+connector-action evidence in this benchmark tree, plus a successful synthetic
+live benchmark tracked at
+[`../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/`](../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/)
+and a successful generated-handoff live smoke tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/).
 Earlier failed generated-handoff live smoke attempts remain tracked under
 [`../sglang/2026-06-23-g6-l4-live-handoff-smoke/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke/)
@@ -61,14 +63,13 @@ the canary-after-cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/),
 and the canary-flush cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/).
-It does not yet have a published live SGLang latency/throughput benchmark
-suite. The successful smoke validates decode-time prefix binding with Cachet
-handoffs, hydrates matching generated page-key chunks, records a positive
-cache-arm cached-token validation covering the generated handoff prefix, passes
-the live baseline and cache-arm quality gates, and passes the post-flush
-model-quality canary. Treat SGLang latency and throughput evidence as pending
-until a multi-measurement SGLang benchmark record is produced with the same
-schema used by the vLLM report.
+The synthetic live benchmark validates decode-time prefix binding with Cachet
+handoffs, hydrates matching generated page-key chunks, records positive
+cache-arm cached-token validation covering the generated handoff prefix across
+two repeats, keeps a post-flush model-quality canary, and preserves live
+quality. It did not show a speedup on the tiny synthetic prompt. Treat full
+SGLang latency and throughput evidence as pending until a multi-dataset SGLang
+benchmark record covers the V1 release suite.
 
 ## V1 Latency And Quality
 
@@ -80,6 +81,16 @@ schema used by the vLLM report.
 The g5/A10G benchmark is compatibility evidence only. It is bundled through the
 `compatibility_benchmark` and `compatibility_databricks_run_status` roles and
 does not replace the strict AWS g6/L4 publication target.
+
+## SGLang Synthetic Live Benchmark
+
+| Target | Folder | Databricks run | Measurements | TTFT speedup | Time-to-completion speedup | Quality delta |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| Synthetic g6/L4 | [`../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success`](../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/) | `238535418152934` | 4 | 0.875x | 0.926x | 0.0 |
+
+This SGLang artifact is scoped to one synthetic NIAH live prompt. It validates
+two Cachet-backed cache repeats with 175 cached tokens each, but it does not
+replace the full V1 release benchmark suite.
 
 ## Storage And Native Engine Evidence
 

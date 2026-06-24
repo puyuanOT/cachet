@@ -1136,6 +1136,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_live_benchmark_success_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-benchmark-synthetic-niah-success"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1288,6 +1294,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             / "success_run.json"
         ).read_text(encoding="utf-8")
     )
+    sglang_live_benchmark_success_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-benchmark-synthetic-niah-success"
+            / "success_run.json"
+        ).read_text(encoding="utf-8")
+    )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1298,6 +1312,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_sglang_readme = " ".join(sglang_readme.split())
     compact_storage_readme = " ".join(storage_readme.split())
     compact_native_engine_readme = " ".join(native_engine_readme.split())
+    compact_sglang_live_benchmark_success_readme = " ".join(
+        sglang_live_benchmark_success_readme.split()
+    )
     compact_databricks_readme = " ".join(databricks_readme.split())
     compact_matrix_text = " ".join(matrix_text.split())
     compact_project_readme = " ".join(project_readme.split())
@@ -1342,18 +1359,23 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`document_kv_cache`" in current_databricks_snapshot
     assert "does not replace the strict AWS g6/L4 publication target" in current_databricks_snapshot
     assert "instead of a package-owned serving scheduler" in current_databricks_snapshot
-    assert "The latency and quality results in this snapshot are vLLM benchmark runs" in current_databricks_snapshot
+    assert (
+        "The full release latency and quality results in this snapshot are vLLM "
+        "benchmark runs"
+    ) in compact_snapshot
     assert "successful generated-handoff live smoke" in compact_snapshot
-    assert "does not yet have a published live SGLang latency/throughput benchmark suite" in compact_snapshot
-    assert "successful smoke validates decode-time prefix binding" in compact_snapshot
+    assert "Treat full SGLang latency and throughput evidence as pending" in compact_snapshot
+    assert "synthetic live benchmark validates decode-time prefix binding" in compact_snapshot
     assert "They are not latency, throughput, or quality benchmark measurements" in compact_snapshot
     assert "Folders with `v1_benchmark.json` are latency and quality benchmark reports" in root_readme
+    assert "SGLang `sglang-live-benchmark.json` files are synthetic live endpoint" in root_readme
     assert "native-engine probe folder is integration evidence only" in compact_root_readme
-    assert "Only folders containing `v1_benchmark.json` should be cited" in databricks_readme
-    assert "does not publish SGLang latency, throughput, or quality benchmark results" in compact_databricks_readme
+    assert "Folders containing `v1_benchmark.json` are full V1 latency" in databricks_readme
+    assert "cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint" in databricks_readme
+    assert "do not replace full V1 benchmark reports" in compact_databricks_readme
     assert "vLLM `document_kv.benchmark_run.v1` evidence" in matrix_text
-    assert "not live SGLang latency or quality benchmark results" in compact_matrix_text
-    assert "Validate live SGLang decode-time prefix binding" in compact_matrix_text
+    assert "synthetic live `cachet.sglang_live_benchmark.v1` evidence" in compact_matrix_text
+    assert "Publish full SGLang latency/throughput evidence only after" in compact_matrix_text
     assert "Release-bundle manifests are regenerated from these benchmark artifacts" in compact_snapshot
     assert "vLLM latency and quality benchmark results" in compact_vllm_readme
     assert "872615985402004" in vllm_readme
@@ -1361,8 +1383,16 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "strict g6/L4 release target" in vllm_readme
     assert "Do not use `../../pr-evidence/` as the benchmark report surface" in vllm_readme
     assert "successful live SGLang handoff smoke on g6/L4" in compact_sglang_readme
-    assert "not yet a published SGLang latency or throughput benchmark suite" in compact_sglang_readme
+    assert "synthetic live SGLang benchmark artifact" in compact_sglang_readme
+    assert "published full SGLang latency or throughput benchmark suite" in compact_sglang_readme
     assert "Native HiCache integration evidence" in sglang_readme
+    assert "Latest synthetic live benchmark" in sglang_readme
+    assert "238535418152934" in sglang_readme
+    assert "cachet.sglang_live_benchmark.v1" in sglang_readme
+    assert "0.875x" in sglang_readme
+    assert "0.926x" in sglang_readme
+    assert "compact sanitized snapshot" in compact_sglang_readme
+    assert "per-repeat flush records" not in sglang_readme
     assert "Failed live handoff smoke" in sglang_readme
     assert "Latest successful live handoff smoke" in sglang_readme
     assert "134006212072875" in sglang_readme
@@ -1421,6 +1451,13 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success"
         in sglang_readme
     )
+    assert (
+        "2026-06-24-g6-l4-live-benchmark-synthetic-niah-success"
+        in sglang_readme
+    )
+    assert "Synthetic g6/L4" in current_databricks_snapshot
+    assert "238535418152934" in current_databricks_snapshot
+    assert "175 cached tokens each" in current_databricks_snapshot
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "baseline-isolated-success" in current_databricks_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
@@ -2100,6 +2137,100 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     )
     assert "otkv7391" in sglang_baseline_isolated_success_readme
     assert "cachet-green" in sglang_baseline_isolated_success_readme
+    assert "SGLang g6/L4 Live Synthetic NIAH Benchmark" in (
+        sglang_live_benchmark_success_readme
+    )
+    assert "standalone benchmark evidence, not `pr-evidence/`" in (
+        compact_sglang_live_benchmark_success_readme
+    )
+    assert "not the full SGLang release benchmark suite" in (
+        sglang_live_benchmark_success_readme
+    )
+    assert "TTFT speedup `0.875x`" in sglang_live_benchmark_success_readme
+    assert "time-to-completion speedup `0.926x`" in (
+        sglang_live_benchmark_success_readme
+    )
+    assert "175 cached tokens" in sglang_live_benchmark_success_readme
+    assert "baseline p50 TTFT was `0.3029023165s`" in (
+        sglang_live_benchmark_success_readme
+    )
+    assert "Raw Databricks API responses" in compact_sglang_live_benchmark_success_readme
+    assert sglang_live_benchmark_success_run["record_type"] == (
+        "cachet.benchmark_successful_sglang_live_benchmark.v1"
+    )
+    assert sglang_live_benchmark_success_run["benchmark_result"] == (
+        "synthetic_live_benchmark_pass_no_speedup"
+    )
+    assert sglang_live_benchmark_success_run["cachet_commit"] == "eff801d"
+    assert sglang_live_benchmark_success_run["hardware_target"] == "aws-g6-l4"
+    assert sglang_live_benchmark_success_run["node_type"] == "g6.8xlarge"
+    assert sglang_live_benchmark_success_run["databricks_run"]["run_id"] == (
+        238535418152934
+    )
+    assert sglang_live_benchmark_success_run["databricks_run"]["result_state"] == (
+        "SUCCESS"
+    )
+    assert sglang_live_benchmark_success_run["databricks_run"]["succeeded"] is True
+    assert sglang_live_benchmark_success_run["task"]["run_id"] == 760304813051328
+    assert sglang_live_benchmark_success_run["package_wheel"]["sha256"] == (
+        "c30e1cc64ae58796df4b2973dbef78d6ad708e8168133fa28d4acb0ea4e2fa4e"
+    )
+    assert sglang_live_benchmark_success_run["integration_checks"][
+        "document_kv_request_metadata_bridge_ok"
+    ] is True
+    assert sglang_live_benchmark_success_run["integration_checks"][
+        "live_benchmark_repeats"
+    ] == 2
+    assert sglang_live_benchmark_success_run["live_handoff_generation"][
+        "cache_prefix_tokens"
+    ] == 175
+    assert sglang_live_benchmark_success_run["smoke"]["ok"] is True
+    assert sglang_live_benchmark_success_run["smoke"]["cache_hit_validation_ok"] is True
+    assert sglang_live_benchmark_success_run["smoke"]["cache_request_cached_tokens"] == 175
+    assert sglang_live_benchmark_success_run["live_benchmark"]["record_type"] == (
+        "cachet.sglang_live_benchmark.v1"
+    )
+    assert sglang_live_benchmark_success_run["live_benchmark"]["ok"] is True
+    assert sglang_live_benchmark_success_run["live_benchmark"]["issues"] == []
+    assert sglang_live_benchmark_success_run["live_benchmark"]["measurement_count"] == 4
+    assert sglang_live_benchmark_success_run["live_benchmark"]["suite"] == {
+        "datasets": ["niah"],
+        "examples": 1,
+        "release_v1_suite": False,
+        "repeats": 2,
+        "scope": "live_synthetic_niah",
+        "suite_id": "sglang-live-synthetic-niah",
+    }
+    assert sglang_live_benchmark_success_run["live_benchmark"]["comparisons"][0] == {
+        "answer_found_delta": 0.0,
+        "baseline_arm_id": "baseline_prefill",
+        "cache_arm_id": "document_kv_cache",
+        "dataset": "niah",
+        "exact_match_delta": 0.0,
+        "time_to_completion_speedup": 0.9257808239257902,
+        "ttft_speedup": 0.8745573213595708,
+    }
+    assert [
+        validation["cache_request_cached_tokens"]
+        for validation in sglang_live_benchmark_success_run["live_benchmark"][
+            "cache_hit_validations"
+        ]
+    ] == [175, 175]
+    assert all(
+        validation["ok"]
+        for validation in sglang_live_benchmark_success_run["live_benchmark"][
+            "cache_hit_validations"
+        ]
+    )
+    assert sglang_live_benchmark_success_run["interpretation"] == {
+        "answer_found_delta": 0.0,
+        "cache_hits_validated": True,
+        "exact_match_delta": 0.0,
+        "performance_result": "cache_arm_slower_on_tiny_synthetic_prompt",
+        "quality_passed": True,
+        "time_to_completion_speedup": 0.9257808239257902,
+        "ttft_speedup": 0.8745573213595708,
+    }
     assert (
         sglang_baseline_isolated_success_run["record_type"]
         == "cachet.benchmark_successful_databricks_smoke.v1"
@@ -2611,11 +2742,13 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/failed_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/README.md",
-            "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/failed_run.json",
-            "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/README.md",
-            "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/success_run.json",
-            "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/README.md",
-            "sglang/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/success_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/README.md",
+        "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/success_run.json",
+        "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/README.md",
+        "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
         "databricks/README.md",
