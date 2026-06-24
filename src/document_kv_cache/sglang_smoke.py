@@ -21,7 +21,11 @@ from typing import Any
 import urllib.error
 import urllib.request
 
-from document_kv_cache.benchmark_handoffs import load_benchmark_kv_chunk_generator
+from document_kv_cache.benchmark_handoffs import (
+    enrich_benchmark_jsonl_with_handoffs,
+    generate_benchmark_handoff_bundles,
+    load_benchmark_kv_chunk_generator,
+)
 from document_kv_cache.benchmark_runner import (
     BenchmarkEngine,
     BenchmarkEngineRequest,
@@ -231,6 +235,7 @@ __all__ = [
     "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
     "SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE",
     "SGLangLiveHandoffGenerationConfig",
+    "SGLangPreparedHandoffGenerationConfig",
     "SGLangSmokeBenchmarkConfig",
     "build_metadata",
     "build_sglang_quality_canary_request",
@@ -242,6 +247,7 @@ __all__ = [
     "install_document_kv_package",
     "install_sglang",
     "parse_args",
+    "prepare_generated_sglang_benchmark_handoffs",
     "prepare_generated_live_handoff",
     "prepared_sglang_benchmark_handoff_coverage_record",
     "validate_prepared_sglang_benchmark_handoffs",
@@ -310,6 +316,56 @@ class SGLangLiveHandoffGenerationConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class SGLangPreparedHandoffGenerationConfig:
+    """Optional generation settings for prepared SGLang benchmark handoffs."""
+
+    output_dir: Path
+    generator_factory: str = DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
+    dtype: str = "bfloat16"
+    align_bytes: int = 4096
+    page_size: int = DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+    timeout_seconds: float = 1800.0
+
+    def __post_init__(self) -> None:
+        if self.output_dir is None:
+            raise ValueError("benchmark_handoff_output_dir must be provided")
+        if (
+            not isinstance(self.generator_factory, str)
+            or not self.generator_factory.strip()
+        ):
+            raise ValueError("benchmark_handoff_generator_factory must be non-empty")
+        if not isinstance(self.dtype, str) or not self.dtype.strip():
+            raise ValueError("benchmark_handoff_dtype must be non-empty")
+        if (
+            isinstance(self.align_bytes, bool)
+            or not isinstance(self.align_bytes, int)
+            or self.align_bytes <= 0
+        ):
+            raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
+        if (
+            isinstance(self.page_size, bool)
+            or not isinstance(self.page_size, int)
+            or self.page_size <= 0
+        ):
+            raise ValueError("sglang_hicache_page_size must be a positive integer")
+        if self.timeout_seconds <= 0:
+            raise ValueError(
+                "benchmark_handoff_generation_timeout_seconds must be positive"
+            )
+        object.__setattr__(self, "output_dir", Path(self.output_dir))
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "generator_factory": self.generator_factory,
+            "output_dir": str(self.output_dir),
+            "dtype": self.dtype,
+            "align_bytes": self.align_bytes,
+            "sglang_hicache_page_size": self.page_size,
+            "timeout_seconds": self.timeout_seconds,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SGLangSmokeBenchmarkConfig:
     """Runtime configuration for a one-node Databricks SGLang live smoke."""
 
@@ -357,6 +413,7 @@ class SGLangSmokeBenchmarkConfig:
     request_id: str | None = None
     sglang_hicache_page_keys: Sequence[str] | None = None
     handoff_generation: SGLangLiveHandoffGenerationConfig | None = None
+    prepared_handoff_generation: SGLangPreparedHandoffGenerationConfig | None = None
     hicache_page_store_uri: str | None = None
     hicache_page_size: int | None = None
     hicache_ratio: float | None = None
@@ -515,6 +572,12 @@ class SGLangSmokeBenchmarkConfig:
             raise TypeError(
                 "handoff_generation must be a SGLangLiveHandoffGenerationConfig"
             )
+        if self.prepared_handoff_generation is not None and not isinstance(
+            self.prepared_handoff_generation, SGLangPreparedHandoffGenerationConfig
+        ):
+            raise TypeError(
+                "prepared_handoff_generation must be a SGLangPreparedHandoffGenerationConfig"
+            )
         if self.hicache_page_size is not None and (
             isinstance(self.hicache_page_size, bool)
             or not isinstance(self.hicache_page_size, int)
@@ -542,12 +605,24 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError(
                 "hicache_page_size must match live handoff generation page_size"
             )
+        if (
+            self.prepared_handoff_generation is not None
+            and self.hicache_page_size is not None
+            and self.hicache_page_size != self.prepared_handoff_generation.page_size
+        ):
+            raise ValueError(
+                "hicache_page_size must match prepared handoff generation page_size"
+            )
         if self.baseline_only:
             if self.live_benchmark_repeats:
                 raise ValueError("live_benchmark_repeats requires cache-arm SGLang smoke")
             if dataset_specs:
                 raise ValueError("dataset specs require cache-arm SGLang live benchmark")
-            if has_handoff_fields or self.handoff_generation is not None:
+            if (
+                has_handoff_fields
+                or self.handoff_generation is not None
+                or self.prepared_handoff_generation is not None
+            ):
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
             if dataset_specs:
@@ -557,6 +632,10 @@ class SGLangSmokeBenchmarkConfig:
                     raise ValueError(
                         "prepared SGLang benchmark datasets must not be combined with single live handoff fields"
                     )
+            elif self.prepared_handoff_generation is not None:
+                raise ValueError(
+                    "benchmark_handoff_generator_factory requires prepared dataset specs"
+                )
             elif self.handoff_generation is not None:
                 if has_handoff_fields:
                     raise ValueError(
@@ -578,11 +657,18 @@ class SGLangSmokeBenchmarkConfig:
         object.__setattr__(self, "live_check_extra_body", live_check_extra_body)
         if self.hicache_page_size is None:
             if dataset_specs:
-                object.__setattr__(
-                    self,
-                    "hicache_page_size",
-                    DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
-                )
+                if self.prepared_handoff_generation is not None:
+                    object.__setattr__(
+                        self,
+                        "hicache_page_size",
+                        self.prepared_handoff_generation.page_size,
+                    )
+                else:
+                    object.__setattr__(
+                        self,
+                        "hicache_page_size",
+                        DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE,
+                    )
             elif self.handoff_generation is not None:
                 object.__setattr__(
                     self, "hicache_page_size", self.handoff_generation.page_size
@@ -639,6 +725,10 @@ class SGLangSmokeBenchmarkConfig:
         return self.output_dir / "sglang-live-handoff-generation.json"
 
     @property
+    def prepared_handoff_generation_path(self) -> Path:
+        return self.output_dir / "prepared-sglang-handoff-generation.json"
+
+    @property
     def live_benchmark_output_path(self) -> Path:
         return self.output_dir / "sglang-live-benchmark.json"
 
@@ -680,6 +770,15 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     metadata.update(_metadata_from_import_probe(import_probe_record))
 
     dataset_paths = benchmark_dataset_paths(config)
+    dataset_paths = prepare_generated_sglang_benchmark_handoffs(config, dataset_paths)
+    if config.prepared_handoff_generation is not None:
+        config = replace(config, dataset_specs=_dataset_specs_from_paths(dataset_paths))
+        metadata["dataset_specs"] = list(config.dataset_specs)
+        metadata["generated_prepared_handoffs"] = True
+        metadata["prepared_handoff_generation_path"] = str(
+            config.prepared_handoff_generation_path
+        )
+        write_json(config.metadata_path, metadata)
     validate_prepared_sglang_benchmark_handoffs(config, dataset_paths)
 
     runtime_config = prepare_generated_live_handoff(config)
@@ -821,6 +920,17 @@ def build_metadata(
             else None
         ),
         "kv_transfer_params_transport": "custom_params",
+        "generates_prepared_handoffs": config.prepared_handoff_generation is not None,
+        "benchmark_handoff_generation": (
+            config.prepared_handoff_generation.to_metadata()
+            if config.prepared_handoff_generation is not None
+            else None
+        ),
+        "prepared_handoff_generation_path": (
+            str(config.prepared_handoff_generation_path)
+            if config.prepared_handoff_generation is not None
+            else None
+        ),
         "generates_live_handoff": config.handoff_generation is not None,
         "live_handoff_generation": (
             config.handoff_generation.to_metadata()
@@ -846,6 +956,13 @@ def benchmark_dataset_paths(config: SGLangSmokeBenchmarkConfig) -> dict[str, Pat
     if not config.dataset_specs:
         return {}
     return parse_dataset_specs(config.dataset_specs)
+
+
+def _dataset_specs_from_paths(dataset_paths: Mapping[str, Path]) -> tuple[str, ...]:
+    return tuple(
+        f"{dataset}={Path(dataset_paths[dataset])}"
+        for dataset in SUPPORTED_V1_DATASETS
+    )
 
 
 def parse_dataset_specs(dataset_specs: tuple[str, ...]) -> dict[str, Path]:
@@ -1151,6 +1268,260 @@ def sglang_live_kv_transfer_params(
         expected_backend=ServingBackend.SGLANG,
     )
     return params
+
+
+def prepare_generated_sglang_benchmark_handoffs(
+    config: SGLangSmokeBenchmarkConfig,
+    dataset_paths: Mapping[str, Path],
+) -> dict[str, Path]:
+    """Generate and attach Cachet handoffs for prepared SGLang benchmark rows."""
+
+    generation = config.prepared_handoff_generation
+    prepared_paths = {
+        str(dataset): Path(path) for dataset, path in dataset_paths.items()
+    }
+    if generation is None:
+        return prepared_paths
+    if config.venv_python.exists():
+        generated_paths, record = (
+            _generate_prepared_sglang_benchmark_handoff_inputs_in_subprocess(
+                config,
+                prepared_paths,
+                generation,
+            )
+        )
+        write_json(config.prepared_handoff_generation_path, record)
+        return generated_paths
+    generation.output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        generated_paths, record = _generate_prepared_sglang_benchmark_handoff_inputs(
+            config,
+            prepared_paths,
+            generation,
+        )
+    finally:
+        release_live_handoff_generation_resources()
+    write_json(config.prepared_handoff_generation_path, record)
+    return generated_paths
+
+
+def _generate_prepared_sglang_benchmark_handoff_inputs_in_subprocess(
+    config: SGLangSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    generation: SGLangPreparedHandoffGenerationConfig,
+) -> tuple[dict[str, Path], dict[str, object]]:
+    input_path = (
+        config.local_dir / "prepared-sglang-handoff-generation-worker-input.json"
+    )
+    output_path = (
+        config.local_dir / "prepared-sglang-handoff-generation-worker-output.json"
+    )
+    payload: dict[str, object] = {
+        "benchmark_id": config.benchmark_id,
+        "output_dir": str(config.output_dir),
+        "local_root": str(config.local_root),
+        "hardware_target": config.hardware_target,
+        "dataset_paths": {
+            dataset: str(path) for dataset, path in dataset_paths.items()
+        },
+        "handoff_generation": generation.to_metadata(),
+    }
+    write_json(input_path, payload)
+    code = """
+import json
+import sys
+from pathlib import Path
+
+from document_kv_cache.sglang_smoke import (
+    SGLangPreparedHandoffGenerationConfig,
+    SGLangSmokeBenchmarkConfig,
+    _dataset_specs_from_paths,
+    _generate_prepared_sglang_benchmark_handoff_inputs,
+    release_live_handoff_generation_resources,
+    write_json,
+)
+
+input_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+payload = json.loads(input_path.read_text(encoding="utf-8"))
+generation_payload = payload["handoff_generation"]
+generation = SGLangPreparedHandoffGenerationConfig(
+    output_dir=Path(generation_payload["output_dir"]),
+    generator_factory=generation_payload["generator_factory"],
+    dtype=generation_payload["dtype"],
+    align_bytes=int(generation_payload["align_bytes"]),
+    page_size=int(generation_payload["sglang_hicache_page_size"]),
+    timeout_seconds=float(generation_payload["timeout_seconds"]),
+)
+dataset_paths = {
+    dataset: Path(path)
+    for dataset, path in payload["dataset_paths"].items()
+}
+config = SGLangSmokeBenchmarkConfig(
+    benchmark_id=payload["benchmark_id"],
+    output_dir=Path(payload["output_dir"]),
+    local_root=Path(payload["local_root"]),
+    hardware_target=payload["hardware_target"],
+    dataset_specs=_dataset_specs_from_paths(dataset_paths),
+    live_benchmark_repeats=1,
+    prepared_handoff_generation=generation,
+    hicache_page_size=generation.page_size,
+)
+try:
+    generated_paths, record = _generate_prepared_sglang_benchmark_handoff_inputs(
+        config,
+        dataset_paths,
+        generation,
+    )
+finally:
+    release_live_handoff_generation_resources()
+record["generator_python"] = sys.executable
+write_json(
+    output_path,
+    {
+        "generated_paths": {
+            dataset: str(path) for dataset, path in generated_paths.items()
+        },
+        "record": record,
+    },
+)
+"""
+    argv = [
+        str(config.venv_python),
+        "-c",
+        code,
+        str(input_path),
+        str(output_path),
+    ]
+    print(
+        "+",
+        " ".join(
+            [argv[0], "-c", "<prepared SGLang handoff generation>", *argv[3:]]
+        ),
+        flush=True,
+    )
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=generation.timeout_seconds,
+            env=server_env(config),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "prepared SGLang handoff generation timed out after "
+            f"{generation.timeout_seconds:.1f}s; "
+            f"stdout_tail={tail_text(exc.stdout)!r}; stderr_tail={tail_text(exc.stderr)!r}"
+        ) from exc
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "prepared SGLang handoff generation failed with return code "
+            f"{completed.returncode}; stdout_tail={tail_text(completed.stdout)!r}; "
+            f"stderr_tail={tail_text(completed.stderr)!r}"
+        )
+    if not output_path.exists():
+        raise RuntimeError(
+            f"prepared SGLang handoff generation did not write {output_path}"
+        )
+    result = json.loads(output_path.read_text(encoding="utf-8"))
+    generated_paths_payload = result.get("generated_paths")
+    record = result.get("record")
+    if not isinstance(generated_paths_payload, dict) or not isinstance(record, dict):
+        raise RuntimeError(
+            f"prepared SGLang handoff generation wrote invalid result {output_path}"
+        )
+    if record.get("ok") is not True:
+        raise RuntimeError(
+            "prepared SGLang handoff generation worker result was not ok in "
+            f"{output_path}"
+        )
+    if set(generated_paths_payload) != set(SUPPORTED_V1_DATASETS):
+        raise RuntimeError(
+            "prepared SGLang handoff generation worker result must include exactly "
+            f"{sorted(SUPPORTED_V1_DATASETS)!r}; got "
+            f"{sorted(str(dataset) for dataset in generated_paths_payload)!r}"
+        )
+    generated_paths = {
+        str(dataset): Path(str(path))
+        for dataset, path in generated_paths_payload.items()
+    }
+    for dataset, path in generated_paths.items():
+        if not str(path):
+            raise RuntimeError(
+                "prepared SGLang handoff generation worker returned empty path "
+                f"for {dataset}"
+            )
+        if not path.exists():
+            raise RuntimeError(
+                "prepared SGLang handoff generation worker output for "
+                f"{dataset} does not exist: {path}"
+            )
+    return generated_paths, record
+
+
+def _generate_prepared_sglang_benchmark_handoff_inputs(
+    config: SGLangSmokeBenchmarkConfig,
+    dataset_paths: Mapping[str, Path],
+    generation: SGLangPreparedHandoffGenerationConfig,
+) -> tuple[dict[str, Path], dict[str, object]]:
+    generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
+    layout = layout_for_model(
+        CACHET_MODEL_ID,
+        dtype=generation.dtype,
+        block_size=generation.page_size,
+    )
+    generated_paths: dict[str, Path] = {}
+    dataset_records: dict[str, dict[str, object]] = {}
+    for dataset in SUPPORTED_V1_DATASETS:
+        input_jsonl = Path(dataset_paths[dataset])
+        dataset_output_dir = generation.output_dir / dataset
+        manifest_json = generation.output_dir / f"{dataset}-manifest.json"
+        output_jsonl = generation.output_dir / f"{dataset}.handoffs.jsonl"
+        result = generate_benchmark_handoff_bundles(
+            input_jsonl,
+            output_dir=dataset_output_dir,
+            generator=generator,
+            layout=layout,
+            dataset=dataset,
+            backend=ServingBackend.SGLANG,
+            manifest_json=manifest_json,
+            align_bytes=generation.align_bytes,
+            sglang_hicache_page_size=generation.page_size,
+        )
+        enriched_rows = enrich_benchmark_jsonl_with_handoffs(
+            input_jsonl,
+            manifest_json,
+            output_jsonl,
+            dataset=dataset,
+            overwrite=True,
+        )
+        generated_paths[dataset] = output_jsonl
+        dataset_records[dataset] = {
+            "input_jsonl": str(input_jsonl),
+            "output_jsonl": str(output_jsonl),
+            "manifest_json": str(manifest_json),
+            "bundle_output_dir": str(dataset_output_dir),
+            "entries": len(result.manifest.entries),
+            "enriched_rows": enriched_rows,
+            "cache_refs": len(result.cache_refs),
+            "shard_uri": result.shard_uri,
+        }
+
+    record = {
+        "ok": True,
+        "dataset_source": "prepared",
+        "benchmark_id": config.benchmark_id,
+        "backend": ServingBackend.SGLANG.value,
+        "generator_factory": generation.generator_factory,
+        "output_dir": str(generation.output_dir),
+        "dtype": generation.dtype,
+        "align_bytes": generation.align_bytes,
+        "sglang_hicache_page_size": generation.page_size,
+        "datasets": dataset_records,
+    }
+    return generated_paths, record
 
 
 def prepare_generated_live_handoff(
@@ -3343,6 +3714,28 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument(
         "--live-handoff-generation-timeout-seconds", type=float, default=1800.0
     )
+    parser.add_argument(
+        "--benchmark-handoff-generator-factory",
+        help=(
+            "Generate Cachet handoff bundles for prepared SGLang datasets before "
+            "starting the server. Value must be a module:callable returning a "
+            "KVChunkGenerator."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-handoff-output-dir",
+        help=(
+            "Output directory for generated SGLang handoff bundles and enriched "
+            "JSONL. Defaults under --output-dir."
+        ),
+    )
+    parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
+    parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument(
+        "--benchmark-handoff-generation-timeout-seconds",
+        type=float,
+        default=1800.0,
+    )
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -3362,6 +3755,9 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
 
     output_dir = Path(args.output_dir)
     handoff_generation = _live_handoff_generation_from_args(args, output_dir)
+    prepared_handoff_generation = _prepared_handoff_generation_from_args(
+        args, output_dir
+    )
     live_check_extra_body = _json_object_option(
         args.live_check_extra_body_json, "--live-check-extra-body-json"
     )
@@ -3410,10 +3806,13 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
             "--sglang-hicache-page-keys-json",
         ),
         handoff_generation=handoff_generation,
+        prepared_handoff_generation=prepared_handoff_generation,
         hicache_page_store_uri=args.hicache_page_store_uri,
         hicache_page_size=(
             handoff_generation.page_size
             if handoff_generation is not None
+            else prepared_handoff_generation.page_size
+            if prepared_handoff_generation is not None
             else args.sglang_hicache_page_size
         ),
         hicache_ratio=args.hicache_ratio,
@@ -3512,8 +3911,40 @@ def _live_handoff_generation_from_args(
         generator_factory=args.live_handoff_generator_factory,
         dtype=args.live_handoff_dtype,
         align_bytes=args.live_handoff_align_bytes,
-        page_size=args.sglang_hicache_page_size or DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+        page_size=(
+            args.sglang_hicache_page_size
+            if args.sglang_hicache_page_size is not None
+            else DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+        ),
         timeout_seconds=args.live_handoff_generation_timeout_seconds,
+    )
+
+
+def _prepared_handoff_generation_from_args(
+    args: argparse.Namespace,
+    output_dir: Path,
+) -> SGLangPreparedHandoffGenerationConfig | None:
+    if args.benchmark_handoff_generator_factory is None:
+        if args.benchmark_handoff_output_dir is not None:
+            raise ValueError(
+                "--benchmark-handoff-output-dir requires "
+                "--benchmark-handoff-generator-factory"
+            )
+        return None
+    output = args.benchmark_handoff_output_dir or str(
+        output_dir / "generated-handoffs"
+    )
+    return SGLangPreparedHandoffGenerationConfig(
+        output_dir=Path(_cluster_file_path(output)),
+        generator_factory=args.benchmark_handoff_generator_factory,
+        dtype=args.benchmark_handoff_dtype,
+        align_bytes=args.benchmark_handoff_align_bytes,
+        page_size=(
+            args.sglang_hicache_page_size
+            if args.sglang_hicache_page_size is not None
+            else DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE
+        ),
+        timeout_seconds=args.benchmark_handoff_generation_timeout_seconds,
     )
 
 

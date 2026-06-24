@@ -155,6 +155,11 @@ class DatabricksSGLangSmokeJobConfig:
     live_handoff_align_bytes: int = 4096
     sglang_hicache_page_size: int | None = None
     live_handoff_generation_timeout_seconds: float = 1800.0
+    benchmark_handoff_generator_factory: str | None = None
+    benchmark_handoff_output_dir: str | None = None
+    benchmark_handoff_dtype: str = "bfloat16"
+    benchmark_handoff_align_bytes: int = 4096
+    benchmark_handoff_generation_timeout_seconds: float = 1800.0
     hicache_page_store_uri: str | None = None
     hicache_ratio: float | None = None
     hicache_size_gb: int | None = None
@@ -338,6 +343,40 @@ class DatabricksSGLangSmokeJobConfig:
             )
         if self.live_handoff_generation_timeout_seconds <= 0:
             raise ValueError("live_handoff_generation_timeout_seconds must be positive")
+        if self.benchmark_handoff_generator_factory is not None and (
+            not isinstance(self.benchmark_handoff_generator_factory, str)
+            or not self.benchmark_handoff_generator_factory.strip()
+        ):
+            raise ValueError("benchmark_handoff_generator_factory must be non-empty")
+        if (
+            self.benchmark_handoff_output_dir is not None
+            and not self.benchmark_handoff_output_dir
+        ):
+            raise ValueError(
+                "benchmark_handoff_output_dir must be non-empty when provided"
+            )
+        if (
+            self.benchmark_handoff_generator_factory is None
+            and self.benchmark_handoff_output_dir is not None
+        ):
+            raise ValueError(
+                "benchmark_handoff_output_dir requires benchmark_handoff_generator_factory"
+            )
+        if (
+            not isinstance(self.benchmark_handoff_dtype, str)
+            or not self.benchmark_handoff_dtype.strip()
+        ):
+            raise ValueError("benchmark_handoff_dtype must be non-empty")
+        if (
+            isinstance(self.benchmark_handoff_align_bytes, bool)
+            or not isinstance(self.benchmark_handoff_align_bytes, int)
+            or self.benchmark_handoff_align_bytes <= 0
+        ):
+            raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
+        if self.benchmark_handoff_generation_timeout_seconds <= 0:
+            raise ValueError(
+                "benchmark_handoff_generation_timeout_seconds must be positive"
+            )
         sglang_hicache_page_keys: tuple[str, ...] | None = None
         if self.sglang_hicache_page_keys_json is not None:
             sglang_hicache_page_keys = _json_string_array_from_text(
@@ -354,6 +393,9 @@ class DatabricksSGLangSmokeJobConfig:
                 self.sglang_hicache_page_keys_json,
             )
         )
+        generates_benchmark_handoffs = (
+            self.benchmark_handoff_generator_factory is not None
+        )
         if self.baseline_only:
             if self.live_benchmark_repeats:
                 raise ValueError("live_benchmark_repeats requires cache-arm SGLang smoke")
@@ -363,6 +405,7 @@ class DatabricksSGLangSmokeJobConfig:
                 has_handoff_fields
                 or self.generate_live_handoff
                 or self.live_handoff_output_dir is not None
+                or generates_benchmark_handoffs
             ):
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
@@ -377,6 +420,10 @@ class DatabricksSGLangSmokeJobConfig:
                     raise ValueError(
                         "prepared SGLang benchmark datasets must not be combined with single live handoff fields"
                     )
+            elif generates_benchmark_handoffs:
+                raise ValueError(
+                    "benchmark_handoff_generator_factory requires prepared dataset specs"
+                )
             elif self.generate_live_handoff:
                 if has_handoff_fields:
                     raise ValueError(
@@ -587,6 +634,26 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         parameters.extend(
             ["--sglang-hicache-page-keys-json", config.sglang_hicache_page_keys_json]
         )
+    if config.benchmark_handoff_generator_factory is not None:
+        parameters.extend(
+            [
+                "--benchmark-handoff-generator-factory",
+                config.benchmark_handoff_generator_factory,
+                "--benchmark-handoff-dtype",
+                config.benchmark_handoff_dtype,
+                "--benchmark-handoff-align-bytes",
+                str(config.benchmark_handoff_align_bytes),
+                "--benchmark-handoff-generation-timeout-seconds",
+                str(config.benchmark_handoff_generation_timeout_seconds),
+            ]
+        )
+        if config.benchmark_handoff_output_dir is not None:
+            parameters.extend(
+                [
+                    "--benchmark-handoff-output-dir",
+                    config.benchmark_handoff_output_dir,
+                ]
+            )
     if config.generate_live_handoff:
         parameters.append("--generate-live-handoff")
         if config.live_handoff_output_dir is not None:
@@ -757,6 +824,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--live-handoff-generation-timeout-seconds", type=float, default=1800.0
     )
+    parser.add_argument(
+        "--benchmark-handoff-generator-factory",
+        help=(
+            "Generate Cachet handoff bundles for prepared SGLang datasets inside "
+            "the cluster before starting the server."
+        ),
+    )
+    parser.add_argument("--benchmark-handoff-output-dir")
+    parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
+    parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument(
+        "--benchmark-handoff-generation-timeout-seconds",
+        type=float,
+        default=1800.0,
+    )
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -840,6 +922,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             live_handoff_align_bytes=args.live_handoff_align_bytes,
             sglang_hicache_page_size=args.sglang_hicache_page_size,
             live_handoff_generation_timeout_seconds=args.live_handoff_generation_timeout_seconds,
+            benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,
+            benchmark_handoff_output_dir=args.benchmark_handoff_output_dir,
+            benchmark_handoff_dtype=args.benchmark_handoff_dtype,
+            benchmark_handoff_align_bytes=args.benchmark_handoff_align_bytes,
+            benchmark_handoff_generation_timeout_seconds=(
+                args.benchmark_handoff_generation_timeout_seconds
+            ),
             hicache_page_store_uri=args.hicache_page_store_uri,
             hicache_ratio=args.hicache_ratio,
             hicache_size_gb=args.hicache_size_gb,

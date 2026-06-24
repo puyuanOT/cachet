@@ -1459,7 +1459,12 @@ bring-up, or pass `--handoff-json`/`--handoff-record-json` plus
 `--sglang-hicache-page-keys-json` when reusing an already validated SGLang
 handoff bundle. For prepared V1 datasets, the Databricks helper uses the same
 Qwen3 V1 page-size default (`16`) unless `--sglang-hicache-page-size` is passed
-explicitly.
+explicitly. Add `--benchmark-handoff-generator-factory` to a prepared SGLang
+dataset run when the cluster should first generate SGLang handoff bundles and
+enriched JSONL inside the isolated SGLang runtime; use
+`--benchmark-handoff-output-dir` to choose the durable artifact directory.
+Those generated prepared inputs are validated by the same page-size and page-key
+coverage gate before the SGLang server starts.
 
 After the real V1 benchmark, storage benchmark, and native vLLM/SGLang probe
 runs complete, validate the collected release artifacts:
