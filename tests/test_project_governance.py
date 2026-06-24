@@ -1040,6 +1040,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_partial_page_binding_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1061,6 +1067,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             benchmark_root
             / "sglang"
             / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
+    sglang_partial_page_binding_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
@@ -1143,13 +1157,17 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "201402713679607" in sglang_readme
     assert "13763847664432" in sglang_readme
     assert "476596508869043" in sglang_readme
+    assert "521023980659718" in sglang_readme
     assert "suffix-only runtime prompt text" in compact_sglang_readme
     assert "zero cached tokens" in compact_sglang_readme
+    assert "partial page-binding blocker" in compact_sglang_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
     assert "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit" in sglang_readme
+    assert "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding" in sglang_readme
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
+    assert "partial page-binding blocker" in compact_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1161,6 +1179,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Zero Cache-Hit Blocker" in sglang_zero_cache_hit_readme
     assert "cache_prompt_text_mode=logical" in sglang_zero_cache_hit_readme
     assert "ordinary SGLang prefix-cache reuse" in sglang_zero_cache_hit_readme
+    assert "Partial Page-Binding Blocker" in sglang_partial_page_binding_readme
+    assert "prefetch_threshold=1" in sglang_partial_page_binding_readme
+    assert "hicache_storage_prefetch_policy=wait_complete" in sglang_partial_page_binding_readme
+    assert "SGLang reported 128 cached tokens" in sglang_partial_page_binding_readme
     assert sglang_failed_run == {
         "benchmark_result": "not_published",
         "blocker": (
@@ -1379,6 +1401,99 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             "task_key": "document_kv_sglang_smoke",
         },
     }
+    assert sglang_partial_page_binding_failed_run["record_type"] == (
+        "cachet.benchmark_failed_databricks_smoke.v1"
+    )
+    assert sglang_partial_page_binding_failed_run["benchmark_result"] == "not_published"
+    assert sglang_partial_page_binding_failed_run["failure_type"] == (
+        "sglang_partial_hicache_page_binding"
+    )
+    assert sglang_partial_page_binding_failed_run["cachet_commit"] == "a0249d0"
+    assert sglang_partial_page_binding_failed_run["hardware_target"] == "aws-g6-l4"
+    assert sglang_partial_page_binding_failed_run["node_type"] == "g6.8xlarge"
+    assert sglang_partial_page_binding_failed_run["snapshot_date"] == "2026-06-24"
+    assert sglang_partial_page_binding_failed_run["databricks_run"]["run_id"] == 521023980659718
+    assert sglang_partial_page_binding_failed_run["databricks_run"]["result_state"] == "FAILED"
+    assert sglang_partial_page_binding_failed_run["task"]["run_id"] == 893706825011644
+    assert sglang_partial_page_binding_failed_run["integration_checks"] == {
+        "cache_prompt_text_mode": "logical",
+        "generated_live_handoff": True,
+        "generated_live_handoff_page_keys": 150,
+        "hicache_storage_prefetch_policy": "wait_complete",
+        "live_request_metadata_bridge_ok": True,
+        "prefetch_threshold": 1,
+        "sglang_import_probe_ok": True,
+    }
+    assert sglang_partial_page_binding_failed_run["live_handoff_generation"] == {
+        "backend": "sglang",
+        "cache_prefix_tokens": 150,
+        "ok": True,
+        "sglang_hicache_page_size": 1,
+    }
+    assert sglang_partial_page_binding_failed_run["server_hicache_binding_events"] == [
+        {
+            "binding_key_count": 128,
+            "expected_page_keys": 150,
+            "full_page_count": 150,
+            "hydrated_count": 128,
+            "key_count": 128,
+            "prefix_keys": 0,
+            "reason": "pages_hydrated",
+            "runtime_key_count": 128,
+        },
+        {
+            "binding_key_count": 0,
+            "expected_page_keys": 150,
+            "full_page_count": None,
+            "hydrated_count": 0,
+            "key_count": 46,
+            "prefix_keys": 0,
+            "reason": "binding_miss",
+            "runtime_key_count": 46,
+        },
+        {
+            "binding_key_count": 128,
+            "expected_page_keys": 150,
+            "full_page_count": 150,
+            "hydrated_count": 128,
+            "key_count": 128,
+            "operation": "batch_get_v1",
+            "prefix_keys": 0,
+            "reason": "pages_already_hydrated",
+            "runtime_key_count": 128,
+        },
+    ]
+    assert sglang_partial_page_binding_failed_run["server_prefill_token_counts"] == [
+        {
+            "cached_tokens": 0,
+            "classification": "server_warmup",
+            "new_tokens": 6,
+            "total_prompt_tokens": 6,
+        },
+        {
+            "cached_tokens": 0,
+            "classification": "server_warmup",
+            "new_tokens": 1,
+            "total_prompt_tokens": 1,
+        },
+        {
+            "cached_tokens": 128,
+            "classification": "cache_arm_external_partial_handoff",
+            "new_tokens": 46,
+            "total_prompt_tokens": 174,
+        },
+        {
+            "cached_tokens": 173,
+            "classification": "baseline_after_cache_arm_prefix_cache",
+            "new_tokens": 1,
+            "total_prompt_tokens": 174,
+        },
+    ]
+    assert sglang_partial_page_binding_failed_run["smoke"]["issues"] == [
+        "baseline live check failed",
+        "cache-arm live check failed",
+    ]
+    assert sglang_partial_page_binding_failed_run["smoke"]["cache_request_cached_tokens_from_server_log"] == 128
     assert "must not be cited as SGLang latency, throughput, or quality benchmark results" in compact_sglang_readme
     assert "948365719597221" in storage_readme
     assert "unity_catalog" in storage_readme
@@ -1397,6 +1512,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/failed_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",
