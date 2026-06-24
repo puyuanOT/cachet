@@ -864,15 +864,14 @@ def test_document_kv_hicache_page_provider_hydrates_chained_split_storage_query(
         sglang_hicache_last_hash="sglang-hash-page-1",
     )
     chained_query_keys = [
-        "runtime-chained-page-2",
-        "runtime-chained-page-3",
+        "sglang-hash-page-2",
+        "sglang-hash-page-3",
         "runtime-query-page",
     ]
 
     assert provider.batch_exists(chained_query_keys, document_kv_request_context=context) == 2
-    assert provider.get("runtime-chained-page-2") == b"page-002"
-    assert provider.get("runtime-chained-page-3") == b"page-003"
-    assert provider.get("sglang-hash-page-2") is None
+    assert provider.get("sglang-hash-page-2") == b"page-002"
+    assert provider.get("sglang-hash-page-3") == b"page-003"
     assert provider.get("runtime-query-page") is None
     assert provider.batch_get_v1(
         chained_query_keys,
@@ -883,6 +882,45 @@ def test_document_kv_hicache_page_provider_hydrates_chained_split_storage_query(
         (30, bytearray(b"page-002")),
         (32, bytearray(b"page-003")),
     ]
+
+
+def test_document_kv_hicache_page_provider_rejects_divergent_chained_runtime_keys(tmp_path):
+    ready = sglang_ready_request(payload=b"page-000page-001page-002page-003")
+    handoff_path, payload_path = write_sglang_handoff(tmp_path, ready)
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: ready.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: f"disk:{payload_path}",
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: [
+                "sglang-hash-page-0",
+                "sglang-hash-page-1",
+                "sglang-hash-page-2",
+                "sglang-hash-page-3",
+            ],
+        },
+        request_id=ready.request_id,
+        handoff_json=str(handoff_path),
+        payload_uri=f"disk:{payload_path}",
+        sglang_hicache_page_keys=(
+            "sglang-hash-page-0",
+            "sglang-hash-page-1",
+            "sglang-hash-page-2",
+            "sglang-hash-page-3",
+        ),
+        sglang_hicache_last_hash="sglang-hash-page-1",
+    )
+
+    divergent_query_keys = [
+        "runtime-chained-page-2",
+        "runtime-chained-page-3",
+    ]
+
+    assert provider.batch_exists(divergent_query_keys, document_kv_request_context=context) == 0
+    assert provider.get("runtime-chained-page-2") is None
+    assert provider.get("runtime-chained-page-3") is None
+    assert provider.get("sglang-hash-page-2") is None
 
 
 def test_document_kv_hicache_page_provider_rejects_unknown_last_hash_binding(tmp_path):

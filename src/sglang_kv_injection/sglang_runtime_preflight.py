@@ -187,6 +187,7 @@ _REQUEST_METADATA_BRIDGE_RECORD_KEYS = frozenset(
         "installed",
         "scheduler_prefetch_patched",
         "controller_prefetch_patched",
+        "controller_hash_tracking_patched",
         "prefetch_operation_patched",
         "hicache_storage_extra_info_factory_patched",
         "storage_hit_query_patched",
@@ -1166,6 +1167,7 @@ def _request_metadata_bridge_record_issues(
         "installed",
         "scheduler_prefetch_patched",
         "controller_prefetch_patched",
+        "controller_hash_tracking_patched",
         "prefetch_operation_patched",
         "hicache_storage_extra_info_factory_patched",
         "storage_hit_query_patched",
@@ -1200,6 +1202,7 @@ def _request_metadata_bridge_ok(record: object) -> bool:
         record.get("installed") is True
         and record.get("scheduler_prefetch_patched") is True
         and record.get("controller_prefetch_patched") is True
+        and record.get("controller_hash_tracking_patched") is True
         and record.get("prefetch_operation_patched") is True
         and record.get("hicache_storage_extra_info_factory_patched") is True
         and record.get("storage_hit_query_patched") is True

@@ -875,7 +875,10 @@ artifact snapshot at
 sanitized source records. Those folders contain the current g6/L4 target
 benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and
 native vLLM/SGLang probe artifacts without relying on the PR-only
-`pr-evidence/` tree or ignored local `databricks-runs/` output.
+`pr-evidence/` tree or ignored local `databricks-runs/` output. Every durable
+Databricks benchmark or benchmark-readiness run should get its own dated
+standalone folder with a `README.md`; `pr-evidence/` stays reserved for
+machine-readable PR validation and release-audit sidecars.
 
 The latency and quality benchmark rows are vLLM benchmark runs. The current
 SGLang artifacts are provider-backed native HiCache probe and connector-action

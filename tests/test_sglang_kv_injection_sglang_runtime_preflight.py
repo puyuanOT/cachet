@@ -215,6 +215,10 @@ def install_storage_backend_factory_module(monkeypatch: pytest.MonkeyPatch) -> N
             self.prefix_keys = prefix_keys
 
     class HiCacheController:
+        def get_hash_str(self, token_ids, prior_hash=None):
+            prior = "root" if prior_hash is None else prior_hash
+            return "hash-" + prior + "-" + "-".join(str(token_id) for token_id in token_ids)
+
         def prefetch(
             self,
             request_id,

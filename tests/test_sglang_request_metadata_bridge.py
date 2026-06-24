@@ -98,15 +98,28 @@ class HiCacheController:
         return operation
 
     def get_hash_str(self, tokens, last_hash):
-        return "hash-" + "-".join(str(token) for token in tokens)
+        prior = "root" if last_hash is None else last_hash
+        return "hash-" + prior + "-" + "-".join(str(token) for token in tokens)
 
     def _storage_hit_query(self, operation):
+        last_hash = operation.last_hash
+        tokens_to_fetch = operation.token_ids
         prefix_keys = operation.prefix_keys.copy() if operation.prefix_keys else None
-        batch_hashes = [self.get_hash_str(operation.token_ids, operation.last_hash)]
-        extra_info = HiCacheStorageExtraInfo(prefix_keys=prefix_keys)
-        self.storage_backend.batch_exists(batch_hashes, extra_info)
-        operation.hash_value = batch_hashes
-        return batch_hashes, len(batch_hashes) * self.page_size
+        hash_value = []
+        for start in range(0, len(tokens_to_fetch), self.page_size * self.storage_batch_size):
+            end = min(start + self.page_size * self.storage_batch_size, len(tokens_to_fetch))
+            batch_tokens = tokens_to_fetch[start:end]
+            batch_hashes = []
+            for i in range(0, len(batch_tokens), self.page_size):
+                last_hash = self.get_hash_str(batch_tokens[i : i + self.page_size], last_hash)
+                batch_hashes.append(last_hash)
+            extra_info = HiCacheStorageExtraInfo(prefix_keys=prefix_keys)
+            self.storage_backend.batch_exists(batch_hashes, extra_info)
+            hash_value.extend(batch_hashes)
+            if prefix_keys and len(prefix_keys) > 0:
+                prefix_keys += batch_hashes
+        operation.hash_value = hash_value
+        return hash_value, len(hash_value) * self.page_size
 
     def _page_get_zero_copy(self, operation, hash_values, host_indices, extra_info=None):
         self.storage_backend.batch_get_v1(hash_values, host_indices, extra_info)
@@ -167,6 +180,7 @@ def test_sglang_request_metadata_bridge_forwards_custom_params_to_hicache_extra_
 
     assert status.installed is True
     assert record["record_type"] == DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE
+    assert record["controller_hash_tracking_patched"] is True
     assert record["prefetch_operation_patched"] is True
     assert record["ok"] is True
     assert "page_backup_patched" not in record
@@ -228,6 +242,45 @@ def test_sglang_request_metadata_bridge_forwards_custom_params_to_hicache_extra_
     assert "__req__" not in operation.document_kv_extra_info["custom_params"]
 
 
+def test_sglang_request_metadata_bridge_forwards_split_batch_prior_hash(monkeypatch):
+    _scheduler_module, cache_controller_module = install_fake_sglang_bridge_modules(monkeypatch)
+
+    status = install_sglang_request_metadata_bridge()
+    assert status.installed is True
+    assert status.controller_hash_tracking_patched is True
+
+    controller = cache_controller_module.HiCacheController()
+    controller.page_size = 1
+    controller.storage_batch_size = 2
+    operation = cache_controller_module.PrefetchOperation(
+        "cachet-sglang-request-split",
+        [0, 1, 2, 3],
+        [101, 102, 103, 104],
+        None,
+        None,
+    )
+    expected_extra_info = {
+        "custom_params": {
+            "kv_transfer_params": {
+                "document_kv.request_id": "cachet-sglang-request-split",
+                "document_kv.handoff_json": "/tmp/cachet-secret-handoff.json",
+                "document_kv.payload_uri": "disk:/tmp/cachet-secret-payload.kv",
+                "document_kv.sglang_hicache_page_keys": ["page-secret-1", "page-secret-2"],
+            },
+        },
+    }
+    operation.document_kv_extra_info = expected_extra_info
+
+    controller._storage_hit_query(operation)
+
+    assert len(controller.storage_backend.exists_extra_info) == 2
+    assert controller.storage_backend.exists_extra_info[0].extra_info == expected_extra_info
+    assert controller.storage_backend.exists_extra_info[1].extra_info == {
+        **expected_extra_info,
+        DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY: "hash-hash-root-101-102",
+    }
+
+
 def test_sglang_request_metadata_bridge_is_idempotent(monkeypatch):
     install_fake_sglang_bridge_modules(monkeypatch)
 
@@ -236,6 +289,7 @@ def test_sglang_request_metadata_bridge_is_idempotent(monkeypatch):
 
     assert first_status.installed is True
     assert second_status.installed is True
+    assert second_status.controller_hash_tracking_patched is True
 
 
 def test_sglang_request_metadata_bridge_cleans_registry_when_prefetch_is_skipped(monkeypatch):
@@ -278,3 +332,15 @@ def test_sglang_request_metadata_bridge_fails_closed_when_runtime_shape_is_missi
     assert status.installed is False
     assert record["ok"] is False
     assert "error" in record
+
+
+def test_sglang_request_metadata_bridge_fails_closed_without_hash_tracking(monkeypatch):
+    _scheduler_module, cache_controller_module = install_fake_sglang_bridge_modules(monkeypatch)
+    delattr(cache_controller_module.HiCacheController, "get_hash_str")
+
+    status = install_sglang_request_metadata_bridge()
+    record = sglang_request_metadata_bridge_status_to_record(status)
+
+    assert status.installed is False
+    assert record["ok"] is False
+    assert "get_hash_str" in record["error"]
