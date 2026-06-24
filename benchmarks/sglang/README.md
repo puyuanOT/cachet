@@ -8,7 +8,8 @@ benchmark result.
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
-| Latest failed live handoff smoke | `476430354490832` | [`2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/`](2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/) | The PR #464 provider wheel was present and hydrated the first 128 runtime pages, but Cachet still missed the later 46-key storage query because SGLang chained it from runtime `last_hash`. It is not a benchmark result. |
+| Latest failed live handoff smoke | `73938470896039` | [`2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/`](2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/) | The PR #465 wheel was present, but the later 46-key storage query still logged `last_hash_present=False` because SGLang keeps the per-batch prior hash in a local `_storage_hit_query` variable. It is not a benchmark result. |
+| Failed live handoff smoke | `476430354490832` | [`2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/`](2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/) | The PR #464 provider wheel was present and hydrated the first 128 runtime pages, but Cachet still missed the later 46-key storage query because SGLang chained it from runtime `last_hash`. It is not a benchmark result. |
 | Failed live handoff smoke | `521023980659718` | [`2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/`](2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/) | SGLang launched with `wait_complete` prefetch and reported 128 cached tokens from Cachet handoff pages, but Cachet missed the later 46-key storage query and both live checks failed. It is not a benchmark result. |
 | Failed live handoff smoke | `201402713679607` | [`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/) | Generated handoff preparation completed, but SGLang rejected the colon-containing served-model name before live requests. It is not a benchmark result. |
 | Failed live handoff smoke | `13763847664432` | [`2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/) | SGLang launched with the safe served-model name and request metadata bridge validation passed, but the cache arm used suffix-only runtime prompt text and did not answer from the generated prefix. It is not a benchmark result. |
@@ -44,8 +45,10 @@ plus the current zero-cache-hit blocker in
 [`2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/),
 the partial page-binding blocker in
 [`2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/`](2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/),
-and the current chained hash-binding blocker in
-[`2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/`](2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/).
+the chained hash-binding blocker in
+[`2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/`](2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/),
+and the current batch prior-hash metadata blocker in
+[`2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/`](2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/).
 Use
 `--baseline-only` for provider/server bring-up. For handoff-backed smoke,
 prefer `--generate-live-handoff`, which generates the synthetic live Cachet
@@ -53,16 +56,16 @@ handoff and exact SGLang HiCache page keys inside the isolated SGLang runtime
 before the server starts. The smoke now uses logical prompt text by default so
 stock SGLang can compute the cached prefix page keys. The latest run also sets
 `hicache_storage_prefetch_policy=wait_complete`, which allows SGLang to wait
-for Cachet-backed page hydration before prefill. The latest failure shows that
-later split queries can be chained from SGLang's runtime `last_hash`, so Cachet
-must propagate that runtime anchor before the remaining generated pages can be
-bound safely. A publishable live run must hydrate all matching generated
-page-key chunks and record a positive SGLang cached-token validation before it
-can be treated as successful. That validation must identify the cache-arm
-request itself by its prompt-token total, rather than warmup requests or a
-later baseline request that benefits from ordinary SGLang prefix-cache reuse.
-Manual handoff inputs remain supported when callers already have a validated
-SGLang handoff plus
+for Cachet-backed page hydration before prefill. Recent failures show that
+later split queries can be chained from SGLang's runtime hash state, and that
+the relevant anchor is the first per-batch `prior_hash` passed to SGLang's
+`get_hash_str`, not merely `operation.last_hash`. A publishable live run must
+hydrate all matching generated page-key chunks and record a positive SGLang
+cached-token validation before it can be treated as successful. That validation
+must identify the cache-arm request itself by its prompt-token total, rather
+than warmup requests or a later baseline request that benefits from ordinary
+SGLang prefix-cache reuse. Manual handoff inputs remain supported when callers
+already have a validated SGLang handoff plus
 `document_kv.sglang_hicache_page_keys` metadata. This report remains pending
 until a Databricks g6/L4 or g5/A10G run writes `sglang-live-smoke.json` with a
 passing handoff-backed cache arm.
@@ -79,7 +82,8 @@ Treat SGLang benchmark publication as pending until all of these are true:
 - The SGLang runtime preflight reports `live_request_metadata_bridge_ok=true`.
 - Decode-time prefix binding is validated against the live endpoint.
 - Split SGLang HiCache storage queries hydrate every matching generated handoff
-  page chunk, including later chunks chained from SGLang's runtime `last_hash`.
+  page chunk, including later chunks anchored by the batch `prior_hash` used to
+  compute SGLang's chained runtime keys.
 - The cache-arm request reports positive SGLang cached-token validation.
 - The cached-token validation is matched to the cache-arm request, not to server
   warmup traffic or later baseline prefix-cache reuse.

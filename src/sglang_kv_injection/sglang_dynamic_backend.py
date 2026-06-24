@@ -898,7 +898,7 @@ def _sglang_hicache_page_binding_after_last_hash(
         first_page_index = expected_page_keys.index(last_hash) + 1
     except ValueError:
         return None
-    return _sglang_hicache_page_binding_from_chained_offset(
+    return _sglang_hicache_page_binding_from_offset(
         runtime_keys,
         expected_page_keys,
         first_page_index,
@@ -923,18 +923,6 @@ def _sglang_hicache_page_binding_by_runtime_keys(
         if binding is not None:
             return binding
     return None
-
-
-def _sglang_hicache_page_binding_from_chained_offset(
-    runtime_keys: tuple[str, ...],
-    expected_page_keys: tuple[str, ...],
-    first_page_index: int,
-) -> tuple[int, int] | None:
-    available_count = len(expected_page_keys) - first_page_index
-    key_count = min(len(runtime_keys), available_count)
-    if key_count <= 0:
-        return None
-    return first_page_index, key_count
 
 
 def _sglang_hicache_page_binding_from_offset(

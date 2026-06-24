@@ -14,7 +14,7 @@ from typing import Any
 DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE = (
     "sglang_kv_injection.request_metadata_bridge.v1"
 )
-DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION = 2
+DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION = 3
 DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE = (
     "sglang_kv_injection.sglang_request_metadata_bridge"
 )
@@ -27,6 +27,8 @@ _PREFETCH_OPERATION_CLASS = "PrefetchOperation"
 _HICACHE_STORAGE_EXTRA_INFO_NAME = "HiCacheStorageExtraInfo"
 _PATCH_MARKER = "__document_kv_request_metadata_bridge_patched__"
 _ORIGINAL_ATTR = "__document_kv_request_metadata_bridge_original__"
+_HASH_TRACKING_PATCH_MARKER = "__document_kv_hicache_hash_tracking_patched__"
+_HASH_TRACKING_ORIGINAL_ATTR = "__document_kv_hicache_hash_tracking_original__"
 _REQUEST_METADATA_REGISTRY_ATTR = "_document_kv_request_metadata_by_rid"
 _OPERATION_EXTRA_INFO_ATTR = "document_kv_extra_info"
 _SGLANG_REQ_BACKREF_KEY = "__req__"
@@ -60,6 +62,7 @@ class SGLangRequestMetadataBridgeStatus:
     installed: bool
     scheduler_prefetch_patched: bool = False
     controller_prefetch_patched: bool = False
+    controller_hash_tracking_patched: bool = False
     prefetch_operation_patched: bool = False
     hicache_storage_extra_info_factory_patched: bool = False
     storage_hit_query_patched: bool = False
@@ -96,6 +99,7 @@ def install_sglang_request_metadata_bridge() -> SGLangRequestMetadataBridgeStatu
     try:
         scheduler_patched = _patch_scheduler_prefetch(scheduler_cls)
         controller_patched = _patch_controller_prefetch(controller_cls)
+        controller_hash_tracking_patched = _patch_controller_hash_tracking(controller_cls)
         prefetch_operation_patched = _patch_prefetch_operation(prefetch_operation_cls)
         extra_info_patched = _patch_hicache_storage_extra_info_factory(
             cache_controller_module,
@@ -110,6 +114,7 @@ def install_sglang_request_metadata_bridge() -> SGLangRequestMetadataBridgeStatu
         (
             scheduler_patched,
             controller_patched,
+            controller_hash_tracking_patched,
             prefetch_operation_patched,
             extra_info_patched,
             storage_hit_query_patched,
@@ -120,6 +125,7 @@ def install_sglang_request_metadata_bridge() -> SGLangRequestMetadataBridgeStatu
         installed=installed,
         scheduler_prefetch_patched=scheduler_patched,
         controller_prefetch_patched=controller_patched,
+        controller_hash_tracking_patched=controller_hash_tracking_patched,
         prefetch_operation_patched=prefetch_operation_patched,
         hicache_storage_extra_info_factory_patched=extra_info_patched,
         storage_hit_query_patched=storage_hit_query_patched,
@@ -147,6 +153,7 @@ def sglang_request_metadata_bridge_status_to_record(
         "installed": status.installed,
         "scheduler_prefetch_patched": status.scheduler_prefetch_patched,
         "controller_prefetch_patched": status.controller_prefetch_patched,
+        "controller_hash_tracking_patched": status.controller_hash_tracking_patched,
         "prefetch_operation_patched": status.prefetch_operation_patched,
         "hicache_storage_extra_info_factory_patched": (
             status.hicache_storage_extra_info_factory_patched
@@ -250,6 +257,39 @@ def _patch_controller_prefetch(controller_cls: type) -> bool:
     return True
 
 
+def _patch_controller_hash_tracking(controller_cls: type) -> bool:
+    original = getattr(controller_cls, "__init__", None)
+    if not callable(original):
+        raise TypeError("SGLang HiCacheController.__init__ is not callable")
+    if getattr(original, _HASH_TRACKING_PATCH_MARKER, False) is True:
+        return True
+    if not _controller_hash_tracking_installable(controller_cls):
+        raise TypeError("SGLang HiCacheController.get_hash_str is not patchable")
+
+    @functools.wraps(original)
+    def patched_controller_init(self: object, *args: object, **kwargs: object) -> None:
+        original(self, *args, **kwargs)
+        if not _ensure_hicache_hash_tracking(self):
+            raise TypeError("SGLang HiCacheController.get_hash_str is not patchable")
+        return None
+
+    setattr(patched_controller_init, _HASH_TRACKING_PATCH_MARKER, True)
+    setattr(patched_controller_init, _HASH_TRACKING_ORIGINAL_ATTR, original)
+    setattr(controller_cls, "__init__", patched_controller_init)
+    return True
+
+
+def _controller_hash_tracking_installable(controller_cls: type) -> bool:
+    if callable(getattr(controller_cls, "get_hash_str", None)):
+        return True
+    controller_init = getattr(controller_cls, "__init__", None)
+    try:
+        source = inspect.getsource(controller_init)
+    except (OSError, TypeError):
+        return False
+    return "get_hash_str" in source and "self.get_hash_str" in source
+
+
 def _patch_prefetch_operation(prefetch_operation_cls: type) -> bool:
     original = getattr(prefetch_operation_cls, "__init__", None)
     if not callable(original):
@@ -336,23 +376,67 @@ def _patch_operation_context_method(controller_cls: type, method_name: str) -> b
 
     @functools.wraps(original)
     def patched_method(self: object, operation: object, *args: object, **kwargs: object) -> object:
-        previous = getattr(_THREAD_CONTEXT, "operation", None)
+        previous_operation = getattr(_THREAD_CONTEXT, "operation", _MISSING)
+        previous_batch_hash_priors = getattr(_THREAD_CONTEXT, "batch_hash_priors", _MISSING)
         _THREAD_CONTEXT.operation = operation
+        if method_name == "_storage_hit_query":
+            if not _ensure_hicache_hash_tracking(self):
+                raise TypeError("SGLang HiCacheController.get_hash_str is not patchable")
+            _THREAD_CONTEXT.batch_hash_priors = []
         try:
             return original(self, operation, *args, **kwargs)
         finally:
-            if previous is None:
-                try:
-                    delattr(_THREAD_CONTEXT, "operation")
-                except AttributeError:
-                    pass
-            else:
-                _THREAD_CONTEXT.operation = previous
+            if method_name == "_storage_hit_query":
+                _restore_thread_context_attr("batch_hash_priors", previous_batch_hash_priors)
+            _restore_thread_context_attr("operation", previous_operation)
 
     setattr(patched_method, _PATCH_MARKER, True)
     setattr(patched_method, _ORIGINAL_ATTR, original)
     setattr(controller_cls, method_name, patched_method)
     return True
+
+
+def _ensure_hicache_hash_tracking(controller: object) -> bool:
+    get_hash_str = getattr(controller, "get_hash_str", None)
+    if getattr(get_hash_str, _HASH_TRACKING_PATCH_MARKER, False) is True:
+        return True
+    if not callable(get_hash_str):
+        return False
+
+    @functools.wraps(get_hash_str)
+    def tracked_get_hash_str(*args: object, **kwargs: object) -> object:
+        priors = getattr(_THREAD_CONTEXT, "batch_hash_priors", None)
+        if isinstance(priors, list):
+            priors.append(_prior_hash_argument(args=args, kwargs=kwargs))
+        return get_hash_str(*args, **kwargs)
+
+    try:
+        setattr(tracked_get_hash_str, _HASH_TRACKING_PATCH_MARKER, True)
+        setattr(tracked_get_hash_str, _HASH_TRACKING_ORIGINAL_ATTR, get_hash_str)
+        setattr(controller, "get_hash_str", tracked_get_hash_str)
+    except Exception:
+        return False
+    return True
+
+
+def _restore_thread_context_attr(name: str, previous: object) -> None:
+    if previous is _MISSING:
+        try:
+            delattr(_THREAD_CONTEXT, name)
+        except AttributeError:
+            pass
+        return
+    setattr(_THREAD_CONTEXT, name, previous)
+
+
+def _prior_hash_argument(
+    *,
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+) -> object:
+    if len(args) >= 2:
+        return args[1]
+    return kwargs.get("prior_hash")
 
 
 def _register_request_metadata_from_req(
@@ -471,10 +555,23 @@ def _operation_request_metadata_with_runtime_context(
     metadata: Mapping[str, object],
 ) -> Mapping[str, object]:
     enriched = dict(metadata)
-    last_hash = getattr(operation, "last_hash", None)
+    last_hash = _pop_current_batch_prior_hash()
+    if last_hash is _MISSING:
+        last_hash = getattr(operation, "last_hash", None)
     if isinstance(last_hash, str) and last_hash:
         enriched[DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY] = last_hash
     return enriched
+
+
+def _pop_current_batch_prior_hash() -> object:
+    priors = getattr(_THREAD_CONTEXT, "batch_hash_priors", None)
+    if not isinstance(priors, list):
+        return _MISSING
+    if not priors:
+        return _MISSING
+    first_prior = priors[0]
+    priors.clear()
+    return first_prior
 
 
 def _current_prefetch_request_metadata() -> tuple[str, Mapping[str, object]] | None:
@@ -520,6 +617,7 @@ def _request_metadata_bridge_installed(record: Mapping[str, Any]) -> bool:
         record.get("installed") is True
         and record.get("scheduler_prefetch_patched") is True
         and record.get("controller_prefetch_patched") is True
+        and record.get("controller_hash_tracking_patched") is True
         and record.get("prefetch_operation_patched") is True
         and record.get("hicache_storage_extra_info_factory_patched") is True
         and record.get("storage_hit_query_patched") is True
