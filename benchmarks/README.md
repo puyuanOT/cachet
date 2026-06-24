@@ -10,7 +10,7 @@ Start with the standalone report folders:
 | Folder | Purpose | Current status |
 | --- | --- | --- |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
-| [`sglang/`](sglang/) | SGLang benchmark status | Pending live latency and quality benchmark |
+| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke is running; live latency and quality benchmark pending |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 
@@ -23,6 +23,9 @@ Use this boundary when adding or reviewing benchmark output:
 
 - `benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
   `benchmarks/native-engine/` are standalone human-readable report folders.
+- Pending live-readiness runs can live under the relevant engine folder, such
+  as `benchmarks/sglang/2026-06-23-g6-l4-live-handoff-smoke/`, when they are
+  useful to review before a terminal benchmark result exists.
 - `benchmarks/databricks/CURRENT.md` is the current human-readable summary.
 - `benchmarks/databricks/<date>-<target>-<purpose>/README.md` is the
   run-specific human-readable source-artifact report.

@@ -8,6 +8,7 @@ benchmark result.
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
+| Pending live handoff smoke | `201402713679607` | [`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/) | Current Databricks g6/L4 run for generated Cachet handoff plus SGLang HiCache page keys. It is not a benchmark result until the run terminates successfully and writes validated smoke or benchmark artifacts. |
 | Pending latency and quality benchmark | Not available yet | Not available yet | A live SGLang endpoint still needs to validate decode-time prefix binding with Cachet handoffs before Cachet can publish SGLang latency, throughput, or quality numbers. |
 | Native HiCache integration evidence | `934698284395881` | [`../databricks/2026-06-23-g6-l4-native-engine-probes/`](../databricks/2026-06-23-g6-l4-native-engine-probes/) | Provider-backed native probe and connector-action records succeeded on AWS g6/L4, but these records are integration evidence, not benchmark measurements. |
 
@@ -30,7 +31,10 @@ transfers. The runtime preflight records that bridge separately from upstream
 SGLang source detection and can report `live_request_metadata_bridge_ok=true`
 when all patch points install.
 
-Those helpers are a live readiness path, not a benchmark result. Use
+Those helpers are a live readiness path, not a benchmark result. The current
+generated-handoff Databricks smoke is tracked in
+[`2026-06-23-g6-l4-live-handoff-smoke/`](2026-06-23-g6-l4-live-handoff-smoke/).
+Use
 `--baseline-only` for provider/server bring-up. For handoff-backed smoke,
 prefer `--generate-live-handoff`, which generates the synthetic live Cachet
 handoff and exact SGLang HiCache page keys inside the isolated SGLang runtime
