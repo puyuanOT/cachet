@@ -8,6 +8,7 @@ benchmark result.
 
 | Status | Databricks run | Source artifacts | Meaning |
 | --- | --- | --- | --- |
+| Latest failed live handoff smoke | `655273897262076` | [`2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/) | The PR #488 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with deterministic no-thinking controls, SGLang reported a full 175-token cache-arm hit covering that generated prefix, `/flush_cache` returned HTTP 200 before the post-live-check canary, and the canary passed with zero cached tokens, but baseline and cache-arm quality still failed. It is not a benchmark result. |
 | Latest failed live handoff smoke | `419314952937106` | [`2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/) | The PR #486 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with deterministic no-thinking controls, SGLang accepted `--attention-backend triton`, `--sampling-backend pytorch`, and `--enable-deterministic-inference`, the model-quality canary now ran after cache/baseline checks, and SGLang reported a full 175-token cache-arm hit covering that generated prefix, but baseline, cache-arm, and post-live-check canary quality all failed. It is not a benchmark result. |
 | Failed live handoff smoke | `672927118707206` | [`2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/) | The PR #482 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with deterministic no-thinking controls, SGLang accepted `--attention-backend triton`, `--sampling-backend pytorch`, and `--enable-deterministic-inference`, the live request used a minimal no-thinking body without sampling extras, and SGLang reported a positive 175-token cache-arm hit covering that generated prefix, but both live quality checks returned the same repeated filler text. It is not a benchmark result. |
 | Failed live handoff smoke | `585529688094161` | [`2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/) | The PR #480 wheel was present, import probe and request metadata bridge passed, generated Qwen-chat handoff creation used the tokenizer chat template with deterministic no-thinking controls, SGLang accepted `--attention-backend triton`, `--sampling-backend pytorch`, and `--enable-deterministic-inference`, and SGLang reported a positive 175-token cache-arm hit covering that generated prefix, but both live quality checks returned the same repeated filler text. It is not a benchmark result. |
@@ -80,8 +81,10 @@ the Triton/PyTorch deterministic cache-hit quality failure in
 [`2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/),
 the minimal no-thinking cache-hit quality failure in
 [`2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/),
-and the current canary-after-cache-hit quality failure in
-[`2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/).
+the canary-after-cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/),
+and the current canary-flush cache-hit quality failure in
+[`2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/).
 Use
 `--baseline-only` for provider/server bring-up. For handoff-backed smoke,
 prefer `--generate-live-handoff`, which generates the synthetic live Cachet
@@ -105,10 +108,12 @@ disables thinking through both `reasoning_effort=none` and
 backend controls are accepted and radix cache remains enabled. Recent runs use
 a minimal no-thinking live request body without `top_p`, `top_k`, `min_p`, or
 `presence_penalty`, but the live prompt still fails quality for both baseline
-and cache arms. The current run moves the model-quality canary after the live
+and cache arms. The previous run moved the model-quality canary after the live
 cache and baseline checks; that restored full cache-arm validation, but the
-post-live-check canary also fails quality. A publishable live run must make the
-Qwen3/SGLang request pass baseline, cache-arm, and canary quality while still
+canary also failed quality. The current run flushes SGLang's in-memory prefix
+cache before the canary; that flush returned HTTP 200, the canary ran with zero
+cached tokens, and it produced `cachet-green`. A publishable live run must
+still make the Qwen3/SGLang request pass baseline and cache-arm quality while
 hydrating matching generated page-key chunks and recording positive SGLang
 cached-token validation. That validation must identify the cache-arm request
 itself by its prompt-token total, rather than warmup requests or a later
