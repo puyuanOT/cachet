@@ -75,6 +75,7 @@ DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
 )
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
+DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY = "wait_complete"
 DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX = "cachet-live"
 SGLANG_SERVER_CACHED_TOKEN_PATTERN = re.compile(r"#cached-token:\s*(\d+)")
@@ -103,6 +104,7 @@ __all__ = [
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
     "DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY",
     "DEFAULT_SGLANG_HICACHE_PAGE_SIZE",
+    "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY",
     "DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD",
     "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
     "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
@@ -202,7 +204,9 @@ class SGLangSmokeBenchmarkConfig:
     hicache_size_gb: int | None = None
     hicache_io_backend: str | None = None
     hicache_mem_layout: str | None = None
-    hicache_storage_prefetch_policy: str | None = None
+    hicache_storage_prefetch_policy: str | None = (
+        DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
+    )
     hicache_storage_prefetch_threshold: int | None = (
         DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
     )
@@ -1458,7 +1462,10 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     parser.add_argument("--hicache-size-gb", type=int)
     parser.add_argument("--hicache-io-backend")
     parser.add_argument("--hicache-mem-layout")
-    parser.add_argument("--hicache-storage-prefetch-policy")
+    parser.add_argument(
+        "--hicache-storage-prefetch-policy",
+        default=DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
+    )
     parser.add_argument(
         "--hicache-storage-prefetch-threshold",
         type=int,

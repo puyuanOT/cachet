@@ -27,6 +27,7 @@ from document_kv_cache.models import KVCacheKey
 from document_kv_cache.sglang_smoke import (
     CACHET_MODEL_ID,
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
@@ -516,6 +517,9 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
     assert args[args.index("--hicache-storage-backend") + 1] == "dynamic"
     assert args[args.index("--page-size") + 1] == "2"
     assert args[args.index("--hicache-size") + 1] == "4"
+    assert args[args.index("--hicache-storage-prefetch-policy") + 1] == (
+        DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
+    )
     assert args[args.index("--hicache-write-policy") + 1] == "write_through_selective"
     extra_config = json.loads(args[args.index("--hicache-storage-backend-extra-config") + 1])
     assert extra_config[DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY].endswith("/hicache-pages")
@@ -620,6 +624,10 @@ def test_sglang_smoke_cli_accepts_generated_live_handoff(monkeypatch, tmp_path):
     assert generation.page_size == 2
     assert generation.timeout_seconds == 12.5
     assert seen_configs[0].hicache_page_size == 2
+    assert (
+        seen_configs[0].hicache_storage_prefetch_policy
+        == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
+    )
     assert seen_configs[0].hicache_storage_prefetch_threshold == 3
 
 

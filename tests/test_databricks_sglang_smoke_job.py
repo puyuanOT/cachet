@@ -16,6 +16,7 @@ from document_kv_cache.databricks_sglang_smoke_job import (
 )
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
@@ -107,6 +108,8 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
             "/local_disk0/cachet/sglang-hicache",
             "--hicache-size-gb",
             "4",
+            "--hicache-storage-prefetch-policy",
+            DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
             "--hicache-storage-prefetch-threshold",
             str(DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD),
             "--package-wheel-uri",
@@ -185,6 +188,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert default_config.cache_prompt_text_mode == "logical"
     assert default_config.live_handoff_generator_factory == DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY
     assert default_config.sglang_hicache_page_size == DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+    assert default_config.hicache_storage_prefetch_policy == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
     assert (
         default_config.hicache_storage_prefetch_threshold
         == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
@@ -222,6 +226,9 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert parameters[parameters.index("--live-handoff-align-bytes") + 1] == "8"
     assert parameters[parameters.index("--sglang-hicache-page-size") + 1] == "2"
     assert parameters[parameters.index("--live-handoff-generation-timeout-seconds") + 1] == "12.5"
+    assert parameters[parameters.index("--hicache-storage-prefetch-policy") + 1] == (
+        DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
+    )
     assert parameters[parameters.index("--hicache-storage-prefetch-threshold") + 1] == str(
         DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
     )
