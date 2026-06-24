@@ -28,6 +28,7 @@ from document_kv_cache.databricks_job import (
 )
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
+    DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_LOCAL_ROOT,
@@ -134,7 +135,9 @@ class DatabricksSGLangSmokeJobConfig:
     hicache_size_gb: int | None = None
     hicache_io_backend: str | None = None
     hicache_mem_layout: str | None = None
-    hicache_storage_prefetch_policy: str | None = None
+    hicache_storage_prefetch_policy: str | None = (
+        DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY
+    )
     hicache_storage_prefetch_threshold: int | None = (
         DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
     )
@@ -464,7 +467,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hicache-size-gb", type=int)
     parser.add_argument("--hicache-io-backend")
     parser.add_argument("--hicache-mem-layout")
-    parser.add_argument("--hicache-storage-prefetch-policy")
+    parser.add_argument(
+        "--hicache-storage-prefetch-policy",
+        default=DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_POLICY,
+    )
     parser.add_argument(
         "--hicache-storage-prefetch-threshold",
         type=int,
