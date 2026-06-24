@@ -318,6 +318,7 @@ from document_kv_cache.live_server import (
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY as DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT as DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE as DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE as DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     SGLangSmokeBenchmarkConfig as SGLangSmokeBenchmarkConfig,
     build_sglang_hicache_provider_probe_record as build_sglang_hicache_provider_probe_record,
@@ -407,6 +408,7 @@ from document_kv_cache.openai_compatible import (
     KVTransferParamsTransport as KVTransferParamsTransport,
     OpenAICompatibleCompletionEngine as OpenAICompatibleCompletionEngine,
     OpenAICompatibleEngineConfig as OpenAICompatibleEngineConfig,
+    OpenAICompatibleRequestMode as OpenAICompatibleRequestMode,
     PromptTextMode as PromptTextMode,
     PromptTokenAccounting as PromptTokenAccounting,
     TokenCounter as TokenCounter,

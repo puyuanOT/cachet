@@ -101,7 +101,9 @@ class FakeErrorBody:
         self.closed = True
 
 
-def benchmark_request(kv_transfer_params=None, *, repeat_index: int = 1) -> BenchmarkEngineRequest:
+def benchmark_request(
+    kv_transfer_params=None, *, repeat_index: int = 1
+) -> BenchmarkEngineRequest:
     example = BenchmarkExample(
         example_id="bio-1",
         dataset="biography",
@@ -189,7 +191,9 @@ def test_runtime_prompt_mode_uses_cache_suffix_for_kv_aware_proxy():
     assert generation.metadata["prompt_text_mode"] == "runtime"
     assert generation.metadata["server_usage_prompt_tokens"] == "12"
     assert generation.metadata["server_usage_prompt_tokens_present"] == "true"
-    assert int(generation.metadata["logical_prompt_tokens"]) > int(generation.metadata["runtime_prompt_tokens"])
+    assert int(generation.metadata["logical_prompt_tokens"]) > int(
+        generation.metadata["runtime_prompt_tokens"]
+    )
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
 
 
@@ -210,7 +214,9 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
         clock=FakeClock([1.0, 2.0]),
     )
 
-    generation = engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
+    generation = engine.generate(
+        benchmark_request(kv_transfer_params=kv_transfer_params)
+    )
 
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
     assert engine.payloads[0]["request_id"] == "cachet-bio-1"
@@ -243,7 +249,9 @@ def test_custom_params_transport_sends_sglang_compatible_kv_transfer_params():
         clock=FakeClock([1.0, 2.0]),
     )
 
-    generation = engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
+    generation = engine.generate(
+        benchmark_request(kv_transfer_params=kv_transfer_params)
+    )
 
     payload = engine.payloads[0]
     assert "request_id" not in payload
@@ -259,6 +267,91 @@ def test_custom_params_transport_sends_sglang_compatible_kv_transfer_params():
     assert generation.metadata["request_id"] == "cachet-bio-1"
 
 
+def test_chat_request_mode_sends_chat_completions_payload():
+    response = FakeJSONResponse(
+        {
+            "choices": [{"message": {"content": "Ada Lovelace"}}],
+            "usage": {"prompt_tokens": 17, "completion_tokens": 2},
+        }
+    )
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            request_mode="chat",
+            stream=False,
+            max_tokens=9,
+            model_id="served-qwen",
+            prompt_token_accounting="server_usage",
+        ),
+        chat_messages_factory=lambda request: (
+            {"role": "system", "content": "answer exactly"},
+            {"role": "user", "content": request.logical_prompt_text},
+        ),
+        response=response,
+        clock=FakeClock([1.0, 2.0]),
+    )
+
+    generation = engine.generate(benchmark_request())
+
+    payload = engine.payloads[0]
+    assert engine.config.endpoint == "/v1/chat/completions"
+    assert payload["model"] == "served-qwen"
+    assert payload["messages"] == [
+        {"role": "system", "content": "answer exactly"},
+        {"role": "user", "content": benchmark_request().logical_prompt_text},
+    ]
+    assert payload["max_completion_tokens"] == 9
+    assert payload["stream"] is False
+    assert "prompt" not in payload
+    assert "max_tokens" not in payload
+    assert generation.output_text == "Ada Lovelace"
+    assert generation.metadata["request_mode"] == "chat"
+    assert generation.metadata["server_usage_prompt_tokens"] == "17"
+
+
+def test_chat_request_mode_preserves_sglang_custom_params_transport():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        "document_kv.payload_uri": "uc-volume:/catalog/schema/volume/cachet/bio-1.kv",
+    }
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            request_mode="chat",
+            stream=False,
+            prompt_text_mode="runtime",
+            kv_transfer_params_transport="custom_params",
+            extra_body={"custom_params": {"existing": "sglang-value"}},
+        ),
+        response=FakeJSONResponse(
+            {"choices": [{"message": {"content": "Ada Lovelace"}}]}
+        ),
+        clock=FakeClock([1.0, 2.0]),
+    )
+
+    generation = engine.generate(
+        benchmark_request(kv_transfer_params=kv_transfer_params)
+    )
+
+    payload = engine.payloads[0]
+    assert payload["messages"] == [
+        {"role": "user", "content": benchmark_request().cache_suffix_text}
+    ]
+    assert "request_id" not in payload
+    assert "kv_transfer_params" not in payload
+    assert payload["custom_params"] == {
+        "existing": "sglang-value",
+        "kv_transfer_params": {
+            **kv_transfer_params,
+            DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
+        },
+    }
+    assert generation.metadata["request_mode"] == "chat"
+    assert generation.metadata["kv_transfer_params_attached"] == "true"
+    assert generation.metadata["request_id"] == "cachet-bio-1"
+
+
 def test_extra_body_factory_can_vary_prefix_cache_salt_per_request():
     engine = CapturingEngine(
         OpenAICompatibleEngineConfig(
@@ -266,7 +359,9 @@ def test_extra_body_factory_can_vary_prefix_cache_salt_per_request():
             stream=False,
             extra_body={"cache_salt": "static-salt", "top_p": 0.9},
         ),
-        extra_body_factory=lambda request: {"cache_salt": f"dynamic-repeat-{request.repeat_index}"},
+        extra_body_factory=lambda request: {
+            "cache_salt": f"dynamic-repeat-{request.repeat_index}"
+        },
         response=FakeJSONResponse(),
         clock=FakeClock([1.0, 2.0, 3.0, 4.0]),
     )
@@ -303,7 +398,10 @@ def test_non_streaming_completion_engine_uses_usage_and_total_latency():
     assert generation.metadata["prompt_token_source"] == "logical"
     assert generation.metadata["server_usage_prompt_tokens"] == "12"
     assert generation.metadata["server_usage_prompt_tokens_present"] == "true"
-    assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
+    assert (
+        generation.metadata["logical_prompt_tokens"]
+        == generation.metadata["runtime_prompt_tokens"]
+    )
     assert generation.ttft_seconds == pytest.approx(2.5)
     assert generation.time_to_completion_seconds == pytest.approx(2.5)
     assert engine.payloads[0]["model"] == "served-qwen"
@@ -324,10 +422,15 @@ def test_missing_usage_uses_logical_prompt_and_output_fallback_counts():
 
     generation = engine.generate(request)
 
-    assert generation.prompt_tokens == WhitespaceTokenCounter().count(request.logical_prompt_text)
+    assert generation.prompt_tokens == WhitespaceTokenCounter().count(
+        request.logical_prompt_text
+    )
     assert generation.completion_tokens == 2
     assert generation.metadata["prompt_token_source"] == "logical"
-    assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
+    assert (
+        generation.metadata["logical_prompt_tokens"]
+        == generation.metadata["runtime_prompt_tokens"]
+    )
 
 
 def test_server_usage_accounting_records_missing_usage_fallback():
@@ -344,11 +447,16 @@ def test_server_usage_accounting_records_missing_usage_fallback():
 
     generation = engine.generate(request)
 
-    assert generation.prompt_tokens == WhitespaceTokenCounter().count(request.logical_prompt_text)
+    assert generation.prompt_tokens == WhitespaceTokenCounter().count(
+        request.logical_prompt_text
+    )
     assert generation.metadata["prompt_token_source"] == "logical"
     assert generation.metadata["server_usage_prompt_tokens_present"] == "false"
     assert "server_usage_prompt_tokens" not in generation.metadata
-    assert generation.metadata["logical_prompt_tokens"] == generation.metadata["runtime_prompt_tokens"]
+    assert (
+        generation.metadata["logical_prompt_tokens"]
+        == generation.metadata["runtime_prompt_tokens"]
+    )
 
 
 def test_streaming_error_payload_raises_and_closes_response():
@@ -386,7 +494,9 @@ def test_document_urlopen_hook_still_wraps_http_errors(monkeypatch):
     body = FakeErrorBody()
 
     def raise_http_error(*args, **kwargs):
-        raise HTTPError("http://localhost:8000/v1/completions", 400, "bad request", {}, body)
+        raise HTTPError(
+            "http://localhost:8000/v1/completions", 400, "bad request", {}, body
+        )
 
     monkeypatch.setattr(openai_module, "_urlopen", raise_http_error)
     engine = OpenAICompatibleCompletionEngine(
@@ -409,7 +519,11 @@ def test_whitespace_token_counter_is_available_as_local_fallback():
         ("base_url", "", "base_url must be non-empty"),
         ("endpoint", "", "endpoint must be non-empty"),
         ("api_key", 123, "api_key must be a string"),
-        ("timeout_seconds", math.inf, "timeout_seconds must be a positive finite number"),
+        (
+            "timeout_seconds",
+            math.inf,
+            "timeout_seconds must be a positive finite number",
+        ),
         ("max_tokens", True, "max_tokens must be positive"),
         ("temperature", math.nan, "temperature must be a non-negative finite number"),
         ("stream", 1, "stream must be a boolean"),
@@ -420,7 +534,9 @@ def test_whitespace_token_counter_is_available_as_local_fallback():
         ("kv_transfer_params_transport", "query", "kv_transfer_params_transport"),
     ],
 )
-def test_openai_compatible_engine_config_rejects_invalid_public_fields(field_name, value, message):
+def test_openai_compatible_engine_config_rejects_invalid_public_fields(
+    field_name, value, message
+):
     kwargs = {"base_url": "http://localhost:8000"}
     kwargs[field_name] = value
 

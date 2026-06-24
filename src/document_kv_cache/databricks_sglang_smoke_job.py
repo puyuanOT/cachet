@@ -32,6 +32,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
@@ -120,6 +121,7 @@ class DatabricksSGLangSmokeJobConfig:
     baseline_only: bool = False
     cache_prompt_text_mode: str = "logical"
     live_check_prompt_format: str = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
+    live_check_request_mode: str = DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     handoff_json: str | None = None
     handoff_record_json: str | None = None
     payload_uri: str | None = None
@@ -195,17 +197,30 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
         if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
             raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
+        if self.live_check_request_mode not in {"completion", "chat"}:
+            raise ValueError("live_check_request_mode must be 'completion' or 'chat'")
         if self.handoff_json and self.handoff_record_json:
-            raise ValueError("SGLang smoke handoff params must use only one of handoff_json or handoff_record_json")
+            raise ValueError(
+                "SGLang smoke handoff params must use only one of handoff_json or handoff_record_json"
+            )
         if self.handoff_record_json is not None:
             _json_object_from_text(self.handoff_record_json, "handoff_record_json")
         if type(self.generate_live_handoff) is not bool:
             raise ValueError("generate_live_handoff must be a boolean")
-        if self.live_handoff_output_dir is not None and not self.live_handoff_output_dir:
+        if (
+            self.live_handoff_output_dir is not None
+            and not self.live_handoff_output_dir
+        ):
             raise ValueError("live_handoff_output_dir must be non-empty when provided")
-        if not isinstance(self.live_handoff_generator_factory, str) or not self.live_handoff_generator_factory.strip():
+        if (
+            not isinstance(self.live_handoff_generator_factory, str)
+            or not self.live_handoff_generator_factory.strip()
+        ):
             raise ValueError("live_handoff_generator_factory must be non-empty")
-        if not isinstance(self.live_handoff_dtype, str) or not self.live_handoff_dtype.strip():
+        if (
+            not isinstance(self.live_handoff_dtype, str)
+            or not self.live_handoff_dtype.strip()
+        ):
             raise ValueError("live_handoff_dtype must be non-empty")
         if (
             isinstance(self.live_handoff_align_bytes, bool)
@@ -238,12 +253,18 @@ class DatabricksSGLangSmokeJobConfig:
             )
         )
         if self.baseline_only:
-            if has_handoff_fields or self.generate_live_handoff or self.live_handoff_output_dir is not None:
+            if (
+                has_handoff_fields
+                or self.generate_live_handoff
+                or self.live_handoff_output_dir is not None
+            ):
                 raise ValueError(SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE)
         else:
             if self.generate_live_handoff:
                 if has_handoff_fields:
-                    raise ValueError(SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE)
+                    raise ValueError(
+                        SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE
+                    )
             else:
                 if self.handoff_json is None and self.handoff_record_json is None:
                     raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
@@ -251,21 +272,26 @@ class DatabricksSGLangSmokeJobConfig:
                     raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
         if self.hicache_size_gb is not None and self.hicache_size_gb < 0:
             raise ValueError("hicache_size_gb must be non-negative")
-        if (
-            self.hicache_storage_prefetch_threshold is not None
-            and (
-                isinstance(self.hicache_storage_prefetch_threshold, bool)
-                or not isinstance(self.hicache_storage_prefetch_threshold, int)
-                or self.hicache_storage_prefetch_threshold <= 0
-            )
+        if self.hicache_storage_prefetch_threshold is not None and (
+            isinstance(self.hicache_storage_prefetch_threshold, bool)
+            or not isinstance(self.hicache_storage_prefetch_threshold, int)
+            or self.hicache_storage_prefetch_threshold <= 0
         ):
-            raise ValueError("hicache_storage_prefetch_threshold must be a positive integer when provided")
-        object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
+            raise ValueError(
+                "hicache_storage_prefetch_threshold must be a positive integer when provided"
+            )
+        object.__setattr__(
+            self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars)
+        )
         _DEFAULT_CLUSTER_CONFIG_FROM_SGLANG_SMOKE_JOB(self)
 
 
-def build_databricks_sglang_smoke_run_submit_payload(config: DatabricksSGLangSmokeJobConfig) -> dict[str, Any]:
-    cluster = build_single_node_gpu_cluster(_cluster_config_from_sglang_smoke_job(config))
+def build_databricks_sglang_smoke_run_submit_payload(
+    config: DatabricksSGLangSmokeJobConfig,
+) -> dict[str, Any]:
+    cluster = build_single_node_gpu_cluster(
+        _cluster_config_from_sglang_smoke_job(config)
+    )
     if config.spark_env_vars:
         cluster["spark_env_vars"] = dict(config.spark_env_vars)
     task: dict[str, Any] = {
@@ -277,7 +303,9 @@ def build_databricks_sglang_smoke_run_submit_payload(config: DatabricksSGLangSmo
         },
     }
     if config.wheel_uri is not None:
-        task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
+        task["spark_python_task"]["parameters"].extend(
+            ["--package-wheel-uri", config.wheel_uri]
+        )
     return {
         "run_name": config.run_name,
         "tasks": [task],
@@ -289,7 +317,12 @@ def write_databricks_sglang_smoke_run_submit_json(
     path: str | Path,
 ) -> None:
     Path(path).write_text(
-        json.dumps(build_databricks_sglang_smoke_run_submit_payload(config), indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            build_databricks_sglang_smoke_run_submit_payload(config),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -319,14 +352,18 @@ _DEFAULT_CLUSTER_CONFIG_FROM_SGLANG_SMOKE_JOB = _cluster_config_from_sglang_smok
 def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> str:
     if hardware_target is not None:
         validate_v1_hardware_target(hardware_target)
-        validate_aws_single_node_gpu_type_for_hardware_target(node_type_id, hardware_target)
+        validate_aws_single_node_gpu_type_for_hardware_target(
+            node_type_id, hardware_target
+        )
         return hardware_target
     validate_aws_single_node_gpu_type(node_type_id)
     lowered = node_type_id.lower()
     for target, prefixes in HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.items():
         if lowered.startswith(prefixes):
             return target
-    raise ValueError(f"Unable to derive V1 hardware target from node_type_id {node_type_id!r}")
+    raise ValueError(
+        f"Unable to derive V1 hardware target from node_type_id {node_type_id!r}"
+    )
 
 
 def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
@@ -361,6 +398,8 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         config.cache_prompt_text_mode,
         "--live-check-prompt-format",
         config.live_check_prompt_format,
+        "--live-check-request-mode",
+        config.live_check_request_mode,
     ]
     if not config.stream:
         parameters.append("--no-stream")
@@ -375,11 +414,15 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
     if config.request_id is not None:
         parameters.extend(["--request-id", config.request_id])
     if config.sglang_hicache_page_keys_json is not None:
-        parameters.extend(["--sglang-hicache-page-keys-json", config.sglang_hicache_page_keys_json])
+        parameters.extend(
+            ["--sglang-hicache-page-keys-json", config.sglang_hicache_page_keys_json]
+        )
     if config.generate_live_handoff:
         parameters.append("--generate-live-handoff")
         if config.live_handoff_output_dir is not None:
-            parameters.extend(["--live-handoff-output-dir", config.live_handoff_output_dir])
+            parameters.extend(
+                ["--live-handoff-output-dir", config.live_handoff_output_dir]
+            )
         parameters.extend(
             [
                 "--live-handoff-generator-factory",
@@ -405,7 +448,12 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
     if config.hicache_mem_layout is not None:
         parameters.extend(["--hicache-mem-layout", config.hicache_mem_layout])
     if config.hicache_storage_prefetch_policy is not None:
-        parameters.extend(["--hicache-storage-prefetch-policy", config.hicache_storage_prefetch_policy])
+        parameters.extend(
+            [
+                "--hicache-storage-prefetch-policy",
+                config.hicache_storage_prefetch_policy,
+            ]
+        )
     if config.hicache_storage_prefetch_threshold is not None:
         parameters.extend(
             [
@@ -423,8 +471,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Emit a Databricks runs/submit payload for a Qwen3/SGLang live Cachet smoke."
     )
     parser.add_argument("--benchmark-id", required=True)
-    parser.add_argument("--output-dir", required=True, help="Cluster-visible output directory for smoke artifacts.")
-    parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
+    parser.add_argument(
+        "--output-dir",
+        required=True,
+        help="Cluster-visible output directory for smoke artifacts.",
+    )
+    parser.add_argument(
+        "--runner-python-file",
+        required=True,
+        help="Cluster-visible runner script path or URI.",
+    )
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY)
     parser.add_argument(
@@ -437,9 +493,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Databricks node type override. Must match --hardware-target when provided.",
     )
     parser.add_argument("--spark-version", default=DEFAULT_DATABRICKS_SPARK_VERSION)
-    parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
-    parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
-    parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
+    parser.add_argument(
+        "--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE
+    )
+    parser.add_argument(
+        "--single-user-name", help="Required when --data-security-mode SINGLE_USER."
+    )
+    parser.add_argument(
+        "--wheel-uri",
+        help="Optional cluster-visible wheel URI to install before the task.",
+    )
     parser.add_argument("--max-tokens", type=int, default=32)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--import-probe-timeout-seconds", type=float, default=180.0)
@@ -452,11 +515,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--mem-fraction-static", type=float, default=0.85)
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--baseline-only", action="store_true")
-    parser.add_argument("--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical")
+    parser.add_argument(
+        "--cache-prompt-text-mode", choices=("logical", "runtime"), default="logical"
+    )
     parser.add_argument(
         "--live-check-prompt-format",
         choices=("plain", "qwen3_chat"),
         default=DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
+    )
+    parser.add_argument(
+        "--live-check-request-mode",
+        choices=("completion", "chat"),
+        default=DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
@@ -471,8 +541,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--live-handoff-dtype", default="bfloat16")
     parser.add_argument("--live-handoff-align-bytes", type=int, default=4096)
-    parser.add_argument("--sglang-hicache-page-size", type=int, default=DEFAULT_SGLANG_HICACHE_PAGE_SIZE)
-    parser.add_argument("--live-handoff-generation-timeout-seconds", type=float, default=1800.0)
+    parser.add_argument(
+        "--sglang-hicache-page-size", type=int, default=DEFAULT_SGLANG_HICACHE_PAGE_SIZE
+    )
+    parser.add_argument(
+        "--live-handoff-generation-timeout-seconds", type=float, default=1800.0
+    )
     parser.add_argument("--hicache-page-store-uri")
     parser.add_argument("--hicache-ratio", type=float)
     parser.add_argument("--hicache-size-gb", type=int)
@@ -494,8 +568,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Non-secret Databricks cluster spark_env_vars entry for runtime configuration, in KEY=VALUE form.",
     )
-    parser.add_argument("--output-json", help="Write the runs/submit payload to this path instead of stdout.")
-    parser.add_argument("--runner-script-output", help="Write the tiny SGLang smoke runner script to this path.")
+    parser.add_argument(
+        "--output-json",
+        help="Write the runs/submit payload to this path instead of stdout.",
+    )
+    parser.add_argument(
+        "--runner-script-output",
+        help="Write the tiny SGLang smoke runner script to this path.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -505,7 +585,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner_python_file=args.runner_python_file,
             run_name=args.run_name,
             task_key=args.task_key,
-            node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
+            node_type_id=databricks_node_type_for_hardware_target(
+                args.hardware_target, args.node_type_id
+            ),
             hardware_target=args.hardware_target,
             spark_version=args.spark_version,
             data_security_mode=args.data_security_mode,
@@ -525,6 +607,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             baseline_only=args.baseline_only,
             cache_prompt_text_mode=args.cache_prompt_text_mode,
             live_check_prompt_format=args.live_check_prompt_format,
+            live_check_request_mode=args.live_check_request_mode,
             handoff_json=args.handoff_json,
             handoff_record_json=args.handoff_record_json,
             payload_uri=args.payload_uri,
@@ -551,11 +634,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             write_databricks_sglang_smoke_runner_script(args.runner_script_output)
         payload = build_databricks_sglang_smoke_run_submit_payload(config)
         if args.output_json:
-            Path(args.output_json).write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            Path(args.output_json).write_text(
+                json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
         else:
             print(json.dumps(payload, indent=2, sort_keys=True))
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, sort_keys=True))
+        print(
+            json.dumps(
+                {"ok": False, "error": str(exc), "error_type": type(exc).__name__},
+                sort_keys=True,
+            )
+        )
         return 1
     return 0
 
@@ -575,7 +665,9 @@ def _json_string_array_from_text(value: str, field_name: str) -> tuple[str, ...]
         decoded = json.loads(value)
     except json.JSONDecodeError as exc:
         raise ValueError(f"{field_name} must be valid JSON") from exc
-    if isinstance(decoded, (str, bytes, bytearray)) or not isinstance(decoded, Sequence):
+    if isinstance(decoded, (str, bytes, bytearray)) or not isinstance(
+        decoded, Sequence
+    ):
         raise ValueError(f"{field_name} must decode to a JSON string array")
     items = tuple(decoded)
     for index, item in enumerate(items):
