@@ -1,0 +1,31 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no findings, verified the Cachet-branded native adapter import aliases, confirmed the lazy vLLM root-import boundary was not weakened, checked docs kept compatibility-path semantics clear, ran focused tests, and approved.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 504,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/504",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "src/cachet/adapters/README.md",
+    "tests/test_public_package.py",
+    "tests/test_vllm_kv_injection_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_public_package.py::test_cachet_adapter_facades_delegate_to_vendored_compatibility_packages tests/test_public_package.py::test_cachet_adapter_submodules_delegate_to_vendored_compatibility_submodules tests/test_public_package.py::test_cachet_adapter_facades_expose_native_runtime_symbols tests/test_public_package.py::test_cachet_adapter_submodules_reuse_preloaded_vendored_submodules -q",
+    "poetry run pytest tests/test_vllm_kv_injection_project_governance.py::test_vllm_adapter_readme_keeps_engine_boundary_in_cachet_monorepo -q",
+    "poetry run pytest -q -> 1876 passed, 5 skipped",
+    "git diff --check",
+    "Databricks token-pattern scan returned 0 matching files",
+    "GPT-5.5 reviewer reported no findings and APPROVED"
+  ],
+  "what_changed": [
+    "Documented that Cachet-branded vLLM and SGLang adapter aliases cover production native provider/backend modules, not only probe and protocol helpers.",
+    "Extended public package tests so Cachet adapter native runtime imports resolve to the same module objects and symbols as vllm_kv_injection and sglang_kv_injection.",
+    "Kept engine-facing compatibility paths unchanged for Databricks launch metadata and runtime connector imports."
+  ],
+  "why": "The package goal is one Cachet repo and user-facing package surface while preserving engine-compatible adapter import paths required by vLLM, SGLang, and Databricks metadata."
+}
