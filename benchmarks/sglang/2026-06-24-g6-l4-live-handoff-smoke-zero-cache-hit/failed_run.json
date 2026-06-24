@@ -1,0 +1,98 @@
+{
+  "benchmark_result": "not_published",
+  "blocker": "The generated-handoff smoke cleared SGLang server launch, request-metadata bridge validation, and logical prompt submission. The cache arm received Cachet kv_transfer_params and answered, but SGLang reported 174 new tokens and 0 cached tokens for the cache-arm prefill. The later 173 cached tokens came from ordinary SGLang prefix-cache reuse after the cache arm, not from the external Cachet handoff.",
+  "cachet_commit": "c774e0c",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 476596508869043,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/673957935805692/run/476596508869043",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure_type": "sglang_zero_cache_hit_validation",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cache_prompt_text_mode": "logical",
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 150,
+    "live_request_metadata_bridge_ok": true,
+    "sglang_import_probe_ok": true
+  },
+  "live_handoff_generation": {
+    "backend": "sglang",
+    "cache_prefix_tokens": 150,
+    "ok": true,
+    "sglang_hicache_page_size": 1
+  },
+  "mode": "generated-live-handoff-logical-prompt",
+  "node_type": "g6.8xlarge",
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "server_prefill_token_counts": [
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 6,
+      "total_prompt_tokens": 6
+    },
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 1,
+      "total_prompt_tokens": 1
+    },
+    {
+      "cached_tokens": 0,
+      "classification": "cache_arm",
+      "new_tokens": 174,
+      "total_prompt_tokens": 174
+    },
+    {
+      "cached_tokens": 173,
+      "classification": "baseline_after_cache_arm",
+      "new_tokens": 1,
+      "total_prompt_tokens": 174
+    }
+  ],
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "smoke": {
+    "baseline_answer_found": true,
+    "baseline_ok": true,
+    "baseline_prompt_tokens": 92,
+    "baseline_server_usage_prompt_tokens": 174,
+    "baseline_time_to_completion_seconds": 7.865617623,
+    "baseline_ttft_seconds": 6.851119656,
+    "cache_answer_found": true,
+    "cache_ok": true,
+    "cache_prompt_text_mode": "logical",
+    "cache_prompt_tokens": 92,
+    "cache_request_cached_tokens": 0,
+    "cache_runtime_prompt_chars": 131,
+    "cache_server_usage_prompt_tokens": 174,
+    "cache_time_to_completion_seconds": 1.079948088,
+    "cache_ttft_seconds": 0.054490063,
+    "cached_token_counts": [
+      0,
+      0,
+      0,
+      173
+    ],
+    "issues": [
+      "SGLang cache arm reported zero cached tokens"
+    ],
+    "model_id": "qwen3:4b-instruct",
+    "served_model_name": "qwen3-4b-instruct",
+    "server_cached_token_validation": "failed_zero_cache_arm_cached_tokens"
+  },
+  "task": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 232728503370432,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}

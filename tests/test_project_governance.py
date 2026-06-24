@@ -1034,6 +1034,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_zero_cache_hit_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1047,6 +1053,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             benchmark_root
             / "sglang"
             / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
+    sglang_zero_cache_hit_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
@@ -1128,10 +1142,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Failed live handoff smoke" in sglang_readme
     assert "201402713679607" in sglang_readme
     assert "13763847664432" in sglang_readme
+    assert "476596508869043" in sglang_readme
     assert "suffix-only runtime prompt text" in compact_sglang_readme
+    assert "zero cached tokens" in compact_sglang_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
+    assert "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit" in sglang_readme
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
+    assert "zero-cache-hit blocker" in compact_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1140,6 +1158,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Runtime Suffix Blocker" in sglang_runtime_suffix_readme
     assert "cache_prompt_text_mode=runtime" in sglang_runtime_suffix_readme
     assert "positive SGLang cache-hit validation" in sglang_runtime_suffix_readme
+    assert "Zero Cache-Hit Blocker" in sglang_zero_cache_hit_readme
+    assert "cache_prompt_text_mode=logical" in sglang_zero_cache_hit_readme
+    assert "ordinary SGLang prefix-cache reuse" in sglang_zero_cache_hit_readme
     assert sglang_failed_run == {
         "benchmark_result": "not_published",
         "blocker": (
@@ -1248,6 +1269,116 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             "task_key": "document_kv_sglang_smoke",
         },
     }
+    assert sglang_zero_cache_hit_failed_run == {
+        "benchmark_result": "not_published",
+        "blocker": (
+            "The generated-handoff smoke cleared SGLang server launch, request-metadata bridge "
+            "validation, and logical prompt submission. The cache arm received Cachet "
+            "kv_transfer_params and answered, but SGLang reported 174 new tokens and 0 cached "
+            "tokens for the cache-arm prefill. The later 173 cached tokens came from ordinary "
+            "SGLang prefix-cache reuse after the cache arm, not from the external Cachet handoff."
+        ),
+        "cachet_commit": "c774e0c",
+        "databricks_run": {
+            "active_task_key": None,
+            "life_cycle_state": "INTERNAL_ERROR",
+            "result_state": "FAILED",
+            "run_id": 476596508869043,
+            "run_name": "document-kv-sglang-smoke",
+            "run_page_url": (
+                "https://dbc-21120bc8-ecb0.cloud.databricks.com/"
+                "?o=413991477208516#job/673957935805692/run/476596508869043"
+            ),
+            "state_message": (
+                "Task document_kv_sglang_smoke failed with message: "
+                "Workload failed, see run output for details."
+            ),
+            "succeeded": False,
+            "terminal": True,
+        },
+        "failure_type": "sglang_zero_cache_hit_validation",
+        "hardware_target": "aws-g6-l4",
+        "integration_checks": {
+            "cache_prompt_text_mode": "logical",
+            "generated_live_handoff": True,
+            "generated_live_handoff_page_keys": 150,
+            "live_request_metadata_bridge_ok": True,
+            "sglang_import_probe_ok": True,
+        },
+        "live_handoff_generation": {
+            "backend": "sglang",
+            "cache_prefix_tokens": 150,
+            "ok": True,
+            "sglang_hicache_page_size": 1,
+        },
+        "mode": "generated-live-handoff-logical-prompt",
+        "node_type": "g6.8xlarge",
+        "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+        "server_prefill_token_counts": [
+            {
+                "cached_tokens": 0,
+                "classification": "server_warmup",
+                "new_tokens": 6,
+                "total_prompt_tokens": 6,
+            },
+            {
+                "cached_tokens": 0,
+                "classification": "server_warmup",
+                "new_tokens": 1,
+                "total_prompt_tokens": 1,
+            },
+            {
+                "cached_tokens": 0,
+                "classification": "cache_arm",
+                "new_tokens": 174,
+                "total_prompt_tokens": 174,
+            },
+            {
+                "cached_tokens": 173,
+                "classification": "baseline_after_cache_arm",
+                "new_tokens": 1,
+                "total_prompt_tokens": 174,
+            },
+        ],
+        "snapshot_date": "2026-06-24",
+        "spark_version": "15.4.x-gpu-ml-scala2.12",
+        "smoke": {
+            "baseline_answer_found": True,
+            "baseline_ok": True,
+            "baseline_prompt_tokens": 92,
+            "baseline_server_usage_prompt_tokens": 174,
+            "baseline_time_to_completion_seconds": 7.865617623,
+            "baseline_ttft_seconds": 6.851119656,
+            "cache_answer_found": True,
+            "cache_ok": True,
+            "cache_prompt_text_mode": "logical",
+            "cache_prompt_tokens": 92,
+            "cache_request_cached_tokens": 0,
+            "cache_runtime_prompt_chars": 131,
+            "cache_server_usage_prompt_tokens": 174,
+            "cache_time_to_completion_seconds": 1.079948088,
+            "cache_ttft_seconds": 0.054490063,
+            "cached_token_counts": [
+                0,
+                0,
+                0,
+                173,
+            ],
+            "issues": [
+                "SGLang cache arm reported zero cached tokens",
+            ],
+            "model_id": "qwen3:4b-instruct",
+            "served_model_name": "qwen3-4b-instruct",
+            "server_cached_token_validation": "failed_zero_cache_arm_cached_tokens",
+        },
+        "task": {
+            "life_cycle_state": "TERMINATED",
+            "result_state": "FAILED",
+            "run_id": 232728503370432,
+            "state_message": "Workload failed, see run output for details",
+            "task_key": "document_kv_sglang_smoke",
+        },
+    }
     assert "must not be cited as SGLang latency, throughput, or quality benchmark results" in compact_sglang_readme
     assert "948365719597221" in storage_readme
     assert "unity_catalog" in storage_readme
@@ -1264,6 +1395,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/README.md",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/failed_run.json",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",

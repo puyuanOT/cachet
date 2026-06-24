@@ -10,7 +10,7 @@ Start with the standalone report folders:
 | Folder | Purpose | Current status |
 | --- | --- | --- |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
-| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smokes exposed served-model-name and suffix-only prompt blockers; live latency and quality benchmark pending |
+| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smokes exposed served-model-name, suffix-only prompt, and zero cache-hit blockers; live latency and quality benchmark pending |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 
@@ -50,6 +50,10 @@ generated dataset payloads, or cluster-local scratch output here.
 | [`databricks/2026-06-23-g5-a10g-v1-compatibility`](databricks/2026-06-23-g5-a10g-v1-compatibility/) | Non-default compatibility benchmark | `566743786103032` | `aws-g5-a10g` / `g5.8xlarge` | `ok=true`; 24 measurements; 4.66x-6.04x TTFT speedups |
 | [`databricks/2026-06-21-g6-l4-storage-readers`](databricks/2026-06-21-g6-l4-storage-readers/) | Memory, Disk, and Unity Catalog storage readers | `948365719597221` | `aws-g6-l4` / `g6.8xlarge` | `ok=true`; real UC Volume; zero reader errors |
 | [`databricks/2026-06-23-g6-l4-native-engine-probes`](databricks/2026-06-23-g6-l4-native-engine-probes/) | vLLM and SGLang native connector probes, not latency benchmarks | `934698284395881` | `aws-g6-l4` / `g6.8xlarge` | `ok=true`; provider-backed native probes succeeded |
+
+SGLang live-readiness failures are tracked in standalone folders under
+[`sglang/`](sglang/), including the latest zero-cache-hit blocker at
+[`sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/).
 
 The strict V1 publication target remains AWS g6/L4. The g5 folder is retained
 only as compatibility evidence and cannot replace the g6/L4 release target.
