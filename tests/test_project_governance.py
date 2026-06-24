@@ -1124,6 +1124,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
         / "README.md"
     ).read_text(encoding="utf-8")
+    sglang_canary_flush_cache_hit_quality_failure_readme = (
+        benchmark_root
+        / "sglang"
+        / "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     sglang_failed_run = json.loads(
         (
             benchmark_root
@@ -1260,6 +1266,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
+    sglang_canary_flush_cache_hit_quality_failure_failed_run = json.loads(
+        (
+            benchmark_root
+            / "sglang"
+            / "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
+            / "failed_run.json"
+        ).read_text(encoding="utf-8")
+    )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
@@ -1384,6 +1398,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
         in sglang_readme
     )
+    assert (
+        "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
+        in sglang_readme
+    )
     assert "failed generated-handoff live smoke attempts" in compact_snapshot
     assert "zero-cache-hit blocker" in compact_snapshot
     assert "partial page-binding blocker" in compact_snapshot
@@ -1398,7 +1416,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Triton/PyTorch deterministic cache-hit quality failure" in current_databricks_snapshot
     assert "minimal no-thinking cache-hit quality failure" in current_databricks_snapshot
     assert "canary-after-cache-hit quality failure" in current_databricks_snapshot
-    assert "post-live-check canary quality gates" in current_databricks_snapshot
+    assert "canary-flush cache-hit quality failure" in current_databricks_snapshot
+    assert "post-live-check canary now passes" in current_databricks_snapshot
     assert "cache-arm cached-token validation" in compact_snapshot
     assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
@@ -1973,6 +1992,88 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "document_kv.request_id",
         "document_kv.sglang_hicache_page_keys",
     ]
+    assert "Canary Flush With Cache Hit And Quality Failure" in (
+        sglang_canary_flush_cache_hit_quality_failure_readme
+    )
+    compact_canary_flush_readme = " ".join(
+        sglang_canary_flush_cache_hit_quality_failure_readme.split()
+    )
+    assert "zero cached tokens" in compact_canary_flush_readme
+    assert "cachet-green" in compact_canary_flush_readme
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "record_type"
+    ] == "cachet.benchmark_failed_databricks_smoke.v1"
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "benchmark_result"
+    ] == "not_published"
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "failure_type"
+    ] == "sglang_live_quality_failure_with_canary_flush_after_full_cache_hit"
+    assert (
+        sglang_canary_flush_cache_hit_quality_failure_failed_run["cachet_commit"]
+        == "f95d4f0"
+    )
+    assert (
+        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
+            "run_id"
+        ]
+        == 655273897262076
+    )
+    assert (
+        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
+            "result_state"
+        ]
+        == "FAILED"
+    )
+    assert (
+        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
+            "succeeded"
+        ]
+        is False
+    )
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["task"][
+        "run_id"
+    ] == 541340270733865
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["task"][
+        "result_state"
+    ] == "FAILED"
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["package_wheel"][
+        "sha256"
+    ] == "43185087ca4cd8148102bd7b813dded530ec9cd0e882b7496641ad9acc952c48"
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "sglang_cache_hit_validation"
+    ]["cache_request_cached_tokens"] == 175
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "canary_cache_flush"
+    ]["ok"] is True
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "canary_cache_flush"
+    ]["http_status"] == 200
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "server_prefill_token_counts"
+    ][2] == {
+        "cached_tokens": 175,
+        "classification": "cache_arm_external_handoff",
+        "new_tokens": 30,
+        "total_prompt_tokens": 205,
+    }
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
+        "server_prefill_token_counts"
+    ][4] == {
+        "cached_tokens": 0,
+        "classification": "model_quality_canary_after_flush",
+        "new_tokens": 36,
+        "total_prompt_tokens": 36,
+    }
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
+        "ok"
+    ] is False
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
+        "model_quality_canary_ok"
+    ] is True
+    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
+        "model_quality_canary_output_text_prefix"
+    ] == "cachet-green"
     assert sglang_failed_run == {
         "benchmark_result": "not_published",
         "blocker": (
@@ -2423,6 +2524,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/README.md",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/failed_run.json",
         "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/README.md",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/failed_run.json",
+        "sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/README.md",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",

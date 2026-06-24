@@ -1,0 +1,222 @@
+{
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "snapshot_date": "2026-06-24",
+  "benchmark_result": "not_published",
+  "failure_type": "sglang_live_quality_failure_with_canary_flush_after_full_cache_hit",
+  "benchmark_id": "v1_sglang_live_canary_flush_20260624_035639",
+  "mode": "generated-live-handoff-logical-prompt-qwen-chat-minimal-no-thinking-triton-pytorch-deterministic-wait-complete-flush-before-canary",
+  "cachet_commit": "f95d4f0",
+  "hardware_target": "aws-g6-l4",
+  "node_type": "g6.8xlarge",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 655273897262076,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/117492896037773/run/655273897262076",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "task": {
+    "cluster_id": "0624-095800-5rktvvv6",
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 541340270733865,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  },
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "43185087ca4cd8148102bd7b813dded530ec9cd0e882b7496641ad9acc952c48"
+  },
+  "integration_checks": {
+    "sglang_import_probe_ok": true,
+    "document_kv_request_metadata_bridge_ok": true,
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_provider_type": "sglang_kv_injection.sglang_dynamic_backend.DocumentKVHiCachePageProvider",
+    "cuda_device_name": "NVIDIA L4",
+    "sglang_version": "0.5.10.post1",
+    "document_kv_cache_version": "0.2.0",
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 175,
+    "kv_transfer_params_transport": "custom_params",
+    "cache_prompt_text_mode": "logical",
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.0,
+    "live_check_extra_body": {
+      "chat_template_kwargs": {
+        "enable_thinking": false,
+        "thinking": false
+      },
+      "reasoning_effort": "none"
+    },
+    "sglang_attention_backend": "triton",
+    "sglang_sampling_backend": "pytorch",
+    "sglang_enable_deterministic_inference": true,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "prefetch_threshold": 1,
+    "flush_cache_before_canary": true,
+    "flush_cache_timeout_seconds": 30.0
+  },
+  "live_handoff_generation": {
+    "ok": true,
+    "backend": "sglang",
+    "chat_template_rendered": true,
+    "sglang_hicache_page_size": 1,
+    "cache_prefix_tokens": 175,
+    "cache_prefix_source_tokens": 176,
+    "runtime_prompt_tokens": 205,
+    "cache_prefix_full_pages": 175,
+    "cache_prefix_token_stable": false,
+    "cache_prefix_token_stable_ratio": 0.9943181818181818,
+    "cache_prefix_token_stable_truncated": true
+  },
+  "sglang_cache_hit_validation": {
+    "ok": true,
+    "cache_request_cached_tokens": 175,
+    "minimum_cached_tokens": 175,
+    "cache_request_prompt_tokens": 205,
+    "cache_request_prefill_index": 2,
+    "cache_request_prompt_match_field": "total_prompt_tokens",
+    "issue": null
+  },
+  "canary_cache_flush": {
+    "endpoint": "/flush_cache",
+    "http_status": 200,
+    "ok": true,
+    "reason": "before_model_quality_canary",
+    "response_text_tail": "Cache flushed.\nPlease check backend logs for more details. (When there are running or waiting requests, the operation will not be performed.)\n",
+    "timeout_seconds": 30.0
+  },
+  "server_prefill_token_counts": [
+    {
+      "new_tokens": 6,
+      "cached_tokens": 0,
+      "total_prompt_tokens": 6,
+      "classification": "server_warmup"
+    },
+    {
+      "new_tokens": 1,
+      "cached_tokens": 0,
+      "total_prompt_tokens": 1,
+      "classification": "server_warmup"
+    },
+    {
+      "new_tokens": 30,
+      "cached_tokens": 175,
+      "total_prompt_tokens": 205,
+      "classification": "cache_arm_external_handoff"
+    },
+    {
+      "new_tokens": 1,
+      "cached_tokens": 204,
+      "total_prompt_tokens": 205,
+      "classification": "baseline_after_cache_arm_prefix_cache"
+    },
+    {
+      "new_tokens": 36,
+      "cached_tokens": 0,
+      "total_prompt_tokens": 36,
+      "classification": "model_quality_canary_after_flush"
+    }
+  ],
+  "server_hicache_binding_events": [
+    {
+      "reason": "pages_hydrated",
+      "key_count": 128,
+      "runtime_key_count": 128,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": false,
+      "binding_key_count": 128,
+      "hydrated_count": 128,
+      "full_page_count": 175,
+      "has_handoff_json": true,
+      "has_inline_handoff": false,
+      "has_payload_uri": true,
+      "prompt_text_mode": "logical"
+    },
+    {
+      "reason": "pages_hydrated",
+      "key_count": 77,
+      "runtime_key_count": 77,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": true,
+      "binding_key_count": 47,
+      "hydrated_count": 47,
+      "full_page_count": 175,
+      "has_handoff_json": true,
+      "has_inline_handoff": false,
+      "has_payload_uri": true,
+      "prompt_text_mode": "logical"
+    },
+    {
+      "reason": "pages_already_hydrated",
+      "key_count": 128,
+      "runtime_key_count": 128,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": false,
+      "binding_key_count": 128,
+      "hydrated_count": 128,
+      "full_page_count": 175,
+      "has_handoff_json": true,
+      "has_inline_handoff": false,
+      "has_payload_uri": true,
+      "prompt_text_mode": "logical"
+    },
+    {
+      "reason": "pages_already_hydrated",
+      "key_count": 47,
+      "runtime_key_count": 47,
+      "expected_page_keys": 175,
+      "prefix_keys": 0,
+      "last_hash_present": false,
+      "binding_key_count": 47,
+      "hydrated_count": 47,
+      "full_page_count": 175,
+      "has_handoff_json": true,
+      "has_inline_handoff": false,
+      "has_payload_uri": true,
+      "prompt_text_mode": "logical"
+    }
+  ],
+  "smoke": {
+    "ok": false,
+    "issues": [
+      "baseline live check failed",
+      "cache-arm live check failed"
+    ],
+    "model_id": "qwen3:4b-instruct",
+    "served_model_name": "qwen3-4b-instruct",
+    "cache_prompt_text_mode": "logical",
+    "cache_ok": false,
+    "cache_answer_found": false,
+    "cache_output_text_prefix": " or or or Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover or or Cover Cover Cover Cover Co",
+    "cache_prompt_tokens": 92,
+    "cache_ttft_seconds": 1.3406978149999986,
+    "cache_time_to_completion_seconds": 2.687231278000013,
+    "baseline_ok": false,
+    "baseline_answer_found": false,
+    "baseline_output_text_prefix": " or or or Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover or or Cover Cover Cover Cover Co",
+    "baseline_prompt_tokens": 92,
+    "baseline_ttft_seconds": 0.18496428699995704,
+    "baseline_time_to_completion_seconds": 1.5303106920000573,
+    "model_quality_canary_ok": true,
+    "model_quality_canary_answer_found": true,
+    "model_quality_canary_expected_answer": "cachet-green",
+    "model_quality_canary_output_text_prefix": "cachet-green",
+    "model_quality_canary_prompt_tokens": 17,
+    "server_cached_token_validation": "positive_generated_prefix_cache_hit_and_flushed_canary_passed_but_live_quality_failed"
+  },
+  "related_diagnostic": {
+    "previous_canary_after_run_id": 419314952937106,
+    "previous_canary_after_result": "full cache hit passed but post-live-check canary failed before explicit SGLang /flush_cache isolation"
+  },
+  "blocker": "PR #488 added an explicit SGLang /flush_cache call before the post-live-check model-quality canary. The Databricks run used the fresh f95d4f0 wheel on g6.8xlarge, generated the Qwen-chat handoff, hydrated all expected Cachet-backed SGLang pages, and preserved the full 175-token cache-arm hit. The flush returned HTTP 200 and the model-quality canary then produced cachet-green with zero cached tokens, clearing the previous canary-contamination blocker. The run is still not a publishable SGLang benchmark because both baseline and cache-arm live quality returned repeated filler text instead of the expected NIAH answer."
+}

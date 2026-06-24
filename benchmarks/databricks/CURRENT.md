@@ -55,15 +55,17 @@ the Triton/PyTorch deterministic cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/),
 the minimal no-thinking cache-hit quality failure tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/),
-and the current canary-after-cache-hit quality failure tracked at
-[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/).
+the canary-after-cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/),
+and the current canary-flush cache-hit quality failure tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
 decode-time prefix binding with Cachet handoffs, hydrates all matching
 generated page-key chunks, records a positive cache-arm cached-token
-validation covering the generated handoff prefix, and passes the live
-baseline, cache-arm, and post-live-check canary quality gates with a
-Qwen3/SGLang-compatible request.
+validation covering the generated handoff prefix, and passes the live baseline
+and cache-arm quality gates with a Qwen3/SGLang-compatible request. The
+post-live-check canary now passes after the explicit SGLang cache flush.
 
 ## V1 Latency And Quality
 
