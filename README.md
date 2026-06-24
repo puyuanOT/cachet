@@ -1374,9 +1374,13 @@ backend so pinned SGLang request `custom_params` reach
 `HiCacheStorageExtraInfo.extra_info`; the SGLang runtime preflight records that
 Cachet bridge separately from upstream SGLang source detection and can report
 `live_request_metadata_bridge_ok=true`. Use `--baseline-only` for provider and
-server bring-up. Omit it only when passing a validated SGLang handoff plus
-`--sglang-hicache-page-keys-json`; the smoke then runs both baseline and
-handoff-backed cache arms and records decode-time prefix binding.
+server bring-up. For cache-arm readiness, prefer `--generate-live-handoff`: the
+helper generates the synthetic live Cachet handoff and exact SGLang HiCache
+page keys inside the isolated SGLang runtime before starting the server. Manual
+handoff inputs remain supported by passing a validated SGLang handoff plus
+`--sglang-hicache-page-keys-json`. In either non-baseline mode, the smoke runs
+both baseline and handoff-backed cache arms and records decode-time prefix
+binding.
 
 ```bash
 python -m document_kv_cache.sglang_smoke \
@@ -1388,9 +1392,9 @@ python -m document_kv_cache.sglang_smoke \
 
 To submit that same smoke as a Databricks task, generate the runner script and
 single-node g5/g6 runs/submit payload. Baseline-only output is provider/server
-bring-up evidence, not Cachet benchmark evidence. A handoff-backed smoke job
-must include `--handoff-json` or `--handoff-record-json` plus
-`--sglang-hicache-page-keys-json`:
+bring-up evidence, not Cachet benchmark evidence. The preferred handoff-backed
+readiness payload uses `--generate-live-handoff` plus non-secret Transformers
+runtime env vars for the Cachet generator:
 
 ```bash
 mkdir -p databricks-runs/sglang-smoke
@@ -1401,10 +1405,18 @@ python -m document_kv_cache.databricks_sglang_smoke_job \
   --runner-script-output databricks-runs/sglang-smoke/run_sglang_smoke.py \
   --wheel-uri /Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl \
   --single-user-name user@example.com \
-  --baseline-only \
   --hardware-target aws-g6-l4 \
+  --generate-live-handoff \
+  --live-handoff-output-dir /Volumes/catalog/schema/volume/document-kv-sglang-live/live-handoff \
+  --spark-env-var CACHET_TRANSFORMERS_DEVICE=cuda \
+  --spark-env-var CACHET_TRANSFORMERS_TORCH_DTYPE=bfloat16 \
   --output-json databricks-runs/sglang-smoke/databricks-sglang-smoke-submit.json
 ```
+
+Use `--baseline-only` instead of `--generate-live-handoff` for provider/server
+bring-up, or pass `--handoff-json`/`--handoff-record-json` plus
+`--sglang-hicache-page-keys-json` when reusing an already validated SGLang
+handoff bundle.
 
 After the real V1 benchmark, storage benchmark, and native vLLM/SGLang probe
 runs complete, validate the collected release artifacts:
