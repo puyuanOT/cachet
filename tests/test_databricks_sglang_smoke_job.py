@@ -229,6 +229,7 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         live_handoff_output_dir="/Volumes/catalog/schema/volume/v1-sglang-generated/live-handoff",
         live_handoff_generator_factory="module:factory",
         live_check_temperature=0.25,
+        live_check_extra_body_json='{"reasoning_effort":"none"}',
         live_handoff_dtype="float16",
         live_handoff_align_bytes=8,
         sglang_hicache_page_size=2,
@@ -254,6 +255,10 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         == DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     )
     assert parameters[parameters.index("--live-check-temperature") + 1] == "0.25"
+    assert (
+        parameters[parameters.index("--live-check-extra-body-json") + 1]
+        == '{"reasoning_effort":"none"}'
+    )
     assert parameters[parameters.index("--sglang-attention-backend") + 1] == "triton"
     assert parameters[parameters.index("--sglang-sampling-backend") + 1] == "pytorch"
     assert "--sglang-enable-deterministic-inference" in parameters
@@ -300,6 +305,14 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         (
             {"live_check_temperature": True, "baseline_only": True},
             "live_check_temperature",
+        ),
+        (
+            {"live_check_extra_body_json": "[]", "baseline_only": True},
+            "live_check_extra_body_json must decode",
+        ),
+        (
+            {"live_check_extra_body_json": "{", "baseline_only": True},
+            "live_check_extra_body_json must decode",
         ),
         (
             {

@@ -104,10 +104,6 @@ SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS = {
     "enable_thinking": False,
 }
 DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY = {
-    "top_p": 0.8,
-    "top_k": 20,
-    "min_p": 0,
-    "presence_penalty": 1.0,
     "reasoning_effort": "none",
     "chat_template_kwargs": dict(SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS),
 }
@@ -2171,6 +2167,13 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         type=float,
         default=DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     )
+    parser.add_argument(
+        "--live-check-extra-body-json",
+        help=(
+            "Optional non-secret JSON object merged into SGLang live check requests. "
+            "Defaults to the deterministic Qwen3 no-thinking body."
+        ),
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -2211,6 +2214,9 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
 
     output_dir = Path(args.output_dir)
     handoff_generation = _live_handoff_generation_from_args(args, output_dir)
+    live_check_extra_body = _json_object_option(
+        args.live_check_extra_body_json, "--live-check-extra-body-json"
+    )
     return SGLangSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
         output_dir=output_dir,
@@ -2235,6 +2241,11 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
         live_check_prompt_format=args.live_check_prompt_format,
         live_check_request_mode=args.live_check_request_mode,
         live_check_temperature=args.live_check_temperature,
+        live_check_extra_body=(
+            live_check_extra_body
+            if live_check_extra_body is not None
+            else DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+        ),
         handoff_json=args.handoff_json,
         handoff_record=_json_object_option(
             args.handoff_record_json, "--handoff-record-json"

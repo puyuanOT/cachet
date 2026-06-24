@@ -131,6 +131,7 @@ class DatabricksSGLangSmokeJobConfig:
     live_check_prompt_format: str = DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
     live_check_request_mode: str = DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE
     live_check_temperature: float = DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
+    live_check_extra_body_json: str | None = None
     handoff_json: str | None = None
     handoff_record_json: str | None = None
     payload_uri: str | None = None
@@ -250,6 +251,10 @@ class DatabricksSGLangSmokeJobConfig:
         ):
             raise ValueError(
                 "live_check_temperature must be a non-negative finite number"
+            )
+        if self.live_check_extra_body_json is not None:
+            _json_object_from_text(
+                self.live_check_extra_body_json, "live_check_extra_body_json"
             )
         if self.handoff_json and self.handoff_record_json:
             raise ValueError(
@@ -474,6 +479,10 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         "--live-check-temperature",
         str(config.live_check_temperature),
     ]
+    if config.live_check_extra_body_json is not None:
+        parameters.extend(
+            ["--live-check-extra-body-json", config.live_check_extra_body_json]
+        )
     if config.sglang_attention_backend is not None:
         parameters.extend(["--sglang-attention-backend", config.sglang_attention_backend])
     if config.sglang_sampling_backend is not None:
@@ -619,6 +628,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=float,
         default=DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
     )
+    parser.add_argument(
+        "--live-check-extra-body-json",
+        help="Non-secret JSON object merged into SGLang live check requests.",
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -703,6 +716,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             live_check_prompt_format=args.live_check_prompt_format,
             live_check_request_mode=args.live_check_request_mode,
             live_check_temperature=args.live_check_temperature,
+            live_check_extra_body_json=args.live_check_extra_body_json,
             handoff_json=args.handoff_json,
             handoff_record_json=args.handoff_record_json,
             payload_uri=args.payload_uri,

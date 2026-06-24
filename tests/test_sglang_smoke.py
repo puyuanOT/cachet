@@ -429,6 +429,10 @@ def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp
     assert config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
     assert DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE == 0.0
     assert config.live_check_extra_body == DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
+    assert set(config.live_check_extra_body) == {
+        "reasoning_effort",
+        "chat_template_kwargs",
+    }
     assert config.live_check_extra_body["reasoning_effort"] == "none"
     assert config.live_check_extra_body["chat_template_kwargs"] == {
         "thinking": False,
@@ -471,6 +475,32 @@ def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
             baseline_only=True,
             live_check_extra_body={"bad": object()},
         )
+
+
+def test_parse_args_accepts_live_check_extra_body_json(tmp_path):
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "sglang-extra-body",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--baseline-only",
+            "--live-check-extra-body-json",
+            '{"reasoning_effort":"none","chat_template_kwargs":{"thinking":false}}',
+        ]
+    )
+
+    assert config.live_check_extra_body == {
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"thinking": False},
+    }
+    assert public_sglang_smoke._sglang_live_check_chat_template_kwargs(
+        config.live_check_extra_body
+    ) == {
+        "reasoning_effort": "none",
+        "thinking": False,
+        "enable_thinking": False,
+    }
 
 
 def test_sglang_smoke_validates_server_backend_controls(tmp_path):
