@@ -35,10 +35,13 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
+    SGLANG_ATTENTION_BACKEND_CHOICES,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
+    SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES,
+    SGLANG_SAMPLING_BACKEND_CHOICES,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
 )
@@ -119,6 +122,9 @@ class DatabricksSGLangSmokeJobConfig:
     client_host: str = SERVER_HOST
     context_length: int = 4096
     mem_fraction_static: float = 0.85
+    sglang_attention_backend: str | None = None
+    sglang_sampling_backend: str | None = None
+    sglang_enable_deterministic_inference: bool = False
     stream: bool = True
     baseline_only: bool = False
     cache_prompt_text_mode: str = "logical"
@@ -192,6 +198,40 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("context_length must be positive")
         if not 0 < self.mem_fraction_static <= 1:
             raise ValueError("mem_fraction_static must be in (0, 1]")
+        sglang_attention_backend = _validated_optional_choice(
+            self.sglang_attention_backend,
+            choices=SGLANG_ATTENTION_BACKEND_CHOICES,
+            field_name="sglang_attention_backend",
+        )
+        sglang_sampling_backend = _validated_optional_choice(
+            self.sglang_sampling_backend,
+            choices=SGLANG_SAMPLING_BACKEND_CHOICES,
+            field_name="sglang_sampling_backend",
+        )
+        if type(self.sglang_enable_deterministic_inference) is not bool:
+            raise ValueError("sglang_enable_deterministic_inference must be a boolean")
+        if self.sglang_enable_deterministic_inference:
+            if sglang_sampling_backend not in {None, "pytorch"}:
+                raise ValueError(
+                    "sglang_sampling_backend must be 'pytorch' when deterministic "
+                    "inference is enabled"
+                )
+            if (
+                sglang_attention_backend
+                not in SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES
+            ):
+                supported = ", ".join(
+                    repr(value)
+                    for value in SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES
+                )
+                raise ValueError(
+                    "sglang_attention_backend must be one of "
+                    f"{supported} when deterministic inference is enabled"
+                )
+        object.__setattr__(
+            self, "sglang_attention_backend", sglang_attention_backend
+        )
+        object.__setattr__(self, "sglang_sampling_backend", sglang_sampling_backend)
         if type(self.stream) is not bool:
             raise ValueError("stream must be a boolean")
         if type(self.baseline_only) is not bool:
@@ -378,6 +418,25 @@ def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> 
     )
 
 
+def _validated_optional_choice(
+    value: str | None,
+    *,
+    choices: Sequence[str],
+    field_name: str,
+) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string when provided")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{field_name} must be non-empty when provided")
+    if normalized not in choices:
+        supported = ", ".join(repr(choice) for choice in choices)
+        raise ValueError(f"{field_name} must be one of {supported}")
+    return normalized
+
+
 def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
     parameters = [
         "--benchmark-id",
@@ -415,6 +474,12 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         "--live-check-temperature",
         str(config.live_check_temperature),
     ]
+    if config.sglang_attention_backend is not None:
+        parameters.extend(["--sglang-attention-backend", config.sglang_attention_backend])
+    if config.sglang_sampling_backend is not None:
+        parameters.extend(["--sglang-sampling-backend", config.sglang_sampling_backend])
+    if config.sglang_enable_deterministic_inference:
+        parameters.append("--sglang-enable-deterministic-inference")
     if not config.stream:
         parameters.append("--no-stream")
     if config.baseline_only:
@@ -527,6 +592,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--client-host", default=SERVER_HOST)
     parser.add_argument("--context-length", type=int, default=4096)
     parser.add_argument("--mem-fraction-static", type=float, default=0.85)
+    parser.add_argument(
+        "--sglang-attention-backend", choices=SGLANG_ATTENTION_BACKEND_CHOICES
+    )
+    parser.add_argument(
+        "--sglang-sampling-backend", choices=SGLANG_SAMPLING_BACKEND_CHOICES
+    )
+    parser.add_argument("--sglang-enable-deterministic-inference", action="store_true")
     parser.add_argument("--no-stream", action="store_true")
     parser.add_argument("--baseline-only", action="store_true")
     parser.add_argument(
@@ -622,6 +694,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             client_host=args.client_host,
             context_length=args.context_length,
             mem_fraction_static=args.mem_fraction_static,
+            sglang_attention_backend=args.sglang_attention_backend,
+            sglang_sampling_backend=args.sglang_sampling_backend,
+            sglang_enable_deterministic_inference=args.sglang_enable_deterministic_inference,
             stream=not args.no_stream,
             baseline_only=args.baseline_only,
             cache_prompt_text_mode=args.cache_prompt_text_mode,

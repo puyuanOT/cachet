@@ -434,6 +434,9 @@ def test_sglang_smoke_accepts_generated_live_handoff_without_explicit_fields(tmp
         "thinking": False,
         "enable_thinking": False,
     }
+    assert config.sglang_attention_backend is None
+    assert config.sglang_sampling_backend is None
+    assert config.sglang_enable_deterministic_inference is False
 
 
 def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
@@ -467,6 +470,64 @@ def test_sglang_smoke_rejects_invalid_live_check_options(tmp_path):
             output_dir=tmp_path / "out",
             baseline_only=True,
             live_check_extra_body={"bad": object()},
+        )
+
+
+def test_sglang_smoke_validates_server_backend_controls(tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        baseline_only=True,
+        sglang_attention_backend=" triton ",
+        sglang_sampling_backend=" pytorch ",
+        sglang_enable_deterministic_inference=True,
+    )
+
+    assert config.sglang_attention_backend == "triton"
+    assert config.sglang_sampling_backend == "pytorch"
+    assert config.sglang_enable_deterministic_inference is True
+
+    with pytest.raises(ValueError, match="sglang_attention_backend"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            sglang_attention_backend="flash-attention",
+        )
+
+    with pytest.raises(ValueError, match="sglang_sampling_backend"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            sglang_sampling_backend="flash-attention",
+        )
+
+    with pytest.raises(ValueError, match="sglang_attention_backend"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            sglang_enable_deterministic_inference=True,
+        )
+
+    with pytest.raises(ValueError, match="sglang_attention_backend"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            sglang_attention_backend="flashinfer",
+            sglang_enable_deterministic_inference=True,
+        )
+
+    with pytest.raises(ValueError, match="sglang_sampling_backend"):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-1",
+            output_dir=tmp_path / "out",
+            baseline_only=True,
+            sglang_attention_backend="triton",
+            sglang_sampling_backend="flashinfer",
+            sglang_enable_deterministic_inference=True,
         )
 
 
@@ -985,6 +1046,9 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
     assert args[args.index("--port") + 1] == "8123"
     assert args[args.index("--context-length") + 1] == "8192"
     assert args[args.index("--mem-fraction-static") + 1] == "0.72"
+    assert "--attention-backend" not in args
+    assert "--sampling-backend" not in args
+    assert "--enable-deterministic-inference" not in args
     assert "--enable-hierarchical-cache" in args
     assert args[args.index("--hicache-storage-backend") + 1] == "dynamic"
     assert args[args.index("--page-size") + 1] == "2"
@@ -1005,6 +1069,23 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
         extra_config["prefetch_threshold"]
         == DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD
     )
+
+
+def test_sglang_server_args_include_backend_controls(tmp_path):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-1",
+        output_dir=tmp_path / "out",
+        baseline_only=True,
+        sglang_attention_backend="triton",
+        sglang_sampling_backend="pytorch",
+        sglang_enable_deterministic_inference=True,
+    )
+
+    args = build_sglang_server_args(config, tmp_path / "venv" / "bin" / "python")
+
+    assert args[args.index("--attention-backend") + 1] == "triton"
+    assert args[args.index("--sampling-backend") + 1] == "pytorch"
+    assert "--enable-deterministic-inference" in args
 
 
 def test_sglang_hicache_provider_probe_rejects_noop_launch_config():
@@ -1147,6 +1228,14 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["served_model_name"] == SERVED_MODEL_NAME
     assert metadata["hardware_target"] == "aws-g5-a10g"
     assert metadata["kv_transfer_params_transport"] == "custom_params"
+    assert metadata["sglang_attention_backend"] is None
+    assert metadata["sglang_sampling_backend"] is None
+    assert metadata["sglang_enable_deterministic_inference"] is False
+    assert metadata["sglang_server_backend_options"] == {
+        "attention_backend": None,
+        "sampling_backend": None,
+        "enable_deterministic_inference": False,
+    }
     assert metadata["cache_prompt_text_mode"] == "logical"
     assert (
         metadata["live_check_prompt_format"] == DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT
@@ -1933,12 +2022,20 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
             "--baseline-only",
             "--hardware-target",
             "aws-g5-a10g",
+            "--sglang-attention-backend",
+            "triton",
+            "--sglang-sampling-backend",
+            "pytorch",
+            "--sglang-enable-deterministic-inference",
             "--no-stream",
         ]
     )
 
     assert config.baseline_only is True
     assert config.hardware_target == "aws-g5-a10g"
+    assert config.sglang_attention_backend == "triton"
+    assert config.sglang_sampling_backend == "pytorch"
+    assert config.sglang_enable_deterministic_inference is True
     assert config.stream is False
     assert config.cache_prompt_text_mode == "logical"
     assert config.live_check_temperature == DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE
