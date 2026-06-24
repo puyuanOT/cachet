@@ -934,7 +934,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
         "strict V1 publication target",
         "compatibility_benchmark",
         "compatibility_databricks_run_status",
-        "24 artifacts",
+        "27 artifacts",
         "872615985402004",
         "566743786103032",
         "cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main",
@@ -954,8 +954,8 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     )
     assert "cannot substitute for the strict release target" in matrix_text
     assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "post-#442 current-wheel complete g5-enriched strict bundle validates with 24 artifacts" in compact_matrix
-    assert "PR #442 evidence for the core restaurant-alias removal" in compact_matrix
+    assert "post-#505 current-wheel complete g5-enriched strict bundle validates with 27 artifacts" in compact_matrix
+    assert "PR #442/#503/#504 evidence" in compact_matrix
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
     assert "compatibility Databricks run-status sidecar" in compact_matrix
     assert "GitHub governance is release-ready" in compact_matrix
@@ -3430,8 +3430,8 @@ def test_readme_release_bundle_documents_artifact_validation_contracts():
     assert "--legacy-migration-evidence-json" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "post-#442 current-wheel g5-enriched strict bundle validates with 24 artifacts" in compact_remaining_v1_work
-    assert "PR #442 evidence for the core restaurant-alias removal" in compact_remaining_v1_work
+    assert "post-#505 current-wheel g5-enriched strict bundle validates with 27 artifacts" in compact_remaining_v1_work
+    assert "PR #442/#503/#504 evidence" in compact_remaining_v1_work
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_remaining_v1_work
     assert "compatibility_databricks_run_status" in compact_remaining_v1_work
     assert "GitHub governance sidecar" in compact_remaining_v1_work
