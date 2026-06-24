@@ -1,0 +1,176 @@
+{
+  "benchmark_id": "v1_sglang_live_minimal_no_thinking_20260624_083652",
+  "benchmark_result": "not_published",
+  "blocker": "The PR #482 wheel was present, SGLang accepted triton attention, pytorch sampling, deterministic inference, and the minimal no-thinking live request body, and Cachet hydrated the generated 175-token prefix. The cache-arm request reported 175 cached tokens out of 205 prompt tokens, but both baseline and cache live quality checks returned the same repeated filler text instead of the expected NIAH answer. This run is readiness evidence only and not a benchmark result.",
+  "cachet_commit": "046ab03",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 672927118707206,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/16000945563715/run/672927118707206",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure_type": "sglang_live_quality_failure_with_minimal_no_thinking_cache_hit",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cache_prompt_text_mode": "logical",
+    "document_kv_request_metadata_bridge_ok": true,
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 175,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "live_check_chat_template_kwargs": {
+      "enable_thinking": false,
+      "reasoning_effort": "none",
+      "thinking": false
+    },
+    "live_check_extra_body": {
+      "chat_template_kwargs": {
+        "enable_thinking": false,
+        "thinking": false
+      },
+      "reasoning_effort": "none"
+    },
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.0,
+    "prefetch_threshold": 1,
+    "sglang_attention_backend": "triton",
+    "sglang_enable_deterministic_inference": true,
+    "sglang_import_probe_ok": true,
+    "sglang_sampling_backend": "pytorch"
+  },
+  "live_handoff_generation": {
+    "backend": "sglang",
+    "cache_prefix_full_pages": 175,
+    "cache_prefix_source_tokens": 176,
+    "cache_prefix_token_stable": false,
+    "cache_prefix_token_stable_ratio": 0.9943181818181818,
+    "cache_prefix_token_stable_truncated": true,
+    "cache_prefix_tokens": 175,
+    "ok": true,
+    "runtime_prompt_tokens": 205,
+    "sglang_hicache_page_size": 1
+  },
+  "mode": "generated-live-handoff-logical-prompt-qwen-chat-minimal-no-thinking-triton-pytorch-deterministic-wait-complete",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "c355cb546b3818cfd31ae155479cc9412f6f06d81fbdb1d52e3d4c1deabd50a1"
+  },
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "server_hicache_binding_events": [
+    {
+      "binding_key_count": 128,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 128,
+      "key_count": 128,
+      "last_hash_present": false,
+      "prefix_keys": 0,
+      "reason": "pages_hydrated",
+      "runtime_key_count": 128
+    },
+    {
+      "binding_key_count": 47,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 47,
+      "key_count": 77,
+      "last_hash_present": true,
+      "prefix_keys": 0,
+      "reason": "pages_hydrated",
+      "runtime_key_count": 77
+    },
+    {
+      "binding_key_count": 128,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 128,
+      "key_count": 128,
+      "last_hash_present": false,
+      "prefix_keys": 0,
+      "reason": "pages_already_hydrated",
+      "runtime_key_count": 128
+    },
+    {
+      "binding_key_count": 47,
+      "expected_page_keys": 175,
+      "full_page_count": 175,
+      "hydrated_count": 47,
+      "key_count": 47,
+      "last_hash_present": false,
+      "prefix_keys": 0,
+      "reason": "pages_already_hydrated",
+      "runtime_key_count": 47
+    }
+  ],
+  "server_prefill_token_counts": [
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 6,
+      "total_prompt_tokens": 6
+    },
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 1,
+      "total_prompt_tokens": 1
+    },
+    {
+      "cached_tokens": 175,
+      "classification": "cache_arm_external_minimal_no_thinking_handoff",
+      "new_tokens": 30,
+      "total_prompt_tokens": 205
+    },
+    {
+      "cached_tokens": 204,
+      "classification": "baseline_after_cache_arm_prefix_cache",
+      "new_tokens": 1,
+      "total_prompt_tokens": 205
+    }
+  ],
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "smoke": {
+    "baseline_answer_found": false,
+    "baseline_ok": false,
+    "baseline_output_text_prefix": " or or or Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover or or Cover Cover Cover Cover Cover",
+    "baseline_prompt_tokens": 92,
+    "baseline_server_usage_prompt_tokens": 205,
+    "baseline_time_to_completion_seconds": 1.5219474059999811,
+    "baseline_ttft_seconds": 0.19663714599994364,
+    "cache_answer_found": false,
+    "cache_ok": false,
+    "cache_output_text_prefix": " or or or Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover Cover or or Cover Cover Cover Cover Cover",
+    "cache_prompt_text_mode": "logical",
+    "cache_prompt_tokens": 92,
+    "cache_request_cached_tokens_from_server_log": 175,
+    "cache_request_minimum_cached_tokens": 175,
+    "cache_runtime_prompt_chars": 131,
+    "cache_server_usage_prompt_tokens": 205,
+    "cache_time_to_completion_seconds": 2.659679020999988,
+    "cache_ttft_seconds": 1.3339195390000214,
+    "issues": [
+      "baseline live check failed",
+      "cache-arm live check failed"
+    ],
+    "live_check_prompt_format": "qwen3_chat",
+    "live_check_request_mode": "chat",
+    "live_check_temperature": 0.0,
+    "model_id": "qwen3:4b-instruct",
+    "served_model_name": "qwen3-4b-instruct",
+    "server_cached_token_validation": "positive_minimal_no_thinking_generated_prefix_cache_hit_but_smoke_failed_quality"
+  },
+  "task": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 540954902597909,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}
