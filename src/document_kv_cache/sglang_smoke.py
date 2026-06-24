@@ -105,6 +105,8 @@ DEFAULT_SGLANG_HICACHE_STORAGE_PREFETCH_THRESHOLD = 1
 DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT: LiveCheckPromptFormat = "qwen3_chat"
 DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE: OpenAICompatibleRequestMode = "chat"
 DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE = 0.0
+DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY = True
+DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS = 30.0
 SGLANG_QWEN3_NO_THINKING_CHAT_TEMPLATE_KWARGS = {
     "thinking": False,
     "enable_thinking": False,
@@ -178,6 +180,8 @@ __all__ = [
     "DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE",
     "DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE",
     "DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY",
+    "DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY",
+    "DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS",
     "SGLANG_QUALITY_CANARY_ANSWER",
     "SGLANG_ATTENTION_BACKEND_CHOICES",
     "SGLANG_SAMPLING_BACKEND_CHOICES",
@@ -202,6 +206,7 @@ __all__ = [
     "release_live_handoff_generation_resources",
     "require_sglang_cache_hit",
     "run_sglang_quality_canary",
+    "flush_sglang_cache",
     "run_sglang_live_smoke",
     "sglang_cache_hit_validation_record",
     "sglang_cached_token_counts",
@@ -298,6 +303,8 @@ class SGLangSmokeBenchmarkConfig:
             field_name="live_check_extra_body",
         )
     )
+    flush_cache_before_canary: bool = DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
+    flush_cache_timeout_seconds: float = DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
@@ -408,6 +415,17 @@ class SGLangSmokeBenchmarkConfig:
         live_check_extra_body = _json_object_copy(
             self.live_check_extra_body, field_name="live_check_extra_body"
         )
+        if type(self.flush_cache_before_canary) is not bool:
+            raise ValueError("flush_cache_before_canary must be a boolean")
+        if (
+            not isinstance(self.flush_cache_timeout_seconds, (int, float))
+            or isinstance(self.flush_cache_timeout_seconds, bool)
+            or not math.isfinite(self.flush_cache_timeout_seconds)
+            or self.flush_cache_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "flush_cache_timeout_seconds must be a positive finite number"
+            )
         if self.handoff_json and self.handoff_record is not None:
             raise ValueError(
                 "SGLang smoke handoff params must use only one of handoff_json or handoff_record"
@@ -669,6 +687,8 @@ def build_metadata(
         "live_check_chat_template_kwargs": _sglang_live_check_chat_template_kwargs(
             config.live_check_extra_body
         ),
+        "flush_cache_before_canary": config.flush_cache_before_canary,
+        "flush_cache_timeout_seconds": config.flush_cache_timeout_seconds,
         "kv_transfer_params_transport": "custom_params",
         "generates_live_handoff": config.handoff_generation is not None,
         "live_handoff_generation": (
@@ -1497,9 +1517,22 @@ def run_live_checks(
     baseline_record = baseline.to_record()
     _record_logical_and_served_model_ids(baseline_record)
     baseline_record["label"] = "baseline_prefill"
+    canary_cache_flush = (
+        flush_sglang_cache(config, reason="before_model_quality_canary")
+        if config.flush_cache_before_canary
+        else {
+            "ok": None,
+            "reason": "before_model_quality_canary",
+            "endpoint": "/flush_cache",
+            "skipped": True,
+            "skip_reason": "disabled",
+        }
+    )
     model_quality_canary = run_sglang_quality_canary(config)
 
     issues = []
+    if canary_cache_flush.get("ok") is False:
+        issues.append("model quality canary cache flush failed")
     if model_quality_canary.get("ok") is not True:
         issues.append("model quality canary failed")
     if baseline_record.get("ok") is not True:
@@ -1546,6 +1579,9 @@ def run_live_checks(
         "live_check_chat_template_kwargs": _sglang_live_check_chat_template_kwargs(
             config.live_check_extra_body
         ),
+        "flush_cache_before_canary": config.flush_cache_before_canary,
+        "flush_cache_timeout_seconds": config.flush_cache_timeout_seconds,
+        "canary_cache_flush": canary_cache_flush,
         "cache_prefill_log_start_index": cache_prefill_log_start_index,
         "model_quality_canary": model_quality_canary,
         "baseline": baseline_record,
@@ -1809,6 +1845,61 @@ def _nonnegative_int(value: object) -> int | None:
 def _record_logical_and_served_model_ids(record: dict[str, object]) -> None:
     record["served_model_name"] = SERVED_MODEL_NAME
     record["model_id"] = CACHET_MODEL_ID
+
+
+def flush_sglang_cache(
+    config: SGLangSmokeBenchmarkConfig,
+    *,
+    reason: str,
+) -> dict[str, object]:
+    """Flush SGLang's in-memory prefix cache through the runtime HTTP endpoint."""
+
+    endpoint = "/flush_cache"
+    timeout_seconds = float(config.flush_cache_timeout_seconds)
+    url = (
+        f"{config.server_base_url}{endpoint}"
+        f"?timeout={timeout_seconds:g}"
+    )
+    request = urllib.request.Request(url, method="POST")
+    record: dict[str, object] = {
+        "ok": False,
+        "reason": reason,
+        "endpoint": endpoint,
+        "timeout_seconds": timeout_seconds,
+    }
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            body = response.read()
+            status = int(getattr(response, "status", response.getcode()))
+    except urllib.error.HTTPError as exc:
+        body = exc.read()
+        record.update(
+            {
+                "http_status": exc.code,
+                "response_text_tail": tail_text(body, max_chars=1000),
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        )
+        return record
+    except (OSError, urllib.error.URLError, TimeoutError) as exc:
+        record.update(
+            {
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        )
+        return record
+    record.update(
+        {
+            "ok": 200 <= status < 300,
+            "http_status": status,
+            "response_text_tail": tail_text(body, max_chars=1000),
+        }
+    )
+    if record["ok"] is not True:
+        record["error"] = f"SGLang {endpoint} returned HTTP {status}"
+    return record
 
 
 def build_sglang_quality_canary_request(
@@ -2299,6 +2390,17 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
             "Defaults to the deterministic Qwen3 no-thinking body."
         ),
     )
+    parser.add_argument(
+        "--no-flush-cache-before-canary",
+        action="store_true",
+        help="Do not flush SGLang's in-memory prefix cache before the model-quality canary.",
+    )
+    parser.add_argument(
+        "--flush-cache-timeout-seconds",
+        type=float,
+        default=DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
+        help="SGLang /flush_cache idle-wait and HTTP timeout before the model-quality canary.",
+    )
     parser.add_argument("--handoff-json")
     parser.add_argument("--handoff-record-json")
     parser.add_argument("--payload-uri")
@@ -2371,6 +2473,8 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
             if live_check_extra_body is not None
             else DEFAULT_SGLANG_LIVE_CHECK_EXTRA_BODY
         ),
+        flush_cache_before_canary=not args.no_flush_cache_before_canary,
+        flush_cache_timeout_seconds=args.flush_cache_timeout_seconds,
         handoff_json=args.handoff_json,
         handoff_record=_json_object_option(
             args.handoff_record_json, "--handoff-record-json"

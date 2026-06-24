@@ -22,6 +22,8 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT,
     DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
     DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE,
+    DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
+    DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
@@ -111,6 +113,8 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
             DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE,
             "--live-check-temperature",
             str(DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE),
+            "--flush-cache-timeout-seconds",
+            str(DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS),
             "--no-stream",
             "--baseline-only",
             "--hicache-page-store-uri",
@@ -218,6 +222,14 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert default_config.sglang_attention_backend is None
     assert default_config.sglang_sampling_backend is None
     assert default_config.sglang_enable_deterministic_inference is False
+    assert (
+        default_config.flush_cache_before_canary
+        is DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY
+    )
+    assert (
+        default_config.flush_cache_timeout_seconds
+        == DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
+    )
 
     config = DatabricksSGLangSmokeJobConfig(
         benchmark_id="v1-sglang-generated-001",
@@ -237,6 +249,8 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
         sglang_attention_backend="triton",
         sglang_sampling_backend="pytorch",
         sglang_enable_deterministic_inference=True,
+        flush_cache_before_canary=False,
+        flush_cache_timeout_seconds=12.5,
         spark_env_vars={"CACHET_TRANSFORMERS_DEVICE": "cuda"},
     )
 
@@ -262,6 +276,8 @@ def test_databricks_sglang_smoke_config_supports_generated_live_handoff_cache_ar
     assert parameters[parameters.index("--sglang-attention-backend") + 1] == "triton"
     assert parameters[parameters.index("--sglang-sampling-backend") + 1] == "pytorch"
     assert "--sglang-enable-deterministic-inference" in parameters
+    assert "--no-flush-cache-before-canary" in parameters
+    assert parameters[parameters.index("--flush-cache-timeout-seconds") + 1] == "12.5"
     assert parameters[parameters.index("--live-handoff-output-dir") + 1].endswith(
         "/live-handoff"
     )
@@ -313,6 +329,14 @@ def test_databricks_sglang_smoke_config_validates_cluster_and_runtime_fields():
         (
             {"live_check_extra_body_json": "{", "baseline_only": True},
             "live_check_extra_body_json must decode",
+        ),
+        (
+            {"flush_cache_before_canary": "yes", "baseline_only": True},
+            "flush_cache_before_canary",
+        ),
+        (
+            {"flush_cache_timeout_seconds": 0, "baseline_only": True},
+            "flush_cache_timeout_seconds",
         ),
         (
             {
@@ -623,6 +647,9 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
     ]
     parameters = task["spark_python_task"]["parameters"]
     assert parameters[parameters.index("--live-check-temperature") + 1] == "0.25"
+    assert parameters[parameters.index("--flush-cache-timeout-seconds") + 1] == str(
+        DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS
+    )
     assert parameters[parameters.index("--sglang-attention-backend") + 1] == "triton"
     assert parameters[parameters.index("--sglang-sampling-backend") + 1] == "pytorch"
     assert "--sglang-enable-deterministic-inference" in parameters
