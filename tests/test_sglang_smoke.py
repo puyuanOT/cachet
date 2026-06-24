@@ -813,6 +813,54 @@ def test_sglang_smoke_accepts_prepared_handoff_generation(tmp_path):
     )
 
 
+def test_generated_prepared_handoff_config_swap_clears_single_handoff_fields(
+    tmp_path,
+):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+    generation = SGLangPreparedHandoffGenerationConfig(
+        output_dir=tmp_path / "generated-handoffs",
+        generator_factory="module:factory",
+        page_size=2,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-v1",
+        output_dir=tmp_path / "out",
+        dataset_specs=dataset_specs,
+        live_benchmark_repeats=1,
+        prepared_handoff_generation=generation,
+    )
+    generated_paths = {
+        dataset: tmp_path / "generated" / f"{dataset}.handoffs.jsonl"
+        for dataset in SUPPORTED_V1_DATASETS
+    }
+
+    assert config.prepared_handoff_generation == generation
+    assert config.sglang_hicache_page_keys == ()
+
+    runtime_config = public_sglang_smoke._config_with_generated_prepared_handoffs(
+        config,
+        generated_paths,
+    )
+
+    assert runtime_config.dataset_specs == tuple(
+        f"{dataset}={generated_paths[dataset]}"
+        for dataset in SUPPORTED_V1_DATASETS
+    )
+    assert runtime_config.uses_prepared_datasets is True
+    assert runtime_config.prepared_handoff_generation is None
+    assert runtime_config.handoff_generation is None
+    assert runtime_config.handoff_json is None
+    assert runtime_config.handoff_record is None
+    assert runtime_config.payload_uri is None
+    assert runtime_config.request_id is None
+    assert runtime_config.sglang_hicache_page_keys == ()
+    assert runtime_config.live_benchmark_repeats == 1
+    assert runtime_config.hicache_page_size == 2
+
+
 def test_prepared_sglang_benchmark_handoff_coverage_requires_page_keys(tmp_path):
     dataset_specs = write_prepared_sglang_v1_datasets(tmp_path / "prepared")
     config = SGLangSmokeBenchmarkConfig(

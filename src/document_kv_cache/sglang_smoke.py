@@ -772,7 +772,7 @@ def run_sglang_live_smoke(config: SGLangSmokeBenchmarkConfig) -> None:
     dataset_paths = benchmark_dataset_paths(config)
     dataset_paths = prepare_generated_sglang_benchmark_handoffs(config, dataset_paths)
     if config.prepared_handoff_generation is not None:
-        config = replace(config, dataset_specs=_dataset_specs_from_paths(dataset_paths))
+        config = _config_with_generated_prepared_handoffs(config, dataset_paths)
         metadata["dataset_specs"] = list(config.dataset_specs)
         metadata["generated_prepared_handoffs"] = True
         metadata["prepared_handoff_generation_path"] = str(
@@ -962,6 +962,25 @@ def _dataset_specs_from_paths(dataset_paths: Mapping[str, Path]) -> tuple[str, .
     return tuple(
         f"{dataset}={Path(dataset_paths[dataset])}"
         for dataset in SUPPORTED_V1_DATASETS
+    )
+
+
+def _config_with_generated_prepared_handoffs(
+    config: SGLangSmokeBenchmarkConfig,
+    dataset_paths: Mapping[str, Path],
+) -> SGLangSmokeBenchmarkConfig:
+    """Return runtime config for generated prepared benchmark datasets."""
+
+    return replace(
+        config,
+        dataset_specs=_dataset_specs_from_paths(dataset_paths),
+        handoff_json=None,
+        handoff_record=None,
+        payload_uri=None,
+        request_id=None,
+        sglang_hicache_page_keys=None,
+        handoff_generation=None,
+        prepared_handoff_generation=None,
     )
 
 
