@@ -9,8 +9,8 @@ dated report subfolders: [`../vllm/`](../vllm/),
 [`../sglang/`](../sglang/), [`../storage/`](../storage/), and
 [`../native-engine/`](../native-engine/). Use [`CURRENT.md`](CURRENT.md) for the
 current Databricks artifact snapshot, then use each dated folder README here
-for source-artifact details. The JSON files are the validated records copied
-from the strict release-bundle evidence set:
+for source-artifact details. The JSON files are validated source records used to
+audit the report claims:
 
 - `document_kv.benchmark_run.v1` for V1 latency and quality benchmarks.
 - `cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint
@@ -22,6 +22,11 @@ from the strict release-bundle evidence set:
 - `document_kv.engine_kv_connector_probe.v1` and
   `document_kv.engine_kv_connector_actions.v1` for native vLLM/SGLang connector
   probes.
+
+Some records are canonical release-bundle inputs, such as
+`document_kv.benchmark_run.v1`; others are scoped SGLang live benchmark or
+integration records that remain separate from release-bundle consumption until
+validators explicitly ingest those record types.
 
 Folders containing `v1_benchmark.json` are full V1 latency and quality
 benchmark reports. SGLang live benchmark folders under `../sglang/` can be

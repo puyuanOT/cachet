@@ -2341,11 +2341,21 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert sglang_prepared_v1_release_success_run["live_benchmark"]["suite"][
         "release_v1_suite"
     ] is True
-    assert len(
-        sglang_prepared_v1_release_success_run["live_benchmark"][
-            "cache_hit_validations"
-        ]
-    ) == 8
+    sglang_prepared_v1_release_live_benchmark = (
+        sglang_prepared_v1_release_success_run["live_benchmark"]
+    )
+    sglang_prepared_v1_release_cache_validations = (
+        sglang_prepared_v1_release_live_benchmark["cache_hit_validations"]
+    )
+    assert len(sglang_prepared_v1_release_cache_validations) == 8
+    assert all(
+        validation["ok"] is True
+        for validation in sglang_prepared_v1_release_cache_validations
+    )
+    assert all(
+        validation["issue"] is None
+        for validation in sglang_prepared_v1_release_cache_validations
+    )
     assert sglang_prepared_v1_release_success_run["live_benchmark"][
         "cache_hit_validations"
     ][0] == {
@@ -2364,6 +2374,50 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         },
         "repeat_index": 1,
     }
+    release_report_rows = {
+        (row["dataset"], row["arm_id"]): row
+        for row in sglang_prepared_v1_release_live_benchmark["report_rows"]
+    }
+    release_comparisons = {
+        comparison["dataset"]: comparison
+        for comparison in sglang_prepared_v1_release_live_benchmark["comparisons"]
+    }
+    release_cached_tokens = {
+        validation["dataset"]: validation["observed_prefill_row"]["cached_tokens"]
+        for validation in sglang_prepared_v1_release_cache_validations
+        if validation["repeat_index"] == 1
+    }
+    assert len(release_report_rows) == 8
+    assert set(release_comparisons) == {"biography", "hotpotqa", "musique", "niah"}
+    assert release_cached_tokens == {
+        "biography": 96,
+        "hotpotqa": 144,
+        "musique": 144,
+        "niah": 96,
+    }
+    for row in release_report_rows.values():
+        assert row["errors"] == 0
+        assert row["answer_found_rate"] == 1.0
+    for dataset, display_name in {
+        "biography": "Biography",
+        "hotpotqa": "HotpotQA",
+        "musique": "MusiQue",
+        "niah": "NIAH",
+    }.items():
+        baseline_row = release_report_rows[(dataset, "baseline_prefill")]
+        cache_row = release_report_rows[(dataset, "document_kv_cache")]
+        comparison = release_comparisons[dataset]
+        expected_result_row = (
+            f"| {display_name} | "
+            f"`{baseline_row['ttft_p50_seconds']:.3f}s` | "
+            f"`{cache_row['ttft_p50_seconds']:.3f}s` | "
+            f"`{comparison['ttft_speedup']:.3f}x` | "
+            f"`{baseline_row['time_to_completion_p50_seconds']:.3f}s` | "
+            f"`{cache_row['time_to_completion_p50_seconds']:.3f}s` | "
+            f"`{comparison['time_to_completion_speedup']:.3f}x` | "
+            f"`{release_cached_tokens[dataset]}` |"
+        )
+        assert expected_result_row in sglang_prepared_v1_release_success_readme
     assert sglang_prepared_v1_release_success_run["interpretation"][
         "quality_passed"
     ] is True
