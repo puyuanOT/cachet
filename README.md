@@ -1,9 +1,43 @@
 # Cachet: Document KV Cache
 
+Cachet turns long, repeated document context into reusable KV-cache payloads for
+vLLM, SGLang, and other serving engines. It handles the work around the engine:
+document manifests, packed KV storage, CPU/local cache tiers, handoff metadata,
+and benchmark evidence. The serving engine still owns scheduling, decode, and
+native GPU KV blocks.
+
+## Start Here
+
+| Question | Answer |
+| --- | --- |
+| What do I install? | `cachet-kv` |
+| What do I import? | `cachet` |
+| What does it accelerate? | Repeated long document prefixes with short request-specific suffixes |
+| What engines are in this repo? | Thin vLLM and SGLang adapter modules live here and ship with `cachet-kv` |
+| What is the current target? | Qwen3 4B Instruct on AWS g6/L4 Databricks, `g6.8xlarge` |
+| Where are the latest results? | [`benchmarks/current/README.md`](benchmarks/current/) |
+
+Current release evidence includes a strict vLLM g6/L4 benchmark with unchanged
+quality and 5.27x-6.97x TTFT speedups, Memory/Disk/Unity Catalog storage-reader
+evidence, provider-backed vLLM and SGLang native probe evidence, and SGLang live
+handoff evidence. SGLang prepared V1 live serving currently proves cache-hit
+correctness and quality on g6/L4, but it is not yet a speedup result on the
+short prepared prompts.
+
+Most readers should use these entry points first:
+
+- [`Cachet-First Quickstart`](#cachet-first-quickstart) for the smallest import
+  and CLI example.
+- [`Benchmark Contract`](#benchmark-contract) for what is measured and where
+  the current reports live.
+- [`docs/repo-map.md`](docs/repo-map.md) for the repository layout.
+- [`docs/evidence-policy.md`](docs/evidence-policy.md) for what belongs in
+  `benchmarks/`, `evidence/`, `pr-evidence/`, release bundles, and ignored
+  `databricks-runs/` output.
+
 Cachet is a reusable document KV-cache orchestration package for long-context
-LLM serving. It is being split out of the restaurant KV-cache experiments into
-an open-source library for arbitrary textual documents. Cachet owns the work
-outside the inference engine:
+LLM serving over arbitrary textual documents. Cachet owns the work outside the
+inference engine:
 
 - document/chunk manifest lookup
 - packed KV shard reading

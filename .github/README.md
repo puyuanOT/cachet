@@ -1,5 +1,9 @@
 # GitHub Metadata
 
+You are viewing the `.github/` metadata folder, not the Cachet project front
+page. Start at the root [`README.md`](../README.md) for the product overview,
+quickstart, benchmark status, and repository map.
+
 This folder contains repository-level contribution automation and templates.
 
 - `main-branch-protection.json` is the operator-ready GitHub branch protection
