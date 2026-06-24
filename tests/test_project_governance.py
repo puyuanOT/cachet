@@ -684,13 +684,34 @@ def _first_bash_fence_after(text: str, marker: str) -> str:
 
 def test_readme_documents_cachet_brand_and_scope():
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    start_here = _markdown_section(text, "Start Here")
+    compact_start_here = " ".join(start_here.split())
     purpose = _markdown_section(text, "Purpose And Scope")
     compact_purpose = " ".join(purpose.split())
 
     assert text.startswith("# Cachet: Document KV Cache")
-    assert "Cachet is a reusable document KV-cache orchestration package" in text
     compact_text = " ".join(text.split())
-
+    assert "Cachet turns long, repeated document context into reusable KV-cache payloads" in text
+    assert "The serving engine still owns scheduling, decode, and native GPU KV blocks" in compact_text
+    for required in (
+        "What do I install?",
+        "`cachet-kv`",
+        "What do I import?",
+        "`cachet`",
+        "Thin vLLM and SGLang adapter modules live here and ship with `cachet-kv`",
+        "Qwen3 4B Instruct on AWS g6/L4 Databricks",
+        "[`benchmarks/current/README.md`](benchmarks/current/)",
+        "5.27x-6.97x TTFT speedups",
+        "SGLang prepared V1 live serving currently proves cache-hit correctness",
+        "[`Cachet-First Quickstart`](#cachet-first-quickstart)",
+        "[`Benchmark Contract`](#benchmark-contract)",
+        "[`docs/repo-map.md`](docs/repo-map.md)",
+        "[`docs/evidence-policy.md`](docs/evidence-policy.md)",
+    ):
+        assert required in compact_start_here
+    assert "## Cachet-First Quickstart" in text
+    assert "## Benchmark Contract" in text
+    assert "Cachet is a reusable document KV-cache orchestration package" in text
     assert "Cachet is the product brand and primary repository identity" in compact_text
     assert "The package publishes through the Cachet-branded `cachet-kv` distribution name" in compact_text
     assert "unrelated Cachet API client" in compact_text
@@ -3619,6 +3640,9 @@ def test_github_docs_explain_branch_protection_application_and_plan_limit():
     text = (REPO_ROOT / ".github" / "README.md").read_text(encoding="utf-8")
     compact_text = " ".join(text.split())
 
+    assert "not the Cachet project front page" in compact_text
+    assert "[`README.md`](../README.md)" in text
+    assert "product overview, quickstart, benchmark status, and repository map" in compact_text
     assert "`main-branch-protection.json`" in text
     assert "/branches/main/protection" in text
     assert "--data @.github/main-branch-protection.json" in text

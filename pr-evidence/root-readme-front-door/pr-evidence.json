@@ -1,0 +1,35 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "findings_resolved",
+  "gpt55_review_summary": "Franklin the 3rd found that the first screen could imply separate adapter packages, that the new front door still dropped into migration-era restaurant wording, and that internal README shortcut anchors were not fully guarded. The README now says vLLM/SGLang adapter modules ship with cachet-kv, the migration-era opening was replaced with present-tense Cachet product language, and governance tests assert the target headings exist.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": null,
+  "pull_request_url": "",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    ".github/README.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/root-readme-front-door"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_readme_documents_cachet_brand_and_scope tests/test_project_governance.py::test_github_docs_explain_branch_protection_application_and_plan_limit -q -> 2 passed",
+    "poetry run pytest tests/test_project_governance.py -q -> 51 passed",
+    "poetry run pytest -q -> 1886 passed, 5 skipped",
+    "git diff --check -> passed",
+    "poetry check --lock -> All set",
+    "local README markdown link check -> all local links resolve",
+    "changed-file secret scan for Databricks, GitHub, OpenAI, and private-key patterns -> no matches",
+    "Franklin the 3rd review found adapter-package wording, migration-era opening, and anchor-target guard notes; all three were fixed"
+  ],
+  "what_changed": [
+    "Added a product-first Start Here section to the root README with install/import identity, target hardware, current benchmark status, and human entry points.",
+    "Rewrote the immediate root README transition into present-tense Cachet product language instead of migration-era restaurant wording.",
+    "Added a .github/README.md pointer back to the root README so GitHub folder readers do not mistake metadata docs for the project front page.",
+    "Added governance assertions that pin the root README front-door content, internal anchor targets, and .github pointer."
+  ],
+  "why": "Make the repository root README meaningful for newcomers before they reach release evidence, implementation history, or GitHub metadata folders."
+}
