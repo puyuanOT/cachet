@@ -26,7 +26,9 @@ in this benchmark tree, plus failed generated-handoff live smoke attempts
 tracked under
 [`../sglang/2026-06-23-g6-l4-live-handoff-smoke/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke/)
 and
-[`../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/).
+[`../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/`](../sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/),
+with the latest logical-prompt zero-cache-hit blocker tracked at
+[`../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/).
 It does not yet have a published live SGLang latency/quality benchmark. Treat
 SGLang benchmark evidence as pending until a live SGLang endpoint validates
 decode-time prefix binding with Cachet handoffs and records a positive
