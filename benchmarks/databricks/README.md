@@ -26,4 +26,9 @@ quality benchmark reports. The native-engine probe folder proves provider-backed
 vLLM/SGLang integration against engine-owned KV block managers, but it does not
 publish SGLang latency, throughput, or quality benchmark results.
 
+Pending live-readiness folders, such as the generated-handoff SGLang smoke under
+[`../sglang/`](../sglang/), can be tracked before a Databricks run reaches a
+terminal state. Keep those files out of release-bundle inputs until they are
+promoted to terminal successful benchmark artifacts.
+
 Raw local run directories stay under ignored `databricks-runs/`.

@@ -1,0 +1,27 @@
+{
+  "benchmark_result": "pending",
+  "cachet_commit": "86a8085",
+  "databricks_run": {
+    "active_task_key": "document_kv_sglang_smoke",
+    "life_cycle_state": "RUNNING",
+    "result_state": null,
+    "run_id": 201402713679607,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/1007379972621829/run/201402713679607",
+    "state_message": "",
+    "succeeded": false,
+    "terminal": false
+  },
+  "hardware_target": "aws-g6-l4",
+  "mode": "generated-live-handoff",
+  "node_type": "g6.8xlarge",
+  "record_type": "cachet.benchmark_pending_databricks_run.v1",
+  "snapshot_date": "2026-06-23",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "life_cycle_state": "PENDING",
+    "result_state": null,
+    "state_message": "Waiting for cluster",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}
