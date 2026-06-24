@@ -1028,12 +1028,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     sglang_live_smoke_readme = (
         benchmark_root / "sglang" / "2026-06-23-g6-l4-live-handoff-smoke" / "README.md"
     ).read_text(encoding="utf-8")
-    sglang_pending_run = json.loads(
+    sglang_failed_run = json.loads(
         (
             benchmark_root
             / "sglang"
             / "2026-06-23-g6-l4-live-handoff-smoke"
-            / "pending_run.json"
+            / "failed_run.json"
         ).read_text(encoding="utf-8")
     )
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
@@ -1111,40 +1111,50 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         in compact_sglang_readme
     )
     assert "Native HiCache integration evidence" in sglang_readme
-    assert "Pending live handoff smoke" in sglang_readme
+    assert "Failed live handoff smoke" in sglang_readme
     assert "201402713679607" in sglang_readme
     assert "2026-06-23-g6-l4-live-handoff-smoke" in root_readme
-    assert "pending generated-handoff live smoke run" in compact_snapshot
-    assert "Pending live-readiness folders" in databricks_readme
+    assert "failed generated-handoff live smoke attempt" in compact_snapshot
+    assert "Live-readiness folders" in databricks_readme
     assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
     assert "Do not cite this folder as a completed benchmark" in sglang_live_smoke_readme
-    assert sglang_pending_run == {
-        "benchmark_result": "pending",
+    assert "colon is reserved for `model:adapter` syntax" in sglang_live_smoke_readme
+    assert sglang_failed_run == {
+        "benchmark_result": "not_published",
+        "blocker": (
+            "SGLang 0.5.10 rejected the Cachet logical model id as --served-model-name "
+            "because it contains a colon reserved for model:adapter syntax."
+        ),
         "cachet_commit": "86a8085",
         "databricks_run": {
-            "active_task_key": "document_kv_sglang_smoke",
-            "life_cycle_state": "RUNNING",
-            "result_state": None,
+            "active_task_key": None,
+            "life_cycle_state": "INTERNAL_ERROR",
+            "result_state": "FAILED",
             "run_id": 201402713679607,
             "run_name": "document-kv-sglang-smoke",
             "run_page_url": (
                 "https://dbc-21120bc8-ecb0.cloud.databricks.com/"
                 "?o=413991477208516#job/1007379972621829/run/201402713679607"
             ),
-            "state_message": "",
+            "state_message": (
+                "Task document_kv_sglang_smoke failed with message: "
+                "Workload failed, see run output for details."
+            ),
             "succeeded": False,
-            "terminal": False,
+            "terminal": True,
         },
+        "failure_type": "sglang_invalid_served_model_name",
         "hardware_target": "aws-g6-l4",
+        "live_handoff_generation_completed": True,
         "mode": "generated-live-handoff",
         "node_type": "g6.8xlarge",
-        "record_type": "cachet.benchmark_pending_databricks_run.v1",
+        "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
         "snapshot_date": "2026-06-23",
         "spark_version": "15.4.x-gpu-ml-scala2.12",
         "task": {
-            "life_cycle_state": "PENDING",
-            "result_state": None,
-            "state_message": "Waiting for cluster",
+            "life_cycle_state": "TERMINATED",
+            "result_state": "FAILED",
+            "state_message": "Workload failed, see run output for details",
             "task_key": "document_kv_sglang_smoke",
         },
     }
@@ -1160,8 +1170,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "databricks/CURRENT.md",
         "README.md",
         "native-engine/README.md",
+        "sglang/2026-06-23-g6-l4-live-handoff-smoke/failed_run.json",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/README.md",
-        "sglang/2026-06-23-g6-l4-live-handoff-smoke/pending_run.json",
         "sglang/README.md",
         "storage/README.md",
         "vllm/README.md",

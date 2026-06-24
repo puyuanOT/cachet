@@ -14,8 +14,8 @@ not `pr-evidence/` and not ignored local `databricks-runs/` scratch output.
 | Task | `document_kv_sglang_smoke` |
 | Cachet commit | `86a8085` |
 | Mode | Generated live Cachet handoff plus SGLang HiCache page keys |
-| Current state | `RUNNING`; task `PENDING` on `Waiting for cluster` |
-| Benchmark result | Pending; no SGLang latency, throughput, or quality result has been published from this run yet |
+| Current state | `FAILED`; server rejected the colon-containing SGLang served-model name before live requests |
+| Benchmark result | Not published; no SGLang latency, throughput, or quality result was produced from this run |
 
 ## Scope
 
@@ -23,17 +23,21 @@ This run exercises the generated live handoff path added for SGLang. The job
 creates the synthetic Cachet handoff and the matching SGLang HiCache page-key
 metadata inside the target runtime before starting the SGLang server.
 
-Do not cite this folder as a completed benchmark until the Databricks run is
-terminal `SUCCESS` and the folder contains a validated `sglang-live-smoke.json`
-or benchmark result artifact. Until then, the source of truth is the pending
-run-status summary in [`pending_run.json`](pending_run.json).
+Do not cite this folder as a completed benchmark. The Databricks run reached a
+terminal failed state before live requests could run. The source of truth is the
+sanitized failure summary in [`failed_run.json`](failed_run.json).
+
+The useful signal from this attempt is that generated live handoff preparation
+completed and the SGLang server launch reached argument validation. SGLang
+0.5.10 then rejected `qwen3:4b-instruct` as `--served-model-name` because the
+colon is reserved for `model:adapter` syntax.
 
 ## Promotion Criteria
 
-When the Databricks run completes, promote it from pending smoke evidence to a
-published SGLang benchmark only if all of these are true:
+Promote a replacement smoke run from readiness evidence to a published SGLang
+benchmark only if all of these are true:
 
-- The Databricks run terminates with `result_state=SUCCESS` on `g6.8xlarge`.
+- A new Databricks run terminates with `result_state=SUCCESS` on `g6.8xlarge`.
 - The SGLang live smoke writes `sglang-live-smoke.json` with `ok=true`.
 - The handoff-backed cache arm validates decode-time prefix binding against the
   live SGLang endpoint.
@@ -42,8 +46,8 @@ published SGLang benchmark only if all of these are true:
 
 ## Artifacts
 
-- [`pending_run.json`](pending_run.json) contains a compact, sanitized snapshot
-  of the non-terminal Databricks run state.
+- [`failed_run.json`](failed_run.json) contains a compact, sanitized snapshot
+  of the terminal failed Databricks run state and blocker.
 
 Raw Databricks API responses, package wheels, driver logs, generated payloads,
 and local scratch outputs stay out of this folder.

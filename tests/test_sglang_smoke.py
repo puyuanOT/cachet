@@ -25,6 +25,7 @@ from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
 from document_kv_cache.sglang_smoke import (
+    CACHET_MODEL_ID,
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
     DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
@@ -154,7 +155,9 @@ def test_dependency_constraints_match_pinned_sglang_stack():
     assert dependency_constraints() == ["sglang==0.5.10.post1"]
     assert SGLANG_VERSION == "0.5.10.post1"
     assert HF_MODEL_ID == "Qwen/Qwen3-4B-Instruct-2507"
-    assert SERVED_MODEL_NAME == "qwen3:4b-instruct"
+    assert CACHET_MODEL_ID == "qwen3:4b-instruct"
+    assert SERVED_MODEL_NAME == "qwen3-4b-instruct"
+    assert ":" not in SERVED_MODEL_NAME
 
 
 def test_sglang_smoke_cache_arm_requires_handoff_and_page_keys(tmp_path):
@@ -465,6 +468,7 @@ def test_sglang_server_args_use_qwen3_and_hicache_backend(tmp_path):
     assert args[:4] == [str(tmp_path / "venv" / "bin" / "python"), "-u", "-m", "sglang.launch_server"]
     assert args[args.index("--model-path") + 1] == HF_MODEL_ID
     assert args[args.index("--served-model-name") + 1] == SERVED_MODEL_NAME
+    assert ":" not in args[args.index("--served-model-name") + 1]
     assert args[args.index("--host") + 1] == "127.0.0.1"
     assert args[args.index("--port") + 1] == "8123"
     assert args[args.index("--context-length") + 1] == "8192"
@@ -586,6 +590,8 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
 
     metadata = build_metadata(config)
 
+    assert metadata["model_id"] == CACHET_MODEL_ID
+    assert metadata["served_model_name"] == SERVED_MODEL_NAME
     assert metadata["hardware_target"] == "aws-g5-a10g"
     assert metadata["kv_transfer_params_transport"] == "custom_params"
     assert metadata["cache_prompt_text_mode"] == "runtime"
@@ -666,7 +672,10 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkey
     record = run_live_checks(config)
 
     assert record["ok"] is True
+    assert record["model_id"] == CACHET_MODEL_ID
+    assert record["served_model_name"] == SERVED_MODEL_NAME
     assert len(seen_configs) == 1
+    assert seen_configs[0].model_id == SERVED_MODEL_NAME
     assert seen_configs[0].use_cache_arm is False
     assert seen_configs[0].prompt_text_mode == "logical"
     assert record["cache"] is None
@@ -677,6 +686,8 @@ def test_run_live_checks_runs_baseline_only_and_records_cache_arm_blocker(monkey
     assert record["live_request_metadata_bridge_ok"] is False
     written = json.loads(config.live_smoke_output_path.read_text(encoding="utf-8"))
     assert written["cache"] is None
+    assert written["baseline"]["model_id"] == CACHET_MODEL_ID
+    assert written["baseline"]["served_model_name"] == SERVED_MODEL_NAME
 
 
 def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
@@ -714,7 +725,11 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
     )
 
     assert record["ok"] is True
+    assert record["model_id"] == CACHET_MODEL_ID
+    assert record["served_model_name"] == SERVED_MODEL_NAME
     assert len(seen_configs) == 2
+    assert seen_configs[0].model_id == SERVED_MODEL_NAME
+    assert seen_configs[1].model_id == SERVED_MODEL_NAME
     assert seen_configs[0].use_cache_arm is False
     assert seen_configs[1].use_cache_arm is True
     assert seen_configs[1].kv_transfer_params_transport == "custom_params"
@@ -725,6 +740,10 @@ def test_run_live_checks_runs_handoff_cache_arm(monkeypatch, tmp_path):
         "page-b",
     ]
     assert record["cache"]["arm_id"] == "document_kv_cache"
+    assert record["baseline"]["model_id"] == CACHET_MODEL_ID
+    assert record["cache"]["model_id"] == CACHET_MODEL_ID
+    assert record["baseline"]["served_model_name"] == SERVED_MODEL_NAME
+    assert record["cache"]["served_model_name"] == SERVED_MODEL_NAME
     assert record["cache_arm_supported"] is True
     assert record["cache_arm_blocker"] is None
     assert record["requires_kv_transfer_params"] is True

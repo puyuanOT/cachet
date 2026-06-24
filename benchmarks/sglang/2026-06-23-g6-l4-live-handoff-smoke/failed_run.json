@@ -1,0 +1,30 @@
+{
+  "benchmark_result": "not_published",
+  "blocker": "SGLang 0.5.10 rejected the Cachet logical model id as --served-model-name because it contains a colon reserved for model:adapter syntax.",
+  "cachet_commit": "86a8085",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 201402713679607,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/1007379972621829/run/201402713679607",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure_type": "sglang_invalid_served_model_name",
+  "hardware_target": "aws-g6-l4",
+  "live_handoff_generation_completed": true,
+  "mode": "generated-live-handoff",
+  "node_type": "g6.8xlarge",
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "snapshot_date": "2026-06-23",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "task": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}
