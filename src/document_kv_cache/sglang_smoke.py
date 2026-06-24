@@ -622,7 +622,11 @@ def _generate_live_handoff_inputs(
 ) -> dict[str, object]:
     generation.output_dir.mkdir(parents=True, exist_ok=True)
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
-    layout = layout_for_model(SERVED_MODEL_NAME, dtype=generation.dtype)
+    layout = layout_for_model(
+        SERVED_MODEL_NAME,
+        dtype=generation.dtype,
+        block_size=generation.page_size,
+    )
     live_request = build_live_server_check_request(
         model_id=SERVED_MODEL_NAME,
         hardware_target=config.hardware_target,

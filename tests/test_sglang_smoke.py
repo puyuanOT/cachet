@@ -8,11 +8,18 @@ import pytest
 
 import document_kv_cache.sglang_smoke as public_sglang_smoke
 from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
 )
 from document_kv_cache.engine import EngineReadyRequest
-from document_kv_cache.engine_adapters import build_engine_adapter_request, engine_adapter_request_to_record, sglang_adapter_spec
+from document_kv_cache.engine_adapters import (
+    build_engine_adapter_request,
+    engine_adapter_request_to_record,
+    read_engine_adapter_request_json,
+    sglang_adapter_spec,
+)
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
@@ -47,6 +54,8 @@ from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 from sglang_kv_injection.sglang_dynamic_backend import (
     DOCUMENT_KV_HICACHE_PAGE_STORE_URI_CONFIG_KEY,
     DOCUMENT_KV_HICACHE_PROVIDER_FACTORY_CONFIG_KEY,
+    DocumentKVHiCachePageProvider,
+    DocumentKVHiCacheRequestContext,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -307,6 +316,28 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(tmp_path, 
     assert Path(runtime_config.handoff_json).exists()
     assert runtime_config.payload_uri is not None
     assert local_path(runtime_config.payload_uri).exists()
+    handoff = read_engine_adapter_request_json(runtime_config.handoff_json, require_external_payload_uri=False)
+    layout = handoff["handle"]["layout"]
+    assert layout["block_size"] == 2
+    provider = DocumentKVHiCachePageProvider()
+    context = DocumentKVHiCacheRequestContext(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: runtime_config.request_id,
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: runtime_config.handoff_json,
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: runtime_config.payload_uri,
+            DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM: list(runtime_config.sglang_hicache_page_keys),
+        },
+        request_id=runtime_config.request_id,
+        handoff_json=runtime_config.handoff_json,
+        payload_uri=runtime_config.payload_uri,
+        sglang_hicache_page_keys=runtime_config.sglang_hicache_page_keys,
+    )
+    hydrated = provider.batch_get_v1(
+        [runtime_config.sglang_hicache_page_keys[0]],
+        document_kv_request_context=context,
+    )
+    payload = local_path(runtime_config.payload_uri).read_bytes()
+    assert hydrated == [payload[: 2 * layout["bytes_per_token"]]]
     generation = json.loads(config.live_handoff_generation_path.read_text(encoding="utf-8"))
     assert generation["ok"] is True
     assert generation["cache_prefix_tokens"] == len(TinyTokenizer.token_ids)
