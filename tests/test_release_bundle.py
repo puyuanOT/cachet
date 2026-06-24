@@ -80,6 +80,8 @@ from document_kv_cache.repository_hygiene import (
     REQUIRED_GITIGNORE_PATTERNS,
 )
 from document_kv_cache.release_evidence import (
+    SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+    SGLANG_LIVE_V1_BENCHMARK_SCOPE,
     evaluate_release_evidence_files,
     inspect_release_evidence_input_files,
     write_release_evidence_input_status_json,
@@ -181,6 +183,77 @@ def test_build_release_bundle_can_include_non_default_compatibility_benchmark(tm
     assert compatibility_artifact["bundled_path"] == "compatibility_benchmark_02_aws-g5-a10g.json"
     bundled_record = json.loads((bundle_dir / compatibility_artifact["bundled_path"]).read_text(encoding="utf-8"))
     assert bundled_record["suite"]["hardware_target"] == "aws-g5-a10g"
+
+
+def test_build_release_bundle_can_include_sglang_live_v1_benchmark(tmp_path):
+    source_dir = tmp_path / "sources"
+    bundle_dir = tmp_path / "bundle"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    sglang_live_v1_benchmark = _write_json(
+        source_dir / "sglang-live-v1-benchmark.json",
+        _sglang_live_v1_benchmark_record(ok=True),
+    )
+
+    bundle = build_release_bundle(
+        v1_benchmark_json=artifacts["v1"],
+        sglang_live_v1_benchmark_jsons=(sglang_live_v1_benchmark,),
+        storage_benchmark_json=artifacts["storage"],
+        engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+        engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+        release_evidence_json=artifacts["evidence"],
+        preflight_json=artifacts["preflight"],
+        output_dir=bundle_dir,
+    )
+    record = release_bundle_to_record(bundle)
+
+    assert [artifact["role"] for artifact in record["artifacts"]] == [
+        "v1_benchmark",
+        "sglang_live_v1_benchmark",
+        "storage_benchmark",
+        "engine_probe",
+        "engine_probe",
+        "engine_connector_actions",
+        "engine_connector_actions",
+        "release_evidence",
+        "preflight",
+    ]
+    sglang_artifact = record["artifacts"][1]
+    assert sglang_artifact["record_type"] == SGLANG_LIVE_BENCHMARK_RECORD_TYPE
+    assert sglang_artifact["bundled_path"] == (
+        "sglang_live_v1_benchmark_02_sglang-prepared-v1-g6-test.json"
+    )
+    bundled_record = json.loads((bundle_dir / sglang_artifact["bundled_path"]).read_text(encoding="utf-8"))
+    assert bundled_record["suite"]["scope"] == SGLANG_LIVE_V1_BENCHMARK_SCOPE
+    assert len(bundled_record["cache_hit_validations"]) == 8
+
+
+def test_build_release_bundle_rejects_invalid_sglang_live_v1_benchmark(tmp_path):
+    source_dir = tmp_path / "sources"
+    artifacts = _write_release_ready_artifacts(source_dir)
+    invalid_record = _sglang_live_v1_benchmark_record(ok=True)
+    invalid_record["suite"]["release_v1_suite"] = False
+    invalid_record["cache_hit_validations"][0]["ok"] = False
+    invalid_record["cache_hit_validations"][0]["issue"] = "cache miss"
+    invalid_record["cache_hit_validations"][0]["cache_request_cached_tokens"] = 0
+    invalid_sglang_live_v1_benchmark = _write_json(
+        source_dir / "invalid-sglang-live-v1-benchmark.json",
+        invalid_record,
+    )
+
+    with pytest.raises(ValueError) as exc_info:
+        build_release_bundle(
+            v1_benchmark_json=artifacts["v1"],
+            sglang_live_v1_benchmark_jsons=(invalid_sglang_live_v1_benchmark,),
+            storage_benchmark_json=artifacts["storage"],
+            engine_probe_jsons=(artifacts["vllm"], artifacts["sglang"]),
+            engine_actions_jsons=(artifacts["vllm_actions"], artifacts["sglang_actions"]),
+            output_dir=tmp_path / "invalid-sglang-live-v1-bundle",
+        )
+
+    error = str(exc_info.value)
+    assert "SGLang live V1 benchmark suite release_v1_suite must be true" in error
+    assert "cache_hit_validations[0].ok must be true" in error
+    assert "cache_request_cached_tokens must be a positive integer" in error
 
 
 def test_build_release_bundle_rejects_default_target_as_compatibility_benchmark(tmp_path):
@@ -916,6 +989,7 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     assert record["ok"] is True
     assert [artifact["role"] for artifact in record["artifacts"]] == [
         "v1_benchmark",
+        "sglang_live_v1_benchmark",
         "storage_benchmark",
         "engine_probe",
         "engine_probe",
@@ -925,14 +999,14 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
         "engine_launch_config",
         "release_evidence",
         "preflight",
-            "plan_execution",
-            "databricks_run_status",
-            "databricks_run_status",
-            "databricks_run_status",
-            "databricks_run_status",
-            "package_wheel",
-            "pr_evidence",
-            "requirements_matrix",
+        "plan_execution",
+        "databricks_run_status",
+        "databricks_run_status",
+        "databricks_run_status",
+        "databricks_run_status",
+        "package_wheel",
+        "pr_evidence",
+        "requirements_matrix",
         "github_governance",
         "repository_hygiene",
         "native_probe_factories",
@@ -957,8 +1031,8 @@ def test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set(tm
     ]
     assert [artifact["backend"] for artifact in launch_config_artifacts] == ["vllm", "sglang"]
     assert [artifact["bundled_path"] for artifact in launch_config_artifacts] == [
-        "engine_launch_config_07_vllm.json",
-        "engine_launch_config_08_sglang.json",
+        "engine_launch_config_08_vllm.json",
+        "engine_launch_config_09_sglang.json",
     ]
 
 
@@ -1005,7 +1079,7 @@ def test_build_release_bundle_strict_v1_requires_compatibility_status_for_compat
     record = release_bundle_to_record(bundle)
 
     assert record["ok"] is True
-    assert record["artifact_count"] == 23
+    assert record["artifact_count"] == 24
     assert any(artifact["role"] == "compatibility_benchmark" for artifact in record["artifacts"])
     assert any(artifact["role"] == "compatibility_databricks_run_status" for artifact in record["artifacts"])
 
@@ -1026,7 +1100,7 @@ def test_build_release_bundle_strict_v1_requires_compatibility_status_for_compat
     record_with_migration = release_bundle_to_record(bundle_with_migration)
 
     assert record_with_migration["ok"] is True
-    assert record_with_migration["artifact_count"] == 24
+    assert record_with_migration["artifact_count"] == 25
     assert any(
         artifact["role"] == "legacy_migration_evidence"
         for artifact in record_with_migration["artifacts"]
@@ -3572,6 +3646,10 @@ def _write_release_ready_artifacts(
             source_dir / "sglang-launch-config.json",
             _launch_config_record(ServingBackend.SGLANG),
         ),
+        "sglang_live_v1": _write_json(
+            source_dir / "sglang-live-v1-benchmark.json",
+            _sglang_live_v1_benchmark_record(ok=True),
+        ),
     }
     evidence = evaluate_release_evidence_files(
         v1_benchmark_json=paths["v1"],
@@ -3634,6 +3712,101 @@ def _v1_record(*, ok: bool, suite_id: str = "v1-suite", hardware_target: str = "
             "unexpected_datasets": [],
             "issues": [] if ok else ["missing report rows: hotpotqa:baseline_prefill"],
         },
+    }
+
+
+def _sglang_live_v1_benchmark_record(*, ok: bool = True):
+    datasets = ("biography", "hotpotqa", "musique", "niah")
+    arms = ("baseline_prefill", "document_kv_cache")
+    repeats = 2
+    return {
+        "record_type": SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+        "ok": ok,
+        "benchmark_id": "sglang-prepared-v1-g6-test",
+        "engine": "sglang",
+        "model_id": "qwen3:4b-instruct",
+        "served_model_name": "qwen3-4b-instruct",
+        "hardware_target": "aws-g6-l4",
+        "suite": {
+            "suite_id": "sglang-prepared-v1-g6-test",
+            "scope": SGLANG_LIVE_V1_BENCHMARK_SCOPE,
+            "datasets": list(datasets),
+            "examples": len(datasets),
+            "repeats": repeats,
+            "release_v1_suite": True,
+        },
+        "cache_prompt_text_mode": "logical",
+        "live_check_prompt_format": "plain",
+        "live_check_request_mode": "completion",
+        "live_check_temperature": 0.0,
+        "kv_transfer_params_transport": "custom_params",
+        "flushes": [],
+        "measurements": [
+            _v1_measurement_record(dataset, arm)
+            | {
+                "example_id": f"{dataset}-1",
+                "metadata": {
+                    **_v1_measurement_metadata(arm),
+                    "repeat_index": str(repeat),
+                },
+            }
+            for dataset in datasets
+            for repeat in range(1, repeats + 1)
+            for arm in arms
+        ],
+        "report_rows": [_sglang_live_v1_report_row_record(dataset, arm) for dataset in datasets for arm in arms],
+        "comparisons": [
+            {
+                "dataset": dataset,
+                "baseline_arm_id": "baseline_prefill",
+                "cache_arm_id": "document_kv_cache",
+                "ttft_speedup": 1.0,
+                "time_to_completion_speedup": 1.0,
+                "exact_match_delta": 0.0,
+                "answer_found_delta": 0.0,
+            }
+            for dataset in datasets
+        ],
+        "cache_hit_validations": [
+            _sglang_live_v1_cache_hit_validation(dataset, repeat)
+            for dataset in datasets
+            for repeat in range(1, repeats + 1)
+        ],
+        "issues": [] if ok else ["cache hit validation failed"],
+    }
+
+
+def _sglang_live_v1_report_row_record(dataset: str, arm: str):
+    row = _v1_report_row_record(dataset, arm)
+    return {
+        **row,
+        "requests": 2,
+        "ttft": {**row["ttft"], "count": 2},
+        "time_to_completion": {**row["time_to_completion"], "count": 2},
+    }
+
+
+def _sglang_live_v1_cache_hit_validation(dataset: str, repeat: int):
+    return {
+        "dataset": dataset,
+        "example_id": f"{dataset}-1",
+        "arm_id": "document_kv_cache",
+        "repeat_index": repeat,
+        "ok": True,
+        "issue": None,
+        "minimum_cached_tokens": 128,
+        "cache_request_cached_tokens": 128,
+        "cache_request_prompt_tokens": 1024,
+        "cache_request_match_reason": "minimum_cached_tokens",
+        "cache_request_prefill_index": 0,
+        "prefill_token_counts": [
+            {
+                "cached_tokens": 128,
+                "new_tokens": 896,
+                "total_prompt_tokens": 1024,
+            }
+        ],
+        "cached_token_counts": [128],
     }
 
 
@@ -3907,6 +4080,7 @@ def _strict_v1_release_bundle_kwargs(
     )
     return {
         "v1_benchmark_json": artifacts["v1"],
+        "sglang_live_v1_benchmark_jsons": (artifacts["sglang_live_v1"],),
         "storage_benchmark_json": artifacts["storage"],
         "engine_probe_jsons": (artifacts["vllm"], artifacts["sglang"]),
         "engine_actions_jsons": (artifacts["vllm_actions"], artifacts["sglang_actions"]),

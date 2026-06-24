@@ -887,7 +887,10 @@ repeated Cachet-backed cache hits and quality for one generated NIAH prompt,
 and a prepared four-dataset V1 live benchmark that passes cache-hit and quality
 gates on g6/L4. The SGLang prepared V1 cache arm is slower on the short prepared
 prompts, and the artifact remains the SGLang live benchmark record type rather
-than the canonical `document_kv.benchmark_run.v1` release-bundle input.
+than the canonical `document_kv.benchmark_run.v1` release-bundle input. Strict
+release bundles validate raw `cachet.sglang_live_benchmark.v1` sidecars through
+the dedicated `sglang_live_v1_benchmark` role; the tracked standalone report is
+a compact human-readable snapshot, not the bundle sidecar itself.
 
 - `BenchmarkExample` captures one dataset example, query, expected answer, and selected source documents.
 - `BenchmarkDatasetSpec` records the canonical V1 instruction style for Biography, HotpotQA, MusiQue, and NIAH.
@@ -1589,7 +1592,8 @@ target. Add
 `--require-complete-v1` for release publishing; this strict mode refuses to
 build a V1 bundle unless the release evidence, preflight, vLLM/SGLang native
 engine-probe, connector-action, and engine-launch-config sidecars,
-benchmark-plan execution, Databricks run-status sidecars for benchmark,
+SGLang live V1 benchmark sidecar, benchmark-plan execution, Databricks
+run-status sidecars for benchmark,
 storage, and engine-probe runs, tested wheel, PR evidence, V1 requirements
 matrix, GitHub governance, repository hygiene, and native-probe factory
 diagnostics sidecars are all present; the release bundle also verifies exactly
@@ -2011,7 +2015,8 @@ users keep inline type annotations after installation.
   artifact set remains: release evidence
   sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
-  sidecars, benchmark plan execution sidecar, Databricks run-status
+  sidecars, SGLang live V1 benchmark sidecar, benchmark plan execution sidecar,
+  Databricks run-status
   sidecars for benchmark, storage, and vLLM/SGLang engine-probe runs, tested
   package wheel, PR evidence sidecar, legacy migration evidence sidecar, V1
   requirements matrix, GitHub governance sidecar, repository hygiene sidecar,

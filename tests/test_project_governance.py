@@ -1448,7 +1448,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "benchmark runs"
     ) in compact_snapshot
     assert "successful generated-handoff live smoke" in compact_snapshot
-    assert "SGLang canonical release-bundle consumption as pending" in compact_snapshot
+    assert "dedicated `sglang_live_v1_benchmark` artifact role" in compact_snapshot
     assert "synthetic live benchmark validates decode-time prefix binding" in compact_snapshot
     assert "They are not latency, throughput, or quality benchmark measurements" in compact_snapshot
     assert "Folders with `v1_benchmark.json` are latency and quality benchmark reports" in root_readme
@@ -1461,6 +1461,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "distinct SGLang live report surface rather than canonical" in (
         compact_databricks_readme
     )
+    assert "`sglang_live_v1_benchmark`" in databricks_readme
     assert "vLLM `document_kv.benchmark_run.v1` evidence" in matrix_text
     assert "synthetic live `cachet.sglang_live_benchmark.v1` evidence" in compact_matrix_text
     assert "SGLang prepared V1 run `48413356233422`" in compact_matrix_text

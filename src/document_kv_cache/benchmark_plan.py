@@ -60,6 +60,7 @@ STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
 STRICT_V1_COMPATIBILITY_DATABRICKS_RUN_STATUS_SIDECAR_LABEL = (
     "matching compatibility Databricks run-status sidecars for compatibility benchmarks"
 )
+STRICT_V1_SGLANG_LIVE_V1_BENCHMARK_SIDECAR_LABEL = "SGLang live V1 benchmark sidecar"
 
 __all__ = [
     "PLAN_VERSION",
@@ -214,6 +215,7 @@ class ReleaseBundlePlanConfig:
     engine_launch_config_jsons: tuple[str, ...] = ()
     compatibility_benchmark_jsons: tuple[str, ...] = ()
     compatibility_databricks_run_status_jsons: tuple[str, ...] = ()
+    sglang_live_v1_benchmark_jsons: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.output_dir:
@@ -246,6 +248,8 @@ class ReleaseBundlePlanConfig:
             raise ValueError(
                 "release bundle compatibility_databricks_run_status_jsons entries must be non-empty"
             )
+        if any(not path for path in self.sglang_live_v1_benchmark_jsons):
+            raise ValueError("release bundle sglang_live_v1_benchmark_jsons entries must be non-empty")
         canonical_launch_config_paths = tuple(
             _canonical_artifact_path(path) for path in self.engine_launch_config_jsons
         )
@@ -261,6 +265,11 @@ class ReleaseBundlePlanConfig:
         )
         if len(set(canonical_compatibility_status_paths)) != len(canonical_compatibility_status_paths):
             raise ValueError("release bundle compatibility_databricks_run_status_jsons entries must be distinct")
+        canonical_sglang_live_paths = tuple(
+            _canonical_artifact_path(path) for path in self.sglang_live_v1_benchmark_jsons
+        )
+        if len(set(canonical_sglang_live_paths)) != len(canonical_sglang_live_paths):
+            raise ValueError("release bundle sglang_live_v1_benchmark_jsons entries must be distinct")
         if type(self.overwrite) is not bool:
             raise ValueError("release bundle overwrite must be boolean")
         if type(self.require_complete_v1) is not bool:
@@ -275,6 +284,11 @@ class ReleaseBundlePlanConfig:
             self,
             "compatibility_databricks_run_status_jsons",
             tuple(self.compatibility_databricks_run_status_jsons),
+        )
+        object.__setattr__(
+            self,
+            "sglang_live_v1_benchmark_jsons",
+            tuple(self.sglang_live_v1_benchmark_jsons),
         )
 
 
@@ -1212,6 +1226,8 @@ def _release_bundle_command(config: BenchmarkPlanConfig) -> BenchmarkCommand:
     )
     for compatibility_benchmark_json in bundle_config.compatibility_benchmark_jsons:
         argv = (*argv, "--compatibility-benchmark-json", compatibility_benchmark_json)
+    for sglang_live_v1_benchmark_json in bundle_config.sglang_live_v1_benchmark_jsons:
+        argv = (*argv, "--sglang-live-v1-benchmark-json", sglang_live_v1_benchmark_json)
     for engine_probe_json in _release_engine_probe_jsons(config):
         argv = (*argv, "--engine-probe-json", engine_probe_json)
     for engine_action_json in _release_engine_action_jsons(config):
@@ -1260,6 +1276,7 @@ def _release_bundle_plan_to_record(config: BenchmarkPlanConfig) -> dict[str, Any
         "output_json": bundle_config.output_json,
         "v1_benchmark_json": config.benchmark_output_json,
         "compatibility_benchmark_jsons": list(bundle_config.compatibility_benchmark_jsons),
+        "sglang_live_v1_benchmark_jsons": list(bundle_config.sglang_live_v1_benchmark_jsons),
         "storage_benchmark_json": _release_storage_benchmark_json(config),
         "engine_probe_jsons": list(_release_engine_probe_jsons(config)),
         "engine_actions_jsons": list(_release_engine_action_jsons(config)),
@@ -1383,6 +1400,8 @@ def _validate_strict_v1_release_bundle_plan(config: BenchmarkPlanConfig) -> None
         or len(set(bundle_config.databricks_run_status_jsons)) != len(bundle_config.databricks_run_status_jsons)
     ):
         missing.append(STRICT_V1_DATABRICKS_RUN_STATUS_SIDECAR_LABEL)
+    if len(bundle_config.sglang_live_v1_benchmark_jsons) != 1:
+        missing.append(STRICT_V1_SGLANG_LIVE_V1_BENCHMARK_SIDECAR_LABEL)
     if bundle_config.compatibility_benchmark_jsons and (
         len(bundle_config.compatibility_databricks_run_status_jsons)
         != len(bundle_config.compatibility_benchmark_jsons)
@@ -2168,6 +2187,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--release-bundle-sglang-live-v1-benchmark-json",
+        action="append",
+        help=(
+            "SGLang cachet.sglang_live_benchmark.v1 prepared live V1 benchmark JSON "
+            "to include in the release bundle. Repeat as needed."
+        ),
+    )
+    parser.add_argument(
         "--release-bundle-pr-evidence-json",
         action="append",
         help="PR evidence sidecar to include in the release bundle. Repeat as needed.",
@@ -2696,6 +2723,7 @@ def _release_bundle_config_from_cli(
         compatibility_databricks_run_status_jsons=tuple(
             args.release_bundle_compatibility_databricks_run_status_json or ()
         ),
+        sglang_live_v1_benchmark_jsons=tuple(args.release_bundle_sglang_live_v1_benchmark_json or ()),
         pr_evidence_jsons=tuple(args.release_bundle_pr_evidence_json or ()),
         requirements_matrix_md=args.release_bundle_requirements_matrix_md,
         github_governance_json=args.release_bundle_github_governance_json,
@@ -2731,6 +2759,7 @@ def _has_release_bundle_options(args: argparse.Namespace) -> bool:
         or args.release_bundle_package_wheel is not None
         or args.release_bundle_compatibility_benchmark_json is not None
         or args.release_bundle_compatibility_databricks_run_status_json is not None
+        or args.release_bundle_sglang_live_v1_benchmark_json is not None
         or args.release_bundle_pr_evidence_json is not None
         or args.release_bundle_requirements_matrix_md is not None
         or args.release_bundle_github_governance_json is not None

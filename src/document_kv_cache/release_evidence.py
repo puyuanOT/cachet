@@ -49,6 +49,8 @@ from document_kv_cache.storage_benchmark import RELEASE_STORAGE_BENCHMARK_READER
 __all__ = [
     "RELEASE_EVIDENCE_RECORD_TYPE",
     "RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE",
+    "SGLANG_LIVE_BENCHMARK_RECORD_TYPE",
+    "SGLANG_LIVE_V1_BENCHMARK_SCOPE",
     "RELEASE_EVIDENCE_ARTIFACT_ROLES",
     "REQUIRED_ENGINE_PROBE_BACKENDS",
     "ReleaseEvidenceArtifactSource",
@@ -60,6 +62,7 @@ __all__ = [
     "inspect_release_evidence_input_files",
     "release_evidence_input_status_to_record",
     "release_evidence_to_record",
+    "sglang_live_v1_benchmark_issues",
     "write_release_evidence_input_status_json",
     "write_release_evidence_json",
     "main",
@@ -68,6 +71,8 @@ __all__ = [
 
 RELEASE_EVIDENCE_RECORD_TYPE = "document_kv.release_evidence.v1"
 RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE = "document_kv.release_evidence_inputs.v1"
+SGLANG_LIVE_BENCHMARK_RECORD_TYPE = "cachet.sglang_live_benchmark.v1"
+SGLANG_LIVE_V1_BENCHMARK_SCOPE = "live_v1_release"
 REQUIRED_ENGINE_PROBE_BACKENDS = tuple(backend.value for backend in ServingBackend)
 RELEASE_EVIDENCE_ARTIFACT_ROLES = (
     "v1_benchmark",
@@ -642,6 +647,291 @@ def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
     if comparisons is not None:
         _validate_v1_comparisons(comparisons, issues)
     return tuple(issues)
+
+
+def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return release-readiness issues for a live SGLang prepared V1 benchmark."""
+
+    issues: list[str] = []
+    if record.get("record_type") != SGLANG_LIVE_BENCHMARK_RECORD_TYPE:
+        issues.append(
+            "SGLang live V1 benchmark record_type must be "
+            f"{SGLANG_LIVE_BENCHMARK_RECORD_TYPE!r}"
+        )
+    if record.get("ok") is not True:
+        record_issues = record.get("issues")
+        if isinstance(record_issues, Sequence) and not isinstance(
+            record_issues,
+            (str, bytes, bytearray),
+        ) and record_issues:
+            issues.extend(f"SGLang live V1 benchmark: {issue}" for issue in record_issues)
+        else:
+            issues.append("SGLang live V1 benchmark ok must be true")
+    if record.get("issues") not in ([], ()):
+        issues.append("SGLang live V1 benchmark issues must be empty")
+    if record.get("engine") != "sglang":
+        issues.append("SGLang live V1 benchmark engine must be 'sglang'")
+    if record.get("model_id") != DEFAULT_V1_MODEL_ID:
+        issues.append(f"SGLang live V1 benchmark model_id must be {DEFAULT_V1_MODEL_ID!r}")
+    if record.get("hardware_target") not in SUPPORTED_V1_HARDWARE_TARGETS:
+        issues.append(
+            "SGLang live V1 benchmark hardware_target must be one of "
+            f"{SUPPORTED_V1_HARDWARE_TARGETS!r}"
+        )
+    _validate_sglang_live_v1_runtime_metadata(record, issues)
+
+    suite = _mapping_or_issue(record, "suite", issues)
+    measurements = _sequence_or_issue(record, "measurements", issues)
+    report_rows = _sequence_or_issue(record, "report_rows", issues)
+    comparisons = _sequence_or_issue(record, "comparisons", issues)
+    cache_hit_validations = _sequence_or_issue(record, "cache_hit_validations", issues)
+    if suite is not None:
+        _validate_sglang_live_v1_suite_metadata(suite, issues)
+    if suite is not None and measurements is not None:
+        _validate_sglang_live_v1_measurement_count(suite, measurements, issues)
+        _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
+    if measurements is not None:
+        _validate_v1_measurement_examples_have_required_arms(measurements, issues)
+        _validate_v1_measurement_examples_have_consistent_expected_answers(measurements, issues)
+        _validate_v1_measurement_examples_have_consistent_logical_prompt_tokens(measurements, issues)
+        _validate_v1_measurements(measurements, issues)
+    if measurements is not None and report_rows is not None:
+        _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
+    if report_rows is not None and comparisons is not None:
+        _validate_v1_comparisons_match_report_rows(report_rows, comparisons, issues)
+    if report_rows is not None:
+        _validate_v1_report_rows(report_rows, issues)
+    if comparisons is not None:
+        _validate_v1_comparisons(comparisons, issues)
+    if suite is not None and cache_hit_validations is not None:
+        _validate_sglang_live_v1_cache_hit_validations(
+            suite,
+            cache_hit_validations,
+            measurements=measurements,
+            issues=issues,
+        )
+    return tuple(issues)
+
+
+def _validate_sglang_live_v1_runtime_metadata(
+    record: Mapping[str, Any],
+    issues: list[str],
+) -> None:
+    if not isinstance(record.get("benchmark_id"), str) or not record.get("benchmark_id"):
+        issues.append("SGLang live V1 benchmark benchmark_id must be non-empty")
+    if not isinstance(record.get("served_model_name"), str) or not record.get("served_model_name"):
+        issues.append("SGLang live V1 benchmark served_model_name must be non-empty")
+    if record.get("cache_prompt_text_mode") != "logical":
+        issues.append("SGLang live V1 benchmark cache_prompt_text_mode must be 'logical'")
+    if record.get("live_check_prompt_format") != "plain":
+        issues.append("SGLang live V1 benchmark live_check_prompt_format must be 'plain'")
+    if record.get("live_check_request_mode") != "completion":
+        issues.append("SGLang live V1 benchmark live_check_request_mode must be 'completion'")
+    temperature = record.get("live_check_temperature")
+    if not _is_finite_number(temperature) or temperature != 0.0:
+        issues.append("SGLang live V1 benchmark live_check_temperature must be 0.0")
+    if record.get("kv_transfer_params_transport") != "custom_params":
+        issues.append("SGLang live V1 benchmark kv_transfer_params_transport must be 'custom_params'")
+
+
+def _validate_sglang_live_v1_suite_metadata(
+    suite: Mapping[str, Any],
+    issues: list[str],
+) -> None:
+    suite_id = suite.get("suite_id")
+    if not isinstance(suite_id, str) or not suite_id:
+        issues.append("SGLang live V1 benchmark suite_id must be non-empty")
+    if suite.get("scope") != SGLANG_LIVE_V1_BENCHMARK_SCOPE:
+        issues.append(
+            "SGLang live V1 benchmark suite.scope must be "
+            f"{SGLANG_LIVE_V1_BENCHMARK_SCOPE!r}"
+        )
+    datasets = suite.get("datasets")
+    if (
+        not isinstance(datasets, Sequence)
+        or isinstance(datasets, (str, bytes, bytearray))
+        or tuple(datasets) != SUPPORTED_V1_DATASETS
+    ):
+        issues.append("SGLang live V1 benchmark suite datasets must match the V1 release datasets")
+    if not _is_positive_int(suite.get("examples")):
+        issues.append("SGLang live V1 benchmark suite examples must be a positive integer")
+    if not _is_positive_int(suite.get("repeats")):
+        issues.append("SGLang live V1 benchmark suite repeats must be a positive integer")
+    if suite.get("release_v1_suite") is not True:
+        issues.append("SGLang live V1 benchmark suite release_v1_suite must be true")
+
+
+def _validate_sglang_live_v1_measurement_count(
+    suite: Mapping[str, Any],
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> None:
+    examples = suite.get("examples")
+    repeats = suite.get("repeats")
+    if not _is_positive_int(examples) or not _is_positive_int(repeats):
+        return
+    expected = examples * repeats * 2
+    if len(measurements) != expected:
+        issues.append(
+            "SGLang live V1 benchmark measurements count must match "
+            f"examples * repeats * 2 ({len(measurements)!r} != {expected})"
+        )
+
+
+def _validate_sglang_live_v1_cache_hit_validations(
+    suite: Mapping[str, Any],
+    validations: Sequence[Any],
+    *,
+    measurements: Sequence[Any] | None,
+    issues: list[str],
+) -> None:
+    if not validations:
+        issues.append("SGLang live V1 benchmark cache_hit_validations must be non-empty")
+        return
+    repeats = suite.get("repeats")
+    repeat_count = repeats if _is_positive_int(repeats) else 0
+    cache_measurement_bindings = (
+        _sglang_live_v1_cache_measurement_bindings(measurements)
+        if measurements is not None
+        else set()
+    )
+    observed_dataset_repeats: set[tuple[str, int]] = set()
+    for index, validation in enumerate(validations):
+        label = f"SGLang live V1 benchmark cache_hit_validations[{index}]"
+        if not isinstance(validation, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        dataset = _validate_v1_dataset(
+            validation.get("dataset"),
+            label=label,
+            issues=issues,
+        )
+        example_id = validation.get("example_id")
+        if not isinstance(example_id, str) or not example_id:
+            issues.append(f"{label}.example_id must be non-empty")
+        if validation.get("arm_id") != CACHE_REUSE_ARM:
+            issues.append(f"{label}.arm_id must be {CACHE_REUSE_ARM!r}")
+        repeat_index = validation.get("repeat_index")
+        if not _is_positive_int(repeat_index):
+            issues.append(f"{label}.repeat_index must be a positive integer")
+        elif repeat_count and repeat_index > repeat_count:
+            issues.append(f"{label}.repeat_index must not exceed suite repeats")
+        elif dataset is not None:
+            observed_dataset_repeats.add((dataset, repeat_index))
+            if isinstance(example_id, str) and example_id and measurements is not None:
+                binding = (dataset, example_id, repeat_index)
+                if binding not in cache_measurement_bindings:
+                    issues.append(f"{label} must match a measured cache-arm request")
+        if validation.get("ok") is not True:
+            issues.append(f"{label}.ok must be true")
+        if validation.get("issue") is not None:
+            issues.append(f"{label}.issue must be null")
+        minimum_cached_tokens = validation.get("minimum_cached_tokens")
+        if not _is_positive_int(minimum_cached_tokens):
+            issues.append(f"{label}.minimum_cached_tokens must be a positive integer")
+        cache_request_cached_tokens = validation.get("cache_request_cached_tokens")
+        if not _is_positive_int(cache_request_cached_tokens):
+            issues.append(f"{label}.cache_request_cached_tokens must be a positive integer")
+        elif (
+            _is_positive_int(minimum_cached_tokens)
+            and cache_request_cached_tokens < minimum_cached_tokens
+        ):
+            issues.append(
+                f"{label}.cache_request_cached_tokens must be at least minimum_cached_tokens"
+            )
+        _validate_sglang_live_v1_cache_hit_prefill_row(validation, label, issues)
+
+    if repeat_count:
+        expected = {
+            (dataset, repeat)
+            for dataset in SUPPORTED_V1_DATASETS
+            for repeat in range(1, repeat_count + 1)
+        }
+        missing = sorted(
+            f"{dataset}:repeat_{repeat}"
+            for dataset, repeat in expected.difference(observed_dataset_repeats)
+        )
+        if missing:
+            issues.append(
+                "SGLang live V1 benchmark cache_hit_validations missing required "
+                f"dataset repeats: {', '.join(missing)}"
+            )
+
+
+def _sglang_live_v1_cache_measurement_bindings(
+    measurements: Sequence[Any],
+) -> set[tuple[str, str, int]]:
+    bindings: set[tuple[str, str, int]] = set()
+    for measurement in measurements:
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        metadata = measurement.get("metadata")
+        if (
+            not isinstance(dataset, str)
+            or dataset not in SUPPORTED_V1_DATASETS
+            or not isinstance(example_id, str)
+            or not example_id
+            or measurement.get("arm_id") != CACHE_REUSE_ARM
+            or not isinstance(metadata, Mapping)
+        ):
+            continue
+        repeat_index = _positive_int_metadata(metadata.get("repeat_index"))
+        if repeat_index is not None:
+            bindings.add((dataset, example_id, repeat_index))
+    return bindings
+
+
+def _validate_sglang_live_v1_cache_hit_prefill_row(
+    validation: Mapping[str, Any],
+    label: str,
+    issues: list[str],
+) -> None:
+    observed_row = _sglang_live_v1_cache_hit_prefill_row(validation)
+    if observed_row is None:
+        issues.append(f"{label} must include the observed cache-arm prefill row")
+        return
+    observed_cached_tokens = observed_row.get("cached_tokens")
+    if not _is_positive_int(observed_cached_tokens):
+        issues.append(f"{label} observed cached_tokens must be a positive integer")
+    minimum_cached_tokens = validation.get("minimum_cached_tokens")
+    if (
+        _is_positive_int(observed_cached_tokens)
+        and _is_positive_int(minimum_cached_tokens)
+        and observed_cached_tokens < minimum_cached_tokens
+    ):
+        issues.append(f"{label} observed cached_tokens must be at least minimum_cached_tokens")
+    observed_total_prompt_tokens = observed_row.get("total_prompt_tokens")
+    cache_request_prompt_tokens = validation.get("cache_request_prompt_tokens")
+    if not _is_positive_int(cache_request_prompt_tokens):
+        issues.append(f"{label}.cache_request_prompt_tokens must be a positive integer")
+    if not _is_positive_int(observed_total_prompt_tokens):
+        issues.append(f"{label} observed total_prompt_tokens must be a positive integer")
+    elif (
+        _is_positive_int(cache_request_prompt_tokens)
+        and observed_total_prompt_tokens < cache_request_prompt_tokens
+    ):
+        issues.append(f"{label} observed total_prompt_tokens must cover cache_request_prompt_tokens")
+
+
+def _sglang_live_v1_cache_hit_prefill_row(
+    validation: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    observed_row = validation.get("observed_prefill_row")
+    if isinstance(observed_row, Mapping):
+        return observed_row
+    prefill_counts = validation.get("prefill_token_counts")
+    prefill_index = validation.get("cache_request_prefill_index")
+    if (
+        isinstance(prefill_counts, Sequence)
+        and not isinstance(prefill_counts, (str, bytes, bytearray))
+        and type(prefill_index) is int
+        and 0 <= prefill_index < len(prefill_counts)
+        and isinstance(prefill_counts[prefill_index], Mapping)
+    ):
+        return prefill_counts[prefill_index]
+    return None
 
 
 def _validate_v1_suite_metadata(suite: Mapping[str, Any], issues: list[str]) -> None:

@@ -1,6 +1,6 @@
 {
   "benchmark_id": "sglang-prepared-v1-g6-5c66990-20260624_072154",
-  "benchmark_limitation": "This is a prepared live SGLang V1 benchmark artifact using cachet.sglang_live_benchmark.v1. It covers the four V1 datasets with validated Cachet-backed SGLang HiCache hits, but it is not the canonical document_kv.benchmark_run.v1 record type consumed by existing release-bundle validators.",
+  "benchmark_limitation": "This is a compact standalone snapshot of a prepared live SGLang V1 benchmark artifact using cachet.sglang_live_benchmark.v1. It covers the four V1 datasets with validated Cachet-backed SGLang HiCache hits. It is not the canonical document_kv.benchmark_run.v1 vLLM record shape and is not itself the strict release-bundle sidecar; strict bundles validate raw live benchmark sidecars through the dedicated sglang_live_v1_benchmark artifact role.",
   "benchmark_result": "prepared_live_v1_release_pass_no_speedup",
   "cachet_commit": "5c66990",
   "databricks_run": {
