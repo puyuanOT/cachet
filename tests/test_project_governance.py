@@ -1025,6 +1025,21 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(
         encoding="utf-8"
     )
+    vllm_g6_report_readme = (
+        benchmark_root / "vllm" / "2026-06-23-g6-l4-v1" / "README.md"
+    ).read_text(encoding="utf-8")
+    vllm_g5_report_readme = (
+        benchmark_root / "vllm" / "2026-06-23-g5-a10g-v1-compatibility" / "README.md"
+    ).read_text(encoding="utf-8")
+    storage_report_readme = (
+        benchmark_root / "storage" / "2026-06-21-g6-l4-storage-readers" / "README.md"
+    ).read_text(encoding="utf-8")
+    native_engine_report_readme = (
+        benchmark_root
+        / "native-engine"
+        / "2026-06-23-g6-l4-native-engine-probes"
+        / "README.md"
+    ).read_text(encoding="utf-8")
     benchmark_template_readme = (
         benchmark_root / "_template" / "README.md"
     ).read_text(encoding="utf-8")
@@ -1315,6 +1330,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_sglang_readme = " ".join(sglang_readme.split())
     compact_storage_readme = " ".join(storage_readme.split())
     compact_native_engine_readme = " ".join(native_engine_readme.split())
+    compact_vllm_g6_report_readme = " ".join(vllm_g6_report_readme.split())
+    compact_vllm_g5_report_readme = " ".join(vllm_g5_report_readme.split())
+    compact_storage_report_readme = " ".join(storage_report_readme.split())
+    compact_native_engine_report_readme = " ".join(native_engine_report_readme.split())
     compact_benchmark_template_readme = " ".join(benchmark_template_readme.split())
     compact_sglang_live_benchmark_success_readme = " ".join(
         sglang_live_benchmark_success_readme.split()
@@ -1335,6 +1354,15 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "[`sglang/`](sglang/)" in root_readme
     assert "[`storage/`](storage/)" in root_readme
     assert "[`native-engine/`](native-engine/)" in root_readme
+    assert "[`vllm/2026-06-23-g6-l4-v1/`](vllm/2026-06-23-g6-l4-v1/)" in root_readme
+    assert (
+        "[`storage/2026-06-21-g6-l4-storage-readers/`](storage/2026-06-21-g6-l4-storage-readers/)"
+        in root_readme
+    )
+    assert (
+        "[`native-engine/2026-06-23-g6-l4-native-engine-probes/`](native-engine/2026-06-23-g6-l4-native-engine-probes/)"
+        in root_readme
+    )
     assert "[`_template/`](./_template/)" in root_readme
     assert "[`databricks/CURRENT.md`](databricks/CURRENT.md)" in root_readme
     assert "[`CURRENT.md`](CURRENT.md)" in databricks_readme
@@ -1385,10 +1413,15 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Publish full SGLang latency/throughput evidence only after" in compact_matrix_text
     assert "Release-bundle manifests are regenerated from these benchmark artifacts" in compact_snapshot
     assert "vLLM latency and quality benchmark results" in compact_vllm_readme
+    assert "Dated subfolders are the report pages to read and cite" in compact_vllm_readme
     assert "872615985402004" in vllm_readme
     assert "566743786103032" in vllm_readme
     assert "strict g6/L4 release target" in vllm_readme
     assert "Do not use `../../pr-evidence/` as the benchmark report surface" in vllm_readme
+    assert "strict Cachet vLLM V1 benchmark" in compact_vllm_g6_report_readme
+    assert "TTFT speedups ranged from 5.27x to 6.97x" in compact_vllm_g6_report_readme
+    assert "Compatibility evidence; not the strict release target" in vllm_g5_report_readme
+    assert "TTFT speedups ranged from 4.66x to 6.04x" in compact_vllm_g5_report_readme
     assert "successful live SGLang handoff smoke on g6/L4" in compact_sglang_readme
     assert "synthetic live SGLang benchmark artifact" in compact_sglang_readme
     assert "published full SGLang latency or throughput benchmark suite" in compact_sglang_readme
@@ -2707,9 +2740,13 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "948365719597221" in storage_readme
     assert "unity_catalog" in storage_readme
     assert "not model-serving latency or quality measurements" in compact_storage_readme
+    assert "storage-reader benchmark that pairs with the strict Cachet V1" in compact_storage_report_readme
+    assert "Unity Catalog reader reached 1148.0 MiB/s" in compact_storage_report_readme
     assert "Native Engine Integration Evidence" in native_engine_readme
     assert "Provider-backed dynamic HiCache probe succeeded" in native_engine_readme
     assert "not latency, throughput, or quality benchmark measurements" in compact_native_engine_readme
+    assert "provider-backed native connector evidence" in compact_native_engine_report_readme
+    assert "Each probe copied 48 tokens" in compact_native_engine_report_readme
     assert "Benchmark Report Template" in benchmark_template_readme
     assert "Do not include Databricks tokens" in compact_benchmark_template_readme
     assert "`pr-evidence/` only for PR validation" in compact_benchmark_template_readme
@@ -2719,6 +2756,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "databricks/CURRENT.md",
         "README.md",
         "native-engine/README.md",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/README.md",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/failed_run.json",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/README.md",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/failed_run.json",
@@ -2761,7 +2799,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/README.md",
         "sglang/README.md",
         "storage/README.md",
+        "storage/2026-06-21-g6-l4-storage-readers/README.md",
         "vllm/README.md",
+        "vllm/2026-06-23-g5-a10g-v1-compatibility/README.md",
+        "vllm/2026-06-23-g6-l4-v1/README.md",
         "databricks/README.md",
         "databricks/2026-06-21-g6-l4-storage-readers/README.md",
         "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",

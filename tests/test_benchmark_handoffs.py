@@ -27,6 +27,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
+    benchmark_cache_source_document,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -38,6 +39,7 @@ from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.models import KVCacheKey
+from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 
 
 class AlignedGenerator:
@@ -54,6 +56,40 @@ class AlignedGenerator:
             ),
             payload=payload,
             token_count=len(payload),
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class PageKeyTokenizer:
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        return {"input_ids": [[ord(character) for character in text]]}
+
+
+class PageKeyGenerator:
+    tokenizer = PageKeyTokenizer()
+    add_special_tokens = False
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        token_ids = self.tokenizer(
+            chunk.text,
+            return_tensors="pt",
+            add_special_tokens=self.add_special_tokens,
+        )["input_ids"][0]
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=b"\0" * len(token_ids),
+            token_count=len(token_ids),
             dtype=config.dtype,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
@@ -79,6 +115,49 @@ class Generator:
             ),
             payload=payload,
             token_count=len(payload),
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+def factory():
+    return Generator()
+"""
+
+PAGE_KEY_GENERATOR_MODULE_SOURCE = """
+from document_kv_cache.kvpack import PackChunk
+from document_kv_cache.models import KVCacheKey
+
+
+class Tokenizer:
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        return {"input_ids": [[ord(character) for character in text]]}
+
+
+class Generator:
+    tokenizer = Tokenizer()
+    add_special_tokens = False
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        token_ids = self.tokenizer(
+            chunk.text,
+            return_tensors="pt",
+            add_special_tokens=self.add_special_tokens,
+        )["input_ids"][0]
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=b"q" * len(token_ids),
+            token_count=len(token_ids),
             dtype=config.dtype,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
@@ -128,6 +207,12 @@ def write_generator_module(tmp_path, module_name):
 def write_profile_generator_module(tmp_path, module_name):
     module_path = tmp_path / f"{module_name}.py"
     module_path.write_text(PROFILE_GENERATOR_MODULE_SOURCE, encoding="utf-8")
+    return module_path
+
+
+def write_page_key_generator_module(tmp_path, module_name):
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(PAGE_KEY_GENERATOR_MODULE_SOURCE, encoding="utf-8")
     return module_path
 
 
@@ -459,6 +544,76 @@ def test_generate_benchmark_handoff_bundles_can_emit_sglang_records(tmp_path):
     assert handoff_record["connector_package"] == "sglang"
 
 
+def test_generate_sglang_handoff_bundles_can_emit_hicache_page_keys(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    manifest_path = tmp_path / "bundle-manifest.json"
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=PageKeyGenerator(),
+        layout=tiny_layout(),
+        backend="sglang",
+        manifest_json=manifest_path,
+        sglang_hicache_page_size=4,
+        align_bytes=1,
+    )
+
+    example = load_benchmark_jsonl(input_path)[0]
+    source_document = benchmark_cache_source_document(example)
+    token_ids = PageKeyTokenizer()(
+        source_document.chunks[0].text,
+        return_tensors="pt",
+        add_special_tokens=False,
+    )["input_ids"][0]
+    expected_page_keys = sglang_hicache_page_keys(token_ids, page_size=4)
+    entry = result.manifest.entries[0]
+
+    assert entry.sglang_hicache_page_keys == expected_page_keys
+    persisted_entry = read_benchmark_handoff_manifest_json(manifest_path).entries[0]
+    assert persisted_entry.sglang_hicache_page_keys == expected_page_keys
+
+    output_path = tmp_path / "bio.enriched.jsonl"
+    enrich_benchmark_jsonl_with_handoffs(input_path, manifest_path, output_path)
+    enriched = load_benchmark_jsonl(output_path)[0]
+    assert enriched.kv_transfer_params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] == list(
+        expected_page_keys
+    )
+
+
+def test_generate_sglang_handoff_page_keys_requires_tokenizer(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+
+    with pytest.raises(TypeError, match="requires generator.tokenizer"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=tmp_path / "bundles",
+            generator=AlignedGenerator(),
+            layout=tiny_layout(),
+            backend="sglang",
+            sglang_hicache_page_size=4,
+            align_bytes=1,
+        )
+
+
+def test_generate_sglang_handoff_page_keys_requires_sglang_backend(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="requires backend='sglang'"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=tmp_path / "bundles",
+            generator=PageKeyGenerator(),
+            layout=tiny_layout(),
+            backend="vllm",
+            sglang_hicache_page_size=4,
+            align_bytes=1,
+        )
+
+
 def test_generate_benchmark_handoff_bundles_rejects_duplicate_input_rows(tmp_path):
     input_path = tmp_path / "bio.jsonl"
     input_path.write_text(
@@ -664,6 +819,53 @@ def test_bundle_main_writes_manifest_from_generator_factory(tmp_path, monkeypatc
     assert output["cache_refs"] == 1
     assert output["manifest_json"] == str(manifest_path)
     assert read_benchmark_handoff_manifest_json(manifest_path).entries[0].example_id == "bio-1"
+
+
+def test_bundle_main_can_write_sglang_hicache_page_keys(tmp_path, monkeypatch, capsys):
+    write_page_key_generator_module(tmp_path, "page_key_cli_generator")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    manifest_path = tmp_path / "handoffs.json"
+
+    exit_code = public_benchmark_handoffs.bundle_main(
+        [
+            "--input-jsonl",
+            str(input_path),
+            "--output-dir",
+            str(tmp_path / "bundles"),
+            "--output-manifest-json",
+            str(manifest_path),
+            "--generator-factory",
+            "page_key_cli_generator:factory",
+            "--backend",
+            "sglang",
+            "--layout-version",
+            "toy-one-byte-v1",
+            "--dtype",
+            "int8",
+            "--num-layers",
+            "1",
+            "--block-size",
+            "8",
+            "--bytes-per-token",
+            "1",
+            "--sglang-hicache-page-size",
+            "4",
+            "--align-bytes",
+            "1",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    entry = read_benchmark_handoff_manifest_json(manifest_path).entries[0]
+
+    assert exit_code == 0
+    assert output["ok"] is True
+    assert len(entry.sglang_hicache_page_keys) > 0
+    assert json.loads(manifest_path.read_text(encoding="utf-8"))["entries"][0][
+        "sglang_hicache_page_keys"
+    ] == list(entry.sglang_hicache_page_keys)
 
 
 def test_bundle_main_defaults_to_builtin_model_profile_layout(tmp_path, monkeypatch, capsys):

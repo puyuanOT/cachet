@@ -1,16 +1,16 @@
 # Native Engine Integration Evidence
 
 This folder is the standalone, human-readable entry point for current Cachet
-native vLLM and SGLang connector evidence. These records support benchmark
-release readiness, but they are not latency, throughput, or quality benchmark
-measurements.
+native vLLM and SGLang connector evidence. Dated subfolders are the report
+pages to read and cite. These records support benchmark release readiness, but
+they are not latency, throughput, or quality benchmark measurements.
 
 ## Current Evidence
 
 | Backend | Databricks run | Source artifacts | Engine version | Payload mode | Copied tokens | Result |
 | --- | --- | --- | --- | --- | ---: | --- |
-| vLLM | `934698284395881` | [`../databricks/2026-06-23-g6-l4-native-engine-probes/`](../databricks/2026-06-23-g6-l4-native-engine-probes/) | `0.23.0` | merged | 48 | Provider-backed native probe succeeded |
-| SGLang | `934698284395881` | [`../databricks/2026-06-23-g6-l4-native-engine-probes/`](../databricks/2026-06-23-g6-l4-native-engine-probes/) | `0.5.10.post1` | merged | 48 | Provider-backed dynamic HiCache probe succeeded |
+| vLLM | `934698284395881` | [`2026-06-23-g6-l4-native-engine-probes/`](2026-06-23-g6-l4-native-engine-probes/) | `0.23.0` | merged | 48 | Provider-backed native probe succeeded |
+| SGLang | `934698284395881` | [`2026-06-23-g6-l4-native-engine-probes/`](2026-06-23-g6-l4-native-engine-probes/) | `0.5.10.post1` | merged | 48 | Provider-backed dynamic HiCache probe succeeded |
 
 ## Scope
 

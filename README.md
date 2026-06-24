@@ -961,6 +961,31 @@ cachet-benchmark-handoff-bundles \
   --dtype bfloat16
 ```
 
+For SGLang prepared live benchmarks, generate SGLang handoff records and page
+keys in the same pass by setting the backend and HiCache page size. The
+generator must expose the tokenizer used for the cached prefix; Cachet writes
+the resulting `document_kv.sglang_hicache_page_keys` into the manifest and the
+later enriched JSONL:
+
+```bash
+CACHET_TRANSFORMERS_MODEL_ID=Qwen/Qwen3-4B-Instruct-2507 \
+CACHET_TRANSFORMERS_DEVICE=cuda \
+cachet-benchmark-handoff-bundles \
+  --input-jsonl /data/v1-prepared/biography.jsonl \
+  --output-dir /Volumes/catalog/schema/volume/cachet/sglang-handoffs \
+  --output-manifest-json /data/handoffs/biography-sglang-manifest.json \
+  --generator-factory document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator \
+  --backend sglang \
+  --sglang-hicache-page-size 1 \
+  --dtype bfloat16
+```
+
+These generated keys match the standard V1 plain cache prefix assembled by
+Cachet's benchmark dataset helpers. Run the prepared SGLang live path with the
+matching plain prompt format, or provide prompt-format-specific page-key
+metadata through the manifest template when the runtime prompt uses a chat
+template.
+
 The bundle CLI derives the default `qwen3:4b-instruct` layout from the built-in
 model profile. For custom models, pass the complete manual layout flags:
 `--layout-version`, `--dtype`, `--num-layers`, `--block-size`, and

@@ -4,13 +4,13 @@ These folders contain the current sanitized Databricks benchmark artifacts for
 Cachet. They are meant for release and benchmark review, not for PR process
 bookkeeping.
 
-For human-facing reports, start with the standalone benchmark folders:
-[`../vllm/`](../vllm/), [`../sglang/`](../sglang/),
-[`../storage/`](../storage/), and [`../native-engine/`](../native-engine/).
-Use [`CURRENT.md`](CURRENT.md) for the current Databricks artifact snapshot,
-then use each dated folder README for run-specific source details. The JSON
-files are the validated records copied from the strict release-bundle evidence
-set:
+For human-facing reports, start with the standalone benchmark folders and their
+dated report subfolders: [`../vllm/`](../vllm/),
+[`../sglang/`](../sglang/), [`../storage/`](../storage/), and
+[`../native-engine/`](../native-engine/). Use [`CURRENT.md`](CURRENT.md) for the
+current Databricks artifact snapshot, then use each dated folder README here
+for source-artifact details. The JSON files are the validated records copied
+from the strict release-bundle evidence set:
 
 - `document_kv.benchmark_run.v1` for V1 latency and quality benchmarks.
 - `cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint

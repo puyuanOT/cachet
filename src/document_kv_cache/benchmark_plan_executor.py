@@ -52,6 +52,7 @@ _BENCHMARK_JOB_PLAN_KEYS = frozenset(
         "benchmark_handoff_output_dir",
         "benchmark_handoff_dtype",
         "benchmark_handoff_backend",
+        "benchmark_handoff_sglang_hicache_page_size",
         "planned_engine_probes",
         "notes",
     }
