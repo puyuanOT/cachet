@@ -34,11 +34,14 @@ not replace the strict AWS g6/L4 publication target.
 
 ## Source Artifacts
 
-The sanitized source records live in
-[`../../databricks/2026-06-23-g5-a10g-v1-compatibility/`](../../databricks/2026-06-23-g5-a10g-v1-compatibility/):
+The sanitized source records are committed beside this README:
 
 - `v1_benchmark.json`
 - `databricks_run_status.json`
+
+The same records are mirrored under
+[`../../databricks/2026-06-23-g5-a10g-v1-compatibility/`](../../databricks/2026-06-23-g5-a10g-v1-compatibility/)
+for release-bundle and Databricks run-status audits.
 
 ## Artifact Boundary
 

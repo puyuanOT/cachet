@@ -8,9 +8,10 @@ For human-facing reports, start with the standalone benchmark folders and their
 dated report subfolders: [`../vllm/`](../vllm/),
 [`../sglang/`](../sglang/), [`../storage/`](../storage/), and
 [`../native-engine/`](../native-engine/). Use [`CURRENT.md`](CURRENT.md) for the
-current Databricks artifact snapshot, then use each dated folder README here
-for source-artifact details. The JSON files are validated source records used to
-audit the report claims:
+current Databricks artifact snapshot. The standalone dated report folders carry
+their compact sanitized JSON beside each report README; the JSON files here are
+validated mirror records used for release-bundle and Databricks run-status
+audits:
 
 - `document_kv.benchmark_run.v1` for V1 latency and quality benchmarks.
 - `cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint

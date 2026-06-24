@@ -2,8 +2,9 @@
 
 This folder is the standalone, human-readable entry point for current Cachet
 vLLM latency and quality benchmark results. Dated subfolders are the report
-pages to read and cite; the canonical sanitized JSON artifacts remain under
-`../databricks/` so release validation can audit the same records cited here.
+pages to read and cite; each dated folder carries the compact sanitized JSON
+records behind the report. The matching `../databricks/` folders remain as
+release-bundle source mirrors and Databricks run-status indexes.
 
 ## Current Results
 
@@ -24,7 +25,8 @@ strict g6/L4 release target.
 
 ## Evidence Boundary
 
-Use this folder for human review and citation. Use the linked Databricks folders
-for the sanitized `document_kv.benchmark_run.v1`,
-`document_kv.databricks_run_status.v1`, and release-evidence source records.
-Do not use `../../pr-evidence/` as the benchmark report surface.
+Use this folder for human review and citation. The dated report folders include
+the sanitized `document_kv.benchmark_run.v1`,
+`document_kv.databricks_run_status.v1`, and release-evidence records they cite.
+Use `../databricks/` as a release-source mirror, not as the only benchmark
+surface. Do not use `../../pr-evidence/` as the benchmark report surface.

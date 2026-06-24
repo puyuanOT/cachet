@@ -995,7 +995,8 @@ def test_native_engine_integration_doc_examples_are_validated():
         "aws-g5-a10g",
         "g5.8xlarge",
         "payload-summary",
-        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/",
+        "benchmarks/native-engine/2026-06-23-g6-l4-native-engine-probes/",
+        "`benchmarks/databricks/` mirrors the Databricks",
         "commit tokens",
     ):
         assert required in text
@@ -1426,6 +1427,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`benchmarks/native-engine/`" in matrix_text
     assert "`pr-evidence/` tree" in compact_project_readme
     assert "Every durable Databricks benchmark or benchmark-readiness run" in compact_project_readme
+    assert "compact sanitized evidence committed beside it" in compact_project_readme
     assert "without requiring readers to inspect `pr-evidence/`" in compact_snapshot
     assert "ignored local `databricks-runs/` output" in compact_snapshot
     assert "Raw local run directories stay under ignored `databricks-runs/`" in databricks_readme
@@ -1468,6 +1470,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Release-bundle manifests are regenerated from these benchmark artifacts" in compact_snapshot
     assert "vLLM latency and quality benchmark results" in compact_vllm_readme
     assert "Dated subfolders are the report pages to read and cite" in compact_vllm_readme
+    assert "compact sanitized JSON records behind the report" in compact_vllm_readme
     assert "872615985402004" in vllm_readme
     assert "566743786103032" in vllm_readme
     assert "strict g6/L4 release target" in vllm_readme
@@ -3108,6 +3111,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "948365719597221" in storage_readme
     assert "unity_catalog" in storage_readme
     assert "not model-serving latency or quality measurements" in compact_storage_readme
+    assert "compact sanitized JSON records behind the report" in compact_storage_readme
     assert "storage-reader benchmark that pairs with the strict Cachet V1" in compact_storage_report_readme
     assert "Unity Catalog reader reached 1148.0 MiB/s" in compact_storage_report_readme
     assert "Native Engine Integration Evidence" in native_engine_readme
@@ -3115,6 +3119,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "not latency, throughput, or quality benchmark measurements" in compact_native_engine_readme
     assert "provider-backed native connector evidence" in compact_native_engine_report_readme
     assert "Each probe copied 48 tokens" in compact_native_engine_report_readme
+    assert "sanitized source records are committed beside this README" in (
+        compact_native_engine_report_readme
+    )
     assert "Benchmark Report Template" in benchmark_template_readme
     assert "Do not include Databricks tokens" in compact_benchmark_template_readme
     assert "`pr-evidence/` only for PR validation" in compact_benchmark_template_readme
@@ -3125,6 +3132,11 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "README.md",
         "native-engine/README.md",
         "native-engine/2026-06-23-g6-l4-native-engine-probes/README.md",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/failed_run.json",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke/README.md",
         "sglang/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/failed_run.json",
@@ -3174,9 +3186,16 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "sglang/README.md",
         "storage/README.md",
         "storage/2026-06-21-g6-l4-storage-readers/README.md",
+        "storage/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
+        "storage/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
         "vllm/README.md",
+        "vllm/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json",
         "vllm/2026-06-23-g5-a10g-v1-compatibility/README.md",
+        "vllm/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
+        "vllm/2026-06-23-g6-l4-v1/databricks_run_status.json",
         "vllm/2026-06-23-g6-l4-v1/README.md",
+        "vllm/2026-06-23-g6-l4-v1/release_evidence.json",
+        "vllm/2026-06-23-g6-l4-v1/v1_benchmark.json",
         "databricks/README.md",
         "databricks/2026-06-21-g6-l4-storage-readers/README.md",
         "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
@@ -3201,6 +3220,25 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         if path.is_file()
     }
     assert actual_files == expected_files
+
+    standalone_mirrors = {
+        "vllm/2026-06-23-g6-l4-v1/v1_benchmark.json": "databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
+        "vllm/2026-06-23-g6-l4-v1/databricks_run_status.json": "databricks/2026-06-23-g6-l4-v1/databricks_run_status.json",
+        "vllm/2026-06-23-g6-l4-v1/release_evidence.json": "databricks/2026-06-23-g6-l4-v1/release_evidence.json",
+        "vllm/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json": "databricks/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
+        "vllm/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json": "databricks/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json",
+        "storage/2026-06-21-g6-l4-storage-readers/storage_benchmark.json": "databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
+        "storage/2026-06-21-g6-l4-storage-readers/databricks_run_status.json": "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json": "databricks/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json": "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json": "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json": "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
+        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json": "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
+    }
+    for standalone_path, mirror_path in standalone_mirrors.items():
+        assert (benchmark_root / standalone_path).read_bytes() == (
+            benchmark_root / mirror_path
+        ).read_bytes()
 
     expected_folders = {
         "2026-06-23-g6-l4-v1": {

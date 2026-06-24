@@ -26,8 +26,9 @@ records remain integration evidence only.
 
 ## Evidence Boundary
 
-Use this folder for human review of runtime-integration evidence. Use the
-linked Databricks folder for the sanitized
+Use this folder for human review of runtime-integration evidence. The dated
+report folder includes the sanitized
 `document_kv.engine_kv_connector_probe.v1` and
-`document_kv.engine_kv_connector_actions.v1` source records. Do not use
-`../../pr-evidence/` as the benchmark report surface.
+`document_kv.engine_kv_connector_actions.v1` records it cites. Use
+`../databricks/` as a release-source mirror, not as the only benchmark surface.
+Do not use `../../pr-evidence/` as the benchmark report surface.

@@ -6,8 +6,10 @@ launch-config sidecars; vLLM and SGLang still own scheduling, allocation,
 decode, routing, and cleanup.
 
 Use this guide when wiring the current provider-backed vLLM or SGLang paths into
-a deployment. For benchmark evidence, use the standalone folders under
-`benchmarks/databricks/`.
+a deployment. For benchmark evidence, start with the standalone folders under
+`benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
+`benchmarks/native-engine/`; `benchmarks/databricks/` mirrors the Databricks
+status and release-source records for audit.
 
 ## Launch Configs
 
@@ -119,11 +121,12 @@ dataset payloads, or local `databricks-runs/` output.
 
 The current provider-backed evidence is tracked in:
 
-- `benchmarks/databricks/2026-06-23-g6-l4-v1/`
-- `benchmarks/databricks/2026-06-23-g5-a10g-v1-compatibility/`
-- `benchmarks/databricks/2026-06-21-g6-l4-storage-readers/`
-- `benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/`
+- `benchmarks/vllm/2026-06-23-g6-l4-v1/`
+- `benchmarks/vllm/2026-06-23-g5-a10g-v1-compatibility/`
+- `benchmarks/storage/2026-06-21-g6-l4-storage-readers/`
+- `benchmarks/native-engine/2026-06-23-g6-l4-native-engine-probes/`
 
-Refresh those folders, the strict release bundle, and
-`docs/v1-requirements-matrix.md` whenever benchmark code, runtime pins, connector
-contracts, launch-config fields, or package wheel identity change.
+Refresh those standalone folders, the matching `benchmarks/databricks/` mirrors,
+the strict release bundle, and `docs/v1-requirements-matrix.md` whenever
+benchmark code, runtime pins, connector contracts, launch-config fields, or
+package wheel identity change.

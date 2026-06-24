@@ -32,11 +32,14 @@ is not a model-serving latency, throughput, or quality benchmark.
 
 ## Source Artifacts
 
-The sanitized source records live in
-[`../../databricks/2026-06-21-g6-l4-storage-readers/`](../../databricks/2026-06-21-g6-l4-storage-readers/):
+The sanitized source records are committed beside this README:
 
 - `storage_benchmark.json`
 - `databricks_run_status.json`
+
+The same records are mirrored under
+[`../../databricks/2026-06-21-g6-l4-storage-readers/`](../../databricks/2026-06-21-g6-l4-storage-readers/)
+for release-bundle and Databricks run-status audits.
 
 ## Artifact Boundary
 
