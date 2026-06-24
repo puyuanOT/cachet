@@ -26,7 +26,7 @@ Regenerate from the repository root with:
 
 ```bash
 python -m document_kv_cache.legacy_compatibility \
-  --scan-config-json evidence/legacy-migration/current/legacy-migration-scan-config.json \
+  --scan-config-json docs/release-ops/evidence/legacy-migration/current/legacy-migration-scan-config.json \
   --scan-base-dir . \
-  --output-json evidence/legacy-migration/current/legacy-migration-evidence.json
+  --output-json docs/release-ops/evidence/legacy-migration/current/legacy-migration-evidence.json
 ```

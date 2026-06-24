@@ -2,8 +2,8 @@
 
 Use this template for each standalone benchmark or benchmark-readiness folder
 under `benchmarks/`. The folder should be readable without opening
-`pr-evidence/`, raw Databricks job payloads, or local `databricks-runs/`
-scratch output.
+`docs/release-ops/pr-evidence/`, raw Databricks job payloads, or local
+`databricks-runs/` scratch output.
 
 ## Summary
 
@@ -46,5 +46,5 @@ List the sanitized records committed beside this README, such as:
 
 Do not include Databricks tokens, raw Jobs API responses, package wheels,
 cluster logs, generated payload blobs, or local scratch directories. Use
-`pr-evidence/` only for PR validation and release-audit sidecars, not as the
-human benchmark report surface.
+`docs/release-ops/pr-evidence/` only for PR validation and release-audit
+sidecars, not as the human benchmark report surface.

@@ -2,8 +2,8 @@
 
 This folder tracks the first SGLang run that wrote the opt-in
 `cachet.sglang_live_benchmark.v1` artifact. It is standalone benchmark
-evidence, not `pr-evidence/` and not ignored local `databricks-runs/` scratch
-output.
+evidence, not `docs/release-ops/pr-evidence/` and not ignored local
+`databricks-runs/` scratch output.
 
 | Field | Value |
 | --- | --- |

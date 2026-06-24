@@ -57,7 +57,7 @@ python -m document_kv_cache.dependency_freshness \
   --allow-runtime-pin 'prometheus-fastapi-instrumentator=Pinned to the latest g6/L4 Databricks-validated vLLM 0.23.0 serving profile; upgrade after a fresh vLLM Databricks run.' \
   --outdated-package protobuf=6.33.6:7.35.1 \
   --allow-transitive-outdated 'protobuf=databricks-sdk==0.118.0 currently resolves protobuf <7.0, so Poetry keeps protobuf 6.33.6 even though PyPI has 7.35.1.' \
-  --output-json evidence/dependency-freshness/current/dependency-freshness-evidence.json
+  --output-json docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json
 ```
 
 Do not commit package-index credentials, service tokens, raw resolver logs,

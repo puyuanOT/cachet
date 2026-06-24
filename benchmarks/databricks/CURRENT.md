@@ -5,7 +5,8 @@ V1 benchmark evidence. For standalone benchmark reports, start with
 [`../vllm/`](../vllm/), [`../sglang/`](../sglang/),
 [`../storage/`](../storage/), and [`../native-engine/`](../native-engine/). This
 snapshot summarizes the tracked Databricks results without requiring readers to
-inspect `pr-evidence/` or ignored local `databricks-runs/` output.
+inspect `docs/release-ops/pr-evidence/` or ignored local `databricks-runs/`
+output.
 
 | Field | Current value |
 | --- | --- |

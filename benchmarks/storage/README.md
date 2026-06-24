@@ -26,4 +26,4 @@ Use this folder for human review and citation. The dated report folder includes
 the sanitized `document_kv.storage_benchmark.v1` and
 `document_kv.databricks_run_status.v1` records it cites. Use `../databricks/`
 as a release-source mirror, not as the only benchmark surface. Do not use
-`../../pr-evidence/` as the benchmark report surface.
+`../../docs/release-ops/pr-evidence/` as the benchmark report surface.

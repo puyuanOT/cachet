@@ -7,9 +7,9 @@ Use this boundary when adding evidence:
 
 - `benchmarks/` is for human-readable benchmark summaries plus their sanitized
   benchmark JSON records.
-- `pr-evidence/` is for `document_kv.pr_evidence.v1` pull-request audit
+- `../pr-evidence/` is for `document_kv.pr_evidence.v1` pull-request audit
   sidecars.
-- `evidence/` is for release-governance evidence with other record types, such
+- `./` is for release-governance evidence with other record types, such
   as dependency freshness and legacy compatibility migration readiness.
 
 Current evidence families:

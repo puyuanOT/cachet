@@ -543,6 +543,9 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     packaged_bundle_text = PACKAGED_BUNDLE_TEMPLATE.read_text(encoding="utf-8")
     readme_text = (REPO_ROOT / "databricks" / "README.md").read_text(encoding="utf-8")
     root_readme_text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    maintainer_reference_text = (
+        REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
+    ).read_text(encoding="utf-8")
     assert packaged_bundle_text == bundle_text
 
     bundle = _parse_simple_yaml(bundle_text)
@@ -630,13 +633,17 @@ def test_databricks_asset_bundle_template_matches_v1_g5_contract():
     assert "dbfs:/benchmarks/document_kv_cache" not in readme_text
     assert "dbfs:/benchmarks/document_kv_cache" not in root_readme_text
     assert WHEEL_URI in readme_text
-    assert WHEEL_URI in root_readme_text
+    assert WHEEL_URI not in root_readme_text
+    assert WHEEL_URI in maintainer_reference_text
     assert "document-kv-databricks-job" in readme_text
     assert "document-kv-vllm-smoke-databricks-job" in readme_text
     assert "--vllm-native-probe-delegate-factory" in readme_text
     assert "--sglang-native-probe-delegate-factory" in readme_text
     assert f"--engine-probe-metadata vllm={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA}" in readme_text
-    assert f"--engine-probe-metadata vllm={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA}" in root_readme_text
+    assert (
+        f"--engine-probe-metadata vllm={VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA}"
+        in maintainer_reference_text
+    )
     assert "--var vllm_native_probe_delegate_factory=" in readme_text
     assert "--var sglang_native_probe_delegate_factory=" in readme_text
     assert "single-node AWS `g6`/L4 GPU cluster" in readme_text

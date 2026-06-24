@@ -31,4 +31,5 @@ report folder includes the sanitized
 `document_kv.engine_kv_connector_probe.v1` and
 `document_kv.engine_kv_connector_actions.v1` records it cites. Use
 `../databricks/` as a release-source mirror, not as the only benchmark surface.
-Do not use `../../pr-evidence/` as the benchmark report surface.
+Do not use `../../docs/release-ops/pr-evidence/` as the benchmark report
+surface.

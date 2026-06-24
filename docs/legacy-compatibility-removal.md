@@ -29,9 +29,9 @@ not silently regress.
 - `tests/test_project_governance.py` prevents new accidental
   `restaurant_kv_serving` dependencies from spreading.
 - Current downstream migration evidence is tracked in
-  `evidence/legacy-migration/current/legacy-migration-evidence.json`.
+  `docs/release-ops/evidence/legacy-migration/current/legacy-migration-evidence.json`.
   It is generated from
-  `evidence/legacy-migration/current/legacy-migration-scan-config.json`
+  `docs/release-ops/evidence/legacy-migration/current/legacy-migration-scan-config.json`
   and validates with no legacy references across the `release`, `benchmark`,
   `storage`, `native_probe`, and `smoke` runner categories.
 - Release PRs continue to include PR evidence sidecars with Refactor-skill

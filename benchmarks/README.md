@@ -1,9 +1,9 @@
 # Benchmark Reports
 
 This directory contains durable, human-readable Cachet benchmark reports and
-the sanitized artifacts that back them. It is separate from `pr-evidence/`,
-which records PR review and validation history, and from `databricks-runs/`,
-which remains ignored local scratch output.
+the sanitized artifacts that back them. It is separate from
+`docs/release-ops/pr-evidence/`, which records PR review and validation history,
+and from `databricks-runs/`, which remains ignored local scratch output.
 
 Start with [`current/`](current/) when you want the concise human-facing answer,
 then open the linked standalone dated report folders for the underlying
@@ -44,9 +44,8 @@ Use this boundary when adding or reviewing benchmark output:
   target, run id, scope, result, and artifact boundary.
 - Dated folders under the category directories are durable benchmark reports,
   not temporary package-development evidence.
-- Pending live-readiness runs can live under the relevant engine folder, such
-  as `benchmarks/sglang/2026-06-23-g6-l4-live-handoff-smoke/`, when they are
-  useful to review before a terminal benchmark result exists.
+- Failed or superseded live-readiness runs belong under an archive folder such
+  as `benchmarks/sglang/archive/` once a newer terminal benchmark result exists.
 - `benchmarks/databricks/CURRENT.md` is the current Databricks evidence
   summary and cross-benchmark index.
 - `benchmarks/databricks/<date>-<target>-<purpose>/README.md` is the
@@ -66,8 +65,8 @@ Use this boundary when adding or reviewing benchmark output:
   vLLM or SGLang latency/quality benchmark report.
 - JSON files beside each report are sanitized, schema-validated source records
   for the claims in that report.
-- `pr-evidence/` is PR validation and release-audit material, not the benchmark
-  report surface.
+- `docs/release-ops/pr-evidence/` is PR validation and release-audit material,
+  not the benchmark report surface.
 - `databricks-runs/` is ignored local scratch output and must not be used as the
   durable benchmark location.
 
