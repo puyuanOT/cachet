@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -89,6 +90,9 @@ class HiCacheController:
         operation = PrefetchOperation(
             request_id, host_indices, new_input_tokens, last_hash, prefix_keys
         )
+        self.prefetch_side_effects.append(
+            ("constructed_extra_info", getattr(operation, "document_kv_extra_info", None))
+        )
         self.prefetch_queue.put(operation)
         return operation
 
@@ -150,14 +154,19 @@ class Scheduler:
     return scheduler_module, cache_controller_module
 
 
-def test_sglang_request_metadata_bridge_forwards_custom_params_to_hicache_extra_info(monkeypatch):
+def test_sglang_request_metadata_bridge_forwards_custom_params_to_hicache_extra_info(
+    monkeypatch,
+    caplog,
+):
     scheduler_module, cache_controller_module = install_fake_sglang_bridge_modules(monkeypatch)
+    caplog.set_level(logging.INFO, logger="sglang_kv_injection.sglang_request_metadata_bridge")
 
     status = install_sglang_request_metadata_bridge()
     record = sglang_request_metadata_bridge_status_to_record(status)
 
     assert status.installed is True
     assert record["record_type"] == DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE
+    assert record["prefetch_operation_patched"] is True
     assert record["ok"] is True
     assert "page_backup_patched" not in record
 
@@ -168,7 +177,12 @@ def test_sglang_request_metadata_bridge_forwards_custom_params_to_hicache_extra_
         rid="cachet-sglang-request-1",
         sampling_params=SimpleNamespace(
             custom_params={
-                "kv_transfer_params": {"document_kv.request_id": "cachet-sglang-request-1"},
+                "kv_transfer_params": {
+                    "document_kv.request_id": "cachet-sglang-request-1",
+                    "document_kv.handoff_json": "/tmp/cachet-secret-handoff.json",
+                    "document_kv.payload_uri": "disk:/tmp/cachet-secret-payload.kv",
+                    "document_kv.sglang_hicache_page_keys": ["page-secret-1", "page-secret-2"],
+                },
                 "ordinary_sglang_param": "kept",
                 "__req__": req_backref,
             },
@@ -178,15 +192,28 @@ def test_sglang_request_metadata_bridge_forwards_custom_params_to_hicache_extra_
     scheduler._prefetch_kvcache(req)
 
     assert len(controller.prefetch_queue.items) == 1
-    assert controller.prefetch_side_effects == [("original_prefetch", "cachet-sglang-request-1")]
     operation = controller.prefetch_queue.items[0]
     expected_extra_info = {
         "custom_params": {
-            "kv_transfer_params": {"document_kv.request_id": "cachet-sglang-request-1"},
+            "kv_transfer_params": {
+                "document_kv.request_id": "cachet-sglang-request-1",
+                "document_kv.handoff_json": "/tmp/cachet-secret-handoff.json",
+                "document_kv.payload_uri": "disk:/tmp/cachet-secret-payload.kv",
+                "document_kv.sglang_hicache_page_keys": ["page-secret-1", "page-secret-2"],
+            },
             "ordinary_sglang_param": "kept",
         },
     }
+    assert controller.prefetch_side_effects == [
+        ("original_prefetch", "cachet-sglang-request-1"),
+        ("constructed_extra_info", expected_extra_info),
+    ]
     assert operation.document_kv_extra_info == expected_extra_info
+    assert "event=request_registered" in caplog.text
+    assert "sglang_hicache_page_key_count=2" in caplog.text
+    assert "cachet-sglang-request-1" not in caplog.text
+    assert "cachet-secret" not in caplog.text
+    assert "page-secret" not in caplog.text
 
     controller._storage_hit_query(operation)
     controller._page_transfer(operation)

@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import functools
 import importlib
 import inspect
+import logging
 import threading
 from typing import Any
 
 DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE = (
     "sglang_kv_injection.request_metadata_bridge.v1"
 )
-DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION = 1
+DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION = 2
 DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE = (
     "sglang_kv_injection.sglang_request_metadata_bridge"
 )
@@ -22,6 +23,7 @@ _SCHEDULER_MODULE = "sglang.srt.managers.scheduler"
 _CACHE_CONTROLLER_MODULE = "sglang.srt.managers.cache_controller"
 _SCHEDULER_CLASS = "Scheduler"
 _CACHE_CONTROLLER_CLASS = "HiCacheController"
+_PREFETCH_OPERATION_CLASS = "PrefetchOperation"
 _HICACHE_STORAGE_EXTRA_INFO_NAME = "HiCacheStorageExtraInfo"
 _PATCH_MARKER = "__document_kv_request_metadata_bridge_patched__"
 _ORIGINAL_ATTR = "__document_kv_request_metadata_bridge_original__"
@@ -30,8 +32,14 @@ _OPERATION_EXTRA_INFO_ATTR = "document_kv_extra_info"
 _SGLANG_REQ_BACKREF_KEY = "__req__"
 _SGLANG_CUSTOM_PARAMS_KEY = "custom_params"
 _SGLANG_KV_TRANSFER_PARAMS_KEY = "kv_transfer_params"
+_DOCUMENT_KV_REQUEST_ID_PARAM = "document_kv.request_id"
+_DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
+_DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
+_DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
+_DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 _THREAD_CONTEXT = threading.local()
 _MISSING = object()
+_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE",
@@ -50,6 +58,7 @@ class SGLangRequestMetadataBridgeStatus:
     installed: bool
     scheduler_prefetch_patched: bool = False
     controller_prefetch_patched: bool = False
+    prefetch_operation_patched: bool = False
     hicache_storage_extra_info_factory_patched: bool = False
     storage_hit_query_patched: bool = False
     page_transfer_patched: bool = False
@@ -74,6 +83,7 @@ def install_sglang_request_metadata_bridge() -> SGLangRequestMetadataBridgeStatu
         cache_controller_module = importlib.import_module(_CACHE_CONTROLLER_MODULE)
         scheduler_cls = getattr(scheduler_module, _SCHEDULER_CLASS)
         controller_cls = getattr(cache_controller_module, _CACHE_CONTROLLER_CLASS)
+        prefetch_operation_cls = getattr(cache_controller_module, _PREFETCH_OPERATION_CLASS)
         hicache_storage_extra_info = getattr(
             cache_controller_module,
             _HICACHE_STORAGE_EXTRA_INFO_NAME,
@@ -84,6 +94,7 @@ def install_sglang_request_metadata_bridge() -> SGLangRequestMetadataBridgeStatu
     try:
         scheduler_patched = _patch_scheduler_prefetch(scheduler_cls)
         controller_patched = _patch_controller_prefetch(controller_cls)
+        prefetch_operation_patched = _patch_prefetch_operation(prefetch_operation_cls)
         extra_info_patched = _patch_hicache_storage_extra_info_factory(
             cache_controller_module,
             hicache_storage_extra_info,
@@ -97,6 +108,7 @@ def install_sglang_request_metadata_bridge() -> SGLangRequestMetadataBridgeStatu
         (
             scheduler_patched,
             controller_patched,
+            prefetch_operation_patched,
             extra_info_patched,
             storage_hit_query_patched,
             page_transfer_patched,
@@ -106,6 +118,7 @@ def install_sglang_request_metadata_bridge() -> SGLangRequestMetadataBridgeStatu
         installed=installed,
         scheduler_prefetch_patched=scheduler_patched,
         controller_prefetch_patched=controller_patched,
+        prefetch_operation_patched=prefetch_operation_patched,
         hicache_storage_extra_info_factory_patched=extra_info_patched,
         storage_hit_query_patched=storage_hit_query_patched,
         page_transfer_patched=page_transfer_patched,
@@ -132,6 +145,7 @@ def sglang_request_metadata_bridge_status_to_record(
         "installed": status.installed,
         "scheduler_prefetch_patched": status.scheduler_prefetch_patched,
         "controller_prefetch_patched": status.controller_prefetch_patched,
+        "prefetch_operation_patched": status.prefetch_operation_patched,
         "hicache_storage_extra_info_factory_patched": (
             status.hicache_storage_extra_info_factory_patched
         ),
@@ -203,22 +217,11 @@ def _patch_controller_prefetch(controller_cls: type) -> bool:
                 last_hash,
                 prefix_keys,
             )
-        prefetch_queue = getattr(self, "prefetch_queue", None)
-        original_put = getattr(prefetch_queue, "put", None)
-        if not callable(original_put):
-            raise TypeError("SGLang HiCacheController.prefetch_queue.put is not callable")
-
-        def put_with_metadata(item: object, *args: object, **kwargs: object) -> object:
-            if getattr(item, "request_id", None) == request_id:
-                setattr(item, _OPERATION_EXTRA_INFO_ATTR, request_metadata)
-            return original_put(item, *args, **kwargs)
-
+        restore_put = _patch_prefetch_queue_put(self, request_id, request_metadata)
+        previous = getattr(_THREAD_CONTEXT, "prefetch_metadata", None)
+        _THREAD_CONTEXT.prefetch_metadata = (request_id, request_metadata)
         try:
-            setattr(prefetch_queue, "put", put_with_metadata)
-        except Exception as exc:
-            raise TypeError("SGLang HiCacheController.prefetch_queue.put cannot be patched") from exc
-        try:
-            return original(
+            operation = original(
                 self,
                 request_id,
                 host_indices,
@@ -226,13 +229,71 @@ def _patch_controller_prefetch(controller_cls: type) -> bool:
                 last_hash,
                 prefix_keys,
             )
+            _attach_operation_request_metadata(operation, request_id, request_metadata)
+            return operation
         finally:
-            setattr(prefetch_queue, "put", original_put)
+            if restore_put is not None:
+                restore_put()
+            if previous is None:
+                try:
+                    delattr(_THREAD_CONTEXT, "prefetch_metadata")
+                except AttributeError:
+                    pass
+            else:
+                _THREAD_CONTEXT.prefetch_metadata = previous
 
     setattr(patched_prefetch, _PATCH_MARKER, True)
     setattr(patched_prefetch, _ORIGINAL_ATTR, original)
     setattr(controller_cls, "prefetch", patched_prefetch)
     return True
+
+
+def _patch_prefetch_operation(prefetch_operation_cls: type) -> bool:
+    original = getattr(prefetch_operation_cls, "__init__", None)
+    if not callable(original):
+        raise TypeError("SGLang PrefetchOperation.__init__ is not callable")
+    if getattr(original, _PATCH_MARKER, False) is True:
+        return True
+
+    @functools.wraps(original)
+    def patched_prefetch_operation_init(self: object, *args: object, **kwargs: object) -> None:
+        original(self, *args, **kwargs)
+        prefetch_metadata = _current_prefetch_request_metadata()
+        if prefetch_metadata is None:
+            return None
+        request_id, request_metadata = prefetch_metadata
+        _attach_operation_request_metadata(self, request_id, request_metadata)
+        return None
+
+    setattr(patched_prefetch_operation_init, _PATCH_MARKER, True)
+    setattr(patched_prefetch_operation_init, _ORIGINAL_ATTR, original)
+    setattr(prefetch_operation_cls, "__init__", patched_prefetch_operation_init)
+    return True
+
+
+def _patch_prefetch_queue_put(
+    controller: object,
+    request_id: str,
+    request_metadata: Mapping[str, object],
+) -> object | None:
+    prefetch_queue = getattr(controller, "prefetch_queue", None)
+    original_put = getattr(prefetch_queue, "put", None)
+    if not callable(original_put):
+        return None
+
+    def put_with_metadata(item: object, *args: object, **kwargs: object) -> object:
+        _attach_operation_request_metadata(item, request_id, request_metadata)
+        return original_put(item, *args, **kwargs)
+
+    try:
+        setattr(prefetch_queue, "put", put_with_metadata)
+    except Exception:
+        return None
+
+    def restore_put() -> None:
+        setattr(prefetch_queue, "put", original_put)
+
+    return restore_put
 
 
 def _patch_hicache_storage_extra_info_factory(
@@ -310,6 +371,7 @@ def _register_request_metadata_from_req(
         registry = {}
         setattr(controller, _REQUEST_METADATA_REGISTRY_ATTR, registry)
     registry[request_id] = metadata
+    _log_request_metadata_registered(metadata)
     return controller, request_id, metadata
 
 
@@ -327,6 +389,37 @@ def _request_metadata_from_req(req: object) -> dict[str, object] | None:
         if key != _SGLANG_REQ_BACKREF_KEY
     }
     return {_SGLANG_CUSTOM_PARAMS_KEY: filtered_custom_params}
+
+
+def _log_request_metadata_registered(metadata: Mapping[str, object]) -> None:
+    kv_transfer_params = _kv_transfer_params_from_request_metadata(metadata)
+    page_keys = kv_transfer_params.get(_DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM)
+    page_key_count = len(page_keys) if _is_non_string_sequence(page_keys) else 0
+    _LOGGER.info(
+        "Cachet SGLang request metadata bridge: event=request_registered "
+        "has_kv_transfer_params=%s has_request_id=%s has_handoff_json=%s "
+        "has_inline_handoff=%s has_payload_uri=%s sglang_hicache_page_key_count=%d",
+        bool(kv_transfer_params),
+        isinstance(kv_transfer_params.get(_DOCUMENT_KV_REQUEST_ID_PARAM), str),
+        isinstance(kv_transfer_params.get(_DOCUMENT_KV_HANDOFF_JSON_PARAM), str),
+        isinstance(kv_transfer_params.get(_DOCUMENT_KV_HANDOFF_RECORD_PARAM), Mapping),
+        isinstance(kv_transfer_params.get(_DOCUMENT_KV_PAYLOAD_URI_PARAM), str),
+        page_key_count,
+    )
+
+
+def _kv_transfer_params_from_request_metadata(metadata: Mapping[str, object]) -> Mapping[str, object]:
+    custom_params = metadata.get(_SGLANG_CUSTOM_PARAMS_KEY)
+    if not isinstance(custom_params, Mapping):
+        return {}
+    kv_transfer_params = custom_params.get(_SGLANG_KV_TRANSFER_PARAMS_KEY)
+    if not isinstance(kv_transfer_params, Mapping):
+        return {}
+    return kv_transfer_params
+
+
+def _is_non_string_sequence(value: object) -> bool:
+    return not isinstance(value, (str, bytes, bytearray)) and isinstance(value, Iterable)
 
 
 def _cache_controller_from_scheduler(scheduler: object) -> object | None:
@@ -371,6 +464,26 @@ def _current_operation_request_metadata() -> Mapping[str, object] | None:
     return metadata
 
 
+def _current_prefetch_request_metadata() -> tuple[str, Mapping[str, object]] | None:
+    prefetch_metadata = getattr(_THREAD_CONTEXT, "prefetch_metadata", None)
+    if not isinstance(prefetch_metadata, tuple) or len(prefetch_metadata) != 2:
+        return None
+    request_id, request_metadata = prefetch_metadata
+    if not isinstance(request_id, str) or not isinstance(request_metadata, Mapping):
+        return None
+    return request_id, request_metadata
+
+
+def _attach_operation_request_metadata(
+    operation: object,
+    request_id: str,
+    request_metadata: Mapping[str, object],
+) -> None:
+    if getattr(operation, "request_id", request_id) != request_id:
+        return
+    setattr(operation, _OPERATION_EXTRA_INFO_ATTR, dict(request_metadata))
+
+
 def _explicit_extra_info(
     *,
     args: tuple[object, ...],
@@ -394,6 +507,7 @@ def _request_metadata_bridge_installed(record: Mapping[str, Any]) -> bool:
         record.get("installed") is True
         and record.get("scheduler_prefetch_patched") is True
         and record.get("controller_prefetch_patched") is True
+        and record.get("prefetch_operation_patched") is True
         and record.get("hicache_storage_extra_info_factory_patched") is True
         and record.get("storage_hit_query_patched") is True
         and record.get("page_transfer_patched") is True
