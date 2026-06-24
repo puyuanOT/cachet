@@ -1,0 +1,34 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": false,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no findings, verified duplicate JSON drift protection, checked docs point humans to standalone benchmark folders while keeping Databricks as release-source mirror, reran the full suite, hygiene scan, and diff check, and approved.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 503,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/503",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/native-engine-integration.md",
+    "docs/v1-requirements-matrix.md",
+    "benchmarks/",
+    "tests/test_project_governance.py"
+  ],
+  "verification": [
+    "poetry run pytest tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs -q",
+    "poetry run pytest tests/test_repository_hygiene.py -q",
+    "poetry run pytest tests/test_project_governance.py::test_native_engine_integration_doc_examples_are_validated tests/test_project_governance.py::test_standalone_benchmark_evidence_folders_track_current_databricks_runs -q",
+    "poetry run pytest -q -> 1875 passed, 5 skipped",
+    "git diff --check",
+    "Databricks token-pattern scan returned 0 matching files",
+    "GPT-5.5 reviewer reported no findings and APPROVED"
+  ],
+  "what_changed": [
+    "Copied compact sanitized vLLM, storage, and native-engine benchmark/source JSON into their dated standalone benchmark report folders.",
+    "Updated benchmark documentation so human readers start from benchmarks/vllm, benchmarks/storage, and benchmarks/native-engine while benchmarks/databricks remains a release-source mirror.",
+    "Extended governance tests so standalone benchmark JSON copies must match their Databricks mirror records byte-for-byte."
+  ],
+  "why": "Benchmark reviewers need standalone human-readable report folders with compact auditable evidence, without relying on pr-evidence or Databricks scratch output as the benchmark surface."
+}
