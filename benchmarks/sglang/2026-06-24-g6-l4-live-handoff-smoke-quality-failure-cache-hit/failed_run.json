@@ -1,0 +1,138 @@
+{
+  "benchmark_id": "v1_sglang_live_attach_hash_20260624_041525",
+  "benchmark_result": "not_published",
+  "blocker": "The PR #467 provider wheel was present and the live SGLang runtime accepted Cachet's request metadata bridge. Generated handoff creation produced 150 SGLang HiCache page keys and the cache-arm request reported a positive 128-token external cache hit, but the later 46-key split query still missed with last_hash_present=true. Both baseline and cache live quality checks failed, so this run is readiness evidence only and not a benchmark result.",
+  "cachet_commit": "6a697b3",
+  "databricks_run": {
+    "active_task_key": null,
+    "life_cycle_state": "INTERNAL_ERROR",
+    "result_state": "FAILED",
+    "run_id": 348824841142825,
+    "run_name": "document-kv-sglang-smoke",
+    "run_page_url": "https://dbc-21120bc8-ecb0.cloud.databricks.com/?o=413991477208516#job/442399905325099/run/348824841142825",
+    "state_message": "Task document_kv_sglang_smoke failed with message: Workload failed, see run output for details.",
+    "succeeded": false,
+    "terminal": true
+  },
+  "failure_type": "sglang_live_quality_failure_with_partial_cache_hit",
+  "hardware_target": "aws-g6-l4",
+  "integration_checks": {
+    "cache_prompt_text_mode": "logical",
+    "document_kv_hicache_provider_ok": true,
+    "document_kv_request_metadata_bridge_ok": true,
+    "generated_live_handoff": true,
+    "generated_live_handoff_page_keys": 150,
+    "hicache_storage_prefetch_policy": "wait_complete",
+    "prefetch_threshold": 1,
+    "sglang_import_probe_ok": true,
+    "storage_hit_query_patched": true
+  },
+  "live_handoff_generation": {
+    "backend": "sglang",
+    "cache_prefix_tokens": 150,
+    "ok": true,
+    "sglang_hicache_page_size": 1
+  },
+  "mode": "generated-live-handoff-logical-prompt-wait-complete-attach-hash-tracking",
+  "node_type": "g6.8xlarge",
+  "package_wheel": {
+    "filename": "cachet_kv-0.2.0-py3-none-any.whl",
+    "sha256": "a40a50cb9e7253c46a2d71fc28f4d75100300562ef0a428cd2522509117c8654"
+  },
+  "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
+  "server_hicache_binding_events": [
+    {
+      "binding_key_count": 128,
+      "expected_page_keys": 150,
+      "full_page_count": 150,
+      "hydrated_count": 128,
+      "key_count": 128,
+      "last_hash_present": false,
+      "prefix_keys": 0,
+      "reason": "pages_hydrated",
+      "runtime_key_count": 128
+    },
+    {
+      "binding_key_count": 0,
+      "expected_page_keys": 150,
+      "full_page_count": null,
+      "hydrated_count": 0,
+      "key_count": 46,
+      "last_hash_present": true,
+      "prefix_keys": 0,
+      "reason": "binding_miss",
+      "runtime_key_count": 46
+    },
+    {
+      "binding_key_count": 128,
+      "expected_page_keys": 150,
+      "full_page_count": 150,
+      "hydrated_count": 128,
+      "key_count": 128,
+      "last_hash_present": false,
+      "operation": "batch_get_v1",
+      "prefix_keys": 0,
+      "reason": "pages_already_hydrated",
+      "runtime_key_count": 128
+    }
+  ],
+  "server_prefill_token_counts": [
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 6,
+      "total_prompt_tokens": 6
+    },
+    {
+      "cached_tokens": 0,
+      "classification": "server_warmup",
+      "new_tokens": 1,
+      "total_prompt_tokens": 1
+    },
+    {
+      "cached_tokens": 128,
+      "classification": "cache_arm_external_partial_handoff",
+      "new_tokens": 46,
+      "total_prompt_tokens": 174
+    },
+    {
+      "cached_tokens": 173,
+      "classification": "baseline_after_cache_arm_prefix_cache",
+      "new_tokens": 1,
+      "total_prompt_tokens": 174
+    }
+  ],
+  "snapshot_date": "2026-06-24",
+  "spark_version": "15.4.x-gpu-ml-scala2.12",
+  "smoke": {
+    "baseline_answer_found": false,
+    "baseline_ok": false,
+    "baseline_prompt_tokens": 92,
+    "baseline_server_usage_prompt_tokens": 174,
+    "baseline_time_to_completion_seconds": 1.106717966,
+    "baseline_ttft_seconds": 0.093773758,
+    "cache_answer_found": false,
+    "cache_ok": false,
+    "cache_prompt_text_mode": "logical",
+    "cache_prompt_tokens": 92,
+    "cache_request_cached_tokens_from_server_log": 128,
+    "cache_runtime_prompt_chars": 131,
+    "cache_server_usage_prompt_tokens": 174,
+    "cache_time_to_completion_seconds": 8.583346188,
+    "cache_ttft_seconds": 7.568334646,
+    "issues": [
+      "baseline live check failed",
+      "cache-arm live check failed"
+    ],
+    "model_id": "qwen3:4b-instruct",
+    "served_model_name": "qwen3-4b-instruct",
+    "server_cached_token_validation": "positive_cache_hit_but_smoke_failed_quality"
+  },
+  "task": {
+    "life_cycle_state": "TERMINATED",
+    "result_state": "FAILED",
+    "run_id": 401615265653490,
+    "state_message": "Workload failed, see run output for details",
+    "task_key": "document_kv_sglang_smoke"
+  }
+}
