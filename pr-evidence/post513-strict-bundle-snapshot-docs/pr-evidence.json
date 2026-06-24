@@ -1,0 +1,33 @@
+{
+  "gpt55_review_completed": true,
+  "gpt55_review_findings_resolved": true,
+  "gpt55_review_outcome": "clean",
+  "gpt55_review_summary": "GPT-5.5 reviewer reported no actionable findings. The reviewer verified README.md, docs/v1-requirements-matrix.md, and tests/test_project_governance.py; confirmed the wording matches the local post-#513 strict bundle manifest with ok=true and artifact_count=37; confirmed the docs preserve benchmarks/ as human-facing benchmark evidence and pr-evidence/ as PR traceability; and found no claim that this PR launched new Databricks runs.",
+  "issues": [],
+  "ok": true,
+  "pull_request_number": 514,
+  "pull_request_url": "https://github.com/puyuanOT/cachet/pull/514",
+  "record_type": "document_kv.pr_evidence.v1",
+  "refactor_skill_applied": true,
+  "scope": [
+    "README.md",
+    "docs/v1-requirements-matrix.md",
+    "tests/test_project_governance.py",
+    "pr-evidence/post513-strict-bundle-snapshot-docs/"
+  ],
+  "verification": [
+    "poetry build -f wheel -> built cachet-kv 0.2.0 wheel",
+    "poetry run python -m document_kv_cache.release_bundle ... --require-complete-v1 --output-dir databricks-runs/current-governance/complete-strict-release-bundle-with-g5-post-513-current-wheel --output-json databricks-runs/current-governance/complete-strict-release-bundle-with-g5-post-513-current-wheel.json --overwrite -> ok=true, 37 artifacts",
+    "poetry run pytest -q tests/test_project_governance.py -> 50 passed",
+    "poetry run pytest -q -> 1885 passed, 5 skipped",
+    "poetry check --lock -> All set",
+    "git diff --check -> no issues",
+    "GPT-5.5 reviewer ran poetry run pytest -q tests/test_project_governance.py -> 50 passed"
+  ],
+  "what_changed": [
+    "Updated README.md and docs/v1-requirements-matrix.md from the stale post-#511 34-artifact strict-bundle snapshot to the verified post-#513 37-artifact snapshot.",
+    "Recorded that the refreshed snapshot carries PR #512/#513 traceability evidence and the new dependency_freshness strict sidecar while preserving the existing g6/L4, g5/A10G, storage, SGLang live V1, and native-engine benchmark evidence references.",
+    "Updated project-governance tests so old 34-artifact snapshot wording is treated as stale and the post-#513 37-artifact wording is pinned."
+  ],
+  "why": "PR #513 made dependency freshness a strict release-bundle artifact, so the release-readiness docs need to cite the current strict-bundle validation state instead of saying dependency freshness belongs only in a future refresh."
+}
