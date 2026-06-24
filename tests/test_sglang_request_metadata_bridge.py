@@ -8,6 +8,7 @@ import pytest
 
 from sglang_kv_injection.sglang_request_metadata_bridge import (
     DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE,
+    DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY,
     install_sglang_request_metadata_bridge,
     sglang_request_metadata_bridge_status_to_record,
 )
@@ -218,8 +219,12 @@ def test_sglang_request_metadata_bridge_forwards_custom_params_to_hicache_extra_
     controller._storage_hit_query(operation)
     controller._page_transfer(operation)
 
-    assert controller.storage_backend.exists_extra_info[0].extra_info == expected_extra_info
-    assert controller.storage_backend.get_extra_info[0].extra_info == expected_extra_info
+    expected_runtime_extra_info = {
+        **expected_extra_info,
+        DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY: "last-hash",
+    }
+    assert controller.storage_backend.exists_extra_info[0].extra_info == expected_runtime_extra_info
+    assert controller.storage_backend.get_extra_info[0].extra_info == expected_runtime_extra_info
     assert "__req__" not in operation.document_kv_extra_info["custom_params"]
 
 

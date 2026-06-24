@@ -37,6 +37,7 @@ _DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 _DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 _DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 _DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
+DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY = "document_kv.sglang_hicache_last_hash"
 _THREAD_CONTEXT = threading.local()
 _MISSING = object()
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ __all__ = [
     "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_RECORD_TYPE",
     "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SCHEMA_VERSION",
     "DOCUMENT_KV_SGLANG_REQUEST_METADATA_BRIDGE_SOURCE",
+    "DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY",
     "SGLangRequestMetadataBridgeStatus",
     "install_sglang_request_metadata_bridge",
     "sglang_request_metadata_bridge_status_to_record",
@@ -461,7 +463,18 @@ def _current_operation_request_metadata() -> Mapping[str, object] | None:
     metadata = getattr(operation, _OPERATION_EXTRA_INFO_ATTR, None)
     if not isinstance(metadata, Mapping):
         return None
-    return metadata
+    return _operation_request_metadata_with_runtime_context(operation, metadata)
+
+
+def _operation_request_metadata_with_runtime_context(
+    operation: object,
+    metadata: Mapping[str, object],
+) -> Mapping[str, object]:
+    enriched = dict(metadata)
+    last_hash = getattr(operation, "last_hash", None)
+    if isinstance(last_hash, str) and last_hash:
+        enriched[DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY] = last_hash
+    return enriched
 
 
 def _current_prefetch_request_metadata() -> tuple[str, Mapping[str, object]] | None:
