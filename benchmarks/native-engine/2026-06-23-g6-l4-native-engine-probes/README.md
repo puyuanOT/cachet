@@ -28,8 +28,8 @@ bytes through the native connector test path.
 
 These records prove native runtime integration paths, not serving benchmark
 latency or quality. vLLM latency and quality results live under
-`../../vllm/`; full SGLang benchmark publication remains pending until a live
-SGLang run covers the release suite.
+`../../vllm/`; the current prepared live SGLang V1 benchmark result lives under
+`../../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/`.
 
 ## Source Artifacts
 

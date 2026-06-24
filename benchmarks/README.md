@@ -10,7 +10,7 @@ Start with the standalone report folders:
 | Folder | Purpose | Current status |
 | --- | --- | --- |
 | [`vllm/`](vllm/) | vLLM latency and quality benchmark report | Published g6/L4 target and g5/A10G compatibility results |
-| [`sglang/`](sglang/) | SGLang benchmark status and live smoke folders | Generated-handoff Databricks smoke passes on g6/L4, and opt-in `cachet.sglang_live_benchmark.v1` synthetic live measurements now publish repeated SGLang baseline/cache rows; the first tiny-prompt result validates 175-token cache hits and quality but shows no speedup; the latest prepared four-dataset V1 attempt generated all handoffs and wrote 16 live measurement rows, but publication validation failed on padded SGLang prompt-token totals, so the full release latency and throughput suite is still pending |
+| [`sglang/`](sglang/) | SGLang benchmark status and live benchmark folders | Prepared SGLang V1 live benchmark now passes on g6/L4 with 16 rows, 8/8 validated Cachet-backed cache hits, and unchanged quality; the Cachet arm is slower on the short prepared prompts, so this is a correctness and integration benchmark result rather than a speedup result |
 | [`storage/`](storage/) | Storage-reader benchmark report | Published Memory, Disk, and Unity Catalog results |
 | [`native-engine/`](native-engine/) | Native connector integration evidence | Published provider-backed vLLM and SGLang probes |
 | [`_template/`](./_template/) | New standalone benchmark report template | Use for future human-readable run folders |
@@ -78,18 +78,22 @@ run `238535418152934` on `aws-g6-l4` / `g6.8xlarge`, `ok=true`, two
 baseline/cache repeats, 175 cached tokens in each cache repeat, unchanged
 quality, and no speedup on the tiny synthetic prompt.
 
-The latest prepared SGLang V1 Databricks attempt is tracked in
-[`sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/`](sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/):
-run `918882025776007` on `aws-g6-l4` / `g6.8xlarge`. It imported SGLang on an
+The latest prepared SGLang V1 Databricks benchmark is tracked in
+[`sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/`](sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/):
+run `48413356233422` on `aws-g6-l4` / `g6.8xlarge`. It imported SGLang on an
 NVIDIA L4, validated the production HiCache provider factory and request
 metadata bridge, generated prepared handoffs for Biography, HotpotQA, MusiQue,
-and NIAH, validated prepared handoff coverage, launched SGLang, and wrote 16
-live measurement rows. It is still not a published benchmark result because
-cache-hit validation matched server logs by exact prompt-token total, while
-SGLang reported padded/page-rounded prompt totals despite showing the expected
-cached-token floors.
+and NIAH, validated prepared handoff coverage, launched SGLang, wrote 16 live
+measurement rows, and passed 8/8 cache-hit validations. Quality deltas were
+`0.0`, but the Cachet arm was slower on the short prepared prompts.
 
 The previous prepared SGLang V1 Databricks attempt is tracked in
+[`sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/`](sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/):
+run `918882025776007` on `aws-g6-l4` / `g6.8xlarge`. It wrote 16 live
+measurement rows but failed publication validation before PR #500 fixed padded
+SGLang prompt-token matching.
+
+The first prepared SGLang V1 Databricks attempt is tracked in
 [`sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/`](sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/):
 run `514040136831626` on `aws-g6-l4` / `g6.8xlarge`. It generated all prepared
 handoffs but failed before server launch because the generated prepared dataset

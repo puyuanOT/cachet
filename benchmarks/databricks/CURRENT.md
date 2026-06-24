@@ -22,12 +22,19 @@ inspect `pr-evidence/` or ignored local `databricks-runs/` output.
 
 The full release latency and quality results in this snapshot are vLLM
 benchmark runs. SGLang currently has provider-backed native HiCache probe and
-connector-action evidence in this benchmark tree, plus a successful synthetic
-live benchmark tracked at
+connector-action evidence in this benchmark tree, a successful prepared V1 live
+benchmark tracked at
+[`../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/`](../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/),
+a successful synthetic live benchmark tracked at
 [`../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/`](../sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/)
 and a successful generated-handoff live smoke tracked at
 [`../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/`](../sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/).
-The latest prepared four-dataset SGLang V1 attempt is tracked at
+The latest prepared four-dataset SGLang V1 benchmark is run `48413356233422`
+on `aws-g6-l4` / `g6.8xlarge`; it wrote 16
+`cachet.sglang_live_benchmark.v1` rows, passed all eight Cachet-backed cache-hit
+validations, and preserved quality with `0.0` deltas. It did not show a
+speedup on the short prepared prompts. The previous prepared attempt is tracked
+at
 [`../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/`](../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/):
 run `918882025776007` on `aws-g6-l4` / `g6.8xlarge`, where import probe,
 request metadata bridge, prepared handoff generation, prepared handoff
@@ -81,8 +88,8 @@ handoffs, hydrates matching generated page-key chunks, records positive
 cache-arm cached-token validation covering the generated handoff prefix across
 two repeats, keeps a post-flush model-quality canary, and preserves live
 quality. It did not show a speedup on the tiny synthetic prompt. Treat full
-SGLang latency and throughput evidence as pending until a multi-dataset SGLang
-benchmark record covers the V1 release suite.
+SGLang canonical release-bundle consumption as pending until release validation
+explicitly consumes the prepared live V1 record type.
 
 ## V1 Latency And Quality
 
@@ -105,12 +112,13 @@ This SGLang artifact is scoped to one synthetic NIAH live prompt. It validates
 two Cachet-backed cache repeats with 175 cached tokens each, but it does not
 replace the full V1 release benchmark suite.
 
-## SGLang Prepared V1 Attempts
+## SGLang Prepared V1 Benchmark
 
-| Target | Folder | Databricks run | Measurements | Result |
-| --- | --- | --- | ---: | --- |
-| Prepared g6/L4 | [`../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure`](../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/) | `918882025776007` | 16 | Not published; cache-hit validation failed on padded SGLang prompt-token totals |
-| Prepared g6/L4 | [`../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure`](../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/) | `514040136831626` | 0 | Not published; failed before SGLang server launch |
+| Target | Folder | Databricks run | Measurements | TTFT speedup | Time-to-completion speedup | Quality delta | Result |
+| --- | --- | --- | ---: | ---: | ---: | ---: | --- |
+| Prepared g6/L4 | [`../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success`](../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/) | `48413356233422` | 16 | 0.313x-0.966x | 0.891x-0.966x | 0.0 | `ok=true`; no speedup on short prompts |
+| Prepared g6/L4 | [`../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure`](../sglang/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/) | `918882025776007` | 16 | n/a | n/a | n/a | Not published; cache-hit validation failed on padded SGLang prompt-token totals |
+| Prepared g6/L4 | [`../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure`](../sglang/2026-06-24-g6-l4-prepared-v1-config-swap-failure/) | `514040136831626` | 0 | n/a | n/a | n/a | Not published; failed before SGLang server launch |
 
 ## Storage And Native Engine Evidence
 
