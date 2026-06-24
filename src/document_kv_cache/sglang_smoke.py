@@ -22,6 +22,7 @@ import urllib.request
 from document_kv_cache.benchmark_handoffs import load_benchmark_kv_chunk_generator
 from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
+    DEFAULT_V1_MODEL_ID,
     DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     benchmark_cache_request,
     benchmark_cache_source_document,
@@ -62,7 +63,8 @@ from sglang_kv_injection.sglang_request_metadata_bridge import (
 )
 
 HF_MODEL_ID = QWEN3_4B_INSTRUCT_HF_MODEL_ID
-SERVED_MODEL_NAME = "qwen3:4b-instruct"
+CACHET_MODEL_ID = DEFAULT_V1_MODEL_ID
+SERVED_MODEL_NAME = "qwen3-4b-instruct"
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
@@ -91,6 +93,7 @@ __all__ = [
     "SGLANG_VERSION",
     "SGLANG_DEPENDENCY_CONSTRAINTS",
     "HF_MODEL_ID",
+    "CACHET_MODEL_ID",
     "SERVED_MODEL_NAME",
     "SERVER_BASE_URL",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
@@ -388,6 +391,7 @@ def build_metadata(
 ) -> dict[str, object]:
     metadata: dict[str, object] = {
         "benchmark_id": config.benchmark_id,
+        "model_id": CACHET_MODEL_ID,
         "hf_model_id": HF_MODEL_ID,
         "served_model_name": SERVED_MODEL_NAME,
         "sglang_version_requested": SGLANG_VERSION,
@@ -623,12 +627,12 @@ def _generate_live_handoff_inputs(
     generation.output_dir.mkdir(parents=True, exist_ok=True)
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
     layout = layout_for_model(
-        SERVED_MODEL_NAME,
+        CACHET_MODEL_ID,
         dtype=generation.dtype,
         block_size=generation.page_size,
     )
     live_request = build_live_server_check_request(
-        model_id=SERVED_MODEL_NAME,
+        model_id=CACHET_MODEL_ID,
         hardware_target=config.hardware_target,
         use_cache_arm=True,
     )
@@ -647,7 +651,7 @@ def _generate_live_handoff_inputs(
     request_id = f"{LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX}-{config.benchmark_id}"
     document_request = benchmark_cache_request(
         live_request.example,
-        model_id=SERVED_MODEL_NAME,
+        model_id=CACHET_MODEL_ID,
         request_id=request_id,
         prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX,
     )
@@ -844,6 +848,7 @@ def run_live_checks(
         )
     )
     baseline_record = baseline.to_record()
+    _record_logical_and_served_model_ids(baseline_record)
     baseline_record["label"] = "baseline_prefill"
     cache_record: dict[str, object] | None = None
     if not config.baseline_only:
@@ -863,6 +868,7 @@ def run_live_checks(
             )
         )
         cache_record = cache.to_record()
+        _record_logical_and_served_model_ids(cache_record)
         cache_record["label"] = "document_kv_cache"
 
     issues = []
@@ -877,7 +883,8 @@ def run_live_checks(
         "ok": not issues,
         "benchmark_id": config.benchmark_id,
         "engine": "sglang",
-        "model_id": SERVED_MODEL_NAME,
+        "model_id": CACHET_MODEL_ID,
+        "served_model_name": SERVED_MODEL_NAME,
         "hardware_target": config.hardware_target,
         "baseline_only": config.baseline_only,
         "cache_arm_supported": not config.baseline_only,
@@ -897,6 +904,11 @@ def run_live_checks(
     if issues:
         raise RuntimeError(f"SGLang live smoke failed: {'; '.join(issues)}")
     return record
+
+
+def _record_logical_and_served_model_ids(record: dict[str, object]) -> None:
+    record["served_model_name"] = SERVED_MODEL_NAME
+    record["model_id"] = CACHET_MODEL_ID
 
 
 def build_sglang_server_args(config: SGLangSmokeBenchmarkConfig, python_executable: Path) -> list[str]:
