@@ -3,8 +3,8 @@
     "pr-evidence/post511-strict-bundle-snapshot-docs/pr-evidence.json": {
       "gpt55_review_completed": true,
       "gpt55_review_findings_resolved": true,
-      "gpt55_review_outcome": "clean",
-      "gpt55_review_summary": "GPT-5.5 reviewer approved the final PR #512 diff with no findings, including the post-#511 strict-bundle snapshot wording and this self-contained PR-evidence sidecar.",
+      "gpt55_review_outcome": "findings_resolved",
+      "gpt55_review_summary": "GPT-5.5 reviewer found that the initial ignored post-#511 bundle had the correct 34-artifact count but bundled the pre-change requirements matrix copy. The finding was resolved by rebuilding the wheel and strict bundle from the final branch docs, verifying the bundled matrix SHA/size matches docs/v1-requirements-matrix.md, and updating this sidecar to record the findings-resolved review outcome.",
       "issues": [],
       "ok": true,
       "pull_request_number": 512,
@@ -21,6 +21,7 @@
         "generated current GitHub governance and repository hygiene sidecars under ignored scratch; both ok=true",
         "built ignored post-#511 strict bundle with --require-complete-v1 -> ok=true, artifact_count=34",
         "verified post-#511 manifest includes 10 pr_evidence artifacts and sglang_live_v1_benchmark",
+        "rebuilt post-#511 strict bundle after GPT-5.5 review; bundled v1_requirements_matrix.md SHA/size now matches docs/v1-requirements-matrix.md",
         "post-#511 strict bundle token-pattern scan returned 0 matches",
         "poetry run pytest tests/test_project_governance.py::test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates tests/test_project_governance.py::test_readme_release_bundle_documents_artifact_validation_contracts tests/test_release_bundle.py::test_build_release_bundle_strict_v1_accepts_complete_release_artifact_set -q -> 3 passed",
         "git diff --check",
