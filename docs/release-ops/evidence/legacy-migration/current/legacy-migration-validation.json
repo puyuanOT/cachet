@@ -8,7 +8,7 @@
         "src/document_kv_cache/release_bundle.py"
       ],
       "environment": "Databricks QA and GitHub release validation",
-      "evidence_uri": "benchmarks/databricks/2026-06-23-g6-l4-v1/release_evidence.json",
+      "evidence_uri": "benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
       "legacy_console_scripts_present": false,
       "legacy_imports_present": false,
       "legacy_reference_hits": [],
@@ -26,7 +26,7 @@
         "src/document_kv_cache/databricks_job.py"
       ],
       "environment": "Databricks QA",
-      "evidence_uri": "benchmarks/databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
+      "evidence_uri": "benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
       "legacy_console_scripts_present": false,
       "legacy_imports_present": false,
       "legacy_reference_hits": [],
@@ -43,7 +43,7 @@
         "src/document_kv_cache/storage_benchmark.py"
       ],
       "environment": "Databricks QA",
-      "evidence_uri": "benchmarks/databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
+      "evidence_uri": "benchmarks/databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
       "legacy_console_scripts_present": false,
       "legacy_imports_present": false,
       "legacy_reference_hits": [],
@@ -61,7 +61,7 @@
         "src/document_kv_cache/native_probe_factories.py"
       ],
       "environment": "Databricks QA",
-      "evidence_uri": "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
+      "evidence_uri": "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
       "legacy_console_scripts_present": false,
       "legacy_imports_present": false,
       "legacy_reference_hits": [],
@@ -78,7 +78,7 @@
         "src/document_kv_cache/vllm_smoke.py"
       ],
       "environment": "Databricks QA",
-      "evidence_uri": "benchmarks/databricks/2026-06-23-g6-l4-v1/databricks_run_status.json",
+      "evidence_uri": "benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
       "legacy_console_scripts_present": false,
       "legacy_imports_present": false,
       "legacy_reference_hits": [],
@@ -92,12 +92,12 @@
   "record_type": "document_kv.legacy_compatibility_migration.v1",
   "release_evidence": [
     {
-      "evidence_uri": "benchmarks/databricks/2026-06-23-g6-l4-v1/release_evidence.json",
+      "evidence_uri": "benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
       "hardware_target": "aws-g6-l4",
       "runner_uses_legacy_facade": false
     },
     {
-      "evidence_uri": "benchmarks/databricks/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
+      "evidence_uri": "benchmarks/databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
       "hardware_target": "aws-g5-a10g",
       "runner_uses_legacy_facade": false
     }

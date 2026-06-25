@@ -121,10 +121,10 @@ dataset payloads, or local `databricks-runs/` output.
 
 The current provider-backed evidence is tracked in:
 
-- `benchmarks/vllm/2026-06-23-g6-l4-v1/`
-- `benchmarks/vllm/2026-06-23-g5-a10g-v1-compatibility/`
-- `benchmarks/storage/2026-06-21-g6-l4-storage-readers/`
-- `benchmarks/native-engine/2026-06-23-g6-l4-native-engine-probes/`
+- `benchmarks/vllm/qwen3-4b-g6-l4-vanilla-kv/`
+- `benchmarks/vllm/qwen3-4b-g5-a10g-vanilla-kv/`
+- `benchmarks/storage/g6-l4-reader-throughput/`
+- `benchmarks/native-engine/g6-l4-vllm-sglang-vanilla-kv/`
 
 Refresh those standalone folders, the matching `benchmarks/databricks/` mirrors,
 the strict release bundle, and `docs/v1-requirements-matrix.md` whenever
