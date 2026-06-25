@@ -1,50 +1,48 @@
 # Benchmark Report Template
 
-Use this template for each standalone benchmark or benchmark-readiness folder
-under `benchmarks/`. The folder should be readable without opening
-`docs/release-ops/pr-evidence/`, raw Databricks job payloads, or local
-`databricks-runs/` scratch output.
+Use this template for new public benchmark result folders under `benchmarks/`.
+Folder names should be stable and descriptive, such as
+`qwen3-4b-g6-l4-vanilla-kv`, not date or run-id based.
 
 ## Summary
 
 | Field | Value |
 | --- | --- |
-| Date | YYYY-MM-DD |
-| Scope | vLLM V1, SGLang live V1, storage readers, native engine probe, or readiness smoke |
-| Target | `aws-g6-l4` / `g6.8xlarge` unless explicitly marked compatibility |
-| Databricks run | RUN_ID |
-| Result | `ok=true`, `ok=false`, or readiness-only status |
-| Publication status | Published benchmark, compatibility evidence, integration evidence, or readiness evidence |
+| Serving platform | vLLM, SGLang, storage, or native engine probe |
+| Model | e.g. `qwen3:4b-instruct`, or `n/a` for storage |
+| Hardware | e.g. AWS g6/L4, `g6.8xlarge` |
+| Method | Vanilla external KV, KV Packet, storage reader, etc. |
+| Baseline | no-cache prefill, reader baseline, or `n/a` |
+| Measurements | Count and scope |
+| Result | Speedup, no speedup, correctness-only, or integration-only |
 
-## Human Result
+## Result
 
-State the benchmark claim in a few sentences. Include the useful numbers a
-reviewer should see first, such as measurement count, TTFT speedup,
-time-to-completion speedup, quality delta, cache-hit validation, reader
-throughput, or probe copied-token count.
+State the useful benchmark claim first. Include the numbers readers care about:
+TTFT speedup, time-to-completion speedup, throughput, quality delta, cache-hit
+validation, copied-token count, or reader errors.
 
 ## Scope
 
-Explain exactly what this folder proves and what it does not prove. For
-example, native connector probes are integration evidence, synthetic SGLang
-live measurements are not full V1 release-suite results, and g5/A10G folders
-are compatibility evidence rather than the strict g6/L4 publication target.
+Explain what this folder proves and what it does not prove. Examples:
 
-## Source Artifacts
+- g5/A10G is compatibility evidence, not the primary g6/L4 target.
+- SGLang correctness/cache-hit evidence is not automatically a speedup claim.
+- Native connector probes are integration evidence, not latency benchmarks.
+- Planned methods such as KV Packet need their own result folders.
 
-List the sanitized records committed beside this README, such as:
+## Provenance
+
+List sanitized records committed beside this README, such as:
 
 - `v1_benchmark.json`
-- `sglang-live-benchmark.json`
+- `success_run.json`
 - `storage_benchmark.json`
 - `databricks_run_status.json`
 - `release_evidence.json`
 - `*_engine_probe.json`
 - `*_connector_actions.json`
 
-## Artifact Boundary
-
 Do not include Databricks tokens, raw Jobs API responses, package wheels,
-cluster logs, generated payload blobs, or local scratch directories. Use
-`docs/release-ops/pr-evidence/` only for PR validation and release-audit
-sidecars, not as the human benchmark report surface.
+cluster logs, generated payload blobs, prompt text, or local scratch
+directories.

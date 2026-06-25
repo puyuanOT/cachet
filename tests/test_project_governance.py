@@ -1074,7 +1074,7 @@ def test_native_engine_integration_doc_examples_are_validated():
         "aws-g5-a10g",
         "g5.8xlarge",
         "payload-summary",
-        "benchmarks/native-engine/2026-06-23-g6-l4-native-engine-probes/",
+        "benchmarks/native-engine/g6-l4-vllm-sglang-vanilla-kv/",
         "`benchmarks/databricks/` mirrors the Databricks",
         "commit tokens",
     ):
@@ -1164,2274 +1164,161 @@ def test_release_ops_doc_classifies_installed_cli_surface():
 def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     benchmark_root = REPO_ROOT / "benchmarks"
     databricks_root = benchmark_root / "databricks"
+    archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
+    sglang_archive_root = archive_root / "sglang-smoke"
+
     root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
-    current_readme = (benchmark_root / "current" / "README.md").read_text(
-        encoding="utf-8"
-    )
+    current_readme = (benchmark_root / "current" / "README.md").read_text(encoding="utf-8")
     vllm_readme = (benchmark_root / "vllm" / "README.md").read_text(encoding="utf-8")
     sglang_readme = (benchmark_root / "sglang" / "README.md").read_text(encoding="utf-8")
     storage_readme = (benchmark_root / "storage" / "README.md").read_text(encoding="utf-8")
-    native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(
-        encoding="utf-8"
-    )
-    vllm_g6_report_readme = (
-        benchmark_root / "vllm" / "2026-06-23-g6-l4-v1" / "README.md"
-    ).read_text(encoding="utf-8")
-    vllm_g5_report_readme = (
-        benchmark_root / "vllm" / "2026-06-23-g5-a10g-v1-compatibility" / "README.md"
-    ).read_text(encoding="utf-8")
-    storage_report_readme = (
-        benchmark_root / "storage" / "2026-06-21-g6-l4-storage-readers" / "README.md"
-    ).read_text(encoding="utf-8")
-    native_engine_report_readme = (
-        benchmark_root
-        / "native-engine"
-        / "2026-06-23-g6-l4-native-engine-probes"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    benchmark_template_readme = (
-        benchmark_root / "_template" / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_live_smoke_readme = (
-        benchmark_root / "sglang" / "archive"
-            / "2026-06-23-g6-l4-live-handoff-smoke" / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_runtime_suffix_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_zero_cache_hit_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_partial_page_binding_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_chained_hash_binding_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_batch_prior_metadata_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_attach_hash_tracking_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_quality_failure_cache_hit_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_token_stable_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_qwen_chat_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_qwen_sampling_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_chat_completions_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_no_thinking_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_deterministic_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_triton_deterministic_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_minimal_no_thinking_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_canary_after_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_canary_flush_cache_hit_quality_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_baseline_isolated_success_readme = (
-        benchmark_root
-        / "sglang"
-        / "2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_live_benchmark_success_readme = (
-        benchmark_root
-        / "sglang"
-        / "2026-06-24-g6-l4-live-benchmark-synthetic-niah-success"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_prepared_v1_config_swap_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_prepared_v1_padded_token_failure_readme = (
-        benchmark_root
-        / "sglang"
-        / "archive"
-            / "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_prepared_v1_release_success_readme = (
-        benchmark_root
-        / "sglang"
-        / "2026-06-24-g6-l4-prepared-v1-release-suite-success"
-        / "README.md"
-    ).read_text(encoding="utf-8")
-    sglang_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-23-g6-l4-live-handoff-smoke"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_runtime_suffix_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_zero_cache_hit_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_partial_page_binding_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_chained_hash_binding_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_batch_prior_metadata_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_attach_hash_tracking_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_quality_failure_cache_hit_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_token_stable_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_qwen_chat_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_qwen_sampling_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_chat_completions_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_no_thinking_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_deterministic_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_triton_deterministic_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_canary_after_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_canary_flush_cache_hit_quality_failure_failed_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_baseline_isolated_success_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success"
-            / "success_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_live_benchmark_success_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "2026-06-24-g6-l4-live-benchmark-synthetic-niah-success"
-            / "success_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_prepared_v1_config_swap_failure_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_prepared_v1_padded_token_failure_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "archive"
-            / "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
-            / "failed_run.json"
-        ).read_text(encoding="utf-8")
-    )
-    sglang_prepared_v1_release_success_run = json.loads(
-        (
-            benchmark_root
-            / "sglang"
-            / "2026-06-24-g6-l4-prepared-v1-release-suite-success"
-            / "success_run.json"
-        ).read_text(encoding="utf-8")
-    )
+    native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(encoding="utf-8")
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
     current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
+    benchmark_template_readme = (benchmark_root / "_template" / "README.md").read_text(encoding="utf-8")
+    archive_readme = (archive_root / "README.md").read_text(encoding="utf-8")
+    sglang_archive_readme = (sglang_archive_root / "README.md").read_text(encoding="utf-8")
     project_readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     maintainer_reference = (
         REPO_ROOT / "docs" / "release-ops" / "maintainer-reference.md"
     ).read_text(encoding="utf-8")
     docs_readme = (REPO_ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
+
     compact_root_readme = " ".join(root_readme.split())
+    compact_current_readme = " ".join(current_readme.split())
     compact_vllm_readme = " ".join(vllm_readme.split())
     compact_sglang_readme = " ".join(sglang_readme.split())
-    compact_storage_readme = " ".join(storage_readme.split())
-    compact_native_engine_readme = " ".join(native_engine_readme.split())
-    compact_vllm_g6_report_readme = " ".join(vllm_g6_report_readme.split())
-    compact_vllm_g5_report_readme = " ".join(vllm_g5_report_readme.split())
-    compact_storage_report_readme = " ".join(storage_report_readme.split())
-    compact_native_engine_report_readme = " ".join(native_engine_report_readme.split())
-    compact_benchmark_template_readme = " ".join(benchmark_template_readme.split())
-    compact_sglang_live_benchmark_success_readme = " ".join(
-        sglang_live_benchmark_success_readme.split()
-    )
-    compact_sglang_prepared_v1_config_swap_failure_readme = " ".join(
-        sglang_prepared_v1_config_swap_failure_readme.split()
-    )
-    compact_sglang_prepared_v1_padded_token_failure_readme = " ".join(
-        sglang_prepared_v1_padded_token_failure_readme.split()
-    )
-    compact_sglang_prepared_v1_release_success_readme = " ".join(
-        sglang_prepared_v1_release_success_readme.split()
-    )
     compact_databricks_readme = " ".join(databricks_readme.split())
+    compact_archive_readme = " ".join(archive_readme.split())
+    compact_sglang_archive_readme = " ".join(sglang_archive_readme.split())
     compact_matrix_text = " ".join(matrix_text.split())
     compact_maintainer_reference = " ".join(maintainer_reference.split())
     compact_docs_readme = " ".join(docs_readme.split())
-    compact_snapshot = " ".join(current_databricks_snapshot.split())
-    compact_current_readme = " ".join(current_readme.split())
+
+    assert "how Cachet compares with the no-cache prefill baseline" in compact_root_readme
+    assert "which models, hardware targets, cache methods, and serving engines" in compact_root_readme
+    assert "Vanilla external KV cache" in root_readme
+    assert "KV Packet" in root_readme
+    assert "Planned next" in root_readme
+    assert "folder names such as" in root_readme
+    assert "instead of dates" in root_readme
+    assert "Performance Summary" in current_readme
+    assert "no-cache prefill baseline" in compact_current_readme
+    assert "5.27x-6.97x TTFT speedup" in current_readme
+    assert "8/8 Cachet-backed cache hits" in current_readme
+    assert "no speedup on short prompts" in current_readme
+    assert "Stable Result Folders" in current_readme
+    assert "Supported Methods" in current_readme
+    assert "KV Packet | Not yet benchmarked" in current_readme
+    assert "These are the current Cachet performance results for vLLM" in vllm_readme
+    assert "g5/A10G result is compatibility evidence" in compact_vllm_readme
+    assert "correctness and integration result today" in sglang_readme
+    assert "not as a reason to expect lower latency on every prompt" in compact_sglang_readme
+    assert "Historical Runs" in sglang_readme
+    assert "not public benchmark results" in compact_sglang_readme
+    assert "not model-serving benchmarks" in storage_readme
+    assert "Integration Evidence" in native_engine_readme
+    assert "audits, not first-time benchmark reading" in databricks_readme
+    assert "QA run provenance" in current_databricks_snapshot
+    assert "date or run-id based" in benchmark_template_readme
+    assert "should not dominate the public benchmark experience" in compact_archive_readme
+    assert "not as the current public benchmark result surface" in compact_sglang_archive_readme
 
     assert "[`benchmarks/current/README.md`](benchmarks/current/)" in project_readme
     assert "[`benchmarks/`](../../benchmarks/README.md)" in maintainer_reference
-    assert "[`vLLM`](../../benchmarks/vllm/)" in maintainer_reference
-    assert "[`SGLang`](../../benchmarks/sglang/)" in maintainer_reference
-    assert "[`storage`](../../benchmarks/storage/)" in maintainer_reference
-    assert "[`native-engine`](../../benchmarks/native-engine/)" in maintainer_reference
-    assert (
-        "[`benchmarks/databricks/CURRENT.md`](../../benchmarks/databricks/CURRENT.md)"
-        in maintainer_reference
-    )
-    assert "[`current/`](current/)" in root_readme
-    assert "[`vllm/`](vllm/)" in root_readme
-    assert "[`sglang/`](sglang/)" in root_readme
-    assert "[`storage/`](storage/)" in root_readme
-    assert "[`native-engine/`](native-engine/)" in root_readme
-    assert "[`vllm/2026-06-23-g6-l4-v1/`](vllm/2026-06-23-g6-l4-v1/)" in root_readme
-    assert (
-        "[`storage/2026-06-21-g6-l4-storage-readers/`](storage/2026-06-21-g6-l4-storage-readers/)"
-        in root_readme
-    )
-    assert (
-        "[`native-engine/2026-06-23-g6-l4-native-engine-probes/`](native-engine/2026-06-23-g6-l4-native-engine-probes/)"
-        in root_readme
-    )
-    assert "[`_template/`](./_template/)" in root_readme
-    assert "[`databricks/CURRENT.md`](databricks/CURRENT.md)" in root_readme
-    assert "Current Benchmark Results" in current_readme
-    assert "human-facing front door for Cachet benchmark results" in compact_current_readme
-    assert "`docs/release-ops/pr-evidence/`" in current_readme
-    assert (
-        "[`../vllm/2026-06-23-g6-l4-v1/`](../vllm/2026-06-23-g6-l4-v1/)"
-        in current_readme
-    )
-    assert (
-        "[`../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/`](../sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/)"
-        in current_readme
-    )
-    assert (
-        "[`../storage/2026-06-21-g6-l4-storage-readers/`](../storage/2026-06-21-g6-l4-storage-readers/)"
-        in current_readme
-    )
-    assert "5.27x-6.97x TTFT speedup" in current_readme
-    assert "8/8 Cachet cache-hit validations" in current_readme
-    assert "not as the benchmark report surface" in compact_current_readme
-    assert "[`CURRENT.md`](CURRENT.md)" in databricks_readme
     assert "`../benchmarks/README.md`" in docs_readme
-    assert "`../benchmarks/current/README.md`" in docs_readme
-    assert "standalone, human-readable benchmark report folders" in compact_docs_readme
     assert "Standalone human-readable benchmark report folders" in matrix_text
     assert "`benchmarks/current/` is the concise human-facing benchmark index" in matrix_text
-    assert "`benchmarks/vllm/`" in matrix_text
-    assert "`benchmarks/sglang/`" in matrix_text
-    assert "`benchmarks/storage/`" in matrix_text
-    assert "`benchmarks/native-engine/`" in matrix_text
     assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
-    assert "Every durable Databricks benchmark or benchmark-readiness run" in compact_maintainer_reference
-    assert "compact sanitized evidence committed beside it" in compact_maintainer_reference
-    assert "without requiring readers to inspect `docs/release-ops/pr-evidence/`" in compact_snapshot
-    assert "ignored local `databricks-runs/` output" in compact_snapshot
-    assert "Raw local run directories stay under ignored `databricks-runs/`" in databricks_readme
-    assert "[`../vllm/`](../vllm/)" in databricks_readme
-    assert "[`../sglang/`](../sglang/)" in databricks_readme
-    assert "[`../storage/`](../storage/)" in databricks_readme
-    assert "[`../native-engine/`](../native-engine/)" in databricks_readme
-    assert "[`../vllm/`](../vllm/)" in current_databricks_snapshot
-    assert "[`../sglang/`](../sglang/)" in current_databricks_snapshot
-    assert "[`../storage/`](../storage/)" in current_databricks_snapshot
-    assert "[`../native-engine/`](../native-engine/)" in current_databricks_snapshot
-    assert "Strict publication target | AWS g6/L4, `aws-g6-l4`, `g6.8xlarge`" in current_databricks_snapshot
-    assert "Compatibility target | AWS g5/A10G, `aws-g5-a10g`, `g5.8xlarge`" in current_databricks_snapshot
-    assert "`baseline_prefill`" in current_databricks_snapshot
-    assert "`document_kv_cache`" in current_databricks_snapshot
-    assert "does not replace the strict AWS g6/L4 publication target" in current_databricks_snapshot
-    assert "instead of a package-owned serving scheduler" in current_databricks_snapshot
-    assert (
-        "The full release latency and quality results in this snapshot are vLLM "
-        "benchmark runs"
-    ) in compact_snapshot
-    assert "successful generated-handoff live smoke" in compact_snapshot
-    assert "dedicated `sglang_live_v1_benchmark` artifact role" in compact_snapshot
-    assert "synthetic live benchmark validates decode-time prefix binding" in compact_snapshot
-    assert "They are not latency, throughput, or quality benchmark measurements" in compact_snapshot
-    assert "Folders with `v1_benchmark.json` are latency and quality benchmark reports" in root_readme
-    assert "scope=live_synthetic_niah" in root_readme
-    assert "scope=live_v1_release" in root_readme
-    assert "not a replacement for canonical `v1_benchmark.json`" in compact_root_readme
-    assert "native-engine probe folder is integration evidence only" in compact_root_readme
-    assert "Folders containing `v1_benchmark.json` are full V1 latency" in databricks_readme
-    assert "cachet.sglang_live_benchmark.v1` for SGLang synthetic live endpoint" in databricks_readme
-    assert "distinct SGLang live report surface rather than canonical" in (
-        compact_databricks_readme
-    )
-    assert "`sglang_live_v1_benchmark`" in databricks_readme
-    assert "vLLM `document_kv.benchmark_run.v1` evidence" in matrix_text
-    assert "synthetic live `cachet.sglang_live_benchmark.v1` evidence" in compact_matrix_text
-    assert "SGLang prepared V1 run `48413356233422`" in compact_matrix_text
-    assert "Release-bundle manifests are regenerated from these benchmark artifacts" in compact_snapshot
-    assert "vLLM latency and quality benchmark results" in compact_vllm_readme
-    assert "Dated subfolders are the report pages to read and cite" in compact_vllm_readme
-    assert "compact sanitized JSON records behind the report" in compact_vllm_readme
-    assert "872615985402004" in vllm_readme
-    assert "566743786103032" in vllm_readme
-    assert "strict g6/L4 release target" in vllm_readme
-    assert "Do not use `../../docs/release-ops/pr-evidence/` as the benchmark" in vllm_readme
-    assert "strict Cachet vLLM V1 benchmark" in compact_vllm_g6_report_readme
-    assert "TTFT speedups ranged from 5.27x to 6.97x" in compact_vllm_g6_report_readme
-    assert "Compatibility evidence; not the strict release target" in vllm_g5_report_readme
-    assert "TTFT speedups ranged from 4.66x to 6.04x" in compact_vllm_g5_report_readme
-    assert "successful live SGLang handoff smoke on g6/L4" in compact_sglang_readme
-    assert "synthetic live SGLang benchmark artifact" in compact_sglang_readme
-    assert "successful prepared four-dataset V1 live benchmark" in compact_sglang_readme
-    assert "Native HiCache integration evidence" in sglang_readme
-    assert "Latest synthetic live benchmark" in sglang_readme
-    assert "238535418152934" in sglang_readme
-    assert "cachet.sglang_live_benchmark.v1" in sglang_readme
-    assert "0.875x" in sglang_readme
-    assert "0.926x" in sglang_readme
-    assert "compact sanitized snapshot" in compact_sglang_readme
-    assert "per-repeat flush records" not in sglang_readme
-    assert "Failed live handoff smoke" in sglang_readme
-    assert "Latest successful live handoff smoke" in sglang_readme
-    assert "134006212072875" in sglang_readme
-    assert "201402713679607" in sglang_readme
-    assert "13763847664432" in sglang_readme
-    assert "476596508869043" in sglang_readme
-    assert "521023980659718" in sglang_readme
-    assert "476430354490832" in sglang_readme
-    assert "73938470896039" in sglang_readme
-    assert "672750124167579" in sglang_readme
-    assert "348824841142825" in sglang_readme
-    assert "995284076545208" in sglang_readme
-    assert "897276220223990" in sglang_readme
-    assert "585131634686228" in sglang_readme
-    assert "163920824964705" in sglang_readme
-    assert "417035094778538" in sglang_readme
-    assert "647563677081667" in sglang_readme
-    assert "585529688094161" in sglang_readme
-    assert "672927118707206" in sglang_readme
-    assert "419314952937106" in sglang_readme
-    assert "suffix-only runtime prompt text" in compact_sglang_readme
-    assert "zero cached tokens" in compact_sglang_readme
-    assert "partial page-binding blocker" in compact_sglang_readme
-    assert "full 175-token external cache hit" in root_readme
-    assert "benchmarks/sglang/archive/" in root_readme
-    assert "2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure" in sglang_readme
-    assert "2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure" in sglang_readme
-    assert (
-        "2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure"
-        in sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure"
-        in sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure"
-        in sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure"
-        in sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success"
-        in sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-live-benchmark-synthetic-niah-success"
-        in sglang_readme
-    )
-    assert "Synthetic g6/L4" in current_databricks_snapshot
-    assert "238535418152934" in current_databricks_snapshot
-    assert "175 cached tokens each" in current_databricks_snapshot
-    assert "failed generated-handoff live smoke attempts" in compact_snapshot
-    assert "baseline-isolated-success" in current_databricks_snapshot
-    assert "zero-cache-hit blocker" in compact_snapshot
-    assert "partial page-binding blocker" in compact_snapshot
-    assert "batch prior-hash metadata blocker" in compact_snapshot
-    assert "cache-hit quality failure" in compact_snapshot
-    assert "token-stable cache-hit quality failure" in compact_snapshot
-    assert "Qwen-chat cache-hit quality failure" in current_databricks_snapshot
-    assert "Qwen-sampling cache-hit quality failure" in current_databricks_snapshot
-    assert "chat-completions cache-hit quality failure" in current_databricks_snapshot
-    assert "no-thinking cache-hit quality failure" in current_databricks_snapshot
-    assert "deterministic no-thinking cache-hit quality failure" in current_databricks_snapshot
-    assert "Triton/PyTorch deterministic cache-hit quality failure" in current_databricks_snapshot
-    assert "minimal no-thinking cache-hit quality failure" in current_databricks_snapshot
-    assert "canary-after-cache-hit quality failure" in current_databricks_snapshot
-    assert "canary-flush cache-hit quality failure" in current_databricks_snapshot
-    assert "post-flush model-quality canary" in compact_snapshot
-    assert "cache-arm cached-token validation" in compact_snapshot
-    assert "Live-readiness folders" in databricks_readme
-    assert "This folder tracks the current human-readable SGLang live handoff smoke run" in sglang_live_smoke_readme
-    assert "Do not cite this folder as a completed benchmark" in sglang_live_smoke_readme
-    assert "colon is reserved for `model:adapter` syntax" in sglang_live_smoke_readme
-    assert "Runtime Suffix Blocker" in sglang_runtime_suffix_readme
-    assert "cache_prompt_text_mode=runtime" in sglang_runtime_suffix_readme
-    assert "positive SGLang cache-hit validation" in sglang_runtime_suffix_readme
-    assert "Zero Cache-Hit Blocker" in sglang_zero_cache_hit_readme
-    assert "cache_prompt_text_mode=logical" in sglang_zero_cache_hit_readme
-    assert "ordinary SGLang prefix-cache reuse" in sglang_zero_cache_hit_readme
-    assert "Partial Page-Binding Blocker" in sglang_partial_page_binding_readme
-    assert "prefetch_threshold=1" in sglang_partial_page_binding_readme
-    assert "hicache_storage_prefetch_policy=wait_complete" in sglang_partial_page_binding_readme
-    assert "SGLang reported 128 cached tokens" in sglang_partial_page_binding_readme
-    assert "Chained Hash Binding Blocker" in sglang_chained_hash_binding_readme
-    assert "PR #464 wheel was present" in sglang_chained_hash_binding_readme
-    assert "runtime `last_hash`" in sglang_chained_hash_binding_readme
-    assert "Batch Prior-Hash Metadata Blocker" in sglang_batch_prior_metadata_readme
-    assert "PR #465 wheel was present" in sglang_batch_prior_metadata_readme
-    assert "per-batch prior hash" in sglang_batch_prior_metadata_readme
-    assert "Attach-Time Hash Tracking Gate" in sglang_attach_hash_tracking_readme
-    assert "PR #466 wheel was present" in sglang_attach_hash_tracking_readme
-    assert "attach_storage_backend" in sglang_attach_hash_tracking_readme
-    assert "Cache Hit With Quality Failure" in sglang_quality_failure_cache_hit_readme
-    assert "PR #467" in sglang_quality_failure_cache_hit_readme
-    assert "positive 128-token external cache hit" in sglang_quality_failure_cache_hit_readme
-    assert "Token-Stable Cache Hit With Quality Failure" in (
-        sglang_token_stable_cache_hit_quality_failure_readme
-    )
-    assert "PR #469" in sglang_token_stable_cache_hit_quality_failure_readme
-    assert "positive cache-arm hit for the full 149-token generated prefix" in (
-        sglang_token_stable_cache_hit_quality_failure_readme
-    )
-    assert "Qwen Chat Cache Hit With Quality Failure" in sglang_qwen_chat_cache_hit_quality_failure_readme
-    assert "PR #470" in sglang_qwen_chat_cache_hit_quality_failure_readme
-    assert "positive SGLang cached-token validation" in sglang_qwen_chat_cache_hit_quality_failure_readme
-    assert "175-token full-page prefix" in sglang_qwen_chat_cache_hit_quality_failure_readme
-    assert "Qwen Sampling Cache Hit With Quality Failure" in (
-        sglang_qwen_sampling_cache_hit_quality_failure_readme
-    )
-    assert "PR #471" in sglang_qwen_sampling_cache_hit_quality_failure_readme
-    assert "Qwen sampling parameters reached the live request path" in (
-        sglang_qwen_sampling_cache_hit_quality_failure_readme
-    )
-    assert "175-token full-page prefix" in sglang_qwen_sampling_cache_hit_quality_failure_readme
-    assert "Chat Completions Cache Hit With Quality Failure" in (
-        sglang_chat_completions_cache_hit_quality_failure_readme
-    )
-    assert "PR #473" in sglang_chat_completions_cache_hit_quality_failure_readme
-    assert "`/v1/chat/completions`" in (
-        sglang_chat_completions_cache_hit_quality_failure_readme
-    )
-    assert "175-token full-page prefix" in (
-        sglang_chat_completions_cache_hit_quality_failure_readme
-    )
-    assert "No-Thinking Cache Hit With Quality Failure" in (
-        sglang_no_thinking_cache_hit_quality_failure_readme
-    )
-    assert "PR #476" in sglang_no_thinking_cache_hit_quality_failure_readme
-    assert "reasoning_effort=none" in sglang_no_thinking_cache_hit_quality_failure_readme
-    assert "reported 175 cached" in sglang_no_thinking_cache_hit_quality_failure_readme
-    assert "Deterministic Cache Hit With Quality Failure" in (
-        sglang_deterministic_cache_hit_quality_failure_readme
-    )
-    assert "PR #478" in sglang_deterministic_cache_hit_quality_failure_readme
-    assert "`temperature=0.0`" in sglang_deterministic_cache_hit_quality_failure_readme
-    assert "reported 175 cached" in sglang_deterministic_cache_hit_quality_failure_readme
-    assert "Triton Deterministic Cache Hit With Quality Failure" in (
-        sglang_triton_deterministic_cache_hit_quality_failure_readme
-    )
-    assert "PR #480" in sglang_triton_deterministic_cache_hit_quality_failure_readme
-    assert "`--attention-backend triton`" in (
-        sglang_triton_deterministic_cache_hit_quality_failure_readme
-    )
-    assert "`--sampling-backend pytorch`" in (
-        sglang_triton_deterministic_cache_hit_quality_failure_readme
-    )
-    assert "175 cached tokens out of 205 prompt tokens" in (
-        sglang_triton_deterministic_cache_hit_quality_failure_readme
-    )
-    assert "Minimal No-Thinking Cache Hit With Quality Failure" in (
-        sglang_minimal_no_thinking_cache_hit_quality_failure_readme
-    )
-    assert "PR #482" in sglang_minimal_no_thinking_cache_hit_quality_failure_readme
-    assert "minimal no-thinking request body" in (
-        sglang_minimal_no_thinking_cache_hit_quality_failure_readme
-    )
-    assert "`top_p`, `top_k`, `min_p`, and" in (
-        sglang_minimal_no_thinking_cache_hit_quality_failure_readme
-    )
-    assert "175 cached tokens out of 205 prompt tokens" in (
-        sglang_minimal_no_thinking_cache_hit_quality_failure_readme
-    )
-    assert "Canary After Cache Hit With Quality Failure" in (
-        sglang_canary_after_cache_hit_quality_failure_readme
-    )
-    assert "PR #486" in sglang_canary_after_cache_hit_quality_failure_readme
-    assert "The canary now runs" in (
-        sglang_canary_after_cache_hit_quality_failure_readme
-    )
-    assert "175 cached tokens out of 205 prompt tokens" in (
-        sglang_canary_after_cache_hit_quality_failure_readme
-    )
-    assert "post-live-check model-quality canary failed" in (
-        sglang_canary_after_cache_hit_quality_failure_readme
-    )
-    assert sglang_attach_hash_tracking_failed_run["failure_type"] == (
-        "sglang_attach_time_hash_tracking_gate"
-    )
-    assert sglang_attach_hash_tracking_failed_run["databricks_run"]["run_id"] == 672750124167579
-    assert sglang_attach_hash_tracking_failed_run["task"]["run_id"] == 178988370465155
-    assert sglang_attach_hash_tracking_failed_run["integration_checks"][
-        "document_kv_hicache_provider_ok"
-    ] is True
-    assert sglang_attach_hash_tracking_failed_run["integration_checks"][
-        "document_kv_request_metadata_bridge_ok"
-    ] is False
-    assert sglang_quality_failure_cache_hit_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_quality_failure_cache_hit_failed_run["benchmark_result"] == "not_published"
-    assert sglang_quality_failure_cache_hit_failed_run["failure_type"] == (
-        "sglang_live_quality_failure_with_partial_cache_hit"
-    )
-    assert sglang_quality_failure_cache_hit_failed_run["cachet_commit"] == "6a697b3"
-    assert sglang_quality_failure_cache_hit_failed_run["databricks_run"]["run_id"] == 348824841142825
-    assert sglang_quality_failure_cache_hit_failed_run["task"]["run_id"] == 401615265653490
-    assert sglang_quality_failure_cache_hit_failed_run["integration_checks"][
-        "document_kv_request_metadata_bridge_ok"
-    ] is True
-    assert sglang_quality_failure_cache_hit_failed_run["server_hicache_binding_events"][1] == {
-        "binding_key_count": 0,
-        "expected_page_keys": 150,
-        "full_page_count": None,
-        "hydrated_count": 0,
-        "key_count": 46,
-        "last_hash_present": True,
-        "prefix_keys": 0,
-        "reason": "binding_miss",
-        "runtime_key_count": 46,
+
+    public_result_folders = {
+        "vllm/qwen3-4b-g6-l4-vanilla-kv",
+        "vllm/qwen3-4b-g5-a10g-vanilla-kv",
+        "sglang/qwen3-4b-g6-l4-vanilla-kv-prepared",
+        "sglang/qwen3-4b-g6-l4-vanilla-kv-synthetic-niah",
+        "storage/g6-l4-reader-throughput",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv",
     }
-    assert sglang_quality_failure_cache_hit_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 128
-    assert sglang_quality_failure_cache_hit_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_cache_hit_but_smoke_failed_quality"
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["benchmark_result"] == "not_published"
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["failure_type"] == (
-        "sglang_live_quality_failure_with_token_stable_cache_hit"
-    )
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["cachet_commit"] == "d6c9660"
-    assert (
-        sglang_token_stable_cache_hit_quality_failure_failed_run["databricks_run"]["run_id"]
-        == 995284076545208
-    )
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["task"]["run_id"] == 815981906697847
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["live_handoff_generation"][
-        "cache_prefix_tokens"
-    ] == 149
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 149
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_minimum_cached_tokens"
-    ] == 149
-    assert sglang_token_stable_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["benchmark_result"] == "not_published"
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["failure_type"] == (
-        "sglang_live_quality_failure_with_qwen_chat_cache_hit"
-    )
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["cachet_commit"] == "3401acd"
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["databricks_run"]["run_id"] == 897276220223990
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["task"]["run_id"] == 287812438371284
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["integration_checks"][
-        "live_check_prompt_format"
-    ] == "qwen3_chat"
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["live_handoff_generation"][
-        "cache_prefix_tokens"
-    ] == 175
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 175
-    assert sglang_qwen_chat_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["benchmark_result"] == (
-        "not_published"
-    )
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["failure_type"] == (
-        "sglang_live_quality_failure_with_qwen_sampling_cache_hit"
-    )
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["cachet_commit"] == "8856139"
-    assert (
-        sglang_qwen_sampling_cache_hit_quality_failure_failed_run["databricks_run"]["run_id"]
-        == 585131634686228
-    )
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["task"]["run_id"] == (
-        772265220177306
-    )
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["integration_checks"][
-        "live_check_temperature"
-    ] == 0.7
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["integration_checks"][
-        "live_check_extra_body"
-    ] == {
-        "min_p": 0,
-        "presence_penalty": 1.0,
-        "top_k": 20,
-        "top_p": 0.8,
+    for folder in public_result_folders:
+        assert (benchmark_root / folder / "README.md").is_file()
+        assert not any(part.startswith("2026-") for part in Path(folder).parts)
+        assert folder in root_readme or folder in current_readme
+
+    assert not (benchmark_root / "sglang" / "archive").exists()
+    archived_sglang_folders = {
+        "invalid-served-model-name": "failed_run.json",
+        "runtime-suffix-missing-prefix-binding": "failed_run.json",
+        "zero-cache-hit": "failed_run.json",
+        "partial-page-binding": "failed_run.json",
+        "chained-hash-binding": "failed_run.json",
+        "batch-prior-metadata": "failed_run.json",
+        "attach-hash-tracking": "failed_run.json",
+        "quality-failure-cache-hit": "failed_run.json",
+        "token-stable-cache-hit-quality-failure": "failed_run.json",
+        "qwen-chat-cache-hit-quality-failure": "failed_run.json",
+        "qwen-sampling-cache-hit-quality-failure": "failed_run.json",
+        "chat-completions-cache-hit-quality-failure": "failed_run.json",
+        "no-thinking-cache-hit-quality-failure": "failed_run.json",
+        "deterministic-cache-hit-quality-failure": "failed_run.json",
+        "triton-deterministic-cache-hit-quality-failure": "failed_run.json",
+        "minimal-no-thinking-cache-hit-quality-failure": "failed_run.json",
+        "canary-after-cache-hit-quality-failure": "failed_run.json",
+        "canary-flush-cache-hit-quality-failure": "failed_run.json",
+        "prepared-v1-config-swap-failure": "failed_run.json",
+        "prepared-v1-padded-token-validation-failure": "failed_run.json",
+        "baseline-isolated-success": "success_run.json",
     }
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["live_handoff_generation"][
-        "cache_prefix_tokens"
-    ] == 175
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 175
-    assert sglang_qwen_sampling_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["benchmark_result"] == (
-        "not_published"
-    )
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["failure_type"] == (
-        "sglang_live_quality_failure_with_chat_completions_cache_hit"
-    )
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["cachet_commit"] == "ff868a4"
-    assert (
-        sglang_chat_completions_cache_hit_quality_failure_failed_run["databricks_run"][
-            "run_id"
-        ]
-        == 163920824964705
-    )
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["task"]["run_id"] == (
-        412030078319178
-    )
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["integration_checks"][
-        "live_check_request_mode"
-    ] == "chat"
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["integration_checks"][
-        "chat_template_rendered"
-    ] is True
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run[
-        "live_handoff_generation"
-    ]["cache_prefix_tokens"] == 175
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run[
-        "live_handoff_generation"
-    ]["runtime_prompt_tokens"] == 205
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 175
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_chat_completions_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_chat_completions_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][2] == {
-        "cached_tokens": 175,
-        "classification": "cache_arm_external_chat_completions_handoff",
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["benchmark_result"] == (
-        "not_published"
-    )
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["failure_type"] == (
-        "sglang_live_quality_failure_with_no_thinking_chat_completions_cache_hit"
-    )
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["cachet_commit"] == "7a5b4e8"
-    assert (
-        sglang_no_thinking_cache_hit_quality_failure_failed_run["databricks_run"][
-            "run_id"
-        ]
-        == 417035094778538
-    )
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["task"]["run_id"] == (
-        527510395448437
-    )
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["integration_checks"][
-        "live_check_request_mode"
-    ] == "chat"
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["integration_checks"][
-        "live_check_chat_template_kwargs"
-    ] == {
-        "enable_thinking": False,
-        "reasoning_effort": "none",
-        "thinking": False,
-    }
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run[
-        "live_handoff_generation"
-    ]["cache_prefix_tokens"] == 175
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 175
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_no_thinking_chat_completions_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_no_thinking_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][2] == {
-        "cached_tokens": 175,
-        "classification": "cache_arm_external_chat_completions_handoff",
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run[
-        "benchmark_result"
-    ] == "not_published"
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["failure_type"] == (
-        "sglang_live_quality_failure_with_deterministic_chat_completions_cache_hit"
-    )
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["cachet_commit"] == "b89cad5"
-    assert (
-        sglang_deterministic_cache_hit_quality_failure_failed_run["databricks_run"][
-            "run_id"
-        ]
-        == 647563677081667
-    )
-    assert (
-        sglang_deterministic_cache_hit_quality_failure_failed_run["databricks_run"][
-            "result_state"
-        ]
-        == "FAILED"
-    )
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["task"]["run_id"] == (
-        522972650970006
-    )
-    assert (
-        sglang_deterministic_cache_hit_quality_failure_failed_run["task"]["result_state"]
-        == "FAILED"
-    )
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["live_check_temperature"] == 0.0
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run[
-        "live_handoff_generation"
-    ]["cache_prefix_tokens"] == 175
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 175
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_deterministic_no_thinking_chat_completions_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["smoke"][
-        "baseline_ok"
-    ] is False
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_ok"
-    ] is False
-    assert sglang_deterministic_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][2] == {
-        "cached_tokens": 175,
-        "classification": "cache_arm_external_chat_completions_handoff",
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "record_type"
-    ] == "cachet.benchmark_failed_databricks_smoke.v1"
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "benchmark_result"
-    ] == "not_published"
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "failure_type"
-    ] == "sglang_live_quality_failure_with_triton_deterministic_cache_hit"
-    assert (
-        sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-            "cachet_commit"
-        ]
-        == "2923463"
-    )
-    assert (
-        sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-            "databricks_run"
-        ]["run_id"]
-        == 585529688094161
-    )
-    assert (
-        sglang_triton_deterministic_cache_hit_quality_failure_failed_run["task"][
-            "run_id"
-        ]
-        == 415140625002539
-    )
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "package_wheel"
-    ]["sha256"] == "c67fcef45b67f466a3abb6310d773532e6c6d86c02e7f1f6123b654a762195a4"
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["sglang_attention_backend"] == "triton"
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["sglang_sampling_backend"] == "pytorch"
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["sglang_enable_deterministic_inference"] is True
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "live_handoff_generation"
-    ]["cache_prefix_tokens"] == 175
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 175
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_triton_deterministic_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_triton_deterministic_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][2] == {
-        "cached_tokens": 175,
-        "classification": "cache_arm_external_triton_deterministic_handoff",
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "record_type"
-    ] == "cachet.benchmark_failed_databricks_smoke.v1"
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "benchmark_result"
-    ] == "not_published"
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "failure_type"
-    ] == "sglang_live_quality_failure_with_minimal_no_thinking_cache_hit"
-    assert (
-        sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-            "cachet_commit"
-        ]
-        == "046ab03"
-    )
-    assert (
-        sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-            "databricks_run"
-        ]["run_id"]
-        == 672927118707206
-    )
-    assert (
-        sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run["task"][
-            "run_id"
-        ]
-        == 540954902597909
-    )
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "package_wheel"
-    ]["sha256"] == "c355cb546b3818cfd31ae155479cc9412f6f06d81fbdb1d52e3d4c1deabd50a1"
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["live_check_extra_body"] == {
-        "chat_template_kwargs": {
-            "enable_thinking": False,
-            "thinking": False,
-        },
-        "reasoning_effort": "none",
-    }
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["sglang_attention_backend"] == "triton"
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["sglang_sampling_backend"] == "pytorch"
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["sglang_enable_deterministic_inference"] is True
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "live_handoff_generation"
-    ]["cache_prefix_tokens"] == 175
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run["smoke"][
-        "cache_request_cached_tokens_from_server_log"
-    ] == 175
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run["smoke"][
-        "server_cached_token_validation"
-    ] == "positive_minimal_no_thinking_generated_prefix_cache_hit_but_smoke_failed_quality"
-    assert sglang_minimal_no_thinking_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][2] == {
-        "cached_tokens": 175,
-        "classification": "cache_arm_external_minimal_no_thinking_handoff",
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "record_type"
-    ] == "cachet.benchmark_failed_databricks_smoke.v1"
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "benchmark_result"
-    ] == "not_published"
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "failure_type"
-    ] == "sglang_live_quality_failure_with_post_live_check_canary_after_full_cache_hit"
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "cachet_commit"
-    ] == "16a8085"
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "databricks_run"
-    ]["run_id"] == 419314952937106
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run["task"][
-        "run_id"
-    ] == 42608288205489
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "package_wheel"
-    ]["sha256"] == "de79f5c8b91b333c4279b47ee85676f42ead3f4db4a317820632216384a93d5c"
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["document_kv_hicache_provider_ok"] is True
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "integration_checks"
-    ]["live_check_extra_body"] == {
-        "chat_template_kwargs": {
-            "enable_thinking": False,
-            "thinking": False,
-        },
-        "reasoning_effort": "none",
-    }
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "live_handoff_generation"
-    ]["cache_prefix_tokens"] == 175
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "sglang_cache_hit_validation"
-    ] == {
-        "cache_request_cached_tokens": 175,
-        "cache_request_prefill_index": 2,
-        "cache_request_prompt_match_field": "total_prompt_tokens",
-        "cache_request_prompt_tokens": 205,
-        "issue": None,
-        "minimum_cached_tokens": 175,
-        "ok": True,
-    }
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][2] == {
-        "cached_tokens": 175,
-        "classification": "cache_arm_external_handoff",
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][4] == {
-        "cached_tokens": 6,
-        "classification": "model_quality_canary_after_live_checks",
-        "new_tokens": 30,
-        "total_prompt_tokens": 36,
-    }
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run["smoke"][
-        "model_quality_canary_ok"
-    ] is False
-    assert sglang_canary_after_cache_hit_quality_failure_failed_run["request_shape"][
-        "cache_kv_transfer_param_keys"
-    ] == [
-        "document_kv.handoff_json",
-        "document_kv.payload_uri",
-        "document_kv.prompt_text_mode",
-        "document_kv.request_id",
-        "document_kv.sglang_hicache_page_keys",
-    ]
-    assert "Canary Flush With Cache Hit And Quality Failure" in (
-        sglang_canary_flush_cache_hit_quality_failure_readme
-    )
-    compact_canary_flush_readme = " ".join(
-        sglang_canary_flush_cache_hit_quality_failure_readme.split()
-    )
-    assert "zero cached tokens" in compact_canary_flush_readme
-    assert "cachet-green" in compact_canary_flush_readme
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "record_type"
-    ] == "cachet.benchmark_failed_databricks_smoke.v1"
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "benchmark_result"
-    ] == "not_published"
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "failure_type"
-    ] == "sglang_live_quality_failure_with_canary_flush_after_full_cache_hit"
-    assert (
-        sglang_canary_flush_cache_hit_quality_failure_failed_run["cachet_commit"]
-        == "f95d4f0"
-    )
-    assert (
-        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
-            "run_id"
-        ]
-        == 655273897262076
-    )
-    assert (
-        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
-            "result_state"
-        ]
-        == "FAILED"
-    )
-    assert (
-        sglang_canary_flush_cache_hit_quality_failure_failed_run["databricks_run"][
-            "succeeded"
-        ]
-        is False
-    )
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["task"][
-        "run_id"
-    ] == 541340270733865
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["task"][
-        "result_state"
-    ] == "FAILED"
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["package_wheel"][
-        "sha256"
-    ] == "43185087ca4cd8148102bd7b813dded530ec9cd0e882b7496641ad9acc952c48"
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "sglang_cache_hit_validation"
-    ]["cache_request_cached_tokens"] == 175
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "canary_cache_flush"
-    ]["ok"] is True
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "canary_cache_flush"
-    ]["http_status"] == 200
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][2] == {
-        "cached_tokens": 175,
-        "classification": "cache_arm_external_handoff",
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run[
-        "server_prefill_token_counts"
-    ][4] == {
-        "cached_tokens": 0,
-        "classification": "model_quality_canary_after_flush",
-        "new_tokens": 36,
-        "total_prompt_tokens": 36,
-    }
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
-        "ok"
-    ] is False
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
-        "model_quality_canary_ok"
-    ] is True
-    assert sglang_canary_flush_cache_hit_quality_failure_failed_run["smoke"][
-        "model_quality_canary_output_text_prefix"
-    ] == "cachet-green"
-    assert "Baseline-Isolated Success" in sglang_baseline_isolated_success_readme
-    assert "175 cached tokens out of a 205-token prompt" in (
-        sglang_baseline_isolated_success_readme
-    )
-    assert "otkv7391" in sglang_baseline_isolated_success_readme
-    assert "cachet-green" in sglang_baseline_isolated_success_readme
-    assert "SGLang g6/L4 Live Synthetic NIAH Benchmark" in (
-        sglang_live_benchmark_success_readme
-    )
-    assert "standalone benchmark evidence, not `docs/release-ops/pr-evidence/`" in (
-        compact_sglang_live_benchmark_success_readme
-    )
-    assert "not the full SGLang release benchmark suite" in (
-        sglang_live_benchmark_success_readme
-    )
-    assert "TTFT speedup `0.875x`" in sglang_live_benchmark_success_readme
-    assert "time-to-completion speedup `0.926x`" in (
-        sglang_live_benchmark_success_readme
-    )
-    assert "175 cached tokens" in sglang_live_benchmark_success_readme
-    assert "baseline p50 TTFT was `0.3029023165s`" in (
-        sglang_live_benchmark_success_readme
-    )
-    assert "Raw Databricks API responses" in compact_sglang_live_benchmark_success_readme
-    assert "SGLang g6/L4 Prepared V1 Release Suite Benchmark" in (
-        sglang_prepared_v1_release_success_readme
-    )
-    assert "standalone benchmark evidence, not `docs/release-ops/pr-evidence/`" in (
-        compact_sglang_prepared_v1_release_success_readme
-    )
-    assert "Prepared live V1 release-suite benchmark passed quality" in (
-        compact_sglang_prepared_v1_release_success_readme
-    )
-    assert "16 request measurements" in (
-        compact_sglang_prepared_v1_release_success_readme
-    )
-    assert "All eight Cachet cache-arm validations passed" in (
-        compact_sglang_prepared_v1_release_success_readme
-    )
-    assert "TTFT speedup" in sglang_prepared_v1_release_success_readme
-    assert "0.313x" in sglang_prepared_v1_release_success_readme
-    assert "0.966x" in sglang_prepared_v1_release_success_readme
-    assert (
-        "2026-06-24-g6-l4-prepared-v1-release-suite-success"
-        in compact_sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-prepared-v1-release-suite-success"
-        in compact_snapshot
-    )
-    assert (
-        "sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/"
-        in root_readme
-    )
-    assert "Latest prepared V1 benchmark" in sglang_readme
-    assert "48413356233422" in sglang_readme
-    assert "48413356233422" in current_databricks_snapshot
-    assert sglang_prepared_v1_release_success_run["record_type"] == (
-        "cachet.benchmark_successful_sglang_live_v1_release.v1"
-    )
-    assert sglang_prepared_v1_release_success_run["benchmark_result"] == (
-        "prepared_live_v1_release_pass_no_speedup"
-    )
-    assert sglang_prepared_v1_release_success_run["cachet_commit"] == "5c66990"
-    assert sglang_prepared_v1_release_success_run["hardware_target"] == "aws-g6-l4"
-    assert sglang_prepared_v1_release_success_run["node_type"] == "g6.8xlarge"
-    assert sglang_prepared_v1_release_success_run["databricks_run"]["run_id"] == (
-        48413356233422
-    )
-    assert sglang_prepared_v1_release_success_run["databricks_run"][
-        "result_state"
-    ] == "SUCCESS"
-    assert sglang_prepared_v1_release_success_run["task"]["run_id"] == (
-        1003064866180856
-    )
-    assert sglang_prepared_v1_release_success_run["task"]["node_type_id"] == (
-        "g6.8xlarge"
-    )
-    assert sglang_prepared_v1_release_success_run["integration_checks"][
-        "cuda_device_name"
-    ] == "NVIDIA L4"
-    assert sglang_prepared_v1_release_success_run["integration_checks"][
-        "document_kv_hicache_provider_ok"
-    ] is True
-    assert sglang_prepared_v1_release_success_run["integration_checks"][
-        "document_kv_request_metadata_bridge_ok"
-    ] is True
-    assert sglang_prepared_v1_release_success_run["prepared_handoff_generation"][
-        "ok"
-    ] is True
-    assert sglang_prepared_v1_release_success_run["prepared_handoff_generation"][
-        "datasets"
-    ] == {
-        "biography": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-        "hotpotqa": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-        "musique": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-        "niah": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-    }
-    assert sglang_prepared_v1_release_success_run["prepared_handoff_coverage"][
-        "ok"
-    ] is True
-    assert sglang_prepared_v1_release_success_run["prepared_handoff_coverage"][
-        "release_v1_suite"
-    ] is True
-    assert sglang_prepared_v1_release_success_run["live_benchmark"]["ok"] is True
-    assert sglang_prepared_v1_release_success_run["live_benchmark"][
-        "record_type"
-    ] == "cachet.sglang_live_benchmark.v1"
-    assert sglang_prepared_v1_release_success_run["live_benchmark"][
-        "measurement_count"
-    ] == 16
-    assert sglang_prepared_v1_release_success_run["live_benchmark"]["suite"][
-        "scope"
-    ] == "live_v1_release"
-    assert sglang_prepared_v1_release_success_run["live_benchmark"]["suite"][
-        "release_v1_suite"
-    ] is True
-    sglang_prepared_v1_release_live_benchmark = (
-        sglang_prepared_v1_release_success_run["live_benchmark"]
-    )
-    sglang_prepared_v1_release_cache_validations = (
-        sglang_prepared_v1_release_live_benchmark["cache_hit_validations"]
-    )
-    assert len(sglang_prepared_v1_release_cache_validations) == 8
-    assert all(
-        validation["ok"] is True
-        for validation in sglang_prepared_v1_release_cache_validations
-    )
-    assert all(
-        validation["issue"] is None
-        for validation in sglang_prepared_v1_release_cache_validations
-    )
-    assert sglang_prepared_v1_release_success_run["live_benchmark"][
-        "cache_hit_validations"
-    ][0] == {
-        "cache_request_cached_tokens": 96,
-        "cache_request_match_reason": "minimum_cached_tokens",
-        "cache_request_prefill_index": 3,
-        "cache_request_prompt_tokens": 120,
-        "dataset": "biography",
-        "issue": None,
-        "minimum_cached_tokens": 96,
-        "ok": True,
-        "observed_prefill_row": {
-            "cached_tokens": 96,
-            "new_tokens": 32,
-            "total_prompt_tokens": 128,
-        },
-        "repeat_index": 1,
-    }
-    release_report_rows = {
-        (row["dataset"], row["arm_id"]): row
-        for row in sglang_prepared_v1_release_live_benchmark["report_rows"]
-    }
-    release_comparisons = {
-        comparison["dataset"]: comparison
-        for comparison in sglang_prepared_v1_release_live_benchmark["comparisons"]
-    }
-    release_cached_tokens = {
-        validation["dataset"]: validation["observed_prefill_row"]["cached_tokens"]
-        for validation in sglang_prepared_v1_release_cache_validations
-        if validation["repeat_index"] == 1
-    }
-    assert len(release_report_rows) == 8
-    assert set(release_comparisons) == {"biography", "hotpotqa", "musique", "niah"}
-    assert release_cached_tokens == {
-        "biography": 96,
-        "hotpotqa": 144,
-        "musique": 144,
-        "niah": 96,
-    }
-    for row in release_report_rows.values():
-        assert row["errors"] == 0
-        assert row["answer_found_rate"] == 1.0
-    for dataset, display_name in {
-        "biography": "Biography",
-        "hotpotqa": "HotpotQA",
-        "musique": "MusiQue",
-        "niah": "NIAH",
-    }.items():
-        baseline_row = release_report_rows[(dataset, "baseline_prefill")]
-        cache_row = release_report_rows[(dataset, "document_kv_cache")]
-        comparison = release_comparisons[dataset]
-        expected_result_row = (
-            f"| {display_name} | "
-            f"`{baseline_row['ttft_p50_seconds']:.3f}s` | "
-            f"`{cache_row['ttft_p50_seconds']:.3f}s` | "
-            f"`{comparison['ttft_speedup']:.3f}x` | "
-            f"`{baseline_row['time_to_completion_p50_seconds']:.3f}s` | "
-            f"`{cache_row['time_to_completion_p50_seconds']:.3f}s` | "
-            f"`{comparison['time_to_completion_speedup']:.3f}x` | "
-            f"`{release_cached_tokens[dataset]}` |"
-        )
-        assert expected_result_row in sglang_prepared_v1_release_success_readme
-    assert sglang_prepared_v1_release_success_run["interpretation"][
-        "quality_passed"
-    ] is True
-    assert sglang_prepared_v1_release_success_run["interpretation"][
-        "performance_result"
-    ] == "cache_arm_slower_on_short_prepared_prompts"
-    assert sglang_prepared_v1_release_success_run["interpretation"][
-        "ttft_speedup_range"
-    ] == [0.31313082993542257, 0.9658703381706629]
-    assert sglang_prepared_v1_release_success_run["interpretation"][
-        "time_to_completion_speedup_range"
-    ] == [0.8911264493293519, 0.9663701910389325]
-    assert "Prepared V1 Attempt: Padded Token Validation Failure" in (
-        sglang_prepared_v1_padded_token_failure_readme
-    )
-    assert "standalone benchmark-readiness evidence, not `pr-evidence/`" in (
-        compact_sglang_prepared_v1_padded_token_failure_readme
-    )
-    assert "16 live measurement rows" in compact_sglang_prepared_v1_padded_token_failure_readme
-    assert "padded SGLang prompt-token totals" in (
-        compact_sglang_prepared_v1_padded_token_failure_readme
-    )
-    assert "not publication numbers" in (
-        compact_sglang_prepared_v1_padded_token_failure_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
-        in compact_sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure"
-        in compact_snapshot
-    )
-    assert "918882025776007" in sglang_readme
-    assert "918882025776007" in current_databricks_snapshot
-    assert sglang_prepared_v1_padded_token_failure_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_prepared_v1_padded_token_failure_run["benchmark_result"] == (
-        "not_published"
-    )
-    assert sglang_prepared_v1_padded_token_failure_run["failure_type"] == (
-        "sglang_prepared_v1_padded_prompt_token_validation"
-    )
-    assert sglang_prepared_v1_padded_token_failure_run["cachet_commit"] == "06a9c76"
-    assert (
-        sglang_prepared_v1_padded_token_failure_run["databricks_run"]["run_id"]
-        == 918882025776007
-    )
-    assert (
-        sglang_prepared_v1_padded_token_failure_run["task"]["run_id"]
-        == 131444738323102
-    )
-    assert sglang_prepared_v1_padded_token_failure_run["integration_checks"][
-        "document_kv_request_metadata_bridge_ok"
-    ] is True
-    assert sglang_prepared_v1_padded_token_failure_run["integration_checks"][
-        "cuda_device_name"
-    ] == "NVIDIA L4"
-    assert sglang_prepared_v1_padded_token_failure_run[
-        "prepared_handoff_generation"
-    ]["ok"] is True
-    assert sglang_prepared_v1_padded_token_failure_run[
-        "prepared_handoff_coverage"
-    ]["release_v1_suite"] is True
-    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"][
-        "measurement_count"
-    ] == 16
-    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"]["suite"][
-        "scope"
-    ] == "live_v1_release"
-    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"][
-        "cache_hit_validation"
-    ]["failed_validations"] == 8
-    assert sglang_prepared_v1_padded_token_failure_run["live_benchmark"][
-        "cache_hit_validation"
-    ]["candidate_rows"][0] == {
-        "cache_request_prompt_tokens": 120,
-        "dataset": "biography",
-        "minimum_cached_tokens": 96,
-        "observed_cached_tokens": 96,
-        "observed_new_tokens": 32,
-        "observed_total_prompt_tokens": 128,
-        "repeat_index": 1,
-    }
-    assert "Prepared V1 Attempt: Config Swap Failure" in (
-        sglang_prepared_v1_config_swap_failure_readme
-    )
-    assert "standalone benchmark-readiness evidence, not `pr-evidence/`" in (
-        compact_sglang_prepared_v1_config_swap_failure_readme
-    )
-    assert "generate SGLang prepared handoff JSONLs for Biography, HotpotQA" in (
-        compact_sglang_prepared_v1_config_swap_failure_readme
-    )
-    assert "before server launch" in sglang_prepared_v1_config_swap_failure_readme
-    assert "generated prepared-dataset config swap" in (
-        sglang_prepared_v1_config_swap_failure_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
-        in compact_sglang_readme
-    )
-    assert (
-        "2026-06-24-g6-l4-prepared-v1-config-swap-failure"
-        in compact_snapshot
-    )
-    assert sglang_prepared_v1_config_swap_failure_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_prepared_v1_config_swap_failure_run["benchmark_result"] == (
-        "not_published"
-    )
-    assert sglang_prepared_v1_config_swap_failure_run["failure_type"] == (
-        "sglang_prepared_v1_generated_dataset_config_swap"
-    )
-    assert sglang_prepared_v1_config_swap_failure_run["cachet_commit"] == "054b721"
-    assert (
-        sglang_prepared_v1_config_swap_failure_run["databricks_run"]["run_id"]
-        == 514040136831626
-    )
-    assert (
-        sglang_prepared_v1_config_swap_failure_run["task"]["run_id"]
-        == 799338455029344
-    )
-    assert sglang_prepared_v1_config_swap_failure_run["integration_checks"][
-        "document_kv_request_metadata_bridge_ok"
-    ] is True
-    assert sglang_prepared_v1_config_swap_failure_run["integration_checks"][
-        "cuda_device_name"
-    ] == "NVIDIA L4"
-    assert sglang_prepared_v1_config_swap_failure_run[
-        "prepared_handoff_generation"
-    ]["ok"] is True
-    assert sglang_prepared_v1_config_swap_failure_run[
-        "prepared_handoff_generation"
-    ]["datasets"] == {
-        "biography": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-        "hotpotqa": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-        "musique": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-        "niah": {"cache_refs": 1, "enriched_rows": 1, "entries": 1},
-    }
-    assert sglang_prepared_v1_config_swap_failure_run["server_launch"][
-        "attempted"
-    ] is False
-    assert sglang_live_benchmark_success_run["record_type"] == (
-        "cachet.benchmark_successful_sglang_live_benchmark.v1"
-    )
-    assert sglang_live_benchmark_success_run["benchmark_result"] == (
-        "synthetic_live_benchmark_pass_no_speedup"
-    )
-    assert sglang_live_benchmark_success_run["cachet_commit"] == "eff801d"
-    assert sglang_live_benchmark_success_run["hardware_target"] == "aws-g6-l4"
-    assert sglang_live_benchmark_success_run["node_type"] == "g6.8xlarge"
-    assert sglang_live_benchmark_success_run["databricks_run"]["run_id"] == (
-        238535418152934
-    )
-    assert sglang_live_benchmark_success_run["databricks_run"]["result_state"] == (
-        "SUCCESS"
-    )
-    assert sglang_live_benchmark_success_run["databricks_run"]["succeeded"] is True
-    assert sglang_live_benchmark_success_run["task"]["run_id"] == 760304813051328
-    assert sglang_live_benchmark_success_run["package_wheel"]["sha256"] == (
-        "c30e1cc64ae58796df4b2973dbef78d6ad708e8168133fa28d4acb0ea4e2fa4e"
-    )
-    assert sglang_live_benchmark_success_run["integration_checks"][
-        "document_kv_request_metadata_bridge_ok"
-    ] is True
-    assert sglang_live_benchmark_success_run["integration_checks"][
-        "live_benchmark_repeats"
-    ] == 2
-    assert sglang_live_benchmark_success_run["live_handoff_generation"][
-        "cache_prefix_tokens"
-    ] == 175
-    assert sglang_live_benchmark_success_run["smoke"]["ok"] is True
-    assert sglang_live_benchmark_success_run["smoke"]["cache_hit_validation_ok"] is True
-    assert sglang_live_benchmark_success_run["smoke"]["cache_request_cached_tokens"] == 175
-    assert sglang_live_benchmark_success_run["live_benchmark"]["record_type"] == (
-        "cachet.sglang_live_benchmark.v1"
-    )
-    assert sglang_live_benchmark_success_run["live_benchmark"]["ok"] is True
-    assert sglang_live_benchmark_success_run["live_benchmark"]["issues"] == []
-    assert sglang_live_benchmark_success_run["live_benchmark"]["measurement_count"] == 4
-    assert sglang_live_benchmark_success_run["live_benchmark"]["suite"] == {
-        "datasets": ["niah"],
-        "examples": 1,
-        "release_v1_suite": False,
-        "repeats": 2,
-        "scope": "live_synthetic_niah",
-        "suite_id": "sglang-live-synthetic-niah",
-    }
-    assert sglang_live_benchmark_success_run["live_benchmark"]["comparisons"][0] == {
-        "answer_found_delta": 0.0,
-        "baseline_arm_id": "baseline_prefill",
-        "cache_arm_id": "document_kv_cache",
-        "dataset": "niah",
-        "exact_match_delta": 0.0,
-        "time_to_completion_speedup": 0.9257808239257902,
-        "ttft_speedup": 0.8745573213595708,
-    }
-    assert [
-        validation["cache_request_cached_tokens"]
-        for validation in sglang_live_benchmark_success_run["live_benchmark"][
-            "cache_hit_validations"
-        ]
-    ] == [175, 175]
-    assert all(
-        validation["ok"]
-        for validation in sglang_live_benchmark_success_run["live_benchmark"][
-            "cache_hit_validations"
-        ]
-    )
-    assert sglang_live_benchmark_success_run["interpretation"] == {
-        "answer_found_delta": 0.0,
-        "cache_hits_validated": True,
-        "exact_match_delta": 0.0,
-        "performance_result": "cache_arm_slower_on_tiny_synthetic_prompt",
-        "quality_passed": True,
-        "time_to_completion_speedup": 0.9257808239257902,
-        "ttft_speedup": 0.8745573213595708,
-    }
-    assert (
-        sglang_baseline_isolated_success_run["record_type"]
-        == "cachet.benchmark_successful_databricks_smoke.v1"
-    )
-    assert sglang_baseline_isolated_success_run["benchmark_result"] == "readiness_pass"
-    assert sglang_baseline_isolated_success_run["cachet_commit"] == "b33b3f4"
-    assert sglang_baseline_isolated_success_run["hardware_target"] == "aws-g6-l4"
-    assert sglang_baseline_isolated_success_run["node_type"] == "g6.8xlarge"
-    assert sglang_baseline_isolated_success_run["databricks_run"][
-        "run_id"
-    ] == 134006212072875
-    assert sglang_baseline_isolated_success_run["databricks_run"][
-        "result_state"
-    ] == "SUCCESS"
-    assert sglang_baseline_isolated_success_run["databricks_run"][
-        "succeeded"
-    ] is True
-    assert sglang_baseline_isolated_success_run["task"]["run_id"] == 342507441509485
-    assert sglang_baseline_isolated_success_run["task"]["result_state"] == "SUCCESS"
-    assert sglang_baseline_isolated_success_run["package_wheel"][
-        "sha256"
-    ] == "10ca1684238f40e437a0a1b565cdfa5e0ecdb105169ad3d704c98a56f9cb9053"
-    assert sglang_baseline_isolated_success_run["integration_checks"][
-        "flush_cache_before_cache_arm"
-    ] is True
-    assert sglang_baseline_isolated_success_run["integration_checks"][
-        "document_kv_request_metadata_bridge_ok"
-    ] is True
-    assert sglang_baseline_isolated_success_run["live_handoff_generation"][
-        "cache_prefix_tokens"
-    ] == 175
-    assert sglang_baseline_isolated_success_run["sglang_cache_hit_validation"][
-        "cache_request_cached_tokens"
-    ] == 175
-    assert sglang_baseline_isolated_success_run["sglang_cache_hit_validation"][
-        "cache_request_prompt_tokens"
-    ] == 205
-    assert sglang_baseline_isolated_success_run["cache_arm_cache_flush"]["ok"] is True
-    assert sglang_baseline_isolated_success_run["canary_cache_flush"]["ok"] is True
-    assert sglang_baseline_isolated_success_run["server_prefill_token_counts"][3] == {
-        "cached_tokens": 175,
-        "new_tokens": 30,
-        "total_prompt_tokens": 205,
-    }
-    assert sglang_baseline_isolated_success_run["server_prefill_token_counts"][4] == {
-        "cached_tokens": 0,
-        "new_tokens": 36,
-        "total_prompt_tokens": 36,
-    }
-    assert sglang_baseline_isolated_success_run["smoke"]["ok"] is True
-    assert sglang_baseline_isolated_success_run["smoke"]["issues"] == []
-    assert sglang_baseline_isolated_success_run["smoke"]["baseline_output_text"] == (
-        sglang_baseline_isolated_success_run["smoke"]["cache_output_text"]
-    )
-    assert (
-        sglang_baseline_isolated_success_run["smoke"]["baseline_output_text"]
-        == "otkv7391"
-    )
-    assert sglang_baseline_isolated_success_run["smoke"][
-        "model_quality_canary_output_text"
-    ] == "cachet-green"
-    assert sglang_failed_run == {
-        "benchmark_result": "not_published",
-        "blocker": (
-            "SGLang 0.5.10 rejected the Cachet logical model id as --served-model-name "
-            "because it contains a colon reserved for model:adapter syntax."
-        ),
-        "cachet_commit": "86a8085",
-        "databricks_run": {
-            "active_task_key": None,
-            "life_cycle_state": "INTERNAL_ERROR",
-            "result_state": "FAILED",
-            "run_id": 201402713679607,
-            "run_name": "document-kv-sglang-smoke",
-            "run_page_url": (
-                "https://dbc-21120bc8-ecb0.cloud.databricks.com/"
-                "?o=413991477208516#job/1007379972621829/run/201402713679607"
-            ),
-            "state_message": (
-                "Task document_kv_sglang_smoke failed with message: "
-                "Workload failed, see run output for details."
-            ),
-            "succeeded": False,
-            "terminal": True,
-        },
-        "failure_type": "sglang_invalid_served_model_name",
-        "hardware_target": "aws-g6-l4",
-        "live_handoff_generation_completed": True,
-        "mode": "generated-live-handoff",
-        "node_type": "g6.8xlarge",
-        "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
-        "snapshot_date": "2026-06-23",
-        "spark_version": "15.4.x-gpu-ml-scala2.12",
-        "task": {
-            "life_cycle_state": "TERMINATED",
-            "result_state": "FAILED",
-            "state_message": "Workload failed, see run output for details",
-            "task_key": "document_kv_sglang_smoke",
-        },
-    }
-    assert sglang_runtime_suffix_failed_run == {
-        "benchmark_result": "not_published",
-        "blocker": (
-            "The generated-handoff smoke cleared SGLang server launch and request-metadata bridge "
-            "validation, but the cache arm used prompt_text_mode=runtime. Stock SGLang HiCache "
-            "needs the logical prefix tokens present to compute prefix page keys, so the suffix-only "
-            "cache request did not answer from the generated handoff prefix."
-        ),
-        "cachet_commit": "425ee36",
-        "databricks_run": {
-            "active_task_key": None,
-            "life_cycle_state": "INTERNAL_ERROR",
-            "result_state": "FAILED",
-            "run_id": 13763847664432,
-            "run_name": "document-kv-sglang-smoke",
-            "run_page_url": (
-                "https://dbc-21120bc8-ecb0.cloud.databricks.com/"
-                "?o=413991477208516#job/296959417583262/run/13763847664432"
-            ),
-            "state_message": (
-                "Task document_kv_sglang_smoke failed with message: "
-                "Workload failed, see run output for details."
-            ),
-            "succeeded": False,
-            "terminal": True,
-        },
-        "failure_type": "sglang_runtime_suffix_missing_prefix_binding",
-        "hardware_target": "aws-g6-l4",
-        "integration_checks": {
-            "generated_live_handoff": True,
-            "generated_live_handoff_page_keys": 150,
-            "live_request_metadata_bridge_ok": True,
-            "sglang_import_probe_ok": True,
-        },
-        "live_handoff_generation": {
-            "backend": "sglang",
-            "cache_prefix_tokens": 150,
-            "ok": True,
-            "sglang_hicache_page_size": 1,
-        },
-        "mode": "generated-live-handoff",
-        "node_type": "g6.8xlarge",
-        "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
-        "snapshot_date": "2026-06-23",
-        "spark_version": "15.4.x-gpu-ml-scala2.12",
-        "smoke": {
-            "baseline_answer_found": True,
-            "baseline_ok": True,
-            "baseline_prompt_tokens": 92,
-            "baseline_server_usage_prompt_tokens": 174,
-            "cache_answer_found": False,
-            "cache_ok": False,
-            "cache_prompt_text_mode": "runtime",
-            "cache_prompt_tokens": 19,
-            "cache_runtime_prompt_chars": 131,
-            "cache_server_usage_prompt_tokens": 25,
-            "issues": ["cache-arm live check failed"],
-            "model_id": "qwen3:4b-instruct",
-            "served_model_name": "qwen3-4b-instruct",
-            "server_cached_token_validation": "not_recorded_by_this_run",
-        },
-        "task": {
-            "life_cycle_state": "TERMINATED",
-            "result_state": "FAILED",
-            "run_id": 79214966879931,
-            "state_message": "Workload failed, see run output for details",
-            "task_key": "document_kv_sglang_smoke",
-        },
-    }
-    assert sglang_zero_cache_hit_failed_run == {
-        "benchmark_result": "not_published",
-        "blocker": (
-            "The generated-handoff smoke cleared SGLang server launch, request-metadata bridge "
-            "validation, and logical prompt submission. The cache arm received Cachet "
-            "kv_transfer_params and answered, but SGLang reported 174 new tokens and 0 cached "
-            "tokens for the cache-arm prefill. The later 173 cached tokens came from ordinary "
-            "SGLang prefix-cache reuse after the cache arm, not from the external Cachet handoff."
-        ),
-        "cachet_commit": "c774e0c",
-        "databricks_run": {
-            "active_task_key": None,
-            "life_cycle_state": "INTERNAL_ERROR",
-            "result_state": "FAILED",
-            "run_id": 476596508869043,
-            "run_name": "document-kv-sglang-smoke",
-            "run_page_url": (
-                "https://dbc-21120bc8-ecb0.cloud.databricks.com/"
-                "?o=413991477208516#job/673957935805692/run/476596508869043"
-            ),
-            "state_message": (
-                "Task document_kv_sglang_smoke failed with message: "
-                "Workload failed, see run output for details."
-            ),
-            "succeeded": False,
-            "terminal": True,
-        },
-        "failure_type": "sglang_zero_cache_hit_validation",
-        "hardware_target": "aws-g6-l4",
-        "integration_checks": {
-            "cache_prompt_text_mode": "logical",
-            "generated_live_handoff": True,
-            "generated_live_handoff_page_keys": 150,
-            "live_request_metadata_bridge_ok": True,
-            "sglang_import_probe_ok": True,
-        },
-        "live_handoff_generation": {
-            "backend": "sglang",
-            "cache_prefix_tokens": 150,
-            "ok": True,
-            "sglang_hicache_page_size": 1,
-        },
-        "mode": "generated-live-handoff-logical-prompt",
-        "node_type": "g6.8xlarge",
-        "record_type": "cachet.benchmark_failed_databricks_smoke.v1",
-        "server_prefill_token_counts": [
-            {
-                "cached_tokens": 0,
-                "classification": "server_warmup",
-                "new_tokens": 6,
-                "total_prompt_tokens": 6,
-            },
-            {
-                "cached_tokens": 0,
-                "classification": "server_warmup",
-                "new_tokens": 1,
-                "total_prompt_tokens": 1,
-            },
-            {
-                "cached_tokens": 0,
-                "classification": "cache_arm",
-                "new_tokens": 174,
-                "total_prompt_tokens": 174,
-            },
-            {
-                "cached_tokens": 173,
-                "classification": "baseline_after_cache_arm",
-                "new_tokens": 1,
-                "total_prompt_tokens": 174,
-            },
-        ],
-        "snapshot_date": "2026-06-24",
-        "spark_version": "15.4.x-gpu-ml-scala2.12",
-        "smoke": {
-            "baseline_answer_found": True,
-            "baseline_ok": True,
-            "baseline_prompt_tokens": 92,
-            "baseline_server_usage_prompt_tokens": 174,
-            "baseline_time_to_completion_seconds": 7.865617623,
-            "baseline_ttft_seconds": 6.851119656,
-            "cache_answer_found": True,
-            "cache_ok": True,
-            "cache_prompt_text_mode": "logical",
-            "cache_prompt_tokens": 92,
-            "cache_request_cached_tokens": 0,
-            "cache_runtime_prompt_chars": 131,
-            "cache_server_usage_prompt_tokens": 174,
-            "cache_time_to_completion_seconds": 1.079948088,
-            "cache_ttft_seconds": 0.054490063,
-            "cached_token_counts": [
-                0,
-                0,
-                0,
-                173,
-            ],
-            "issues": [
-                "SGLang cache arm reported zero cached tokens",
-            ],
-            "model_id": "qwen3:4b-instruct",
-            "served_model_name": "qwen3-4b-instruct",
-            "server_cached_token_validation": "failed_zero_cache_arm_cached_tokens",
-        },
-        "task": {
-            "life_cycle_state": "TERMINATED",
-            "result_state": "FAILED",
-            "run_id": 232728503370432,
-            "state_message": "Workload failed, see run output for details",
-            "task_key": "document_kv_sglang_smoke",
-        },
-    }
-    assert sglang_partial_page_binding_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_partial_page_binding_failed_run["benchmark_result"] == "not_published"
-    assert sglang_partial_page_binding_failed_run["failure_type"] == (
-        "sglang_partial_hicache_page_binding"
-    )
-    assert sglang_partial_page_binding_failed_run["cachet_commit"] == "a0249d0"
-    assert sglang_partial_page_binding_failed_run["hardware_target"] == "aws-g6-l4"
-    assert sglang_partial_page_binding_failed_run["node_type"] == "g6.8xlarge"
-    assert sglang_partial_page_binding_failed_run["snapshot_date"] == "2026-06-24"
-    assert sglang_partial_page_binding_failed_run["databricks_run"]["run_id"] == 521023980659718
-    assert sglang_partial_page_binding_failed_run["databricks_run"]["result_state"] == "FAILED"
-    assert sglang_partial_page_binding_failed_run["task"]["run_id"] == 893706825011644
-    assert sglang_partial_page_binding_failed_run["integration_checks"] == {
-        "cache_prompt_text_mode": "logical",
-        "generated_live_handoff": True,
-        "generated_live_handoff_page_keys": 150,
-        "hicache_storage_prefetch_policy": "wait_complete",
-        "live_request_metadata_bridge_ok": True,
-        "prefetch_threshold": 1,
-        "sglang_import_probe_ok": True,
-    }
-    assert sglang_partial_page_binding_failed_run["live_handoff_generation"] == {
-        "backend": "sglang",
-        "cache_prefix_tokens": 150,
-        "ok": True,
-        "sglang_hicache_page_size": 1,
-    }
-    assert sglang_partial_page_binding_failed_run["server_hicache_binding_events"] == [
-        {
-            "binding_key_count": 128,
-            "expected_page_keys": 150,
-            "full_page_count": 150,
-            "hydrated_count": 128,
-            "key_count": 128,
-            "prefix_keys": 0,
-            "reason": "pages_hydrated",
-            "runtime_key_count": 128,
-        },
-        {
-            "binding_key_count": 0,
-            "expected_page_keys": 150,
-            "full_page_count": None,
-            "hydrated_count": 0,
-            "key_count": 46,
-            "prefix_keys": 0,
-            "reason": "binding_miss",
-            "runtime_key_count": 46,
-        },
-        {
-            "binding_key_count": 128,
-            "expected_page_keys": 150,
-            "full_page_count": 150,
-            "hydrated_count": 128,
-            "key_count": 128,
-            "operation": "batch_get_v1",
-            "prefix_keys": 0,
-            "reason": "pages_already_hydrated",
-            "runtime_key_count": 128,
-        },
-    ]
-    assert sglang_partial_page_binding_failed_run["server_prefill_token_counts"] == [
-        {
-            "cached_tokens": 0,
-            "classification": "server_warmup",
-            "new_tokens": 6,
-            "total_prompt_tokens": 6,
-        },
-        {
-            "cached_tokens": 0,
-            "classification": "server_warmup",
-            "new_tokens": 1,
-            "total_prompt_tokens": 1,
-        },
-        {
-            "cached_tokens": 128,
-            "classification": "cache_arm_external_partial_handoff",
-            "new_tokens": 46,
-            "total_prompt_tokens": 174,
-        },
-        {
-            "cached_tokens": 173,
-            "classification": "baseline_after_cache_arm_prefix_cache",
-            "new_tokens": 1,
-            "total_prompt_tokens": 174,
-        },
-    ]
-    assert sglang_partial_page_binding_failed_run["smoke"]["issues"] == [
-        "baseline live check failed",
-        "cache-arm live check failed",
-    ]
-    assert sglang_partial_page_binding_failed_run["smoke"]["cache_request_cached_tokens_from_server_log"] == 128
-    assert sglang_chained_hash_binding_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_chained_hash_binding_failed_run["benchmark_result"] == "not_published"
-    assert sglang_chained_hash_binding_failed_run["failure_type"] == (
-        "sglang_chained_hicache_page_binding"
-    )
-    assert sglang_chained_hash_binding_failed_run["cachet_commit"] == "73f051b"
-    assert sglang_chained_hash_binding_failed_run["benchmark_id"] == (
-        "v1_sglang_live_split_binding_20260624_030020"
-    )
-    assert sglang_chained_hash_binding_failed_run["databricks_run"]["run_id"] == 476430354490832
-    assert sglang_chained_hash_binding_failed_run["task"]["run_id"] == 331512280797427
-    assert sglang_chained_hash_binding_failed_run["integration_checks"] == {
-        "cache_prompt_text_mode": "logical",
-        "document_kv_hicache_provider_ok": True,
-        "document_kv_request_metadata_bridge_ok": True,
-        "generated_live_handoff": True,
-        "generated_live_handoff_page_keys": 150,
-        "hicache_storage_prefetch_policy": "wait_complete",
-        "prefetch_threshold": 1,
-        "sglang_import_probe_ok": True,
-        "split_runtime_key_binding_code_present": True,
-    }
-    assert sglang_chained_hash_binding_failed_run["package_wheel"]["sha256"] == (
-        "48de72c7cc3c9fa6be22606eb1d05619c2627524bf63bc0b4f4e68fdadd36c52"
-    )
-    assert sglang_chained_hash_binding_failed_run["server_hicache_binding_events"][1] == {
-        "binding_key_count": 0,
-        "expected_page_keys": 150,
-        "full_page_count": None,
-        "hydrated_count": 0,
-        "key_count": 46,
-        "prefix_keys": 0,
-        "reason": "binding_miss",
-        "runtime_key_count": 46,
-    }
-    assert sglang_chained_hash_binding_failed_run["server_prefill_token_counts"][2] == {
-        "cached_tokens": 128,
-        "classification": "cache_arm_external_partial_handoff",
-        "new_tokens": 46,
-        "total_prompt_tokens": 174,
-    }
-    assert sglang_chained_hash_binding_failed_run["smoke"]["issues"] == [
-        "baseline live check failed",
-        "cache-arm live check failed",
-    ]
-    assert sglang_chained_hash_binding_failed_run["smoke"]["cache_request_cached_tokens_from_server_log"] == 128
-    assert sglang_batch_prior_metadata_failed_run["record_type"] == (
-        "cachet.benchmark_failed_databricks_smoke.v1"
-    )
-    assert sglang_batch_prior_metadata_failed_run["benchmark_result"] == "not_published"
-    assert sglang_batch_prior_metadata_failed_run["failure_type"] == (
-        "sglang_batch_prior_hash_metadata_missing"
-    )
-    assert sglang_batch_prior_metadata_failed_run["cachet_commit"] == "90de5c5"
-    assert sglang_batch_prior_metadata_failed_run["benchmark_id"] == (
-        "v1_sglang_live_last_hash_20260624_032415"
-    )
-    assert sglang_batch_prior_metadata_failed_run["databricks_run"]["run_id"] == 73938470896039
-    assert sglang_batch_prior_metadata_failed_run["task"]["run_id"] == 298112994701441
-    assert sglang_batch_prior_metadata_failed_run["integration_checks"] == {
-        "cache_prompt_text_mode": "logical",
-        "document_kv_hicache_provider_ok": True,
-        "document_kv_request_metadata_bridge_ok": True,
-        "generated_live_handoff": True,
-        "generated_live_handoff_page_keys": 150,
-        "hicache_storage_prefetch_policy": "wait_complete",
-        "operation_last_hash_metadata_code_present": True,
-        "prefetch_threshold": 1,
-        "sglang_import_probe_ok": True,
-    }
-    assert sglang_batch_prior_metadata_failed_run["package_wheel"]["sha256"] == (
-        "e544b439644b8fc9cb19d5d162ad6088ec9862faa0082d40e5a8079167bde94e"
-    )
-    assert sglang_batch_prior_metadata_failed_run["server_hicache_binding_events"][1] == {
-        "binding_key_count": 0,
-        "expected_page_keys": 150,
-        "full_page_count": None,
-        "hydrated_count": 0,
-        "key_count": 46,
-        "last_hash_present": False,
-        "prefix_keys": 0,
-        "reason": "binding_miss",
-        "runtime_key_count": 46,
-    }
-    assert sglang_batch_prior_metadata_failed_run["server_prefill_token_counts"][2] == {
-        "cached_tokens": 128,
-        "classification": "cache_arm_external_partial_handoff",
-        "new_tokens": 46,
-        "total_prompt_tokens": 174,
-    }
-    assert sglang_batch_prior_metadata_failed_run["smoke"]["cache_request_cached_tokens_from_server_log"] == 128
-    assert "must not be cited as SGLang latency, throughput, or quality benchmark results" in compact_sglang_readme
-    assert "948365719597221" in storage_readme
-    assert "unity_catalog" in storage_readme
-    assert "not model-serving latency or quality measurements" in compact_storage_readme
-    assert "compact sanitized JSON records behind the report" in compact_storage_readme
-    assert "storage-reader benchmark that pairs with the strict Cachet V1" in compact_storage_report_readme
-    assert "Unity Catalog reader reached 1148.0 MiB/s" in compact_storage_report_readme
-    assert "Native Engine Integration Evidence" in native_engine_readme
-    assert "Provider-backed dynamic HiCache probe succeeded" in native_engine_readme
-    assert "not latency, throughput, or quality benchmark measurements" in compact_native_engine_readme
-    assert "provider-backed native connector evidence" in compact_native_engine_report_readme
-    assert "Each probe copied 48 tokens" in compact_native_engine_report_readme
-    assert "sanitized source records are committed beside this README" in (
-        compact_native_engine_report_readme
-    )
-    assert "Benchmark Report Template" in benchmark_template_readme
-    assert "Do not include Databricks tokens" in compact_benchmark_template_readme
-    assert "`docs/release-ops/pr-evidence/` only for PR validation" in compact_benchmark_template_readme
+    for folder, record_name in archived_sglang_folders.items():
+        assert (sglang_archive_root / folder / "README.md").is_file()
+        assert (sglang_archive_root / folder / record_name).is_file()
 
     expected_files = {
         "_template/README.md",
         "current/README.md",
         "databricks/CURRENT.md",
-        "README.md",
-        "native-engine/README.md",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/README.md",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
-        "sglang/archive/README.md",
-        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke/failed_run.json",
-        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke/README.md",
-        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/failed_run.json",
-        "sglang/archive/2026-06-23-g6-l4-live-handoff-smoke-runtime-suffix/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-zero-cache-hit/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-partial-page-binding/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chained-hash-binding/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-batch-prior-metadata/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-attach-hash-tracking/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-quality-failure-cache-hit/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-token-stable-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-chat-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-qwen-sampling-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-chat-completions-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-no-thinking-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-deterministic-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-triton-deterministic-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-minimal-no-thinking-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-after-cache-hit-quality-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-live-handoff-smoke-canary-flush-cache-hit-quality-failure/README.md",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/success_run.json",
-        "sglang/2026-06-24-g6-l4-live-handoff-smoke-baseline-isolated-success/README.md",
-        "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/success_run.json",
-        "sglang/2026-06-24-g6-l4-live-benchmark-synthetic-niah-success/README.md",
-        "sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/success_run.json",
-        "sglang/2026-06-24-g6-l4-prepared-v1-release-suite-success/README.md",
-        "sglang/archive/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-prepared-v1-padded-token-validation-failure/README.md",
-        "sglang/archive/2026-06-24-g6-l4-prepared-v1-config-swap-failure/failed_run.json",
-        "sglang/archive/2026-06-24-g6-l4-prepared-v1-config-swap-failure/README.md",
-        "sglang/README.md",
-        "storage/README.md",
-        "storage/2026-06-21-g6-l4-storage-readers/README.md",
-        "storage/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
-        "storage/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
-        "vllm/README.md",
-        "vllm/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json",
-        "vllm/2026-06-23-g5-a10g-v1-compatibility/README.md",
-        "vllm/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
-        "vllm/2026-06-23-g6-l4-v1/databricks_run_status.json",
-        "vllm/2026-06-23-g6-l4-v1/README.md",
-        "vllm/2026-06-23-g6-l4-v1/release_evidence.json",
-        "vllm/2026-06-23-g6-l4-v1/v1_benchmark.json",
         "databricks/README.md",
-        "databricks/2026-06-21-g6-l4-storage-readers/README.md",
-        "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
-        "databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
-        "databricks/2026-06-23-g5-a10g-v1-compatibility/README.md",
-        "databricks/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json",
-        "databricks/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
-        "databricks/2026-06-23-g6-l4-native-engine-probes/README.md",
-        "databricks/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
-        "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
-        "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
-        "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
-        "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
-        "databricks/2026-06-23-g6-l4-v1/README.md",
-        "databricks/2026-06-23-g6-l4-v1/databricks_run_status.json",
-        "databricks/2026-06-23-g6-l4-v1/release_evidence.json",
-        "databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
+        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/README.md",
+        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
+        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
+        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
+        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
+        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
+        "databricks/storage-g6-l4-reader-throughput/README.md",
+        "databricks/storage-g6-l4-reader-throughput/databricks_run_status.json",
+        "databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
+        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/README.md",
+        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
+        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
+        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/README.md",
+        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
+        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
+        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
+        "native-engine/README.md",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/README.md",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
+        "README.md",
+        "sglang/README.md",
+        "sglang/qwen3-4b-g6-l4-vanilla-kv-prepared/README.md",
+        "sglang/qwen3-4b-g6-l4-vanilla-kv-prepared/success_run.json",
+        "sglang/qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/README.md",
+        "sglang/qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/success_run.json",
+        "storage/README.md",
+        "storage/g6-l4-reader-throughput/README.md",
+        "storage/g6-l4-reader-throughput/databricks_run_status.json",
+        "storage/g6-l4-reader-throughput/storage_benchmark.json",
+        "vllm/README.md",
+        "vllm/qwen3-4b-g5-a10g-vanilla-kv/README.md",
+        "vllm/qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
+        "vllm/qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
+        "vllm/qwen3-4b-g6-l4-vanilla-kv/README.md",
+        "vllm/qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
+        "vllm/qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
+        "vllm/qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
     }
     actual_files = {
         path.relative_to(benchmark_root).as_posix()
@@ -3441,58 +1328,53 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert actual_files == expected_files
 
     standalone_mirrors = {
-        "vllm/2026-06-23-g6-l4-v1/v1_benchmark.json": "databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
-        "vllm/2026-06-23-g6-l4-v1/databricks_run_status.json": "databricks/2026-06-23-g6-l4-v1/databricks_run_status.json",
-        "vllm/2026-06-23-g6-l4-v1/release_evidence.json": "databricks/2026-06-23-g6-l4-v1/release_evidence.json",
-        "vllm/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json": "databricks/2026-06-23-g5-a10g-v1-compatibility/v1_benchmark.json",
-        "vllm/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json": "databricks/2026-06-23-g5-a10g-v1-compatibility/databricks_run_status.json",
-        "storage/2026-06-21-g6-l4-storage-readers/storage_benchmark.json": "databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
-        "storage/2026-06-21-g6-l4-storage-readers/databricks_run_status.json": "databricks/2026-06-21-g6-l4-storage-readers/databricks_run_status.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json": "databricks/2026-06-23-g6-l4-native-engine-probes/databricks_run_status.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json": "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json": "databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json": "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
-        "native-engine/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json": "databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
+        "vllm/qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
+        "vllm/qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
+        "vllm/qwen3-4b-g6-l4-vanilla-kv/release_evidence.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
+        "vllm/qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json": "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
+        "vllm/qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json": "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
+        "storage/g6-l4-reader-throughput/storage_benchmark.json": "databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
+        "storage/g6-l4-reader-throughput/databricks_run_status.json": "databricks/storage-g6-l4-reader-throughput/databricks_run_status.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
+        "native-engine/g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
     }
     for standalone_path, mirror_path in standalone_mirrors.items():
         assert (benchmark_root / standalone_path).read_bytes() == (
             benchmark_root / mirror_path
         ).read_bytes()
 
-    expected_folders = {
-        "2026-06-23-g6-l4-v1": {
+    expected_databricks_folders = {
+        "vllm-qwen3-4b-g6-l4-vanilla-kv": {
             "run_id": 872615985402004,
             "hardware_target": "aws-g6-l4",
             "node_type": "g6.8xlarge",
         },
-        "2026-06-23-g5-a10g-v1-compatibility": {
+        "vllm-qwen3-4b-g5-a10g-vanilla-kv": {
             "run_id": 566743786103032,
             "hardware_target": "aws-g5-a10g",
             "node_type": "g5.8xlarge",
         },
-        "2026-06-21-g6-l4-storage-readers": {
+        "storage-g6-l4-reader-throughput": {
             "run_id": 948365719597221,
             "hardware_target": "aws-g6-l4",
             "node_type": "g6.8xlarge",
         },
-        "2026-06-23-g6-l4-native-engine-probes": {
+        "native-engine-g6-l4-vllm-sglang-vanilla-kv": {
             "run_id": 934698284395881,
             "hardware_target": "aws-g6-l4",
             "node_type": "g6.8xlarge",
         },
     }
-
-    for folder_name, expected in expected_folders.items():
+    for folder_name, expected in expected_databricks_folders.items():
         folder = databricks_root / folder_name
-        folder_readme = (folder / "README.md").read_text(encoding="utf-8")
         status = json.loads((folder / "databricks_run_status.json").read_text(encoding="utf-8"))
         summary = status["summary"]
 
-        assert folder_name in root_readme
-        assert str(expected["run_id"]) in root_readme
-        assert str(expected["run_id"]) in folder_readme
-        assert expected["hardware_target"] in folder_readme
-        assert expected["node_type"] in folder_readme
+        assert folder_name in databricks_readme
+        assert str(expected["run_id"]) in current_databricks_snapshot
         assert status["ok"] is True
         assert status["action"] == "get"
         assert summary["record_type"] == "document_kv.databricks_run_status.v1"
@@ -3510,23 +1392,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
             expected_node_type_id=expected["node_type"],
         ) == ()
 
-    native_probe_readme = (
-        databricks_root / "2026-06-23-g6-l4-native-engine-probes" / "README.md"
-    ).read_text(encoding="utf-8")
-    compact_native_probe_readme = " ".join(native_probe_readme.split())
-    assert "not benchmark latency measurements" in native_probe_readme
-    assert (
-        "They should not be cited as SGLang latency, throughput, or quality benchmark results"
-        in compact_native_probe_readme
-    )
-    assert "They do not prove live decode-time prefix binding" in native_probe_readme
-    assert (
-        "cache-vs-baseline latency/quality behavior for a serving SGLang endpoint"
-        in compact_native_probe_readme
-    )
-
     g6_benchmark = json.loads(
-        (databricks_root / "2026-06-23-g6-l4-v1" / "v1_benchmark.json").read_text(encoding="utf-8")
+        (databricks_root / "vllm-qwen3-4b-g6-l4-vanilla-kv" / "v1_benchmark.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert g6_benchmark["record_type"] == "document_kv.benchmark_run.v1"
     assert g6_benchmark["suite"]["hardware_target"] == "aws-g6-l4"
@@ -3537,40 +1406,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert min(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(5.2668743391)
     assert max(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(6.9722325045)
 
-    g6_release_evidence = json.loads(
-        (databricks_root / "2026-06-23-g6-l4-v1" / "release_evidence.json").read_text(
+    g5_benchmark = json.loads(
+        (databricks_root / "vllm-qwen3-4b-g5-a10g-vanilla-kv" / "v1_benchmark.json").read_text(
             encoding="utf-8"
         )
-    )
-    assert g6_release_evidence["record_type"] == "document_kv.release_evidence.v1"
-    assert g6_release_evidence["ok"] is True
-    assert g6_release_evidence["issues"] == []
-    assert g6_release_evidence["v1_benchmark_ok"] is True
-    assert g6_release_evidence["storage_benchmark_ok"] is True
-    assert set(g6_release_evidence["engine_probe_backends"]) == {"sglang", "vllm"}
-    artifact_sources = g6_release_evidence["artifact_sources"]
-    artifact_source_paths = {source["path"] for source in artifact_sources}
-    assert not any(path.startswith("databricks-runs/") for path in artifact_source_paths)
-    assert artifact_source_paths == {
-        "benchmarks/databricks/2026-06-21-g6-l4-storage-readers/storage_benchmark.json",
-        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/sglang_connector_actions.json",
-        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/sglang_engine_probe.json",
-        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/vllm_connector_actions.json",
-        "benchmarks/databricks/2026-06-23-g6-l4-native-engine-probes/vllm_engine_probe.json",
-        "benchmarks/databricks/2026-06-23-g6-l4-v1/v1_benchmark.json",
-    }
-    for source in artifact_sources:
-        artifact_path = REPO_ROOT / source["path"]
-        artifact_bytes = artifact_path.read_bytes()
-        assert source["size_bytes"] == len(artifact_bytes)
-        assert source["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
-
-    g5_benchmark = json.loads(
-        (
-            databricks_root
-            / "2026-06-23-g5-a10g-v1-compatibility"
-            / "v1_benchmark.json"
-        ).read_text(encoding="utf-8")
     )
     assert g5_benchmark["suite"]["hardware_target"] == "aws-g5-a10g"
     assert len(g5_benchmark["measurements"]) == 24
@@ -3578,12 +1417,63 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert min(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(4.6620010419)
     assert max(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(6.0430383626)
 
+    sglang_prepared = json.loads(
+        (benchmark_root / "sglang" / "qwen3-4b-g6-l4-vanilla-kv-prepared" / "success_run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sglang_prepared["record_type"] == "cachet.benchmark_successful_sglang_live_v1_release.v1"
+    assert sglang_prepared["benchmark_result"] == "prepared_live_v1_release_pass_no_speedup"
+    assert sglang_prepared["live_benchmark"]["ok"] is True
+    assert sglang_prepared["live_benchmark"]["suite"]["scope"] == "live_v1_release"
+    assert sglang_prepared["live_benchmark"]["suite"]["release_v1_suite"] is True
+    assert sglang_prepared["live_benchmark"]["measurement_count"] == 16
+    assert len(sglang_prepared["live_benchmark"]["cache_hit_validations"]) == 8
+    assert all(
+        validation["ok"] is True
+        for validation in sglang_prepared["live_benchmark"]["cache_hit_validations"]
+    )
+    assert max(
+        row["ttft_speedup"]
+        for row in sglang_prepared["live_benchmark"]["comparisons"]
+    ) < 1.0
+
+    sglang_synthetic = json.loads(
+        (benchmark_root / "sglang" / "qwen3-4b-g6-l4-vanilla-kv-synthetic-niah" / "success_run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert sglang_synthetic["record_type"] == "cachet.benchmark_successful_sglang_live_benchmark.v1"
+    assert sglang_synthetic["benchmark_result"] == "synthetic_live_benchmark_pass_no_speedup"
+    assert sglang_synthetic["live_benchmark"]["suite"]["scope"] == "live_synthetic_niah"
+    assert sglang_synthetic["live_benchmark"]["cache_hit_validations"][0][
+        "cache_request_cached_tokens"
+    ] == 175
+    assert sglang_synthetic["live_benchmark"]["comparisons"][0]["ttft_speedup"] == pytest.approx(
+        0.8745573214
+    )
+
+    baseline_smoke = json.loads(
+        (sglang_archive_root / "baseline-isolated-success" / "success_run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert baseline_smoke["record_type"] == "cachet.benchmark_successful_databricks_smoke.v1"
+    assert baseline_smoke["benchmark_result"] == "readiness_pass"
+    assert baseline_smoke["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 175
+
+    archived_failure = json.loads(
+        (sglang_archive_root / "invalid-served-model-name" / "failed_run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert archived_failure["benchmark_result"] == "not_published"
+    assert archived_failure["failure_type"] == "sglang_invalid_served_model_name"
+
     storage_benchmark = json.loads(
-        (
-            databricks_root
-            / "2026-06-21-g6-l4-storage-readers"
-            / "storage_benchmark.json"
-        ).read_text(encoding="utf-8")
+        (databricks_root / "storage-g6-l4-reader-throughput" / "storage_benchmark.json").read_text(
+            encoding="utf-8"
+        )
     )
     assert storage_benchmark["record_type"] == "document_kv.storage_benchmark.v1"
     assert storage_benchmark["uc_volume_is_real"] is True
@@ -3596,7 +1486,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     }
     assert all(row["errors"] == 0 for row in storage_benchmark["results"])
 
-    native_probe_root = databricks_root / "2026-06-23-g6-l4-native-engine-probes"
+    native_probe_root = databricks_root / "native-engine-g6-l4-vllm-sglang-vanilla-kv"
     for backend, provider_factory in {
         "vllm": "vllm_kv_injection.vllm_native_provider:build_document_kv_provider",
         "sglang": "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider",
@@ -3614,6 +1504,32 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         assert probe["metadata"][f"{backend}_kv_injection.provider_factory"] == provider_factory
         assert actions["record_type"] == "document_kv.engine_kv_connector_actions.v1"
         assert actions["backend"] == backend
+
+    g6_release_evidence = json.loads(
+        (databricks_root / "vllm-qwen3-4b-g6-l4-vanilla-kv" / "release_evidence.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert g6_release_evidence["record_type"] == "document_kv.release_evidence.v1"
+    assert g6_release_evidence["ok"] is True
+    assert g6_release_evidence["issues"] == []
+    assert g6_release_evidence["v1_benchmark_ok"] is True
+    assert g6_release_evidence["storage_benchmark_ok"] is True
+    assert set(g6_release_evidence["engine_probe_backends"]) == {"sglang", "vllm"}
+    artifact_source_paths = {source["path"] for source in g6_release_evidence["artifact_sources"]}
+    assert artifact_source_paths == {
+        "benchmarks/databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
+        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
+        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
+        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
+        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
+        "benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
+    }
+    for source in g6_release_evidence["artifact_sources"]:
+        artifact_path = REPO_ROOT / source["path"]
+        artifact_bytes = artifact_path.read_bytes()
+        assert source["size_bytes"] == len(artifact_bytes)
+        assert source["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
 
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
