@@ -1,7 +1,8 @@
 # SGLang Qwen3 4B On g6/L4 With Vanilla KV
 
-Prepared live SGLang benchmark for Cachet through HiCache. This proves
-correctness and cache-hit integration; it is not a speedup claim.
+Appendix evidence for a prepared live SGLang benchmark through HiCache. This
+proves correctness and cache-hit integration; it is not a speedup claim and is
+not a row in the fixed main table in [`../../../current/`](../../../current/).
 
 ## Experimental Setup
 
@@ -17,6 +18,7 @@ correctness and cache-hit integration; it is not a speedup claim.
 | Repeats / measurements | 2 repeats per arm/dataset; 16 measurements |
 | Prompt-token scope | report-row prompt mean not recorded; cache-validation prompt tokens 120-189 |
 | Evidence file | [`success_run.json`](success_run.json) |
+| Main-table mismatch | SGLang on g6/L4, 2 repeats, short prompts, and no fixed parallel-8/256-token/g5/disk-cache configuration |
 
 ## Main Latency Results
 

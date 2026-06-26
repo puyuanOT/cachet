@@ -6,10 +6,10 @@ launch-config sidecars; vLLM and SGLang still own scheduling, allocation,
 decode, routing, and cleanup.
 
 Use this guide when wiring the current provider-backed vLLM or SGLang paths into
-a deployment. For benchmark evidence, start with the standalone folders under
-`benchmarks/vllm/`, `benchmarks/sglang/`, `benchmarks/storage/`, and
-`benchmarks/native-engine/`; `benchmarks/databricks/` mirrors the Databricks
-status and release-source records for audit.
+a deployment. For benchmark evidence, start with the paper-style tables in
+`benchmarks/current/`; existing committed result folders live under
+`benchmarks/appendix/existing-results/`, and `benchmarks/databricks/` mirrors
+the Databricks status and release-source records for audit.
 
 ## Launch Configs
 
@@ -121,12 +121,12 @@ dataset payloads, or local `databricks-runs/` output.
 
 The current provider-backed evidence is tracked in:
 
-- `benchmarks/vllm/qwen3-4b-g6-l4-vanilla-kv/`
-- `benchmarks/vllm/qwen3-4b-g5-a10g-vanilla-kv/`
-- `benchmarks/storage/g6-l4-reader-throughput/`
-- `benchmarks/native-engine/g6-l4-vllm-sglang-vanilla-kv/`
+- `benchmarks/appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/`
+- `benchmarks/appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/`
+- `benchmarks/appendix/existing-results/storage-g6-l4-reader-throughput/`
+- `benchmarks/appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/`
 
-Refresh those standalone folders, the matching `benchmarks/databricks/` mirrors,
+Refresh those appendix folders, the matching `benchmarks/databricks/` mirrors,
 the strict release bundle, and `docs/v1-requirements-matrix.md` whenever
 benchmark code, runtime pins, connector contracts, launch-config fields, or
 package wheel identity change.

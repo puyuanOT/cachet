@@ -1,8 +1,9 @@
 # SGLang Synthetic NIAH With Vanilla KV
 
-Small SGLang live benchmark for repeated Cachet-backed cache hits on one
-synthetic NIAH prompt. It is useful integration evidence, not the full SGLang
-release-suite benchmark.
+Appendix evidence for repeated Cachet-backed cache hits on one synthetic NIAH
+prompt. It is useful integration evidence, not the full SGLang release-suite
+benchmark and not a row in the fixed main table in
+[`../../../current/`](../../../current/).
 
 ## Experimental Setup
 
@@ -18,6 +19,7 @@ release-suite benchmark.
 | Repeats / measurements | 2 repeats per arm; 4 measurements |
 | Prompt-token scope | report-row mean prompt tokens 92; cache-validation prompt tokens 205 |
 | Evidence file | [`success_run.json`](success_run.json) |
+| Main-table mismatch | One tiny synthetic prompt on SGLang/g6/L4, not the fixed vLLM/g5/parallel-8/256-token/four-dataset table |
 
 ## Main Latency Results
 

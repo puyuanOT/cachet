@@ -1,7 +1,7 @@
 # vLLM Qwen3 4B On g5/A10G With Vanilla KV
 
-Compatibility benchmark for users running vLLM on g5/A10G clusters. The
-primary target remains g6/L4.
+Appendix evidence for a prior vLLM g5/A10G compatibility benchmark. It is not
+a row in the fixed main table in [`../../../current/`](../../../current/).
 
 ## Experimental Setup
 
@@ -17,6 +17,7 @@ primary target remains g6/L4.
 | Repeats / measurements | 3 repeats per arm/dataset; 24 measurements |
 | Prompt-token mean | 15,491-23,231 |
 | Evidence file | [`v1_benchmark.json`](v1_benchmark.json) |
+| Main-table mismatch | 3 repeats, 100-token completions, and prompt-token means 15,491-23,231 rather than fixed parallel-8/256-token/8k-16k-32k/disk-cache |
 
 ## Main Latency Results
 
@@ -62,4 +63,4 @@ Sanitized evidence is committed beside this README:
 - [`databricks_run_status.json`](databricks_run_status.json)
 
 The matching Databricks audit mirror is
-[`../../databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/`](../../databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/).
+[`../../../databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/`](../../../databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/).

@@ -117,9 +117,9 @@ and release evidence in one repository. The human entry points are:
 - [`docs/evidence-policy.md`](../evidence-policy.md) explains what belongs in
   `benchmarks/`, `docs/release-ops/evidence/`, `docs/release-ops/pr-evidence/`, release bundles, and ignored
   `databricks-runs/` scratch output.
-- [`benchmarks/current/README.md`](../../benchmarks/current/) is the concise current
+- [`benchmarks/current/README.md`](../../benchmarks/current/) is the paper-style
   benchmark answer; [`benchmarks/README.md`](../../benchmarks/README.md) indexes the
-  standalone human-readable benchmark report folders.
+  appendix evidence folders.
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
   the implementation package and migration boundary.
@@ -918,18 +918,18 @@ with document KV-cache reuse:
 
 Curated, human-readable benchmark reports are tracked under
 [`benchmarks/`](../../benchmarks/README.md). Start with
-[`benchmarks/current/`](../../benchmarks/current/) for the concise current result
-index, then open the standalone report folders for
-[`vLLM`](../../benchmarks/vllm/), [`SGLang`](../../benchmarks/sglang/),
-[`storage`](../../benchmarks/storage/), and [`native-engine`](../../benchmarks/native-engine/)
-status. Use the Databricks artifact snapshot at
+[`benchmarks/current/`](../../benchmarks/current/) for the paper-style main
+table and ablations, then open
+[`benchmarks/appendix/existing-results/`](../../benchmarks/appendix/existing-results/)
+for committed evidence that does not match the fixed main-table configuration.
+Use the Databricks artifact snapshot at
 [`benchmarks/databricks/CURRENT.md`](../../benchmarks/databricks/CURRENT.md) for
 sanitized source records. Those folders contain the current g6/L4 target
 benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and
 native vLLM/SGLang probe artifacts without relying on the PR-only
 `docs/release-ops/pr-evidence/` tree or ignored local `databricks-runs/` output. Every durable
-Databricks benchmark or benchmark-readiness run should get its own dated
-standalone folder with a `README.md` and compact sanitized evidence committed
+Databricks benchmark or benchmark-readiness run should get its own stable
+appendix folder with a `README.md` and compact sanitized evidence committed
 beside it; `docs/release-ops/pr-evidence/` stays reserved for machine-readable PR validation and
 release-audit sidecars.
 

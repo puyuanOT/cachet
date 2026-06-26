@@ -1,7 +1,8 @@
 # Storage Reader Throughput On g6/L4
 
-Reader throughput benchmark for Cachet memory, disk, and real Unity Catalog
-Volume storage on the g6/L4 target.
+Appendix evidence for Cachet memory, disk, and real Unity Catalog Volume
+reader throughput on the g6/L4 target. It is not a model-serving benchmark and
+does not populate the fixed main table in [`../../../current/`](../../../current/).
 
 ## Experimental Setup
 
@@ -16,6 +17,7 @@ Volume storage on the g6/L4 target.
 | Dataset scope | 268,435,456-byte read workload per reader |
 | Repeats / measurements | 256 reads; parallelism 8 |
 | Evidence file | [`storage_benchmark.json`](storage_benchmark.json) |
+| Main-table mismatch | Reader throughput only; no serving TTFT, TTC, dataset scores, or memory-utilization metrics |
 
 ## Reader Throughput And Latency
 

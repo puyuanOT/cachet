@@ -1,8 +1,9 @@
 # Native vLLM And SGLang Connector Evidence
 
-Provider-backed native connector probes for vLLM and SGLang on g6/L4. This is
-engine-integration and copied-byte evidence, not latency, throughput, or
-quality evidence.
+Appendix evidence for provider-backed native connector probes for vLLM and
+SGLang on g6/L4. This is engine-integration and copied-byte evidence, not
+latency, throughput, quality evidence, or a row in the fixed main table in
+[`../../../current/`](../../../current/).
 
 ## Experimental Setup
 

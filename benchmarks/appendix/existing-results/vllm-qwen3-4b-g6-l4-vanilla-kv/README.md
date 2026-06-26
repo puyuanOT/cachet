@@ -1,6 +1,7 @@
 # vLLM Qwen3 4B On g6/L4 With Vanilla KV
 
-Primary Cachet speedup benchmark for vLLM on the target g6/L4 hardware.
+Appendix evidence for a prior Cachet vLLM speedup benchmark on g6/L4 hardware.
+It is not a row in the fixed main table in [`../../../current/`](../../../current/).
 
 ## Experimental Setup
 
@@ -16,6 +17,7 @@ Primary Cachet speedup benchmark for vLLM on the target g6/L4 hardware.
 | Repeats / measurements | 3 repeats per arm/dataset; 24 measurements |
 | Prompt-token mean | 15,491-23,231 |
 | Evidence file | [`v1_benchmark.json`](v1_benchmark.json) |
+| Main-table mismatch | g6/L4, 3 repeats, 100-token completions, and prompt-token means 15,491-23,231 rather than fixed g5/parallel-8/256-token/8k-16k-32k/disk-cache |
 
 ## Main Latency Results
 
@@ -65,4 +67,4 @@ Sanitized evidence is committed beside this README:
 - [`release_evidence.json`](release_evidence.json)
 
 The matching Databricks audit mirror is
-[`../../databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/`](../../databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/).
+[`../../../databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/`](../../../databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/).
