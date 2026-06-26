@@ -2,22 +2,22 @@
 
 Appendix evidence for Cachet memory, disk, and real Unity Catalog Volume
 reader throughput on the g6/L4 target. It is not a model-serving benchmark and
-does not populate the fixed main table in [benchmark root](../../../).
+does not populate the primary table in [benchmark root](../../../).
 
 ## Experimental Setup
 
 | Field | Value |
 | --- | --- |
 | Engine | Cachet storage readers |
-| Model | n/a |
+| Model | N/A |
 | Hardware | AWS g6/L4, `g6.8xlarge` |
 | Method | Memory, disk, and Unity Catalog readers |
-| Baseline arm | n/a |
-| Cache arm | n/a |
+| Baseline arm | N/A |
+| Cache arm | N/A |
 | Dataset scope | 268,435,456-byte read workload per reader |
 | Repeats / measurements | 256 reads; parallelism 8 |
 | Evidence file | [`storage_benchmark.json`](storage_benchmark.json) |
-| Main-table mismatch | Reader throughput only; no serving TTFT, TTC, dataset scores, or memory-utilization metrics |
+| Primary-table mismatch | Reader throughput only; no serving TTFT, TTC, dataset scores, or memory-utilization metrics |
 
 ## Reader Throughput And Latency
 
@@ -32,10 +32,10 @@ does not populate the fixed main table in [benchmark root](../../../).
 | Metric | Value |
 | --- | --- |
 | Bytes read | 268,435,456 per reader |
-| Peak GPU memory | not measured |
-| CPU RSS | not measured |
-| Cache-resident footprint | not measured |
-| Serving latency | not measured |
+| Peak GPU memory | Not measured |
+| CPU RSS | Not measured |
+| Cache-resident footprint | Not measured |
+| Serving latency | Not measured |
 
 This benchmark is storage-reader evidence only. It does not measure model
 TTFT, time-to-completion, GPU memory, CPU RSS, or serving cache footprint.

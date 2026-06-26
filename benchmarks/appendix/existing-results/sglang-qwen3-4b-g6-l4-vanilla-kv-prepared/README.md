@@ -1,8 +1,9 @@
 # SGLang Qwen3 4B On g6/L4 With Vanilla KV
 
 Appendix evidence for a prepared live SGLang benchmark through HiCache. This
-proves correctness and cache-hit integration; it is not a speedup claim and is
-not a row in the fixed main table in [benchmark root](../../../).
+validates correctness and cache-hit integration; it does not demonstrate a
+latency improvement and is not a row in the primary table in
+[benchmark root](../../../).
 
 ## Experimental Setup
 
@@ -18,7 +19,7 @@ not a row in the fixed main table in [benchmark root](../../../).
 | Repeats / measurements | 2 repeats per arm/dataset; 16 measurements |
 | Prompt-token scope | report-row prompt mean not recorded; cache-validation prompt tokens 120-189 |
 | Evidence file | [`success_run.json`](success_run.json) |
-| Main-table mismatch | SGLang on g6/L4, 2 repeats, short prompts, and no fixed parallel-8/256-token/g5/disk-cache configuration |
+| Primary-table mismatch | SGLang on g6/L4, 2 repeats, short prompts, and no fixed parallel-8/256-token/g5/disk-cache configuration |
 
 ## Main Latency Results
 
@@ -34,7 +35,7 @@ prepared prompts.
 
 ## Quality Results
 
-| Dataset | Baseline answer-found | Cachet answer-found | Answer-found delta | Baseline exact-match | Cachet exact-match | Exact-match delta |
+| Dataset | Baseline `answer_found_rate` | Cachet `answer_found_rate` | `answer_found_rate` delta | Baseline `exact_match_rate` | Cachet `exact_match_rate` | `exact_match_rate` delta |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | biography | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 | hotpotqa | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
@@ -47,19 +48,19 @@ prepared prompts.
 | --- | --- |
 | Cache-hit validations | 8/8 passed |
 | Validated cached tokens | 96-144 |
-| Peak GPU memory | not measured |
-| CPU RSS | not measured |
-| Cache-resident footprint | not measured |
-| Storage throughput | not measured in this serving benchmark |
+| Peak GPU memory | Not measured |
+| CPU RSS | Not measured |
+| Cache-resident footprint | Not measured |
+| Storage throughput | Not measured in this serving benchmark |
 
 ## Limitations
 
 | Limitation | Current state |
 | --- | --- |
-| Performance | No latency speedup on current short prepared prompts |
+| Performance | No latency improvement observed on the current short prepared prompts |
 | Repeat count | 2 repeats per arm/dataset |
 | Prompt tokens | report-row prompt means are not recorded in this artifact |
-| Memory | Serving peak GPU memory, CPU RSS, and cache footprint are not measured |
+| Memory | Serving peak GPU memory, CPU RSS, and KV cache footprint are not measured |
 
 ## Provenance
 

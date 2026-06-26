@@ -117,9 +117,9 @@ and release evidence in one repository. The human entry points are:
 - [`docs/evidence-policy.md`](../evidence-policy.md) explains what belongs in
   `benchmarks/`, `docs/release-ops/evidence/`, `docs/release-ops/pr-evidence/`, release bundles, and ignored
   `databricks-runs/` scratch output.
-- [`benchmarks/README.md`](../../benchmarks/) is the paper-style
+- [`benchmarks/README.md`](../../benchmarks/) is the research-style
   benchmark answer; [`benchmarks/appendix/existing-results/`](../../benchmarks/appendix/existing-results/)
-  preserves committed evidence that does not match the fixed main-table
+  preserves committed evidence that does not match the primary-table
   configuration.
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
@@ -919,9 +919,9 @@ with document KV-cache reuse:
 
 Curated, human-readable benchmark reports are tracked in
 [`benchmarks/README.md`](../../benchmarks/README.md). Start there for the
-paper-style main table and ablations, then open
+primary comparison table and ablations, then open
 [`benchmarks/appendix/existing-results/`](../../benchmarks/appendix/existing-results/)
-for committed evidence that does not match the fixed main-table configuration.
+for committed evidence that does not match the primary-table configuration.
 Use the Databricks artifact snapshot at
 [`benchmarks/databricks/CURRENT.md`](../../benchmarks/databricks/CURRENT.md) for
 sanitized source records. Those folders contain the current g6/L4 target
@@ -2014,7 +2014,7 @@ python -m document_kv_cache.live_server \
   --model-id qwen3:4b-instruct
 ```
 
-The command prints a JSON record with TTFT, time-to-completion, token counts, `prompt_token_source`, answer-found quality, and the prompt mode used. Add `--cache-arm --runtime-prompt` only for a KV-aware proxy that injects the cached prefix out of band; ordinary OpenAI-compatible servers should use the default full-prompt mode.
+The command prints a JSON record with TTFT, time-to-completion, token counts, `prompt_token_source`, `answer_found_rate`, and the prompt mode used. Add `--cache-arm --runtime-prompt` only for a KV-aware proxy that injects the cached prefix out of band; ordinary OpenAI-compatible servers should use the default full-prompt mode.
 
 For native engine paths, pass a validated Cachet handoff so the smoke request
 carries the same `kv_transfer_params` field as benchmark cache-arm requests.

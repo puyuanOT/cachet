@@ -1,7 +1,7 @@
 # vLLM Qwen3 4B On g5/A10G With Vanilla KV
 
-Appendix evidence for a prior vLLM g5/A10G compatibility benchmark. It is not
-a row in the fixed main table in [benchmark root](../../../).
+Appendix evidence for an existing vLLM g5/A10G compatibility benchmark. It is
+not a row in the primary table in [benchmark root](../../../).
 
 ## Experimental Setup
 
@@ -17,7 +17,7 @@ a row in the fixed main table in [benchmark root](../../../).
 | Repeats / measurements | 3 repeats per arm/dataset; 24 measurements |
 | Prompt-token mean | 15,491-23,231 |
 | Evidence file | [`v1_benchmark.json`](v1_benchmark.json) |
-| Main-table mismatch | 3 repeats, 100-token completions, and prompt-token means 15,491-23,231 rather than fixed parallel-8/256-token/8k-16k-32k/disk-cache |
+| Primary-table mismatch | 3 repeats, 100-token completions, and prompt-token means 15,491-23,231 rather than the primary parallel-8/256-token/8k-16k-32k/disk-cache protocol |
 
 ## Main Latency Results
 
@@ -30,7 +30,7 @@ a row in the fixed main table in [benchmark root](../../../).
 
 ## Quality Results
 
-| Dataset | Baseline answer-found | Cachet answer-found | Answer-found delta | Baseline exact-match | Cachet exact-match | Exact-match delta |
+| Dataset | Baseline `answer_found_rate` | Cachet `answer_found_rate` | `answer_found_rate` delta | Baseline `exact_match_rate` | Cachet `exact_match_rate` | `exact_match_rate` delta |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | biography | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 | hotpotqa | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
@@ -41,10 +41,10 @@ a row in the fixed main table in [benchmark root](../../../).
 
 | Metric | Value |
 | --- | --- |
-| Peak GPU memory | not measured |
-| CPU RSS | not measured |
-| Cache-resident footprint | not measured |
-| Storage throughput | not measured in this serving benchmark |
+| Peak GPU memory | Not measured |
+| CPU RSS | Not measured |
+| Cache-resident footprint | Not measured |
+| Storage throughput | Not measured in this serving benchmark |
 
 ## Limitations
 
@@ -53,7 +53,7 @@ a row in the fixed main table in [benchmark root](../../../).
 | Target status | Compatibility result; g6/L4 is the primary target |
 | Model coverage | Qwen3 4B Instruct only |
 | Method coverage | Vanilla external KV only |
-| Memory | Serving peak GPU memory, CPU RSS, and cache footprint are not measured |
+| Memory | Serving peak GPU memory, CPU RSS, and KV cache footprint are not measured |
 
 ## Provenance
 

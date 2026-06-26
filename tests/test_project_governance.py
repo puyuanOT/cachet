@@ -1201,13 +1201,13 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_docs_readme = " ".join(docs_readme.split())
 
     assert "public benchmark appendix for Cachet" in compact_root_readme
-    assert "one main comparison table first, then ablations" in compact_root_readme
+    assert "one primary comparison table first, followed by focused ablation tables" in compact_root_readme
     assert "Main Table Configuration" in root_readme
     assert "Directory Layout" in root_readme
     assert "appendix/existing-results/" in root_readme
     assert "Cachet + KV Packet" in root_readme
     assert "Folder names should be stable and descriptive" in benchmark_template_readme
-    assert "Do not invent missing numbers" in benchmark_template_readme
+    assert "Do not infer or estimate missing values" in benchmark_template_readme
     for heading in (
         "Main Table Configuration",
         "Main Performance Table",
@@ -1234,22 +1234,25 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "16k" in root_readme
     assert "32k" in root_readme
     assert "Cachet + KV Packet" in root_readme
+    assert "Storage tier" in root_readme
+    assert "Cache location" not in root_readme
+    assert "Cache location" not in benchmark_template_readme
     assert "Hybrid RAM / disk / Unity Catalog" in root_readme
     assert "not measured yet" in root_readme
     assert "not implemented yet" in root_readme
     assert "[benchmark root](../)" in appendix_readme
-    assert "does not match the fixed main-table configuration" in compact_existing_results_readme
+    assert "does not match the primary-table configuration" in compact_existing_results_readme
     assert "vllm-qwen3-4b-g6-l4-vanilla-kv" in existing_results_readme
     assert "fixed target configuration" in compact_vllm_readme
-    assert "Prior g5/A10G vanilla KV compatibility evidence" in vllm_readme
+    assert "Existing g5/A10G vanilla KV compatibility evidence" in vllm_readme
     assert "SGLang appears in the serving-platform ablation" in compact_sglang_readme
-    assert "Prepared V1 correctness/cache-hit evidence; no speedup" in sglang_readme
+    assert "Prepared V1 correctness and cache-hit evidence; no latency improvement observed" in sglang_readme
     assert "not public benchmark results" in compact_sglang_readme
     assert "not a model-serving latency benchmark" in storage_readme
     assert "not a memory-consumption measurement" in storage_readme
     assert "integration evidence" in native_engine_readme
     assert "not serving-latency benchmark rows" in " ".join(native_engine_readme.split())
-    assert "audits, not first-time benchmark reading" in databricks_readme
+    assert "audit mirror, not the primary benchmark summary" in databricks_readme
     assert "QA run provenance" in current_databricks_snapshot
     assert "should not dominate the public benchmark experience" in compact_archive_readme
     assert "not as the current public benchmark result surface" in compact_sglang_archive_readme
@@ -1258,7 +1261,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "[`benchmarks/README.md`](../../benchmarks/)" in maintainer_reference
     assert "`../benchmarks/README.md`" in docs_readme
     assert "benchmarks/appendix/existing-results/" in matrix_text
-    assert "`benchmarks/README.md` is the paper-style human-facing benchmark index" in matrix_text
+    assert "`benchmarks/README.md` is the research-style human-facing benchmark index" in matrix_text
     assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
 
     public_result_folders = {

@@ -2,8 +2,8 @@
 
 Appendix evidence for provider-backed native connector probes for vLLM and
 SGLang on g6/L4. This is engine-integration and copied-byte evidence, not
-latency, throughput, quality evidence, or a row in the fixed main table in
-[benchmark root](../../../).
+latency, throughput, or quality evidence, and it is not a row in the primary
+table in [benchmark root](../../../).
 
 ## Experimental Setup
 
@@ -23,11 +23,11 @@ latency, throughput, quality evidence, or a row in the fixed main table in
 
 | Metric | Status |
 | --- | --- |
-| p50 TTFT / time-to-completion | not measured |
-| Answer quality | not measured |
-| Peak GPU memory | not measured |
-| CPU RSS | not measured |
-| Serving cache footprint | not measured |
+| p50 TTFT / time-to-completion | Not measured |
+| Answer quality | Not measured |
+| Peak GPU memory | Not measured |
+| CPU RSS | Not measured |
+| Serving cache footprint | Not measured |
 
 ## Provenance
 

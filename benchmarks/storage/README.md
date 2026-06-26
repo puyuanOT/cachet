@@ -1,10 +1,11 @@
 # Storage Benchmark Index
 
-Storage appears in the paper-style appendix as a storage-tier ablation and as
-resource-utilization fields. See [benchmark root](../). Blank numeric
-cells mean the target serving benchmark has not measured that metric yet.
+Storage appears in the primary benchmark appendix as a storage-tier ablation
+and as resource-utilization fields. See the [benchmark root](../). Blank
+numeric cells mean the target serving benchmark has not measured that metric
+yet.
 
-Existing storage-reader evidence moved to:
+Existing storage-reader evidence:
 
 | Appendix result | Status |
 | --- | --- |

@@ -1,12 +1,12 @@
 # Benchmark Appendix
 
-This appendix keeps benchmark evidence that is useful for audits or historical
-comparison but should not be confused with the fixed main table in
-[benchmark root](../).
+This appendix preserves benchmark evidence for audit and historical comparison.
+These records should not be treated as primary-table measurements; the primary
+table lives at the [benchmark root](../).
 
 | Folder | Purpose |
 | --- | --- |
-| [`existing-results/`](existing-results/) | Current committed evidence produced before the paper-style main-table configuration was defined |
+| [`existing-results/`](existing-results/) | Committed evidence produced under non-primary benchmark configurations |
 
-Use [benchmark root](../) for the main performance table and ablation
+Use the [benchmark root](../) for the main performance table and ablation
 tables.

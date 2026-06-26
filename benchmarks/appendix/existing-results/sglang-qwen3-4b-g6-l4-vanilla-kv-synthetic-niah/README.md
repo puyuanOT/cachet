@@ -1,8 +1,8 @@
 # SGLang Synthetic NIAH With Vanilla KV
 
-Appendix evidence for repeated Cachet-backed cache hits on one synthetic NIAH
-prompt. It is useful integration evidence, not the full SGLang release-suite
-benchmark and not a row in the fixed main table in
+Appendix evidence for repeated Cachet-backed cache hits on a single synthetic
+NIAH prompt. It is useful integration evidence, not the full SGLang
+release-suite benchmark and not a row in the primary table in
 [benchmark root](../../../).
 
 ## Experimental Setup
@@ -15,11 +15,11 @@ benchmark and not a row in the fixed main table in
 | Method | Vanilla external KV via HiCache |
 | Baseline arm | `baseline_prefill` |
 | Cache arm | `document_kv_cache` |
-| Dataset scope | One synthetic NIAH prompt |
+| Dataset scope | Single synthetic NIAH prompt |
 | Repeats / measurements | 2 repeats per arm; 4 measurements |
 | Prompt-token scope | report-row mean prompt tokens 92; cache-validation prompt tokens 205 |
 | Evidence file | [`success_run.json`](success_run.json) |
-| Main-table mismatch | One tiny synthetic prompt on SGLang/g6/L4, not the fixed vLLM/g5/parallel-8/256-token/four-dataset table |
+| Primary-table mismatch | Single minimal synthetic prompt on SGLang/g6/L4, not the fixed vLLM/g5/parallel-8/256-token/four-dataset table |
 
 ## Main Latency Results
 
@@ -29,7 +29,7 @@ benchmark and not a row in the fixed main table in
 
 ## Quality Results
 
-| Scope | Baseline answer-found | Cachet answer-found | Answer-found delta | Baseline exact-match | Cachet exact-match | Exact-match delta |
+| Scope | Baseline `answer_found_rate` | Cachet `answer_found_rate` | `answer_found_rate` delta | Baseline `exact_match_rate` | Cachet `exact_match_rate` | `exact_match_rate` delta |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | synthetic NIAH | 1.0 | 1.0 | 0.0 | 1.0 | 1.0 | 0.0 |
 
@@ -39,19 +39,19 @@ benchmark and not a row in the fixed main table in
 | --- | --- |
 | Cache-hit validations | 2/2 passed |
 | Validated cached tokens | 175 |
-| Peak GPU memory | not measured |
-| CPU RSS | not measured |
-| Cache-resident footprint | not measured |
-| Storage throughput | not measured in this serving benchmark |
+| Peak GPU memory | Not measured |
+| CPU RSS | Not measured |
+| Cache-resident footprint | Not measured |
+| Storage throughput | Not measured in this serving benchmark |
 
 ## Limitations
 
 | Limitation | Current state |
 | --- | --- |
-| Dataset scope | One synthetic prompt |
-| Performance | No speedup on this tiny prompt |
+| Dataset scope | Single synthetic prompt |
+| Performance | No latency improvement observed on this minimal prompt |
 | Repeat count | 2 repeats per arm |
-| Memory | Serving peak GPU memory, CPU RSS, and cache footprint are not measured |
+| Memory | Serving peak GPU memory, CPU RSS, and KV cache footprint are not measured |
 
 ## Provenance
 
