@@ -8,8 +8,7 @@ cell means not measured yet; not zero.
 The committed appendix evidence at
 [`appendix/existing-results/`](appendix/existing-results/) does not match the
 primary-table configuration below. Treat it as prior evidence, not as the
-source for the empty primary-table cells. Rows marked `pending measurement`
-have not been measured under the stated configuration.
+source for the empty primary-table cells.
 
 ## Main Table Configuration
 
@@ -28,17 +27,21 @@ have not been measured under the stated configuration.
 
 ## Main Performance Table
 
-| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score | Status / evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Baseline, no precomputed KV | 8k |  |  |  |  |  |  |  |  | Pending measurement under the primary-table configuration |
-| Baseline, no precomputed KV | 16k |  |  |  |  |  |  |  |  | Pending measurement under the primary-table configuration |
-| Baseline, no precomputed KV | 32k |  |  |  |  |  |  |  |  | Pending measurement under the primary-table configuration |
-| Cachet + vanilla KV | 8k |  |  |  |  |  |  |  |  | Pending measurement under the primary-table configuration |
-| Cachet + vanilla KV | 16k |  |  |  |  |  |  |  |  | Pending measurement under the primary-table configuration |
-| Cachet + vanilla KV | 32k |  |  |  |  |  |  |  |  | Pending measurement under the primary-table configuration |
-| Cachet + KV Packet | 8k |  |  |  |  |  |  |  |  | Planned method; not implemented yet |
-| Cachet + KV Packet | 16k |  |  |  |  |  |  |  |  | Planned method; not implemented yet |
-| Cachet + KV Packet | 32k |  |  |  |  |  |  |  |  | Planned method; not implemented yet |
+Blank numeric cells in this table indicate pending measurements under the
+primary-table configuration. `Cachet + KV Packet` is listed for protocol
+completeness and is not implemented yet.
+
+| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline, no precomputed KV | 8k |  |  |  |  |  |  |  |  |
+| Baseline, no precomputed KV | 16k |  |  |  |  |  |  |  |  |
+| Baseline, no precomputed KV | 32k |  |  |  |  |  |  |  |  |
+| Cachet + vanilla KV | 8k |  |  |  |  |  |  |  |  |
+| Cachet + vanilla KV | 16k |  |  |  |  |  |  |  |  |
+| Cachet + vanilla KV | 32k |  |  |  |  |  |  |  |  |
+| Cachet + KV Packet | 8k |  |  |  |  |  |  |  |  |
+| Cachet + KV Packet | 16k |  |  |  |  |  |  |  |  |
+| Cachet + KV Packet | 32k |  |  |  |  |  |  |  |  |
 
 Dataset score columns should report the task metric selected by the benchmark
 plan for each dataset. Existing appendix evidence reports `answer_found_rate`
@@ -57,12 +60,12 @@ under the primary-table configuration.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Storage tier | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score | Status / evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| RAM |  |  |  |  |  |  |  |  | Pending measurement |
-| Disk |  |  |  |  |  |  |  |  | Pending measurement |
-| Unity Catalog |  |  |  |  |  |  |  |  | Pending measurement |
-| Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  | Pending measurement |
+| Storage tier | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RAM |  |  |  |  |  |  |  |  |
+| Disk |  |  |  |  |  |  |  |  |
+| Unity Catalog |  |  |  |  |  |  |  |  |
+| Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  |
 
 ## Hardware Ablation
 
@@ -76,10 +79,10 @@ under the primary-table configuration.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Hardware | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score | Status / evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  | Pending measurement under this ablation configuration |
-| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  | Pending measurement under this ablation configuration |
+| Hardware | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |
+| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  |
 
 ## Serving Platform Ablation
 
@@ -93,10 +96,10 @@ under the primary-table configuration.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Serving platform | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score | Status / evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| vLLM |  |  |  |  |  |  |  |  | Pending measurement under this ablation configuration |
-| SGLang |  |  |  |  |  |  |  |  | Pending measurement under this ablation configuration |
+| Serving platform | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| vLLM |  |  |  |  |  |  |  |  |
+| SGLang |  |  |  |  |  |  |  |  |
 
 ## Resource Utilization
 
@@ -107,14 +110,17 @@ under the primary-table configuration.
 | Default context / output | 16k input context, 256 emitted tokens |
 | Request parallelism | 8 requests in flight |
 
-| Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint | Status / evidence |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Baseline, no precomputed KV | N/A |  |  |  |  |  |  | Pending measurement |
-| Cachet + vanilla KV | Disk |  |  |  |  |  |  | Pending measurement |
-| Cachet + vanilla KV | RAM |  |  |  |  |  |  | Pending measurement |
-| Cachet + vanilla KV | Unity Catalog |  |  |  |  |  |  | Pending measurement |
-| Cachet + vanilla KV | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  | Pending measurement |
-| Cachet + KV Packet | Disk |  |  |  |  |  |  | Planned method; not implemented yet |
+| Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline, no precomputed KV | N/A |  |  |  |  |  |  |
+| Cachet + vanilla KV | Disk |  |  |  |  |  |  |
+| Cachet + vanilla KV | RAM |  |  |  |  |  |  |
+| Cachet + vanilla KV | Unity Catalog |  |  |  |  |  |  |
+| Cachet + vanilla KV | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |
+| Cachet + KV Packet | Disk |  |  |  |  |  |  |
+
+The `Cachet + KV Packet` resource-utilization row is reserved for a future
+implementation.
 
 ## Appendix Evidence
 

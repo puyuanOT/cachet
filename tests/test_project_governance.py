@@ -1237,6 +1237,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Storage tier" in root_readme
     assert "Cache location" not in root_readme
     assert "Cache location" not in benchmark_template_readme
+    assert "Status / evidence" not in root_readme
+    assert "Status / evidence" not in benchmark_template_readme
     assert "Hybrid RAM / disk / Unity Catalog" in root_readme
     assert "not measured yet" in root_readme
     assert "not implemented yet" in root_readme

@@ -5,9 +5,8 @@ Use this template for new public benchmark result folders under
 Folder names should be stable and descriptive, not date or run-id based.
 
 Do not infer or estimate missing values. If a metric is absent from committed
-evidence, leave the numeric cell blank and explain the status in the
-`Status / evidence` column. A blank numeric cell means not measured yet; not
-zero.
+evidence, leave the numeric cell blank and document the limitation below. A
+blank numeric cell means not measured yet; not zero.
 
 ## Table Configuration
 
@@ -26,19 +25,19 @@ zero.
 
 ## Main Result Table
 
-| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score | Status / evidence |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Example method | 16k |  |  |  |  |  |  |  |  | Pending measurement |
+| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Example method | 16k |  |  |  |  |  |  |  |  |
 
 Use the same columns even when a result only covers a subset. If the result is
-not a serving-latency benchmark, mark latency cells blank and explain the scope
-in `Status / evidence`.
+not a serving-latency benchmark, leave latency cells blank and explain the scope
+in `Limitations`.
 
 ## Resource Utilization
 
-| Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint | Status / evidence |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| Example method | Disk |  |  |  |  |  |  | Pending measurement |
+| Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Example method | Disk |  |  |  |  |  |  |
 
 Do not use storage throughput as a synonym for memory consumption. Report disk
 or Unity Catalog throughput only when the evidence directly measures those
