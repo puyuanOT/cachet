@@ -1,7 +1,7 @@
 # Current Databricks Benchmark Mirrors
 
 This page records the QA run provenance behind the public benchmark reports.
-It is intentionally secondary to [`../current/`](../current/).
+It is intentionally secondary to [benchmark root](../).
 
 | Public Result | Mirror | QA Run | Hardware | Result |
 | --- | --- | --- | --- | --- |

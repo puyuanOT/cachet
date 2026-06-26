@@ -3,7 +3,7 @@
 Appendix evidence for repeated Cachet-backed cache hits on one synthetic NIAH
 prompt. It is useful integration evidence, not the full SGLang release-suite
 benchmark and not a row in the fixed main table in
-[`../../../current/`](../../../current/).
+[benchmark root](../../../).
 
 ## Experimental Setup
 

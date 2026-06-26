@@ -1,7 +1,7 @@
 # Native Engine Benchmark Index
 
 Native engine probes are integration evidence, not serving-latency benchmark
-rows. Use [`../current/`](../current/) for the main table and ablations.
+rows. Use [benchmark root](../) for the main table and ablations.
 
 Existing native connector evidence moved to:
 

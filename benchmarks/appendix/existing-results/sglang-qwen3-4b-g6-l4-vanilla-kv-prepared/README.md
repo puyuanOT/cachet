@@ -2,7 +2,7 @@
 
 Appendix evidence for a prepared live SGLang benchmark through HiCache. This
 proves correctness and cache-hit integration; it is not a speedup claim and is
-not a row in the fixed main table in [`../../../current/`](../../../current/).
+not a row in the fixed main table in [benchmark root](../../../).
 
 ## Experimental Setup
 

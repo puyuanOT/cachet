@@ -29,7 +29,7 @@ folders.
 
 For a product overview, start with [`../README.md`](../README.md), then open
 [`getting-started.md`](getting-started.md) and [`concepts.md`](concepts.md).
-Use [`../benchmarks/current/README.md`](../benchmarks/current/README.md) only
+Use [`../benchmarks/README.md`](../benchmarks/README.md) only
 when you want the current benchmark answer.
 
 For serving-engine work, start with

@@ -15,7 +15,7 @@ native GPU KV blocks.
 | What does it accelerate? | Repeated long document prefixes with short request-specific suffixes |
 | What engines are in this repo? | Thin vLLM and SGLang adapter modules live here and ship with `cachet-kv` |
 | What is the current target? | Qwen3 4B Instruct on AWS g6/L4 Databricks, `g6.8xlarge` |
-| Where are the latest results? | [`benchmarks/current/README.md`](../../benchmarks/current/) |
+| Where are the latest results? | [`benchmarks/README.md`](../../benchmarks/) |
 
 Current release evidence includes a strict vLLM g6/L4 benchmark with unchanged
 quality and 5.27x-6.97x TTFT speedups, Memory/Disk/Unity Catalog storage-reader
@@ -117,9 +117,10 @@ and release evidence in one repository. The human entry points are:
 - [`docs/evidence-policy.md`](../evidence-policy.md) explains what belongs in
   `benchmarks/`, `docs/release-ops/evidence/`, `docs/release-ops/pr-evidence/`, release bundles, and ignored
   `databricks-runs/` scratch output.
-- [`benchmarks/current/README.md`](../../benchmarks/current/) is the paper-style
-  benchmark answer; [`benchmarks/README.md`](../../benchmarks/README.md) indexes the
-  appendix evidence folders.
+- [`benchmarks/README.md`](../../benchmarks/) is the paper-style
+  benchmark answer; [`benchmarks/appendix/existing-results/`](../../benchmarks/appendix/existing-results/)
+  preserves committed evidence that does not match the fixed main-table
+  configuration.
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
   the implementation package and migration boundary.
@@ -916,10 +917,9 @@ the explicit non-default `aws-g5-a10g` target for `g5.8xlarge` compatibility
 runs. It defines a common schema for comparing the no-cache prefill baseline
 with document KV-cache reuse:
 
-Curated, human-readable benchmark reports are tracked under
-[`benchmarks/`](../../benchmarks/README.md). Start with
-[`benchmarks/current/`](../../benchmarks/current/) for the paper-style main
-table and ablations, then open
+Curated, human-readable benchmark reports are tracked in
+[`benchmarks/README.md`](../../benchmarks/README.md). Start there for the
+paper-style main table and ablations, then open
 [`benchmarks/appendix/existing-results/`](../../benchmarks/appendix/existing-results/)
 for committed evidence that does not match the fixed main-table configuration.
 Use the Databricks artifact snapshot at

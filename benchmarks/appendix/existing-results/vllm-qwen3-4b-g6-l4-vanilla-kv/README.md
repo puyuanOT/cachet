@@ -1,7 +1,7 @@
 # vLLM Qwen3 4B On g6/L4 With Vanilla KV
 
 Appendix evidence for a prior Cachet vLLM speedup benchmark on g6/L4 hardware.
-It is not a row in the fixed main table in [`../../../current/`](../../../current/).
+It is not a row in the fixed main table in [benchmark root](../../../).
 
 ## Experimental Setup
 

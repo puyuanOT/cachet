@@ -1,7 +1,7 @@
 # Existing Benchmark Evidence
 
 These folders preserve committed benchmark and integration evidence that does
-not match the fixed main-table configuration in [`../../current/`](../../current/).
+not match the fixed main-table configuration in [benchmark root](../../).
 They remain useful for audits, release evidence, and implementation history.
 
 | Result folder | Evidence type | Key result | Main-table mismatch |

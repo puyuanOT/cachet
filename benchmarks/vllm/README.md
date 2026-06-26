@@ -1,7 +1,7 @@
 # vLLM Benchmark Index
 
 The main vLLM comparison now lives in the paper-style benchmark appendix at
-[`../current/`](../current/). The fixed target configuration is Qwen3-4B-Instruct
+[benchmark root](../). The fixed target configuration is Qwen3-4B-Instruct
 on vLLM, `g5.8xlarge`, 8 parallel requests, 256 emitted tokens, and disk-backed
 Cachet methods.
 

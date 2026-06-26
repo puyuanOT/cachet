@@ -2,7 +2,7 @@
 
 Appendix evidence for Cachet memory, disk, and real Unity Catalog Volume
 reader throughput on the g6/L4 target. It is not a model-serving benchmark and
-does not populate the fixed main table in [`../../../current/`](../../../current/).
+does not populate the fixed main table in [benchmark root](../../../).
 
 ## Experimental Setup
 

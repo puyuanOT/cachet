@@ -1171,7 +1171,6 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     sglang_archive_root = archive_root / "sglang-smoke"
 
     root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
-    current_readme = (benchmark_root / "current" / "README.md").read_text(encoding="utf-8")
     appendix_readme = (benchmark_root / "appendix" / "README.md").read_text(encoding="utf-8")
     existing_results_readme = (appendix_results_root / "README.md").read_text(encoding="utf-8")
     vllm_readme = (benchmark_root / "vllm" / "README.md").read_text(encoding="utf-8")
@@ -1191,7 +1190,6 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
 
     compact_root_readme = " ".join(root_readme.split())
-    compact_current_readme = " ".join(current_readme.split())
     compact_existing_results_readme = " ".join(existing_results_readme.split())
     compact_vllm_readme = " ".join(vllm_readme.split())
     compact_sglang_readme = " ".join(sglang_readme.split())
@@ -1203,8 +1201,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_docs_readme = " ".join(docs_readme.split())
 
     assert "public benchmark appendix for Cachet" in compact_root_readme
-    assert "table-first" in compact_root_readme
-    assert "Main Table Contract" in root_readme
+    assert "one main comparison table first, then ablations" in compact_root_readme
+    assert "Main Table Configuration" in root_readme
+    assert "Directory Layout" in root_readme
     assert "appendix/existing-results/" in root_readme
     assert "Cachet + KV Packet" in root_readme
     assert "Folder names should be stable and descriptive" in benchmark_template_readme
@@ -1218,7 +1217,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "Resource Utilization",
         "Appendix Evidence",
     ):
-        assert heading in current_readme
+        assert heading in root_readme
     for heading in (
         "Table Configuration",
         "Main Result Table",
@@ -1227,18 +1226,18 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "Provenance",
     ):
         assert heading in benchmark_template_readme
-    assert "blank numeric cell means not measured yet; not zero" in compact_current_readme
-    assert "Qwen3-4B-Instruct" in current_readme
-    assert "8 requests in flight" in current_readme
-    assert "Emit 256 tokens" in current_readme
-    assert "8k" in current_readme
-    assert "16k" in current_readme
-    assert "32k" in current_readme
-    assert "Cachet + KV Packet" in current_readme
-    assert "Hybrid RAM / disk / Unity Catalog" in current_readme
-    assert "not benchmarked yet" in current_readme
-    assert "not implemented yet" in current_readme
-    assert "[`../current/`](../current/)" in appendix_readme
+    assert "blank numeric cell means not measured yet; not zero" in compact_root_readme
+    assert "Qwen3-4B-Instruct" in root_readme
+    assert "8 requests in flight" in root_readme
+    assert "Emit 256 tokens" in root_readme
+    assert "8k" in root_readme
+    assert "16k" in root_readme
+    assert "32k" in root_readme
+    assert "Cachet + KV Packet" in root_readme
+    assert "Hybrid RAM / disk / Unity Catalog" in root_readme
+    assert "not measured yet" in root_readme
+    assert "not implemented yet" in root_readme
+    assert "[benchmark root](../)" in appendix_readme
     assert "does not match the fixed main-table configuration" in compact_existing_results_readme
     assert "vllm-qwen3-4b-g6-l4-vanilla-kv" in existing_results_readme
     assert "fixed target configuration" in compact_vllm_readme
@@ -1255,11 +1254,11 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "should not dominate the public benchmark experience" in compact_archive_readme
     assert "not as the current public benchmark result surface" in compact_sglang_archive_readme
 
-    assert "[`benchmarks/current/README.md`](benchmarks/current/)" in project_readme
-    assert "[`benchmarks/`](../../benchmarks/README.md)" in maintainer_reference
+    assert "[`benchmarks/README.md`](benchmarks/)" in project_readme
+    assert "[`benchmarks/README.md`](../../benchmarks/)" in maintainer_reference
     assert "`../benchmarks/README.md`" in docs_readme
     assert "benchmarks/appendix/existing-results/" in matrix_text
-    assert "`benchmarks/current/` is the paper-style human-facing benchmark index" in matrix_text
+    assert "`benchmarks/README.md` is the paper-style human-facing benchmark index" in matrix_text
     assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
 
     public_result_folders = {
@@ -1273,7 +1272,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     for folder in public_result_folders:
         assert (benchmark_root / folder / "README.md").is_file()
         assert not any(part.startswith("2026-") for part in Path(folder).parts)
-        assert folder in root_readme or folder in current_readme
+        assert folder in root_readme
 
     assert not (benchmark_root / "sglang" / "archive").exists()
     archived_sglang_folders = {
@@ -1327,7 +1326,6 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
         "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
         "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-        "current/README.md",
         "databricks/CURRENT.md",
         "databricks/README.md",
         "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/README.md",

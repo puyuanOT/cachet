@@ -69,6 +69,6 @@ documented in [`release-ops/README.md`](release-ops/README.md).
 
 ## Benchmarks
 
-Use [`../benchmarks/current/README.md`](../benchmarks/current/) for the current
+Use [`../benchmarks/README.md`](../benchmarks/) for the current
 human-readable benchmark summary. Keep raw run output out of the source tree;
 promote only compact, sanitized reports when they support a public claim.

@@ -1,7 +1,7 @@
 # Databricks Benchmark Mirrors
 
 This folder is for audits, not first-time benchmark reading. Start with
-[`../current/`](../current/) for the user-facing performance summary.
+[benchmark root](../) for the user-facing performance summary.
 
 The folders here mirror sanitized QA Databricks records for appendix evidence.
 They stay at stable paths because release-evidence JSON refers to them:

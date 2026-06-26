@@ -7,7 +7,7 @@ decode, routing, and cleanup.
 
 Use this guide when wiring the current provider-backed vLLM or SGLang paths into
 a deployment. For benchmark evidence, start with the paper-style tables in
-`benchmarks/current/`; existing committed result folders live under
+`benchmarks/`; existing committed result folders live under
 `benchmarks/appendix/existing-results/`, and `benchmarks/databricks/` mirrors
 the Databricks status and release-source records for audit.
 

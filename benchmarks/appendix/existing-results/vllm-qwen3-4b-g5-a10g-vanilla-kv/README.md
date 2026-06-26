@@ -1,7 +1,7 @@
 # vLLM Qwen3 4B On g5/A10G With Vanilla KV
 
 Appendix evidence for a prior vLLM g5/A10G compatibility benchmark. It is not
-a row in the fixed main table in [`../../../current/`](../../../current/).
+a row in the fixed main table in [benchmark root](../../../).
 
 ## Experimental Setup
 

@@ -1,7 +1,7 @@
 # SGLang Benchmark Index
 
 The main benchmark table is now fixed to vLLM on `g5.8xlarge`; see
-[`../current/`](../current/). SGLang appears in the serving-platform ablation
+[benchmark root](../). SGLang appears in the serving-platform ablation
 table with blank cells until a matching run exists.
 
 Existing SGLang evidence moved to:
