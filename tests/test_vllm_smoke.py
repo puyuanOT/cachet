@@ -966,6 +966,22 @@ def test_validate_prepared_benchmark_handoffs_skips_builtin_smoke(tmp_path):
     assert not config.prepared_handoff_coverage_path.exists()
 
 
+def test_validate_prepared_benchmark_handoffs_skips_baseline_only_prepared_run(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-baseline-only",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        benchmark_arms=("baseline_prefill",),
+    )
+
+    assert config.requires_prepared_handoff_metadata is False
+    assert validate_prepared_benchmark_handoffs(config, dataset_paths) is None
+    assert not config.prepared_handoff_coverage_path.exists()
+
+
 def test_validate_prepared_benchmark_handoffs_writes_ok_artifact(tmp_path):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
@@ -1192,6 +1208,23 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
     assert metadata["max_num_seqs"] == 8
     assert metadata["gpu_memory_utilization"] == 0.72
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
+
+
+def test_metadata_marks_baseline_only_prepared_run_as_not_requiring_handoffs(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="baseline-v1-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        benchmark_arms=("baseline_prefill",),
+    )
+
+    metadata = build_metadata(config)
+
+    assert metadata["dataset_source"] == "prepared"
+    assert metadata["requires_kv_transfer_params"] is False
+    assert metadata["benchmark_arms"] == ["baseline_prefill"]
 
 
 def test_parse_args_builds_config_with_overrides(tmp_path):

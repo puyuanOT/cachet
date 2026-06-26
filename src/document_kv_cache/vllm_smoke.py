@@ -299,6 +299,14 @@ class VLLMSmokeBenchmarkConfig:
     def uses_prepared_datasets(self) -> bool:
         return bool(self.dataset_specs)
 
+    @property
+    def runs_document_kv_cache_arm(self) -> bool:
+        return not self.benchmark_arms or CACHE_REUSE_ARM in self.benchmark_arms
+
+    @property
+    def requires_prepared_handoff_metadata(self) -> bool:
+        return self.uses_prepared_datasets and self.runs_document_kv_cache_arm
+
 
 def _validated_benchmark_arms(value: Sequence[str]) -> tuple[str, ...]:
     if not value:
@@ -347,7 +355,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
     metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
-    if config.uses_prepared_datasets:
+    if config.requires_prepared_handoff_metadata:
         metadata["prepared_handoff_coverage_path"] = str(config.prepared_handoff_coverage_path)
     if config.handoff_generation is not None:
         metadata["prepared_handoff_generation_path"] = str(config.prepared_handoff_generation_path)
@@ -388,7 +396,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
             if config.uses_prepared_datasets
             else None
         ),
-        "requires_kv_transfer_params": config.uses_prepared_datasets,
+        "requires_kv_transfer_params": config.requires_prepared_handoff_metadata,
         "generates_prepared_handoffs": config.handoff_generation is not None,
         "benchmark_handoff_generation": (
             None if config.handoff_generation is None else config.handoff_generation.to_metadata()
@@ -557,9 +565,9 @@ def validate_prepared_benchmark_handoffs(
     config: VLLMSmokeBenchmarkConfig,
     dataset_paths: dict[str, Path],
 ) -> dict[str, object] | None:
-    """Require prepared benchmark rows to carry loadable Cachet handoff params."""
+    """Require prepared benchmark rows to carry loadable Cachet handoff params when Cachet runs."""
 
-    if not config.uses_prepared_datasets:
+    if not config.requires_prepared_handoff_metadata:
         return None
     record = prepared_benchmark_handoff_coverage_record(config, dataset_paths)
     write_json(config.prepared_handoff_coverage_path, record)
