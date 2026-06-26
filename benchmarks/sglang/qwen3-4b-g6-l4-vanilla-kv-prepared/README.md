@@ -1,41 +1,65 @@
 # SGLang Qwen3 4B On g6/L4 With Vanilla KV
 
-This is the current prepared SGLang live benchmark for Cachet. It proves the
-SGLang serving path can consume Cachet-backed external KV through HiCache with
-correct answers and validated cache hits. It is not a speedup claim.
+Prepared live SGLang benchmark for Cachet through HiCache. This proves
+correctness and cache-hit integration; it is not a speedup claim.
+
+## Experimental Setup
 
 | Field | Value |
 | --- | --- |
-| Serving platform | SGLang |
+| Engine | SGLang |
 | Model | `qwen3:4b-instruct` |
 | Hardware | AWS g6/L4, `g6.8xlarge` |
-| Method | Vanilla external KV through SGLang HiCache |
-| Baseline | no-cache prefill |
-| Datasets | Biography, HotpotQA, MusiQue, NIAH |
-| Measurements | 16 |
-| Cache-hit validations | 8/8 Cachet-backed cache arms passed |
-| Quality | answer-found delta `0.0` on every dataset |
-| Result | Correct and integrated, but slower than baseline on short prompts |
+| Method | Vanilla external KV via HiCache |
+| Baseline arm | `baseline_prefill` |
+| Cache arm | `document_kv_cache` |
+| Dataset scope | Biography, HotpotQA, MusiQue, NIAH |
+| Repeats / measurements | 2 repeats per arm/dataset; 16 measurements |
+| Prompt-token scope | report-row prompt mean not recorded; cache-validation prompt tokens 120-189 |
+| Evidence file | [`success_run.json`](success_run.json) |
 
-## Result
+## Main Latency Results
 
-| Dataset | Baseline p50 TTFT | Cache p50 TTFT | TTFT Speedup | Baseline p50 TTC | Cache p50 TTC | TTC Speedup | Validated Cached Tokens |
+| Dataset | Baseline p50 TTFT | Cachet p50 TTFT | TTFT speedup | Baseline p50 TTC | Cachet p50 TTC | TTC speedup | Validated cached tokens |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Biography | `0.197s` | `0.204s` | `0.966x` | `0.727s` | `0.753s` | `0.966x` | `96` |
-| HotpotQA | `0.081s` | `0.257s` | `0.314x` | `1.412s` | `1.585s` | `0.891x` | `144` |
-| MusiQue | `0.081s` | `0.225s` | `0.358x` | `1.416s` | `1.557s` | `0.910x` | `144` |
-| NIAH | `0.077s` | `0.245s` | `0.313x` | `1.410s` | `1.576s` | `0.895x` | `96` |
+| biography | 0.197 s | 0.204 s | 0.966x | 0.727 s | 0.753 s | 0.966x | 96 |
+| hotpotqa | 0.081 s | 0.257 s | 0.314x | 1.412 s | 1.585 s | 0.891x | 144 |
+| musique | 0.081 s | 0.225 s | 0.358x | 1.416 s | 1.557 s | 0.910x | 144 |
+| niah | 0.077 s | 0.245 s | 0.313x | 1.410 s | 1.576 s | 0.895x | 96 |
 
-## Interpretation
+Speedup below `1.0x` means Cachet was slower than baseline on these short
+prepared prompts.
 
-Cachet's SGLang path is functionally working on the target hardware: request
-metadata reaches HiCache, generated handoff page keys match live runtime keys,
-external cache hits are validated, and quality gates pass. The current prepared
-prompts are short enough that Cachet's handoff overhead exceeds the saved
-prefill time.
+## Quality Results
+
+| Dataset | Baseline answer-found | Cachet answer-found | Answer-found delta | Baseline exact-match | Cachet exact-match | Exact-match delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| biography | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| hotpotqa | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| musique | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| niah | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+
+## Memory / Footprint
+
+| Metric | Value |
+| --- | --- |
+| Cache-hit validations | 8/8 passed |
+| Validated cached tokens | 96-144 |
+| Peak GPU memory | not measured |
+| CPU RSS | not measured |
+| Cache-resident footprint | not measured |
+| Storage throughput | not measured in this serving benchmark |
+
+## Limitations
+
+| Limitation | Current state |
+| --- | --- |
+| Performance | No latency speedup on current short prepared prompts |
+| Repeat count | 2 repeats per arm/dataset |
+| Prompt tokens | report-row prompt means are not recorded in this artifact |
+| Memory | Serving peak GPU memory, CPU RSS, and cache footprint are not measured |
 
 ## Provenance
 
-`success_run.json` is a compact, sanitized snapshot of the successful live
-benchmark, including import probes, handoff generation, coverage, measurements,
-comparisons, and cache-hit validations.
+[`success_run.json`](success_run.json) contains the sanitized terminal run state,
+handoff generation, measurements, comparisons, and cache-hit validations.

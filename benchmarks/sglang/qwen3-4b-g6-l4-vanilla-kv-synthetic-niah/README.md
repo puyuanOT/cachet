@@ -1,29 +1,57 @@
 # SGLang Synthetic NIAH With Vanilla KV
 
-This small SGLang benchmark validates repeated live Cachet-backed cache hits on
-one synthetic NIAH prompt. It is useful integration evidence, but it is not the
-full SGLang release-suite benchmark.
+Small SGLang live benchmark for repeated Cachet-backed cache hits on one
+synthetic NIAH prompt. It is useful integration evidence, not the full SGLang
+release-suite benchmark.
+
+## Experimental Setup
 
 | Field | Value |
 | --- | --- |
-| Serving platform | SGLang |
+| Engine | SGLang |
 | Model | `qwen3:4b-instruct` |
 | Hardware | AWS g6/L4, `g6.8xlarge` |
-| Method | Vanilla external KV through SGLang HiCache |
-| Scope | One synthetic NIAH prompt |
-| Repeats | Two baseline repeats, two Cachet cache-arm repeats |
-| Cache-hit validation | Both Cachet repeats validated 175 cached tokens |
-| Quality | answer-found delta `0.0` |
-| Result | Correct cache hits; no speedup on this tiny prompt |
+| Method | Vanilla external KV via HiCache |
+| Baseline arm | `baseline_prefill` |
+| Cache arm | `document_kv_cache` |
+| Dataset scope | One synthetic NIAH prompt |
+| Repeats / measurements | 2 repeats per arm; 4 measurements |
+| Prompt-token scope | report-row mean prompt tokens 92; cache-validation prompt tokens 205 |
+| Evidence file | [`success_run.json`](success_run.json) |
 
-## Result
+## Main Latency Results
 
-Baseline p50 TTFT was `0.3029023165s`; Cachet p50 TTFT was
-`0.3463493005s`, for `0.875x` TTFT speedup. Baseline p50
-time-to-completion was `0.5560753460s`; Cachet p50 time-to-completion was
-`0.6006555025s`, for `0.926x` speedup.
+| Scope | Baseline p50 TTFT | Cachet p50 TTFT | TTFT speedup | Baseline p50 TTC | Cachet p50 TTC | TTC speedup | Validated cached tokens |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| synthetic NIAH | 0.303 s | 0.346 s | 0.875x | 0.556 s | 0.601 s | 0.926x | 175 |
+
+## Quality Results
+
+| Scope | Baseline answer-found | Cachet answer-found | Answer-found delta | Baseline exact-match | Cachet exact-match | Exact-match delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| synthetic NIAH | 1.0 | 1.0 | 0.0 | 1.0 | 1.0 | 0.0 |
+
+## Memory / Footprint
+
+| Metric | Value |
+| --- | --- |
+| Cache-hit validations | 2/2 passed |
+| Validated cached tokens | 175 |
+| Peak GPU memory | not measured |
+| CPU RSS | not measured |
+| Cache-resident footprint | not measured |
+| Storage throughput | not measured in this serving benchmark |
+
+## Limitations
+
+| Limitation | Current state |
+| --- | --- |
+| Dataset scope | One synthetic prompt |
+| Performance | No speedup on this tiny prompt |
+| Repeat count | 2 repeats per arm |
+| Memory | Serving peak GPU memory, CPU RSS, and cache footprint are not measured |
 
 ## Provenance
 
-`success_run.json` contains the sanitized terminal run state, smoke gates, live
-benchmark rows, comparisons, and cache-hit validations.
+[`success_run.json`](success_run.json) contains the sanitized terminal run state,
+smoke gates, live benchmark rows, comparisons, and cache-hit validations.

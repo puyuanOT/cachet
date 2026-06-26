@@ -1,39 +1,68 @@
 # vLLM Qwen3 4B On g6/L4 With Vanilla KV
 
-This is the primary Cachet vLLM benchmark result. It compares vLLM no-cache
-prefill with Cachet's vanilla external KV cache arm on the target g6/L4
-hardware.
+Primary Cachet speedup benchmark for vLLM on the target g6/L4 hardware.
+
+## Experimental Setup
 
 | Field | Value |
 | --- | --- |
-| Serving platform | vLLM |
+| Engine | vLLM |
 | Model | `qwen3:4b-instruct` |
 | Hardware | AWS g6/L4, `g6.8xlarge` |
-| Method | Vanilla external KV cache |
-| Baseline | `baseline_prefill` |
+| Method | Vanilla external KV |
+| Baseline arm | `baseline_prefill` |
 | Cache arm | `document_kv_cache` |
-| Datasets | Biography, HotpotQA, MusiQue, NIAH |
-| Measurements | 24 |
-| Result | Cachet is faster than baseline with unchanged answer quality |
+| Dataset scope | Biography, HotpotQA, MusiQue, NIAH |
+| Repeats / measurements | 3 repeats per arm/dataset; 24 measurements |
+| Prompt-token mean | 15,491-23,231 |
+| Evidence file | [`v1_benchmark.json`](v1_benchmark.json) |
 
-## Result
+## Main Latency Results
 
-| Dataset | TTFT Speedup | Time-To-Completion Speedup | Answer Found Delta |
-| --- | ---: | ---: | ---: |
-| biography | 5.27x | 1.74x | 0.0 |
-| hotpotqa | 6.97x | 2.23x | 0.0 |
-| musique | 5.33x | 2.06x | 0.0 |
-| niah | 6.90x | 2.25x | 0.0 |
+| Dataset | Baseline p50 TTFT | Cachet p50 TTFT | TTFT speedup | Baseline p50 TTC | Cachet p50 TTC | TTC speedup | Repeats |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| biography | 4.841 s | 0.919 s | 5.267x | 9.205 s | 5.285 s | 1.742x | 3 |
+| hotpotqa | 8.878 s | 1.273 s | 6.972x | 13.807 s | 6.202 s | 2.226x | 3 |
+| musique | 8.433 s | 1.583 s | 5.326x | 13.300 s | 6.451 s | 2.062x | 3 |
+| niah | 9.188 s | 1.332 s | 6.896x | 14.126 s | 6.267 s | 2.254x | 3 |
+
+## Quality Results
+
+| Dataset | Baseline answer-found | Cachet answer-found | Answer-found delta | Baseline exact-match | Cachet exact-match | Exact-match delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| biography | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| hotpotqa | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| musique | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| niah | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+
+`answer_found_rate` is the current quality gate. Exact match is a separate raw
+field and is `0.0` for both arms in this evidence.
+
+## Memory / Footprint
+
+| Metric | Value |
+| --- | --- |
+| Peak GPU memory | not measured |
+| CPU RSS | not measured |
+| Cache-resident footprint | not measured |
+| Storage throughput | not measured in this serving benchmark |
+
+## Limitations
+
+| Limitation | Current state |
+| --- | --- |
+| Model coverage | Qwen3 4B Instruct only |
+| Method coverage | Vanilla external KV only |
+| Repeat count | 3 repeats per arm/dataset |
+| Memory | Serving peak GPU memory, CPU RSS, and cache footprint are not measured |
 
 ## Provenance
 
 Sanitized evidence is committed beside this README:
 
-- `v1_benchmark.json`
-- `databricks_run_status.json`
-- `release_evidence.json`
+- [`v1_benchmark.json`](v1_benchmark.json)
+- [`databricks_run_status.json`](databricks_run_status.json)
+- [`release_evidence.json`](release_evidence.json)
 
 The matching Databricks audit mirror is
 [`../../databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/`](../../databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/).
-Raw Databricks responses, credentials, wheels, logs, generated datasets, and
-local scratch output are intentionally excluded.
