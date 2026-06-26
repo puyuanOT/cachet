@@ -1,41 +1,65 @@
 # vLLM Qwen3 4B On g5/A10G With Vanilla KV
 
-This is Cachet's vLLM compatibility benchmark for g5/A10G hardware. It uses
-the same model, method, baseline, and dataset suite as the primary g6/L4
-result.
+Compatibility benchmark for users running vLLM on g5/A10G clusters. The
+primary target remains g6/L4.
+
+## Experimental Setup
 
 | Field | Value |
 | --- | --- |
-| Serving platform | vLLM |
+| Engine | vLLM |
 | Model | `qwen3:4b-instruct` |
 | Hardware | AWS g5/A10G, `g5.8xlarge` |
-| Method | Vanilla external KV cache |
-| Baseline | `baseline_prefill` |
+| Method | Vanilla external KV |
+| Baseline arm | `baseline_prefill` |
 | Cache arm | `document_kv_cache` |
-| Datasets | Biography, HotpotQA, MusiQue, NIAH |
-| Measurements | 24 |
-| Result | Cachet is faster than baseline with unchanged answer quality |
+| Dataset scope | Biography, HotpotQA, MusiQue, NIAH |
+| Repeats / measurements | 3 repeats per arm/dataset; 24 measurements |
+| Prompt-token mean | 15,491-23,231 |
+| Evidence file | [`v1_benchmark.json`](v1_benchmark.json) |
 
-## Result
+## Main Latency Results
 
-| Dataset | TTFT Speedup | Time-To-Completion Speedup | Answer Found Delta |
-| --- | ---: | ---: | ---: |
-| biography | 4.69x | 2.04x | 0.0 |
-| hotpotqa | 6.04x | 2.67x | 0.0 |
-| musique | 4.66x | 2.39x | 0.0 |
-| niah | 5.91x | 2.66x | 0.0 |
+| Dataset | Baseline p50 TTFT | Cachet p50 TTFT | TTFT speedup | Baseline p50 TTC | Cachet p50 TTC | TTC speedup | Repeats |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| biography | 4.460 s | 0.950 s | 4.693x | 6.901 s | 3.388 s | 2.037x | 3 |
+| hotpotqa | 8.116 s | 1.343 s | 6.043x | 10.816 s | 4.047 s | 2.673x | 3 |
+| musique | 7.609 s | 1.632 s | 4.662x | 10.287 s | 4.310 s | 2.387x | 3 |
+| niah | 8.114 s | 1.372 s | 5.915x | 10.816 s | 4.071 s | 2.657x | 3 |
 
-## Scope
+## Quality Results
 
-This result is useful for users running g5 clusters, but it does not replace
-the primary g6/L4 target.
+| Dataset | Baseline answer-found | Cachet answer-found | Answer-found delta | Baseline exact-match | Cachet exact-match | Exact-match delta |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| biography | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| hotpotqa | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| musique | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+| niah | 1.0 | 1.0 | 0.0 | 0.0 | 0.0 | 0.0 |
+
+## Memory / Footprint
+
+| Metric | Value |
+| --- | --- |
+| Peak GPU memory | not measured |
+| CPU RSS | not measured |
+| Cache-resident footprint | not measured |
+| Storage throughput | not measured in this serving benchmark |
+
+## Limitations
+
+| Limitation | Current state |
+| --- | --- |
+| Target status | Compatibility result; g6/L4 is the primary target |
+| Model coverage | Qwen3 4B Instruct only |
+| Method coverage | Vanilla external KV only |
+| Memory | Serving peak GPU memory, CPU RSS, and cache footprint are not measured |
 
 ## Provenance
 
 Sanitized evidence is committed beside this README:
 
-- `v1_benchmark.json`
-- `databricks_run_status.json`
+- [`v1_benchmark.json`](v1_benchmark.json)
+- [`databricks_run_status.json`](databricks_run_status.json)
 
 The matching Databricks audit mirror is
 [`../../databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/`](../../databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/).

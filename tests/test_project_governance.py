@@ -1196,32 +1196,45 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_maintainer_reference = " ".join(maintainer_reference.split())
     compact_docs_readme = " ".join(docs_readme.split())
 
-    assert "how Cachet compares with the no-cache prefill baseline" in compact_root_readme
-    assert "which models, hardware targets, cache methods, and serving engines" in compact_root_readme
-    assert "Vanilla external KV cache" in root_readme
-    assert "KV Packet" in root_readme
-    assert "Planned next" in root_readme
-    assert "folder names such as" in root_readme
-    assert "instead of dates" in root_readme
-    assert "Performance Summary" in current_readme
-    assert "no-cache prefill baseline" in compact_current_readme
-    assert "5.27x-6.97x TTFT speedup" in current_readme
-    assert "8/8 Cachet-backed cache hits" in current_readme
-    assert "no speedup on short prompts" in current_readme
-    assert "Stable Result Folders" in current_readme
-    assert "Supported Methods" in current_readme
-    assert "KV Packet | Not yet benchmarked" in current_readme
-    assert "These are the current Cachet performance results for vLLM" in vllm_readme
-    assert "g5/A10G result is compatibility evidence" in compact_vllm_readme
-    assert "correctness and integration result today" in sglang_readme
-    assert "not as a reason to expect lower latency on every prompt" in compact_sglang_readme
+    assert "public benchmark appendix for Cachet" in compact_root_readme
+    assert "speedup, quality, footprint evidence, and coverage gaps" in compact_root_readme
+    assert "Primary speedup result" in root_readme
+    assert "Missing footprint metrics" in root_readme
+    assert "Coverage Matrix" in root_readme
+    assert "KV Packet | not benchmarked yet" in root_readme
+    assert "Folder names should be stable and descriptive" in benchmark_template_readme
+    assert "Do not invent missing numbers" in benchmark_template_readme
+    for heading in (
+        "Experimental Setup",
+        "Main Latency Results",
+        "Quality Results",
+        "Memory / Footprint",
+        "Coverage Matrix",
+        "Limitations",
+        "Provenance",
+    ):
+        assert heading in current_readme
+        assert heading in benchmark_template_readme
+    assert "what was tested, on what hardware, how many times, how fast" in compact_root_readme
+    assert "5.27x-6.97x" in current_readme
+    assert "Serving peak GPU memory, CPU RSS, and cache-resident footprint are not measured" in compact_current_readme
+    assert "Storage throughput is not memory consumption" in current_readme
+    assert "`answer_found_rate` is the current quality gate" in current_readme
+    assert "exact-match rate is also shown" in compact_current_readme
+    assert "268,435,456 total bytes" in current_readme
+    assert "3,538,944 copied bytes" in current_readme
+    assert "not benchmarked yet" in current_readme
+    assert "compare vLLM no-cache prefill with Cachet vanilla external KV" in vllm_readme
+    assert "g5/A10G run is compatibility evidence" in compact_vllm_readme
+    assert "Correctness/cache-hit benchmark; no speedup" in sglang_readme
     assert "Historical Runs" in sglang_readme
     assert "not public benchmark results" in compact_sglang_readme
-    assert "not model-serving benchmarks" in storage_readme
-    assert "Integration Evidence" in native_engine_readme
+    assert "not model-serving latency benchmarks" in storage_readme
+    assert "not memory-consumption measurements" in " ".join(storage_readme.split())
+    assert "Copied KV Footprint" in native_engine_readme
+    assert "not latency or quality benchmarks" in native_engine_readme
     assert "audits, not first-time benchmark reading" in databricks_readme
     assert "QA run provenance" in current_databricks_snapshot
-    assert "date or run-id based" in benchmark_template_readme
     assert "should not dominate the public benchmark experience" in compact_archive_readme
     assert "not as the current public benchmark result surface" in compact_sglang_archive_readme
 
