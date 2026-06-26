@@ -27,6 +27,7 @@ from document_kv_cache.databricks_job import (
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.vllm_smoke import (
+    BENCHMARK_ARM_IDS,
     DEFAULT_LOCAL_ROOT,
     SERVER_HOST,
     SERVER_PORT,
@@ -111,6 +112,8 @@ class DatabricksVLLMSmokeJobConfig:
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
     benchmark_repeats: int = 1
+    request_parallelism: int = 1
+    benchmark_arms: tuple[str, ...] = ()
     payload_cache_max_bytes: int = 0
     dataset_specs: tuple[str, ...] = ()
     benchmark_handoff_generator_factory: str | None = None
@@ -166,6 +169,11 @@ class DatabricksVLLMSmokeJobConfig:
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
             raise ValueError("benchmark_repeats must be a positive integer")
+        if isinstance(self.request_parallelism, bool) or not isinstance(self.request_parallelism, int):
+            raise TypeError("request_parallelism must be a positive integer")
+        if self.request_parallelism <= 0:
+            raise ValueError("request_parallelism must be a positive integer")
+        object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -253,6 +261,22 @@ def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> 
     raise ValueError(f"Unable to derive V1 hardware target from node_type_id {node_type_id!r}")
 
 
+def _validated_benchmark_arms(value: Sequence[str]) -> tuple[str, ...]:
+    if not value:
+        return ()
+    arms: list[str] = []
+    for index, arm_id in enumerate(value):
+        if not isinstance(arm_id, str) or not arm_id:
+            raise ValueError(f"benchmark_arms[{index}] must be a non-empty string")
+        arms.append(arm_id)
+    if len(set(arms)) != len(arms):
+        raise ValueError(f"benchmark_arms must not contain duplicates: {arms}")
+    unknown = sorted(set(arms).difference(BENCHMARK_ARM_IDS))
+    if unknown:
+        raise ValueError(f"Unknown benchmark arms: {unknown}")
+    return tuple(arms)
+
+
 def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
     parameters = [
         "--benchmark-id",
@@ -285,9 +309,13 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         str(config.hardware_target),
         "--benchmark-repeats",
         str(config.benchmark_repeats),
+        "--request-parallelism",
+        str(config.request_parallelism),
     ]
     if config.payload_cache_max_bytes:
         parameters.extend(["--payload-cache-max-bytes", str(config.payload_cache_max_bytes)])
+    for arm_id in config.benchmark_arms:
+        parameters.extend(["--benchmark-arm", arm_id])
     for dataset_spec in config.dataset_specs:
         parameters.extend(["--dataset", dataset_spec])
     if config.benchmark_handoff_generator_factory is not None:
@@ -346,6 +374,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         help=(
             "Number of baseline/cache arm repeats per benchmark example. "
             "Use values greater than 1 for hot-document cache measurements."
+        ),
+    )
+    parser.add_argument(
+        "--request-parallelism",
+        type=int,
+        default=1,
+        help="Maximum number of benchmark requests issued concurrently by the client.",
+    )
+    parser.add_argument(
+        "--benchmark-arm",
+        action="append",
+        choices=BENCHMARK_ARM_IDS,
+        default=None,
+        help=(
+            "Benchmark only this arm. Repeat for multiple arms; omit to run "
+            "baseline_prefill and document_kv_cache."
         ),
     )
     parser.add_argument(
@@ -414,6 +458,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_num_seqs=args.max_num_seqs,
             gpu_memory_utilization=args.gpu_memory_utilization,
             benchmark_repeats=args.benchmark_repeats,
+            request_parallelism=args.request_parallelism,
+            benchmark_arms=tuple(args.benchmark_arm or ()),
             payload_cache_max_bytes=args.payload_cache_max_bytes,
             dataset_specs=tuple(args.dataset or ()),
             benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,

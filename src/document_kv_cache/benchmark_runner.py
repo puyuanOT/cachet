@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from itertools import islice
 import json
 import math
@@ -141,6 +142,7 @@ class BenchmarkRunResult:
     comparisons: tuple[BenchmarkComparison, ...]
     baseline_arm_id: str = BASELINE_PREFILL_ARM
     cache_arm_id: str = CACHE_REUSE_ARM
+    request_parallelism: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +157,8 @@ class OpenAICompatibleBenchmarkConfig:
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     limit_per_dataset: int | None = None
     repeats: int = 1
+    request_parallelism: int = 1
+    arm_ids: tuple[str, ...] = ()
     shuffle: bool = False
     seed: int | None = None
     api_key: str | None = None
@@ -189,6 +193,8 @@ class OpenAICompatibleBenchmarkConfig:
         ):
             raise ValueError("limit_per_dataset must be positive when provided")
         _validate_positive_int(self.repeats, "repeats")
+        _validate_positive_int(self.request_parallelism, "request_parallelism")
+        object.__setattr__(self, "arm_ids", _validated_arm_ids(self.arm_ids))
         if self.seed is not None and type(self.seed) is not int:
             raise ValueError("seed must be an integer when provided")
         if type(self.shuffle) is not bool:
@@ -297,19 +303,48 @@ def default_benchmark_arms() -> tuple[BenchmarkArm, ...]:
     return (baseline_prefill_arm(), document_kv_cache_arm())
 
 
+def _validated_arm_ids(value: Any) -> tuple[str, ...]:
+    if value in (None, ()):
+        return ()
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        raise ValueError("arm_ids must be a sequence of benchmark arm ids")
+    arm_ids: list[str] = []
+    for index, arm_id in enumerate(value):
+        if not isinstance(arm_id, str) or not arm_id:
+            raise ValueError(f"arm_ids[{index}] must be a non-empty string")
+        arm_ids.append(arm_id)
+    if len(set(arm_ids)) != len(arm_ids):
+        raise ValueError(f"arm_ids must not contain duplicates: {arm_ids}")
+    known_arm_ids = {arm.arm_id for arm in default_benchmark_arms()}
+    unknown = sorted(set(arm_ids).difference(known_arm_ids))
+    if unknown:
+        raise ValueError(f"Unknown benchmark arm ids: {unknown}")
+    return tuple(arm_ids)
+
+
+def _benchmark_arms_for_ids(arm_ids: Sequence[str] = ()) -> tuple[BenchmarkArm, ...]:
+    arms = default_benchmark_arms()
+    if not arm_ids:
+        return arms
+    by_id = {arm.arm_id: arm for arm in arms}
+    return tuple(by_id[arm_id] for arm_id in arm_ids)
+
+
 def run_benchmark_suite(
     suite: BenchmarkSuite,
     engines: Mapping[str, BenchmarkEngine],
     *,
     arms: Sequence[BenchmarkArm] = default_benchmark_arms(),
     repeats: int = 1,
+    request_parallelism: int = 1,
     shuffle: bool = False,
     seed: int | None = None,
 ) -> BenchmarkRunResult:
     if repeats <= 0:
         raise ValueError("repeats must be positive")
+    _validate_positive_int(request_parallelism, "request_parallelism")
     _validate_engine_mapping(arms, engines)
-    measurements: list[InferenceMeasurement] = []
+    requests: list[BenchmarkEngineRequest] = []
     for example in suite.examples:
         prompt_parts = build_prompt_parts(example)
         arm_sequence = list(arms) * repeats
@@ -329,7 +364,8 @@ def run_benchmark_suite(
                 kv_transfer_params=_kv_transfer_params_for_arm(example, arm),
                 repeat_index=repeat_indices_by_arm[arm.arm_id],
             )
-            measurements.append(_run_engine(request, engines[arm.arm_id]))
+            requests.append(request)
+    measurements = _run_requests(requests, engines, request_parallelism=request_parallelism)
     report_rows = summarize_measurements(measurements)
     baseline_arm_id = _arm_id_for_prefill(arms)
     cache_arm_id = _arm_id_for_cache(arms)
@@ -344,6 +380,7 @@ def run_benchmark_suite(
         ),
         baseline_arm_id=baseline_arm_id,
         cache_arm_id=cache_arm_id,
+        request_parallelism=request_parallelism,
     )
 
 
@@ -422,13 +459,14 @@ def run_openai_compatible_v1_benchmark(
         limit_per_dataset=config.limit_per_dataset,
     )
     factory = engine_factory or _openai_compatible_engine
-    arms = default_benchmark_arms()
+    arms = _benchmark_arms_for_ids(config.arm_ids)
     engines = {arm.arm_id: factory(arm, config) for arm in arms}
     return run_benchmark_suite(
         suite,
         engines,
         arms=arms,
         repeats=config.repeats,
+        request_parallelism=config.request_parallelism,
         shuffle=config.shuffle,
         seed=config.seed,
     )
@@ -443,6 +481,7 @@ def benchmark_run_result_to_record(result: BenchmarkRunResult) -> dict[str, Any]
             "hardware_target": result.suite.hardware_target,
             "datasets": list(result.suite.datasets),
             "examples": len(result.suite.examples),
+            "request_parallelism": result.request_parallelism,
         },
         "measurements": [_measurement_to_record(measurement) for measurement in result.measurements],
         "report_rows": [_report_row_to_record(row) for row in result.report_rows],
@@ -462,6 +501,23 @@ def write_benchmark_run_result_json(result: BenchmarkRunResult, path: str | Path
     output_path = local_path(str(path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(benchmark_run_result_to_record(result), indent=2, sort_keys=True) + "\n")
+
+
+def _run_requests(
+    requests: Sequence[BenchmarkEngineRequest],
+    engines: Mapping[str, BenchmarkEngine],
+    *,
+    request_parallelism: int,
+) -> list[InferenceMeasurement]:
+    if request_parallelism == 1:
+        return [_run_engine(request, engines[request.arm.arm_id]) for request in requests]
+    with ThreadPoolExecutor(max_workers=request_parallelism) as executor:
+        return list(
+            executor.map(
+                lambda request: _run_engine(request, engines[request.arm.arm_id]),
+                requests,
+            )
+        )
 
 
 def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> InferenceMeasurement:
@@ -968,6 +1024,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--hardware-target", default=DEFAULT_HARDWARE_TARGET)
     parser.add_argument("--limit-per-dataset", type=int)
     parser.add_argument("--repeats", type=int, default=1)
+    parser.add_argument(
+        "--request-parallelism",
+        type=int,
+        default=1,
+        help="Maximum number of benchmark requests issued concurrently by the client.",
+    )
+    parser.add_argument(
+        "--arm",
+        action="append",
+        choices=(BASELINE_PREFILL_ARM, CACHE_REUSE_ARM),
+        help=(
+            "Benchmark only this arm. Repeat to select multiple arms; omit to run "
+            "baseline_prefill and document_kv_cache."
+        ),
+    )
     parser.add_argument("--shuffle", action="store_true")
     parser.add_argument("--seed", type=int)
     parser.add_argument("--api-key")
@@ -1014,6 +1085,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             hardware_target=args.hardware_target,
             limit_per_dataset=args.limit_per_dataset,
             repeats=args.repeats,
+            request_parallelism=args.request_parallelism,
+            arm_ids=tuple(args.arm or ()),
             shuffle=args.shuffle,
             seed=args.seed,
             api_key=args.api_key,

@@ -1,5 +1,7 @@
 import json
 import math
+import threading
+import time
 
 import pytest
 
@@ -56,6 +58,26 @@ class RecordingEngine:
             time_to_completion_seconds=3.0 if request.arm.uses_cache else 8.0,
             metadata={"arm": request.arm.arm_id},
         )
+
+
+class SlowRecordingEngine(RecordingEngine):
+    def __init__(self, *, delay_seconds: float = 0.05) -> None:
+        super().__init__()
+        self.delay_seconds = delay_seconds
+        self._lock = threading.Lock()
+        self._active = 0
+        self.max_active = 0
+
+    def generate(self, request: BenchmarkEngineRequest) -> BenchmarkGeneration:
+        with self._lock:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        try:
+            time.sleep(self.delay_seconds)
+            return super().generate(request)
+        finally:
+            with self._lock:
+                self._active -= 1
 
 
 class EmptyMessageFailureEngine:
@@ -392,6 +414,7 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
         "hardware_target": "aws-g6-l4",
         "datasets": ["biography", "hotpotqa", "musique", "niah"],
         "examples": 1,
+        "request_parallelism": 1,
     }
     assert record["measurements"][0]["exact_match"] is False
     assert record["measurements"][1]["answer_found"] is True
@@ -475,6 +498,34 @@ def test_run_openai_compatible_v1_benchmark_uses_factory_for_baseline_and_cache(
     assert cache_measurement.prompt_tokens < baseline_measurement.prompt_tokens
 
 
+def test_run_openai_compatible_v1_benchmark_can_select_single_arm(tmp_path):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(
+        json.dumps({"query": "Who wrote notes?", "documents": ["Ada wrote notes."], "answer": "Ada Lovelace"})
+        + "\n",
+        encoding="utf-8",
+    )
+    built: list[str] = []
+
+    def factory(arm, config):
+        built.append(arm.arm_id)
+        return RecordingEngine()
+
+    result = run_openai_compatible_v1_benchmark(
+        OpenAICompatibleBenchmarkConfig(
+            suite_id="v1-openai-baseline-only",
+            dataset_paths={"biography": path},
+            base_url="http://server",
+            arm_ids=(BASELINE_PREFILL_ARM,),
+        ),
+        engine_factory=factory,
+    )
+
+    assert built == [BASELINE_PREFILL_ARM]
+    assert [measurement.arm_id for measurement in result.measurements] == [BASELINE_PREFILL_ARM]
+    assert result.comparisons == ()
+
+
 def test_openai_compatible_benchmark_config_validates_dataset_paths():
     with pytest.raises(ValueError, match="dataset_paths"):
         OpenAICompatibleBenchmarkConfig(suite_id="v1", dataset_paths={}, base_url="http://server")
@@ -518,6 +569,8 @@ def test_openai_compatible_benchmark_config_rejects_empty_limit_and_unsafe_runti
         ("hardware_target", "aws-g6e", "Unsupported V1 hardware target"),
         ("limit_per_dataset", True, "limit_per_dataset must be positive"),
         ("repeats", True, "repeats must be positive"),
+        ("request_parallelism", 0, "request_parallelism must be positive"),
+        ("arm_ids", ("unknown",), "Unknown benchmark arm ids"),
         ("seed", True, "seed must be an integer"),
         ("shuffle", 1, "shuffle must be a boolean"),
         ("max_tokens", True, "max_tokens must be positive"),
@@ -606,6 +659,24 @@ def test_run_benchmark_suite_supports_repeats_and_seeded_shuffle():
     assert [request.repeat_index for request in cache.requests] == [1, 2, 3]
 
 
+def test_run_benchmark_suite_issues_requests_concurrently():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+    baseline = SlowRecordingEngine()
+    baseline_arm = BenchmarkArm(arm_id=BASELINE_PREFILL_ARM, uses_cache=False, description="baseline")
+
+    result = run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: baseline},
+        arms=(baseline_arm,),
+        repeats=4,
+        request_parallelism=4,
+    )
+
+    assert len(result.measurements) == 4
+    assert baseline.max_active > 1
+    assert benchmark_run_result_to_record(result)["suite"]["request_parallelism"] == 4
+
+
 def test_seeded_shuffle_uses_dataset_and_example_identity():
     suite = BenchmarkSuite(
         suite_id="v1-shared-local-id",
@@ -644,6 +715,18 @@ def test_run_benchmark_suite_rejects_non_positive_repeats():
                 CACHE_REUSE_ARM: RecordingEngine(),
             },
             repeats=0,
+        )
+
+
+def test_run_benchmark_suite_rejects_non_positive_request_parallelism():
+    with pytest.raises(ValueError, match="request_parallelism"):
+        run_benchmark_suite(
+            BenchmarkSuite(suite_id="v1", examples=(example(),)),
+            {
+                BASELINE_PREFILL_ARM: RecordingEngine(),
+                CACHE_REUSE_ARM: RecordingEngine(),
+            },
+            request_parallelism=0,
         )
 
 

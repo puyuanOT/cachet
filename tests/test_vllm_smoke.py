@@ -346,9 +346,11 @@ def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
     assert args[args.index("--hardware-target") + 1] == "aws-g6-l4"
     assert args[args.index("--output-json") + 1] == str(tmp_path / "out" / "v1-benchmark.json")
     assert args[args.index("--repeats") + 1] == "1"
+    assert args[args.index("--request-parallelism") + 1] == "1"
     assert "--server-usage" in args
     assert "--cache-base-url" not in args
     assert "--cache-runtime-prompt" not in args
+    assert "--arm" not in args
     assert dataset_args(dataset_paths) == [
         "--dataset",
         f"biography={tmp_path / 'biography.jsonl'}",
@@ -374,6 +376,23 @@ def test_benchmark_runner_args_preserve_configured_hardware_target(tmp_path):
     args = build_benchmark_runner_args(config, dataset_paths)
 
     assert args[args.index("--hardware-target") + 1] == "aws-g5-a10g"
+
+
+def test_benchmark_runner_args_include_parallelism_and_selected_arm(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-g5-baseline",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+        request_parallelism=8,
+        benchmark_arms=("baseline_prefill",),
+    )
+    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+
+    args = build_benchmark_runner_args(config, dataset_paths)
+
+    assert args[args.index("--request-parallelism") + 1] == "8"
+    assert args[args.index("--arm") + 1] == "baseline_prefill"
 
 
 def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tmp_path):
@@ -992,6 +1011,8 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["max_num_seqs"] == 2
     assert metadata["gpu_memory_utilization"] == 0.85
     assert metadata["benchmark_repeats"] == 1
+    assert metadata["request_parallelism"] == 1
+    assert metadata["benchmark_arms"] == []
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
     assert metadata["dependency_override_constraints"] == dependency_override_constraints()
     assert metadata["vllm_server_env_overrides"] == {
@@ -1207,6 +1228,10 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "aws-g5-a10g",
             "--benchmark-repeats",
             "3",
+            "--request-parallelism",
+            "8",
+            "--benchmark-arm",
+            "baseline_prefill",
             "--package-install-spec",
             str(tmp_path / "cachet.whl"),
             "--benchmark-handoff-generator-factory",
@@ -1236,6 +1261,8 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         max_num_seqs=8,
         gpu_memory_utilization=0.72,
         benchmark_repeats=3,
+        request_parallelism=8,
+        benchmark_arms=("baseline_prefill",),
         hardware_target="aws-g5-a10g",
         dataset_specs=specs,
         package_install_spec=str(tmp_path / "cachet.whl"),
@@ -1264,6 +1291,8 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
+        ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
+        ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
         ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         ({"package_install_spec": ""}, "package_install_spec must be non-empty"),

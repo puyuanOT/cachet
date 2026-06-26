@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import gc
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 import json
 import os
@@ -26,6 +26,8 @@ from document_kv_cache.benchmark_handoffs import (
 )
 from document_kv_cache.benchmark_runner import load_v1_jsonl_suite
 from document_kv_cache.benchmarks import (
+    BASELINE_PREFILL_ARM,
+    CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
@@ -72,6 +74,7 @@ CACHE_PREFIX_CACHE_SALT = "cachet-kv-cache"
 PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
+BENCHMARK_ARM_IDS = (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
@@ -174,6 +177,8 @@ class VLLMSmokeBenchmarkConfig:
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
     benchmark_repeats: int = 1
+    request_parallelism: int = 1
+    benchmark_arms: tuple[str, ...] = ()
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     dataset_specs: tuple[str, ...] = ()
     package_install_spec: str | None = None
@@ -211,6 +216,11 @@ class VLLMSmokeBenchmarkConfig:
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
             raise ValueError("benchmark_repeats must be a positive integer")
+        if isinstance(self.request_parallelism, bool) or not isinstance(self.request_parallelism, int):
+            raise TypeError("request_parallelism must be a positive integer")
+        if self.request_parallelism <= 0:
+            raise ValueError("request_parallelism must be a positive integer")
+        object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
         if not isinstance(self.hardware_target, str) or not self.hardware_target.strip():
             raise ValueError("hardware_target must be non-empty")
         validate_v1_hardware_target(self.hardware_target)
@@ -288,6 +298,22 @@ class VLLMSmokeBenchmarkConfig:
     @property
     def uses_prepared_datasets(self) -> bool:
         return bool(self.dataset_specs)
+
+
+def _validated_benchmark_arms(value: Sequence[str]) -> tuple[str, ...]:
+    if not value:
+        return ()
+    arms: list[str] = []
+    for index, arm_id in enumerate(value):
+        if not isinstance(arm_id, str) or not arm_id:
+            raise ValueError(f"benchmark_arms[{index}] must be a non-empty string")
+        arms.append(arm_id)
+    if len(set(arms)) != len(arms):
+        raise ValueError(f"benchmark_arms must not contain duplicates: {arms}")
+    unknown = sorted(set(arms).difference(BENCHMARK_ARM_IDS))
+    if unknown:
+        raise ValueError(f"Unknown benchmark arms: {unknown}")
+    return tuple(arms)
 
 
 def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
@@ -371,6 +397,8 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
         "benchmark_repeats": config.benchmark_repeats,
+        "request_parallelism": config.request_parallelism,
+        "benchmark_arms": list(config.benchmark_arms),
         "hardware_target": config.hardware_target,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "dependency_override_constraints": dependency_override_constraints(),
@@ -1363,6 +1391,8 @@ def build_benchmark_runner_args(
         str(config.timeout_seconds),
         "--repeats",
         str(config.benchmark_repeats),
+        "--request-parallelism",
+        str(config.request_parallelism),
         "--server-usage",
         "--output-json",
         str(config.benchmark_output_path),
@@ -1380,6 +1410,8 @@ def build_benchmark_runner_args(
                 PREPARED_PREFIX_CACHE_SALT_MODE,
             ]
         )
+    for arm_id in config.benchmark_arms:
+        args.extend(["--arm", arm_id])
     args.extend(dataset_args(dataset_paths))
     return args
 
@@ -1522,6 +1554,22 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--request-parallelism",
+        type=int,
+        default=1,
+        help="Maximum number of benchmark requests issued concurrently by the client.",
+    )
+    parser.add_argument(
+        "--benchmark-arm",
+        action="append",
+        choices=BENCHMARK_ARM_IDS,
+        default=None,
+        help=(
+            "Benchmark only this arm. Repeat for multiple arms; omit to run "
+            "baseline_prefill and document_kv_cache."
+        ),
+    )
+    parser.add_argument(
         "--payload-cache-max-bytes",
         type=int,
         default=0,
@@ -1574,6 +1622,8 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
         benchmark_repeats=args.benchmark_repeats,
+        request_parallelism=args.request_parallelism,
+        benchmark_arms=tuple(args.benchmark_arm or ()),
         hardware_target=args.hardware_target,
         payload_cache_max_bytes=args.payload_cache_max_bytes,
         dataset_specs=tuple(args.dataset or ()),

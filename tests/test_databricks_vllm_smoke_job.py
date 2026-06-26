@@ -97,6 +97,8 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
             "aws-g6-l4",
             "--benchmark-repeats",
             "1",
+            "--request-parallelism",
+            "1",
             "--dataset",
             DATASET_SPECS[0],
             "--dataset",
@@ -119,6 +121,8 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
         node_type_id="g6.8xlarge",
         single_user_name=SINGLE_USER_NAME,
         benchmark_repeats=3,
+        request_parallelism=8,
+        benchmark_arms=("baseline_prefill",),
         payload_cache_max_bytes=4096,
         dataset_specs=DATASET_SPECS,
     )
@@ -127,8 +131,12 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
     parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
 
     assert parameters[parameters.index("--benchmark-repeats") + 1] == "3"
+    assert parameters[parameters.index("--request-parallelism") + 1] == "8"
+    assert parameters[parameters.index("--benchmark-arm") + 1] == "baseline_prefill"
     assert parameters[parameters.index("--payload-cache-max-bytes") + 1] == "4096"
     assert parameters.index("--benchmark-repeats") < parameters.index("--dataset")
+    assert parameters.index("--request-parallelism") < parameters.index("--dataset")
+    assert parameters.index("--benchmark-arm") < parameters.index("--dataset")
     assert parameters.index("--payload-cache-max-bytes") < parameters.index("--dataset")
 
 
@@ -152,6 +160,8 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
+        ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
+        ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
         ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         (
