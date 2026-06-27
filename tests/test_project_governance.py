@@ -1226,7 +1226,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "Provenance",
     ):
         assert heading in benchmark_template_readme
-    assert "blank numeric cell means not measured yet; not zero" in compact_root_readme
+    assert "`N/A` means the method is not implemented or the ablation has not been measured" in compact_root_readme
     assert "Qwen3-4B-Instruct" in root_readme
     assert "8 requests in flight" in root_readme
     assert "Emit 256 tokens" in root_readme
@@ -1240,10 +1240,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Status / evidence" not in root_readme
     assert "Status / evidence" not in benchmark_template_readme
     assert "Hybrid RAM / disk / Unity Catalog" in root_readme
-    assert "not measured yet" in root_readme
+    assert "has not been measured under the fixed configuration" in compact_root_readme
     assert "not implemented yet" in root_readme
-    assert "runtime-prompt path failed with an explicit vLLM provider guard" in compact_root_readme
-    assert "primary Cachet latency rows remain unmeasured" in compact_root_readme
+    assert "suffix-only runtime prompts are not supported by the current vLLM native provider" in compact_root_readme
+    assert "Main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k" in compact_root_readme
     assert "[benchmark root](../)" in appendix_readme
     assert "does not match the primary-table configuration" in compact_existing_results_readme
     assert "vllm-qwen3-4b-g6-l4-vanilla-kv" in existing_results_readme
@@ -1269,6 +1269,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
 
     public_result_folders = {
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache",
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache",
         "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary",
         "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv",
@@ -1315,6 +1316,24 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "_template/README.md",
         "appendix/README.md",
         "appendix/existing-results/README.md",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/README.md",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_16k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_32k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_8k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_generation_16k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_generation_32k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_generation_8k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prompt_token_budget_16k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prompt_token_budget_32k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prompt_token_budget_8k.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_baseline.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_baseline.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_baseline.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/vllm_import_probe.json",
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/README.md",
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json",
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_baseline.json",

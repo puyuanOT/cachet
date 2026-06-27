@@ -1,0 +1,52 @@
+{
+  "align_bytes": 4096,
+  "benchmark_id": "primary-table-v2-8k-document_kv_cache-max32768",
+  "dataset_source": "prepared",
+  "datasets": {
+    "biography": {
+      "bundle_output_dir": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/biography",
+      "cache_refs": 1,
+      "enriched_rows": 1,
+      "entries": 1,
+      "input_jsonl": "/dbfs/benchmarks/cachet/primary-table-v2-fc43996-20260627_033434/inputs/8k/biography.jsonl",
+      "manifest_json": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/biography-manifest.json",
+      "output_jsonl": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/biography.handoffs.jsonl",
+      "shard_uri": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/biography/cachet-benchmark.kvpack"
+    },
+    "hotpotqa": {
+      "bundle_output_dir": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/hotpotqa",
+      "cache_refs": 1,
+      "enriched_rows": 1,
+      "entries": 1,
+      "input_jsonl": "/dbfs/benchmarks/cachet/primary-table-v2-fc43996-20260627_033434/inputs/8k/hotpotqa.jsonl",
+      "manifest_json": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/hotpotqa-manifest.json",
+      "output_jsonl": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/hotpotqa.handoffs.jsonl",
+      "shard_uri": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/hotpotqa/cachet-benchmark.kvpack"
+    },
+    "musique": {
+      "bundle_output_dir": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/musique",
+      "cache_refs": 1,
+      "enriched_rows": 1,
+      "entries": 1,
+      "input_jsonl": "/dbfs/benchmarks/cachet/primary-table-v2-fc43996-20260627_033434/inputs/8k/musique.jsonl",
+      "manifest_json": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/musique-manifest.json",
+      "output_jsonl": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/musique.handoffs.jsonl",
+      "shard_uri": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/musique/cachet-benchmark.kvpack"
+    },
+    "niah": {
+      "bundle_output_dir": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/niah",
+      "cache_refs": 1,
+      "enriched_rows": 1,
+      "entries": 1,
+      "input_jsonl": "/dbfs/benchmarks/cachet/primary-table-v2-fc43996-20260627_033434/inputs/8k/niah.jsonl",
+      "manifest_json": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/niah-manifest.json",
+      "output_jsonl": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/niah.handoffs.jsonl",
+      "shard_uri": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768/niah/cachet-benchmark.kvpack"
+    }
+  },
+  "dtype": "bfloat16",
+  "generator_factory": "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator",
+  "generator_python": "/local_disk0/document-kv-vllm-smoke-primary-table-v2-8k-document_kv_cache-max32768/vllm-venv/bin/python",
+  "ok": true,
+  "output_dir": "/local_disk0/cachet-primary-table-v2-8k-handoffs-max32768"
+}

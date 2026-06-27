@@ -5,8 +5,8 @@ Use this template for new public benchmark result folders under
 Folder names should be stable and descriptive, not date or run-id based.
 
 Do not infer or estimate missing values. If a metric is absent from committed
-evidence, leave the numeric cell blank and document the limitation below. A
-blank numeric cell means not measured yet; not zero.
+evidence, write `N/M` for not measured or `N/A` when the metric does not apply,
+and document the limitation below. `N/M` and `N/A` are not zeros.
 
 ## Table Configuration
 
@@ -21,23 +21,24 @@ blank numeric cell means not measured yet; not zero.
 | Method | Baseline, Cachet + vanilla KV, Cachet + KV Packet, etc. |
 | Storage tier / cache residency | RAM, disk, Unity Catalog, hybrid, or `N/A` |
 | Dataset / task scope | Dataset names and example count |
+| Quality metric | Exact match (EM), answer-found, task score, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
 
 ## Main Result Table
 
-| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Example method | 16k |  |  |  |  |  |  |  |  |
+| Example method | 16k | N/M | N/M | N/M | N/M | N/M | N/M | N/M | N/M |
 
 Use the same columns even when a result only covers a subset. If the result is
-not a serving-latency benchmark, leave latency cells blank and explain the scope
+not a serving-latency benchmark, mark latency cells `N/A` and explain the scope
 in `Limitations`.
 
 ## Resource Utilization
 
 | Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Example method | Disk |  |  |  |  |  |  |
+| Example method | Disk | N/M | N/M | N/M | N/M | N/A | N/M |
 
 Do not use storage throughput as a synonym for memory consumption. Report disk
 or Unity Catalog throughput only when the evidence directly measures those

@@ -2,14 +2,11 @@
 
 This directory is the public benchmark appendix for Cachet. It follows a
 research-paper structure: one primary comparison table first, followed by
-focused ablation tables. No values are inferred or estimated. A blank numeric
-cell means not measured yet; not zero.
+focused ablation tables. No values are inferred or estimated.
 
-The filled baseline latency rows are backed by sanitized evidence in
-[`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/).
-That folder also contains full-logical-prompt Cachet handoff-path evidence,
-which is useful appendix evidence but does not satisfy the primary Cachet
-latency definition below. Historical evidence in
+The main table is backed by sanitized evidence in
+[`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/).
+Historical evidence in
 [`appendix/existing-results/`](appendix/existing-results/) does not match the
 primary-table configuration below and should be treated as prior evidence only.
 
@@ -22,46 +19,41 @@ primary-table configuration below and should be treated as prior evidence only.
 | Hardware | AWS g5/A10G, `g5.8xlarge` |
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
-| Input context lengths | 8k, 16k, 32k tokens |
+| Input context lengths | 8k, 16k, 32k class prepared prompts; tokenizer counts are recorded in evidence |
 | KV cache residency for Cachet methods | Local disk, not Unity Catalog |
-| Datasets / score columns | Biography, HotpotQA, MusiQue, NIAH |
-| Score metric | Pending full-dataset evaluation; synthetic prepared-input sanity runs report `answer_found_rate` only |
+| Datasets / quality columns | Biography, HotpotQA, MusiQue, NIAH |
+| Quality metric | Prepared-suite exact match (EM); not full-dataset accuracy |
 | Baseline | No precomputed KV cache |
 | Cachet methods | Vanilla external KV; KV Packet planned but not implemented yet |
-| Cachet latency criterion | Engine request should bind cached KV out of band and compute only uncached prompt suffix plus generated tokens |
-| Baseline evidence | [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json) |
+| Cachet latency criterion | vLLM request attaches Cachet KV-transfer metadata and imports local-disk vanilla KV blocks for the cached prefix |
+| Prompt mode for Cachet rows | `logical`; suffix-only runtime prompts are not supported by the current vLLM native provider |
+| Main evidence | [`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json) |
 | Runtime-prompt canary | [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json) |
 
 ## Main Performance Table
 
-Latency values are seconds. Baseline percentiles are computed over 32
-successful request-level measurements for each context length: four synthetic
-prepared inputs times eight repeats. Cachet + vanilla KV latency cells are
-blank because the current vLLM native provider requires the full logical prompt
-for external-KV loads, while this primary table is intended to measure
-suffix-only inference over precomputed KV. A Databricks canary that enabled the
-runtime-prompt path failed with an explicit vLLM provider guard, so the older
-full-logical-prompt Cachet handoff latencies stay in appendix evidence rather
-than in the main comparison table. `Cachet + KV Packet` is listed for protocol
-completeness and is not implemented yet.
+Latency values are seconds. Percentiles are computed over 32 successful
+request-level measurements per method/context pair: four prepared synthetic
+inputs times eight repeats. EM is exact-match rate for the prepared row in that
+dataset/context. `N/A` means the method is not implemented or the ablation has
+not been measured under the fixed configuration; it is not a zero.
 
-| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline, no precomputed KV | 8k | 4.22 | 9.93 | 20.53 | 28.15 |  |  |  |  |
-| Baseline, no precomputed KV | 16k | 25.40 | 33.43 | 41.32 | 58.02 |  |  |  |  |
-| Baseline, no precomputed KV | 32k | 97.98 | 98.61 | 117.05 | 117.07 |  |  |  |  |
-| Cachet + vanilla KV | 8k |  |  |  |  |  |  |  |  |
-| Cachet + vanilla KV | 16k |  |  |  |  |  |  |  |  |
-| Cachet + vanilla KV | 32k |  |  |  |  |  |  |  |  |
-| Cachet + KV Packet | 8k |  |  |  |  |  |  |  |  |
-| Cachet + KV Packet | 16k |  |  |  |  |  |  |  |  |
-| Cachet + KV Packet | 32k |  |  |  |  |  |  |  |  |
+| Baseline, no precomputed KV | 8k | 2.74 | 10.64 | 21.34 | 29.23 | 1.00 | 0.00 | 0.00 | 0.00 |
+| Baseline, no precomputed KV | 16k | 29.43 | 34.11 | 49.13 | 53.82 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Baseline, no precomputed KV | 32k | 96.17 | 97.35 | 114.66 | 114.97 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Cachet + vanilla KV | 8k | 7.97 | 8.16 | 17.74 | 17.89 | 1.00 | 0.00 | 0.00 | 0.00 |
+| Cachet + vanilla KV | 16k | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Cachet + vanilla KV | 32k | 57.77 | 62.20 | 71.35 | 71.78 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Cachet + KV Packet | 8k | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Cachet + KV Packet | 16k | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Cachet + KV Packet | 32k | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
-Dataset score columns are intentionally blank because this run used one
-synthetic prepared example per dataset/context, not full Biography, HotpotQA,
-MusiQue, or NIAH evaluation sets. The committed evidence reports
-`answer_found_rate=1.00` for those synthetic sanity examples, but that should
-not be interpreted as dataset accuracy.
+The EM columns are prepared-suite quality checks, not full-dataset benchmark
+accuracy. Raw evidence also records `answer_found_rate`; it is intentionally
+not used as the main quality metric because it can make permissive generations
+look artificially perfect.
 
 ## Storage Tier Ablation
 
@@ -75,12 +67,12 @@ not be interpreted as dataset accuracy.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Storage tier | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Storage tier | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| RAM |  |  |  |  |  |  |  |  |
-| Disk |  |  |  |  |  |  |  |  |
-| Unity Catalog |  |  |  |  |  |  |  |  |
-| Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  |
+| RAM | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Disk | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Hybrid RAM / disk / Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
 ## Hardware Ablation
 
@@ -94,10 +86,10 @@ not be interpreted as dataset accuracy.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Hardware | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Hardware | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |
-| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  |
+| AWS g5/A10G, `g5.8xlarge` | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| AWS g6/L4, `g6.8xlarge` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
 ## Serving Platform Ablation
 
@@ -111,10 +103,10 @@ not be interpreted as dataset accuracy.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Serving platform | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Serving platform | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| vLLM |  |  |  |  |  |  |  |  |
-| SGLang |  |  |  |  |  |  |  |  |
+| vLLM | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| SGLang | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
 ## Resource Utilization
 
@@ -127,12 +119,12 @@ not be interpreted as dataset accuracy.
 
 | Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline, no precomputed KV | N/A |  |  |  |  |  |  |
-| Cachet + vanilla KV | Disk |  |  |  |  |  |  |
-| Cachet + vanilla KV | RAM |  |  |  |  |  |  |
-| Cachet + vanilla KV | Unity Catalog |  |  |  |  |  |  |
-| Cachet + vanilla KV | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |
-| Cachet + KV Packet | Disk |  |  |  |  |  |  |
+| Baseline, no precomputed KV | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
+| Cachet + vanilla KV | Disk | N/A | N/A | N/A | N/A | N/A | N/A |
+| Cachet + vanilla KV | RAM | N/A | N/A | N/A | N/A | N/A | N/A |
+| Cachet + vanilla KV | Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A |
+| Cachet + vanilla KV | Hybrid RAM / disk / Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A |
+| Cachet + KV Packet | Disk | N/A | N/A | N/A | N/A | N/A | N/A |
 
 The `Cachet + KV Packet` resource-utilization row is reserved for a future
 implementation.
@@ -141,8 +133,9 @@ implementation.
 
 | Evidence folder | Evidence summary | Notes |
 | --- | --- | --- |
-| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Baseline latency evidence plus full-logical-prompt vLLM Cachet handoff-path evidence at 8k, 16k, and 32k | Baseline rows fill the primary table; Cachet rows in this folder do not because the engine still received the full logical prompt |
-| [`runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed 8k Cachet + vanilla KV canary with `--benchmark-cache-runtime-prompt` | vLLM rejected `document_kv.prompt_text_mode='runtime'`, so the primary Cachet latency rows remain unmeasured |
+| [`primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Uses vLLM logical prompt text plus external-KV handoff metadata; Cachet payloads live on `/local_disk0` |
+| [`runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed 8k Cachet + vanilla KV canary with `--benchmark-cache-runtime-prompt` | Documents why the current vLLM provider uses logical prompt text for external-KV loads |
+| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded baseline and full-logical-prompt Cachet evidence from the earlier prepared suite | Kept as historical evidence; V2 is the current source for the main table |
 
 ## Appendix Evidence
 
@@ -168,8 +161,9 @@ IDs or release-source mirrors.
 | Folder | Purpose |
 | --- | --- |
 | [`appendix/existing-results/`](appendix/existing-results/) | Committed evidence from configurations that do not match the primary-table protocol |
-| [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Sanitized baseline evidence and full-logical-prompt vLLM handoff-path evidence |
-| [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed runtime-prompt vLLM canary explaining why primary Cachet latency cells are blank |
+| [`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Current sanitized main-table evidence |
+| [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded sanitized main-table evidence from an earlier prepared suite |
+| [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed runtime-prompt vLLM canary for suffix-only prompt text |
 | [`databricks/`](databricks/) | Sanitized Databricks audit mirrors kept at stable paths for release evidence |
 | [`_template/`](_template/) | Required table shape for future public benchmark result folders |
 | [`vllm/`](vllm/) | Short index page for vLLM appendix evidence |

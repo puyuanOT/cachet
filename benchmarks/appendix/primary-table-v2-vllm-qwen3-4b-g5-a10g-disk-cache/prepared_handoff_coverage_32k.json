@@ -1,0 +1,17 @@
+{
+  "dataset_source": "prepared",
+  "datasets": {
+    "biography": 1,
+    "hotpotqa": 1,
+    "musique": 1,
+    "niah": 1
+  },
+  "examples": 4,
+  "examples_with_kv_transfer_params": 4,
+  "examples_with_loadable_handoff_references": 4,
+  "invalid_handoff_references": [],
+  "issues": [],
+  "missing_kv_transfer_params": [],
+  "ok": true,
+  "required": true
+}
