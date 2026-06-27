@@ -420,6 +420,24 @@ def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tm
     assert args[args.index("--prefix-cache-salt-mode") + 1] == "per_request"
 
 
+def test_benchmark_runner_args_can_use_runtime_cache_prompt_for_prepared_datasets(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-runtime-prompt",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+        dataset_specs=specs,
+        cache_runtime_prompt=True,
+    )
+
+    args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
+
+    assert args[args.index("--cache-base-url") + 1] == "http://127.0.0.1:8123"
+    assert "--cache-runtime-prompt" in args
+    assert args.index("--cache-runtime-prompt") < args.index("--dataset")
+
+
 def test_prompt_token_budget_rows_use_full_logical_prompts(tmp_path):
     dataset_paths = {}
     for dataset in SMOKE_DATASETS:
@@ -1210,6 +1228,22 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
     assert metadata["document_kv_package_install_spec"] == str(REPO_ROOT)
 
 
+def test_metadata_records_runtime_cache_prompt_mode(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="full-v1-runtime",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        cache_runtime_prompt=True,
+    )
+
+    metadata = build_metadata(config)
+
+    assert metadata["cache_runtime_prompt"] is True
+    assert metadata["cache_prompt_text_mode"] == "runtime"
+
+
 def test_metadata_marks_baseline_only_prepared_run_as_not_requiring_handoffs(tmp_path):
     specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
     config = VLLMSmokeBenchmarkConfig(
@@ -1263,6 +1297,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "3",
             "--request-parallelism",
             "8",
+            "--benchmark-cache-runtime-prompt",
             "--benchmark-arm",
             "baseline_prefill",
             "--package-install-spec",
@@ -1296,6 +1331,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         benchmark_repeats=3,
         request_parallelism=8,
         benchmark_arms=("baseline_prefill",),
+        cache_runtime_prompt=True,
         hardware_target="aws-g5-a10g",
         dataset_specs=specs,
         package_install_spec=str(tmp_path / "cachet.whl"),
@@ -1326,6 +1362,10 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
         ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
+        (
+            {"cache_runtime_prompt": True},
+            "benchmark_cache_runtime_prompt requires prepared dataset specs",
+        ),
         ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         ({"package_install_spec": ""}, "package_install_spec must be non-empty"),

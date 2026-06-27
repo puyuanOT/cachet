@@ -123,6 +123,7 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
         benchmark_repeats=3,
         request_parallelism=8,
         benchmark_arms=("baseline_prefill",),
+        benchmark_cache_runtime_prompt=True,
         payload_cache_max_bytes=4096,
         dataset_specs=DATASET_SPECS,
     )
@@ -133,10 +134,12 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
     assert parameters[parameters.index("--benchmark-repeats") + 1] == "3"
     assert parameters[parameters.index("--request-parallelism") + 1] == "8"
     assert parameters[parameters.index("--benchmark-arm") + 1] == "baseline_prefill"
+    assert "--benchmark-cache-runtime-prompt" in parameters
     assert parameters[parameters.index("--payload-cache-max-bytes") + 1] == "4096"
     assert parameters.index("--benchmark-repeats") < parameters.index("--dataset")
     assert parameters.index("--request-parallelism") < parameters.index("--dataset")
     assert parameters.index("--benchmark-arm") < parameters.index("--dataset")
+    assert parameters.index("--benchmark-cache-runtime-prompt") < parameters.index("--dataset")
     assert parameters.index("--payload-cache-max-bytes") < parameters.index("--dataset")
 
 
@@ -167,6 +170,10 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         (
             {"benchmark_handoff_generator_factory": "document_kv_cache.transformers_generator:build"},
             "requires prepared dataset specs",
+        ),
+        (
+            {"benchmark_cache_runtime_prompt": True},
+            "benchmark_cache_runtime_prompt requires prepared dataset specs",
         ),
         (
             {"benchmark_handoff_output_dir": "/Volumes/catalog/schema/volume/handoffs"},

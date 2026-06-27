@@ -114,6 +114,7 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_repeats: int = 1
     request_parallelism: int = 1
     benchmark_arms: tuple[str, ...] = ()
+    benchmark_cache_runtime_prompt: bool = False
     payload_cache_max_bytes: int = 0
     dataset_specs: tuple[str, ...] = ()
     benchmark_handoff_generator_factory: str | None = None
@@ -174,6 +175,8 @@ class DatabricksVLLMSmokeJobConfig:
         if self.request_parallelism <= 0:
             raise ValueError("request_parallelism must be a positive integer")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
+        if type(self.benchmark_cache_runtime_prompt) is not bool:
+            raise TypeError("benchmark_cache_runtime_prompt must be a boolean")
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -186,6 +189,8 @@ class DatabricksVLLMSmokeJobConfig:
                 raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
             if not self.dataset_specs:
                 raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+        if self.benchmark_cache_runtime_prompt and not self.dataset_specs:
+            raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
         if self.benchmark_handoff_output_dir is not None and not self.benchmark_handoff_output_dir:
             raise ValueError("benchmark_handoff_output_dir must be non-empty when provided")
         if self.benchmark_handoff_output_dir is not None and self.benchmark_handoff_generator_factory is None:
@@ -316,6 +321,8 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         parameters.extend(["--payload-cache-max-bytes", str(config.payload_cache_max_bytes)])
     for arm_id in config.benchmark_arms:
         parameters.extend(["--benchmark-arm", arm_id])
+    if config.benchmark_cache_runtime_prompt:
+        parameters.append("--benchmark-cache-runtime-prompt")
     for dataset_spec in config.dataset_specs:
         parameters.extend(["--dataset", dataset_spec])
     if config.benchmark_handoff_generator_factory is not None:
@@ -393,6 +400,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--benchmark-cache-runtime-prompt",
+        action="store_true",
+        help="Send only runtime suffix prompts for benchmark cache arms.",
+    )
+    parser.add_argument(
         "--payload-cache-max-bytes",
         type=int,
         default=0,
@@ -460,6 +472,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_repeats=args.benchmark_repeats,
             request_parallelism=args.request_parallelism,
             benchmark_arms=tuple(args.benchmark_arm or ()),
+            benchmark_cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
             payload_cache_max_bytes=args.payload_cache_max_bytes,
             dataset_specs=tuple(args.dataset or ()),
             benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,

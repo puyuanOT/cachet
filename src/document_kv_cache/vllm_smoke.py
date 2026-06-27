@@ -179,6 +179,7 @@ class VLLMSmokeBenchmarkConfig:
     benchmark_repeats: int = 1
     request_parallelism: int = 1
     benchmark_arms: tuple[str, ...] = ()
+    cache_runtime_prompt: bool = False
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     dataset_specs: tuple[str, ...] = ()
     package_install_spec: str | None = None
@@ -221,6 +222,8 @@ class VLLMSmokeBenchmarkConfig:
         if self.request_parallelism <= 0:
             raise ValueError("request_parallelism must be a positive integer")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
+        if type(self.cache_runtime_prompt) is not bool:
+            raise TypeError("cache_runtime_prompt must be a boolean")
         if not isinstance(self.hardware_target, str) or not self.hardware_target.strip():
             raise ValueError("hardware_target must be non-empty")
         validate_v1_hardware_target(self.hardware_target)
@@ -238,6 +241,8 @@ class VLLMSmokeBenchmarkConfig:
                 raise TypeError("handoff_generation must be a VLLMPreparedHandoffGenerationConfig")
             if not self.dataset_specs:
                 raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+        if self.cache_runtime_prompt and not self.dataset_specs:
+            raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
 
     @property
     def local_dir(self) -> Path:
@@ -385,8 +390,8 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "dependency_constraints": dependency_constraints(),
         "dataset_source": "prepared" if config.dataset_specs else "smoke",
         "dataset_specs": list(config.dataset_specs),
-        "cache_runtime_prompt": False,
-        "cache_prompt_text_mode": "logical",
+        "cache_runtime_prompt": config.cache_runtime_prompt,
+        "cache_prompt_text_mode": "runtime" if config.cache_runtime_prompt else "logical",
         "prefix_cache_isolation": (
             {
                 "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
@@ -1418,6 +1423,8 @@ def build_benchmark_runner_args(
                 PREPARED_PREFIX_CACHE_SALT_MODE,
             ]
         )
+    if config.cache_runtime_prompt:
+        args.append("--cache-runtime-prompt")
     for arm_id in config.benchmark_arms:
         args.extend(["--arm", arm_id])
     args.extend(dataset_args(dataset_paths))
@@ -1578,6 +1585,11 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--benchmark-cache-runtime-prompt",
+        action="store_true",
+        help="Pass --cache-runtime-prompt to the benchmark runner so cache arms send only the runtime suffix.",
+    )
+    parser.add_argument(
         "--payload-cache-max-bytes",
         type=int,
         default=0,
@@ -1632,6 +1644,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         benchmark_repeats=args.benchmark_repeats,
         request_parallelism=args.request_parallelism,
         benchmark_arms=tuple(args.benchmark_arm or ()),
+        cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
         hardware_target=args.hardware_target,
         payload_cache_max_bytes=args.payload_cache_max_bytes,
         dataset_specs=tuple(args.dataset or ()),
