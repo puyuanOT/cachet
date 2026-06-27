@@ -1242,6 +1242,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Hybrid RAM / disk / Unity Catalog" in root_readme
     assert "not measured yet" in root_readme
     assert "not implemented yet" in root_readme
+    assert "runtime-prompt path failed with an explicit vLLM provider guard" in compact_root_readme
+    assert "primary Cachet latency rows remain unmeasured" in compact_root_readme
     assert "[benchmark root](../)" in appendix_readme
     assert "does not match the primary-table configuration" in compact_existing_results_readme
     assert "vllm-qwen3-4b-g6-l4-vanilla-kv" in existing_results_readme
@@ -1268,6 +1270,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
 
     public_result_folders = {
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache",
+        "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary",
         "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv",
         "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv",
         "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-prepared",
@@ -1320,6 +1323,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_cachet_vanilla_kv.json",
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_baseline.json",
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_cachet_vanilla_kv.json",
+        "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/README.md",
+        "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json",
         "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/README.md",
         "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
         "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",

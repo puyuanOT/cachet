@@ -5,11 +5,13 @@ research-paper structure: one primary comparison table first, followed by
 focused ablation tables. No values are inferred or estimated. A blank numeric
 cell means not measured yet; not zero.
 
-The primary comparison table is backed by the sanitized evidence in
+The filled baseline latency rows are backed by sanitized evidence in
 [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/).
-Historical evidence in [`appendix/existing-results/`](appendix/existing-results/)
-does not match the primary-table configuration below and should be treated as
-prior evidence only.
+That folder also contains full-logical-prompt Cachet handoff-path evidence,
+which is useful appendix evidence but does not satisfy the primary Cachet
+latency definition below. Historical evidence in
+[`appendix/existing-results/`](appendix/existing-results/) does not match the
+primary-table configuration below and should be treated as prior evidence only.
 
 ## Main Table Configuration
 
@@ -26,28 +28,31 @@ prior evidence only.
 | Score metric | Pending full-dataset evaluation; synthetic prepared-input sanity runs report `answer_found_rate` only |
 | Baseline | No precomputed KV cache |
 | Cachet methods | Vanilla external KV; KV Packet planned but not implemented yet |
-| Primary evidence | [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json) |
+| Cachet latency criterion | Engine request should bind cached KV out of band and compute only uncached prompt suffix plus generated tokens |
+| Baseline evidence | [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json) |
+| Runtime-prompt canary | [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json) |
 
 ## Main Performance Table
 
-Latency values are seconds. Percentiles are computed over 32 successful
-request-level measurements for each method/context pair: four synthetic
-prepared inputs times eight repeats. These latency values measure the current
-end-to-end vLLM handoff path. They are not an isolated prefill-elision
-microbenchmark: the Cachet requests still send the full logical prompt, and
-the raw records report vLLM prompt usage equal to the 8k/16k/32k context size.
-Blank numeric cells indicate pending measurements under the primary-table
-configuration. `Cachet + KV Packet` is listed for protocol completeness and is
-not implemented yet.
+Latency values are seconds. Baseline percentiles are computed over 32
+successful request-level measurements for each context length: four synthetic
+prepared inputs times eight repeats. Cachet + vanilla KV latency cells are
+blank because the current vLLM native provider requires the full logical prompt
+for external-KV loads, while this primary table is intended to measure
+suffix-only inference over precomputed KV. A Databricks canary that enabled the
+runtime-prompt path failed with an explicit vLLM provider guard, so the older
+full-logical-prompt Cachet handoff latencies stay in appendix evidence rather
+than in the main comparison table. `Cachet + KV Packet` is listed for protocol
+completeness and is not implemented yet.
 
 | Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Baseline, no precomputed KV | 8k | 4.22 | 9.93 | 20.53 | 28.15 |  |  |  |  |
 | Baseline, no precomputed KV | 16k | 25.40 | 33.43 | 41.32 | 58.02 |  |  |  |  |
 | Baseline, no precomputed KV | 32k | 97.98 | 98.61 | 117.05 | 117.07 |  |  |  |  |
-| Cachet + vanilla KV | 8k | 7.24 | 8.01 | 17.42 | 18.24 |  |  |  |  |
-| Cachet + vanilla KV | 16k | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
-| Cachet + vanilla KV | 32k | 58.10 | 62.45 | 71.69 | 72.01 |  |  |  |  |
+| Cachet + vanilla KV | 8k |  |  |  |  |  |  |  |  |
+| Cachet + vanilla KV | 16k |  |  |  |  |  |  |  |  |
+| Cachet + vanilla KV | 32k |  |  |  |  |  |  |  |  |
 | Cachet + KV Packet | 8k |  |  |  |  |  |  |  |  |
 | Cachet + KV Packet | 16k |  |  |  |  |  |  |  |  |
 | Cachet + KV Packet | 32k |  |  |  |  |  |  |  |  |
@@ -73,7 +78,7 @@ not be interpreted as dataset accuracy.
 | Storage tier | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | RAM |  |  |  |  |  |  |  |  |
-| Disk | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
+| Disk |  |  |  |  |  |  |  |  |
 | Unity Catalog |  |  |  |  |  |  |  |  |
 | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  |
 
@@ -91,7 +96,7 @@ not be interpreted as dataset accuracy.
 
 | Hardware | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| AWS g5/A10G, `g5.8xlarge` | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
+| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |
 | AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  |
 
 ## Serving Platform Ablation
@@ -108,7 +113,7 @@ not be interpreted as dataset accuracy.
 
 | Serving platform | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| vLLM | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
+| vLLM |  |  |  |  |  |  |  |  |
 | SGLang |  |  |  |  |  |  |  |  |
 
 ## Resource Utilization
@@ -136,7 +141,8 @@ implementation.
 
 | Evidence folder | Evidence summary | Notes |
 | --- | --- | --- |
-| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Primary vLLM + Qwen3 4B + g5/A10G latency measurements for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Synthetic prepared inputs only; Cachet handoffs were generated on local disk under `/local_disk0`; latency is current end-to-end handoff-path latency, not an isolated KV-load microbenchmark |
+| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Baseline latency evidence plus full-logical-prompt vLLM Cachet handoff-path evidence at 8k, 16k, and 32k | Baseline rows fill the primary table; Cachet rows in this folder do not because the engine still received the full logical prompt |
+| [`runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed 8k Cachet + vanilla KV canary with `--benchmark-cache-runtime-prompt` | vLLM rejected `document_kv.prompt_text_mode='runtime'`, so the primary Cachet latency rows remain unmeasured |
 
 ## Appendix Evidence
 
@@ -162,7 +168,8 @@ IDs or release-source mirrors.
 | Folder | Purpose |
 | --- | --- |
 | [`appendix/existing-results/`](appendix/existing-results/) | Committed evidence from configurations that do not match the primary-table protocol |
-| [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Sanitized evidence backing the current primary comparison table |
+| [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Sanitized baseline evidence and full-logical-prompt vLLM handoff-path evidence |
+| [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed runtime-prompt vLLM canary explaining why primary Cachet latency cells are blank |
 | [`databricks/`](databricks/) | Sanitized Databricks audit mirrors kept at stable paths for release evidence |
 | [`_template/`](_template/) | Required table shape for future public benchmark result folders |
 | [`vllm/`](vllm/) | Short index page for vLLM appendix evidence |

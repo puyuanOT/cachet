@@ -12,7 +12,7 @@
   "scope": [
     "README.md",
     "benchmarks/README.md",
-    "benchmarks/current/",
+    "benchmarks/README.md",
     "docs/README.md",
     "docs/v1-requirements-matrix.md",
     "tests/test_project_governance.py",
@@ -27,8 +27,8 @@
     "PYTHONPATH=src poetry run python -m document_kv_cache.pr_evidence --validate-directory pr-evidence/current-benchmark-results-index --output-json pr-evidence/current-benchmark-results-index/pr-evidence-validation.json -> ok=true"
   ],
   "what_changed": [
-    "Added benchmarks/current/README.md as the concise human-facing index for the current Cachet Databricks benchmark results.",
-    "Updated README.md, benchmarks/README.md, docs/README.md, and docs/v1-requirements-matrix.md so readers start with benchmarks/current/ before drilling into standalone dated report folders.",
+    "Added benchmarks/README.md as the concise human-facing index for Cachet benchmark results.",
+    "Updated README.md, docs/README.md, and docs/v1-requirements-matrix.md so readers start with benchmarks/README.md before drilling into appendix result folders.",
     "Extended project-governance tests to pin the current benchmark index, standalone folder links, and the boundary that pr-evidence/ is PR validation rather than benchmark output."
   ],
   "why": "Benchmark results should be easy to inspect without treating the large machine-readable pr-evidence/ tree as the human benchmark report surface."

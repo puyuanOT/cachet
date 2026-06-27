@@ -10,7 +10,7 @@
     ],
     "emitted_tokens": 256,
     "hardware": "AWS g5/A10G, g5.8xlarge",
-    "latency_interpretation": "Latency rows measure the current end-to-end vLLM handoff path. Cachet requests still send the full logical prompt, and raw records report vLLM prompt usage equal to the 8k/16k/32k context size; do not interpret these rows as an isolated KV-load or pure prefill-elision microbenchmark.",
+    "latency_interpretation": "Baseline latency rows match the primary-table latency configuration. Cachet latency rows in this evidence folder measure the current end-to-end vLLM handoff path with the full logical prompt still sent to the engine; do not use those Cachet rows as primary-table values for suffix-only vanilla-KV inference.",
     "max_num_seqs": 8,
     "model": "Qwen3-4B-Instruct",
     "request_parallelism": 8,
@@ -21,7 +21,7 @@
   },
   "dbfs_root": "dbfs:/benchmarks/cachet/primary-table-64b602a-20260626_232950",
   "generated_at_utc": "2026-06-27T00:16:00Z",
-  "record_type": "cachet_primary_table_summary",
+  "record_type": "cachet_primary_table_evidence_summary",
   "rows": [
     {
       "biography_answer_found_rate": 1.0,
@@ -37,6 +37,7 @@
       "p50_ttft_seconds": 4.222317104000069,
       "p95_ttc_256_tokens_seconds": 28.148624018049958,
       "p95_ttft_seconds": 9.926772798450003,
+      "primary_table_latency_value": true,
       "successful_requests": 32
     },
     {
@@ -53,6 +54,7 @@
       "p50_ttft_seconds": 25.404211025999984,
       "p95_ttc_256_tokens_seconds": 58.01670853969989,
       "p95_ttft_seconds": 33.43368068014993,
+      "primary_table_latency_value": true,
       "successful_requests": 32
     },
     {
@@ -69,6 +71,7 @@
       "p50_ttft_seconds": 97.97816395350003,
       "p95_ttc_256_tokens_seconds": 117.06874136270002,
       "p95_ttft_seconds": 98.60645891310003,
+      "primary_table_latency_value": true,
       "successful_requests": 32
     },
     {
@@ -85,6 +88,8 @@
       "p50_ttft_seconds": 7.243795385999988,
       "p95_ttc_256_tokens_seconds": 18.240953344000047,
       "p95_ttft_seconds": 8.00959409145002,
+      "primary_table_latency_value": false,
+      "primary_table_exclusion_reason": "Cachet request used full logical prompt; primary Cachet latency requires suffix-only runtime prompt or equivalent prefill-elision contract.",
       "successful_requests": 32
     },
     {
@@ -101,6 +106,8 @@
       "p50_ttft_seconds": 21.437964975499995,
       "p95_ttc_256_tokens_seconds": 43.40250262910004,
       "p95_ttft_seconds": 32.417482396050026,
+      "primary_table_latency_value": false,
+      "primary_table_exclusion_reason": "Cachet request used full logical prompt; primary Cachet latency requires suffix-only runtime prompt or equivalent prefill-elision contract.",
       "successful_requests": 32
     },
     {
@@ -117,6 +124,8 @@
       "p50_ttft_seconds": 58.09551297100006,
       "p95_ttc_256_tokens_seconds": 72.00699137775001,
       "p95_ttft_seconds": 62.44578475850006,
+      "primary_table_latency_value": false,
+      "primary_table_exclusion_reason": "Cachet request used full logical prompt; primary Cachet latency requires suffix-only runtime prompt or equivalent prefill-elision contract.",
       "successful_requests": 32
     }
   ],

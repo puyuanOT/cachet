@@ -1,9 +1,12 @@
-# Primary Table Evidence: vLLM Qwen3 4B on g5/A10G
+# Baseline and Full-Logical-Prompt vLLM Evidence: Qwen3 4B on g5/A10G
 
-This folder contains the sanitized evidence backing the primary benchmark table
-in the [benchmark root](../../). It matches the fixed primary-table
-configuration: Qwen3-4B-Instruct, vLLM, AWS g5/A10G `g5.8xlarge`, 8 requests in
-flight, 256 emitted tokens, and Cachet handoffs stored on local disk.
+This folder contains sanitized evidence referenced by the benchmark root. The
+baseline rows match the fixed primary-table configuration: Qwen3-4B-Instruct,
+vLLM, AWS g5/A10G `g5.8xlarge`, 8 requests in flight, and 256 emitted tokens.
+The Cachet rows in this folder are full-logical-prompt vLLM handoff-path
+measurements: they are useful appendix evidence, but they do not fill the
+primary Cachet latency cells because the engine still received the full logical
+prompt.
 
 ## Table Configuration
 
@@ -20,10 +23,11 @@ flight, 256 emitted tokens, and Cachet handoffs stored on local disk.
 | Baseline | No precomputed KV cache |
 | Cachet method | Cachet + vanilla KV |
 | Cache residency | Local disk under `/local_disk0`, not Unity Catalog |
+| Cachet prompt mode | Full logical prompt, not suffix-only runtime prompt |
 | Source commit | `64b602a` |
 | DBFS staging root | `dbfs:/benchmarks/cachet/primary-table-64b602a-20260626_232950` |
 
-## Main Result Table
+## Full-Logical-Prompt Result Table
 
 Latency values are seconds. Percentiles are computed over 32 successful
 request-level measurements for each method/context pair: four synthetic
@@ -31,6 +35,7 @@ prepared inputs times eight repeats. These values measure the current
 end-to-end vLLM handoff path. They are not an isolated prefill-elision
 microbenchmark: the Cachet requests still send the full logical prompt, and
 the raw records report vLLM prompt usage equal to the 8k/16k/32k context size.
+Only the baseline rows are used as primary-table latency values.
 
 | Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography answer-found | HotpotQA answer-found | MusiQue answer-found | NIAH answer-found |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -59,7 +64,7 @@ Databricks driver logs were intentionally not committed.
 
 | Limitation | Current state |
 | --- | --- |
-| Primary-table comparability | Matches the primary-table configuration for baseline and Cachet + vanilla KV |
+| Primary-table comparability | Baseline rows match the primary-table latency configuration; Cachet rows do not satisfy the suffix-only Cachet latency criterion |
 | Method coverage | KV Packet is not implemented yet |
 | Context coverage | Covers 8k, 16k, and 32k input context lengths |
 | Resource metrics | Peak GPU memory, GPU utilization, CPU RSS/RAM, disk throughput, network throughput, and cache footprint were not measured |
