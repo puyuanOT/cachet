@@ -1,0 +1,41 @@
+{
+  "ok": true,
+  "over_budget": [],
+  "returncode": 0,
+  "rows": [
+    {
+      "dataset": "biography",
+      "example_id": "biography-8k",
+      "max_model_len": 32768,
+      "max_tokens": 256,
+      "prompt_tokens": 8190,
+      "total_tokens": 8446
+    },
+    {
+      "dataset": "hotpotqa",
+      "example_id": "hotpotqa-8k",
+      "max_model_len": 32768,
+      "max_tokens": 256,
+      "prompt_tokens": 8200,
+      "total_tokens": 8456
+    },
+    {
+      "dataset": "musique",
+      "example_id": "musique-8k",
+      "max_model_len": 32768,
+      "max_tokens": 256,
+      "prompt_tokens": 8211,
+      "total_tokens": 8467
+    },
+    {
+      "dataset": "niah",
+      "example_id": "niah-8k",
+      "max_model_len": 32768,
+      "max_tokens": 256,
+      "prompt_tokens": 8193,
+      "total_tokens": 8449
+    }
+  ],
+  "stderr_tail": "Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n",
+  "stdout_tail": "{\"over_budget\": [], \"rows\": [{\"dataset\": \"biography\", \"example_id\": \"biography-8k\", \"max_model_len\": 32768, \"max_tokens\": 256, \"prompt_tokens\": 8190, \"total_tokens\": 8446}, {\"dataset\": \"hotpotqa\", \"example_id\": \"hotpotqa-8k\", \"max_model_len\": 32768, \"max_tokens\": 256, \"prompt_tokens\": 8200, \"total_tokens\": 8456}, {\"dataset\": \"musique\", \"example_id\": \"musique-8k\", \"max_model_len\": 32768, \"max_tokens\": 256, \"prompt_tokens\": 8211, \"total_tokens\": 8467}, {\"dataset\": \"niah\", \"example_id\": \"niah-8k\", \"max_model_len\": 32768, \"max_tokens\": 256, \"prompt_tokens\": 8193, \"total_tokens\": 8449}]}\n"
+}

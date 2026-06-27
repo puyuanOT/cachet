@@ -96,7 +96,7 @@ SECRET_PATTERNS = {
     "databricks_pat": re.compile(r"dapi[A-Za-z0-9]{32,}"),
     "github_pat": re.compile(r"gh[pousr]_[A-Za-z0-9_]{30,}"),
     "langsmith_token": re.compile(r"lsv2_pt_[A-Za-z0-9_]{20,}"),
-    "openai_api_key": re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}"),
+    "openai_api_key": re.compile(r"(?<![A-Za-z0-9])sk-(?:proj-)?[A-Za-z0-9_-]{20,}"),
     "pem_private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 }
 STABLE_EXACT_VERSION_RE = re.compile(r"^(?:==)?(?:\d+!)?\d+(?:\.\d+)*(?:\.post\d+)?$")
@@ -1229,7 +1229,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`N/A` means the method is not implemented or the ablation has not been measured" in compact_root_readme
     assert "Qwen3-4B-Instruct" in root_readme
     assert "8 requests in flight" in root_readme
-    assert "Emit 256 tokens" in root_readme
+    assert "Forced 256-token decode" in root_readme
     assert "8k" in root_readme
     assert "16k" in root_readme
     assert "32k" in root_readme
@@ -1243,7 +1243,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "has not been measured under the fixed configuration" in compact_root_readme
     assert "not implemented yet" in root_readme
     assert "suffix-only runtime prompts are not supported by the current vLLM native provider" in compact_root_readme
-    assert "Main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k" in compact_root_readme
+    assert "Current main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k" in compact_root_readme
     assert "[benchmark root](../)" in appendix_readme
     assert "does not match the primary-table configuration" in compact_existing_results_readme
     assert "vllm-qwen3-4b-g6-l4-vanilla-kv" in existing_results_readme
@@ -1269,6 +1269,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
 
     public_result_folders = {
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry",
         "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache",
         "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache",
         "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary",
@@ -1316,6 +1317,46 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "_template/README.md",
         "appendix/README.md",
         "appendix/existing-results/README.md",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/README.md",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/connector_telemetry_16k_cachet_vanilla_kv.jsonl",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/connector_telemetry_32k_cachet_vanilla_kv.jsonl",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/connector_telemetry_8k_cachet_vanilla_kv.jsonl",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_16k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_16k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_32k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_32k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_8k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_8k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_16k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_16k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_32k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_32k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_8k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_8k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_coverage_16k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_coverage_32k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_coverage_8k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_generation_16k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_generation_32k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_generation_8k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prompt_token_budget_16k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prompt_token_budget_32k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prompt_token_budget_8k.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_16k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_16k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_32k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_32k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_8k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_8k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_16k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_16k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_32k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_32k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_8k_baseline.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_8k_cachet_vanilla_kv.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/server_log_summary.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/summary.json",
+        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/vllm_import_probe.json",
         "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/README.md",
         "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_16k.json",
         "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_32k.json",

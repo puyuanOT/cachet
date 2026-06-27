@@ -289,7 +289,7 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert args[args.index("--max-model-len") + 1] == "4096"
     assert args[args.index("--max-num-seqs") + 1] == "2"
     assert args[args.index("--gpu-memory-utilization") + 1] == "0.85"
-    assert json.loads(args[args.index("--kv-transfer-config") + 1]) == document_kv_transfer_config()
+    assert json.loads(args[args.index("--kv-transfer-config") + 1]) == document_kv_transfer_config_for_smoke(config)
     assert "--trust-remote-code" in args
     assert "--no-enable-log-requests" in args
     assert "--disable-log-requests" not in args
@@ -306,7 +306,7 @@ def test_vllm_server_args_include_payload_cache_budget(tmp_path):
     args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
     decoded = json.loads(args[args.index("--kv-transfer-config") + 1])
 
-    assert decoded == document_kv_transfer_config(payload_cache_max_bytes=4096)
+    assert decoded == document_kv_transfer_config_for_smoke(config)
 
 
 def test_vllm_server_args_accept_full_benchmark_sizing_overrides(tmp_path):
@@ -418,6 +418,31 @@ def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tm
         "cache_salt": CACHE_PREFIX_CACHE_SALT
     }
     assert args[args.index("--prefix-cache-salt-mode") + 1] == "per_request"
+
+
+def test_benchmark_runner_args_can_force_max_tokens_for_latency_protocol(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-force-256",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+        dataset_specs=specs,
+        max_tokens=256,
+        force_max_tokens=True,
+    )
+
+    args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
+
+    assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {
+        "cache_salt": BASELINE_PREFIX_CACHE_SALT,
+        "ignore_eos": True,
+    }
+    assert json.loads(args[args.index("--cache-extra-body-json") + 1]) == {
+        "cache_salt": CACHE_PREFIX_CACHE_SALT,
+        "ignore_eos": True,
+    }
+    assert args[args.index("--max-tokens") + 1] == "256"
 
 
 def test_benchmark_runner_args_can_use_runtime_cache_prompt_for_prepared_datasets(tmp_path):
@@ -1054,7 +1079,9 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
         "VLLM_USE_FLASHINFER_SAMPLER": "0",
         "VLLM_WORKER_MULTIPROC_METHOD": "spawn",
     }
-    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config()
+    assert metadata["document_kv_connector_telemetry_local_path"] == str(config.connector_telemetry_path)
+    assert metadata["document_kv_connector_telemetry_path"] == str(config.connector_telemetry_copy_path)
+    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(config)
 
 
 def test_metadata_records_payload_cache_budget(tmp_path):
@@ -1068,7 +1095,10 @@ def test_metadata_records_payload_cache_budget(tmp_path):
     metadata = build_metadata(config)
 
     assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(config)
-    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config(payload_cache_max_bytes=4096)
+    assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config(
+        payload_cache_max_bytes=4096,
+        telemetry_jsonl=str(config.connector_telemetry_path),
+    )
 
 
 def test_vllm_native_provider_probe_record_instantiates_default_provider():
@@ -1273,6 +1303,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             str(tmp_path / "local"),
             "--max-tokens",
             "16",
+            "--benchmark-force-max-tokens",
             "--timeout-seconds",
             "12.5",
             "--import-probe-timeout-seconds",
@@ -1319,6 +1350,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
         max_tokens=16,
+        force_max_tokens=True,
         timeout_seconds=12.5,
         import_probe_timeout_seconds=9,
         server_start_timeout_seconds=30,
@@ -1348,6 +1380,7 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
     invalid_cases = [
         ({"benchmark_id": ""}, "benchmark_id must be non-empty"),
         ({"max_tokens": 0}, "max_tokens must be positive"),
+        ({"force_max_tokens": "yes"}, "force_max_tokens must be a boolean"),
         ({"timeout_seconds": 0}, "timeout_seconds must be positive"),
         ({"import_probe_timeout_seconds": 0}, "import_probe_timeout_seconds must be positive"),
         ({"server_start_timeout_seconds": 0}, "server_start_timeout_seconds must be positive"),
@@ -1532,6 +1565,7 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         ("run", build_benchmark_runner_args(config, dataset_paths)),
         ("terminate", fake_server),
         ("copy", config.server_log_path, config.server_log_copy_path),
+        ("copy", config.connector_telemetry_path, config.connector_telemetry_copy_path),
     ]
     metadata = build_metadata(config)
     assert metadata["server_base_url"] == "http://127.0.0.1:8123"

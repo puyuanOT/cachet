@@ -22,6 +22,7 @@ from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
+    DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
 )
 
 DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE = "vllm_kv_injection.document_kv_transfer_config.v1"
@@ -38,6 +39,7 @@ __all__ = [
     "DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION",
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY",
     "DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY",
+    "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
     "document_kv_transfer_config",
     "document_kv_transfer_config_json",
     "main",
@@ -53,6 +55,7 @@ def document_kv_transfer_config(
     provider_factory: str | None = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     handoff_source_factory: str | None = None,
     payload_cache_max_bytes: int | None = None,
+    telemetry_jsonl: str | None = None,
 ) -> dict[str, Any]:
     """Return a vLLM ``KVTransferConfig``-shaped dictionary.
 
@@ -74,6 +77,7 @@ def document_kv_transfer_config(
             provider_factory=provider_factory,
             handoff_source_factory=handoff_source_factory,
             payload_cache_max_bytes=payload_cache_max_bytes,
+            telemetry_jsonl=telemetry_jsonl,
         ),
     }
     _validate_json_serializable(config, field_name="vLLM KV transfer config")
@@ -89,6 +93,7 @@ def document_kv_transfer_config_json(
     provider_factory: str | None = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     handoff_source_factory: str | None = None,
     payload_cache_max_bytes: int | None = None,
+    telemetry_jsonl: str | None = None,
 ) -> str:
     """Return compact JSON for passing to vLLM CLI launch paths."""
 
@@ -101,6 +106,7 @@ def document_kv_transfer_config_json(
             provider_factory=provider_factory,
             handoff_source_factory=handoff_source_factory,
             payload_cache_max_bytes=payload_cache_max_bytes,
+            telemetry_jsonl=telemetry_jsonl,
         ),
         separators=(",", ":"),
         sort_keys=True,
@@ -138,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--telemetry-jsonl",
+        help="Optional local JSONL path where the built-in vLLM provider writes per-load telemetry.",
+    )
+    parser.add_argument(
         "--extra-config",
         action="append",
         default=[],
@@ -155,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
             provider_factory=args.provider_factory,
             handoff_source_factory=args.handoff_source_factory,
             payload_cache_max_bytes=args.payload_cache_max_bytes,
+            telemetry_jsonl=args.telemetry_jsonl,
         )
         payload = json.dumps(config, indent=2, sort_keys=True) + "\n"
         if args.output_json:
@@ -175,6 +186,7 @@ def _document_kv_extra_config(
     provider_factory: str | None,
     handoff_source_factory: str | None,
     payload_cache_max_bytes: int | None,
+    telemetry_jsonl: str | None,
 ) -> dict[str, Any]:
     spec = vllm_adapter_spec()
     merged: dict[str, Any] = {}
@@ -193,6 +205,9 @@ def _document_kv_extra_config(
             payload_cache_max_bytes,
             field_name="payload_cache_max_bytes",
         )
+    if telemetry_jsonl is not None:
+        _validate_non_empty_string(telemetry_jsonl, field_name="telemetry_jsonl")
+        merged[DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY] = telemetry_jsonl
     merged.update(
         {
             "document_kv.record_type": DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,

@@ -13,6 +13,7 @@ from vllm_kv_injection.vllm_transfer_config import (
     DOCUMENT_KV_DEFAULT_ROLE,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
+    DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
     DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,
     DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION,
     document_kv_transfer_config,
@@ -74,10 +75,23 @@ def test_document_kv_transfer_config_accepts_payload_cache_budget():
     assert extra[DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY] == 4096
 
 
+def test_document_kv_transfer_config_accepts_telemetry_jsonl_path():
+    config = document_kv_transfer_config(telemetry_jsonl="/local_disk0/cachet/connector.jsonl")
+
+    extra = config["kv_connector_extra_config"]
+    assert extra[DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY] == "/local_disk0/cachet/connector.jsonl"
+
+
 @pytest.mark.parametrize("value", [-1, True, "4096"])
 def test_document_kv_transfer_config_rejects_invalid_payload_cache_budget(value):
     with pytest.raises((TypeError, ValueError), match="payload_cache_max_bytes"):
         document_kv_transfer_config(payload_cache_max_bytes=value)
+
+
+@pytest.mark.parametrize("value", ["", " "])
+def test_document_kv_transfer_config_rejects_invalid_telemetry_jsonl(value):
+    with pytest.raises(ValueError, match="telemetry_jsonl"):
+        document_kv_transfer_config(telemetry_jsonl=value)
 
 
 def test_document_kv_transfer_config_json_is_cli_ready():
@@ -139,6 +153,7 @@ def test_package_root_reexports_transfer_config_helpers():
     assert vllm_kv_injection.document_kv_transfer_config_json is document_kv_transfer_config_json
     assert vllm_kv_injection.DOCUMENT_KV_CONNECTOR_CLASS == DOCUMENT_KV_CONNECTOR_CLASS
     assert vllm_kv_injection.DOCUMENT_KV_CONNECTOR_MODULE_PATH == DOCUMENT_KV_CONNECTOR_MODULE_PATH
+    assert vllm_kv_injection.DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY == DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY
 
 
 def test_main_writes_transfer_config_sidecar(tmp_path):
@@ -156,6 +171,8 @@ def test_main_writes_transfer_config_sidecar(tmp_path):
             "tenant=\"qa\"",
             "--extra-config",
             "max_ready_queue=16",
+            "--telemetry-jsonl",
+            "/local_disk0/cachet/connector.jsonl",
             "--output-json",
             str(output_json),
         ]
@@ -170,6 +187,7 @@ def test_main_writes_transfer_config_sidecar(tmp_path):
         kv_role="kv_consumer",
         extra_config={"tenant": "qa", "max_ready_queue": 16},
         provider_factory="company_vllm_patch.document_kv_provider:build_provider",
+        telemetry_jsonl="/local_disk0/cachet/connector.jsonl",
     )
 
 

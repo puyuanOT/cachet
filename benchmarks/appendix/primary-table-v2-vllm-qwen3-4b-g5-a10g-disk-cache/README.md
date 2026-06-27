@@ -1,8 +1,11 @@
 # Primary Table V2 Evidence: vLLM Qwen3 4B on g5/A10G
 
-This folder contains the sanitized Databricks evidence used by the benchmark
-root main table. It measures Qwen3-4B-Instruct on vLLM, AWS g5/A10G
-`g5.8xlarge`, 8 concurrent requests, and 256 generated tokens.
+This folder contains superseded sanitized Databricks evidence from an earlier
+primary-table pass. The current benchmark root main table uses
+[`../primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/`](../primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/),
+which separates forced-256 latency from natural-stop quality and includes
+provider telemetry. This V2 folder remains useful historical evidence, but it
+should not be treated as the current main-table source.
 
 ## Configuration
 

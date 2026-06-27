@@ -1,0 +1,20 @@
+{
+  "cuda_available": true,
+  "cuda_device_count": 1,
+  "cuda_device_name": "NVIDIA A10G",
+  "document_kv_cache_module": "document_kv_cache",
+  "document_kv_cache_version": "0.2.0",
+  "document_kv_connector": "DocumentKVConnector",
+  "document_kv_connector_module": "vllm_kv_injection.vllm_dynamic_connector",
+  "document_kv_connector_type": "vllm_kv_injection.vllm_dynamic_connector.DocumentKVConnector",
+  "document_kv_native_provider_ok": true,
+  "document_kv_provider_factory": "vllm_kv_injection.vllm_native_provider:build_document_kv_provider",
+  "document_kv_provider_type": "vllm_kv_injection.vllm_native_provider.DocumentKVNativeProvider",
+  "document_kv_requires_native_runtime": true,
+  "ok": true,
+  "returncode": 0,
+  "stderr_tail": "",
+  "stdout_tail": "WARNING 06-27 06:44:44 [base.py:190] Initializing KVConnectorBase_V1. This API is experimental and subject to change in the future as we iterate the design.\n{\"cuda_available\": true, \"cuda_device_count\": 1, \"cuda_device_name\": \"NVIDIA A10G\", \"document_kv_cache_module\": \"document_kv_cache\", \"document_kv_cache_version\": \"0.2.0\", \"document_kv_connector\": \"DocumentKVConnector\", \"document_kv_connector_module\": \"vllm_kv_injection.vllm_dynamic_connector\", \"document_kv_connector_type\": \"vllm_kv_injection.vllm_dynamic_connector.DocumentKVConnector\", \"document_kv_native_provider_ok\": true, \"document_kv_provider_factory\": \"vllm_kv_injection.vllm_native_provider:build_document_kv_provider\", \"document_kv_provider_type\": \"vllm_kv_injection.vllm_native_provider.DocumentKVNativeProvider\", \"document_kv_requires_native_runtime\": true, \"ok\": true, \"torch_version\": \"2.11.0+cu130\", \"vllm_version\": \"0.23.0\"}\n",
+  "torch_version": "2.11.0+cu130",
+  "vllm_version": "0.23.0"
+}

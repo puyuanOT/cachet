@@ -12,6 +12,7 @@ from document_kv_cache.engine_adapters import (
     build_engine_kv_connector_actions,
     build_engine_kv_injection_plan,
     engine_adapter_request_to_record,
+    engine_kv_connector_actions_to_record,
     vllm_adapter_spec,
     view_engine_adapter_payload,
 )
@@ -23,6 +24,7 @@ from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
     DocumentKVConnector,
 )
+from vllm_kv_injection.block_mapping import BlockSpan
 import vllm_kv_injection.vllm_native_provider as vllm_native_provider
 import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
@@ -31,10 +33,12 @@ from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION,
     DocumentKVConnectorMetadata,
     DocumentKVHandoffLoad,
+    DocumentKVLoadRequest,
     DocumentKVNativeProvider,
     DocumentKVNativeProbeConnector,
     KVTransferParamsDocumentKVSource,
@@ -488,15 +492,17 @@ def test_native_provider_reports_phase_timing_metrics(monkeypatch):
     ticks = iter(
         [
             100,
-            110,
             200,
-            220,
+            210,
             300,
-            330,
+            320,
             400,
-            440,
+            430,
             500,
-            550,
+            540,
+            600,
+            650,
+            700,
         ]
     )
 
@@ -526,6 +532,76 @@ def test_native_provider_reports_phase_timing_metrics(monkeypatch):
     assert stats["document_kv_payload_view_ns"] == 30
     assert stats["document_kv_layer_load_ns"] == 90
     assert connector.get_kv_connector_stats() is None
+
+
+def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
+    telemetry_path = tmp_path / "connector-telemetry.jsonl"
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(handoff_load()),
+        telemetry_jsonl=str(telemetry_path),
+    )
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    rows = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["record_type"] == "document_kv.vllm_native_provider_load.v1"
+    assert row["success"] is True
+    assert row["request_id"] == "req-1"
+    assert row["counts"]["token_count"] == 2
+    assert row["counts"]["handoff_total_tokens"] == 3
+    assert row["counts"]["layers_loaded"] == 2
+    assert row["counts"]["expected_payload_bytes"] == len(payload())
+    assert row["layout"]["dtype"] == "int8"
+    assert row["payload"]["source"] == "inline"
+
+
+def test_native_provider_telemetry_labels_local_payload_paths(tmp_path):
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    handoff = handoff_load()
+    load = DocumentKVLoadRequest(
+        request_id=handoff.request_id,
+        actions_record=engine_kv_connector_actions_to_record(handoff.actions),
+        payload=None,
+        blocks=(BlockSpan(block_id=1, token_start=0, token_count=2, block_offset=0),),
+        source_token_start=0,
+        token_count=2,
+        payload_uri=str(payload_path),
+    )
+
+    record = vllm_native_provider._load_telemetry_record(
+        load,
+        provider_factory=DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
+        payload_cache_enabled=False,
+        total_ns=1,
+        payload_materialize_ns=1,
+        payload_merge_ns=0,
+        payload_view_ns=0,
+        layer_load_ns=0,
+        layers_loaded=0,
+        payload_cache_hits=0,
+        payload_cache_misses=0,
+        error_type=None,
+        error_message=None,
+    )
+
+    assert record["payload"]["source"] == "uri"
+    assert record["payload"]["uri_scheme"] == "local_path"
+    assert record["payload"]["uri_tail"] == "req-1.kv"
 
 
 def test_native_provider_reuses_payload_uri_cache_for_hot_documents(tmp_path, monkeypatch):
@@ -1293,12 +1369,32 @@ def test_native_provider_factory_accepts_payload_cache_budget():
     assert isinstance(provider, DocumentKVNativeProvider)
 
 
+def test_native_provider_factory_accepts_telemetry_jsonl_path(tmp_path):
+    telemetry_path = tmp_path / "connector.jsonl"
+    provider = build_document_kv_provider(
+        vllm_config=None,
+        extra_config={DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY: str(telemetry_path)},
+    )
+
+    assert isinstance(provider, DocumentKVNativeProvider)
+    assert provider.telemetry_jsonl == str(telemetry_path)
+
+
 @pytest.mark.parametrize("value", [-1, True, "4096"])
 def test_native_provider_factory_rejects_invalid_payload_cache_budget(value):
     with pytest.raises((TypeError, ValueError), match=DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY):
         build_document_kv_provider(
             vllm_config=None,
             extra_config={DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY: value},
+        )
+
+
+@pytest.mark.parametrize("value", ["", " "])
+def test_native_provider_factory_rejects_invalid_telemetry_jsonl(value):
+    with pytest.raises(ValueError, match=DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY):
+        build_document_kv_provider(
+            vllm_config=None,
+            extra_config={DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY: value},
         )
 
 

@@ -16,7 +16,7 @@ prompt.
 | Serving engine | vLLM |
 | Hardware | AWS g5/A10G, `g5.8xlarge` |
 | Request parallelism | 8 requests in flight |
-| Output length for TTC | Emit 256 tokens |
+| Output length for TTC | Up to 256 generated tokens; requests were not forced to ignore EOS |
 | Input context lengths | 8k, 16k, 32k tokens |
 | Datasets | Biography, HotpotQA, MusiQue, NIAH |
 | Score metric | Synthetic prepared-input `answer_found_rate`; full-dataset score not measured |

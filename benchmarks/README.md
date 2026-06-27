@@ -5,7 +5,7 @@ research-paper structure: one primary comparison table first, followed by
 focused ablation tables. No values are inferred or estimated.
 
 The main table is backed by sanitized evidence in
-[`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/).
+[`appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/`](appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/).
 Historical evidence in
 [`appendix/existing-results/`](appendix/existing-results/) does not match the
 primary-table configuration below and should be treated as prior evidence only.
@@ -18,34 +18,36 @@ primary-table configuration below and should be treated as prior evidence only.
 | Serving engine | vLLM |
 | Hardware | AWS g5/A10G, `g5.8xlarge` |
 | Request parallelism | 8 requests in flight |
-| Output length for TTC | Emit 256 tokens |
+| Output length for TTC | Forced 256-token decode with `max_tokens=256` and `ignore_eos=true` |
 | Input context lengths | 8k, 16k, 32k class prepared prompts; tokenizer counts are recorded in evidence |
 | KV cache residency for Cachet methods | Local disk, not Unity Catalog |
 | Datasets / quality columns | Biography, HotpotQA, MusiQue, NIAH |
-| Quality metric | Prepared-suite exact match (EM); not full-dataset accuracy |
+| Quality metric | Prepared-suite exact match (EM) from natural-stop quality runs; not full-dataset accuracy |
 | Baseline | No precomputed KV cache |
 | Cachet methods | Vanilla external KV; KV Packet planned but not implemented yet |
-| Cachet latency criterion | vLLM request attaches Cachet KV-transfer metadata and imports local-disk vanilla KV blocks for the cached prefix |
+| Cachet latency criterion | vLLM request attaches Cachet KV-transfer metadata, reports external prefix cache hits, and imports local-disk vanilla KV blocks for the cached prefix |
 | Prompt mode for Cachet rows | `logical`; suffix-only runtime prompts are not supported by the current vLLM native provider |
-| Main evidence | [`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json) |
+| Main evidence | [`appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/summary.json`](appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/summary.json) |
 | Runtime-prompt canary | [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json) |
 
 ## Main Performance Table
 
-Latency values are seconds. Percentiles are computed over 32 successful
-request-level measurements per method/context pair: four prepared synthetic
-inputs times eight repeats. EM is exact-match rate for the prepared row in that
-dataset/context. `N/A` means the method is not implemented or the ablation has
-not been measured under the fixed configuration; it is not a zero.
+Latency values are seconds. TTFT and TTC are computed from forced-256 latency
+runs where every successful request emitted exactly 256 completion tokens.
+Percentiles are computed over 32 successful request-level measurements per
+method/context pair: four prepared synthetic inputs times eight repeats. EM is
+exact-match rate from natural-stop quality runs over the same prepared
+row/context. `N/A` means the method is not implemented or the ablation has not
+been measured under the fixed configuration; it is not a zero.
 
 | Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline, no precomputed KV | 8k | 2.74 | 10.64 | 21.34 | 29.23 | 1.00 | 0.00 | 0.00 | 0.00 |
-| Baseline, no precomputed KV | 16k | 29.43 | 34.11 | 49.13 | 53.82 | 0.00 | 0.00 | 0.00 | 0.00 |
-| Baseline, no precomputed KV | 32k | 96.17 | 97.35 | 114.66 | 114.97 | 0.00 | 0.00 | 0.00 | 0.00 |
-| Cachet + vanilla KV | 8k | 7.97 | 8.16 | 17.74 | 17.89 | 1.00 | 0.00 | 0.00 | 0.00 |
-| Cachet + vanilla KV | 16k | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
-| Cachet + vanilla KV | 32k | 57.77 | 62.20 | 71.35 | 71.78 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Baseline, no precomputed KV | 8k | 2.73 | 9.89 | 21.38 | 28.51 | 1.00 | 0.00 | 0.00 | 0.00 |
+| Baseline, no precomputed KV | 16k | 29.43 | 34.12 | 49.13 | 53.83 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Baseline, no precomputed KV | 32k | 96.13 | 97.31 | 114.61 | 114.93 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Cachet + vanilla KV | 8k | 7.91 | 8.17 | 17.74 | 17.98 | 1.00 | 0.00 | 0.00 | 0.00 |
+| Cachet + vanilla KV | 16k | 27.54 | 28.03 | 37.31 | 37.79 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Cachet + vanilla KV | 32k | 57.71 | 62.08 | 71.28 | 71.67 | 0.00 | 0.00 | 0.00 | 0.00 |
 | Cachet + KV Packet | 8k | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | Cachet + KV Packet | 16k | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | Cachet + KV Packet | 32k | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
@@ -54,6 +56,15 @@ The EM columns are prepared-suite quality checks, not full-dataset benchmark
 accuracy. Raw evidence also records `answer_found_rate`; it is intentionally
 not used as the main quality metric because it can make permissive generations
 look artificially perfect.
+
+The Cachet rows are current vLLM external-prefix measurements. They load raw
+vanilla KV from local disk and skip cached-token prefill, but vLLM still
+allocates GPU KV cache for the full logical context. On `g5.8xlarge`, the 32k
+run reports 82,960 GPU KV-cache tokens available and 2.53x maximum concurrency
+for 32,768-token requests, so an 8-way latency test queues in waves.
+Baseline rows use the same connector-enabled vLLM server for parity, but
+baseline requests do not attach Cachet KV-transfer parameters; server evidence
+reports 0% external-prefix cache hits for those rows.
 
 ## Storage Tier Ablation
 
@@ -65,12 +76,12 @@ look artificially perfect.
 | Method | Cachet + vanilla KV |
 | Input context | 16k tokens |
 | Request parallelism | 8 requests in flight |
-| Output length for TTC | Emit 256 tokens |
+| Output length for TTC | Forced 256-token decode |
 
 | Storage tier | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | RAM | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Disk | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| Disk | 27.54 | 28.03 | 37.31 | 37.79 | 0.00 | 0.00 | 0.00 | 0.00 |
 | Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 | Hybrid RAM / disk / Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
@@ -84,11 +95,11 @@ look artificially perfect.
 | Input context | 16k tokens |
 | Storage tier | Disk |
 | Request parallelism | 8 requests in flight |
-| Output length for TTC | Emit 256 tokens |
+| Output length for TTC | Forced 256-token decode |
 
 | Hardware | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| AWS g5/A10G, `g5.8xlarge` | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| AWS g5/A10G, `g5.8xlarge` | 27.54 | 28.03 | 37.31 | 37.79 | 0.00 | 0.00 | 0.00 | 0.00 |
 | AWS g6/L4, `g6.8xlarge` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
 ## Serving Platform Ablation
@@ -101,11 +112,11 @@ look artificially perfect.
 | Input context | 16k tokens |
 | Storage tier | Disk |
 | Request parallelism | 8 requests in flight |
-| Output length for TTC | Emit 256 tokens |
+| Output length for TTC | Forced 256-token decode |
 
 | Serving platform | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| vLLM | 27.52 | 27.93 | 37.28 | 37.70 | 0.00 | 0.00 | 0.00 | 0.00 |
+| vLLM | 27.54 | 28.03 | 37.31 | 37.79 | 0.00 | 0.00 | 0.00 | 0.00 |
 | SGLang | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
 
 ## Resource Utilization
@@ -117,10 +128,10 @@ look artificially perfect.
 | Default context / output | 16k input context, 256 emitted tokens |
 | Request parallelism | 8 requests in flight |
 
-| Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint |
+| Experiment row | Storage tier | GPU KV-cache pool | GPU KV-cache usage | Peak CPU RSS / host RAM | Disk payload read | Network / Unity Catalog read | KV payload footprint |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline, no precomputed KV | N/A | N/A | N/A | N/A | N/A | N/A | N/A |
-| Cachet + vanilla KV | Disk | N/A | N/A | N/A | N/A | N/A | N/A |
+| Baseline, no precomputed KV | N/A | 11.39 GiB | 81.6% max | N/A | N/A | N/A | N/A |
+| Cachet + vanilla KV | Disk | 11.39 GiB | 81.7% max | N/A | 1.35s p50 for 2.29 GiB | N/A | 2.29 GiB p50 |
 | Cachet + vanilla KV | RAM | N/A | N/A | N/A | N/A | N/A | N/A |
 | Cachet + vanilla KV | Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A |
 | Cachet + vanilla KV | Hybrid RAM / disk / Unity Catalog | N/A | N/A | N/A | N/A | N/A | N/A |
@@ -133,9 +144,10 @@ implementation.
 
 | Evidence folder | Evidence summary | Notes |
 | --- | --- | --- |
-| [`primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Uses vLLM logical prompt text plus external-KV handoff metadata; Cachet payloads live on `/local_disk0` |
+| [`primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry`](appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/) | Current main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Separates forced-256 latency from natural-stop quality and includes Cachet provider-load telemetry |
 | [`runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed 8k Cachet + vanilla KV canary with `--benchmark-cache-runtime-prompt` | Documents why the current vLLM provider uses logical prompt text for external-KV loads |
-| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded baseline and full-logical-prompt Cachet evidence from the earlier prepared suite | Kept as historical evidence; V2 is the current source for the main table |
+| [`primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded primary-table evidence | Kept because its numbers were mostly comparable, but the 8k row did not force every request to emit 256 tokens and it lacked provider telemetry |
+| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded baseline and full-logical-prompt Cachet evidence from the earlier prepared suite | Kept as historical evidence from an earlier prepared-suite pass |
 
 ## Appendix Evidence
 
@@ -161,7 +173,8 @@ IDs or release-source mirrors.
 | Folder | Purpose |
 | --- | --- |
 | [`appendix/existing-results/`](appendix/existing-results/) | Committed evidence from configurations that do not match the primary-table protocol |
-| [`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Current sanitized main-table evidence |
+| [`appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/`](appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/) | Current sanitized main-table evidence |
+| [`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded sanitized main-table evidence without forced-256 validation on every row |
 | [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded sanitized main-table evidence from an earlier prepared suite |
 | [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed runtime-prompt vLLM canary for suffix-only prompt text |
 | [`databricks/`](databricks/) | Sanitized Databricks audit mirrors kept at stable paths for release evidence |

@@ -166,6 +166,7 @@ class VLLMSmokeBenchmarkConfig:
     benchmark_id: str
     output_dir: Path
     max_tokens: int = 32
+    force_max_tokens: bool = False
     timeout_seconds: float = 240.0
     import_probe_timeout_seconds: float = 180.0
     server_start_timeout_seconds: float = 480.0
@@ -193,6 +194,8 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("output_dir must be provided")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
+        if type(self.force_max_tokens) is not bool:
+            raise ValueError("force_max_tokens must be a boolean")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         if self.import_probe_timeout_seconds <= 0:
@@ -271,6 +274,14 @@ class VLLMSmokeBenchmarkConfig:
     @property
     def server_log_copy_path(self) -> Path:
         return self.output_dir / "vllm-server.log"
+
+    @property
+    def connector_telemetry_path(self) -> Path:
+        return self.local_dir / "document-kv-connector-telemetry.jsonl"
+
+    @property
+    def connector_telemetry_copy_path(self) -> Path:
+        return self.output_dir / "document-kv-connector-telemetry.jsonl"
 
     @property
     def benchmark_output_path(self) -> Path:
@@ -359,6 +370,8 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
+    metadata["document_kv_connector_telemetry_local_path"] = str(config.connector_telemetry_path)
+    metadata["document_kv_connector_telemetry_path"] = str(config.connector_telemetry_copy_path)
     metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
     if config.requires_prepared_handoff_metadata:
         metadata["prepared_handoff_coverage_path"] = str(config.prepared_handoff_coverage_path)
@@ -374,6 +387,7 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     finally:
         terminate_process(server)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
+        copy_file_if_exists(config.connector_telemetry_path, config.connector_telemetry_copy_path)
 
 
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
@@ -387,11 +401,28 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "server_base_url": config.server_base_url,
         "hf_home": str(config.hf_cache_dir),
         "vllm_python": str(config.venv_python),
+        "document_kv_connector_telemetry_local_path": str(config.connector_telemetry_path),
+        "document_kv_connector_telemetry_path": str(config.connector_telemetry_copy_path),
         "dependency_constraints": dependency_constraints(),
         "dataset_source": "prepared" if config.dataset_specs else "smoke",
         "dataset_specs": list(config.dataset_specs),
         "cache_runtime_prompt": config.cache_runtime_prompt,
         "cache_prompt_text_mode": "runtime" if config.cache_runtime_prompt else "logical",
+        "max_tokens": config.max_tokens,
+        "force_max_tokens": config.force_max_tokens,
+        "latency_decode_protocol": (
+            {
+                "max_tokens": config.max_tokens,
+                "ignore_eos": True,
+                "description": "force exactly max_tokens decode tokens for TTC latency measurement",
+            }
+            if config.force_max_tokens
+            else {
+                "max_tokens": config.max_tokens,
+                "ignore_eos": False,
+                "description": "natural stop quality/latency smoke measurement",
+            }
+        ),
         "prefix_cache_isolation": (
             {
                 "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
@@ -460,6 +491,7 @@ def build_vllm_native_provider_probe_record(
 def document_kv_transfer_config_for_smoke(config: VLLMSmokeBenchmarkConfig) -> dict[str, Any]:
     return document_kv_transfer_config(
         payload_cache_max_bytes=config.payload_cache_max_bytes or None,
+        telemetry_jsonl=str(config.connector_telemetry_path),
     )
 
 
@@ -1326,6 +1358,7 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         "--kv-transfer-config",
         document_kv_transfer_config_json(
             payload_cache_max_bytes=config.payload_cache_max_bytes or None,
+            telemetry_jsonl=str(config.connector_telemetry_path),
         ),
         "--trust-remote-code",
         "--no-enable-log-requests",
@@ -1386,6 +1419,14 @@ def fetch_served_model_ids(models_url: str) -> set[str]:
 def build_benchmark_runner_args(
     config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]
 ) -> list[str]:
+    baseline_extra_body = _benchmark_extra_body(
+        cache_salt=BASELINE_PREFIX_CACHE_SALT if config.uses_prepared_datasets else None,
+        force_max_tokens=config.force_max_tokens,
+    )
+    cache_extra_body = _benchmark_extra_body(
+        cache_salt=CACHE_PREFIX_CACHE_SALT if config.uses_prepared_datasets else None,
+        force_max_tokens=config.force_max_tokens,
+    )
     args = [
         sys.executable,
         "-m",
@@ -1415,20 +1456,33 @@ def build_benchmark_runner_args(
             [
                 "--cache-base-url",
                 config.server_base_url,
-                "--baseline-extra-body-json",
-                json.dumps({"cache_salt": BASELINE_PREFIX_CACHE_SALT}, sort_keys=True),
-                "--cache-extra-body-json",
-                json.dumps({"cache_salt": CACHE_PREFIX_CACHE_SALT}, sort_keys=True),
                 "--prefix-cache-salt-mode",
                 PREPARED_PREFIX_CACHE_SALT_MODE,
             ]
         )
+    if baseline_extra_body:
+        args.extend(["--baseline-extra-body-json", json.dumps(baseline_extra_body, sort_keys=True)])
+    if cache_extra_body:
+        args.extend(["--cache-extra-body-json", json.dumps(cache_extra_body, sort_keys=True)])
     if config.cache_runtime_prompt:
         args.append("--cache-runtime-prompt")
     for arm_id in config.benchmark_arms:
         args.extend(["--arm", arm_id])
     args.extend(dataset_args(dataset_paths))
     return args
+
+
+def _benchmark_extra_body(
+    *,
+    cache_salt: str | None,
+    force_max_tokens: bool,
+) -> dict[str, object]:
+    extra_body: dict[str, object] = {}
+    if cache_salt:
+        extra_body["cache_salt"] = cache_salt
+    if force_max_tokens:
+        extra_body["ignore_eos"] = True
+    return extra_body
 
 
 def terminate_process(process: subprocess.Popen) -> None:
@@ -1624,6 +1678,14 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     )
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
+    parser.add_argument(
+        "--benchmark-force-max-tokens",
+        action="store_true",
+        help=(
+            "Add ignore_eos=true to benchmark requests so TTC measures a forced "
+            "--max-tokens decode instead of natural early stopping."
+        ),
+    )
     args = parser.parse_args(argv)
     output_dir = Path(_cluster_file_path(args.output_dir))
     handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
@@ -1631,6 +1693,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         benchmark_id=args.benchmark_id,
         output_dir=output_dir,
         max_tokens=args.max_tokens,
+        force_max_tokens=args.benchmark_force_max_tokens,
         timeout_seconds=args.timeout_seconds,
         import_probe_timeout_seconds=args.import_probe_timeout_seconds,
         server_start_timeout_seconds=args.server_start_timeout_seconds,

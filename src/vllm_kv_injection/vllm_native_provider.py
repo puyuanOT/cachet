@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import math
+import os
 import time
 import warnings
 from collections.abc import Mapping, Sequence
@@ -42,6 +43,7 @@ from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
 )
 from vllm_kv_injection.vllm_layer_mapping import (
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
@@ -65,6 +67,7 @@ __all__ = [
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "DOCUMENT_KV_REQUEST_ID_PARAM",
+    "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION",
     "DocumentKVHandoffLoad",
@@ -302,13 +305,19 @@ class DocumentKVNativeProvider:
         source: DocumentKVHandoffSource | None = None,
         provider_factory: str = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
         payload_cache_max_bytes: int = 0,
+        telemetry_jsonl: str | None = None,
     ) -> None:
         payload_cache_max_bytes = _non_negative_int(
             payload_cache_max_bytes,
             field_name="payload_cache_max_bytes",
         )
+        telemetry_jsonl = _optional_config_path(
+            telemetry_jsonl,
+            field_name="telemetry_jsonl",
+        )
         self.source = source or KVTransferParamsDocumentKVSource()
         self.provider_factory = _provider_factory_path(provider_factory)
+        self.telemetry_jsonl = telemetry_jsonl
         self._payload_cache = (
             None if payload_cache_max_bytes == 0 else _PayloadCache(max_bytes=payload_cache_max_bytes)
         )
@@ -561,24 +570,37 @@ class DocumentKVNativeProvider:
         return None, None
 
     def _load_request(self, load: DocumentKVLoadRequest) -> None:
+        load_started_ns = time.perf_counter_ns()
+        payload_materialize_ns = 0
+        payload_merge_ns = 0
+        payload_view_ns = 0
+        layer_load_ns = 0
+        layers_loaded = 0
+        cache_hits_before = self._stats_payload_cache_hits
+        cache_misses_before = self._stats_payload_cache_misses
+        error_type: str | None = None
+        error_message: str | None = None
         try:
             started_ns = time.perf_counter_ns()
             try:
                 payload = _materialized_payload(load, payload_reader=self._read_payload)
             finally:
-                self._stats_payload_materialize_ns += time.perf_counter_ns() - started_ns
+                payload_materialize_ns = time.perf_counter_ns() - started_ns
+                self._stats_payload_materialize_ns += payload_materialize_ns
 
             started_ns = time.perf_counter_ns()
             try:
                 merged_payload = _merged_payload(load.actions, payload)
             finally:
-                self._stats_payload_merge_ns += time.perf_counter_ns() - started_ns
+                payload_merge_ns = time.perf_counter_ns() - started_ns
+                self._stats_payload_merge_ns += payload_merge_ns
 
             started_ns = time.perf_counter_ns()
             try:
                 payload_view = _payload_tensor_view(merged_payload, load)
             finally:
-                self._stats_payload_view_ns += time.perf_counter_ns() - started_ns
+                payload_view_ns = time.perf_counter_ns() - started_ns
+                self._stats_payload_view_ns += payload_view_ns
 
             block_size = load.actions.reservation.layout.block_size
             slot_mappings: dict[object | None, object] = {}
@@ -608,13 +630,32 @@ class DocumentKVNativeProvider:
                         block_size=block_size,
                     )
                 finally:
-                    self._stats_layer_load_ns += time.perf_counter_ns() - started_ns
+                    elapsed_ns = time.perf_counter_ns() - started_ns
+                    layer_load_ns += elapsed_ns
+                    self._stats_layer_load_ns += elapsed_ns
                 self._stats_layers_loaded += 1
-        except Exception:
+                layers_loaded += 1
+        except Exception as exc:
+            error_type = type(exc).__name__
+            error_message = _truncated_error_message(exc)
             error_block_ids = {block.block_id for block in load.blocks}
             self._load_errors.update(error_block_ids)
             self._stats_load_error_blocks += len(error_block_ids)
             raise
+        finally:
+            self._write_load_telemetry(
+                load,
+                total_ns=time.perf_counter_ns() - load_started_ns,
+                payload_materialize_ns=payload_materialize_ns,
+                payload_merge_ns=payload_merge_ns,
+                payload_view_ns=payload_view_ns,
+                layer_load_ns=layer_load_ns,
+                layers_loaded=layers_loaded,
+                payload_cache_hits=self._stats_payload_cache_hits - cache_hits_before,
+                payload_cache_misses=self._stats_payload_cache_misses - cache_misses_before,
+                error_type=error_type,
+                error_message=error_message,
+            )
 
     def _read_payload(
         self,
@@ -635,6 +676,43 @@ class DocumentKVNativeProvider:
         else:
             self._stats_payload_cache_misses += 1
         return result.payload
+
+    def _write_load_telemetry(
+        self,
+        load: DocumentKVLoadRequest,
+        *,
+        total_ns: int,
+        payload_materialize_ns: int,
+        payload_merge_ns: int,
+        payload_view_ns: int,
+        layer_load_ns: int,
+        layers_loaded: int,
+        payload_cache_hits: int,
+        payload_cache_misses: int,
+        error_type: str | None,
+        error_message: str | None,
+    ) -> None:
+        if self.telemetry_jsonl is None:
+            return
+        try:
+            record = _load_telemetry_record(
+                load,
+                provider_factory=self.provider_factory,
+                payload_cache_enabled=self._payload_cache is not None,
+                total_ns=total_ns,
+                payload_materialize_ns=payload_materialize_ns,
+                payload_merge_ns=payload_merge_ns,
+                payload_view_ns=payload_view_ns,
+                layer_load_ns=layer_load_ns,
+                layers_loaded=layers_loaded,
+                payload_cache_hits=payload_cache_hits,
+                payload_cache_misses=payload_cache_misses,
+                error_type=error_type,
+                error_message=error_message,
+            )
+            _append_jsonl(self.telemetry_jsonl, record)
+        except Exception as exc:  # pragma: no cover - defensive runtime diagnostics path.
+            warnings.warn(f"Could not write document KV telemetry: {exc}", RuntimeWarning, stacklevel=2)
 
     def reset_cache(self) -> bool | None:
         if self._payload_cache is None:
@@ -810,18 +888,39 @@ def build_document_kv_provider(*, vllm_config: object | None, extra_config: Mapp
     del vllm_config
     source_factory = extra_config.get(DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY)
     payload_cache_max_bytes = _payload_cache_max_bytes_from_config(extra_config)
+    telemetry_jsonl = _telemetry_jsonl_from_config(extra_config)
     if source_factory is None:
-        return DocumentKVNativeProvider(payload_cache_max_bytes=payload_cache_max_bytes)
+        return DocumentKVNativeProvider(
+            payload_cache_max_bytes=payload_cache_max_bytes,
+            telemetry_jsonl=telemetry_jsonl,
+        )
     if not isinstance(source_factory, str) or not source_factory.strip():
         raise ValueError(f"{DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY} must be a non-empty module:attribute string")
     source = _load_source_factory(source_factory)()
     _validate_source(source)
-    return DocumentKVNativeProvider(source=source, payload_cache_max_bytes=payload_cache_max_bytes)
+    return DocumentKVNativeProvider(
+        source=source,
+        payload_cache_max_bytes=payload_cache_max_bytes,
+        telemetry_jsonl=telemetry_jsonl,
+    )
 
 
 def _payload_cache_max_bytes_from_config(extra_config: Mapping[str, Any]) -> int:
     value = extra_config.get(DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY, 0)
     return _non_negative_int(value, field_name=DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY)
+
+
+def _telemetry_jsonl_from_config(extra_config: Mapping[str, Any]) -> str | None:
+    value = extra_config.get(DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY)
+    return _optional_config_path(value, field_name=DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY)
+
+
+def _optional_config_path(value: object, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string when provided")
+    return value
 
 
 def _load_source_factory(factory_path: str) -> object:
@@ -1073,6 +1172,133 @@ def _payload_cache_identity(actions: EngineKVConnectorActions) -> str:
     }
     payload = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _load_telemetry_record(
+    load: DocumentKVLoadRequest,
+    *,
+    provider_factory: str,
+    payload_cache_enabled: bool,
+    total_ns: int,
+    payload_materialize_ns: int,
+    payload_merge_ns: int,
+    payload_view_ns: int,
+    layer_load_ns: int,
+    layers_loaded: int,
+    payload_cache_hits: int,
+    payload_cache_misses: int,
+    error_type: str | None,
+    error_message: str | None,
+) -> dict[str, Any]:
+    actions = load.actions
+    layout = actions.reservation.layout
+    block_ids = [block.block_id for block in load.blocks]
+    record: dict[str, Any] = {
+        "record_type": "document_kv.vllm_native_provider_load.v1",
+        "schema_version": 1,
+        "event": "load_request",
+        "success": error_type is None,
+        "request_id": load.request_id,
+        "provider_factory": provider_factory,
+        "timings_ns": {
+            "total": total_ns,
+            "payload_materialize": payload_materialize_ns,
+            "payload_merge": payload_merge_ns,
+            "payload_view": payload_view_ns,
+            "layer_load": layer_load_ns,
+        },
+        "counts": {
+            "source_token_start": load.source_token_start,
+            "source_token_end": load.source_token_start + load.token_count,
+            "token_count": load.token_count,
+            "handoff_total_tokens": actions.reservation.total_tokens,
+            "block_count": len(load.blocks),
+            "first_block_id": block_ids[0] if block_ids else None,
+            "last_block_id": block_ids[-1] if block_ids else None,
+            "min_block_id": min(block_ids) if block_ids else None,
+            "max_block_id": max(block_ids) if block_ids else None,
+            "copy_count": len(actions.copies),
+            "layers_loaded": layers_loaded,
+            "expected_payload_bytes": _expected_payload_bytes(actions),
+            "payload_cache_hits": payload_cache_hits,
+            "payload_cache_misses": payload_cache_misses,
+        },
+        "layout": {
+            "model_id": layout.model_id,
+            "lora_id": layout.lora_id,
+            "layout_version": layout.layout_version,
+            "dtype": layout.dtype,
+            "num_layers": layout.num_layers,
+            "block_size": layout.block_size,
+            "bytes_per_token": layout.bytes_per_token,
+            "num_query_heads": layout.num_query_heads,
+            "num_kv_heads": layout.num_kv_heads,
+            "head_size": layout.head_size,
+            "kv_stride_bytes": layout.kv_stride_bytes,
+            "shares_kv_storage": layout.shares_kv_storage,
+            "storage_layout": str(layout.storage_layout),
+        },
+        "payload": _payload_telemetry(load, payload_cache_enabled=payload_cache_enabled),
+    }
+    if error_type is not None:
+        record["error"] = {"type": error_type, "message": error_message or error_type}
+    return record
+
+
+def _payload_telemetry(load: DocumentKVLoadRequest, *, payload_cache_enabled: bool) -> dict[str, Any]:
+    payload_uri = load.payload_uri
+    if payload_uri is None:
+        inline_payload = load.payload
+        inline_bytes = (
+            sum(len(segment) for segment in inline_payload)
+            if isinstance(inline_payload, tuple)
+            else len(inline_payload or b"")
+        )
+        return {
+            "source": "inline",
+            "inline_segment_count": len(inline_payload) if isinstance(inline_payload, tuple) else 1,
+            "inline_bytes": inline_bytes,
+            "payload_cache_enabled": payload_cache_enabled,
+        }
+    scheme, separator, remainder = payload_uri.partition(":")
+    if not separator:
+        scheme = "local_path"
+        remainder = payload_uri
+    return {
+        "source": "uri",
+        "uri_scheme": scheme or "unknown",
+        "uri_sha256": hashlib.sha256(payload_uri.encode("utf-8")).hexdigest(),
+        "uri_tail": _safe_uri_tail(remainder),
+        "payload_cache_enabled": payload_cache_enabled,
+    }
+
+
+def _safe_uri_tail(value: str) -> str | None:
+    if not value:
+        return None
+    tail = value.rstrip("/").rsplit("/", 1)[-1]
+    if not tail:
+        return None
+    return tail[:128]
+
+
+def _append_jsonl(path: str, record: Mapping[str, Any]) -> None:
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    line = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    fd = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        os.write(fd, line)
+    finally:
+        os.close(fd)
+
+
+def _truncated_error_message(exc: Exception, *, max_chars: int = 500) -> str:
+    message = str(exc) or type(exc).__name__
+    if len(message) > max_chars:
+        return message[: max_chars - 3] + "..."
+    return message
 
 
 def _expected_payload_bytes(actions: EngineKVConnectorActions) -> int:

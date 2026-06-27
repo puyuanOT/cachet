@@ -13,7 +13,7 @@ uncached runtime suffix while passing the KV handoff out of band.
 | Serving engine | vLLM |
 | Hardware | AWS g5/A10G, `g5.8xlarge` |
 | Request parallelism | 8 requests in flight |
-| Output length for TTC | Emit 256 tokens |
+| Output length for TTC | Forced 256-token decode |
 | Input context | 8k tokens |
 | Dataset inputs | Biography, HotpotQA, MusiQue, NIAH synthetic prepared examples |
 | Cachet method | Cachet + vanilla KV |
@@ -36,15 +36,14 @@ ValueError: Document KV vLLM loads require the full logical prompt; document_kv.
 
 ## Interpretation
 
-This canary confirms that the current vLLM native provider cannot measure the
-intended primary Cachet latency path, where cached KV is bound out of band and
-the engine computes only the uncached prompt suffix plus generated tokens. The
-primary Cachet + vanilla KV latency cells therefore remain blank rather than
-using full-logical-prompt handoff-path latencies.
+This canary confirms that the current vLLM native provider cannot use
+suffix-only runtime prompt text. Current primary Cachet + vanilla KV rows
+therefore use vLLM's logical-prompt external-prefix path: Cachet binds the raw
+KV handoff out of band, vLLM matches the cached prefix against the logical
+prompt, and the provider loads local-disk KV blocks for that cached prefix.
 
 ## Provenance
 
 | File | Contents |
 | --- | --- |
 | [`failure_summary.json`](failure_summary.json) | Sanitized run configuration, Databricks run ids, and failure interpretation |
-
