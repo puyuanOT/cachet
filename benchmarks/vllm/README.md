@@ -6,7 +6,7 @@ parallel requests, 256 emitted tokens, and disk-resident Cachet KV.
 
 Existing vLLM evidence that does not match the primary-table configuration:
 
-| Appendix result | Status |
+| Appendix result | Evidence summary |
 | --- | --- |
 | [`../appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/`](../appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/) | Existing g6/L4 vanilla KV latency evidence |
 | [`../appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/`](../appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/) | Existing g5/A10G vanilla KV compatibility evidence |

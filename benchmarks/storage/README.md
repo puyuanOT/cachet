@@ -7,7 +7,7 @@ yet.
 
 Existing storage-reader evidence:
 
-| Appendix result | Status |
+| Appendix result | Evidence summary |
 | --- | --- |
 | [`../appendix/existing-results/storage-g6-l4-reader-throughput/`](../appendix/existing-results/storage-g6-l4-reader-throughput/) | Memory, disk, and Unity Catalog reader throughput over a 256 MiB workload |
 

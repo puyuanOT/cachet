@@ -6,7 +6,7 @@ with blank metric cells until a matching run exists.
 
 Existing SGLang evidence:
 
-| Appendix result | Status |
+| Appendix result | Evidence summary |
 | --- | --- |
 | [`../appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-prepared/`](../appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-prepared/) | Prepared V1 correctness and cache-hit evidence; no latency improvement observed |
 | [`../appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/`](../appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/) | Minimal synthetic cache-hit validation; no latency improvement observed |

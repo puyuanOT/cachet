@@ -1267,6 +1267,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
 
     public_result_folders = {
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache",
         "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv",
         "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv",
         "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-prepared",
@@ -1311,6 +1312,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "_template/README.md",
         "appendix/README.md",
         "appendix/existing-results/README.md",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/README.md",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_baseline.json",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_cachet_vanilla_kv.json",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_baseline.json",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_cachet_vanilla_kv.json",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_baseline.json",
+        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_cachet_vanilla_kv.json",
         "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/README.md",
         "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
         "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",

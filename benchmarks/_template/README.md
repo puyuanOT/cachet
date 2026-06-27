@@ -25,7 +25,7 @@ blank numeric cell means not measured yet; not zero.
 
 ## Main Result Table
 
-| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Example method | 16k |  |  |  |  |  |  |  |  |
 

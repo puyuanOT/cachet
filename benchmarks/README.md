@@ -5,10 +5,11 @@ research-paper structure: one primary comparison table first, followed by
 focused ablation tables. No values are inferred or estimated. A blank numeric
 cell means not measured yet; not zero.
 
-The committed appendix evidence at
-[`appendix/existing-results/`](appendix/existing-results/) does not match the
-primary-table configuration below. Treat it as prior evidence, not as the
-source for the empty primary-table cells.
+The primary comparison table is backed by the sanitized evidence in
+[`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/).
+Historical evidence in [`appendix/existing-results/`](appendix/existing-results/)
+does not match the primary-table configuration below and should be treated as
+prior evidence only.
 
 ## Main Table Configuration
 
@@ -22,31 +23,35 @@ source for the empty primary-table cells.
 | Input context lengths | 8k, 16k, 32k tokens |
 | KV cache residency for Cachet methods | Local disk, not Unity Catalog |
 | Datasets / score columns | Biography, HotpotQA, MusiQue, NIAH |
+| Score metric | `answer_found_rate` |
 | Baseline | No precomputed KV cache |
 | Cachet methods | Vanilla external KV; KV Packet planned but not implemented yet |
+| Primary evidence | [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json) |
 
 ## Main Performance Table
 
-Blank numeric cells in this table indicate pending measurements under the
+Latency values are seconds. Percentiles are computed over 32 successful
+request-level measurements for each method/context pair: four datasets times
+eight repeats. Blank numeric cells indicate pending measurements under the
 primary-table configuration. `Cachet + KV Packet` is listed for protocol
 completeness and is not implemented yet.
 
-| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline, no precomputed KV | 8k |  |  |  |  |  |  |  |  |
-| Baseline, no precomputed KV | 16k |  |  |  |  |  |  |  |  |
-| Baseline, no precomputed KV | 32k |  |  |  |  |  |  |  |  |
-| Cachet + vanilla KV | 8k |  |  |  |  |  |  |  |  |
-| Cachet + vanilla KV | 16k |  |  |  |  |  |  |  |  |
-| Cachet + vanilla KV | 32k |  |  |  |  |  |  |  |  |
+| Baseline, no precomputed KV | 8k | 4.22 | 9.93 | 20.53 | 28.15 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Baseline, no precomputed KV | 16k | 25.40 | 33.43 | 41.32 | 58.02 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Baseline, no precomputed KV | 32k | 97.98 | 98.61 | 117.05 | 117.07 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Cachet + vanilla KV | 8k | 7.24 | 8.01 | 17.42 | 18.24 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Cachet + vanilla KV | 16k | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Cachet + vanilla KV | 32k | 58.10 | 62.45 | 71.69 | 72.01 | 1.00 | 1.00 | 1.00 | 1.00 |
 | Cachet + KV Packet | 8k |  |  |  |  |  |  |  |  |
 | Cachet + KV Packet | 16k |  |  |  |  |  |  |  |  |
 | Cachet + KV Packet | 32k |  |  |  |  |  |  |  |  |
 
-Dataset score columns should report the task metric selected by the benchmark
-plan for each dataset. Existing appendix evidence reports `answer_found_rate`
-and `exact_match_rate`, but no committed run currently records those scores
-under the primary-table configuration.
+Dataset score columns report `answer_found_rate`, the current quality gate:
+the fraction of successful completions containing the expected answer. Raw
+evidence also records `exact_match_rate`, but exact match is not the main-table
+score metric.
 
 ## Storage Tier Ablation
 
@@ -60,10 +65,10 @@ under the primary-table configuration.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Storage tier | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Storage tier | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | RAM |  |  |  |  |  |  |  |  |
-| Disk |  |  |  |  |  |  |  |  |
+| Disk | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
 | Unity Catalog |  |  |  |  |  |  |  |  |
 | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  |
 
@@ -79,9 +84,9 @@ under the primary-table configuration.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Hardware | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Hardware | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |
+| AWS g5/A10G, `g5.8xlarge` | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
 | AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  |
 
 ## Serving Platform Ablation
@@ -96,9 +101,9 @@ under the primary-table configuration.
 | Request parallelism | 8 requests in flight |
 | Output length for TTC | Emit 256 tokens |
 
-| Serving platform | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Serving platform | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| vLLM |  |  |  |  |  |  |  |  |
+| vLLM | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
 | SGLang |  |  |  |  |  |  |  |  |
 
 ## Resource Utilization
@@ -122,11 +127,18 @@ under the primary-table configuration.
 The `Cachet + KV Packet` resource-utilization row is reserved for a future
 implementation.
 
+## Primary Table Evidence
+
+| Evidence folder | Evidence summary | Notes |
+| --- | --- | --- |
+| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Primary vLLM + Qwen3 4B + g5/A10G measurements for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Matches the main-table configuration; Cachet handoffs were generated on local disk under `/local_disk0` |
+
 ## Appendix Evidence
 
-These committed results remain useful, but they do not satisfy the primary-table
-configuration because they used different prompt-token ranges, repeat counts,
-output lengths, cache/storage assumptions, hardware, or serving paths.
+These additional committed results remain useful, but they do not satisfy the
+primary-table configuration because they used different prompt-token ranges,
+repeat counts, output lengths, cache/storage assumptions, hardware, or serving
+paths.
 
 | Appendix result | Evidence summary | Configuration mismatch |
 | --- | --- | --- |
@@ -145,6 +157,7 @@ IDs or release-source mirrors.
 | Folder | Purpose |
 | --- | --- |
 | [`appendix/existing-results/`](appendix/existing-results/) | Committed evidence from configurations that do not match the primary-table protocol |
+| [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Sanitized evidence backing the current primary comparison table |
 | [`databricks/`](databricks/) | Sanitized Databricks audit mirrors kept at stable paths for release evidence |
 | [`_template/`](_template/) | Required table shape for future public benchmark result folders |
 | [`vllm/`](vllm/) | Short index page for vLLM appendix evidence |
