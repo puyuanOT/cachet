@@ -10,10 +10,12 @@
     ],
     "emitted_tokens": 256,
     "hardware": "AWS g5/A10G, g5.8xlarge",
+    "latency_interpretation": "Latency rows measure the current end-to-end vLLM handoff path. Cachet requests still send the full logical prompt, and raw records report vLLM prompt usage equal to the 8k/16k/32k context size; do not interpret these rows as an isolated KV-load or pure prefill-elision microbenchmark.",
     "max_num_seqs": 8,
     "model": "Qwen3-4B-Instruct",
     "request_parallelism": 8,
-    "score_metric": "answer_found_rate",
+    "score_interpretation": "The 1.00 answer_found_rate values are synthetic sanity checks from one prepared example per dataset/context; they are not full-dataset Biography, HotpotQA, MusiQue, or NIAH accuracy scores.",
+    "score_metric": "synthetic_prepared_input_answer_found_rate",
     "served_model_name": "qwen3:4b-instruct",
     "serving_engine": "vLLM"
   },

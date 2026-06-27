@@ -16,7 +16,7 @@ flight, 256 emitted tokens, and Cachet handoffs stored on local disk.
 | Output length for TTC | Emit 256 tokens |
 | Input context lengths | 8k, 16k, 32k tokens |
 | Datasets | Biography, HotpotQA, MusiQue, NIAH |
-| Score metric | `answer_found_rate` |
+| Score metric | Synthetic prepared-input `answer_found_rate`; full-dataset score not measured |
 | Baseline | No precomputed KV cache |
 | Cachet method | Cachet + vanilla KV |
 | Cache residency | Local disk under `/local_disk0`, not Unity Catalog |
@@ -26,10 +26,13 @@ flight, 256 emitted tokens, and Cachet handoffs stored on local disk.
 ## Main Result Table
 
 Latency values are seconds. Percentiles are computed over 32 successful
-request-level measurements for each method/context pair: four datasets times
-eight repeats.
+request-level measurements for each method/context pair: four synthetic
+prepared inputs times eight repeats. These values measure the current
+end-to-end vLLM handoff path. They are not an isolated prefill-elision
+microbenchmark: the Cachet requests still send the full logical prompt, and
+the raw records report vLLM prompt usage equal to the 8k/16k/32k context size.
 
-| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography answer-found | HotpotQA answer-found | MusiQue answer-found | NIAH answer-found |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Baseline, no precomputed KV | 8k | 4.22 | 9.93 | 20.53 | 28.15 | 1.00 | 1.00 | 1.00 | 1.00 |
 | Baseline, no precomputed KV | 16k | 25.40 | 33.43 | 41.32 | 58.02 | 1.00 | 1.00 | 1.00 | 1.00 |
@@ -37,6 +40,10 @@ eight repeats.
 | Cachet + vanilla KV | 8k | 7.24 | 8.01 | 17.42 | 18.24 | 1.00 | 1.00 | 1.00 | 1.00 |
 | Cachet + vanilla KV | 16k | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
 | Cachet + vanilla KV | 32k | 58.10 | 62.45 | 71.69 | 72.01 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+The answer-found columns are synthetic sanity checks, not full-dataset
+accuracy. The raw records also report low `exact_match_rate`, which is expected
+because the model often emits the answer plus additional text.
 
 ## Resource Utilization
 
@@ -56,7 +63,8 @@ Databricks driver logs were intentionally not committed.
 | Method coverage | KV Packet is not implemented yet |
 | Context coverage | Covers 8k, 16k, and 32k input context lengths |
 | Resource metrics | Peak GPU memory, GPU utilization, CPU RSS/RAM, disk throughput, network throughput, and cache footprint were not measured |
-| Dataset scope | Uses one synthetic prepared example per dataset/context pair |
+| Dataset scope | Uses one synthetic prepared example per dataset/context pair; full-dataset scores are not measured |
+| TTFT interpretation | Measures current end-to-end vLLM handoff-path latency, not a pure KV-load or prefill-skip microbenchmark |
 
 ## Provenance
 

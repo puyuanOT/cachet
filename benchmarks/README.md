@@ -23,7 +23,7 @@ prior evidence only.
 | Input context lengths | 8k, 16k, 32k tokens |
 | KV cache residency for Cachet methods | Local disk, not Unity Catalog |
 | Datasets / score columns | Biography, HotpotQA, MusiQue, NIAH |
-| Score metric | `answer_found_rate` |
+| Score metric | Pending full-dataset evaluation; synthetic prepared-input sanity runs report `answer_found_rate` only |
 | Baseline | No precomputed KV cache |
 | Cachet methods | Vanilla external KV; KV Packet planned but not implemented yet |
 | Primary evidence | [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json) |
@@ -31,27 +31,32 @@ prior evidence only.
 ## Main Performance Table
 
 Latency values are seconds. Percentiles are computed over 32 successful
-request-level measurements for each method/context pair: four datasets times
-eight repeats. Blank numeric cells indicate pending measurements under the
-primary-table configuration. `Cachet + KV Packet` is listed for protocol
-completeness and is not implemented yet.
+request-level measurements for each method/context pair: four synthetic
+prepared inputs times eight repeats. These latency values measure the current
+end-to-end vLLM handoff path. They are not an isolated prefill-elision
+microbenchmark: the Cachet requests still send the full logical prompt, and
+the raw records report vLLM prompt usage equal to the 8k/16k/32k context size.
+Blank numeric cells indicate pending measurements under the primary-table
+configuration. `Cachet + KV Packet` is listed for protocol completeness and is
+not implemented yet.
 
 | Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline, no precomputed KV | 8k | 4.22 | 9.93 | 20.53 | 28.15 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Baseline, no precomputed KV | 16k | 25.40 | 33.43 | 41.32 | 58.02 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Baseline, no precomputed KV | 32k | 97.98 | 98.61 | 117.05 | 117.07 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Cachet + vanilla KV | 8k | 7.24 | 8.01 | 17.42 | 18.24 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Cachet + vanilla KV | 16k | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
-| Cachet + vanilla KV | 32k | 58.10 | 62.45 | 71.69 | 72.01 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Baseline, no precomputed KV | 8k | 4.22 | 9.93 | 20.53 | 28.15 |  |  |  |  |
+| Baseline, no precomputed KV | 16k | 25.40 | 33.43 | 41.32 | 58.02 |  |  |  |  |
+| Baseline, no precomputed KV | 32k | 97.98 | 98.61 | 117.05 | 117.07 |  |  |  |  |
+| Cachet + vanilla KV | 8k | 7.24 | 8.01 | 17.42 | 18.24 |  |  |  |  |
+| Cachet + vanilla KV | 16k | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
+| Cachet + vanilla KV | 32k | 58.10 | 62.45 | 71.69 | 72.01 |  |  |  |  |
 | Cachet + KV Packet | 8k |  |  |  |  |  |  |  |  |
 | Cachet + KV Packet | 16k |  |  |  |  |  |  |  |  |
 | Cachet + KV Packet | 32k |  |  |  |  |  |  |  |  |
 
-Dataset score columns report `answer_found_rate`, the current quality gate:
-the fraction of successful completions containing the expected answer. Raw
-evidence also records `exact_match_rate`, but exact match is not the main-table
-score metric.
+Dataset score columns are intentionally blank because this run used one
+synthetic prepared example per dataset/context, not full Biography, HotpotQA,
+MusiQue, or NIAH evaluation sets. The committed evidence reports
+`answer_found_rate=1.00` for those synthetic sanity examples, but that should
+not be interpreted as dataset accuracy.
 
 ## Storage Tier Ablation
 
@@ -68,7 +73,7 @@ score metric.
 | Storage tier | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | RAM |  |  |  |  |  |  |  |  |
-| Disk | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
+| Disk | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
 | Unity Catalog |  |  |  |  |  |  |  |  |
 | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  |
 
@@ -86,7 +91,7 @@ score metric.
 
 | Hardware | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| AWS g5/A10G, `g5.8xlarge` | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
+| AWS g5/A10G, `g5.8xlarge` | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
 | AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  |
 
 ## Serving Platform Ablation
@@ -103,7 +108,7 @@ score metric.
 
 | Serving platform | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography score | HotpotQA score | MusiQue score | NIAH score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| vLLM | 21.44 | 32.42 | 28.68 | 43.40 | 1.00 | 1.00 | 1.00 | 1.00 |
+| vLLM | 21.44 | 32.42 | 28.68 | 43.40 |  |  |  |  |
 | SGLang |  |  |  |  |  |  |  |  |
 
 ## Resource Utilization
@@ -131,7 +136,7 @@ implementation.
 
 | Evidence folder | Evidence summary | Notes |
 | --- | --- | --- |
-| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Primary vLLM + Qwen3 4B + g5/A10G measurements for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Matches the main-table configuration; Cachet handoffs were generated on local disk under `/local_disk0` |
+| [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Primary vLLM + Qwen3 4B + g5/A10G latency measurements for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Synthetic prepared inputs only; Cachet handoffs were generated on local disk under `/local_disk0`; latency is current end-to-end handoff-path latency, not an isolated KV-load microbenchmark |
 
 ## Appendix Evidence
 
