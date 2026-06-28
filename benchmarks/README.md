@@ -51,17 +51,17 @@ Latency values are seconds.
 
 | Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Max Serving Concurrency | Peak GPU memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline | 8k |  |  |  |  |  | 29.02x |  |
-| Baseline | 16k |  |  |  |  |  | 14.51x |  |
-| Baseline | 32k |  |  |  |  |  | 7.25x |  |
-| vanilla&nbsp;KV | 8k |  |  |  |  |  | 29.02x |  |
-| vanilla&nbsp;KV | 16k |  |  |  |  |  | 14.51x |  |
-| vanilla&nbsp;KV | 32k |  |  |  |  |  | 7.25x |  |
+| Baseline | 8k |  |  |  |  |  |  |  |
+| Baseline | 16k |  |  |  |  |  |  |  |
+| Baseline | 32k |  |  |  |  |  |  |  |
+| vanilla&nbsp;KV | 8k |  |  |  |  |  |  |  |
+| vanilla&nbsp;KV | 16k |  |  |  |  |  |  |  |
+| vanilla&nbsp;KV | 32k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 8k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 16k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 32k |  |  |  |  |  |  |  |
 
-Caption: `Baseline` means vLLM receives the complete prompt and computes KV for
+`Baseline` means vLLM receives the complete prompt and computes KV for
 the system prompt, documents, user question, and generated tokens at request
 time. `vanilla KV` means Cachet reuses precomputed raw KV for the reusable
 system/document prefix by reading the persisted handoff bundle from local disk,
@@ -85,12 +85,13 @@ hydrate cost. The main table uses per-request salt values, so vLLM prefix
 caching remains enabled but cannot turn repeated measurements into warm prefix
 hits.
 
-`P50 tok/s` is computed per request as
+`P50 tok/s` is per-request decode throughput, not aggregate server throughput.
+It is computed for each completed request as
 `completion_tokens / (TTC - TTFT)`, then summarized across request-level
-measurements. `Max Serving Concurrency` is derived from the logged 237,728 GPU
-KV-cache tokens divided by the nominal context length; vLLM directly reports
-7.25x maximum concurrency for 32,768-token requests. The benchmark load is
-still capped at 8 in-flight requests by `--max-num-seqs=8`.
+measurements. `Max Serving Concurrency` is reserved for measured concurrency
+pressure tests: the largest observed in-flight request count that completes
+without request errors under the same model, context, output-token, and Cachet
+protocol. It is not populated from vLLM's derived KV-token capacity estimate.
 
 `Peak GPU memory` is populated only from sampled runtime telemetry such as
 `nvidia-smi` peak process/device memory during the benchmark run. The
@@ -99,8 +100,8 @@ and did not sample a true process-level peak, so this column remains blank
 until the cold-hydrate 512-measurement reruns complete.
 
 The server logs still include observed scheduler state and KV-pool use in the
-appendix evidence, but the main table reports configured capacity rather than
-one sampled scheduler snapshot.
+appendix evidence, but the main table waits for dedicated pressure tests before
+reporting serving concurrency.
 
 ## Benchmark Dataset Score Table
 
@@ -110,7 +111,7 @@ one sampled scheduler snapshot.
 | vanilla&nbsp;KV |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) |  |  |  |  |
 
-Caption: scores are reserved for full-dataset evaluations over all selected
+Scores are reserved for full-dataset evaluations over all selected
 samples for Biography, HotpotQA, MusiQue, and NIAH. The score table has no
 input-context column because input-context length is a latency stress dimension,
 not a separate full-dataset scoring condition in the main table. The previous
@@ -151,7 +152,7 @@ is RAM.
 | Storage tier | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | RAM |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
-| Disk |  |  |  |  |  | 4.92 GB | 14.51x |  |  | Current default; cold-hydrate latency rerun pending |
+| Disk |  |  |  |  |  | 4.92 GB |  |  |  | Current default; cold-hydrate latency rerun pending |
 | Unity Catalog |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 
@@ -163,7 +164,7 @@ Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, vLLM
 
 | Hardware | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  | 4.92 GB | 14.51x |  |  | Current default; cold-hydrate latency rerun pending |
+| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  | 4.92 GB |  |  |  | Current default; cold-hydrate latency rerun pending |
 | AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 
 ## Serving Platform Ablation
@@ -174,7 +175,7 @@ Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV,
 
 | Serving platform | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| vLLM |  |  |  |  |  | 4.92 GB | 14.51x |  |  | Current default; cold-hydrate latency rerun pending |
+| vLLM |  |  |  |  |  | 4.92 GB |  |  |  | Current default; cold-hydrate latency rerun pending |
 | SGLang |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 
 ## Directory Layout

@@ -36,7 +36,7 @@ Latency values are seconds.
 | vanilla&nbsp;KV | 16k | 0.432 | 0.595 | 15.196 | 15.468 | 17.407 | 14.51x |  |
 | vanilla&nbsp;KV | 32k | 0.677 | 1.122 | 19.705 | 20.000 | 13.487 | 7.25x |  |
 
-Caption: `Baseline` means vLLM computes KV for the full prompt at request time.
+`Baseline` means vLLM computes KV for the full prompt at request time.
 `vanilla KV` means Cachet reuses precomputed raw KV for the reusable
 system/document prefix, prewarms those pages into vLLM shared GPU prefix
 references, and leaves only request-specific suffix plus generated-token KV as
