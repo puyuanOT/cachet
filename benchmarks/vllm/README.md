@@ -1,14 +1,8 @@
 # vLLM Benchmark Index
 
-The primary vLLM comparison is defined in the [benchmark root](../). The
-fixed target configuration is Qwen3-4B-Instruct on vLLM, `g5.8xlarge`, 8
-parallel requests, 256 emitted tokens, and disk-resident Cachet KV.
+The current vLLM benchmark protocol is defined in the [benchmark root](../):
+Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, shared GPU prefix
+references, `g5.8xlarge`, 8 parallel requests, and forced 256-token decode.
 
-Existing vLLM evidence that does not match the primary-table configuration:
-
-| Appendix result | Evidence summary |
-| --- | --- |
-| [`../appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/`](../appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/) | Existing g6/L4 vanilla KV latency evidence |
-| [`../appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/`](../appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/) | Existing g5/A10G vanilla KV compatibility evidence |
-
-Use [`../databricks/`](../databricks/) for sanitized audit mirrors.
+Current evidence lives in
+[`../appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/).

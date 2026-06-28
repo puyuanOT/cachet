@@ -19,8 +19,8 @@ Files:
 
 This is not the benchmark report directory. Human-readable benchmark summaries
 and sanitized benchmark JSON live under `benchmarks/`, starting with
-`benchmarks/databricks/CURRENT.md`; the Databricks run-specific folders there
-are the durable standalone benchmark artifacts.
+`benchmarks/README.md`; the current benchmark appendix records Databricks
+provenance without preserving older incompatible result mirrors.
 
 Regenerate from the repository root with:
 

@@ -30,5 +30,5 @@ release-operation material.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
 - `../benchmarks/README.md` is the human-facing research-style benchmark page;
-  `../benchmarks/appendix/existing-results/` preserves appendix evidence and
-  `../benchmarks/databricks/` keeps Databricks source-artifact records.
+  `../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/` keeps the
+  current Q4-weight + Q8-document-KV evidence and Databricks provenance.

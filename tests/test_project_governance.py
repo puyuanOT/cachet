@@ -1,5 +1,4 @@
 import ast
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -11,7 +10,6 @@ import tomllib
 
 import pytest
 
-from document_kv_cache.databricks_runs import databricks_run_status_sidecar_issues
 from document_kv_cache.legacy_compatibility import (
     LEGACY_COMPATIBILITY_REQUIRED_JOB_CATEGORIES,
     build_legacy_compatibility_migration_evidence_from_scan_config,
@@ -504,8 +502,10 @@ def test_current_legacy_migration_evidence_is_generated_from_checked_runners():
         assert release_evidence["runner_uses_legacy_facade"] is False
         assert (REPO_ROOT / release_evidence["evidence_uri"]).is_file()
     assert "This is not the benchmark report directory" in readme
-    assert "`benchmarks/databricks/CURRENT.md`" in readme
-    assert "durable standalone benchmark artifacts" in readme
+    assert "`benchmarks/README.md`" in readme
+    assert "current benchmark appendix records Databricks provenance" in " ".join(
+        readme.split()
+    )
     assert "document_kv.legacy_compatibility_migration.v1" in readme
     assert "generated from `legacy-migration-scan-config.json`" in readme
 
@@ -1026,11 +1026,9 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 
     assert "Release-gated | `databricks_job.py`" in compact_matrix
     assert "Run connector action descriptor validation" in matrix_text
-    assert (
-        "release evidence `ok=true` when paired with the current storage and native engine sidecars"
-        in matrix_text
-    )
-    assert "cannot substitute for the strict release target" in matrix_text
+    assert "Release-evidence validation over the current target benchmark" in compact_matrix
+    assert "vLLM/SGLang native probe/action artifacts is `ok=true` with no issues" in compact_matrix
+    assert "does not replace the strict V1 publication target" in compact_matrix
     assert "`compatibility_benchmark` artifact role" in matrix_text
     assert "latest validated strict-bundle snapshot was built after PR #513 with the current wheel" in compact_matrix
     assert "validates with 37 artifacts" in compact_matrix
@@ -1038,7 +1036,7 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     assert "`dependency_freshness` evidence" in compact_matrix
     assert "Traceability-only PR evidence added after that snapshot must be included" in compact_matrix
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
-    assert "compatibility Databricks run-status sidecar" in compact_matrix
+    assert "`compatibility_databricks_run_status` sidecar" in compact_matrix
     assert "GitHub governance is release-ready" in compact_matrix
     assert "auto-merge is enabled" in compact_matrix
     assert "Add native engine integration examples after connector probes land" not in matrix_text
@@ -1076,8 +1074,8 @@ def test_native_engine_integration_doc_examples_are_validated():
         "aws-g5-a10g",
         "g5.8xlarge",
         "payload-summary",
-        "benchmarks/appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/",
-        "`benchmarks/databricks/` mirrors",
+        "benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/",
+        "compatibility evidence only",
         "commit tokens",
     ):
         assert required in text
@@ -1165,20 +1163,20 @@ def test_release_ops_doc_classifies_installed_cli_surface():
 
 def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     benchmark_root = REPO_ROOT / "benchmarks"
+    current_result_root = benchmark_root / "appendix" / "current-q4-q8-vllm-qwen3-4b-g5-a10g"
     databricks_root = benchmark_root / "databricks"
-    appendix_results_root = benchmark_root / "appendix" / "existing-results"
     archive_root = REPO_ROOT / "docs" / "release-ops" / "benchmark-archive"
     sglang_archive_root = archive_root / "sglang-smoke"
 
     root_readme = (benchmark_root / "README.md").read_text(encoding="utf-8")
     appendix_readme = (benchmark_root / "appendix" / "README.md").read_text(encoding="utf-8")
-    existing_results_readme = (appendix_results_root / "README.md").read_text(encoding="utf-8")
+    current_readme = (current_result_root / "README.md").read_text(encoding="utf-8")
+    current_summary = json.loads((current_result_root / "summary.json").read_text(encoding="utf-8"))
     vllm_readme = (benchmark_root / "vllm" / "README.md").read_text(encoding="utf-8")
     sglang_readme = (benchmark_root / "sglang" / "README.md").read_text(encoding="utf-8")
     storage_readme = (benchmark_root / "storage" / "README.md").read_text(encoding="utf-8")
     native_engine_readme = (benchmark_root / "native-engine" / "README.md").read_text(encoding="utf-8")
     databricks_readme = (databricks_root / "README.md").read_text(encoding="utf-8")
-    current_databricks_snapshot = (databricks_root / "CURRENT.md").read_text(encoding="utf-8")
     benchmark_template_readme = (benchmark_root / "_template" / "README.md").read_text(encoding="utf-8")
     archive_readme = (archive_root / "README.md").read_text(encoding="utf-8")
     sglang_archive_readme = (sglang_archive_root / "README.md").read_text(encoding="utf-8")
@@ -1190,37 +1188,51 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
 
     compact_root_readme = " ".join(root_readme.split())
-    compact_existing_results_readme = " ".join(existing_results_readme.split())
-    compact_vllm_readme = " ".join(vllm_readme.split())
-    compact_sglang_readme = " ".join(sglang_readme.split())
+    compact_current_readme = " ".join(current_readme.split())
     compact_databricks_readme = " ".join(databricks_readme.split())
     compact_archive_readme = " ".join(archive_readme.split())
     compact_sglang_archive_readme = " ".join(sglang_archive_readme.split())
-    compact_matrix_text = " ".join(matrix_text.split())
     compact_maintainer_reference = " ".join(maintainer_reference.split())
-    compact_docs_readme = " ".join(docs_readme.split())
+    compact_matrix_text = " ".join(matrix_text.split())
 
     assert "public benchmark appendix for Cachet" in compact_root_readme
-    assert (
-        "one primary comparison table, a clearly separated latest optimized "
-        "Cachet canary table, and focused ablation tables"
-    ) in compact_root_readme
+    assert "current benchmark protocol only" in compact_root_readme
+    assert "Historical benchmark folders were removed" in compact_root_readme
+    assert "Qwen3-4B-Instruct" in root_readme
+    assert "4-bit model weights" in root_readme
+    assert "Q8 document KV" in root_readme
+    assert "shared GPU prefix references" in root_readme
+    assert "private KV for the user question plus generated tokens" in compact_root_readme
     assert "Main Table Configuration" in root_readme
+    assert "Main Performance Table" in root_readme
+    assert "Document KV Precision Ablation" in root_readme
+    assert "Storage Tier Ablation" in root_readme
+    assert "Hardware Ablation" in root_readme
+    assert "Serving Platform Ablation" in root_readme
     assert "Directory Layout" in root_readme
-    assert "appendix/existing-results/" in root_readme
     assert "Cachet + KV Packet" in root_readme
-    assert "Folder names should be stable and descriptive" in benchmark_template_readme
-    assert "Do not infer or estimate missing values" in benchmark_template_readme
-    for heading in (
-        "Main Table Configuration",
-        "Main Performance Table",
-        "Storage Tier Ablation",
-        "Hardware Ablation",
-        "Serving Platform Ablation",
-        "Resource Utilization",
-        "Appendix Evidence",
-    ):
-        assert heading in root_readme
+    assert "not implemented yet" in root_readme
+    assert "Q4 packed document KV" in root_readme
+    assert "Implementation pending" in root_readme
+    assert "Forced 256-token decode" in root_readme
+    assert "8 requests in flight" in root_readme
+    assert "Answer-found" in root_readme or "answer found" in root_readme
+    assert "strict exact-match is tracked in evidence" in compact_root_readme
+    stale_canary_heading = "Latest Optimized Cachet " + "Canary"
+    stale_existing_results_path = "appendix/" + "existing-results/"
+    stale_primary_prefix = "primary-table" + "-v"
+    stale_runtime_prompt = "runtime-prompt" + "-vllm"
+    removed_cache_column = "Cache " + "location"
+    removed_status_column = "Status / " + "evidence"
+    assert stale_canary_heading not in root_readme
+    assert stale_existing_results_path not in root_readme
+    assert stale_primary_prefix not in root_readme
+    assert stale_runtime_prompt not in root_readme
+    assert removed_cache_column not in root_readme
+    assert removed_cache_column not in benchmark_template_readme
+    assert removed_status_column not in root_readme
+    assert removed_status_column not in benchmark_template_readme
+
     for heading in (
         "Table Configuration",
         "Main Result Table",
@@ -1229,69 +1241,128 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "Provenance",
     ):
         assert heading in benchmark_template_readme
-    assert "`N/A` means the method is not implemented or the ablation has not been measured" in compact_root_readme
-    assert "Qwen3-4B-Instruct" in root_readme
-    assert "8 requests in flight" in root_readme
-    assert "Forced 256-token decode" in root_readme
-    assert "8k" in root_readme
-    assert "16k" in root_readme
-    assert "32k" in root_readme
-    assert "Cachet + KV Packet" in root_readme
-    assert "Storage tier" in root_readme
-    assert "Cache location" not in root_readme
-    assert "Cache location" not in benchmark_template_readme
-    assert "Status / evidence" not in root_readme
-    assert "Status / evidence" not in benchmark_template_readme
-    assert "Hybrid RAM / disk / Unity Catalog" in root_readme
-    assert "has not been measured under the fixed configuration" in compact_root_readme
-    assert "not implemented yet" in root_readme
-    assert "Latest Optimized Cachet Canary" in root_readme
-    assert "4-bit weights + FP8 shared GPU prefix" in root_readme
-    assert "| Cachet + vanilla KV, 4-bit weights + FP8 shared GPU prefix | 32k | 0.677 | 1.122 | 19.705 | 20.000 | 1.00 | 0.00 |" in root_readme
-    assert "suffix-only runtime prompts are not supported by the current vLLM native provider" in compact_root_readme
-    assert "Current main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k" in compact_root_readme
-    assert "[benchmark root](../)" in appendix_readme
-    assert "does not match the primary-table configuration" in compact_existing_results_readme
-    assert "vllm-qwen3-4b-g6-l4-vanilla-kv" in existing_results_readme
-    assert "fixed target configuration" in compact_vllm_readme
-    assert "Existing g5/A10G vanilla KV compatibility evidence" in vllm_readme
-    assert "SGLang appears in the serving-platform ablation" in compact_sglang_readme
-    assert "Prepared V1 correctness and cache-hit evidence; no latency improvement observed" in sglang_readme
-    assert "not public benchmark results" in compact_sglang_readme
-    assert "not a model-serving latency benchmark" in storage_readme
-    assert "not a memory-consumption measurement" in storage_readme
-    assert "integration evidence" in native_engine_readme
-    assert "not serving-latency benchmark rows" in " ".join(native_engine_readme.split())
-    assert "audit mirror, not the primary benchmark summary" in databricks_readme
-    assert "QA run provenance" in current_databricks_snapshot
+    assert "Document KV precision" in benchmark_template_readme
+    assert "packed Q4" in benchmark_template_readme
+    assert "Do not infer or estimate missing values" in benchmark_template_readme
+
+    assert "current public benchmark evidence only" in appendix_readme
+    assert "current Q4-weight + Q8-document-KV configuration" in appendix_readme
+    assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in appendix_readme
+    assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in vllm_readme
+    assert "Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV" in vllm_readme
+    assert "SGLang appears only in the serving-platform ablation" in " ".join(
+        sglang_readme.split()
+    )
+    assert "Historical SGLang smoke attempts remain outside `benchmarks/`" in sglang_readme
+    assert "Historical storage-reader-only results were removed" in " ".join(
+        storage_readme.split()
+    )
+    assert "integration checks, not serving-latency benchmark rows" in " ".join(
+        native_engine_readme.split()
+    )
+    assert "no longer mirrors historical Databricks result JSON" in compact_databricks_readme
+    assert "summary records the Databricks run ids" in compact_databricks_readme
     assert "should not dominate the public benchmark experience" in compact_archive_readme
     assert "not as the current public benchmark result surface" in compact_sglang_archive_readme
 
     assert "[`benchmarks/README.md`](benchmarks/)" in project_readme
     assert "[`benchmarks/README.md`](../../benchmarks/)" in maintainer_reference
     assert "`../benchmarks/README.md`" in docs_readme
-    assert "benchmarks/appendix/existing-results/" in matrix_text
-    assert "`benchmarks/README.md` is the research-style human-facing benchmark index" in matrix_text
-    assert "`docs/release-ops/pr-evidence/` tree" in compact_maintainer_reference
+    assert "current Qwen3-4B 4-bit-weight + Q8-document-KV protocol" in compact_matrix_text
+    assert "`docs/release-ops/pr-evidence/`" in compact_maintainer_reference
 
-    public_result_folders = {
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache",
-        "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary",
-        "appendix/q4-q8-shared-g5-a10g-cachet-canary",
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv",
-        "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv",
-        "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-prepared",
-        "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-synthetic-niah",
-        "appendix/existing-results/storage-g6-l4-reader-throughput",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv",
+    assert current_summary["configuration"]["model_quantization"] == "bitsandbytes"
+    assert current_summary["configuration"]["default_cachet_document_kv_dtype"] == "fp8_e5m2"
+    assert current_summary["configuration"]["vllm_kv_cache_dtype"] == "fp8_e5m2"
+    assert current_summary["configuration"]["quality_metric"] == "prepared-suite answer_found_rate"
+    assert current_summary["configuration"]["request_parallelism"] == 8
+    assert current_summary["configuration"]["output_tokens"] == 256
+    assert current_summary["server_capacity"]["available_kv_cache_memory_gib"] == 16.32
+
+    completed_rows = {
+        (row["method"], row["context"], row["document_kv_dtype"]): row
+        for row in current_summary["results"]
     }
-    for folder in public_result_folders:
-        assert (benchmark_root / folder / "README.md").is_file()
-        assert not any(part.startswith("2026-") for part in Path(folder).parts)
-        assert folder in root_readme
+    assert set(completed_rows) == {
+        ("Baseline, no precomputed KV", "8k", None),
+        ("Baseline, no precomputed KV", "16k", None),
+        ("Baseline, no precomputed KV", "32k", None),
+        ("Cachet + vanilla KV", "8k", "fp8_e5m2"),
+        ("Cachet + vanilla KV", "16k", "fp8_e5m2"),
+        ("Cachet + vanilla KV", "32k", "fp8_e5m2"),
+    }
+    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["p50_ttft_seconds"] == pytest.approx(2.1659776625)
+    assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["p50_ttft_seconds"] == pytest.approx(6.047064134)
+    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["p50_ttft_seconds"] == pytest.approx(16.6217639235)
+    assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["measurements"] == 32
+    assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.3888765125)
+    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.431847068)
+    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["cache_footprint_bytes"] == 4915814400
+    assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.67697023)
+    assert all(row["answer_found_rate"] == 1.0 for row in current_summary["results"])
+    assert all(row["exact_match_rate"] == 0.0 for row in current_summary["results"])
+    assert all(
+        row["measured_connector_load_requests"] == 0
+        for row in current_summary["results"]
+        if row["method"] == "Cachet + vanilla KV"
+    )
+    assert "connector telemetry recorded four `load_request` events" in compact_current_readme
+    assert "bf16 document-KV ablation is a quality failure" in compact_current_readme
 
+    precision_ablations = {
+        row["document_kv_dtype"]: row
+        for row in current_summary["document_kv_precision_ablations"]
+    }
+    assert set(precision_ablations) == {"bfloat16", "fp8_e5m2"}
+    assert precision_ablations["bfloat16"]["quality_failure"] is True
+    assert precision_ablations["bfloat16"]["answer_found_rate"] == 0.0
+    assert precision_ablations["bfloat16"]["cache_footprint_bytes"] == 9831628800
+    assert precision_ablations["fp8_e5m2"]["quality_failure"] is False
+    assert precision_ablations["fp8_e5m2"]["answer_found_rate"] == 1.0
+    completed_run_ids = {
+        row["databricks_parent_run_id"]
+        for row in current_summary["results"]
+    } | {
+        row["databricks_parent_run_id"]
+        for row in current_summary["document_kv_precision_ablations"]
+    }
+    assert {
+        "397306394664215",
+        "353401098635093",
+        "777052874361660",
+        "1108385130287829",
+        "221269968259600",
+        "126174968860307",
+        "745434681832900",
+    } <= completed_run_ids
+    assert current_summary["unmeasured"] == [
+        {
+            "document_kv_dtype": "packed_q4",
+            "reason": "Packed-Q4 document KV layout and dequant/native runtime support are not implemented yet.",
+        }
+    ]
+
+    expected_files = {
+        "_template/README.md",
+        "appendix/README.md",
+        "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/README.md",
+        "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/summary.json",
+        "databricks/README.md",
+        "native-engine/README.md",
+        "README.md",
+        "sglang/README.md",
+        "storage/README.md",
+        "vllm/README.md",
+    }
+    actual_files = {
+        path.relative_to(benchmark_root).as_posix()
+        for path in benchmark_root.rglob("*")
+        if path.is_file()
+    }
+    assert actual_files == expected_files
+
+    assert not (benchmark_root / "current").exists()
+    assert not (benchmark_root / "appendix" / "existing-results").exists()
     assert not (benchmark_root / "sglang" / "archive").exists()
     archived_sglang_folders = {
         "invalid-served-model-name": "failed_run.json",
@@ -1319,336 +1390,6 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     for folder, record_name in archived_sglang_folders.items():
         assert (sglang_archive_root / folder / "README.md").is_file()
         assert (sglang_archive_root / folder / record_name).is_file()
-
-    expected_files = {
-        "_template/README.md",
-        "appendix/README.md",
-        "appendix/existing-results/README.md",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/README.md",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/connector_telemetry_16k_cachet_vanilla_kv.jsonl",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/connector_telemetry_32k_cachet_vanilla_kv.jsonl",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/connector_telemetry_8k_cachet_vanilla_kv.jsonl",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_16k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_16k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_32k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_32k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_8k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_metadata_8k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_16k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_16k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_32k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_32k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_8k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/latency_v1_benchmark_8k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_coverage_16k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_coverage_32k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_coverage_8k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_generation_16k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_generation_32k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prepared_handoff_generation_8k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prompt_token_budget_16k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prompt_token_budget_32k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/prompt_token_budget_8k.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_16k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_16k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_32k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_32k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_8k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_metadata_8k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_16k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_16k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_32k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_32k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_8k_baseline.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/quality_v1_benchmark_8k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/server_log_summary.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/summary.json",
-        "appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/vllm_import_probe.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/README.md",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_16k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_32k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_coverage_8k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_generation_16k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_generation_32k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prepared_handoff_generation_8k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prompt_token_budget_16k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prompt_token_budget_32k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/prompt_token_budget_8k.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_baseline.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_baseline.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_baseline.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_cachet_vanilla_kv.json",
-        "appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/vllm_import_probe.json",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/README.md",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/summary.json",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_baseline.json",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_16k_cachet_vanilla_kv.json",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_baseline.json",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_32k_cachet_vanilla_kv.json",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_baseline.json",
-        "appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/v1_benchmark_8k_cachet_vanilla_kv.json",
-        "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/README.md",
-        "appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/failure_summary.json",
-        "appendix/q4-q8-shared-g5-a10g-cachet-canary/README.md",
-        "appendix/q4-q8-shared-g5-a10g-cachet-canary/summary.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/README.md",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
-        "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-prepared/README.md",
-        "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-prepared/success_run.json",
-        "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/README.md",
-        "appendix/existing-results/sglang-qwen3-4b-g6-l4-vanilla-kv-synthetic-niah/success_run.json",
-        "appendix/existing-results/storage-g6-l4-reader-throughput/README.md",
-        "appendix/existing-results/storage-g6-l4-reader-throughput/databricks_run_status.json",
-        "appendix/existing-results/storage-g6-l4-reader-throughput/storage_benchmark.json",
-        "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/README.md",
-        "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
-        "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/README.md",
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-        "databricks/CURRENT.md",
-        "databricks/README.md",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/README.md",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
-        "databricks/storage-g6-l4-reader-throughput/README.md",
-        "databricks/storage-g6-l4-reader-throughput/databricks_run_status.json",
-        "databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
-        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/README.md",
-        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
-        "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/README.md",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
-        "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-        "native-engine/README.md",
-        "README.md",
-        "sglang/README.md",
-        "storage/README.md",
-        "vllm/README.md",
-    }
-    actual_files = {
-        path.relative_to(benchmark_root).as_posix()
-        for path in benchmark_root.rglob("*")
-        if path.is_file()
-    }
-    assert actual_files == expected_files
-
-    standalone_mirrors = {
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/databricks_run_status.json",
-        "appendix/existing-results/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json": "databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/release_evidence.json",
-        "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json": "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/v1_benchmark.json",
-        "appendix/existing-results/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json": "databricks/vllm-qwen3-4b-g5-a10g-vanilla-kv/databricks_run_status.json",
-        "appendix/existing-results/storage-g6-l4-reader-throughput/storage_benchmark.json": "databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
-        "appendix/existing-results/storage-g6-l4-reader-throughput/databricks_run_status.json": "databricks/storage-g6-l4-reader-throughput/databricks_run_status.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/databricks_run_status.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "appendix/existing-results/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json": "databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
-    }
-    for standalone_path, mirror_path in standalone_mirrors.items():
-        assert (benchmark_root / standalone_path).read_bytes() == (
-            benchmark_root / mirror_path
-        ).read_bytes()
-
-    expected_databricks_folders = {
-        "vllm-qwen3-4b-g6-l4-vanilla-kv": {
-            "run_id": 872615985402004,
-            "hardware_target": "aws-g6-l4",
-            "node_type": "g6.8xlarge",
-        },
-        "vllm-qwen3-4b-g5-a10g-vanilla-kv": {
-            "run_id": 566743786103032,
-            "hardware_target": "aws-g5-a10g",
-            "node_type": "g5.8xlarge",
-        },
-        "storage-g6-l4-reader-throughput": {
-            "run_id": 948365719597221,
-            "hardware_target": "aws-g6-l4",
-            "node_type": "g6.8xlarge",
-        },
-        "native-engine-g6-l4-vllm-sglang-vanilla-kv": {
-            "run_id": 934698284395881,
-            "hardware_target": "aws-g6-l4",
-            "node_type": "g6.8xlarge",
-        },
-    }
-    for folder_name, expected in expected_databricks_folders.items():
-        folder = databricks_root / folder_name
-        status = json.loads((folder / "databricks_run_status.json").read_text(encoding="utf-8"))
-        summary = status["summary"]
-
-        assert folder_name in databricks_readme
-        assert str(expected["run_id"]) in current_databricks_snapshot
-        assert status["ok"] is True
-        assert status["action"] == "get"
-        assert summary["record_type"] == "document_kv.databricks_run_status.v1"
-        assert summary["run_id"] == expected["run_id"]
-        assert summary["terminal"] is True
-        assert summary["succeeded"] is True
-        assert summary["life_cycle_state"] == "TERMINATED"
-        assert summary["result_state"] == "SUCCESS"
-        assert summary["active_task_key"] is None
-        assert summary["submit_payload"]["hardware_targets"] == [expected["hardware_target"]]
-        assert summary["submit_payload"]["node_type_ids"] == [expected["node_type"]]
-        assert databricks_run_status_sidecar_issues(
-            status,
-            expected_hardware_target=expected["hardware_target"],
-            expected_node_type_id=expected["node_type"],
-        ) == ()
-
-    g6_benchmark = json.loads(
-        (databricks_root / "vllm-qwen3-4b-g6-l4-vanilla-kv" / "v1_benchmark.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert g6_benchmark["record_type"] == "document_kv.benchmark_run.v1"
-    assert g6_benchmark["suite"]["hardware_target"] == "aws-g6-l4"
-    assert g6_benchmark["suite"]["model_id"] == "qwen3:4b-instruct"
-    assert g6_benchmark["suite"]["datasets"] == ["biography", "hotpotqa", "musique", "niah"]
-    assert len(g6_benchmark["measurements"]) == 24
-    assert g6_benchmark["v1_evidence"]["ok"] is True
-    assert min(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(5.2668743391)
-    assert max(row["ttft_speedup"] for row in g6_benchmark["comparisons"]) == pytest.approx(6.9722325045)
-
-    g5_benchmark = json.loads(
-        (databricks_root / "vllm-qwen3-4b-g5-a10g-vanilla-kv" / "v1_benchmark.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert g5_benchmark["suite"]["hardware_target"] == "aws-g5-a10g"
-    assert len(g5_benchmark["measurements"]) == 24
-    assert g5_benchmark["v1_evidence"]["ok"] is True
-    assert min(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(4.6620010419)
-    assert max(row["ttft_speedup"] for row in g5_benchmark["comparisons"]) == pytest.approx(6.0430383626)
-
-    sglang_prepared = json.loads(
-        (appendix_results_root / "sglang-qwen3-4b-g6-l4-vanilla-kv-prepared" / "success_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert sglang_prepared["record_type"] == "cachet.benchmark_successful_sglang_live_v1_release.v1"
-    assert sglang_prepared["benchmark_result"] == "prepared_live_v1_release_pass_no_speedup"
-    assert sglang_prepared["live_benchmark"]["ok"] is True
-    assert sglang_prepared["live_benchmark"]["suite"]["scope"] == "live_v1_release"
-    assert sglang_prepared["live_benchmark"]["suite"]["release_v1_suite"] is True
-    assert sglang_prepared["live_benchmark"]["measurement_count"] == 16
-    assert len(sglang_prepared["live_benchmark"]["cache_hit_validations"]) == 8
-    assert all(
-        validation["ok"] is True
-        for validation in sglang_prepared["live_benchmark"]["cache_hit_validations"]
-    )
-    assert max(
-        row["ttft_speedup"]
-        for row in sglang_prepared["live_benchmark"]["comparisons"]
-    ) < 1.0
-
-    sglang_synthetic = json.loads(
-        (appendix_results_root / "sglang-qwen3-4b-g6-l4-vanilla-kv-synthetic-niah" / "success_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert sglang_synthetic["record_type"] == "cachet.benchmark_successful_sglang_live_benchmark.v1"
-    assert sglang_synthetic["benchmark_result"] == "synthetic_live_benchmark_pass_no_speedup"
-    assert sglang_synthetic["live_benchmark"]["suite"]["scope"] == "live_synthetic_niah"
-    assert sglang_synthetic["live_benchmark"]["cache_hit_validations"][0][
-        "cache_request_cached_tokens"
-    ] == 175
-    assert sglang_synthetic["live_benchmark"]["comparisons"][0]["ttft_speedup"] == pytest.approx(
-        0.8745573214
-    )
-
-    baseline_smoke = json.loads(
-        (sglang_archive_root / "baseline-isolated-success" / "success_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert baseline_smoke["record_type"] == "cachet.benchmark_successful_databricks_smoke.v1"
-    assert baseline_smoke["benchmark_result"] == "readiness_pass"
-    assert baseline_smoke["sglang_cache_hit_validation"]["cache_request_cached_tokens"] == 175
-
-    archived_failure = json.loads(
-        (sglang_archive_root / "invalid-served-model-name" / "failed_run.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert archived_failure["benchmark_result"] == "not_published"
-    assert archived_failure["failure_type"] == "sglang_invalid_served_model_name"
-
-    storage_benchmark = json.loads(
-        (databricks_root / "storage-g6-l4-reader-throughput" / "storage_benchmark.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert storage_benchmark["record_type"] == "document_kv.storage_benchmark.v1"
-    assert storage_benchmark["uc_volume_is_real"] is True
-    assert storage_benchmark["readers"] == ["memory", "disk", "unity_catalog"]
-    assert storage_benchmark["release_storage_evidence"]["ok"] is True
-    assert {row["reader_id"] for row in storage_benchmark["results"]} == {
-        "disk",
-        "memory",
-        "unity_catalog",
-    }
-    assert all(row["errors"] == 0 for row in storage_benchmark["results"])
-
-    native_probe_root = databricks_root / "native-engine-g6-l4-vllm-sglang-vanilla-kv"
-    for backend, provider_factory in {
-        "vllm": "vllm_kv_injection.vllm_native_provider:build_document_kv_provider",
-        "sglang": "sglang_kv_injection.sglang_dynamic_backend:build_document_kv_hicache_provider",
-    }.items():
-        probe = json.loads((native_probe_root / f"{backend}_engine_probe.json").read_text(encoding="utf-8"))
-        actions = json.loads(
-            (native_probe_root / f"{backend}_connector_actions.json").read_text(encoding="utf-8")
-        )
-
-        assert probe["record_type"] == "document_kv.engine_kv_connector_probe.v1"
-        assert probe["backend"] == backend
-        assert probe["native_probe"] is True
-        assert probe["payload_mode"] == "merged"
-        assert probe["copied_tokens"] == 48
-        assert probe["metadata"][f"{backend}_kv_injection.provider_factory"] == provider_factory
-        assert actions["record_type"] == "document_kv.engine_kv_connector_actions.v1"
-        assert actions["backend"] == backend
-
-    g6_release_evidence = json.loads(
-        (databricks_root / "vllm-qwen3-4b-g6-l4-vanilla-kv" / "release_evidence.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert g6_release_evidence["record_type"] == "document_kv.release_evidence.v1"
-    assert g6_release_evidence["ok"] is True
-    assert g6_release_evidence["issues"] == []
-    assert g6_release_evidence["v1_benchmark_ok"] is True
-    assert g6_release_evidence["storage_benchmark_ok"] is True
-    assert set(g6_release_evidence["engine_probe_backends"]) == {"sglang", "vllm"}
-    artifact_source_paths = {source["path"] for source in g6_release_evidence["artifact_sources"]}
-    assert artifact_source_paths == {
-        "benchmarks/databricks/storage-g6-l4-reader-throughput/storage_benchmark.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_connector_actions.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/sglang_engine_probe.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_connector_actions.json",
-        "benchmarks/databricks/native-engine-g6-l4-vllm-sglang-vanilla-kv/vllm_engine_probe.json",
-        "benchmarks/databricks/vllm-qwen3-4b-g6-l4-vanilla-kv/v1_benchmark.json",
-    }
-    for source in g6_release_evidence["artifact_sources"]:
-        artifact_path = REPO_ROOT / source["path"]
-        artifact_bytes = artifact_path.read_bytes()
-        assert source["size_bytes"] == len(artifact_bytes)
-        assert source["sha256"] == hashlib.sha256(artifact_bytes).hexdigest()
-
 
 def test_maintainer_reference_release_bundle_documents_artifact_validation_contracts():
     text = (

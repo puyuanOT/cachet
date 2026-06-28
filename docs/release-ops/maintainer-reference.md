@@ -118,9 +118,8 @@ and release evidence in one repository. The human entry points are:
   `benchmarks/`, `docs/release-ops/evidence/`, `docs/release-ops/pr-evidence/`, release bundles, and ignored
   `databricks-runs/` scratch output.
 - [`benchmarks/README.md`](../../benchmarks/) is the research-style
-  benchmark answer; [`benchmarks/appendix/existing-results/`](../../benchmarks/appendix/existing-results/)
-  preserves committed evidence that does not match the primary-table
-  configuration.
+  benchmark answer; [`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/)
+  preserves the current Q4-weight + Q8-document-KV evidence.
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
   the implementation package and migration boundary.
@@ -920,18 +919,13 @@ with document KV-cache reuse:
 Curated, human-readable benchmark reports are tracked in
 [`benchmarks/README.md`](../../benchmarks/README.md). Start there for the
 primary comparison table and ablations, then open
-[`benchmarks/appendix/existing-results/`](../../benchmarks/appendix/existing-results/)
-for committed evidence that does not match the primary-table configuration.
-Use the Databricks artifact snapshot at
-[`benchmarks/databricks/CURRENT.md`](../../benchmarks/databricks/CURRENT.md) for
-sanitized source records. Those folders contain the current g6/L4 target
-benchmark, g5/A10G compatibility benchmark, storage-reader benchmark, and
-native vLLM/SGLang probe artifacts without relying on the PR-only
-`docs/release-ops/pr-evidence/` tree or ignored local `databricks-runs/` output. Every durable
-Databricks benchmark or benchmark-readiness run should get its own stable
-appendix folder with a `README.md` and compact sanitized evidence committed
-beside it; `docs/release-ops/pr-evidence/` stays reserved for machine-readable PR validation and
-release-audit sidecars.
+[`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/)
+for committed evidence and Databricks run provenance. Historical benchmark
+records are intentionally not kept in `benchmarks/`; use git history or release
+bundles for audit-only retrieval. Every durable Databricks benchmark under the
+current protocol should update the stable current appendix folder with a
+`README.md` and compact sanitized evidence; `docs/release-ops/pr-evidence/`
+stays reserved for machine-readable PR validation and release-audit sidecars.
 
 The full release-suite latency and quality benchmark rows are vLLM benchmark
 runs. The current SGLang artifacts include provider-backed native HiCache probe
