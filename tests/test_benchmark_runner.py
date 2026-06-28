@@ -25,6 +25,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     BenchmarkArm,
     BenchmarkExample,
@@ -199,6 +200,24 @@ def test_run_benchmark_suite_attaches_kv_transfer_params_to_cache_arm_only():
         "v1-smoke:biography:biography-1:document_kv_cache:repeat-1:cachet-bio-1"
     )
     assert cache.requests[0].kv_transfer_params == kv_transfer_params
+
+
+def test_run_benchmark_suite_prepends_runtime_prefix_text_for_cache_prompt():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        DOCUMENT_KV_HANDOFF_JSON_PARAM: "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+        DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM: "tail-prefix",
+    }
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(kv_transfer_params=kv_transfer_params),))
+    cache = RecordingEngine()
+
+    run_benchmark_suite(
+        suite,
+        {CACHE_REUSE_ARM: cache},
+        arms=(document_kv_cache_arm(),),
+    )
+
+    assert cache.requests[0].prompt_text == "tail-prefix" + cache.requests[0].cache_suffix_text
 
 
 def test_run_benchmark_suite_uses_unique_engine_request_ids_for_cache_repeats():

@@ -1211,7 +1211,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Hardware Ablation" in root_readme
     assert "Serving Platform Ablation" in root_readme
     assert "Directory Layout" in root_readme
-    assert "[KV Packet](https://arxiv.org/abs/2604.13226)" in root_readme
+    assert "[KV&nbsp;Packet](https://arxiv.org/abs/2604.13226)" in root_readme
     assert "not implemented yet" in compact_root_readme
     assert "Q4 packed document KV" in root_readme
     assert "Implementation pending" in root_readme
@@ -1219,11 +1219,12 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "8 requests in flight" in root_readme
     assert "answer-found values were one-example smoke checks" in compact_root_readme
     assert "not official dataset scores" in compact_root_readme
-    assert "P50 decode tok/s" in root_readme
-    assert "vLLM max concurrency" in root_readme
-    assert "Accounted GPU memory" in root_readme
+    assert "P50 tok/s" in root_readme
+    assert "Max Serving Concurrency" in root_readme
+    assert "Peak GPU memory" in root_readme
     assert "`request_parallelism=8`" in root_readme
-    assert "1,000 successful request-level measurements" in compact_root_readme
+    assert "512 successful request-level measurements" in compact_root_readme
+    assert "Accounted GPU memory" not in root_readme
     assert "P50 TTFT (s)" not in root_readme
     assert "P95 TTFT (s)" not in root_readme
     stale_canary_heading = "Latest Optimized Cachet " + "Canary"

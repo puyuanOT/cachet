@@ -34,6 +34,9 @@ return as a production dependency.
   handoffs to prepared benchmark JSONL rows.
 - `benchmark_handoff_bundles.py` is the `python -m` entry point for the
   handoff-bundle generation CLI used by reproducible benchmark plans.
+- `benchmark_dataset_sources.py` stages public full-dataset benchmark sources
+  into canonical V1 JSONL with source, split, count, and synthetic NIAH-grid
+  provenance.
 - `benchmark_plan_executor.py` runs command-plan JSON files for local or managed
   job runners and records source-plan SHA-256 provenance.
 - `benchmark_runner.py` owns baseline and cache-arm execution against
@@ -120,6 +123,8 @@ return as a production dependency.
   coverage and absence of tracked or untracked generated/secret-like artifacts
   that Git exposes, plus README/package-docstring coverage for repository
   directories.
+- `runtime_telemetry.py` samples vLLM smoke-job process RSS, host memory, and
+  `nvidia-smi` GPU memory/utilization into a run-level telemetry artifact.
 - `service.py` combines planning, materialization, admission, and engine handoff.
 - `serving_env.py` records pinned one-engine-per-environment install profiles
   for vLLM and SGLang helpers.

@@ -8,7 +8,13 @@ Do not infer or estimate missing values. Leave numeric cells blank when a
 metric has not been measured under the stated configuration. Use `N/A` only
 when a metric cannot apply. Blank cells and `N/A` are not zeros.
 
-## Table Configuration
+## Shared Table Configuration
+
+Use this block for every main table in the report unless a specific table
+caption documents an intentional override. Context length belongs in latency
+tables by default; include context in score tables only when the scoring
+protocol intentionally pads/truncates every dataset sample to those context
+lengths.
 
 | Field | Value |
 | --- | --- |
@@ -36,22 +42,24 @@ The preferred decode-only metric is
 Place the detailed caption below the table. The caption should define each
 method label, state the request concurrency used during measurement, give the
 successful request count behind percentiles, and explain whether P95 is
-publication-grade. P95 rows intended for publication should use at least 1,000
+publication-grade. P95 rows intended for publication should use at least 512
 successful request-level measurements per method/context pair at the stated
 concurrency.
 
 Latency values are seconds.
 
-| Method | Input context | Document KV precision | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | P50 decode tok/s | vLLM max concurrency | Accounted GPU memory | Peak GPU process memory |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
-| Example method | 16k | Q8 (`fp8_e5m2`) |  |  |  |  |  |  |  |  |
+| Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Max Serving Concurrency | Peak GPU memory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Example&nbsp;method | 16k |  |  |  |  |  |  |  |
 
 Use the same columns even when a result only covers a subset. If the result is
 not a serving-latency benchmark, mark latency cells `N/A` and explain the scope
-in `Limitations`. State whether vLLM max concurrency is a direct server-log
+in `Limitations`. State whether Max Serving Concurrency is a direct server-log
 value or derived from GPU KV-cache tokens divided by a nominal context length.
 Do not use accounted GPU memory as a synonym for full sampled peak GPU process
-memory.
+memory. If an ablation varies document KV precision, add that as an
+ablation-specific column in the ablation table rather than the main latency
+table.
 
 ## Benchmark Dataset Score Table
 
@@ -62,9 +70,9 @@ separate appendix table, state the number of unique examples per dataset and
 repeats per example, and do not label answer-found containment as official
 dataset accuracy.
 
-| Method | Input context | Biography score | HotpotQA score | MusiQue score | NIAH score |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Example method | 16k |  |  |  |  |
+| Method | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| --- | ---: | ---: | ---: | ---: |
+| Example&nbsp;method |  |  |  |  |
 
 ## Resource Utilization
 

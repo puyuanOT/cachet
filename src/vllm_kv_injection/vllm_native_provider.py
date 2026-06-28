@@ -1448,10 +1448,7 @@ def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> in
     block_size = load.actions.reservation.layout.block_size
     prompt_text_mode = _document_kv_prompt_text_mode(request)
     if prompt_text_mode == "runtime":
-        raise ValueError(
-            "Document KV vLLM loads require the full logical prompt; "
-            f"{DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM}='runtime' cannot be used"
-        )
+        return (load.total_tokens // block_size) * block_size
     request_tokens = getattr(request, "num_tokens", None)
     if isinstance(request_tokens, int):
         if request_tokens <= load.total_tokens:

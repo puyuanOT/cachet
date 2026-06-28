@@ -31,6 +31,7 @@ DOCUMENT_KV_HANDOFF_JSON_PARAM = "document_kv.handoff_json"
 DOCUMENT_KV_HANDOFF_RECORD_PARAM = "document_kv.handoff_record"
 DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
+DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM = "document_kv.runtime_prefix_text"
 DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 FINAL_ANSWER_CUE = "Answer:"
 
@@ -50,6 +51,7 @@ __all__ = [
     "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
+    "DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM",
     "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
@@ -727,6 +729,9 @@ def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
         kv_transfer_params.get(DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM),
         field_name=f"kv_transfer_params.{DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM}",
     )
+    runtime_prefix_text = kv_transfer_params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM)
+    if runtime_prefix_text is not None and not isinstance(runtime_prefix_text, str):
+        raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM} must be a string")
     if handoff_record is not None:
         if not isinstance(handoff_record, Mapping):
             raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")

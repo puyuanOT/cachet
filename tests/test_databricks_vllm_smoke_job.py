@@ -99,6 +99,8 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
             "1",
             "--request-parallelism",
             "1",
+            "--runtime-telemetry-interval-seconds",
+            "1.0",
             "--dataset",
             DATASET_SPECS[0],
             "--dataset",
@@ -141,6 +143,7 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
 
     assert parameters[parameters.index("--benchmark-repeats") + 1] == "3"
     assert parameters[parameters.index("--request-parallelism") + 1] == "8"
+    assert parameters[parameters.index("--runtime-telemetry-interval-seconds") + 1] == "1.0"
     assert parameters[parameters.index("--benchmark-arm") + 1] == "baseline_prefill"
     assert "--benchmark-prewarm-cache-prefix" in parameters
     assert "--benchmark-cache-runtime-prompt" in parameters
@@ -154,6 +157,7 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
     assert parameters[parameters.index("--payload-cache-max-bytes") + 1] == "4096"
     assert parameters.index("--benchmark-repeats") < parameters.index("--dataset")
     assert parameters.index("--request-parallelism") < parameters.index("--dataset")
+    assert parameters.index("--runtime-telemetry-interval-seconds") < parameters.index("--dataset")
     assert parameters.index("--benchmark-arm") < parameters.index("--dataset")
     assert parameters.index("--benchmark-prewarm-cache-prefix") < parameters.index("--dataset")
     assert parameters.index("--benchmark-cache-runtime-prompt") < parameters.index("--dataset")
@@ -196,7 +200,9 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
+        ({"runtime_telemetry_interval_seconds": 0}, "runtime_telemetry_interval_seconds must be positive"),
         ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
+        ({"allow_dataset_subset": "yes"}, "allow_dataset_subset must be a boolean"),
         (
             {"benchmark_prewarm_cache_prefix": True},
             "benchmark_prewarm_cache_prefix requires prepared dataset specs",
@@ -264,6 +270,20 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
     )
     assert config.hardware_target == "aws-g5-a10g"
     assert config.kv_cache_dtype == "fp8_e5m2"
+
+    subset_config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="v1-vllm-score-biography",
+        output_dir="/Volumes/catalog/schema/volume/v1-vllm-score-biography",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        dataset_specs=("biography=dbfs:/benchmarks/cachet/full-score-datasets-20260628/biography.jsonl",),
+        allow_dataset_subset=True,
+    )
+    parameters = build_databricks_vllm_smoke_run_submit_payload(subset_config)["tasks"][0]["spark_python_task"][
+        "parameters"
+    ]
+    assert "--allow-dataset-subset" in parameters
+    assert parameters[parameters.index("--dataset") + 1].startswith("biography=")
 
 
 def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags():

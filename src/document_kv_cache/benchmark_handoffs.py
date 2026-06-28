@@ -23,6 +23,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     benchmark_cache_artifact_stem,
     benchmark_cache_request,
@@ -79,7 +80,11 @@ _ENTRY_KEYS_V1 = frozenset(
         "payload_uri",
     }
 )
-_ENTRY_KEYS = _ENTRY_KEYS_V1 | {"sglang_hicache_page_keys"}
+_ENTRY_KEYS = _ENTRY_KEYS_V1 | {
+    "prompt_text_mode",
+    "runtime_prefix_text",
+    "sglang_hicache_page_keys",
+}
 _ENTRY_KEYS_BY_SCHEMA_VERSION = {
     1: _ENTRY_KEYS_V1,
     BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION: _ENTRY_KEYS,
@@ -116,6 +121,8 @@ class BenchmarkHandoffEntry:
     handoff_json: str | None = None
     handoff_record: Mapping[str, Any] | None = None
     payload_uri: str | None = None
+    prompt_text_mode: str = "logical"
+    runtime_prefix_text: str = ""
     sglang_hicache_page_keys: Sequence[str] = ()
 
     def __post_init__(self) -> None:
@@ -151,6 +158,12 @@ class BenchmarkHandoffEntry:
                 "payload_uri",
                 _runtime_payload_uri(self.payload_uri, field_name="payload_uri"),
             )
+        if self.prompt_text_mode not in {"logical", "runtime"}:
+            raise ValueError("prompt_text_mode must be 'logical' or 'runtime'")
+        if not isinstance(self.runtime_prefix_text, str):
+            raise TypeError("runtime_prefix_text must be a string")
+        if self.runtime_prefix_text and self.prompt_text_mode != "runtime":
+            raise ValueError("runtime_prefix_text requires prompt_text_mode='runtime'")
         page_keys = _string_tuple(self.sglang_hicache_page_keys, field_name="sglang_hicache_page_keys")
         object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
 
@@ -161,7 +174,7 @@ class BenchmarkHandoffEntry:
     def kv_transfer_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {
             DOCUMENT_KV_REQUEST_ID_PARAM: self.request_id,
-            DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "logical",
+            DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: self.prompt_text_mode,
         }
         if self.handoff_json is not None:
             params[DOCUMENT_KV_HANDOFF_JSON_PARAM] = self.handoff_json
@@ -170,6 +183,8 @@ class BenchmarkHandoffEntry:
             params[DOCUMENT_KV_HANDOFF_RECORD_PARAM] = dict(self.handoff_record)
         if self.payload_uri is not None:
             params[DOCUMENT_KV_PAYLOAD_URI_PARAM] = self.payload_uri
+        if self.runtime_prefix_text:
+            params[DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM] = self.runtime_prefix_text
         if self.sglang_hicache_page_keys:
             params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = list(self.sglang_hicache_page_keys)
         return params
@@ -513,6 +528,11 @@ def generate_benchmark_handoff_bundles(
             source_document=source_document,
             page_size=sglang_hicache_page_size,
         )
+        runtime_prefix_text = _runtime_prefix_text_for_handoff(
+            generator,
+            layout=layout,
+            source_document=source_document,
+        )
         entries.append(
             BenchmarkHandoffEntry(
                 dataset=target.example.dataset,
@@ -520,6 +540,8 @@ def generate_benchmark_handoff_bundles(
                 request_id=target.request.request_id,
                 handoff_json=target.handoff_json,
                 payload_uri=target.payload_uri,
+                prompt_text_mode="runtime",
+                runtime_prefix_text=runtime_prefix_text,
                 sglang_hicache_page_keys=sglang_page_keys,
             )
         )
@@ -887,6 +909,16 @@ def _entry_from_record(record: object, *, index: int, schema_version: int) -> Be
         handoff_json=record.get("handoff_json"),
         handoff_record=record.get("handoff_record"),
         payload_uri=record.get("payload_uri"),
+        prompt_text_mode=_optional_string(
+            record.get("prompt_text_mode"),
+            default="logical",
+            field_name=f"entries[{index}].prompt_text_mode",
+        ),
+        runtime_prefix_text=_optional_string(
+            record.get("runtime_prefix_text"),
+            default="",
+            field_name=f"entries[{index}].runtime_prefix_text",
+        ),
         sglang_hicache_page_keys=record.get("sglang_hicache_page_keys", ()),
     )
 
@@ -903,6 +935,10 @@ def _entry_to_record(entry: BenchmarkHandoffEntry) -> dict[str, Any]:
         record["handoff_record"] = dict(entry.handoff_record)
     if entry.payload_uri is not None:
         record["payload_uri"] = entry.payload_uri
+    if entry.prompt_text_mode != "logical":
+        record["prompt_text_mode"] = entry.prompt_text_mode
+    if entry.runtime_prefix_text:
+        record["runtime_prefix_text"] = entry.runtime_prefix_text
     if entry.sglang_hicache_page_keys:
         record["sglang_hicache_page_keys"] = list(entry.sglang_hicache_page_keys)
     return record
@@ -981,11 +1017,30 @@ def _sglang_hicache_page_keys_for_handoff(
     return sglang_hicache_page_keys(token_ids[:full_page_token_count], page_size=page_size)
 
 
+def _runtime_prefix_text_for_handoff(
+    generator: object,
+    *,
+    layout: KVLayout,
+    source_document: SourceDocument,
+) -> str:
+    tokenizer = getattr(generator, "tokenizer", None)
+    decode = getattr(tokenizer, "decode", None)
+    if tokenizer is None or not callable(decode):
+        return ""
+    if len(source_document.chunks) != 1:
+        raise ValueError("benchmark handoff source document must have one cache-prefix chunk")
+    token_ids = _token_ids_for_generator(generator, source_document.chunks[0].text)
+    tail_token_count = len(token_ids) % layout.block_size
+    if tail_token_count == 0:
+        return ""
+    return _decode_token_ids_for_generator(generator, token_ids[-tail_token_count:])
+
+
 def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
     tokenizer = getattr(generator, "tokenizer", None)
     if tokenizer is None:
         raise TypeError(
-            "SGLang HiCache page-key generation requires generator.tokenizer"
+            "benchmark token metadata generation requires generator.tokenizer"
         )
     encoded = tokenizer(
         text,
@@ -1001,12 +1056,32 @@ def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
     return _flatten_token_ids(input_ids)
 
 
+def _decode_token_ids_for_generator(generator: object, token_ids: Sequence[int]) -> str:
+    tokenizer = getattr(generator, "tokenizer", None)
+    if tokenizer is None:
+        raise TypeError("benchmark token metadata generation requires generator.tokenizer")
+    decode = getattr(tokenizer, "decode", None)
+    if not callable(decode):
+        raise TypeError("benchmark token metadata generation requires tokenizer.decode")
+    try:
+        decoded = decode(
+            list(token_ids),
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+    except TypeError:
+        decoded = decode(list(token_ids), skip_special_tokens=False)
+    if not isinstance(decoded, str):
+        raise TypeError("tokenizer.decode must return a string")
+    return decoded
+
+
 def _flatten_token_ids(value: object) -> tuple[int, ...]:
     flattened: list[int] = []
     _append_token_ids(flattened, value)
     if not flattened:
         raise ValueError(
-            "SGLang HiCache page-key tokenizer must return at least one token id"
+            "benchmark token metadata tokenizer must return at least one token id"
         )
     return tuple(flattened)
 

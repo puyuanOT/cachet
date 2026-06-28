@@ -17,6 +17,7 @@ from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     BenchmarkArm,
     BenchmarkComparison,
     BenchmarkExample,
@@ -118,6 +119,9 @@ class BenchmarkEngineRequest:
     @property
     def runtime_prompt_text(self) -> str:
         if self.arm.uses_cache:
+            runtime_prefix_text = self.kv_transfer_params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM)
+            if isinstance(runtime_prefix_text, str) and runtime_prefix_text:
+                return f"{runtime_prefix_text}{self.prompt_parts.cache_suffix_text}"
             return self.prompt_parts.cache_suffix_text
         return self.prompt_parts.prefill_prompt
 

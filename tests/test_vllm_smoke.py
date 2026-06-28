@@ -842,6 +842,11 @@ def test_parse_dataset_specs_requires_complete_v1_dataset_set(tmp_path):
 
     with pytest.raises(ValueError, match="missing required V1 datasets"):
         parse_dataset_specs((f"biography={tmp_path / 'biography.jsonl'}",))
+    subset = parse_dataset_specs(
+        (f"biography={tmp_path / 'biography.jsonl'}",),
+        allow_subset=True,
+    )
+    assert subset == {"biography": tmp_path / "biography.jsonl"}
     with pytest.raises(ValueError, match="Unsupported V1 smoke dataset"):
         parse_dataset_specs(specs + (f"unknown={tmp_path / 'unknown.jsonl'}",))
     with pytest.raises(ValueError, match="duplicate dataset spec"):
@@ -1346,6 +1351,9 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     }
     assert metadata["document_kv_connector_telemetry_local_path"] == str(config.connector_telemetry_path)
     assert metadata["document_kv_connector_telemetry_path"] == str(config.connector_telemetry_copy_path)
+    assert metadata["runtime_telemetry_local_path"] == str(config.runtime_telemetry_path)
+    assert metadata["runtime_telemetry_path"] == str(config.runtime_telemetry_copy_path)
+    assert metadata["runtime_telemetry_interval_seconds"] == 1.0
     assert metadata["vllm_kv_transfer_config"] == document_kv_transfer_config_for_smoke(config)
 
 
@@ -1645,6 +1653,8 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "3",
             "--request-parallelism",
             "8",
+            "--runtime-telemetry-interval-seconds",
+            "2.5",
             "--benchmark-prewarm-cache-prefix",
             "--benchmark-cache-runtime-prompt",
             "--benchmark-prefix-cache-salt-mode",
@@ -1691,6 +1701,7 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         gpu_memory_utilization=0.72,
         benchmark_repeats=3,
         request_parallelism=8,
+        runtime_telemetry_interval_seconds=2.5,
         benchmark_arms=("baseline_prefill",),
         prewarm_cache_prefix=True,
         cache_runtime_prompt=True,
@@ -1753,7 +1764,9 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
+        ({"runtime_telemetry_interval_seconds": 0}, "runtime_telemetry_interval_seconds must be positive"),
         ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
+        ({"allow_dataset_subset": "yes"}, "allow_dataset_subset must be a boolean"),
         ({"prefix_cache_salt_mode": "dynamic"}, "prefix_cache_salt_mode"),
         (
             {"prewarm_cache_prefix": True},
@@ -1803,6 +1816,15 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         kv_cache_dtype="fp8_e5m2",
     )
     assert config.kv_cache_dtype == "fp8_e5m2"
+
+    subset_config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-subset-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=(f"biography={tmp_path / 'biography.jsonl'}",),
+        allow_dataset_subset=True,
+    )
+    assert benchmark_dataset_paths(subset_config) == {"biography": tmp_path / "biography.jsonl"}
 
 
 def test_parse_args_rejects_invalid_values_before_setup(tmp_path):
@@ -1910,6 +1932,19 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         lambda cfg, python, log_path: calls.append(("start_vllm_server", cfg.server_base_url, python, log_path))
         or fake_server,
     )
+    class FakeRuntimeTelemetrySampler:
+        def __init__(self, output_path, *, process_pid, interval_seconds):
+            self.output_path = output_path
+            calls.append(("runtime_telemetry_init", output_path, process_pid, interval_seconds))
+
+        def start(self):
+            calls.append(("runtime_telemetry_start", self.output_path))
+            return self
+
+        def stop(self):
+            calls.append(("runtime_telemetry_stop", self.output_path))
+
+    monkeypatch.setattr(public_vllm_smoke, "RuntimeTelemetrySampler", FakeRuntimeTelemetrySampler)
     monkeypatch.setattr(
         public_vllm_smoke,
         "wait_for_server",
@@ -1941,12 +1976,16 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
         ("write_smoke_datasets", config.local_dir),
         ("validate_prompt_token_budget", "smoke-1", dataset_paths),
         ("start_vllm_server", "http://127.0.0.1:8123", config.venv_python, config.server_log_path),
+        ("runtime_telemetry_init", config.runtime_telemetry_path, None, 1.0),
+        ("runtime_telemetry_start", config.runtime_telemetry_path),
         ("wait_for_server", fake_server, config.server_log_path, "http://127.0.0.1:8123", 480.0),
         ("copy", config.server_log_path, config.server_log_copy_path),
         ("run", build_benchmark_runner_args(config, dataset_paths)),
         ("terminate", fake_server),
+        ("runtime_telemetry_stop", config.runtime_telemetry_path),
         ("copy", config.server_log_path, config.server_log_copy_path),
         ("copy", config.connector_telemetry_path, config.connector_telemetry_copy_path),
+        ("copy", config.runtime_telemetry_path, config.runtime_telemetry_copy_path),
     ]
     metadata = build_metadata(config)
     assert metadata["server_base_url"] == "http://127.0.0.1:8123"

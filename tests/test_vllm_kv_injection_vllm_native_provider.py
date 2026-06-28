@@ -450,17 +450,16 @@ def test_native_provider_rejects_suffix_only_prompt_length():
         provider.get_num_new_matched_tokens(request, 0)
 
 
-def test_native_provider_rejects_runtime_prompt_mode_even_when_prompt_is_long():
+def test_native_provider_matches_aligned_external_prefix_for_runtime_prompt_mode():
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
     request = SimpleNamespace(
         request_id="req-1",
-        num_tokens=99,
+        num_tokens=1,
         kv_transfer_params={DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime"},
     )
 
-    with pytest.raises(ValueError, match=DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM):
-        provider.get_num_new_matched_tokens(request, 0)
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
 
 
 def test_native_provider_copies_materialized_payload_into_registered_paged_kv_layers():

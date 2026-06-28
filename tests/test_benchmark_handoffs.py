@@ -26,6 +26,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     benchmark_cache_source_document,
 )
@@ -94,6 +95,17 @@ class PageKeyGenerator:
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
+
+
+class RuntimeTailTokenizer(PageKeyTokenizer):
+    def decode(self, token_ids, *, skip_special_tokens=False, clean_up_tokenization_spaces=False):
+        assert skip_special_tokens is False
+        assert clean_up_tokenization_spaces is False
+        return "".join(chr(token_id) for token_id in token_ids)
+
+
+class RuntimeTailGenerator(PageKeyGenerator):
+    tokenizer = RuntimeTailTokenizer()
 
 
 GENERATOR_MODULE_SOURCE = """
@@ -514,6 +526,45 @@ def test_generate_benchmark_handoff_bundles_writes_payloads_manifest_and_handoff
         assert handoff_record["payload_source"]["uri"] == str(payload_path)
         assert handoff_record["handle"]["layout"]["bytes_per_token"] == 1
         assert handoff_record["handle"]["total_bytes"] == payload_path.stat().st_size
+
+
+def test_generate_benchmark_handoff_bundles_records_runtime_prefix_tail(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    layout = KVLayout(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        layout_version="toy-one-byte-v1",
+        dtype="int8",
+        num_layers=1,
+        block_size=8,
+        bytes_per_token=1,
+    )
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=RuntimeTailGenerator(),
+        layout=layout,
+        align_bytes=1,
+    )
+
+    source_document = benchmark_cache_source_document(load_benchmark_jsonl(input_path)[0])
+    cache_prefix_text = source_document.chunks[0].text
+    expected_tail_tokens = len(cache_prefix_text) % layout.block_size
+    expected_tail = cache_prefix_text[-expected_tail_tokens:] if expected_tail_tokens else ""
+    assert result.manifest.entries[0].runtime_prefix_text == expected_tail
+    assert result.manifest.entries[0].prompt_text_mode == "runtime"
+
+    enriched = enrich_benchmark_records_with_handoffs((record("bio-1"),), result.manifest)
+    assert enriched[0]["kv_transfer_params"][DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] == "runtime"
+    assert enriched[0]["kv_transfer_params"][DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM] == expected_tail
+    manifest_record = benchmark_handoff_manifest_to_record(result.manifest)
+    assert manifest_record["entries"][0]["prompt_text_mode"] == "runtime"
+    assert manifest_record["entries"][0]["runtime_prefix_text"] == expected_tail
+    round_tripped = benchmark_handoff_manifest_from_record(manifest_record)
+    assert round_tripped.entries[0].prompt_text_mode == "runtime"
+    assert round_tripped.entries[0].runtime_prefix_text == expected_tail
 
 
 def test_generate_benchmark_handoff_bundles_can_emit_sglang_records(tmp_path):

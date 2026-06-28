@@ -121,6 +121,7 @@ class DatabricksVLLMSmokeJobConfig:
     gpu_memory_utilization: float = 0.85
     benchmark_repeats: int = 1
     request_parallelism: int = 1
+    runtime_telemetry_interval_seconds: float = 1.0
     benchmark_arms: tuple[str, ...] = ()
     benchmark_prewarm_cache_prefix: bool = False
     benchmark_cache_runtime_prompt: bool = False
@@ -128,6 +129,7 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
     payload_cache_max_bytes: int = 0
     dataset_specs: tuple[str, ...] = ()
+    allow_dataset_subset: bool = False
     benchmark_handoff_generator_factory: str | None = None
     benchmark_handoff_output_dir: str | None = None
     benchmark_handoff_dtype: str = "bfloat16"
@@ -201,6 +203,8 @@ class DatabricksVLLMSmokeJobConfig:
             raise TypeError("request_parallelism must be a positive integer")
         if self.request_parallelism <= 0:
             raise ValueError("request_parallelism must be a positive integer")
+        if self.runtime_telemetry_interval_seconds <= 0:
+            raise ValueError("runtime_telemetry_interval_seconds must be positive")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
         if type(self.benchmark_prewarm_cache_prefix) is not bool:
             raise TypeError("benchmark_prewarm_cache_prefix must be a boolean")
@@ -219,9 +223,11 @@ class DatabricksVLLMSmokeJobConfig:
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
             raise ValueError("payload_cache_max_bytes must be a non-negative integer")
+        if type(self.allow_dataset_subset) is not bool:
+            raise TypeError("allow_dataset_subset must be a boolean")
         object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
         if self.dataset_specs:
-            parse_dataset_specs(self.dataset_specs)
+            parse_dataset_specs(self.dataset_specs, allow_subset=self.allow_dataset_subset)
         if self.benchmark_handoff_generator_factory is not None:
             if not self.benchmark_handoff_generator_factory.strip():
                 raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
@@ -365,6 +371,8 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         str(config.benchmark_repeats),
         "--request-parallelism",
         str(config.request_parallelism),
+        "--runtime-telemetry-interval-seconds",
+        str(config.runtime_telemetry_interval_seconds),
     ]
     if config.model_id:
         parameters.extend(["--model-id", config.model_id])
@@ -390,6 +398,8 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         parameters.extend(["--benchmark-prefix-cache-salt-mode", config.benchmark_prefix_cache_salt_mode])
     for dataset_spec in config.dataset_specs:
         parameters.extend(["--dataset", dataset_spec])
+    if config.allow_dataset_subset:
+        parameters.append("--allow-dataset-subset")
     if config.benchmark_handoff_generator_factory is not None:
         parameters.extend(
             [
@@ -464,6 +474,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Maximum number of benchmark requests issued concurrently by the client.",
     )
     parser.add_argument(
+        "--runtime-telemetry-interval-seconds",
+        type=float,
+        default=1.0,
+        help="Runtime telemetry sampling interval for GPU, host memory, and process RSS artifacts.",
+    )
+    parser.add_argument(
         "--benchmark-arm",
         action="append",
         choices=BENCHMARK_ARM_IDS,
@@ -514,6 +530,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         action="append",
         default=None,
         help="Prepared V1 benchmark dataset in DATASET=JSONL_PATH form. Repeat for all four V1 datasets.",
+    )
+    parser.add_argument(
+        "--allow-dataset-subset",
+        action="store_true",
+        help=(
+            "Allow prepared runs to specify only a subset of V1 datasets. "
+            "Use for split full-dataset score jobs; omitted smoke runs still require all four datasets."
+        ),
     )
     parser.add_argument(
         "--benchmark-handoff-generator-factory",
@@ -585,6 +609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             gpu_memory_utilization=args.gpu_memory_utilization,
             benchmark_repeats=args.benchmark_repeats,
             request_parallelism=args.request_parallelism,
+            runtime_telemetry_interval_seconds=args.runtime_telemetry_interval_seconds,
             benchmark_arms=tuple(args.benchmark_arm or ()),
             benchmark_prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
             benchmark_cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
@@ -592,6 +617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_prefix_cache_salt_mode=args.benchmark_prefix_cache_salt_mode,
             payload_cache_max_bytes=args.payload_cache_max_bytes,
             dataset_specs=tuple(args.dataset or ()),
+            allow_dataset_subset=args.allow_dataset_subset,
             benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,
             benchmark_handoff_output_dir=args.benchmark_handoff_output_dir,
             benchmark_handoff_dtype=args.benchmark_handoff_dtype,

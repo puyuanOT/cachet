@@ -50,6 +50,7 @@ from document_kv_cache.engine_probe import _validate_local_payload_uri
 from document_kv_cache.dataset_prep import write_v1_jsonl
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.runtime_telemetry import RuntimeTelemetrySampler
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
@@ -204,12 +205,14 @@ class VLLMSmokeBenchmarkConfig:
     gpu_memory_utilization: float = 0.85
     benchmark_repeats: int = 1
     request_parallelism: int = 1
+    runtime_telemetry_interval_seconds: float = 1.0
     benchmark_arms: tuple[str, ...] = ()
     prewarm_cache_prefix: bool = False
     cache_runtime_prompt: bool = False
     prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     dataset_specs: tuple[str, ...] = ()
+    allow_dataset_subset: bool = False
     package_install_spec: str | None = None
     handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
     payload_cache_max_bytes: int = 0
@@ -271,6 +274,8 @@ class VLLMSmokeBenchmarkConfig:
             raise TypeError("request_parallelism must be a positive integer")
         if self.request_parallelism <= 0:
             raise ValueError("request_parallelism must be a positive integer")
+        if self.runtime_telemetry_interval_seconds <= 0:
+            raise ValueError("runtime_telemetry_interval_seconds must be positive")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
         if type(self.prewarm_cache_prefix) is not bool:
             raise TypeError("prewarm_cache_prefix must be a boolean")
@@ -290,13 +295,15 @@ class VLLMSmokeBenchmarkConfig:
             hardware_target=self.hardware_target,
             kv_cache_dtype=self.kv_cache_dtype,
         )
+        if type(self.allow_dataset_subset) is not bool:
+            raise ValueError("allow_dataset_subset must be a boolean")
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
             raise ValueError("payload_cache_max_bytes must be a non-negative integer")
         object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
         if self.dataset_specs:
-            parse_dataset_specs(self.dataset_specs)
+            parse_dataset_specs(self.dataset_specs, allow_subset=self.allow_dataset_subset)
         if self.package_install_spec is not None and not self.package_install_spec.strip():
             raise ValueError("package_install_spec must be non-empty when provided")
         if self.handoff_generation is not None:
@@ -344,6 +351,14 @@ class VLLMSmokeBenchmarkConfig:
     @property
     def connector_telemetry_copy_path(self) -> Path:
         return self.output_dir / "document-kv-connector-telemetry.jsonl"
+
+    @property
+    def runtime_telemetry_path(self) -> Path:
+        return self.local_dir / "runtime-telemetry.json"
+
+    @property
+    def runtime_telemetry_copy_path(self) -> Path:
+        return self.output_dir / "runtime-telemetry.json"
 
     @property
     def benchmark_output_path(self) -> Path:
@@ -445,6 +460,8 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     metadata["vllm_server_log"] = str(config.server_log_copy_path)
     metadata["document_kv_connector_telemetry_local_path"] = str(config.connector_telemetry_path)
     metadata["document_kv_connector_telemetry_path"] = str(config.connector_telemetry_copy_path)
+    metadata["runtime_telemetry_local_path"] = str(config.runtime_telemetry_path)
+    metadata["runtime_telemetry_path"] = str(config.runtime_telemetry_copy_path)
     metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
     if config.requires_prepared_handoff_metadata:
         metadata["prepared_handoff_coverage_path"] = str(config.prepared_handoff_coverage_path)
@@ -455,6 +472,11 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     write_json(config.metadata_path, metadata)
 
     server = start_vllm_server(config, config.venv_python, config.server_log_path)
+    runtime_telemetry = RuntimeTelemetrySampler(
+        config.runtime_telemetry_path,
+        process_pid=getattr(server, "pid", None),
+        interval_seconds=config.runtime_telemetry_interval_seconds,
+    ).start()
     try:
         wait_for_server(server, config.server_log_path, config, timeout_seconds=config.server_start_timeout_seconds)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
@@ -462,8 +484,10 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         run_benchmark_runner(config, dataset_paths)
     finally:
         terminate_process(server)
+        runtime_telemetry.stop()
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
         copy_file_if_exists(config.connector_telemetry_path, config.connector_telemetry_copy_path)
+        copy_file_if_exists(config.runtime_telemetry_path, config.runtime_telemetry_copy_path)
 
 
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
@@ -483,9 +507,13 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "vllm_python": str(config.venv_python),
         "document_kv_connector_telemetry_local_path": str(config.connector_telemetry_path),
         "document_kv_connector_telemetry_path": str(config.connector_telemetry_copy_path),
+        "runtime_telemetry_local_path": str(config.runtime_telemetry_path),
+        "runtime_telemetry_path": str(config.runtime_telemetry_copy_path),
+        "runtime_telemetry_interval_seconds": config.runtime_telemetry_interval_seconds,
         "dependency_constraints": dependency_constraints(),
         "dataset_source": "prepared" if config.dataset_specs else "smoke",
         "dataset_specs": list(config.dataset_specs),
+        "allow_dataset_subset": config.allow_dataset_subset,
         "prewarm_cache_prefix": config.prewarm_cache_prefix,
         "cache_runtime_prompt": config.cache_runtime_prompt,
         "cache_prompt_text_mode": "runtime" if config.cache_runtime_prompt else "logical",
@@ -946,10 +974,11 @@ write_json(
         raise RuntimeError(f"prepared handoff generation wrote invalid result {output_path}")
     if record.get("ok") is not True:
         raise RuntimeError(f"prepared handoff generation worker result was not ok in {output_path}")
-    if set(generated_paths_payload) != set(SMOKE_DATASETS):
+    expected_datasets = set(dataset_paths)
+    if set(generated_paths_payload) != expected_datasets:
         raise RuntimeError(
             "prepared handoff generation worker result must include exactly "
-            f"{sorted(SMOKE_DATASETS)!r}; got {sorted(str(dataset) for dataset in generated_paths_payload)!r}"
+            f"{sorted(expected_datasets)!r}; got {sorted(str(dataset) for dataset in generated_paths_payload)!r}"
         )
     generated_paths = {
         str(dataset): Path(str(path))
@@ -972,7 +1001,7 @@ def _generate_prepared_benchmark_handoff_inputs(
     layout = layout_for_model(SERVED_MODEL_NAME, dtype=generation.dtype)
     generated_paths: dict[str, Path] = {}
     dataset_records: dict[str, dict[str, object]] = {}
-    for dataset in SMOKE_DATASETS:
+    for dataset in dataset_paths:
         input_jsonl = dataset_paths[dataset]
         dataset_output_dir = generation.output_dir / dataset
         generation_input_jsonl = _handoff_generation_input_jsonl(
@@ -1603,11 +1632,11 @@ def write_smoke_datasets(local_dir: Path) -> dict[str, Path]:
 
 def benchmark_dataset_paths(config: VLLMSmokeBenchmarkConfig) -> dict[str, Path]:
     if config.dataset_specs:
-        return parse_dataset_specs(config.dataset_specs)
+        return parse_dataset_specs(config.dataset_specs, allow_subset=config.allow_dataset_subset)
     return write_smoke_datasets(config.local_dir)
 
 
-def parse_dataset_specs(dataset_specs: tuple[str, ...]) -> dict[str, Path]:
+def parse_dataset_specs(dataset_specs: tuple[str, ...], *, allow_subset: bool = False) -> dict[str, Path]:
     paths: dict[str, Path] = {}
     for spec in dataset_specs:
         dataset, separator, raw_path = spec.partition("=")
@@ -1619,9 +1648,9 @@ def parse_dataset_specs(dataset_specs: tuple[str, ...]) -> dict[str, Path]:
             raise ValueError(f"duplicate dataset spec for {dataset!r}")
         paths[dataset] = Path(_cluster_file_path(raw_path))
     missing = set(SMOKE_DATASETS).difference(paths)
-    if missing:
+    if missing and not allow_subset:
         raise ValueError(f"dataset specs missing required V1 datasets: {sorted(missing)}")
-    return {dataset: paths[dataset] for dataset in SMOKE_DATASETS}
+    return {dataset: paths[dataset] for dataset in SMOKE_DATASETS if dataset in paths}
 
 
 def smoke_dataset_records() -> dict[str, dict[str, object]]:
@@ -1700,7 +1729,7 @@ def smoke_dataset_records() -> dict[str, dict[str, object]]:
 
 def dataset_args(dataset_paths: dict[str, Path]) -> list[str]:
     args: list[str] = []
-    for dataset in SMOKE_DATASETS:
+    for dataset in dataset_paths:
         args.extend(["--dataset", f"{dataset}={dataset_paths[dataset]}"])
     return args
 
@@ -2042,6 +2071,12 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         help="Maximum number of benchmark requests issued concurrently by the client.",
     )
     parser.add_argument(
+        "--runtime-telemetry-interval-seconds",
+        type=float,
+        default=1.0,
+        help="Runtime telemetry sampling interval for GPU, host memory, and process RSS artifacts.",
+    )
+    parser.add_argument(
         "--benchmark-arm",
         action="append",
         choices=BENCHMARK_ARM_IDS,
@@ -2094,6 +2129,14 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         action="append",
         default=None,
         help="Prepared V1 benchmark dataset in DATASET=JSONL_PATH form. Repeat for all four V1 datasets.",
+    )
+    parser.add_argument(
+        "--allow-dataset-subset",
+        action="store_true",
+        help=(
+            "Allow prepared runs to specify only a subset of V1 datasets. "
+            "Use for split full-dataset score jobs; omitted smoke runs still require all four datasets."
+        ),
     )
     parser.add_argument(
         "--benchmark-handoff-generator-factory",
@@ -2154,6 +2197,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         gpu_memory_utilization=args.gpu_memory_utilization,
         benchmark_repeats=args.benchmark_repeats,
         request_parallelism=args.request_parallelism,
+        runtime_telemetry_interval_seconds=args.runtime_telemetry_interval_seconds,
         benchmark_arms=tuple(args.benchmark_arm or ()),
         prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
         cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
@@ -2161,6 +2205,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         hardware_target=args.hardware_target,
         payload_cache_max_bytes=args.payload_cache_max_bytes,
         dataset_specs=tuple(args.dataset or ()),
+        allow_dataset_subset=args.allow_dataset_subset,
         package_install_spec=args.package_install_spec,
         handoff_generation=handoff_generation,
     )
