@@ -1,8 +1,9 @@
 # Cachet Benchmarks
 
 This directory is the public benchmark appendix for Cachet. It follows a
-research-paper structure: one primary comparison table first, followed by
-focused ablation tables. No values are inferred or estimated.
+research-paper structure: one primary comparison table, a clearly separated
+latest optimized Cachet canary table, and focused ablation tables. No values
+are inferred or estimated.
 
 The main table is backed by sanitized evidence in
 [`appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/`](appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/).
@@ -14,6 +15,27 @@ Recent Q4/Q8 shared-GPU Cachet canaries are tracked separately in
 [`appendix/q4-q8-shared-g5-a10g-cachet-canary/`](appendix/q4-q8-shared-g5-a10g-cachet-canary/).
 They validate the optimized Cachet arm at 8k and 32k, but are not promoted to
 the main table until same-configuration baseline and 16k rows are measured.
+
+## Latest Optimized Cachet Canary
+
+This table reflects the new serving configuration: 4-bit bitsandbytes model
+weights, FP8 E5M2 document KV payloads, static-salt prewarm into vLLM prefix
+cache, and shared GPU prefix references during measured requests. It is
+Cachet-arm evidence only; the same-configuration baseline and 16k rows are not
+measured yet, so these values are not merged into the primary baseline
+comparison table below.
+
+| Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Answer found | Strict exact match |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cachet + vanilla KV, 4-bit weights + FP8 shared GPU prefix | 8k | 0.389 | 0.422 | 12.730 | 12.752 | 1.00 | 0.00 |
+| Cachet + vanilla KV, 4-bit weights + FP8 shared GPU prefix | 16k | N/M | N/M | N/M | N/M | N/M | N/M |
+| Cachet + vanilla KV, 4-bit weights + FP8 shared GPU prefix | 32k | 0.677 | 1.122 | 19.705 | 20.000 | 1.00 | 0.00 |
+
+`N/M` means not measured. Strict exact match is shown only to document that
+forced-256 verbose generations do not equal the short gold answer string; the
+permissive answer-found metric confirmed the expected answer appeared in every
+measured output. Connector telemetry recorded prewarm-only Cachet KV loads and
+no measured-request Cachet KV loads for both measured contexts.
 
 ## Main Table Configuration
 
@@ -45,6 +67,11 @@ exact-match rate from natural-stop quality runs over the same prepared
 row/context. `N/A` means the method is not implemented or the ablation has not
 been measured under the fixed configuration; it is not a zero.
 
+This table is retained as the latest complete baseline-vs-Cachet comparison
+under the fixed primary-table configuration. It predates the 4-bit-weight /
+FP8-document-KV shared-prefix optimization summarized above, so use the
+optimized canary table for the current Cachet TTFT target behavior.
+
 | Method | Input context | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography EM | HotpotQA EM | MusiQue EM | NIAH EM |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Baseline, no precomputed KV | 8k | 2.73 | 9.89 | 21.38 | 28.51 | 1.00 | 0.00 | 0.00 | 0.00 |
@@ -62,11 +89,12 @@ accuracy. Raw evidence also records `answer_found_rate`; it is intentionally
 not used as the main quality metric because it can make permissive generations
 look artificially perfect.
 
-The Cachet rows are current vLLM external-prefix measurements. They load raw
-vanilla KV from local disk and skip cached-token prefill, but vLLM still
-allocates GPU KV cache for the full logical context. On `g5.8xlarge`, the 32k
-run reports 82,960 GPU KV-cache tokens available and 2.53x maximum concurrency
-for 32,768-token requests, so an 8-way latency test queues in waves.
+The primary-comparison Cachet rows are earlier vLLM external-prefix
+measurements. They load raw vanilla KV from local disk and skip cached-token
+prefill, but vLLM still allocates GPU KV cache for the full logical context.
+On `g5.8xlarge`, the 32k run reports 82,960 GPU KV-cache tokens available and
+2.53x maximum concurrency for 32,768-token requests, so an 8-way latency test
+queues in waves.
 Baseline rows use the same connector-enabled vLLM server for parity, but
 baseline requests do not attach Cachet KV-transfer parameters; server evidence
 reports 0% external-prefix cache hits for those rows.
@@ -150,6 +178,7 @@ implementation.
 | Evidence folder | Evidence summary | Notes |
 | --- | --- | --- |
 | [`primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry`](appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/) | Current main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k | Separates forced-256 latency from natural-stop quality and includes Cachet provider-load telemetry |
+| [`q4-q8-shared-g5-a10g-cachet-canary`](appendix/q4-q8-shared-g5-a10g-cachet-canary/) | Optimized Cachet-only canary with 4-bit model weights, FP8 document KV, shared GPU prefix references, and 8-way parallel forced-256 decode | Covers Cachet + vanilla KV at 8k and 32k only; same-configuration baseline and 16k rows are not measured yet |
 | [`runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed 8k Cachet + vanilla KV canary with `--benchmark-cache-runtime-prompt` | Documents why the current vLLM provider uses logical prompt text for external-KV loads |
 | [`primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded primary-table evidence | Kept because its numbers were mostly comparable, but the 8k row did not force every request to emit 256 tokens and it lacked provider telemetry |
 | [`primary-table-vllm-qwen3-4b-g5-a10g-disk-cache`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded baseline and full-logical-prompt Cachet evidence from the earlier prepared suite | Kept as historical evidence from an earlier prepared-suite pass |
@@ -179,6 +208,7 @@ IDs or release-source mirrors.
 | --- | --- |
 | [`appendix/existing-results/`](appendix/existing-results/) | Committed evidence from configurations that do not match the primary-table protocol |
 | [`appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/`](appendix/primary-table-v4-vllm-qwen3-4b-g5-a10g-disk-cache-forced256-telemetry/) | Current sanitized main-table evidence |
+| [`appendix/q4-q8-shared-g5-a10g-cachet-canary/`](appendix/q4-q8-shared-g5-a10g-cachet-canary/) | Optimized Cachet-only shared-GPU prefix canary evidence |
 | [`appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-v2-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded sanitized main-table evidence without forced-256 validation on every row |
 | [`appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/`](appendix/primary-table-vllm-qwen3-4b-g5-a10g-disk-cache/) | Superseded sanitized main-table evidence from an earlier prepared suite |
 | [`appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/`](appendix/runtime-prompt-vllm-qwen3-4b-g5-a10g-disk-cache-canary/) | Failed runtime-prompt vLLM canary for suffix-only prompt text |

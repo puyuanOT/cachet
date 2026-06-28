@@ -1201,7 +1201,10 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     compact_docs_readme = " ".join(docs_readme.split())
 
     assert "public benchmark appendix for Cachet" in compact_root_readme
-    assert "one primary comparison table first, followed by focused ablation tables" in compact_root_readme
+    assert (
+        "one primary comparison table, a clearly separated latest optimized "
+        "Cachet canary table, and focused ablation tables"
+    ) in compact_root_readme
     assert "Main Table Configuration" in root_readme
     assert "Directory Layout" in root_readme
     assert "appendix/existing-results/" in root_readme
@@ -1242,6 +1245,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Hybrid RAM / disk / Unity Catalog" in root_readme
     assert "has not been measured under the fixed configuration" in compact_root_readme
     assert "not implemented yet" in root_readme
+    assert "Latest Optimized Cachet Canary" in root_readme
+    assert "4-bit weights + FP8 shared GPU prefix" in root_readme
+    assert "| Cachet + vanilla KV, 4-bit weights + FP8 shared GPU prefix | 32k | 0.677 | 1.122 | 19.705 | 20.000 | 1.00 | 0.00 |" in root_readme
     assert "suffix-only runtime prompts are not supported by the current vLLM native provider" in compact_root_readme
     assert "Current main-table evidence for baseline and Cachet + vanilla KV at 8k, 16k, and 32k" in compact_root_readme
     assert "[benchmark root](../)" in appendix_readme
