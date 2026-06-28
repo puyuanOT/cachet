@@ -19,12 +19,12 @@ when a metric cannot apply. Blank cells and `N/A` are not zeros.
 | Request parallelism | e.g. 8 requests in flight, or `N/A` |
 | Output length for TTC | e.g. forced 256-token decode, or `N/A` |
 | Input context length | e.g. 8k, 16k, 32k, or measured prompt-token range |
-| Method | Baseline, Cachet + vanilla KV, Cachet + KV Packet, etc. |
+| Method | Baseline, vanilla KV, KV Packet, etc. |
 | Document KV precision | bf16, Q8 / `fp8_e5m2`, packed Q4, or `N/A` |
 | Runtime KV dtype | e.g. `fp8_e5m2`, `bfloat16`, or `N/A` |
 | Storage tier / cache residency | RAM, disk, Unity Catalog, hybrid, or `N/A` |
 | Dataset / task scope | Dataset names and example count |
-| Quality metric | Answer-found containment, strict exact match, task score, or `N/A` |
+| Quality metric | Full-dataset task score, answer-found containment, strict exact match, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
 
 ## Latency And Resource Table
@@ -33,26 +33,38 @@ Use request-level percentiles for latency. If decode throughput is reported,
 state whether it is end-to-end output throughput or decode-only throughput.
 The preferred decode-only metric is
 `completion_tokens / (time_to_completion_seconds - ttft_seconds)`.
+Place the detailed caption below the table. The caption should define each
+method label, state the request concurrency used during measurement, give the
+successful request count behind percentiles, and explain whether P95 is
+publication-grade. P95 rows intended for publication should use at least 1,000
+successful request-level measurements per method/context pair at the stated
+concurrency.
 
-| Method | Input context | Document KV precision | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | P50 decode tok/s | vLLM KV capacity | Accounted GPU memory | Peak GPU process memory |
+Latency values are seconds.
+
+| Method | Input context | Document KV precision | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | P50 decode tok/s | vLLM max concurrency | Accounted GPU memory | Peak GPU process memory |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
 | Example method | 16k | Q8 (`fp8_e5m2`) |  |  |  |  |  |  |  |  |
 
 Use the same columns even when a result only covers a subset. If the result is
 not a serving-latency benchmark, mark latency cells `N/A` and explain the scope
-in `Limitations`. State whether vLLM KV capacity is a direct server-log value
-or derived from GPU KV-cache tokens divided by a nominal context length. Do not
-use accounted GPU memory as a synonym for full sampled peak GPU process memory.
+in `Limitations`. State whether vLLM max concurrency is a direct server-log
+value or derived from GPU KV-cache tokens divided by a nominal context length.
+Do not use accounted GPU memory as a synonym for full sampled peak GPU process
+memory.
 
-## Prepared Dataset Quality Table
+## Benchmark Dataset Score Table
 
-Describe the dataset scope before the table. For prepared smoke suites, state
-the number of unique examples per dataset and repeats per example. Do not label
-answer-found containment as official dataset accuracy.
+Describe the dataset scope before the table. For main benchmark score tables,
+evaluate all selected samples of each dataset and leave score cells blank until
+those full-dataset runs are complete. For prepared smoke suites, use a
+separate appendix table, state the number of unique examples per dataset and
+repeats per example, and do not label answer-found containment as official
+dataset accuracy.
 
-| Method | Input context | Prepared examples per dataset | Repeats per example | Metric | Biography | HotpotQA | MusiQue | NIAH |
-| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
-| Example method | 16k |  |  | Answer-found / strict EM |  |  |  |  |
+| Method | Input context | Biography score | HotpotQA score | MusiQue score | NIAH score |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Example method | 16k |  |  |  |  |
 
 ## Resource Utilization
 

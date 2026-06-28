@@ -4,8 +4,8 @@ This appendix contains the current public benchmark evidence only. Historical
 result folders were removed from `benchmarks/` so readers do not mix old
 protocols with the current Q4-weight + Q8-document-KV configuration.
 
-Use the [benchmark root](../) for the main latency/resource table, prepared
-dataset quality table, and ablation tables.
+Use the [benchmark root](../) for the main latency/resource table, benchmark
+dataset score table, and ablation tables.
 
 | Folder | Purpose |
 | --- | --- |
