@@ -1219,11 +1219,17 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "8 requests in flight" in root_readme
     assert "answer-found values were one-example smoke checks" in compact_root_readme
     assert "not official dataset scores" in compact_root_readme
+    assert "LongBench v2" in root_readme
+    assert "RULER" in root_readme
+    assert "LongBench v2" in benchmark_template_readme
+    assert "RULER" in benchmark_template_readme
+    assert "LongBench v2 and RULER" in matrix_text
     assert "P50 tok/s" in root_readme
     assert "Max Serving Concurrency" in root_readme
     assert "Peak GPU memory" in root_readme
     assert "`request_parallelism=8`" in root_readme
-    assert "512 successful request-level measurements" in compact_root_readme
+    assert "512 repeats per prepared input" in compact_root_readme
+    assert "2,048 successful request-level measurements" in compact_root_readme
     assert "Accounted GPU memory" not in root_readme
     assert "P50 TTFT (s)" not in root_readme
     assert "P95 TTFT (s)" not in root_readme

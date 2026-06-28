@@ -24,6 +24,7 @@ lengths.
 | Hardware | e.g. AWS g5/A10G, `g5.8xlarge` |
 | Request parallelism | e.g. 8 requests in flight, or `N/A` |
 | Output length for TTC | e.g. forced 256-token decode, or `N/A` |
+| Repeats | e.g. 512 repeats per prepared input, or `N/A` |
 | Input context length | e.g. 8k, 16k, 32k, or measured prompt-token range |
 | Method | Baseline, vanilla KV, KV Packet, etc. |
 | Document KV precision | bf16, Q8 / `fp8_e5m2`, packed Q4, or `N/A` |
@@ -45,10 +46,11 @@ Place the detailed caption below the table. The caption should define each
 method label, state the request concurrency used during measurement, give the
 successful request count behind percentiles, and explain whether P95 is
 publication-grade. P95 rows intended for publication should use at least 512
-successful request-level measurements per method/context pair at the stated
-concurrency. The caption must also say whether TTFT includes loading external
-document KV from storage into GPU memory, or whether the measured requests used
-already-warm/prewarmed prefix-cache blocks.
+repeats per prepared input at the stated concurrency, and the caption should
+state the resulting successful request-level measurement count. The caption must
+also say whether TTFT includes loading external document KV from storage into
+GPU memory, or whether the measured requests used already-warm/prewarmed
+prefix-cache blocks.
 
 Latency values are seconds.
 
@@ -74,9 +76,9 @@ separate appendix table, state the number of unique examples per dataset and
 repeats per example, and do not label answer-found containment as official
 dataset accuracy.
 
-| Method | Biography score | HotpotQA score | MusiQue score | NIAH score |
-| --- | ---: | ---: | ---: | ---: |
-| Example&nbsp;method |  |  |  |  |
+| Method | Biography score | HotpotQA score | MusiQue score | NIAH score | LongBench v2 score | RULER score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Example&nbsp;method |  |  |  |  |  |  |
 
 ## Resource Utilization
 

@@ -43,8 +43,8 @@ references, and leaves only request-specific suffix plus generated-token KV as
 private runtime state. The rows were generated with `request_parallelism=8`,
 so the runner issued up to eight concurrent requests. Each completed row has
 32 successful request-level measurements; treat P95 as canary evidence until a
-run with at least 512 successful request-level measurements per row is
-available. `P50 tok/s` is computed as `completion_tokens / (TTC - TTFT)`.
+run with at least 512 repeats per prepared input is available. `P50 tok/s` is
+computed as `completion_tokens / (TTC - TTFT)`.
 `Max Serving Concurrency` is derived from the logged 237,728 GPU KV-cache tokens
 divided by the nominal context length. `Peak GPU memory` is blank because this
 canary run did not sample process-level GPU memory. The server log reported

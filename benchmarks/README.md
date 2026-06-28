@@ -30,6 +30,7 @@ dataset scores are evaluated over the selected dataset samples.
 | Hardware | AWS g5/A10G, `g5.8xlarge` |
 | Request parallelism | 8 requests in flight |
 | Output length for latency | Forced 256-token decode with `max_tokens=256` and `ignore_eos=true` |
+| Latency repeats | At least 512 repeats per prepared input |
 | Latency input context lengths | 8k, 16k, and 32k prepared prompts |
 | Default Cachet method | Vanilla external KV |
 | Default document KV precision | Q8, represented as `fp8_e5m2` payloads |
@@ -37,7 +38,7 @@ dataset scores are evaluated over the selected dataset samples.
 | Cache residency | Local disk handoff bundles; Cachet rows hydrate document KV from disk during measured requests |
 | Prefix-cache policy | vLLM prefix caching enabled with per-request `cache_salt` isolation for latency rows |
 | Runtime KV ownership | Shared GPU KV for the loaded document/system prefix during each request; private KV for request-specific prompt suffix and generated tokens |
-| Score datasets | Biography, HotpotQA, MusiQue, NIAH |
+| Score datasets | Biography, HotpotQA, MusiQue, NIAH, LongBench v2, RULER |
 | Score metric | Full-dataset task score; blank until full-dataset runs complete |
 | Warm-prefix canary evidence | [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) |
 
@@ -75,8 +76,9 @@ issues up to eight concurrent requests while collecting request-level TTFT and
 TTC measurements. Cold-hydrate rows must use per-request
 `cache_salt` isolation so repeated examples do not reuse vLLM prefix-cache
 blocks across measured requests. Publication rows should use at least 512
-successful request-level measurements per method/context pair at the same
-concurrency.
+repeats per prepared input at the same concurrency; with the four prepared
+inputs used by the main table, that yields at least 2,048 successful
+request-level measurements per method/context pair.
 
 `cache_salt` is the namespace vLLM includes in its prefix-cache key. A static
 salt lets identical prefixes share already-resident KV blocks across requests;
@@ -97,7 +99,7 @@ protocol. It is not populated from vLLM's derived KV-token capacity estimate.
 `nvidia-smi` peak process/device memory during the benchmark run. The
 warm-prefix canary runs reported only server-level vLLM component accounting
 and did not sample a true process-level peak, so this column remains blank
-until the cold-hydrate 512-measurement reruns complete.
+until the cold-hydrate 512-repeat reruns complete.
 
 The server logs still include observed scheduler state and KV-pool use in the
 appendix evidence, but the main table waits for dedicated pressure tests before
@@ -105,18 +107,19 @@ reporting serving concurrency.
 
 ## Benchmark Dataset Score Table
 
-| Method | Biography score | HotpotQA score | MusiQue score | NIAH score |
-| --- | ---: | ---: | ---: | ---: |
-| Baseline |  |  |  |  |
-| vanilla&nbsp;KV |  |  |  |  |
-| [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) |  |  |  |  |
+| Method | Biography score | HotpotQA score | MusiQue score | NIAH score | LongBench v2 score | RULER score |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline |  |  |  |  |  |  |
+| vanilla&nbsp;KV |  |  |  |  |  |  |
+| [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) |  |  |  |  |  |  |
 
 Scores are reserved for full-dataset evaluations over all selected
-samples for Biography, HotpotQA, MusiQue, and NIAH. The score table has no
-input-context column because input-context length is a latency stress dimension,
-not a separate full-dataset scoring condition in the main table. The previous
-all-1.00 answer-found values were one-example smoke checks and are retained
-only in the appendix evidence; they are not official dataset scores.
+samples for Biography, HotpotQA, MusiQue, NIAH, LongBench v2, and RULER. The
+score table has no input-context column because input-context length is a
+latency stress dimension, not a separate full-dataset scoring condition in the
+main table. The previous all-1.00 answer-found values were one-example smoke
+checks and are retained only in the appendix evidence; they are not official
+dataset scores.
 
 ## Document KV Precision Ablation
 
