@@ -1594,6 +1594,8 @@ def _torch_dtype(dtype: str) -> object:
         "fp32": torch.float32,
         "float32": torch.float32,
         "fp8": torch.uint8,
+        "fp8_e4m3": torch.uint8,
+        "fp8_e5m2": torch.uint8,
         "float8": torch.uint8,
         "int8": torch.int8,
         "uint8": torch.uint8,
@@ -1610,7 +1612,7 @@ def _dtype_width(dtype: str) -> int:
         return 2
     if normalized in {"fp32", "float32"}:
         return 4
-    if normalized in {"int8", "uint8", "fp8", "float8"}:
+    if normalized in {"int8", "uint8", "fp8", "fp8_e4m3", "fp8_e5m2", "float8"}:
         return 1
     raise ValueError(f"Unsupported document KV payload dtype {dtype!r}")
 

@@ -29,6 +29,7 @@ from document_kv_cache.benchmarks import (
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
+    document_kv_cache_arm,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -194,8 +195,33 @@ def test_run_benchmark_suite_attaches_kv_transfer_params_to_cache_arm_only():
 
     assert baseline.requests[0].kv_transfer_params == {}
     assert baseline.requests[0].request_id is None
-    assert cache.requests[0].request_id == "cachet-bio-1"
+    assert cache.requests[0].request_id == (
+        "v1-smoke:biography:biography-1:document_kv_cache:repeat-1:cachet-bio-1"
+    )
     assert cache.requests[0].kv_transfer_params == kv_transfer_params
+
+
+def test_run_benchmark_suite_uses_unique_engine_request_ids_for_cache_repeats():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        DOCUMENT_KV_HANDOFF_JSON_PARAM: "/tmp/cachet-bio-1.handoff.json",
+    }
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(kv_transfer_params=kv_transfer_params),))
+    cache = RecordingEngine()
+
+    run_benchmark_suite(
+        suite,
+        {CACHE_REUSE_ARM: cache},
+        arms=(document_kv_cache_arm(),),
+        repeats=2,
+        request_parallelism=1,
+    )
+
+    assert [request.request_id for request in cache.requests] == [
+        "v1-smoke:biography:biography-1:document_kv_cache:repeat-1:cachet-bio-1",
+        "v1-smoke:biography:biography-1:document_kv_cache:repeat-2:cachet-bio-1",
+    ]
+    assert all(request.kv_transfer_params == kv_transfer_params for request in cache.requests)
 
 
 def test_benchmark_generation_validates_output_timing_tokens_and_metadata():

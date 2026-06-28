@@ -105,6 +105,24 @@
       "source": "serving_env.vllm"
     },
     {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "0.49.2",
+      "package": "bitsandbytes",
+      "pinned_version": "0.49.2",
+      "source": "serving_env.vllm"
+    },
+    {
+      "allow_reason": "",
+      "allowed": true,
+      "current": true,
+      "latest_version": "1.14.0",
+      "package": "accelerate",
+      "pinned_version": "1.14.0",
+      "source": "serving_env.vllm"
+    },
+    {
       "allow_reason": "Pinned to the latest g6/L4 Databricks-validated Cachet SGLang HiCache provider profile; upgrading requires a fresh native/live Databricks validation.",
       "allowed": true,
       "current": false,

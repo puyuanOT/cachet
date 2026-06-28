@@ -16,6 +16,7 @@ from document_kv_cache._hardware_targets import (
     validate_aws_single_node_gpu_type,
     validate_aws_single_node_gpu_type_for_hardware_target,
     validate_v1_hardware_target,
+    validate_v1_vllm_kv_cache_dtype_for_hardware_target,
 )
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
@@ -29,10 +30,12 @@ from document_kv_cache.databricks_job import (
 from document_kv_cache.vllm_smoke import (
     BENCHMARK_ARM_IDS,
     DEFAULT_LOCAL_ROOT,
+    PREPARED_PREFIX_CACHE_SALT_MODE,
     SERVER_HOST,
     SERVER_PORT,
     parse_dataset_specs,
 )
+from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES
 
 
 DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME = "document-kv-vllm-smoke"
@@ -100,6 +103,11 @@ class DatabricksVLLMSmokeJobConfig:
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
     wheel_uri: str | None = None
+    model_id: str | None = None
+    model_dtype: str = "bfloat16"
+    model_quantization: str | None = None
+    kv_cache_dtype: str | None = None
+    attention_backend: str | None = None
     max_tokens: int = 32
     timeout_seconds: float = 240.0
     import_probe_timeout_seconds: float = 180.0
@@ -114,13 +122,18 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_repeats: int = 1
     request_parallelism: int = 1
     benchmark_arms: tuple[str, ...] = ()
+    benchmark_prewarm_cache_prefix: bool = False
     benchmark_cache_runtime_prompt: bool = False
+    benchmark_force_max_tokens: bool = False
+    benchmark_prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
     payload_cache_max_bytes: int = 0
     dataset_specs: tuple[str, ...] = ()
     benchmark_handoff_generator_factory: str | None = None
     benchmark_handoff_output_dir: str | None = None
     benchmark_handoff_dtype: str = "bfloat16"
     benchmark_handoff_align_bytes: int = 4096
+    benchmark_handoff_generation_timeout_seconds: float = 1800.0
+    benchmark_handoff_limit: int | None = None
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
@@ -144,6 +157,20 @@ class DatabricksVLLMSmokeJobConfig:
         )
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
+        if self.model_id is not None and not self.model_id.strip():
+            raise ValueError("model_id must be non-empty when provided")
+        if not self.model_dtype.strip():
+            raise ValueError("model_dtype must be non-empty")
+        if self.model_quantization is not None and not self.model_quantization.strip():
+            raise ValueError("model_quantization must be non-empty when provided")
+        if self.kv_cache_dtype is not None and not self.kv_cache_dtype.strip():
+            raise ValueError("kv_cache_dtype must be non-empty when provided")
+        validate_v1_vllm_kv_cache_dtype_for_hardware_target(
+            hardware_target=self.hardware_target,
+            kv_cache_dtype=self.kv_cache_dtype,
+        )
+        if self.attention_backend is not None and not self.attention_backend.strip():
+            raise ValueError("attention_backend must be non-empty when provided")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
         if self.timeout_seconds <= 0:
@@ -175,8 +202,19 @@ class DatabricksVLLMSmokeJobConfig:
         if self.request_parallelism <= 0:
             raise ValueError("request_parallelism must be a positive integer")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
+        if type(self.benchmark_prewarm_cache_prefix) is not bool:
+            raise TypeError("benchmark_prewarm_cache_prefix must be a boolean")
         if type(self.benchmark_cache_runtime_prompt) is not bool:
             raise TypeError("benchmark_cache_runtime_prompt must be a boolean")
+        if type(self.benchmark_force_max_tokens) is not bool:
+            raise TypeError("benchmark_force_max_tokens must be a boolean")
+        if self.benchmark_prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
+            raise ValueError("benchmark_prefix_cache_salt_mode must be 'static' or 'per_request'")
+        if self.benchmark_prewarm_cache_prefix and self.benchmark_prefix_cache_salt_mode != "static":
+            raise ValueError(
+                "benchmark_prewarm_cache_prefix requires benchmark_prefix_cache_salt_mode='static' "
+                "so prewarmed prefix-cache blocks can be reused"
+            )
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -189,6 +227,8 @@ class DatabricksVLLMSmokeJobConfig:
                 raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
             if not self.dataset_specs:
                 raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+        if self.benchmark_prewarm_cache_prefix and not self.dataset_specs:
+            raise ValueError("benchmark_prewarm_cache_prefix requires prepared dataset specs")
         if self.benchmark_cache_runtime_prompt and not self.dataset_specs:
             raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
         if self.benchmark_handoff_output_dir is not None and not self.benchmark_handoff_output_dir:
@@ -199,6 +239,15 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("benchmark_handoff_dtype must be non-empty")
         if type(self.benchmark_handoff_align_bytes) is not int or self.benchmark_handoff_align_bytes <= 0:
             raise ValueError("benchmark_handoff_align_bytes must be a positive integer")
+        if self.benchmark_handoff_generation_timeout_seconds <= 0:
+            raise ValueError("benchmark_handoff_generation_timeout_seconds must be positive")
+        if self.benchmark_handoff_limit is not None:
+            if (
+                isinstance(self.benchmark_handoff_limit, bool)
+                or not isinstance(self.benchmark_handoff_limit, int)
+                or self.benchmark_handoff_limit < 0
+            ):
+                raise ValueError("benchmark_handoff_limit must be a non-negative integer")
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
 
@@ -317,12 +366,28 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         "--request-parallelism",
         str(config.request_parallelism),
     ]
+    if config.model_id:
+        parameters.extend(["--model-id", config.model_id])
+    if config.model_dtype != "bfloat16":
+        parameters.extend(["--model-dtype", config.model_dtype])
+    if config.model_quantization:
+        parameters.extend(["--model-quantization", config.model_quantization])
+    if config.kv_cache_dtype:
+        parameters.extend(["--kv-cache-dtype", config.kv_cache_dtype])
+    if config.attention_backend:
+        parameters.extend(["--attention-backend", config.attention_backend])
     if config.payload_cache_max_bytes:
         parameters.extend(["--payload-cache-max-bytes", str(config.payload_cache_max_bytes)])
     for arm_id in config.benchmark_arms:
         parameters.extend(["--benchmark-arm", arm_id])
+    if config.benchmark_prewarm_cache_prefix:
+        parameters.append("--benchmark-prewarm-cache-prefix")
     if config.benchmark_cache_runtime_prompt:
         parameters.append("--benchmark-cache-runtime-prompt")
+    if config.benchmark_force_max_tokens:
+        parameters.append("--benchmark-force-max-tokens")
+    if config.benchmark_prewarm_cache_prefix or config.benchmark_prefix_cache_salt_mode != PREPARED_PREFIX_CACHE_SALT_MODE:
+        parameters.extend(["--benchmark-prefix-cache-salt-mode", config.benchmark_prefix_cache_salt_mode])
     for dataset_spec in config.dataset_specs:
         parameters.extend(["--dataset", dataset_spec])
     if config.benchmark_handoff_generator_factory is not None:
@@ -334,8 +399,12 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
                 config.benchmark_handoff_dtype,
                 "--benchmark-handoff-align-bytes",
                 str(config.benchmark_handoff_align_bytes),
+                "--benchmark-handoff-generation-timeout-seconds",
+                str(config.benchmark_handoff_generation_timeout_seconds),
             ]
         )
+        if config.benchmark_handoff_limit is not None:
+            parameters.extend(["--benchmark-handoff-limit", str(config.benchmark_handoff_limit)])
         if config.benchmark_handoff_output_dir is not None:
             parameters.extend(["--benchmark-handoff-output-dir", config.benchmark_handoff_output_dir])
     return parameters
@@ -363,6 +432,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
+    parser.add_argument("--model-id", help="HF model path/id passed to vLLM --model.")
+    parser.add_argument("--model-dtype", default="bfloat16", help="Model dtype passed to vLLM --dtype.")
+    parser.add_argument("--model-quantization", help="Optional vLLM --quantization value.")
+    parser.add_argument("--kv-cache-dtype", help="Optional vLLM --kv-cache-dtype value.")
+    parser.add_argument("--attention-backend", help="Optional vLLM --attention-backend value.")
     parser.add_argument("--max-tokens", type=int, default=32)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--import-probe-timeout-seconds", type=float, default=180.0)
@@ -405,6 +479,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Send only runtime suffix prompts for benchmark cache arms.",
     )
     parser.add_argument(
+        "--benchmark-prewarm-cache-prefix",
+        action="store_true",
+        help=(
+            "Before measurement, issue one KV-aware cache-prefix request per prepared "
+            "example so vLLM can keep shared document/system prefix blocks resident."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-force-max-tokens",
+        action="store_true",
+        help="Force benchmark requests to emit exactly --max-tokens tokens with ignore_eos=true.",
+    )
+    parser.add_argument(
+        "--benchmark-prefix-cache-salt-mode",
+        choices=PREFIX_CACHE_SALT_MODES,
+        default=PREPARED_PREFIX_CACHE_SALT_MODE,
+        help=(
+            "Prefix-cache salt mode for prepared benchmark requests. "
+            "'per_request' isolates repeats; 'static' allows repeated documents to share vLLM blocks."
+        ),
+    )
+    parser.add_argument(
         "--payload-cache-max-bytes",
         type=int,
         default=0,
@@ -433,6 +529,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--benchmark-handoff-dtype", default="bfloat16")
     parser.add_argument("--benchmark-handoff-align-bytes", type=int, default=4096)
     parser.add_argument(
+        "--benchmark-handoff-generation-timeout-seconds",
+        type=float,
+        default=1800.0,
+    )
+    parser.add_argument(
+        "--benchmark-handoff-limit",
+        type=int,
+        help=(
+            "Optional per-dataset row limit for generated benchmark handoffs. "
+            "Use only for canary/debug runs; omit for full benchmark evidence."
+        ),
+    )
+    parser.add_argument(
         "--spark-env-var",
         action="append",
         default=None,
@@ -458,6 +567,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             data_security_mode=args.data_security_mode,
             single_user_name=args.single_user_name,
             wheel_uri=args.wheel_uri,
+            model_id=args.model_id,
+            model_dtype=args.model_dtype,
+            model_quantization=args.model_quantization,
+            kv_cache_dtype=args.kv_cache_dtype,
+            attention_backend=args.attention_backend,
             max_tokens=args.max_tokens,
             timeout_seconds=args.timeout_seconds,
             import_probe_timeout_seconds=args.import_probe_timeout_seconds,
@@ -472,13 +586,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_repeats=args.benchmark_repeats,
             request_parallelism=args.request_parallelism,
             benchmark_arms=tuple(args.benchmark_arm or ()),
+            benchmark_prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
             benchmark_cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
+            benchmark_force_max_tokens=args.benchmark_force_max_tokens,
+            benchmark_prefix_cache_salt_mode=args.benchmark_prefix_cache_salt_mode,
             payload_cache_max_bytes=args.payload_cache_max_bytes,
             dataset_specs=tuple(args.dataset or ()),
             benchmark_handoff_generator_factory=args.benchmark_handoff_generator_factory,
             benchmark_handoff_output_dir=args.benchmark_handoff_output_dir,
             benchmark_handoff_dtype=args.benchmark_handoff_dtype,
             benchmark_handoff_align_bytes=args.benchmark_handoff_align_bytes,
+            benchmark_handoff_generation_timeout_seconds=(
+                args.benchmark_handoff_generation_timeout_seconds
+            ),
+            benchmark_handoff_limit=args.benchmark_handoff_limit,
             spark_env_vars=_spark_env_vars_from_cli(args.spark_env_var or ()),
         )
         if args.runner_script_output:

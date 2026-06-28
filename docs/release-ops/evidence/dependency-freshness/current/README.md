@@ -17,11 +17,12 @@ The evidence distinguishes three dependency surfaces:
 Current direct pins are fresh: `poetry-core==2.4.1`, `packaging==26.2`,
 `pyspark==4.1.2`, `databricks-sdk==0.118.0`, and `pytest==9.1.1`.
 
-Current runtime holds are intentionally visible. The vLLM companion pins for
-`tokenizers`, `numpy`, `fastapi`, and
-`prometheus-fastapi-instrumentator`, plus the SGLang runtime pin, remain tied
-to the latest successful g6/L4 Databricks validation profile until a fresh
-Databricks runtime run validates newer serving-engine packages.
+Current vLLM Q4-materializer companion pins are fresh:
+`bitsandbytes==0.49.2` and `accelerate==1.14.0`. Current runtime holds are
+intentionally visible. The vLLM companion pins for `tokenizers`, `numpy`,
+`fastapi`, and `prometheus-fastapi-instrumentator`, plus the SGLang runtime
+pin, remain tied to the latest successful g6/L4 Databricks validation profile
+until a fresh Databricks runtime run validates newer serving-engine packages.
 
 Current transitive drift is `protobuf`: Poetry resolves `protobuf==6.33.6`
 because `databricks-sdk==0.118.0` constrains protobuf below `7.0`, while the
@@ -44,6 +45,8 @@ python -m document_kv_cache.dependency_freshness \
   --latest-version vllm=0.23.0 \
   --latest-version transformers=5.12.1 \
   --latest-version huggingface-hub=1.20.1 \
+  --latest-version bitsandbytes=0.49.2 \
+  --latest-version accelerate=1.14.0 \
   --latest-version tokenizers=0.23.1 \
   --latest-version numpy=2.5.0 \
   --latest-version fastapi=0.138.0 \

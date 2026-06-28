@@ -457,6 +457,8 @@ _DOCUMENT_ROOT_EXPORTS = {
     'write_release_evidence_input_status_json': ('document_kv_cache.release_evidence', 'write_release_evidence_input_status_json'),
     'write_release_evidence_json': ('document_kv_cache.release_evidence', 'write_release_evidence_json'),
     'DocumentKVService': ('document_kv_cache.service', 'DocumentKVService'),
+    'ACCELERATE_CONSTRAINT': ('document_kv_cache.serving_env', 'ACCELERATE_CONSTRAINT'),
+    'BITSANDBYTES_CONSTRAINT': ('document_kv_cache.serving_env', 'BITSANDBYTES_CONSTRAINT'),
     'FASTAPI_CONSTRAINT': ('document_kv_cache.serving_env', 'FASTAPI_CONSTRAINT'),
     'HUGGINGFACE_HUB_CONSTRAINT': ('document_kv_cache.serving_env', 'HUGGINGFACE_HUB_CONSTRAINT'),
     'NUMPY_CONSTRAINT': ('document_kv_cache.serving_env', 'NUMPY_CONSTRAINT'),

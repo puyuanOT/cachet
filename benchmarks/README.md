@@ -10,6 +10,11 @@ Historical evidence in
 [`appendix/existing-results/`](appendix/existing-results/) does not match the
 primary-table configuration below and should be treated as prior evidence only.
 
+Recent Q4/Q8 shared-GPU Cachet canaries are tracked separately in
+[`appendix/q4-q8-shared-g5-a10g-cachet-canary/`](appendix/q4-q8-shared-g5-a10g-cachet-canary/).
+They validate the optimized Cachet arm at 8k and 32k, but are not promoted to
+the main table until same-configuration baseline and 16k rows are measured.
+
 ## Main Table Configuration
 
 | Field | Fixed value |

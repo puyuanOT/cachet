@@ -5,6 +5,8 @@ import pytest
 import document_kv_cache.serving_env as public_serving_env
 from document_kv_cache import ServingBackend
 from document_kv_cache.serving_env import (
+    ACCELERATE_CONSTRAINT,
+    BITSANDBYTES_CONSTRAINT,
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     NUMPY_CONSTRAINT,
@@ -47,6 +49,8 @@ def test_serving_environment_profiles_are_backend_scoped_and_exactly_pinned():
         NUMPY_CONSTRAINT,
         FASTAPI_CONSTRAINT,
         PROMETHEUS_FASTAPI_INSTRUMENTATOR_CONSTRAINT,
+        BITSANDBYTES_CONSTRAINT,
+        ACCELERATE_CONSTRAINT,
     )
 
     assert sglang_profile.backend == ServingBackend.SGLANG

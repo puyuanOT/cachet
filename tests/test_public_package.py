@@ -404,6 +404,8 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'write_release_evidence_input_status_json',
     'write_release_evidence_json',
     'DocumentKVService',
+    'ACCELERATE_CONSTRAINT',
+    'BITSANDBYTES_CONSTRAINT',
     'FASTAPI_CONSTRAINT',
     'HUGGINGFACE_HUB_CONSTRAINT',
     'NUMPY_CONSTRAINT',

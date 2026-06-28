@@ -33,6 +33,8 @@ CURRENT_LATEST_VERSIONS = {
     "vllm": "0.23.0",
     "transformers": "5.12.1",
     "huggingface-hub": "1.20.1",
+    "bitsandbytes": "0.49.2",
+    "accelerate": "1.14.0",
     "tokenizers": "0.23.1",
     "numpy": "2.5.0",
     "fastapi": "0.138.0",

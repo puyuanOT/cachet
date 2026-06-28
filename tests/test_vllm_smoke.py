@@ -12,6 +12,15 @@ import pytest
 
 import document_kv_cache.vllm_smoke as public_vllm_smoke
 from document_kv_cache.serving_env import VLLM_SERVING_ENVIRONMENT_PROFILE
+from document_kv_cache.transformers_generator import (
+    CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
+    CACHET_TRANSFORMERS_MODEL_ID_ENV,
+    CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
+    CACHET_TRANSFORMERS_QUANTIZATION_ENV,
+    CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
+    CACHET_TRANSFORMERS_TORCH_DTYPE_ENV,
+    CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV,
+)
 from document_kv_cache.vllm_smoke import (
     BASELINE_PREFIX_CACHE_SALT,
     CACHE_PREFIX_CACHE_SALT,
@@ -42,14 +51,17 @@ from document_kv_cache.vllm_smoke import (
     dependency_override_constraints,
     document_kv_transfer_config_for_smoke,
     document_kv_package_install_spec,
+    apply_vllm_runtime_patches,
     install_document_kv_package,
     install_vllm,
     parse_args,
     parse_dataset_specs,
     prepare_generated_benchmark_handoffs,
+    prewarm_cache_prefixes,
     prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
+    server_env,
     site_packages_dirs,
     smoke_dataset_records,
     validate_prepared_benchmark_handoffs,
@@ -58,6 +70,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
 )
 from document_kv_cache.engine import EngineReadyRequest
@@ -271,6 +284,130 @@ def test_install_vllm_applies_fips_opencv_override_after_vllm_stack(monkeypatch,
     ]
 
 
+def test_apply_vllm_runtime_patches_disables_e5m2_query_quant(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        kv_cache_dtype="fp8_e5m2",
+    )
+    attention_path = (
+        config.venv_dir
+        / "lib"
+        / "python3.11"
+        / "site-packages"
+        / "vllm"
+        / "model_executor"
+        / "layers"
+        / "attention"
+        / "attention.py"
+    )
+    attention_path.parent.mkdir(parents=True)
+    attention_path.write_text(
+        """prefix
+        if (
+            self.impl.supports_quant_query_input
+            and (
+                self.kv_cache_dtype.startswith("fp8") or self.kv_cache_dtype == "nvfp4"
+            )
+            and not self.kv_cache_dtype.endswith("per_token_head")
+        ):
+suffix
+""",
+        encoding="utf-8",
+    )
+    reshape_path = (
+        config.venv_dir
+        / "lib"
+        / "python3.11"
+        / "site-packages"
+        / "vllm"
+        / "v1"
+        / "attention"
+        / "ops"
+        / "triton_reshape_and_cache_flash.py"
+    )
+    reshape_path.parent.mkdir(parents=True)
+    reshape_path.write_text(
+        """import torch
+    kv_cache_torch_dtype = (
+        current_platform.fp8_dtype()
+        if is_quantized_kv_cache(kv_cache_dtype)
+        else key_cache.dtype
+    )
+middle
+    kv_cache_torch_dtype = (
+        current_platform.fp8_dtype()
+        if is_quantized_kv_cache(kv_cache_dtype)
+        else kv_cache.dtype
+    )
+""",
+        encoding="utf-8",
+    )
+    triton_attn_path = (
+        config.venv_dir
+        / "lib"
+        / "python3.11"
+        / "site-packages"
+        / "vllm"
+        / "v1"
+        / "attention"
+        / "backends"
+        / "triton_attn.py"
+    )
+    triton_attn_path.parent.mkdir(parents=True)
+    triton_attn_path.write_text(
+        """import torch
+        self.fp8_dtype = current_platform.fp8_dtype()
+""",
+        encoding="utf-8",
+    )
+
+    patches = apply_vllm_runtime_patches(config)
+    text = attention_path.read_text(encoding="utf-8")
+    reshape_text = reshape_path.read_text(encoding="utf-8")
+    triton_attn_text = triton_attn_path.read_text(encoding="utf-8")
+
+    assert patches == [
+        {
+            "id": "vllm-qwen-attention-disable-e5m2-query-quant",
+            "path": str(attention_path),
+            "applied": True,
+            "reason": (
+                "vLLM 0.23.0 admits fp8_e5m2 KV cache in Triton metadata but its attention "
+                "wrapper's query quantization path asserts only fp8/fp8_e4m3/nvfp4."
+            ),
+        },
+        {
+            "id": "vllm-triton-reshape-cache-use-e5m2-dtype",
+            "path": str(reshape_path),
+            "applied": True,
+            "reason": (
+                "vLLM 0.23.0 routes all quantized KV cache dtypes through current_platform.fp8_dtype(); "
+                "on AWS g5/A10G that selects an E4M3 dtype even when --kv-cache-dtype=fp8_e5m2."
+            ),
+        },
+        {
+            "id": "vllm-triton-attn-use-e5m2-cache-view",
+            "path": str(triton_attn_path),
+            "applied": True,
+            "reason": (
+                "TritonAttentionImpl stores the platform default FP8 dtype and views quantized KV "
+                "cache pages through it; on AWS g5/A10G this selects E4M3 for fp8_e5m2 KV pages."
+            ),
+        },
+    ]
+    assert 'self.kv_cache_dtype in {"fp8", "fp8_e4m3", "nvfp4"}' in text
+    assert "startswith(\"fp8\")" not in text
+    assert 'if kv_cache_dtype == "fp8_e5m2"' in reshape_text
+    assert 'self.fp8_dtype = (\n            torch.float8_e5m2' in triton_attn_text
+    assert apply_vllm_runtime_patches(config) == [
+        {**patches[0], "applied": False},
+        {**patches[1], "applied": False},
+        {**patches[2], "applied": False},
+    ]
+
+
 def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
@@ -290,6 +427,7 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert args[args.index("--max-num-seqs") + 1] == "2"
     assert args[args.index("--gpu-memory-utilization") + 1] == "0.85"
     assert json.loads(args[args.index("--kv-transfer-config") + 1]) == document_kv_transfer_config_for_smoke(config)
+    assert "--enable-prefix-caching" in args
     assert "--trust-remote-code" in args
     assert "--no-enable-log-requests" in args
     assert "--disable-log-requests" not in args
@@ -324,6 +462,27 @@ def test_vllm_server_args_accept_full_benchmark_sizing_overrides(tmp_path):
     assert args[args.index("--max-model-len") + 1] == "32768"
     assert args[args.index("--max-num-seqs") + 1] == "8"
     assert args[args.index("--gpu-memory-utilization") + 1] == "0.72"
+
+
+def test_vllm_server_args_accept_quantized_model_and_kv_overrides(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="q4-q8-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_id="Qwen/Qwen3-4B-Instruct-2507",
+        model_dtype="float16",
+        model_quantization="bitsandbytes",
+        kv_cache_dtype="fp8",
+        attention_backend="TRITON_ATTN",
+    )
+
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+
+    assert args[args.index("--model") + 1] == "Qwen/Qwen3-4B-Instruct-2507"
+    assert args[args.index("--dtype") + 1] == "float16"
+    assert args[args.index("--quantization") + 1] == "bitsandbytes"
+    assert args[args.index("--kv-cache-dtype") + 1] == "fp8"
+    assert args[args.index("--attention-backend") + 1] == "TRITON_ATTN"
 
 
 def test_benchmark_runner_args_include_all_smoke_datasets(tmp_path):
@@ -417,7 +576,23 @@ def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tm
     assert json.loads(args[args.index("--cache-extra-body-json") + 1]) == {
         "cache_salt": CACHE_PREFIX_CACHE_SALT
     }
-    assert args[args.index("--prefix-cache-salt-mode") + 1] == "per_request"
+    assert args[args.index("--prefix-cache-salt-mode") + 1] == "static"
+
+
+def test_benchmark_runner_args_can_share_static_prefix_cache_for_prepared_datasets(tmp_path):
+    specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-static-salt",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        server_port=8123,
+        dataset_specs=specs,
+        prefix_cache_salt_mode="static",
+    )
+
+    args = build_benchmark_runner_args(config, parse_dataset_specs(specs))
+
+    assert args[args.index("--prefix-cache-salt-mode") + 1] == "static"
 
 
 def test_benchmark_runner_args_can_force_max_tokens_for_latency_protocol(tmp_path):
@@ -738,6 +913,51 @@ def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tm
     assert payload_uri.startswith(str(tmp_path / "generated-handoffs" / "biography"))
 
 
+def test_prepare_generated_benchmark_handoffs_limits_enriched_inputs(tmp_path, monkeypatch):
+    module = ModuleType("cachet_test_vllm_limited_handoff_generator")
+    module.build_generator = OneTokenBenchmarkKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    for dataset, path in dataset_paths.items():
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "dataset": dataset,
+                        "example_id": f"{dataset}-2",
+                        "query": "Who is described?",
+                        "expected_answer": "Grace Hopper",
+                        "documents": [{"document_id": "grace", "text": "Grace Hopper biography"}],
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-generated-limit-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory=f"{module.__name__}:build_generator",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="bfloat16",
+            align_bytes=1,
+            limit=1,
+        ),
+    )
+
+    generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
+
+    generation = json.loads(config.prepared_handoff_generation_path.read_text(encoding="utf-8"))
+    assert generation["datasets"]["biography"]["entries"] == 1
+    assert generation["datasets"]["biography"]["enriched_rows"] == 1
+    assert sum(1 for _ in generated_paths["biography"].open(encoding="utf-8")) == 1
+    limited_input = Path(generation["datasets"]["biography"]["generation_input_jsonl"])
+    assert sum(1 for _ in limited_input.open(encoding="utf-8")) == 1
+
+
 def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(tmp_path, monkeypatch):
     module = ModuleType("cachet_test_vllm_handoff_generator_cleanup")
     module.build_generator = TrackedOneTokenBenchmarkKVGenerator
@@ -774,6 +994,45 @@ def test_prepare_generated_benchmark_handoffs_releases_generator_before_cleanup(
     assert released_after_generator_collectable == [True]
 
 
+def test_prewarm_cache_prefixes_posts_kv_aware_prefix_prompts(tmp_path, monkeypatch):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prewarm-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        prewarm_cache_prefix=True,
+        timeout_seconds=12.5,
+    )
+    calls = []
+
+    def fake_post_json(url, body, *, timeout_seconds):
+        calls.append((url, body, timeout_seconds))
+        return {"usage": {"prompt_tokens": 12, "completion_tokens": 1}}
+
+    monkeypatch.setattr(public_vllm_smoke, "_post_json", fake_post_json)
+
+    prewarm_cache_prefixes(config, dataset_paths)
+
+    assert len(calls) == len(SMOKE_DATASETS)
+    first_url, first_body, first_timeout = calls[0]
+    assert first_url == f"{config.server_base_url}/v1/completions"
+    assert first_timeout == 12.5
+    assert first_body["model"] == SERVED_MODEL_NAME
+    assert first_body["max_tokens"] == 1
+    assert first_body["cache_salt"] == CACHE_PREFIX_CACHE_SALT
+    assert first_body["request_id"].startswith("cachet-prewarm:prewarm-1:")
+    assert "Ada Lovelace biography" in first_body["prompt"]
+    assert first_body["prompt"].endswith("\n\nCache warmup.")
+    assert first_body["kv_transfer_params"][DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] == "logical"
+    assert DOCUMENT_KV_HANDOFF_JSON_PARAM in first_body["kv_transfer_params"]
+    record = json.loads(config.prewarm_cache_prefix_path.read_text(encoding="utf-8"))
+    assert record["ok"] is True
+    assert record["row_count"] == len(SMOKE_DATASETS)
+    assert record["rows"][0]["prompt_tokens"] == 12
+
+
 def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_path, monkeypatch):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
@@ -788,6 +1047,7 @@ def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_
             dtype="bfloat16",
             align_bytes=1,
             timeout_seconds=1234.0,
+            limit=2,
         ),
     )
     config.venv_python.parent.mkdir(parents=True)
@@ -806,6 +1066,7 @@ def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_
         assert input_payload["benchmark_id"] == "prepared-generated-venv"
         assert input_payload["handoff_generation"]["generator_factory"] == "module:factory"
         assert input_payload["handoff_generation"]["timeout_seconds"] == 1234.0
+        assert input_payload["handoff_generation"]["limit"] == 2
         Path(argv[4]).parent.mkdir(parents=True, exist_ok=True)
         for path in generated_worker_paths.values():
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1054,6 +1315,10 @@ def test_metadata_records_reproducible_smoke_context(tmp_path):
     assert metadata["benchmark_id"] == "smoke-1"
     assert metadata["hf_model_id"] == HF_MODEL_ID
     assert metadata["served_model_name"] == SERVED_MODEL_NAME
+    assert metadata["model_dtype"] == "bfloat16"
+    assert metadata["model_quantization"] is None
+    assert metadata["kv_cache_dtype"] is None
+    assert metadata["attention_backend"] is None
     assert metadata["server_bind_host"] == "127.0.0.1"
     assert metadata["server_client_host"] == "127.0.0.1"
     assert metadata["server_base_url"] == "http://127.0.0.1:8000"
@@ -1099,6 +1364,46 @@ def test_metadata_records_payload_cache_budget(tmp_path):
         payload_cache_max_bytes=4096,
         telemetry_jsonl=str(config.connector_telemetry_path),
     )
+
+
+def test_server_env_defaults_q4_handoff_generator_to_matching_transformers_config(tmp_path, monkeypatch):
+    dataset_specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    for name in (
+        CACHET_TRANSFORMERS_MODEL_ID_ENV,
+        CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
+        CACHET_TRANSFORMERS_TORCH_DTYPE_ENV,
+        CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV,
+        CACHET_TRANSFORMERS_QUANTIZATION_ENV,
+        CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
+        CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-q4-handoff",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_id="Qwen/Qwen3-4B-Instruct-2507",
+        model_dtype="bfloat16",
+        model_quantization="bitsandbytes",
+        dataset_specs=dataset_specs,
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory="document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="fp8_e5m2",
+        ),
+    )
+
+    env = server_env(config)
+
+    assert env[CACHET_TRANSFORMERS_MODEL_ID_ENV] == "Qwen/Qwen3-4B-Instruct-2507"
+    assert env[CACHET_TRANSFORMERS_TOKENIZER_ID_ENV] == "Qwen/Qwen3-4B-Instruct-2507"
+    assert env[CACHET_TRANSFORMERS_TORCH_DTYPE_ENV] == "bfloat16"
+    assert env[CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV] == "true"
+    assert env[CACHET_TRANSFORMERS_QUANTIZATION_ENV] == "bitsandbytes-4bit"
+    assert env[CACHET_TRANSFORMERS_DEVICE_MAP_ENV] == "auto"
+    assert json.loads(env[CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV]) == {
+        "bnb_4bit_compute_dtype": "bfloat16",
+    }
 
 
 def test_vllm_native_provider_probe_record_instantiates_default_provider():
@@ -1236,18 +1541,20 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
         max_num_seqs=8,
         gpu_memory_utilization=0.72,
         dataset_specs=specs,
+        prefix_cache_salt_mode="static",
     )
 
     metadata = build_metadata(config)
 
     assert metadata["dataset_source"] == "prepared"
     assert metadata["dataset_specs"] == list(specs)
+    assert metadata["prewarm_cache_prefix"] is False
     assert metadata["cache_runtime_prompt"] is False
     assert metadata["cache_prompt_text_mode"] == "logical"
     assert metadata["prefix_cache_isolation"] == {
         "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
         "cache_cache_salt": CACHE_PREFIX_CACHE_SALT,
-        "cache_salt_mode": "per_request",
+        "cache_salt_mode": "static",
     }
     assert metadata["requires_kv_transfer_params"] is True
     assert metadata["generates_prepared_handoffs"] is False
@@ -1299,6 +1606,16 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "smoke-1",
             "--output-dir",
             str(tmp_path / "out"),
+            "--model-id",
+            "Qwen/Qwen3-4B-Instruct-2507",
+            "--model-dtype",
+            "float16",
+            "--model-quantization",
+            "bitsandbytes",
+            "--kv-cache-dtype",
+            "fp8_e5m2",
+            "--attention-backend",
+            "TRITON_ATTN",
             "--local-root",
             str(tmp_path / "local"),
             "--max-tokens",
@@ -1328,7 +1645,10 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "3",
             "--request-parallelism",
             "8",
+            "--benchmark-prewarm-cache-prefix",
             "--benchmark-cache-runtime-prompt",
+            "--benchmark-prefix-cache-salt-mode",
+            "static",
             "--benchmark-arm",
             "baseline_prefill",
             "--package-install-spec",
@@ -1341,6 +1661,10 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             "bfloat16",
             "--benchmark-handoff-align-bytes",
             "1",
+            "--benchmark-handoff-generation-timeout-seconds",
+            "1234",
+            "--benchmark-handoff-limit",
+            "2",
             *sum((["--dataset", spec] for spec in specs), []),
         ]
     )
@@ -1348,6 +1672,11 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
     assert config == VLLMSmokeBenchmarkConfig(
         benchmark_id="smoke-1",
         output_dir=tmp_path / "out",
+        model_id="Qwen/Qwen3-4B-Instruct-2507",
+        model_dtype="float16",
+        model_quantization="bitsandbytes",
+        kv_cache_dtype="fp8_e5m2",
+        attention_backend="TRITON_ATTN",
         local_root=tmp_path / "local",
         max_tokens=16,
         force_max_tokens=True,
@@ -1363,7 +1692,9 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
         benchmark_repeats=3,
         request_parallelism=8,
         benchmark_arms=("baseline_prefill",),
+        prewarm_cache_prefix=True,
         cache_runtime_prompt=True,
+        prefix_cache_salt_mode="static",
         hardware_target="aws-g5-a10g",
         dataset_specs=specs,
         package_install_spec=str(tmp_path / "cachet.whl"),
@@ -1372,13 +1703,41 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             output_dir=Path("/dbfs/tmp/cachet/generated-handoffs"),
             dtype="bfloat16",
             align_bytes=1,
+            timeout_seconds=1234.0,
+            limit=2,
         ),
     )
 
 
 def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
+    dataset_specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
+    with pytest.raises(ValueError, match="benchmark_handoff_timeout_seconds"):
+        VLLMPreparedHandoffGenerationConfig(
+            generator_factory="module:factory",
+            output_dir=tmp_path / "generated-handoffs",
+            timeout_seconds=0,
+        )
+    with pytest.raises(ValueError, match="benchmark_handoff_limit"):
+        VLLMPreparedHandoffGenerationConfig(
+            generator_factory="module:factory",
+            output_dir=tmp_path / "generated-handoffs",
+            limit=-1,
+        )
     invalid_cases = [
         ({"benchmark_id": ""}, "benchmark_id must be non-empty"),
+        ({"model_id": ""}, "model_id must be non-empty"),
+        ({"model_dtype": ""}, "model_dtype must be non-empty"),
+        ({"model_quantization": ""}, "model_quantization must be non-empty"),
+        ({"kv_cache_dtype": ""}, "kv_cache_dtype must be non-empty"),
+        (
+            {"hardware_target": "aws-g5-a10g", "kv_cache_dtype": "fp8"},
+            "fp8_e5m2",
+        ),
+        (
+            {"hardware_target": "aws-g5-a10g", "kv_cache_dtype": "fp8_e4m3"},
+            "fp8_e5m2",
+        ),
+        ({"attention_backend": ""}, "attention_backend must be non-empty"),
         ({"max_tokens": 0}, "max_tokens must be positive"),
         ({"force_max_tokens": "yes"}, "force_max_tokens must be a boolean"),
         ({"timeout_seconds": 0}, "timeout_seconds must be positive"),
@@ -1395,6 +1754,19 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
         ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
+        ({"prefix_cache_salt_mode": "dynamic"}, "prefix_cache_salt_mode"),
+        (
+            {"prewarm_cache_prefix": True},
+            "benchmark_prewarm_cache_prefix requires prepared dataset specs",
+        ),
+        (
+                {
+                    "prewarm_cache_prefix": True,
+                    "prefix_cache_salt_mode": "per_request",
+                    "dataset_specs": dataset_specs,
+                },
+            "requires prefix_cache_salt_mode='static'",
+        ),
         (
             {"cache_runtime_prompt": True},
             "benchmark_cache_runtime_prompt requires prepared dataset specs",
@@ -1422,6 +1794,15 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         kwargs.update(overrides)
         with pytest.raises(ValueError, match=message):
             VLLMSmokeBenchmarkConfig(**kwargs)
+
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        hardware_target="aws-g5-a10g",
+        kv_cache_dtype="fp8_e5m2",
+    )
+    assert config.kv_cache_dtype == "fp8_e5m2"
 
 
 def test_parse_args_rejects_invalid_values_before_setup(tmp_path):

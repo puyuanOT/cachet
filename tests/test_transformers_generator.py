@@ -7,14 +7,17 @@ import pytest
 
 import cachet.transformers_generator as cachet_transformers_generator
 import document_kv_cache.transformers_generator as public_transformers_generator
-from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout
+from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout, dtype_byte_width
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
     CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
     CACHET_TRANSFORMERS_DEVICE_ENV,
+    CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
     CACHET_TRANSFORMERS_MODEL_ID_ENV,
     CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
+    CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
+    CACHET_TRANSFORMERS_QUANTIZATION_ENV,
     CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
     CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
     CACHET_TRANSFORMERS_TORCH_DTYPE_ENV,
@@ -114,7 +117,7 @@ def tiny_layout(
     kv_stride_bytes: int | None = None,
     storage_layout: KVStorageLayout = KVStorageLayout.SEPARATE_KEY_VALUE,
 ) -> KVLayout:
-    dtype_width = 4 if dtype == "float32" else 2 if dtype in {"bfloat16", "float16"} else 1
+    dtype_width = dtype_byte_width(dtype)
     stride = head_size * dtype_width if kv_stride_bytes is None else kv_stride_bytes
     shares_kv_storage = storage_layout == KVStorageLayout.SHARED_KEY_VALUE
     return KVLayout(
@@ -373,12 +376,43 @@ def test_transformers_generator_rejects_integer_payload_dtype():
     source = document()
     generator = TransformersKVChunkGenerator(model=model, tokenizer=tokenizer, layout=layout)
 
-    with pytest.raises(ValueError, match="floating KV dtype"):
+    with pytest.raises(ValueError, match="floating KV dtype or FP8"):
         generator.generate(
             document=source,
             chunk=source.chunks[0],
             config=build_config(layout),
         )
+
+
+def test_transformers_generator_can_emit_fp8_payload():
+    if not hasattr(torch, "float8_e4m3fn"):
+        pytest.skip("torch runtime does not expose float8_e4m3fn")
+    layout = tiny_layout(dtype="fp8")
+    first_layer = layer([[1, 2], [3, 4]], [[11, 12], [13, 14]])
+    second_layer = layer([[21, 22], [23, 24]], [[31, 32], [33, 34]])
+    tokenizer = TinyTokenizer(token_count=2)
+    model = TinyModel((first_layer, second_layer))
+    source = document()
+    generator = TransformersKVChunkGenerator(model=model, tokenizer=tokenizer, layout=layout)
+
+    pack_chunk = generator.generate(
+        document=source,
+        chunk=source.chunks[0],
+        config=build_config(layout),
+    )
+
+    layer_0 = torch.stack(
+        (first_layer[0][0].permute(1, 0, 2), first_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    ).to(dtype=torch.float8_e4m3fn).view(torch.uint8)
+    layer_1 = torch.stack(
+        (second_layer[0][0].permute(1, 0, 2), second_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    ).to(dtype=torch.float8_e4m3fn).view(torch.uint8)
+    expected = torch.stack((layer_0, layer_1), dim=1).contiguous()
+    assert pack_chunk.dtype == "fp8"
+    assert len(pack_chunk.payload) == layout.bytes_per_token * 2
+    assert pack_chunk.payload == tensor_bytes(expected)
 
 
 def test_transformers_generator_rejects_interleaved_payload_layout():
@@ -394,6 +428,73 @@ def test_transformers_generator_rejects_interleaved_payload_layout():
             chunk=source.chunks[0],
             config=build_config(layout),
         )
+
+
+def test_transformers_generator_from_pretrained_configures_bitsandbytes_quantization(monkeypatch):
+    calls = {}
+
+    class FakeBitsAndBytesConfig:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            calls["tokenizer"] = (model_id, kwargs)
+            return TinyTokenizer()
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.to_calls = []
+            self.eval_called = False
+
+        def to(self, device):
+            self.to_calls.append(device)
+            return self
+
+        def eval(self):
+            self.eval_called = True
+            return self
+
+    fake_model = FakeModel()
+
+    class FakeAutoModelForCausalLM:
+        @staticmethod
+        def from_pretrained(model_id, **kwargs):
+            calls["model"] = (model_id, kwargs)
+            return fake_model
+
+    fake_transformers = SimpleNamespace(
+        AutoTokenizer=FakeAutoTokenizer,
+        AutoModelForCausalLM=FakeAutoModelForCausalLM,
+        BitsAndBytesConfig=FakeBitsAndBytesConfig,
+    )
+    monkeypatch.setattr(public_transformers_generator, "_transformers", lambda: fake_transformers)
+
+    generator = TransformersKVChunkGenerator.from_pretrained(
+        TransformersKVGeneratorConfig(
+            model_id="model-a",
+            tokenizer_id="tokenizer-a",
+            device="cuda",
+            torch_dtype="bfloat16",
+            quantization="bitsandbytes-4bit",
+            quantization_config={"bnb_4bit_compute_dtype": "bfloat16"},
+        )
+    )
+
+    assert isinstance(generator, TransformersKVChunkGenerator)
+    assert calls["tokenizer"] == ("tokenizer-a", {"trust_remote_code": False})
+    model_id, model_kwargs = calls["model"]
+    assert model_id == "model-a"
+    assert model_kwargs["torch_dtype"] is torch.bfloat16
+    assert model_kwargs["device_map"] == "cuda"
+    assert model_kwargs["trust_remote_code"] is False
+    assert model_kwargs["quantization_config"].kwargs == {
+        "load_in_4bit": True,
+        "bnb_4bit_compute_dtype": torch.bfloat16,
+    }
+    assert fake_model.to_calls == []
+    assert fake_model.eval_called is True
 
 
 def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch):
@@ -416,6 +517,12 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     monkeypatch.setenv(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, "false")
     monkeypatch.setenv(CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV, "true")
     monkeypatch.setenv(CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV, "token-major")
+    monkeypatch.setenv(CACHET_TRANSFORMERS_QUANTIZATION_ENV, "bitsandbytes-4bit")
+    monkeypatch.setenv(
+        CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
+        '{"bnb_4bit_compute_dtype":"bfloat16"}',
+    )
+    monkeypatch.setenv(CACHET_TRANSFORMERS_DEVICE_MAP_ENV, "auto")
     monkeypatch.setenv(
         CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
         '{"attn_implementation":"eager"}',
@@ -437,6 +544,9 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     assert config.trust_remote_code is False
     assert config.add_special_tokens is True
     assert config.cache_axis_order == "token_major"
+    assert config.quantization == "bitsandbytes-4bit"
+    assert config.quantization_config == {"bnb_4bit_compute_dtype": "bfloat16"}
+    assert config.device_map == "auto"
     assert config.model_kwargs == {"attn_implementation": "eager"}
     assert config.tokenizer_kwargs == {"padding_side": "left", "use_fast": False}
 
@@ -509,6 +619,9 @@ def test_transformers_generator_env_factory_treats_blank_values_as_unset(monkeyp
         CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV,
         CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
         CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
+        CACHET_TRANSFORMERS_QUANTIZATION_ENV,
+        CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
+        CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
         CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
         CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
         CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV,
@@ -527,6 +640,9 @@ def test_transformers_generator_env_factory_treats_blank_values_as_unset(monkeyp
     assert config.trust_remote_code is False
     assert config.add_special_tokens is False
     assert config.cache_axis_order == "head_major"
+    assert config.quantization is None
+    assert config.quantization_config == {}
+    assert config.device_map is None
     assert config.model_kwargs == {}
     assert config.tokenizer_kwargs == {}
 

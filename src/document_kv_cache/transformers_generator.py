@@ -32,6 +32,9 @@ CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV = "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER
 CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON"
 CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV = "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON"
 CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV = "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER"
+CACHET_TRANSFORMERS_QUANTIZATION_ENV = "CACHET_TRANSFORMERS_QUANTIZATION"
+CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV = "CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON"
+CACHET_TRANSFORMERS_DEVICE_MAP_ENV = "CACHET_TRANSFORMERS_DEVICE_MAP"
 _CACHE_AXIS_ORDER_HEAD_MAJOR = "head_major"
 _CACHE_AXIS_ORDER_TOKEN_MAJOR = "token_major"
 _CACHE_AXIS_ORDERS = frozenset(
@@ -41,6 +44,7 @@ _CACHE_AXIS_ORDERS = frozenset(
     }
 )
 _FLOAT_KV_DTYPES = frozenset({"bf16", "bfloat16", "fp16", "float16", "fp32", "float32"})
+_FLOAT8_KV_DTYPES = frozenset({"fp8", "fp8_e4m3", "fp8_e4m3fn", "fp8_e5m2", "float8"})
 _SUPPORTED_STORAGE_LAYOUTS = frozenset(
     {
         KVStorageLayout.SEPARATE_KEY_VALUE,
@@ -54,11 +58,14 @@ __all__ = [
     "CACHET_TRANSFORMERS_DEVICE_ENV",
     "CACHET_TRANSFORMERS_MODEL_ID_ENV",
     "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV",
+    "CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV",
+    "CACHET_TRANSFORMERS_QUANTIZATION_ENV",
     "CACHET_TRANSFORMERS_TOKENIZER_ID_ENV",
     "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV",
     "CACHET_TRANSFORMERS_TORCH_DTYPE_ENV",
     "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV",
     "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV",
+    "CACHET_TRANSFORMERS_DEVICE_MAP_ENV",
     "TransformersKVGeneratorConfig",
     "TransformersKVChunkGenerator",
     "build_transformers_kv_chunk_generator",
@@ -76,6 +83,9 @@ class TransformersKVGeneratorConfig:
     trust_remote_code: bool = False
     add_special_tokens: bool = False
     cache_axis_order: str = _CACHE_AXIS_ORDER_HEAD_MAJOR
+    quantization: str | None = None
+    quantization_config: Mapping[str, Any] = field(default_factory=dict)
+    device_map: str | None = None
     model_kwargs: Mapping[str, Any] = field(default_factory=dict)
     tokenizer_kwargs: Mapping[str, Any] = field(default_factory=dict)
 
@@ -99,10 +109,27 @@ class TransformersKVGeneratorConfig:
             raise ValueError("trust_remote_code must be a boolean")
         if type(self.add_special_tokens) is not bool:
             raise ValueError("add_special_tokens must be a boolean")
+        if self.quantization is not None:
+            object.__setattr__(
+                self,
+                "quantization",
+                _non_empty_string(self.quantization, "quantization"),
+            )
+        if self.device_map is not None:
+            object.__setattr__(
+                self,
+                "device_map",
+                _non_empty_string(self.device_map, "device_map"),
+            )
         object.__setattr__(
             self,
             "cache_axis_order",
             _cache_axis_order_from_value(self.cache_axis_order),
+        )
+        object.__setattr__(
+            self,
+            "quantization_config",
+            _json_object_mapping(self.quantization_config, "quantization_config"),
         )
         object.__setattr__(
             self,
@@ -164,6 +191,13 @@ class TransformersKVChunkGenerator:
         torch = _torch()
         transformers = _transformers()
         model_kwargs = dict(resolved.model_kwargs)
+        _apply_transformers_quantization_config(
+            transformers,
+            torch,
+            model_kwargs,
+            quantization=resolved.quantization,
+            quantization_config=resolved.quantization_config,
+        )
         if resolved.torch_dtype not in (None, "auto"):
             model_kwargs.setdefault(
                 "torch_dtype",
@@ -171,6 +205,10 @@ class TransformersKVChunkGenerator:
             )
         elif resolved.torch_dtype == "auto":
             model_kwargs.setdefault("torch_dtype", "auto")
+        if resolved.device_map is not None:
+            model_kwargs.setdefault("device_map", resolved.device_map)
+        elif resolved.device is not None and "quantization_config" in model_kwargs:
+            model_kwargs.setdefault("device_map", resolved.device)
         model_kwargs.setdefault("trust_remote_code", resolved.trust_remote_code)
         tokenizer_kwargs = dict(resolved.tokenizer_kwargs)
         tokenizer_kwargs.setdefault("trust_remote_code", resolved.trust_remote_code)
@@ -183,7 +221,7 @@ class TransformersKVChunkGenerator:
             resolved.model_id,
             **model_kwargs,
         )
-        if resolved.device is not None:
+        if resolved.device is not None and "device_map" not in model_kwargs:
             model = model.to(resolved.device)
         evaluator = getattr(model, "eval", None)
         if callable(evaluator):
@@ -273,6 +311,9 @@ def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
             CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
             default=_CACHE_AXIS_ORDER_HEAD_MAJOR,
         ),
+        quantization=_env_string(CACHET_TRANSFORMERS_QUANTIZATION_ENV),
+        quantization_config=_env_json_object(CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV),
+        device_map=_env_string(CACHET_TRANSFORMERS_DEVICE_MAP_ENV),
         model_kwargs=_env_json_object(CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV),
         tokenizer_kwargs=_tokenizer_kwargs_from_env(),
     )
@@ -326,7 +367,8 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         )
     if _dtype_kind(layout.dtype) != "float":
         raise ValueError(
-            "Transformers KV generation requires a floating KV dtype such as bfloat16 or float16"
+            "Transformers KV generation requires a floating KV dtype or FP8 dtype "
+            "such as bfloat16, float16, fp8, fp8_e4m3, or fp8_e5m2"
         )
     if layout.storage_layout not in _SUPPORTED_STORAGE_LAYOUTS:
         supported = ", ".join(layout.value for layout in sorted(_SUPPORTED_STORAGE_LAYOUTS))
@@ -467,8 +509,12 @@ def _normalize_cache_tensor(
 
 def _layer_values(key: object, value: object, *, dtype: object, layout: KVLayout) -> object:
     torch = _torch()
-    key = key.to(device="cpu", dtype=dtype).contiguous()
-    value = value.to(device="cpu", dtype=dtype).contiguous()
+    if _dtype_is_float8(layout.dtype):
+        key = key.to(device="cpu", dtype=dtype).contiguous().view(torch.uint8)
+        value = value.to(device="cpu", dtype=dtype).contiguous().view(torch.uint8)
+    else:
+        key = key.to(device="cpu", dtype=dtype).contiguous()
+        value = value.to(device="cpu", dtype=dtype).contiguous()
     key = _pad_kv_stride(key, layout=layout)
     value = _pad_kv_stride(value, layout=layout)
     return torch.stack((key, value), dim=1).contiguous()
@@ -565,6 +611,67 @@ def _callable_accepts_keyword(callable_object: object, keyword: str) -> bool:
     return keyword in parameters
 
 
+def _apply_transformers_quantization_config(
+    transformers: object,
+    torch: object,
+    model_kwargs: dict[str, Any],
+    *,
+    quantization: str | None,
+    quantization_config: Mapping[str, Any],
+) -> None:
+    existing = model_kwargs.get("quantization_config")
+    if existing is not None:
+        if isinstance(existing, Mapping):
+            model_kwargs["quantization_config"] = _bitsandbytes_config(
+                transformers,
+                torch,
+                existing,
+            )
+        return
+    if quantization is None:
+        return
+    normalized = quantization.strip().lower().replace("_", "-")
+    if normalized in {"bitsandbytes", "bitsandbytes-4bit", "bnb", "bnb-4bit", "4bit"}:
+        model_kwargs["quantization_config"] = _bitsandbytes_config(
+            transformers,
+            torch,
+            {"load_in_4bit": True, **dict(quantization_config)},
+        )
+        return
+    if normalized in {"bitsandbytes-8bit", "bnb-8bit", "8bit"}:
+        model_kwargs["quantization_config"] = _bitsandbytes_config(
+            transformers,
+            torch,
+            {"load_in_8bit": True, **dict(quantization_config)},
+        )
+        return
+    raise ValueError(
+        "Unsupported Transformers quantization "
+        f"{quantization!r}; expected bitsandbytes-4bit or bitsandbytes-8bit"
+    )
+
+
+def _bitsandbytes_config(
+    transformers: object,
+    torch: object,
+    values: Mapping[str, Any],
+) -> object:
+    config_type = getattr(transformers, "BitsAndBytesConfig", None)
+    if config_type is None:
+        raise ValueError("Transformers runtime does not expose BitsAndBytesConfig")
+    kwargs = {
+        str(key): _transformers_quantization_value(torch, str(key), value)
+        for key, value in values.items()
+    }
+    return config_type(**kwargs)
+
+
+def _transformers_quantization_value(torch: object, key: str, value: Any) -> Any:
+    if isinstance(value, str) and key.endswith("_dtype"):
+        return _torch_dtype_from_name(torch, value)
+    return value
+
+
 def _torch_dtype_from_name(torch: object, dtype: str) -> object:
     normalized = dtype.lower()
     mapping = {
@@ -575,6 +682,16 @@ def _torch_dtype_from_name(torch: object, dtype: str) -> object:
         "fp32": torch.float32,
         "float32": torch.float32,
     }
+    if normalized in {"fp8", "fp8_e4m3", "fp8_e4m3fn", "float8"}:
+        try:
+            return torch.float8_e4m3fn
+        except AttributeError as exc:  # pragma: no cover - depends on torch build.
+            raise ValueError("Torch runtime does not support float8_e4m3fn") from exc
+    if normalized == "fp8_e5m2":
+        try:
+            return torch.float8_e5m2
+        except AttributeError as exc:  # pragma: no cover - depends on torch build.
+            raise ValueError("Torch runtime does not support float8_e5m2") from exc
     try:
         return mapping[normalized]
     except KeyError as exc:
@@ -582,7 +699,11 @@ def _torch_dtype_from_name(torch: object, dtype: str) -> object:
 
 
 def _dtype_kind(dtype: str) -> str:
-    return "float" if dtype.lower() in _FLOAT_KV_DTYPES else "other"
+    return "float" if dtype.lower() in (_FLOAT_KV_DTYPES | _FLOAT8_KV_DTYPES) else "other"
+
+
+def _dtype_is_float8(dtype: str) -> bool:
+    return dtype.lower() in _FLOAT8_KV_DTYPES
 
 
 def _cache_axis_order_from_value(value: object) -> str:

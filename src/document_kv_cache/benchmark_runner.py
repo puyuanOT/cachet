@@ -360,7 +360,12 @@ def run_benchmark_suite(
                 example=example,
                 arm=arm,
                 prompt_parts=prompt_parts,
-                request_id=_request_id_for_arm(example, arm),
+                request_id=_request_id_for_arm(
+                    suite_id=suite.suite_id,
+                    example=example,
+                    arm=arm,
+                    repeat_index=repeat_indices_by_arm[arm.arm_id],
+                ),
                 kv_transfer_params=_kv_transfer_params_for_arm(example, arm),
                 repeat_index=repeat_indices_by_arm[arm.arm_id],
             )
@@ -750,15 +755,28 @@ def _kv_transfer_params_for_arm(example: BenchmarkExample, arm: BenchmarkArm) ->
     return example.kv_transfer_params
 
 
-def _request_id_for_arm(example: BenchmarkExample, arm: BenchmarkArm) -> str | None:
+def _request_id_for_arm(
+    *,
+    suite_id: str,
+    example: BenchmarkExample,
+    arm: BenchmarkArm,
+    repeat_index: int,
+) -> str | None:
     if not arm.uses_cache:
         return None
-    request_id = example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
-    if request_id is None:
+    handoff_request_id = example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+    if handoff_request_id is None:
         return None
-    if not isinstance(request_id, str) or not request_id:
+    if not isinstance(handoff_request_id, str) or not handoff_request_id:
         raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} must be a non-empty string")
-    return request_id
+    return (
+        f"{suite_id}:"
+        f"{example.dataset}:"
+        f"{example.example_id}:"
+        f"{arm.arm_id}:"
+        f"repeat-{repeat_index}:"
+        f"{handoff_request_id}"
+    )
 
 
 def _example_seed(seed: int | None, dataset: str, example_id: str) -> int:

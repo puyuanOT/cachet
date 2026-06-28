@@ -123,7 +123,15 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
         benchmark_repeats=3,
         request_parallelism=8,
         benchmark_arms=("baseline_prefill",),
+        benchmark_prewarm_cache_prefix=True,
         benchmark_cache_runtime_prompt=True,
+        benchmark_force_max_tokens=True,
+        benchmark_prefix_cache_salt_mode="static",
+        model_id="Qwen/Qwen3-4B-Instruct-2507",
+        model_dtype="float16",
+        model_quantization="bitsandbytes",
+        kv_cache_dtype="fp8",
+        attention_backend="TRITON_ATTN",
         payload_cache_max_bytes=4096,
         dataset_specs=DATASET_SPECS,
     )
@@ -134,12 +142,27 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
     assert parameters[parameters.index("--benchmark-repeats") + 1] == "3"
     assert parameters[parameters.index("--request-parallelism") + 1] == "8"
     assert parameters[parameters.index("--benchmark-arm") + 1] == "baseline_prefill"
+    assert "--benchmark-prewarm-cache-prefix" in parameters
     assert "--benchmark-cache-runtime-prompt" in parameters
+    assert "--benchmark-force-max-tokens" in parameters
+    assert parameters[parameters.index("--benchmark-prefix-cache-salt-mode") + 1] == "static"
+    assert parameters[parameters.index("--model-id") + 1] == "Qwen/Qwen3-4B-Instruct-2507"
+    assert parameters[parameters.index("--model-dtype") + 1] == "float16"
+    assert parameters[parameters.index("--model-quantization") + 1] == "bitsandbytes"
+    assert parameters[parameters.index("--kv-cache-dtype") + 1] == "fp8"
+    assert parameters[parameters.index("--attention-backend") + 1] == "TRITON_ATTN"
     assert parameters[parameters.index("--payload-cache-max-bytes") + 1] == "4096"
     assert parameters.index("--benchmark-repeats") < parameters.index("--dataset")
     assert parameters.index("--request-parallelism") < parameters.index("--dataset")
     assert parameters.index("--benchmark-arm") < parameters.index("--dataset")
+    assert parameters.index("--benchmark-prewarm-cache-prefix") < parameters.index("--dataset")
     assert parameters.index("--benchmark-cache-runtime-prompt") < parameters.index("--dataset")
+    assert parameters.index("--benchmark-prefix-cache-salt-mode") < parameters.index("--dataset")
+    assert parameters.index("--model-id") < parameters.index("--dataset")
+    assert parameters.index("--model-dtype") < parameters.index("--dataset")
+    assert parameters.index("--model-quantization") < parameters.index("--dataset")
+    assert parameters.index("--kv-cache-dtype") < parameters.index("--dataset")
+    assert parameters.index("--attention-backend") < parameters.index("--dataset")
     assert parameters.index("--payload-cache-max-bytes") < parameters.index("--dataset")
 
 
@@ -159,12 +182,35 @@ def test_databricks_vllm_smoke_config_requires_single_user_name():
 def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
     invalid_cases = [
         ({"max_model_len": 0}, "max_model_len must be positive"),
+        ({"model_id": ""}, "model_id must be non-empty"),
+        ({"model_dtype": ""}, "model_dtype must be non-empty"),
+        ({"model_quantization": ""}, "model_quantization must be non-empty"),
+        ({"kv_cache_dtype": ""}, "kv_cache_dtype must be non-empty"),
+        (
+            {"node_type_id": "g5.8xlarge", "kv_cache_dtype": "fp8"},
+            "fp8_e5m2",
+        ),
+        ({"attention_backend": ""}, "attention_backend must be non-empty"),
         ({"max_num_seqs": 0}, "max_num_seqs must be positive"),
         ({"gpu_memory_utilization": 0}, "gpu_memory_utilization must be in"),
         ({"gpu_memory_utilization": 1.1}, "gpu_memory_utilization must be in"),
         ({"benchmark_repeats": 0}, "benchmark_repeats must be a positive integer"),
         ({"request_parallelism": 0}, "request_parallelism must be a positive integer"),
         ({"benchmark_arms": ("unknown",)}, "Unknown benchmark arms"),
+        (
+            {"benchmark_prewarm_cache_prefix": True},
+            "benchmark_prewarm_cache_prefix requires prepared dataset specs",
+        ),
+        (
+            {
+                "benchmark_prewarm_cache_prefix": True,
+                "benchmark_prefix_cache_salt_mode": "per_request",
+                "dataset_specs": DATASET_SPECS,
+            },
+            "requires benchmark_prefix_cache_salt_mode='static'",
+        ),
+        ({"benchmark_force_max_tokens": "yes"}, "benchmark_force_max_tokens must be a boolean"),
+        ({"benchmark_prefix_cache_salt_mode": "dynamic"}, "benchmark_prefix_cache_salt_mode"),
         ({"payload_cache_max_bytes": -1}, "payload_cache_max_bytes must be a non-negative integer"),
         ({"dataset_specs": ("biography=/tmp/biography.jsonl",)}, "dataset specs missing required V1 datasets"),
         (
@@ -181,6 +227,14 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         ),
         ({"benchmark_handoff_dtype": ""}, "benchmark_handoff_dtype must be non-empty"),
         ({"benchmark_handoff_align_bytes": 0}, "benchmark_handoff_align_bytes must be a positive integer"),
+        (
+            {"benchmark_handoff_generation_timeout_seconds": 0},
+            "benchmark_handoff_generation_timeout_seconds must be positive",
+        ),
+        (
+            {"benchmark_handoff_limit": -1},
+            "benchmark_handoff_limit must be a non-negative integer",
+        ),
         ({"spark_env_vars": {"BAD-NAME": "value"}}, "valid environment variable name"),
         ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}}, "looks secret-bearing"),
     ]
@@ -195,10 +249,21 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         kwargs.update(overrides)
         try:
             DatabricksVLLMSmokeJobConfig(**kwargs)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             assert message in str(exc)
         else:
             raise AssertionError(f"expected validation to fail for {overrides!r}")
+
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="v1-vllm-smoke-001",
+        output_dir="/Volumes/catalog/schema/volume/v1-vllm-smoke",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        node_type_id="g5.8xlarge",
+        kv_cache_dtype="fp8_e5m2",
+    )
+    assert config.hardware_target == "aws-g5-a10g"
+    assert config.kv_cache_dtype == "fp8_e5m2"
 
 
 def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags():
@@ -214,6 +279,8 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
         benchmark_handoff_output_dir="/Volumes/catalog/schema/volume/v1-vllm-prepared/handoffs",
         benchmark_handoff_dtype="bfloat16",
         benchmark_handoff_align_bytes=1,
+        benchmark_handoff_generation_timeout_seconds=1234.0,
+        benchmark_handoff_limit=2,
         spark_env_vars={
             "CACHET_TRANSFORMERS_DEVICE": "cuda",
             "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
@@ -232,6 +299,11 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
     )
     assert parameters[parameters.index("--benchmark-handoff-dtype") + 1] == "bfloat16"
     assert parameters[parameters.index("--benchmark-handoff-align-bytes") + 1] == "1"
+    assert (
+        parameters[parameters.index("--benchmark-handoff-generation-timeout-seconds") + 1]
+        == "1234.0"
+    )
+    assert parameters[parameters.index("--benchmark-handoff-limit") + 1] == "2"
     assert task["new_cluster"]["spark_env_vars"] == {
         "CACHET_TRANSFORMERS_DEVICE": "cuda",
         "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
