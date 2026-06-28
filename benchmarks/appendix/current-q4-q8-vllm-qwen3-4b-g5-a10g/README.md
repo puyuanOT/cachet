@@ -24,18 +24,20 @@ disk handoff bundles, and vLLM on `g5.8xlarge`.
 
 Latency values are seconds. Percentiles are computed over 32 successful
 request-level measurements per complete row. `P50 decode tok/s` is computed as
-`completion_tokens / (TTC - TTFT)`. `Max observed GPU KV-pool use` comes from
-vLLM server-log telemetry over a 16.32 GiB KV pool; it is not a full
-process-level peak GPU memory sample.
+`completion_tokens / (TTC - TTFT)`. `vLLM KV capacity` is derived from the
+logged 237,728 GPU KV-cache tokens divided by the nominal context length; vLLM
+directly reports 7.25x maximum concurrency for 32,768-token requests.
+`Accounted GPU memory` totals the vLLM-log memory components: 2.71 GiB model
+load, 0.26 GiB CUDA graph capture, and 16.32 GiB KV pool.
 
-| Method | Input context | Document KV payload | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | P50 decode tok/s | Observed parallelism | Max observed GPU KV-pool use |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: |
-| Baseline, no precomputed KV | 8k | N/A | 2.166 | 2.737 | 14.507 | 15.080 | 20.742 | 8 running / 0 waiting | 0.70 GiB (4.3%) |
-| Baseline, no precomputed KV | 16k | N/A | 6.047 | 6.644 | 20.728 | 21.324 | 17.437 | 8 running / up to 7 waiting | 1.26 GiB (7.7%) |
-| Baseline, no precomputed KV | 32k | N/A | 16.622 | 16.971 | 35.361 | 35.714 | 13.659 | 8 running / up to 7 waiting | 2.28 GiB (14.0%) |
-| Cachet + vanilla KV | 8k | Q8 (`fp8_e5m2`) | 0.389 | 0.422 | 12.730 | 12.752 | 20.732 | 8 running / 0 waiting | 0.69 GiB (4.2%) |
-| Cachet + vanilla KV | 16k | Q8 (`fp8_e5m2`) | 0.432 | 0.595 | 15.196 | 15.468 | 17.407 | 8 running / 0 waiting | 1.26 GiB (7.7%) |
-| Cachet + vanilla KV | 32k | Q8 (`fp8_e5m2`) | 0.677 | 1.122 | 19.705 | 20.000 | 13.487 | 8 running / 0 waiting | 2.27 GiB (13.9%) |
+| Method | Input context | Document KV payload | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | P50 decode tok/s | vLLM KV capacity | Accounted GPU memory |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Baseline, no precomputed KV | 8k | N/A | 2.166 | 2.737 | 14.507 | 15.080 | 20.742 | 29.02x | 19.29 GiB |
+| Baseline, no precomputed KV | 16k | N/A | 6.047 | 6.644 | 20.728 | 21.324 | 17.437 | 14.51x | 19.29 GiB |
+| Baseline, no precomputed KV | 32k | N/A | 16.622 | 16.971 | 35.361 | 35.714 | 13.659 | 7.25x | 19.29 GiB |
+| Cachet + vanilla KV | 8k | Q8 (`fp8_e5m2`) | 0.389 | 0.422 | 12.730 | 12.752 | 20.732 | 29.02x | 19.29 GiB |
+| Cachet + vanilla KV | 16k | Q8 (`fp8_e5m2`) | 0.432 | 0.595 | 15.196 | 15.468 | 17.407 | 14.51x | 19.29 GiB |
+| Cachet + vanilla KV | 32k | Q8 (`fp8_e5m2`) | 0.677 | 1.122 | 19.705 | 20.000 | 13.487 | 7.25x | 19.29 GiB |
 
 Each completed row had 32 successful measurements and zero request errors. For
 the Cachet Q8 rows, connector telemetry recorded four `load_request` events per
@@ -64,11 +66,11 @@ The bf16 document-KV ablation is a quality failure under the FP8 runtime KV
 setting: the outputs did not contain the expected answers, so it is not used as
 the default Cachet row.
 
-| Document KV payload | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | P50 decode tok/s | Answer-found / strict EM | Cache footprint | Max observed GPU KV-pool use | Notes |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| bf16 | 16k | 0.539 | 0.646 | 15.224 | 15.336 | 17.425 | 0.00 / 0.00 | 9.83 GB | 1.29 GiB (7.9%) | Quality failure under FP8 runtime KV |
-| Q8 (`fp8_e5m2`) | 16k | 0.432 | 0.595 | 15.196 | 15.468 | 17.407 | 1.00 / 0.00 | 4.92 GB | 1.26 GiB (7.7%) | Default document KV precision |
-| Q4 packed | 16k |  |  |  |  |  |  |  |  | Implementation pending |
+| Document KV payload | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 tokens) | P95 TTC (256 tokens) | P50 decode tok/s | Answer-found / strict EM | Cache footprint | vLLM KV capacity | Accounted GPU memory | Notes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| bf16 | 16k | 0.539 | 0.646 | 15.224 | 15.336 | 17.425 | 0.00 / 0.00 | 9.83 GB | 14.51x | 19.29 GiB | Quality failure under FP8 runtime KV |
+| Q8 (`fp8_e5m2`) | 16k | 0.432 | 0.595 | 15.196 | 15.468 | 17.407 | 1.00 / 0.00 | 4.92 GB | 14.51x | 19.29 GiB | Default document KV precision |
+| Q4 packed | 16k |  |  |  |  |  |  |  |  |  | Implementation pending |
 
 ## Databricks Provenance
 
@@ -85,11 +87,14 @@ the default Cachet row.
 The completed Q8 server logs report `load_format=bitsandbytes`,
 `quantization=bitsandbytes`, `kv_cache_dtype=fp8_e5m2`,
 `enable_prefix_caching=True`, 16.32 GiB available KV-cache memory, 237,728 GPU
-KV-cache tokens, and 7.25x maximum concurrency for 32,768-token requests.
+KV-cache tokens, 7.25x maximum concurrency for 32,768-token requests, and about
+20 GiB configured GPU-memory budget from `gpu_memory_utilization=0.9`.
 
 The 16k Q8 handoff payloads occupied 4.92 GB across the four prepared examples;
 the 16k bf16 handoff payloads occupied 9.83 GB across the same four examples.
-Peak GPU process memory, GPU utilization, CPU RSS, and host RAM were not sampled.
+Peak GPU process memory, GPU utilization, CPU RSS, and host RAM were not
+sampled; the committed overall GPU-memory evidence is the 19.29 GiB accounted
+vLLM total described above.
 
 ## Q4 Document KV Status
 

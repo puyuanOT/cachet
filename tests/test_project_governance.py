@@ -1220,7 +1220,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Answer-found" in root_readme or "answer found" in root_readme
     assert "not be read as real dataset scores" in compact_root_readme
     assert "P50 decode tok/s" in root_readme
-    assert "Max observed GPU KV-pool use" in root_readme
+    assert "vLLM KV capacity" in root_readme
+    assert "Accounted GPU memory" in root_readme
     stale_canary_heading = "Latest Optimized Cachet " + "Canary"
     stale_existing_results_path = "appendix/" + "existing-results/"
     stale_primary_prefix = "primary-table" + "-v"
@@ -1287,6 +1288,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert current_summary["server_capacity"]["available_kv_cache_memory_gib"] == 16.32
     assert current_summary["server_capacity"]["model_weight_memory_gib_reported"] == 2.71
     assert current_summary["server_capacity"]["graph_capture_memory_gib_reported"] == 0.26
+    assert current_summary["server_capacity"]["accounted_gpu_memory_gib"] == 19.29
+    assert current_summary["server_capacity"]["configured_gpu_memory_budget_gib_approx"] == 20.0
+    assert current_summary["server_capacity"]["gpu_memory_utilization_fraction"] == 0.9
+    assert current_summary["server_capacity"]["vllm_max_concurrency_by_nominal_context"] == {
+        "8k": 29.02,
+        "16k": 14.51,
+        "32k": 7.25,
+    }
 
     completed_rows = {
         (row["method"], row["context"], row["document_kv_dtype"]): row
@@ -1302,17 +1311,22 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     }
     assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["p50_ttft_seconds"] == pytest.approx(2.1659776625)
     assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["p50_decode_tokens_per_second"] == pytest.approx(20.7423584569)
+    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["vllm_kv_capacity_estimate_for_context"] == pytest.approx(29.02)
+    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["accounted_gpu_memory_gib"] == pytest.approx(19.29)
     assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["max_observed_gpu_kv_cache_usage_percent"] == pytest.approx(4.3)
     assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["p50_ttft_seconds"] == pytest.approx(6.047064134)
+    assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["vllm_kv_capacity_estimate_for_context"] == pytest.approx(14.51)
     assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["max_observed_waiting_requests"] == 7
     assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["p50_ttft_seconds"] == pytest.approx(16.6217639235)
     assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["p50_decode_tokens_per_second"] == pytest.approx(13.6594446137)
+    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["vllm_kv_capacity_estimate_for_context"] == pytest.approx(7.25)
     assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["max_observed_gpu_kv_cache_usage_gib"] == pytest.approx(2.2848)
     assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["measurements"] == 32
     assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.3888765125)
     assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["p50_decode_tokens_per_second"] == pytest.approx(20.7322679282)
     assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.431847068)
     assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["cache_footprint_bytes"] == 4915814400
+    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["accounted_gpu_memory_gib"] == pytest.approx(19.29)
     assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["max_observed_waiting_requests"] == 0
     assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.67697023)
     assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["p50_decode_tokens_per_second"] == pytest.approx(13.4866862195)

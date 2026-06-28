@@ -23,6 +23,7 @@
   },
   "document_kv_precision_ablations": [
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 0.0,
       "answer_found_rate_by_dataset": {
         "biography": 0.0,
@@ -60,9 +61,11 @@
       "prepared_examples_per_dataset": 1,
       "prewarm_load_requests": 4,
       "quality_failure": true,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 14.51
     },
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 1.0,
       "answer_found_rate_by_dataset": {
         "biography": 1.0,
@@ -100,11 +103,13 @@
       "prepared_examples_per_dataset": 1,
       "prewarm_load_requests": 4,
       "quality_failure": false,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 14.51
     }
   ],
   "results": [
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 1.0,
       "answer_found_rate_by_dataset": {
         "biography": 1.0,
@@ -139,9 +144,11 @@
       "p95_ttc_seconds": 15.079536282800042,
       "p95_ttft_seconds": 2.7372703023000327,
       "prepared_examples_per_dataset": 1,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 29.02
     },
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 1.0,
       "answer_found_rate_by_dataset": {
         "biography": 1.0,
@@ -176,9 +183,11 @@
       "p95_ttc_seconds": 21.323817849750036,
       "p95_ttft_seconds": 6.6442863021499985,
       "prepared_examples_per_dataset": 1,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 14.51
     },
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 1.0,
       "answer_found_rate_by_dataset": {
         "biography": 1.0,
@@ -213,9 +222,11 @@
       "p95_ttc_seconds": 35.713843128799994,
       "p95_ttft_seconds": 16.970887138900068,
       "prepared_examples_per_dataset": 1,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 7.25
     },
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 1.0,
       "answer_found_rate_by_dataset": {
         "biography": 1.0,
@@ -252,9 +263,11 @@
       "p95_ttft_seconds": 0.42151741860009223,
       "prepared_examples_per_dataset": 1,
       "prewarm_load_requests": 4,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 29.02
     },
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 1.0,
       "answer_found_rate_by_dataset": {
         "biography": 1.0,
@@ -292,9 +305,11 @@
       "p95_ttft_seconds": 0.5949846163999496,
       "prepared_examples_per_dataset": 1,
       "prewarm_load_requests": 4,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 14.51
     },
     {
+      "accounted_gpu_memory_gib": 19.29,
       "answer_found_rate": 1.0,
       "answer_found_rate_by_dataset": {
         "biography": 1.0,
@@ -331,15 +346,24 @@
       "p95_ttft_seconds": 1.1216644353500556,
       "prepared_examples_per_dataset": 1,
       "prewarm_load_requests": 4,
-      "repeats_per_example": 8
+      "repeats_per_example": 8,
+      "vllm_kv_capacity_estimate_for_context": 7.25
     }
   ],
   "server_capacity": {
+    "accounted_gpu_memory_gib": 19.29,
     "available_kv_cache_memory_gib": 16.32,
+    "configured_gpu_memory_budget_gib_approx": 20.0,
     "gpu_kv_cache_tokens": 237728,
+    "gpu_memory_utilization_fraction": 0.9,
     "graph_capture_memory_gib_reported": 0.26,
     "max_concurrency_32768_tokens": 7.25,
-    "model_weight_memory_gib_reported": 2.71
+    "model_weight_memory_gib_reported": 2.71,
+    "vllm_max_concurrency_by_nominal_context": {
+      "16k": 14.51,
+      "32k": 7.25,
+      "8k": 29.02
+    }
   },
   "unmeasured": [
     {

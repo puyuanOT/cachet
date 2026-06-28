@@ -34,14 +34,15 @@ state whether it is end-to-end output throughput or decode-only throughput.
 The preferred decode-only metric is
 `completion_tokens / (time_to_completion_seconds - ttft_seconds)`.
 
-| Method | Input context | Document KV precision | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | P50 decode tok/s | Observed parallelism | Max observed GPU KV-pool use | Peak GPU process memory |
+| Method | Input context | Document KV precision | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | P50 decode tok/s | vLLM KV capacity | Accounted GPU memory | Peak GPU process memory |
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
 | Example method | 16k | Q8 (`fp8_e5m2`) |  |  |  |  |  |  |  |  |
 
 Use the same columns even when a result only covers a subset. If the result is
 not a serving-latency benchmark, mark latency cells `N/A` and explain the scope
-in `Limitations`. Do not use max observed KV-pool use as a synonym for full
-GPU process memory.
+in `Limitations`. State whether vLLM KV capacity is a direct server-log value
+or derived from GPU KV-cache tokens divided by a nominal context length. Do not
+use accounted GPU memory as a synonym for full sampled peak GPU process memory.
 
 ## Prepared Dataset Quality Table
 
@@ -61,8 +62,8 @@ answer-found containment as official dataset accuracy.
 
 Do not use storage throughput as a synonym for memory consumption. Report disk
 or Unity Catalog throughput only when the evidence directly measures those
-readers. If only vLLM KV-pool telemetry is available, label it as max observed
-GPU KV-pool use rather than peak GPU process memory.
+readers. If only vLLM component telemetry is available, label it as accounted
+GPU memory rather than peak GPU process memory.
 
 ## Limitations
 
