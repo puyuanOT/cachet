@@ -238,7 +238,9 @@ EXPECTED_DOCUMENT_ROOT_EXPORTS = (
     'ENGINE_LAUNCH_CONFIG_EVIDENCE_SCHEMA_VERSION',
     'REQUIRED_ENGINE_LAUNCH_CONFIG_BACKENDS',
     'EngineLaunchConfigEvidence',
+    'build_sglang_hicache_server_args',
     'build_sglang_launch_config',
+    'build_vllm_kv_offloading_config',
     'build_vllm_launch_config',
     'engine_launch_config_evidence_to_record',
     'engine_launch_config_record_issues',
@@ -497,6 +499,7 @@ EXPECTED_PUBLIC_SUBMODULES = frozenset(
     'release_bundle',
     'release_evidence',
     'repository_hygiene',
+    'runtime_kv_offload_probe',
     'runtime_telemetry',
     'service',
     'serving_env',
@@ -531,6 +534,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
     'cachet-release-bundle': 'cachet.release_bundle:main',
     'cachet-release-evidence': 'cachet.release_evidence:main',
     'cachet-repository-hygiene': 'cachet.repository_hygiene:main',
+    'cachet-runtime-kv-offload-probe': 'cachet.runtime_kv_offload_probe:main',
     'cachet-run-benchmark-plan': 'cachet.benchmark_plan_executor:main',
     'cachet-serving-env': 'cachet.serving_env:main',
     'cachet-sglang-runtime-preflight': 'cachet.sglang_runtime_preflight:main',
@@ -560,6 +564,7 @@ EXPECTED_CONSOLE_SCRIPTS = {
     'document-kv-release-bundle': 'document_kv_cache.release_bundle:main',
     'document-kv-release-evidence': 'document_kv_cache.release_evidence:main',
     'document-kv-repository-hygiene': 'document_kv_cache.repository_hygiene:main',
+    'document-kv-runtime-kv-offload-probe': 'document_kv_cache.runtime_kv_offload_probe:main',
     'document-kv-run-benchmark-plan': 'document_kv_cache.benchmark_plan_executor:main',
     'document-kv-serving-env': 'document_kv_cache.serving_env:main',
     'document-kv-sglang-runtime-preflight': 'document_kv_cache.sglang_runtime_preflight:main',
@@ -613,6 +618,9 @@ def test_public_document_package_reexports_core_api():
     assert document_kv_cache.CacheTier.__module__ == "document_kv_cache.cache"
     assert document_kv_cache.DiskRangeReader.__module__ == "document_kv_cache.storage"
     assert document_kv_cache.build_vllm_launch_config.__module__ == "document_kv_cache.engine_launch_config"
+    assert document_kv_cache.build_vllm_kv_offloading_config.__module__ == (
+        "document_kv_cache.engine_launch_config"
+    )
     assert document_kv_cache.vllm_native_probe_factory.__module__ == (
         "document_kv_cache.native_probe_factories"
     )
@@ -627,6 +635,7 @@ def test_public_document_package_star_exports_are_document_first():
     assert "DocumentKVWorkflow" in document_kv_cache.__all__
     assert "build_v1_benchmark_plan" in document_kv_cache.__all__
     assert "build_vllm_launch_config" in document_kv_cache.__all__
+    assert "build_vllm_kv_offloading_config" in document_kv_cache.__all__
     assert "vllm_native_probe_factory" in document_kv_cache.__all__
     assert "RestaurantKVRequest" not in document_kv_cache.__all__
     assert "RestaurantKVService" not in document_kv_cache.__all__

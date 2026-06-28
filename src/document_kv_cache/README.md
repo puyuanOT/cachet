@@ -123,6 +123,9 @@ return as a production dependency.
   coverage and absence of tracked or untracked generated/secret-like artifacts
   that Git exposes, plus README/package-docstring coverage for repository
   directories.
+- `runtime_kv_offload_probe.py` writes an empirical evidence record for
+  platform-native runtime KV offload launch config and Cachet hierarchical
+  document-KV persistence behavior.
 - `runtime_telemetry.py` samples vLLM smoke-job process RSS, host memory, and
   `nvidia-smi` GPU memory/utilization into a run-level telemetry artifact.
 - `service.py` combines planning, materialization, admission, and engine handoff.
@@ -189,6 +192,7 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-engine-launch-config`
 - `document-kv-engine-probe-fixture`
 - `document-kv-engine-probe-databricks-job`
+- `document-kv-runtime-kv-offload-probe`
 - `document-kv-vllm-runtime-preflight`
 - `document-kv-sglang-runtime-preflight`
 - `document-kv-vllm-smoke`
@@ -221,6 +225,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-engine-launch-config`
 - `cachet-engine-probe-fixture`
 - `cachet-engine-probe-databricks-job`
+- `cachet-runtime-kv-offload-probe`
 - `cachet-vllm-runtime-preflight`
 - `cachet-sglang-runtime-preflight`
 - `cachet-vllm-smoke`

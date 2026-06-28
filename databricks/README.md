@@ -12,6 +12,9 @@ workspace URLs, tokens, catalogs, or upload paths.
   Catalog Volume storage-reader benchmark job for release evidence.
 - `engine-probe/databricks.yml` defines a standalone native vLLM/SGLang
   engine-probe job; each workspace still supplies its own adapter probe factory.
+- `runtime-kv-offload-probe/runner.py` is a tiny ad hoc runner for validating
+  runtime KV offload launch config and Cachet document-KV persistence tiers from
+  an installed wheel.
 
 The same bundle templates are included in package artifacts under
 `document_kv_cache/templates/databricks/` so release consumers can retrieve them
