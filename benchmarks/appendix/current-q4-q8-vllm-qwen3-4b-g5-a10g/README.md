@@ -1,8 +1,10 @@
-# Current Q4/Q8 vLLM Benchmark Evidence
+# Warm-Prefix Q4/Q8 vLLM Canary Evidence
 
-This appendix records the current public benchmark protocol: Qwen3-4B-Instruct
-with 4-bit model weights, Q8 document KV, shared GPU prefix references, local
-disk handoff bundles, and vLLM on `g5.8xlarge`.
+This appendix records warm-prefix canary evidence for the current
+Qwen3-4B-Instruct, 4-bit-weight, Q8-document-KV configuration on vLLM and
+`g5.8xlarge`. It does not populate the main cold-hydrate latency table because
+the Cachet document KV pages were prewarmed into vLLM prefix-cache state before
+the measured request loop.
 
 ## Configuration
 
@@ -16,11 +18,12 @@ disk handoff bundles, and vLLM on `g5.8xlarge`.
 | Default Cachet document KV dtype | `fp8_e5m2` |
 | Cachet residency | Local disk handoff bundles, prewarmed into vLLM prefix cache |
 | Prefix sharing | `--enable-prefix-caching`, static `cache_salt`, prewarm before measurement |
+| TTFT measurement boundary | Warm-prefix request latency; disk-to-GPU hydrate happened before measured requests |
 | Request parallelism | 8 requests in flight |
 | Output length | Forced 256 tokens with `ignore_eos=true` |
 | Datasets | Biography, HotpotQA, MusiQue, NIAH; one prepared row per dataset, eight repeats |
 
-## Current Latency And Resource Results
+## Warm-Prefix Latency And Resource Results
 
 Latency values are seconds.
 

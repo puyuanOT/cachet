@@ -29,6 +29,8 @@ lengths.
 | Document KV precision | bf16, Q8 / `fp8_e5m2`, packed Q4, or `N/A` |
 | Runtime KV dtype | e.g. `fp8_e5m2`, `bfloat16`, or `N/A` |
 | Storage tier / cache residency | RAM, disk, Unity Catalog, hybrid, or `N/A` |
+| TTFT measurement boundary | Cold disk-to-GPU hydrate, warm prewarmed prefix cache, RAM-resident hydrate, or `N/A` |
+| Prefix-cache policy | Per-request `cache_salt`, static `cache_salt`, prefix caching disabled, or `N/A` |
 | Dataset / task scope | Dataset names and example count |
 | Quality metric | Full-dataset task score, answer-found containment, strict exact match, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
@@ -44,7 +46,9 @@ method label, state the request concurrency used during measurement, give the
 successful request count behind percentiles, and explain whether P95 is
 publication-grade. P95 rows intended for publication should use at least 512
 successful request-level measurements per method/context pair at the stated
-concurrency.
+concurrency. The caption must also say whether TTFT includes loading external
+document KV from storage into GPU memory, or whether the measured requests used
+already-warm/prewarmed prefix-cache blocks.
 
 Latency values are seconds.
 
@@ -106,7 +110,7 @@ List sanitized records committed beside this README, such as:
 - `metadata.json`
 - `document-kv-connector-telemetry.jsonl`
 - `prepared-handoff-generation.json`
-- `prewarm-cache-prefix.json`
+- `prewarm-cache-prefix.json`, only for warm/prewarmed-prefix measurements
 
 Do not include Databricks tokens, raw Jobs API responses, package wheels,
 cluster logs, generated payload blobs, prompt text, or local scratch

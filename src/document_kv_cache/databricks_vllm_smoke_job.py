@@ -206,19 +206,6 @@ class DatabricksVLLMSmokeJobConfig:
         if self.runtime_telemetry_interval_seconds <= 0:
             raise ValueError("runtime_telemetry_interval_seconds must be positive")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
-        if type(self.benchmark_prewarm_cache_prefix) is not bool:
-            raise TypeError("benchmark_prewarm_cache_prefix must be a boolean")
-        if type(self.benchmark_cache_runtime_prompt) is not bool:
-            raise TypeError("benchmark_cache_runtime_prompt must be a boolean")
-        if type(self.benchmark_force_max_tokens) is not bool:
-            raise TypeError("benchmark_force_max_tokens must be a boolean")
-        if self.benchmark_prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
-            raise ValueError("benchmark_prefix_cache_salt_mode must be 'static' or 'per_request'")
-        if self.benchmark_prewarm_cache_prefix and self.benchmark_prefix_cache_salt_mode != "static":
-            raise ValueError(
-                "benchmark_prewarm_cache_prefix requires benchmark_prefix_cache_salt_mode='static' "
-                "so prewarmed prefix-cache blocks can be reused"
-            )
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -228,6 +215,12 @@ class DatabricksVLLMSmokeJobConfig:
         object.__setattr__(self, "dataset_specs", tuple(self.dataset_specs))
         if self.dataset_specs:
             parse_dataset_specs(self.dataset_specs, allow_subset=self.allow_dataset_subset)
+        if type(self.benchmark_prewarm_cache_prefix) is not bool:
+            raise TypeError("benchmark_prewarm_cache_prefix must be a boolean")
+        if type(self.benchmark_cache_runtime_prompt) is not bool:
+            raise TypeError("benchmark_cache_runtime_prompt must be a boolean")
+        if type(self.benchmark_force_max_tokens) is not bool:
+            raise TypeError("benchmark_force_max_tokens must be a boolean")
         if self.benchmark_handoff_generator_factory is not None:
             if not self.benchmark_handoff_generator_factory.strip():
                 raise ValueError("benchmark_handoff_generator_factory must be non-empty when provided")
@@ -237,6 +230,13 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("benchmark_prewarm_cache_prefix requires prepared dataset specs")
         if self.benchmark_cache_runtime_prompt and not self.dataset_specs:
             raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
+        if self.benchmark_prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
+            raise ValueError("benchmark_prefix_cache_salt_mode must be 'static' or 'per_request'")
+        if self.benchmark_prewarm_cache_prefix and self.benchmark_prefix_cache_salt_mode != "static":
+            raise ValueError(
+                "benchmark_prewarm_cache_prefix requires benchmark_prefix_cache_salt_mode='static' "
+                "so prewarmed prefix-cache blocks can be reused"
+            )
         if self.benchmark_handoff_output_dir is not None and not self.benchmark_handoff_output_dir:
             raise ValueError("benchmark_handoff_output_dir must be non-empty when provided")
         if self.benchmark_handoff_output_dir is not None and self.benchmark_handoff_generator_factory is None:

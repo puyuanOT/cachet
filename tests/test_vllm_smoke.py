@@ -554,7 +554,7 @@ def test_benchmark_runner_args_include_parallelism_and_selected_arm(tmp_path):
     assert args[args.index("--arm") + 1] == "baseline_prefill"
 
 
-def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tmp_path):
+def test_benchmark_runner_args_use_cold_hydrate_cache_prompt_for_prepared_datasets(tmp_path):
     specs = tuple(f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS)
     config = VLLMSmokeBenchmarkConfig(
         benchmark_id="prepared-1",
@@ -576,7 +576,7 @@ def test_benchmark_runner_args_use_logical_cache_prompt_for_prepared_datasets(tm
     assert json.loads(args[args.index("--cache-extra-body-json") + 1]) == {
         "cache_salt": CACHE_PREFIX_CACHE_SALT
     }
-    assert args[args.index("--prefix-cache-salt-mode") + 1] == "static"
+    assert args[args.index("--prefix-cache-salt-mode") + 1] == "per_request"
 
 
 def test_benchmark_runner_args_can_share_static_prefix_cache_for_prepared_datasets(tmp_path):
@@ -1008,6 +1008,7 @@ def test_prewarm_cache_prefixes_posts_kv_aware_prefix_prompts(tmp_path, monkeypa
         local_root=tmp_path / "local",
         dataset_specs=specs,
         prewarm_cache_prefix=True,
+        prefix_cache_salt_mode="static",
         timeout_seconds=12.5,
     )
     calls = []
@@ -1549,7 +1550,6 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
         max_num_seqs=8,
         gpu_memory_utilization=0.72,
         dataset_specs=specs,
-        prefix_cache_salt_mode="static",
     )
 
     metadata = build_metadata(config)
@@ -1558,11 +1558,12 @@ def test_metadata_records_prepared_dataset_context(tmp_path):
     assert metadata["dataset_specs"] == list(specs)
     assert metadata["prewarm_cache_prefix"] is False
     assert metadata["cache_runtime_prompt"] is False
+    assert metadata["cache_measurement_protocol"] == "cold_disk_to_gpu_hydrate"
     assert metadata["cache_prompt_text_mode"] == "logical"
     assert metadata["prefix_cache_isolation"] == {
         "baseline_cache_salt": BASELINE_PREFIX_CACHE_SALT,
         "cache_cache_salt": CACHE_PREFIX_CACHE_SALT,
-        "cache_salt_mode": "static",
+        "cache_salt_mode": "per_request",
     }
     assert metadata["requires_kv_transfer_params"] is True
     assert metadata["generates_prepared_handoffs"] is False
@@ -1587,6 +1588,7 @@ def test_metadata_records_runtime_cache_prompt_mode(tmp_path):
 
     assert metadata["cache_runtime_prompt"] is True
     assert metadata["cache_prompt_text_mode"] == "runtime"
+    assert metadata["cache_measurement_protocol"] == "cold_disk_to_gpu_hydrate"
 
 
 def test_metadata_marks_baseline_only_prepared_run_as_not_requiring_handoffs(tmp_path):

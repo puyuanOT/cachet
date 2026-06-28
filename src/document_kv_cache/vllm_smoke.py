@@ -86,7 +86,7 @@ SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
 CACHE_PREFIX_CACHE_SALT = "cachet-kv-cache"
-PREPARED_PREFIX_CACHE_SALT_MODE = "static"
+PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 BENCHMARK_ARM_IDS = (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
@@ -112,6 +112,7 @@ __all__ = [
     "VLLMPreparedHandoffGenerationConfig",
     "run_vllm_smoke_benchmark",
     "build_metadata",
+    "cache_measurement_protocol",
     "build_vllm_native_provider_probe_record",
     "cuda_wheel_env_paths",
     "dependency_constraints",
@@ -281,13 +282,6 @@ class VLLMSmokeBenchmarkConfig:
             raise TypeError("prewarm_cache_prefix must be a boolean")
         if type(self.cache_runtime_prompt) is not bool:
             raise TypeError("cache_runtime_prompt must be a boolean")
-        if self.prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
-            raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
-        if self.prewarm_cache_prefix and self.prefix_cache_salt_mode != "static":
-            raise ValueError(
-                "benchmark_prewarm_cache_prefix requires prefix_cache_salt_mode='static' "
-                "so prewarmed prefix-cache blocks can be reused"
-            )
         if not isinstance(self.hardware_target, str) or not self.hardware_target.strip():
             raise ValueError("hardware_target must be non-empty")
         validate_v1_hardware_target(self.hardware_target)
@@ -315,6 +309,13 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("benchmark_prewarm_cache_prefix requires prepared dataset specs")
         if self.cache_runtime_prompt and not self.dataset_specs:
             raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
+        if self.prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
+            raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
+        if self.prewarm_cache_prefix and self.prefix_cache_salt_mode != "static":
+            raise ValueError(
+                "benchmark_prewarm_cache_prefix requires prefix_cache_salt_mode='static' "
+                "so prewarmed prefix-cache blocks can be reused"
+            )
 
     @property
     def local_dir(self) -> Path:
@@ -516,6 +517,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "allow_dataset_subset": config.allow_dataset_subset,
         "prewarm_cache_prefix": config.prewarm_cache_prefix,
         "cache_runtime_prompt": config.cache_runtime_prompt,
+        "cache_measurement_protocol": cache_measurement_protocol(config),
         "cache_prompt_text_mode": "runtime" if config.cache_runtime_prompt else "logical",
         "max_tokens": config.max_tokens,
         "force_max_tokens": config.force_max_tokens,
@@ -558,6 +560,16 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "vllm_server_env_overrides": vllm_server_env_overrides(),
         "vllm_kv_transfer_config": document_kv_transfer_config_for_smoke(config),
     }
+
+
+def cache_measurement_protocol(config: VLLMSmokeBenchmarkConfig) -> str:
+    if not config.uses_prepared_datasets:
+        return "stock_smoke"
+    if config.prewarm_cache_prefix:
+        return "warm_prefix_cache"
+    if config.prefix_cache_salt_mode == "per_request":
+        return "cold_disk_to_gpu_hydrate"
+    return "static_prefix_cache_mixed_first_cold_then_warm"
 
 
 def build_vllm_native_provider_probe_record(
