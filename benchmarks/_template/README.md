@@ -24,28 +24,45 @@ when a metric cannot apply. Blank cells and `N/A` are not zeros.
 | Runtime KV dtype | e.g. `fp8_e5m2`, `bfloat16`, or `N/A` |
 | Storage tier / cache residency | RAM, disk, Unity Catalog, hybrid, or `N/A` |
 | Dataset / task scope | Dataset names and example count |
-| Quality metric | Answer-found, exact match, task score, or `N/A` |
+| Quality metric | Answer-found containment, strict exact match, task score, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
 
-## Main Result Table
+## Latency And Resource Table
 
-| Method | Input context | Document KV precision | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | Biography answer found | HotpotQA answer found | MusiQue answer found | NIAH answer found |
-| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+Use request-level percentiles for latency. If decode throughput is reported,
+state whether it is end-to-end output throughput or decode-only throughput.
+The preferred decode-only metric is
+`completion_tokens / (time_to_completion_seconds - ttft_seconds)`.
+
+| Method | Input context | Document KV precision | P50 TTFT (s) | P95 TTFT (s) | P50 TTC (s, 256 tokens) | P95 TTC (s, 256 tokens) | P50 decode tok/s | Observed parallelism | Max observed GPU KV-pool use | Peak GPU process memory |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | ---: | ---: |
 | Example method | 16k | Q8 (`fp8_e5m2`) |  |  |  |  |  |  |  |  |
 
 Use the same columns even when a result only covers a subset. If the result is
 not a serving-latency benchmark, mark latency cells `N/A` and explain the scope
-in `Limitations`.
+in `Limitations`. Do not use max observed KV-pool use as a synonym for full
+GPU process memory.
+
+## Prepared Dataset Quality Table
+
+Describe the dataset scope before the table. For prepared smoke suites, state
+the number of unique examples per dataset and repeats per example. Do not label
+answer-found containment as official dataset accuracy.
+
+| Method | Input context | Prepared examples per dataset | Repeats per example | Metric | Biography | HotpotQA | MusiQue | NIAH |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| Example method | 16k |  |  | Answer-found / strict EM |  |  |  |  |
 
 ## Resource Utilization
 
-| Experiment row | Storage tier | Peak GPU memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint |
+| Experiment row | Storage tier | Peak GPU process memory | GPU utilization | Peak CPU RSS / host RAM | Disk read throughput | Network / Unity Catalog read throughput | KV cache footprint |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Example method | Disk |  |  |  |  | N/A |  |
 
 Do not use storage throughput as a synonym for memory consumption. Report disk
 or Unity Catalog throughput only when the evidence directly measures those
-readers.
+readers. If only vLLM KV-pool telemetry is available, label it as max observed
+GPU KV-pool use rather than peak GPU process memory.
 
 ## Limitations
 
@@ -56,6 +73,7 @@ readers.
 | Method coverage | List covered methods; mark planned methods such as KV Packet as `not implemented yet` |
 | Context coverage | List covered context lengths or prompt-token ranges |
 | Precision coverage | List covered document KV precisions; explain any pending packed-Q4 support |
+| Quality coverage | State whether quality rows are smoke checks, official dataset scores, or another metric |
 | Resource metrics | Say which memory/utilization/cache-footprint fields are missing |
 
 ## Provenance

@@ -1204,7 +1204,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "shared GPU prefix references" in root_readme
     assert "private KV for the user question plus generated tokens" in compact_root_readme
     assert "Main Table Configuration" in root_readme
-    assert "Main Performance Table" in root_readme
+    assert "Main Latency And Resource Table" in root_readme
+    assert "Prepared Dataset Quality Table" in root_readme
     assert "Document KV Precision Ablation" in root_readme
     assert "Storage Tier Ablation" in root_readme
     assert "Hardware Ablation" in root_readme
@@ -1217,7 +1218,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Forced 256-token decode" in root_readme
     assert "8 requests in flight" in root_readme
     assert "Answer-found" in root_readme or "answer found" in root_readme
-    assert "strict exact-match is tracked in evidence" in compact_root_readme
+    assert "not be read as real dataset scores" in compact_root_readme
+    assert "P50 decode tok/s" in root_readme
+    assert "Max observed GPU KV-pool use" in root_readme
     stale_canary_heading = "Latest Optimized Cachet " + "Canary"
     stale_existing_results_path = "appendix/" + "existing-results/"
     stale_primary_prefix = "primary-table" + "-v"
@@ -1235,7 +1238,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
 
     for heading in (
         "Table Configuration",
-        "Main Result Table",
+        "Latency And Resource Table",
+        "Prepared Dataset Quality Table",
         "Resource Utilization",
         "Limitations",
         "Provenance",
@@ -1275,9 +1279,14 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert current_summary["configuration"]["default_cachet_document_kv_dtype"] == "fp8_e5m2"
     assert current_summary["configuration"]["vllm_kv_cache_dtype"] == "fp8_e5m2"
     assert current_summary["configuration"]["quality_metric"] == "prepared-suite answer_found_rate"
+    assert current_summary["configuration"]["strict_quality_metric"] == "prepared-suite exact_match_rate"
+    assert "not official benchmark accuracy" in current_summary["configuration"]["quality_metric_scope"]
+    assert current_summary["configuration"]["decode_throughput_metric"].startswith("completion_tokens /")
     assert current_summary["configuration"]["request_parallelism"] == 8
     assert current_summary["configuration"]["output_tokens"] == 256
     assert current_summary["server_capacity"]["available_kv_cache_memory_gib"] == 16.32
+    assert current_summary["server_capacity"]["model_weight_memory_gib_reported"] == 2.71
+    assert current_summary["server_capacity"]["graph_capture_memory_gib_reported"] == 0.26
 
     completed_rows = {
         (row["method"], row["context"], row["document_kv_dtype"]): row
@@ -1292,15 +1301,44 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         ("Cachet + vanilla KV", "32k", "fp8_e5m2"),
     }
     assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["p50_ttft_seconds"] == pytest.approx(2.1659776625)
+    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["p50_decode_tokens_per_second"] == pytest.approx(20.7423584569)
+    assert completed_rows[("Baseline, no precomputed KV", "8k", None)]["max_observed_gpu_kv_cache_usage_percent"] == pytest.approx(4.3)
     assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["p50_ttft_seconds"] == pytest.approx(6.047064134)
+    assert completed_rows[("Baseline, no precomputed KV", "16k", None)]["max_observed_waiting_requests"] == 7
     assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["p50_ttft_seconds"] == pytest.approx(16.6217639235)
+    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["p50_decode_tokens_per_second"] == pytest.approx(13.6594446137)
+    assert completed_rows[("Baseline, no precomputed KV", "32k", None)]["max_observed_gpu_kv_cache_usage_gib"] == pytest.approx(2.2848)
     assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["measurements"] == 32
     assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.3888765125)
+    assert completed_rows[("Cachet + vanilla KV", "8k", "fp8_e5m2")]["p50_decode_tokens_per_second"] == pytest.approx(20.7322679282)
     assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.431847068)
     assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["cache_footprint_bytes"] == 4915814400
+    assert completed_rows[("Cachet + vanilla KV", "16k", "fp8_e5m2")]["max_observed_waiting_requests"] == 0
     assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["p50_ttft_seconds"] == pytest.approx(0.67697023)
+    assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["p50_decode_tokens_per_second"] == pytest.approx(13.4866862195)
+    assert completed_rows[("Cachet + vanilla KV", "32k", "fp8_e5m2")]["max_observed_gpu_kv_cache_usage_percent"] == pytest.approx(13.9)
     assert all(row["answer_found_rate"] == 1.0 for row in current_summary["results"])
     assert all(row["exact_match_rate"] == 0.0 for row in current_summary["results"])
+    assert all(row["prepared_examples_per_dataset"] == 1 for row in current_summary["results"])
+    assert all(row["repeats_per_example"] == 8 for row in current_summary["results"])
+    assert all(
+        row["answer_found_rate_by_dataset"] == {
+            "biography": 1.0,
+            "hotpotqa": 1.0,
+            "musique": 1.0,
+            "niah": 1.0,
+        }
+        for row in current_summary["results"]
+    )
+    assert all(
+        row["exact_match_rate_by_dataset"] == {
+            "biography": 0.0,
+            "hotpotqa": 0.0,
+            "musique": 0.0,
+            "niah": 0.0,
+        }
+        for row in current_summary["results"]
+    )
     assert all(
         row["measured_connector_load_requests"] == 0
         for row in current_summary["results"]
@@ -1317,8 +1355,11 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert precision_ablations["bfloat16"]["quality_failure"] is True
     assert precision_ablations["bfloat16"]["answer_found_rate"] == 0.0
     assert precision_ablations["bfloat16"]["cache_footprint_bytes"] == 9831628800
+    assert precision_ablations["bfloat16"]["p50_decode_tokens_per_second"] == pytest.approx(17.4245319164)
+    assert precision_ablations["bfloat16"]["max_observed_gpu_kv_cache_usage_percent"] == pytest.approx(7.9)
     assert precision_ablations["fp8_e5m2"]["quality_failure"] is False
     assert precision_ablations["fp8_e5m2"]["answer_found_rate"] == 1.0
+    assert precision_ablations["fp8_e5m2"]["p50_decode_tokens_per_second"] == pytest.approx(17.4073605727)
     completed_run_ids = {
         row["databricks_parent_run_id"]
         for row in current_summary["results"]
