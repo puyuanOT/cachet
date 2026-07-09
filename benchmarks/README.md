@@ -12,8 +12,8 @@ incompatible measurements with the current protocol. Older records remain
 recoverable from git history and Databricks run provenance when needed for
 audit work.
 
-Blank numeric cells mean the row has not been measured under the current
-protocol yet. A blank cell is not a zero.
+Blank numeric cells mean the row has not been measured, or the run has not
+completed, under the current protocol yet. A blank cell is not a zero.
 
 ## Shared Main Table Configuration
 
@@ -27,24 +27,26 @@ dataset scores are evaluated over the selected dataset samples.
 | Model | `Qwen/Qwen3-4B-Instruct-2507` served as `qwen3:4b-instruct` |
 | Model weights | vLLM `--quantization bitsandbytes` 4-bit weights |
 | Serving engine | vLLM `0.23.0` |
-| Hardware | AWS g5/A10G, `g5.8xlarge` |
-| Request parallelism | 8 requests in flight |
+| Hardware | AWS g6/L4, `g6.8xlarge` |
+| Request parallelism | 4 requests in flight |
 | Output length for latency | Forced 256-token decode with `max_tokens=256` and `ignore_eos=true` |
-| Latency repeats | At least 512 repeats per prepared input |
-| Latency input context lengths | 8k, 16k, and 32k prepared prompts |
+| Latency repeats | 64 repeats per prepared input (4 prepared inputs → 256 measurements per method/context cell) |
+| Latency input context lengths | 8k, 16k, and 32k prepared prompts, each assembled from distinct 2k-token documents (8k = 4 docs, 16k = 8 docs, 32k = 16 docs) |
+| Latency document distinctness | Documents are distinct within a request and across the 4 concurrent requests in each wave (round-robin example interleaving); the small document pool repeats across the 64 repeats, with per-request `cache_salt` isolation and OS page-cache eviction keeping every hydrate cold |
+| Latency job isolation | Each (method × context) row runs as its own single-node `g6.8xlarge` job (separate cluster + vLLM server) so no configuration contaminates another |
 | Default Cachet method | Vanilla external KV |
 | Default document KV precision | Q8, represented as `fp8_e5m2` payloads |
 | vLLM runtime KV dtype | `fp8_e5m2` |
 | Cache residency | Local disk handoff bundles; Cachet rows hydrate document KV from disk during measured requests |
 | Prefix-cache policy | vLLM prefix caching enabled with per-request `cache_salt` isolation for latency rows |
 | Runtime KV ownership | Shared GPU KV for the loaded document/system prefix during each request; private KV for request-specific prompt suffix and generated tokens |
-| Score datasets | Biography, HotpotQA, MusiQue, NIAH, LongBench v2, RULER |
+| Score datasets | Biography, HotpotQA, MusiQue, NIAH (LongBench v2 and RULER are reserved columns; their staging/eval harness is not implemented yet) |
 | Score metric | Full-dataset task score; blank until full-dataset runs complete |
-| Warm-prefix canary evidence | [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) |
+| Warm-prefix canary evidence | [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) (historical A10G) |
 
-The appendix currently includes prepared-suite warm-prefix smoke checks only.
-Those checks are not cold-hydrate latency rows, are not full benchmark scores,
-and are not copied into the main score table.
+The appendix includes prepared-suite warm-prefix smoke checks. Those checks are
+not cold-hydrate latency rows, are not full benchmark scores, and are not
+copied into the main score table.
 
 ## Main Latency And Resource Table
 
@@ -52,33 +54,51 @@ Latency values are seconds.
 
 | Method | Input context | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Max Serving Concurrency | Peak GPU memory |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline | 8k |  |  |  |  |  |  |  |
-| Baseline | 16k |  |  |  |  |  |  |  |
-| Baseline | 32k |  |  |  |  |  |  |  |
-| vanilla&nbsp;KV | 8k |  |  |  |  |  |  |  |
-| vanilla&nbsp;KV | 16k |  |  |  |  |  |  |  |
-| vanilla&nbsp;KV | 32k |  |  |  |  |  |  |  |
+| Baseline | 8k | 5.000 | 5.152 | 27.713 | 27.986 | 11.266 | 29.00x | 19.901 GiB |
+| Baseline | 16k | 11.849 | 12.322 | 52.800 | 53.112 | 6.278 | 14.50x | 19.901 GiB |
+| Baseline | 32k | 35.923 | 36.516 | 135.326 | 137.445 | 2.580 | 7.25x | 19.901 GiB |
+| vanilla&nbsp;KV | 8k | 1.806 | 1.850 | 18.765 | 18.888 | 15.090 | 29.00x | 20.851 GiB |
+| vanilla&nbsp;KV | 16k | 3.980 | 4.198 | 24.177 | 24.435 | 12.681 | 14.50x | 20.849 GiB |
+| vanilla&nbsp;KV | 32k | 7.772 | 8.081 | 33.590 | 33.904 | 9.919 | 7.25x | 22.028 GiB |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 8k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 16k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 32k |  |  |  |  |  |  |  |
+| CacheBlend | 8k |  |  |  |  |  |  |  |
+| CacheBlend | 16k |  |  |  |  |  |  |  |
+| CacheBlend | 32k |  |  |  |  |  |  |  |
+| InfoFlow&nbsp;KV | 8k |  |  |  |  |  |  |  |
+| InfoFlow&nbsp;KV | 16k |  |  |  |  |  |  |  |
+| InfoFlow&nbsp;KV | 32k |  |  |  |  |  |  |  |
 
 `Baseline` means vLLM receives the complete prompt and computes KV for
 the system prompt, documents, user question, and generated tokens at request
-time. `vanilla KV` means Cachet reuses precomputed raw KV for the reusable
-system/document prefix by reading the persisted handoff bundle from local disk,
-hydrating those pages into vLLM-managed GPU KV state during the measured
-request, and leaving only the request-specific prompt suffix plus generated
-tokens as private runtime KV. `KV Packet` is a planned method and is not
-implemented yet.
+time. `vanilla KV` means the request still carries the full logical token
+sequence, but Cachet's `DocumentKVConnector` reports the reusable
+system/document prefix as already computed and hydrates those pages into
+vLLM-managed GPU KV state from the persisted handoff bundle on local disk, so
+vLLM skips prefilling the prefix and only prefills the request-specific suffix
+plus generated tokens. The connector must report a matched prefix that is a
+strict prefix of the request's own tokens (vLLM's V1 scheduler asserts
+`num_computed_tokens <= request.num_tokens`); a request that carries only the
+suffix text cannot also load the longer cached prefix, so the
+suffix-only client mode is unsupported and is not used by these rows. `KV
+Packet`, `CacheBlend`, and `InfoFlow KV` are planned methods and are not
+implemented yet; their rows are placeholders. See the "Methods and
+pre-computation" section below for each method's arm, KV pre-computation, and
+serving connector.
 
-Latency rows are generated with `request_parallelism=8`: the benchmark runner
-issues up to eight concurrent requests while collecting request-level TTFT and
-TTC measurements. Cold-hydrate rows must use per-request
-`cache_salt` isolation so repeated examples do not reuse vLLM prefix-cache
-blocks across measured requests. Publication rows should use at least 512
-repeats per prepared input at the same concurrency; with the four prepared
-inputs used by the main table, that yields at least 2,048 successful
-request-level measurements per method/context pair.
+Latency rows are generated with `request_parallelism=4`: the benchmark runner
+issues up to four concurrent requests while collecting request-level TTFT and
+TTC measurements. Each request's prompt is assembled from distinct 2k-token
+documents (8k = 4, 16k = 8, 32k = 16), and requests are round-robin interleaved
+across the four prepared inputs (one per dataset: Biography, HotpotQA, MusiQue,
+NIAH) so the four concurrent in-flight requests always hydrate distinct
+documents. Each (method × context) cell runs as its own isolated single-node
+`g6.8xlarge` job with 64 repeats per prepared input, yielding 256 successful
+request-level measurements per cell. Cold-hydrate rows use per-request
+`cache_salt` isolation plus OS page-cache eviction so repeated examples neither
+reuse vLLM prefix-cache blocks nor read a warm page cache across measured
+requests.
 
 `cache_salt` is the namespace vLLM includes in its prefix-cache key. A static
 salt lets identical prefixes share already-resident KV blocks across requests;
@@ -90,41 +110,110 @@ hits.
 `P50 tok/s` is per-request decode throughput, not aggregate server throughput.
 It is computed for each completed request as
 `completion_tokens / (TTC - TTFT)`, then summarized across request-level
-measurements. `Max Serving Concurrency` is reserved for measured concurrency
-pressure tests: the largest observed in-flight request count that completes
-without request errors under the same model, context, output-token, and Cachet
-protocol. It is not populated from vLLM's derived KV-token capacity estimate.
+measurements. `Max Serving Concurrency` is the vLLM startup KV-pool capacity
+estimate for the nominal input context, reported as an `x` multiplier. The
+current Q4/Q8 vLLM logs on `g6.8xlarge`/L4 report 237,584 GPU KV-cache tokens,
+which corresponds to 29.00x at 8k, 14.50x at 16k, and 7.25x at 32k. It is not
+the request parallelism used for latency measurement and is not copied from
+pressure-probe batch sizes.
 
 `Peak GPU memory` is populated only from sampled runtime telemetry such as
-`nvidia-smi` peak process/device memory during the benchmark run. The
-warm-prefix canary runs reported only server-level vLLM component accounting
-and did not sample a true process-level peak, so this column remains blank
-until the cold-hydrate 512-repeat reruns complete.
+`nvidia-smi` peak process/device memory during the benchmark run.
 
-The server logs still include observed scheduler state and KV-pool use in the
-appendix evidence, but the main table waits for dedicated pressure tests before
-reporting serving concurrency.
+The populated rows come from the `dbfs:/benchmarks/cachet/lat4-20260708/runs/`
+jobs (256 successful request-level measurements per cell, zero errors). Each
+request carries the full logical prompt plus a `DocumentKVConnector` that marks
+the document/system prefix as already computed and hydrates those pages into
+vLLM-managed GPU KV state from the persisted per-document handoff bundles on
+local disk. The connector defensively caps the matched prefix to the visible
+request length, so a misconfigured request can never violate vLLM's V1 scheduler
+assertion (`num_computed_tokens <= request.num_tokens`) and crash EngineCore.
+
+The headline result is that on `g6.8xlarge`/L4 at `request_parallelism=4` with
+distinct multi-document contexts, vanilla external KV now **reduces** first-token
+latency versus baseline at every measured context, and the advantage grows with
+context length: P50 TTFT drops from 5.000 s to 1.806 s at 8k (2.8×), from
+11.849 s to 3.980 s at 16k (3.0×), and from 35.923 s to 7.772 s at 32k (4.6×),
+because hydrating the cached document/system prefix from local disk is cheaper
+than recomputing it and frees the GPU for decode. This reverses the earlier
+A10G / `request_parallelism=8` single-document result (retained in git history),
+where cold hydrate was *slower* than prefill at 8k and 16k. The downstream
+benefit persists across the board: vanilla KV also delivers higher per-request
+decode throughput (8k: 15.1 vs 11.3 tok/s; 16k: 12.7 vs 6.3 tok/s; 32k: 9.9 vs
+2.6 tok/s) and lower total time-to-completion (8k: 18.8 s vs 27.7 s; 16k: 24.2 s
+vs 52.8 s; 32k: 33.6 s vs 135.3 s).
+
+## Methods and pre-computation
+
+Each method in the tables above maps to a specific KV pre-computation and serving
+path. Methods differ not only in how KV is served but in how it is
+**pre-computed**, so a new method is a correspondence between an arm, a
+pre-computation routine, and a serving connector. This correspondence is recorded
+in code as the source of truth in
+[`document_kv_cache.methods`](../src/document_kv_cache/methods.py) (`MethodSpec` /
+`METHOD_SPECS`); new methods declare their contract there.
+
+- **Baseline** - no cache; vLLM recomputes all KV at request time (full prefill). Arm `baseline_prefill`.
+- **vanilla KV** (implemented) - per-document KV computed independently, stored **post-RoPE**, hydrated into GPU KV by the `cachet` connector; no cross-chunk recomputation. Correct for single-document / true-prefix reuse; multi-document quality is limited by missing cross-document attention. Arm `document_kv_cache`.
+- **KV Packet** (planned) - packed-Q4 document KV payloads with provider dequant (or native serving-engine Q4 KV). Packed pre-computation layout not yet defined.
+- **CacheBlend** (planned) - stores **position-independent pre-RoPE keys** (re-roped to their true offset at injection; foundation implemented, flag-gated via `CACHET_TRANSFORMERS_PRE_ROPE`) **and** recomputes a small fraction of cross-chunk tokens with full context to recover multi-document quality. The selective-recompute step is not yet implemented.
+- **InfoFlow KV** (planned) - recovers cross-document information flow over reused KV; expected to build on the same position-independent pre-RoPE foundation. Routine not yet defined.
+
+In short: vanilla KV and KV Packet use post-RoPE pre-computation; CacheBlend and
+InfoFlow KV require position-independent pre-RoPE pre-computation.
 
 ## Benchmark Dataset Score Table
 
 | Method | Biography score | HotpotQA score | MusiQue score | NIAH score | LongBench v2 score | RULER score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Baseline |  |  |  |  |  |  |
-| vanilla&nbsp;KV |  |  |  |  |  |  |
+| Baseline | 0.730 | 0.840 | 0.505 | 0.995 |  |  |
+| vanilla&nbsp;KV | 0.680 | 0.300 | 0.000 | 1.000 |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) |  |  |  |  |  |  |
+| CacheBlend |  |  |  |  |  |  |
+| InfoFlow&nbsp;KV |  |  |  |  |  |  |
 
-Scores are reserved for full-dataset evaluations over all selected
-samples for Biography, HotpotQA, MusiQue, NIAH, LongBench v2, and RULER. The
-score table has no input-context column because input-context length is a
-latency stress dimension, not a separate full-dataset scoring condition in the
-main table. The previous all-1.00 answer-found values were one-example smoke
-checks and are retained only in the appendix evidence; they are not official
-dataset scores.
+Scores are the **answer-found rate** — the fraction of examples whose gold answer
+appears in the generated output — over real full-document dataset samples on
+`g6.8xlarge`/L4 (Qwen3-4B-Instruct, 4-bit weights, `fp8_e5m2` runtime KV). Exact
+match is ≈0.00 across all datasets because the instruct model returns verbose,
+explanatory answers rather than the bare gold span, so answer-found is the
+meaningful task signal. The score table has no input-context column because
+input-context length is a latency stress dimension, not a separate scoring
+condition. The Baseline row is measured over 200 samples per dataset
+(`dbfs:/benchmarks/cachet/lat4-20260708/runs/score-baseline/`, zero request
+errors). LongBench v2 and RULER are reserved columns whose staging/eval harness
+is not implemented yet, so they remain blank. The vanilla KV row is measured over
+50 samples per dataset (`dbfs:/benchmarks/cachet/lat4-20260708/runs/score-cachet-50/`,
+zero request errors); a reduced count was used because per-document KV handoff
+generation over real multi-document examples (MuSiQue carries 20 documents per
+example) OOMs the host at 200 samples per dataset.
+
+The score table exposes a quality caveat the latency table cannot: vanilla
+external KV preserves answer quality on **single-document** inputs (Biography
+0.68 vs 0.73, NIAH 1.00 vs 1.00 — parity within the 50-sample margin) but
+**degrades sharply on multi-document** inputs (HotpotQA 0.30 vs 0.84 with 10
+documents; MuSiQue 0.00 vs 0.505 with 20 documents). This is the cross-chunk
+positional-consistency problem: each document's KV is materialized independently
+with its cached positions starting at 0, so concatenating several documents into
+one prefix yields positionally inconsistent KV that vanilla reuse does not
+correct. Recovering multi-document quality requires two things: (1) RoPE
+re-alignment across chunks, and (2) selective recomputation of a subset of
+cross-chunk tokens with full context (the mechanism CacheBlend/LMCache
+implement). A flag-gated pre-RoPE re-alignment foundation exists in the code
+(`CACHET_TRANSFORMERS_PRE_ROPE`; stores position-independent keys re-roped at
+their true offset during injection), and it is off by default so these vanilla
+KV numbers are post-RoPE. Empirically, re-alignment alone recovers single-document
+positional correctness but does **not** recover multi-document quality (measured:
+HotpotQA and MuSiQue stay within noise of the numbers above) — the missing piece
+is the selective recomputation of cross-document attention, which is the planned
+`CacheBlend` method (see "Methods and pre-computation"). The fast multi-document
+TTFT in the latency table above is therefore quality-preserving today only for
+single-document (or true-prefix) reuse.
 
 ## Document KV Precision Ablation
 
 Configuration: Qwen3-4B-Instruct, 4-bit model weights, vLLM `0.23.0`,
-`g5.8xlarge`, 16k input context, 8 requests in flight, forced 256-token
+`g6.8xlarge` (L4), 16k input context, 4 requests in flight, forced 256-token
 decode, local disk handoff bundles, cold disk-to-GPU hydrate, per-request
 `cache_salt` isolation, and vLLM runtime KV dtype `fp8_e5m2`.
 
@@ -134,58 +223,57 @@ native packed-Q4 KV pages.
 
 | Document KV payload | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Answer-found / strict EM | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| bf16 |  |  |  |  |  |  | 9.83 GB | 14.51x |  |  | Warm-prefix canary showed a quality failure under FP8 runtime KV; rerun required under cold-hydrate protocol |
-| Q8 (`fp8_e5m2`) |  |  |  |  |  |  | 4.92 GB | 14.51x |  |  | Default document KV precision; cold-hydrate latency rerun pending |
-| Q4 packed document KV |  |  |  |  |  |  |  |  |  |  | Implementation pending; requires packed-Q4 payload layout and provider dequant or native serving-engine Q4 KV support |
+| bf16 |  |  |  |  |  |  |  |  |  |  | Not yet re-measured under the current protocol |
+| Q8 (`fp8_e5m2`) |  |  |  |  |  |  |  |  |  |  | Default document KV precision; not yet re-measured under the current protocol |
+| Q4 packed document KV |  |  |  |  |  |  |  |  |  |  | Implementation pending; requires packed-Q4 payload layout and provider dequant or native serving-engine Q4 KV support (the planned KV Packet method) |
 
-Peak GPU process memory, GPU utilization, CPU RSS, and host RAM were not
-sampled in these runs. vLLM server logs report 2.71 GiB model-load memory,
-0.26 GiB CUDA graph-capture memory, 16.32 GiB available KV-cache memory,
-237,728 GPU KV-cache tokens, 7.25x maximum concurrency for 32,768-token
-requests, and about 20 GiB configured GPU-memory budget after loading the
-4-bit Qwen3-4B model.
+These rows are not yet re-measured under the current protocol (g6/L4, request
+parallelism 4, N x 2k distinct documents, 64 repeats). The current L4 startup
+logs report 237,584 GPU KV-cache tokens (29.00x/14.50x/7.25x at 8k/16k/32k); the
+older A10G warm-prefix canary figures (237,728 tokens, 4.92 GB Q8 / 9.83 GB bf16
+footprints) are retained only in the historical appendix.
 
 ## Storage Tier Ablation
 
 Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, vLLM
-`0.23.0`, `g5.8xlarge`, 16k input context, 8 requests in flight, forced
+`0.23.0`, `g6.8xlarge` (L4), 16k input context, 4 requests in flight, forced
 256-token decode, and cold disk-to-GPU hydrate unless the storage tier itself
 is RAM.
 
 | Storage tier | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | RAM |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
-| Disk |  |  |  |  |  | 4.92 GB |  |  |  | Current default; cold-hydrate latency rerun pending |
+| Disk |  |  |  |  |  |  |  |  |  | Current default for vanilla KV; not yet re-measured under the current protocol |
 | Unity Catalog |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 | Hybrid RAM / disk / Unity Catalog |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 
 ## Hardware Ablation
 
 Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, vLLM
-`0.23.0`, 16k input context, disk cache, 8 requests in flight, forced
+`0.23.0`, 16k input context, disk cache, 4 requests in flight, forced
 256-token decode.
 
 | Hardware | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  | 4.92 GB |  |  |  | Current default; cold-hydrate latency rerun pending |
-| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
+| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  | 14.50x |  |  | Current default; latency measured in the Main Latency And Resource Table above (per-context TTFT/TTC/tok/s not duplicated here) |
+| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |  | Historical (old warm-prefix protocol; see the historical appendix); not re-measured |
 
 ## Serving Platform Ablation
 
 Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV,
-`g5.8xlarge`, 16k input context, disk cache, 8 requests in flight, forced
+`g6.8xlarge` (L4), 16k input context, disk cache, 4 requests in flight, forced
 256-token decode.
 
 | Serving platform | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| vLLM |  |  |  |  |  | 4.92 GB |  |  |  | Current default; cold-hydrate latency rerun pending |
+| vLLM |  |  |  |  |  |  | 14.50x |  |  | Current default; latency measured in the Main Latency And Resource Table above |
 | SGLang |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 
 ## Directory Layout
 
 | Folder | Purpose |
 | --- | --- |
-| [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) | Warm-prefix canary evidence and Databricks provenance for the current Q4/Q8 configuration |
+| [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) | Historical A10G warm-prefix canary evidence and Databricks provenance (predates the current g6/L4 protocol; folder name retained because it is referenced by committed release-evidence records) |
 | [`databricks/`](databricks/) | Notes for Databricks provenance; historical committed mirrors have been removed |
 | [`_template/`](_template/) | Required table shape for future public benchmark result folders |
 

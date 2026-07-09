@@ -1,6 +1,6 @@
 import pytest
 
-from document_kv_cache.engine_protocol import AttentionMechanism, KVStorageLayout
+from document_kv_cache.engine_protocol import AttentionMechanism, KVPayloadAxisOrder, KVStorageLayout
 from document_kv_cache.model_profiles import (
     KVModelProfile,
     MODEL_PROFILE_RECORD_TYPE,
@@ -106,6 +106,24 @@ def test_custom_model_profile_registry_extends_aliases_without_mutating_builtins
     assert layout.attention_mechanism == AttentionMechanism.GROUPED_QUERY
     assert layout.query_heads_per_kv_head == 8
     assert layout.bytes_per_token == future_profile.bytes_per_token("bf16")
+
+
+def test_layout_for_model_threads_payload_axis_order():
+    assert layout_for_model("qwen3:4b-instruct").payload_axis_order is KVPayloadAxisOrder.TOKEN_MAJOR
+    assert (
+        layout_for_model("qwen3:4b-instruct", payload_axis_order="layer_major").payload_axis_order
+        is KVPayloadAxisOrder.LAYER_MAJOR
+    )
+    assert (
+        QWEN3_4B_INSTRUCT_PROFILE.to_layout(payload_axis_order=KVPayloadAxisOrder.LAYER_MAJOR).payload_axis_order
+        is KVPayloadAxisOrder.LAYER_MAJOR
+    )
+    assert (
+        default_model_profile_registry()
+        .layout_for_model("qwen3:4b-instruct", payload_axis_order="layer_major")
+        .payload_axis_order
+        is KVPayloadAxisOrder.LAYER_MAJOR
+    )
 
 
 def test_model_profile_layout_derives_bytes_from_padded_kv_stride():

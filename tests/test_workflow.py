@@ -215,6 +215,31 @@ def test_cache_build_config_preserves_non_empty_custom_cache_method_strings():
     assert cfg.cache_method == "vendor_custom_method"
 
 
+def test_cache_build_config_normalizes_payload_axis_order():
+    assert config().payload_axis_order == "token_major"
+
+    layer_major = CacheBuildConfig(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        dtype="int8",
+        layout_version="toy-one-byte-v1",
+        payload_axis_order="LAYER_MAJOR",
+    )
+
+    assert layer_major.payload_axis_order == "layer_major"
+
+    with pytest.raises(ValueError, match="Unsupported payload_axis_order"):
+        CacheBuildConfig(
+            model_id="qwen3:4b-instruct",
+            lora_id="base",
+            prompt_template_version="v1",
+            dtype="int8",
+            layout_version="toy-one-byte-v1",
+            payload_axis_order="head_major",
+        )
+
+
 def test_cache_generation_result_normalizes_public_fields(tmp_path):
     ref = result_ref(tmp_path)
     training_artifacts = TrainingArtifacts(adapter_ids=("packet-adapter",))

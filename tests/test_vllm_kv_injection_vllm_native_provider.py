@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
 from dataclasses import replace
 from types import SimpleNamespace
@@ -450,7 +451,11 @@ def test_native_provider_rejects_suffix_only_prompt_length():
         provider.get_num_new_matched_tokens(request, 0)
 
 
-def test_native_provider_matches_aligned_external_prefix_for_runtime_prompt_mode():
+def test_native_provider_caps_runtime_prefix_to_visible_request_length():
+    # Regression: a suffix-only runtime request must never report more externally
+    # computed tokens than it carries. Returning the full cached prefix here used to
+    # violate vLLM's ``num_computed_tokens <= request.num_tokens`` invariant and crash
+    # EngineCore with an AssertionError on every request.
     source = StaticHandoffSource(handoff_load())
     provider = DocumentKVNativeProvider(source=source)
     request = SimpleNamespace(
@@ -459,7 +464,27 @@ def test_native_provider_matches_aligned_external_prefix_for_runtime_prompt_mode
         kv_transfer_params={DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime"},
     )
 
-    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+    matched, load_async = provider.get_num_new_matched_tokens(request, 0)
+    assert load_async is False
+    assert matched < request.num_tokens
+    assert matched == 0
+
+
+def test_native_provider_matches_aligned_external_prefix_for_runtime_prompt_mode():
+    # When the runtime-mode request carries the full token sequence, the connector
+    # still matches the block-aligned cached prefix (here 2 of 3 cached tokens), and
+    # the matched count stays strictly below the visible request length.
+    source = StaticHandoffSource(handoff_load())
+    provider = DocumentKVNativeProvider(source=source)
+    request = SimpleNamespace(
+        request_id="req-1",
+        num_tokens=5,
+        kv_transfer_params={DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime"},
+    )
+
+    matched, load_async = provider.get_num_new_matched_tokens(request, 0)
+    assert (matched, load_async) == (2, False)
+    assert matched < request.num_tokens
 
 
 def test_native_provider_copies_materialized_payload_into_registered_paged_kv_layers():
@@ -485,6 +510,241 @@ def test_native_provider_copies_materialized_payload_into_registered_paged_kv_la
     assert torch.equal(layer_1[7, :, 0], torch.zeros((2, 1, 2), dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
     assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
+
+
+def test_native_provider_loads_uri_payload_via_mmap_matches_inline(tmp_path):
+    # The no-cache cold-hydrate path memory-maps the payload file (lazily) instead of
+    # reading it into a bytes object. Loading from a file URI must inject exactly the
+    # same KV values as the inline-bytes path.
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = handoff_load()
+    uri_load = DocumentKVHandoffLoad(actions=inline.actions, payload_uri=str(payload_path))
+
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(uri_load))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+
+    connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_0[5, :, 1], torch.tensor([[[5, 6]], [[7, 8]]], dtype=torch.int8))
+    assert torch.equal(layer_1[5, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
+    assert torch.equal(layer_1[5, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+
+
+def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, monkeypatch):
+    # With DOCUMENT_KV_EVICT_PAGE_CACHE=1 the cold-hydrate path must drop the payload
+    # file from the OS page cache (posix_fadvise DONTNEED) before mapping it, so the
+    # host->device copy reads cold from disk. Injected KV must still be correct.
+    calls: list[tuple[int, int, int, int]] = []
+    sync_calls: list[int] = []
+
+    def fake_fadvise(fd, offset, length, advice):
+        calls.append((fd, offset, length, advice))
+
+    monkeypatch.setattr(os, "posix_fadvise", fake_fadvise, raising=False)
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+    monkeypatch.setattr(os, "sync", lambda: sync_calls.append(1), raising=False)
+    monkeypatch.setenv("DOCUMENT_KV_EVICT_PAGE_CACHE", "1")
+
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = handoff_load()
+    uri_load = DocumentKVHandoffLoad(actions=inline.actions, payload_uri=str(payload_path))
+
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(uri_load))
+    assert provider._evict_page_cache is True
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert len(calls) == 1
+    assert calls[0][3] == 4  # POSIX_FADV_DONTNEED
+    assert sync_calls == [1]  # one-time flush before eviction so reads are fully cold
+    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+
+
+def test_read_payload_view_streams_full_file(tmp_path):
+    # The plain buffered reader must return every byte of a multi-chunk payload
+    # (the loop reads in 8 MiB chunks, so exercise more than one chunk boundary).
+    data = bytes((i * 7 + 3) % 256 for i in range(200_000))
+    path = tmp_path / "payload.kv"
+    path.write_bytes(data)
+
+    view = vllm_native_provider._read_payload_view(str(path), expected_bytes=len(data))
+    assert bytes(view) == data
+
+
+def test_read_payload_view_raises_on_size_mismatch(tmp_path):
+    path = tmp_path / "payload.kv"
+    path.write_bytes(b"abcd")
+    with pytest.raises(ValueError, match="!= expected"):
+        vllm_native_provider._read_payload_view(str(path), expected_bytes=8)
+
+
+def test_read_payload_view_evicts_page_cache_when_requested(tmp_path, monkeypatch):
+    # evict_page_cache drops the file from the OS page cache before the buffered read
+    # so the read streams cold from disk (honest cold-hydrate measurement).
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda *a: calls.append(a), raising=False)
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+
+    path = tmp_path / "payload.kv"
+    path.write_bytes(b"hello cachet")
+    view = vllm_native_provider._read_payload_view(str(path), evict_page_cache=True)
+
+    assert bytes(view) == b"hello cachet"
+    assert len(calls) == 1
+    assert calls[0][3] == 4  # POSIX_FADV_DONTNEED
+
+
+def test_advise_sequential_readahead_issues_madvise_hints():
+    # The cold-read path should hint the kernel to read the mapping ahead
+    # sequentially so the host->device copy pulls large I/Os instead of faulting
+    # page-by-page. We can't observe throughput in a unit test, but we can assert
+    # the madvise hints are issued (when the platform defines them).
+    advises: list[int] = []
+
+    class _FakeMapping:
+        def madvise(self, option, *args):
+            advises.append(option)
+
+    vllm_native_provider._advise_sequential_readahead(_FakeMapping())
+
+    expected = [
+        getattr(vllm_native_provider.mmap, name)
+        for name in ("MADV_SEQUENTIAL", "MADV_WILLNEED")
+        if getattr(vllm_native_provider.mmap, name, None) is not None
+    ]
+    assert advises == expected
+
+
+def test_advise_sequential_readahead_tolerates_missing_madvise():
+    # No madvise attribute (e.g. plain-read fallback view) must be a no-op.
+    class _NoMadvise:
+        pass
+
+    vllm_native_provider._advise_sequential_readahead(_NoMadvise())
+
+
+def test_native_provider_does_not_evict_page_cache_by_default(tmp_path, monkeypatch):
+    calls: list[object] = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda *a: calls.append(a), raising=False)
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+    monkeypatch.delenv("DOCUMENT_KV_EVICT_PAGE_CACHE", raising=False)
+
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = handoff_load()
+    uri_load = DocumentKVHandoffLoad(actions=inline.actions, payload_uri=str(payload_path))
+
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(uri_load))
+    assert provider._evict_page_cache is False
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    connector.get_num_new_matched_tokens(request, 0)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert calls == []
+
+
+def test_native_provider_prefetches_payloads_when_workers_enabled(tmp_path, monkeypatch):
+    # With DOCUMENT_KV_PREFETCH_WORKERS>0 the connector warms the payload into the
+    # OS page cache from a background pool as soon as the step's loads are bound, so
+    # the on-critical-path host->device copy streams from cache. When eviction is
+    # also enabled the prefetch performs the (single) cold read; the critical-path
+    # mmap must NOT re-evict the pages the prefetch just warmed.
+    fadvise_calls: list[object] = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda *a: fadvise_calls.append(a), raising=False)
+    monkeypatch.setattr(os, "POSIX_FADV_DONTNEED", 4, raising=False)
+    monkeypatch.setattr(os, "sync", lambda: None, raising=False)
+    monkeypatch.setenv("DOCUMENT_KV_EVICT_PAGE_CACHE", "1")
+    monkeypatch.setenv("DOCUMENT_KV_PREFETCH_WORKERS", "2")
+
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = handoff_load()
+    uri_load = DocumentKVHandoffLoad(actions=inline.actions, payload_uri=str(payload_path))
+
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(uri_load))
+    assert provider._prefetch_workers == 2
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
+
+    connector.bind_connector_metadata(meta)
+    assert provider._stats_prefetch_submitted == 1
+    # Deterministically finish the background prefetch before hydrating so the
+    # non-blocking reap observes it complete (the pool is otherwise racy in tests).
+    for future in list(provider._prefetch_futures.values()):
+        future.result(timeout=30)
+    connector.start_load_kv(SimpleNamespace())
+
+    # Exactly one eviction (from the background prefetch), consumed future, correct KV.
+    assert len(fadvise_calls) == 1
+    assert provider._prefetch_futures == {}
+    assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_1[5, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+
+
+def test_native_provider_prefetch_caps_concurrent_reads_at_inflight_limit(monkeypatch):
+    # A wave of prefetches may be submitted at once, but concurrent NVMe reads must
+    # be bounded to the disk sweet spot (default 4) to avoid over-subscription; the
+    # surplus queues on the executor.
+    monkeypatch.setenv("DOCUMENT_KV_PREFETCH_WORKERS", "8")
+    monkeypatch.delenv("DOCUMENT_KV_PREFETCH_MAX_INFLIGHT", raising=False)
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    assert provider._prefetch_max_inflight == 4
+    pool = provider._ensure_prefetch_pool()
+    assert pool._max_workers == 4  # min(workers=8, max_inflight=4)
+
+    monkeypatch.setenv("DOCUMENT_KV_PREFETCH_MAX_INFLIGHT", "2")
+    provider2 = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    assert provider2._ensure_prefetch_pool()._max_workers == 2
+
+
+def test_native_provider_no_prefetch_pool_by_default(monkeypatch):
+    monkeypatch.delenv("DOCUMENT_KV_PREFETCH_WORKERS", raising=False)
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
+    assert provider._prefetch_workers == 0
+    provider._submit_prefetch(())
+    assert provider._prefetch_pool is None
+    assert provider._stats_prefetch_submitted == 0
 
 
 def test_native_provider_reports_phase_timing_metrics(monkeypatch):
@@ -566,6 +826,66 @@ def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
     assert row["counts"]["expected_payload_bytes"] == len(payload())
     assert row["layout"]["dtype"] == "int8"
     assert row["payload"]["source"] == "inline"
+
+
+def test_native_provider_telemetry_always_records_wall_clock(tmp_path):
+    telemetry_path = tmp_path / "connector-telemetry.jsonl"
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(handoff_load()),
+        telemetry_jsonl=str(telemetry_path),
+    )
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    row = json.loads(telemetry_path.read_text(encoding="utf-8").splitlines()[0])
+    # Wall-clock stamps are always recorded so a serialization timeline can be
+    # reconstructed across concurrent loads; stage splits stay off by default.
+    assert isinstance(row["wall_clock"]["start_s"], float)
+    assert isinstance(row["wall_clock"]["end_s"], float)
+    assert row["wall_clock"]["end_s"] >= row["wall_clock"]["start_s"]
+    assert "h2d" not in row["timings_ns"]
+    assert "scatter" not in row["timings_ns"]
+
+
+def test_native_provider_telemetry_splits_h2d_and_scatter_when_profiling(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCUMENT_KV_PROFILE_STAGES", "1")
+    telemetry_path = tmp_path / "connector-telemetry.jsonl"
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(handoff_load()),
+        telemetry_jsonl=str(telemetry_path),
+    )
+    assert provider._profile_stages is True
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    connector.register_kv_caches(
+        {
+            "layer.0": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+            "layer.1": torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8),
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    row = json.loads(telemetry_path.read_text(encoding="utf-8").splitlines()[0])
+    timings = row["timings_ns"]
+    assert "h2d" in timings
+    assert "scatter" in timings
+    assert timings["h2d"] >= 0
+    assert timings["scatter"] >= 0
 
 
 def test_native_provider_telemetry_labels_local_payload_paths(tmp_path):
@@ -804,6 +1124,34 @@ def test_native_provider_reuses_one_payload_tensor_view_per_load(monkeypatch):
     assert len(calls) == 1
     assert calls[0][0][0] is load.payload
     assert isinstance(calls[0][0][0], bytes)
+
+
+def test_payload_tensor_view_rejects_layer_major_payload():
+    # The provider read path reshapes payloads as token-major, so a layer-major
+    # payload must fail loudly here instead of being silently misread and
+    # corrupting GPU KV.
+    layer_major_layout = KVLayout(
+        model_id="tiny-test-model",
+        lora_id="base",
+        layout_version="standard-v1",
+        dtype="int8",
+        num_layers=2,
+        block_size=2,
+        bytes_per_token=8,
+        num_query_heads=1,
+        num_kv_heads=1,
+        head_size=2,
+        kv_stride_bytes=2,
+        payload_axis_order="layer_major",
+    )
+    load = SimpleNamespace(
+        actions=SimpleNamespace(
+            reservation=SimpleNamespace(layout=layer_major_layout, total_tokens=3)
+        )
+    )
+
+    with pytest.raises(ValueError, match="token-major"):
+        vllm_native_provider._payload_tensor_view(payload(), load)
 
 
 def test_native_provider_reuses_slot_mapping_for_layers_on_same_device(monkeypatch):

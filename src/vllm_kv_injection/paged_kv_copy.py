@@ -41,6 +41,7 @@ def inject_kv_cache_layer(
     *,
     block_size: int,
     layout: PagedKVLayout | None = None,
+    validate: bool = True,
 ) -> None:
     """Copy a materialized KV layer into a vLLM paged KV cache layer.
 
@@ -50,6 +51,11 @@ def inject_kv_cache_layer(
 
     ``layout=None`` infers ``standard`` when the second dimension is the K/V
     pair dimension, otherwise ``flat``.
+
+    ``validate`` runs the slot-mapping bounds check, which reads device tensors
+    back to the host (a CUDA stream sync). When the same ``slot_mapping`` is
+    injected across many layers, validate only the first layer and pass
+    ``validate=False`` for the rest to avoid 2 syncs per layer.
     """
 
     if block_size <= 0:
@@ -68,7 +74,8 @@ def inject_kv_cache_layer(
         raise ValueError("src_kv_cache first dimension must match slot_mapping length")
 
     inferred_layout = layout or _infer_paged_kv_layout(dst_kv_cache_layer)
-    _validate_slot_mapping_range(slot_mapping, dst_kv_cache_layer, block_size=block_size)
+    if validate:
+        _validate_slot_mapping_range(slot_mapping, dst_kv_cache_layer, block_size=block_size)
     if inferred_layout == "standard":
         _inject_standard_kv_layer(
             dst_kv_cache_layer,

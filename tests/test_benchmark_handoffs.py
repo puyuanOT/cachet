@@ -259,6 +259,23 @@ def record(example_id="bio-1", *, dataset="biography", kv_transfer_params=None):
     return row
 
 
+def multi_document_record(example_id="multi-1", *, dataset="hotpotqa", document_count=3):
+    return {
+        "dataset": dataset,
+        "example_id": example_id,
+        "query": "Which document mentions the analytical engine?",
+        "expected_answer": "Ada Lovelace",
+        "documents": [
+            {
+                "document_id": f"doc-{index}",
+                "title": f"Doc {index}",
+                "text": f"Passage {index} about subject {index} and the analytical engine.",
+            }
+            for index in range(document_count)
+        ],
+    }
+
+
 def manifest(*entries):
     return BenchmarkHandoffManifest(entries=tuple(entries))
 
@@ -526,6 +543,87 @@ def test_generate_benchmark_handoff_bundles_writes_payloads_manifest_and_handoff
         assert handoff_record["payload_source"]["uri"] == str(payload_path)
         assert handoff_record["handle"]["layout"]["bytes_per_token"] == 1
         assert handoff_record["handle"]["total_bytes"] == payload_path.stat().st_size
+
+
+def test_generate_benchmark_handoff_bundles_threads_layer_major_payload_axis_order(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    layout = KVLayout(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        layout_version="toy-one-byte-v1",
+        dtype="int8",
+        num_layers=1,
+        block_size=8,
+        bytes_per_token=1,
+        payload_axis_order="layer_major",
+    )
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=AlignedGenerator(),
+        layout=layout,
+        align_bytes=1,
+    )
+
+    entry = result.manifest.entries[0]
+    handoff_path = tmp_path / "bundles" / "biography" / f"{entry.request_id}.handoff.json"
+    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert handoff_record["handle"]["layout"]["payload_axis_order"] == "layer_major"
+
+
+def test_generate_benchmark_handoff_bundles_segments_multi_document_handle(tmp_path):
+    document_count = 3
+    input_path = tmp_path / "hotpot.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=document_count)) + "\n",
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "bundle-manifest.json"
+
+    example = load_benchmark_jsonl(input_path)[0]
+    segmented_source = benchmark_cache_source_document(example, segment_per_document=True)
+    assert len(segmented_source.chunks) == document_count
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=AlignedGenerator(),
+        layout=tiny_layout(),
+        manifest_json=manifest_path,
+        segment_per_document=True,
+        align_bytes=1,
+    )
+
+    entry = result.manifest.entries[0]
+    handoff_path = tmp_path / "bundles" / "hotpotqa" / f"{entry.request_id}.handoff.json"
+    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
+
+    assert len(handoff_record["handle"]["segments"]) == document_count
+    assert handoff_record["payload_source"]["segment_count"] == document_count
+
+
+def test_generate_benchmark_handoff_bundles_keeps_single_segment_by_default(tmp_path):
+    input_path = tmp_path / "hotpot.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=3)) + "\n",
+        encoding="utf-8",
+    )
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=AlignedGenerator(),
+        layout=tiny_layout(),
+        align_bytes=1,
+    )
+
+    entry = result.manifest.entries[0]
+    handoff_path = tmp_path / "bundles" / "hotpotqa" / f"{entry.request_id}.handoff.json"
+    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
+
+    assert len(handoff_record["handle"]["segments"]) == 1
 
 
 def test_generate_benchmark_handoff_bundles_records_runtime_prefix_tail(tmp_path):
@@ -979,6 +1077,50 @@ def test_bundle_main_defaults_to_builtin_model_profile_layout(tmp_path, monkeypa
     assert handoff_record["handle"]["layout"]["storage_layout"] == "shared_key_value"
     assert handoff_record["handle"]["total_tokens"] == 1
     assert handoff_record["handle"]["total_bytes"] == expected_layout.bytes_per_token
+
+
+def test_bundle_main_threads_layer_major_payload_axis_order(tmp_path, monkeypatch, capsys):
+    write_generator_module(tmp_path, "axis_cli_generator")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    manifest_path = tmp_path / "handoffs.json"
+
+    exit_code = public_benchmark_handoffs.bundle_main(
+        [
+            "--input-jsonl",
+            str(input_path),
+            "--output-dir",
+            str(tmp_path / "bundles"),
+            "--output-manifest-json",
+            str(manifest_path),
+            "--generator-factory",
+            "axis_cli_generator:factory",
+            "--layout-version",
+            "toy-one-byte-v1",
+            "--dtype",
+            "int8",
+            "--num-layers",
+            "1",
+            "--block-size",
+            "8",
+            "--bytes-per-token",
+            "1",
+            "--payload-axis-order",
+            "layer_major",
+            "--align-bytes",
+            "1",
+        ]
+    )
+
+    output = json.loads(capsys.readouterr().out)
+    entry = read_benchmark_handoff_manifest_json(manifest_path).entries[0]
+    handoff_path = tmp_path / "bundles" / "biography" / f"{entry.request_id}.handoff.json"
+    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 0
+    assert output["ok"] is True
+    assert handoff_record["handle"]["layout"]["payload_axis_order"] == "layer_major"
 
 
 def test_bundle_main_rejects_partial_manual_layout(tmp_path, monkeypatch, capsys):

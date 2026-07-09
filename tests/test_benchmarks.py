@@ -5,6 +5,7 @@ from document_kv_cache.benchmarks import (
     BENCHMARK_CACHE_ARTIFACT_PREFIX,
     BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     CACHE_REUSE_ARM,
+    CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_LORA_ID,
     DEFAULT_V1_MODEL_ID,
@@ -24,6 +25,7 @@ from document_kv_cache.benchmarks import (
     build_prompt_parts,
     benchmark_cache_artifact_stem,
     benchmark_cache_document_id,
+    benchmark_cache_prefix_segments,
     benchmark_cache_request,
     benchmark_cache_source_document,
     compare_to_baseline,
@@ -315,6 +317,36 @@ def test_prompt_parts_split_prefill_context_from_cache_suffix():
     assert parts.cache_suffix_text.endswith("Answer:")
 
 
+def test_prompt_parts_system_prompt_position_end_moves_guidance_out_of_cache(monkeypatch):
+    example = BenchmarkExample(
+        example_id="bio-1",
+        dataset="biography",
+        documents=(document(),),
+        query="Who wrote notes on the Analytical Engine?",
+        expected_answer="Ada Lovelace",
+    )
+
+    monkeypatch.setenv(CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV, "end")
+    parts = build_prompt_parts(example)
+
+    assert parts.system_prompt_position == "end"
+    # With the guidance at the end, the cached prefix is the document context only, and
+    # the system guidance moves into the online-computed suffix (recomputed with full
+    # attention over the injected document KV).
+    assert "Ada Lovelace biography" in parts.cache_prefix_text
+    assert parts.system_prompt not in parts.cache_prefix_text
+    assert parts.system_prompt in parts.cache_suffix_text
+    # Invariant preserved: cached prefix + online suffix reconstructs the logical prompt.
+    assert parts.cache_prefix_text + parts.cache_suffix_text == parts.prefill_prompt
+    assert build_cache_prefix_text(example) == parts.cache_prefix_text
+    assert build_cache_suffix_text(example) == parts.cache_suffix_text
+    # Documents now precede the guidance in the assembled prompt.
+    assert parts.prefill_prompt.index("Ada Lovelace biography") < parts.prefill_prompt.index(
+        parts.system_prompt
+    )
+    assert parts.prefill_prompt.endswith("Answer:")
+
+
 def test_benchmark_cache_source_document_contains_exact_cache_prefix():
     example = BenchmarkExample(
         example_id="Bio Example/1",
@@ -341,6 +373,56 @@ def test_benchmark_cache_source_document_contains_exact_cache_prefix():
     assert chunk.text == build_cache_prefix_text(example)
     assert chunk.metadata == {
         "cachet.benchmark.prompt_part": "system_prompt_and_document_context",
+    }
+
+
+def multi_document_example(*, document_count: int = 8, dataset: str = "hotpotqa") -> BenchmarkExample:
+    documents = tuple(
+        SourceDocument.from_texts(
+            document_id=f"doc-{index}",
+            chunks={f"p{index}": f"Passage {index} discusses subject number {index}."},
+            metadata={"title": f"Title {index}"},
+        )
+        for index in range(document_count)
+    )
+    return BenchmarkExample(
+        example_id="multi-doc-1",
+        dataset=dataset,
+        documents=documents,
+        query="Which document discusses subject number 3?",
+        expected_answer="Passage 3",
+    )
+
+
+def test_benchmark_cache_prefix_segments_tile_prefix_into_one_chunk_per_document():
+    example = multi_document_example(document_count=8)
+
+    segments = benchmark_cache_prefix_segments(example)
+
+    assert len(segments) == 8
+    assert "".join(text for _chunk_id, text in segments) == build_cache_prefix_text(example)
+    assert [chunk_id for chunk_id, _text in segments] == [
+        f"{BENCHMARK_CACHE_PREFIX_CHUNK_ID}-{index}" for index in range(8)
+    ]
+
+    source_document = benchmark_cache_source_document(example, segment_per_document=True)
+    request = benchmark_cache_request(example, segment_per_document=True)
+    source_chunk_ids = tuple(chunk.chunk_id for chunk in source_document.chunks)
+
+    assert source_chunk_ids == tuple(chunk_id for chunk_id, _text in segments)
+    assert request.document_chunks == {source_document.document_id: source_chunk_ids}
+    assert request.include_static is False
+
+
+def test_benchmark_cache_source_document_defaults_to_single_prefix_chunk():
+    example = multi_document_example(document_count=8)
+
+    single = benchmark_cache_source_document(example)
+
+    assert tuple(chunk.chunk_id for chunk in single.chunks) == (BENCHMARK_CACHE_PREFIX_CHUNK_ID,)
+    assert single.chunks[0].text == build_cache_prefix_text(example)
+    assert benchmark_cache_request(example).document_chunks == {
+        single.document_id: (BENCHMARK_CACHE_PREFIX_CHUNK_ID,),
     }
 
 

@@ -21,10 +21,10 @@ lengths.
 | Model | `Qwen/Qwen3-4B-Instruct-2507`, served as `qwen3:4b-instruct` unless this report explicitly varies the model |
 | Model weights | 4-bit bitsandbytes unless this report explicitly varies weight precision |
 | Serving engine | vLLM, SGLang, storage reader, native probe, etc. |
-| Hardware | e.g. AWS g5/A10G, `g5.8xlarge` |
-| Request parallelism | e.g. 8 requests in flight, or `N/A` |
+| Hardware | e.g. AWS g6/L4, `g6.8xlarge` |
+| Request parallelism | e.g. 4 requests in flight, or `N/A` |
 | Output length for TTC | e.g. forced 256-token decode, or `N/A` |
-| Repeats | e.g. 512 repeats per prepared input, or `N/A` |
+| Repeats | e.g. 64 repeats per prepared input, or `N/A` |
 | Input context length | e.g. 8k, 16k, 32k, or measured prompt-token range |
 | Method | Baseline, vanilla KV, KV Packet, etc. |
 | Document KV precision | bf16, Q8 / `fp8_e5m2`, packed Q4, or `N/A` |
@@ -45,9 +45,10 @@ The preferred decode-only metric is
 Place the detailed caption below the table. The caption should define each
 method label, state the request concurrency used during measurement, give the
 successful request count behind percentiles, and explain whether P95 is
-publication-grade. P95 rows intended for publication should use at least 512
-repeats per prepared input at the stated concurrency, and the caption should
-state the resulting successful request-level measurement count. The caption must
+publication-grade. P95 rows intended for publication should use enough repeats
+per prepared input for stable percentiles at the stated concurrency (the current
+main table uses 64), and the caption should state the resulting successful
+request-level measurement count. The caption must
 also say whether TTFT includes loading external document KV from storage into
 GPU memory, or whether the measured requests used already-warm/prewarmed
 prefix-cache blocks.

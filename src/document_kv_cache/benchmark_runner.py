@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from itertools import islice
+from itertools import islice, zip_longest
 import json
 import math
 import random
@@ -147,6 +147,7 @@ class BenchmarkRunResult:
     baseline_arm_id: str = BASELINE_PREFILL_ARM
     cache_arm_id: str = CACHE_REUSE_ARM
     request_parallelism: int = 1
+    isolate_arms: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +166,7 @@ class OpenAICompatibleBenchmarkConfig:
     arm_ids: tuple[str, ...] = ()
     shuffle: bool = False
     seed: int | None = None
+    isolate_arms: bool = True
     api_key: str | None = None
     max_tokens: int = 128
     temperature: float = 0.0
@@ -175,6 +177,7 @@ class OpenAICompatibleBenchmarkConfig:
     baseline_extra_body: Mapping[str, Any] = field(default_factory=dict)
     cache_extra_body: Mapping[str, Any] = field(default_factory=dict)
     prefix_cache_salt_mode: Literal["static", "per_request"] = "static"
+    interleave_examples: bool = False
 
     def __post_init__(self) -> None:
         _validate_non_empty_string(self.suite_id, "suite_id")
@@ -203,6 +206,8 @@ class OpenAICompatibleBenchmarkConfig:
             raise ValueError("seed must be an integer when provided")
         if type(self.shuffle) is not bool:
             raise ValueError("shuffle must be a boolean")
+        if type(self.interleave_examples) is not bool:
+            raise ValueError("interleave_examples must be a boolean")
         _validate_positive_int(self.max_tokens, "max_tokens")
         _validate_non_negative_finite_number(self.temperature, "temperature")
         _validate_positive_finite_number(self.timeout_seconds, "timeout_seconds")
@@ -343,6 +348,8 @@ def run_benchmark_suite(
     request_parallelism: int = 1,
     shuffle: bool = False,
     seed: int | None = None,
+    isolate_arms: bool = True,
+    interleave_examples: bool = False,
 ) -> BenchmarkRunResult:
     if repeats <= 0:
         raise ValueError("repeats must be positive")
@@ -374,7 +381,34 @@ def run_benchmark_suite(
                 repeat_index=repeat_indices_by_arm[arm.arm_id],
             )
             requests.append(request)
-    measurements = _run_requests(requests, engines, request_parallelism=request_parallelism)
+    # Example interleaving (opt-in): the loop above emits each example's repeats
+    # contiguously, so a request_parallelism=N wave would hydrate the SAME document
+    # set N times concurrently. Round-robin the requests across examples (per arm)
+    # so each concurrent wave draws from distinct documents while every hydrate stays
+    # honestly cold (page-cache eviction + per-request cache_salt). Order is otherwise
+    # unchanged, so the set of measurements is identical to the grouped ordering.
+    if interleave_examples:
+        requests = _interleave_requests_by_example(requests)
+    # Arm isolation (default): run each arm's requests as a separate concurrency
+    # phase instead of interleaving all arms through one shared executor. Co-scheduling
+    # the cache arm alongside the baseline arm makes cache-arm requests queue behind
+    # baseline full-prefill requests on the shared serving engine, which inflates the
+    # measured cache-arm TTFT and hides Cachet's real speedup. Isolating arms measures
+    # each arm the way it would actually be deployed (one arm per server). The set of
+    # measurements is identical; only the execution order/contention differs.
+    if isolate_arms and len(arms) > 1:
+        measurements = []
+        requests_by_arm: dict[str, list[BenchmarkEngineRequest]] = {}
+        for request in requests:
+            requests_by_arm.setdefault(request.arm.arm_id, []).append(request)
+        for arm in arms:
+            arm_requests = requests_by_arm.get(arm.arm_id)
+            if arm_requests:
+                measurements.extend(
+                    _run_requests(arm_requests, engines, request_parallelism=request_parallelism)
+                )
+    else:
+        measurements = _run_requests(requests, engines, request_parallelism=request_parallelism)
     report_rows = summarize_measurements(measurements)
     baseline_arm_id = _arm_id_for_prefill(arms)
     cache_arm_id = _arm_id_for_cache(arms)
@@ -390,6 +424,7 @@ def run_benchmark_suite(
         baseline_arm_id=baseline_arm_id,
         cache_arm_id=cache_arm_id,
         request_parallelism=request_parallelism,
+        isolate_arms=isolate_arms if len(arms) > 1 else True,
     )
 
 
@@ -478,6 +513,8 @@ def run_openai_compatible_v1_benchmark(
         request_parallelism=config.request_parallelism,
         shuffle=config.shuffle,
         seed=config.seed,
+        isolate_arms=config.isolate_arms,
+        interleave_examples=config.interleave_examples,
     )
 
 
@@ -491,6 +528,7 @@ def benchmark_run_result_to_record(result: BenchmarkRunResult) -> dict[str, Any]
             "datasets": list(result.suite.datasets),
             "examples": len(result.suite.examples),
             "request_parallelism": result.request_parallelism,
+            "isolate_arms": result.isolate_arms,
         },
         "measurements": [_measurement_to_record(measurement) for measurement in result.measurements],
         "report_rows": [_report_row_to_record(row) for row in result.report_rows],
@@ -510,6 +548,26 @@ def write_benchmark_run_result_json(result: BenchmarkRunResult, path: str | Path
     output_path = local_path(str(path))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(benchmark_run_result_to_record(result), indent=2, sort_keys=True) + "\n")
+
+
+def _interleave_requests_by_example(
+    requests: Sequence[BenchmarkEngineRequest],
+) -> list[BenchmarkEngineRequest]:
+    """Round-robin requests across (arm, example) groups, preserving each group's order.
+
+    Groups are keyed by ``(arm_id, dataset, example_id)`` and consumed cyclically, so
+    consecutive requests come from distinct examples. Grouping preserves first-seen
+    order and each group keeps its internal (repeat) order, so the result is a stable
+    permutation of the input with identical membership.
+    """
+    groups: dict[tuple[str, str, str], list[BenchmarkEngineRequest]] = {}
+    for request in requests:
+        key = (request.arm.arm_id, request.example.dataset, request.example.example_id)
+        groups.setdefault(key, []).append(request)
+    interleaved: list[BenchmarkEngineRequest] = []
+    for cohort in zip_longest(*groups.values()):
+        interleaved.extend(request for request in cohort if request is not None)
+    return interleaved
 
 
 def _run_requests(
@@ -1062,6 +1120,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--shuffle", action="store_true")
+    parser.add_argument(
+        "--interleave-examples",
+        action="store_true",
+        help=(
+            "Round-robin requests across examples so a request_parallelism=N wave "
+            "draws from N distinct documents instead of repeating one example."
+        ),
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--api-key")
     parser.add_argument("--max-tokens", type=int, default=128)
@@ -1092,6 +1158,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             "'per_request' derives a deterministic salt per dataset/example/arm/repeat."
         ),
     )
+    parser.add_argument(
+        "--no-isolate-arms",
+        dest="isolate_arms",
+        action="store_false",
+        help=(
+            "Interleave all arms through one shared concurrency pool instead of running "
+            "each arm in its own phase. Off by default (arms are isolated) because "
+            "co-scheduling the cache arm behind baseline full-prefill requests inflates "
+            "the measured cache-arm TTFT."
+        ),
+    )
+    parser.set_defaults(isolate_arms=True)
     parser.add_argument("--output-json", help="Write the full benchmark result JSON to this path instead of stdout.")
     args = parser.parse_args(argv)
 
@@ -1110,7 +1188,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             request_parallelism=args.request_parallelism,
             arm_ids=tuple(args.arm or ()),
             shuffle=args.shuffle,
+            interleave_examples=args.interleave_examples,
             seed=args.seed,
+            isolate_arms=args.isolate_arms,
             api_key=args.api_key,
             max_tokens=args.max_tokens,
             temperature=args.temperature,

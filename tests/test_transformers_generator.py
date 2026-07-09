@@ -116,6 +116,7 @@ def tiny_layout(
     head_size: int = 2,
     kv_stride_bytes: int | None = None,
     storage_layout: KVStorageLayout = KVStorageLayout.SEPARATE_KEY_VALUE,
+    payload_axis_order: str = "token_major",
 ) -> KVLayout:
     dtype_width = dtype_byte_width(dtype)
     stride = head_size * dtype_width if kv_stride_bytes is None else kv_stride_bytes
@@ -134,6 +135,7 @@ def tiny_layout(
         kv_stride_bytes=stride,
         shares_kv_storage=shares_kv_storage,
         storage_layout=storage_layout,
+        payload_axis_order=payload_axis_order,
     )
 
 
@@ -145,6 +147,7 @@ def build_config(layout: KVLayout) -> CacheBuildConfig:
         dtype=layout.dtype,
         layout_version=layout.layout_version,
         storage_layout=layout.storage_layout,
+        payload_axis_order=layout.payload_axis_order,
     )
 
 
@@ -211,6 +214,41 @@ def test_transformers_generator_emits_token_major_layer_major_payload():
         }
     ]
     assert model.calls[0]["use_cache"] is True
+
+
+def test_transformers_generator_emits_layer_major_payload():
+    layout = tiny_layout(payload_axis_order="layer_major")
+    first_layer = layer([[1, 2], [3, 4]], [[11, 12], [13, 14]])
+    second_layer = layer([[21, 22], [23, 24]], [[31, 32], [33, 34]])
+    tokenizer = TinyTokenizer(token_count=2)
+    model = TinyModel((first_layer, second_layer))
+    source = document()
+    generator = TransformersKVChunkGenerator(model=model, tokenizer=tokenizer, layout=layout)
+
+    pack_chunk = generator.generate(
+        document=source,
+        chunk=source.chunks[0],
+        config=build_config(layout),
+    )
+
+    layer_0 = torch.stack(
+        (first_layer[0][0].permute(1, 0, 2), first_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    )
+    layer_1 = torch.stack(
+        (second_layer[0][0].permute(1, 0, 2), second_layer[1][0].permute(1, 0, 2)),
+        dim=1,
+    )
+    # layer-major stacks the per-layer tensors on a new leading axis so each
+    # layer's whole token span is one contiguous block: [layer, token, K/V, ...].
+    expected = torch.stack((layer_0, layer_1), dim=0).contiguous()
+    token_major_expected = torch.stack((layer_0, layer_1), dim=1).contiguous()
+
+    assert pack_chunk.payload == tensor_bytes(expected)
+    assert pack_chunk.payload != tensor_bytes(token_major_expected)
+    assert len(pack_chunk.payload) == layout.bytes_per_token * 2
+    # Layer 0's token span is the contiguous prefix of the layer-major payload.
+    assert pack_chunk.payload[: len(tensor_bytes(layer_0))] == tensor_bytes(layer_0)
 
 
 def test_transformers_generator_accepts_transformers5_layer_cache():
@@ -501,7 +539,7 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     calls = []
     sentinel = object()
 
-    def fake_from_pretrained(cls, config, *, layout=None):
+    def fake_from_pretrained(cls, config, *, layout=None, pre_rope=False):
         calls.append((cls, config, layout))
         return sentinel
 
@@ -555,7 +593,7 @@ def test_transformers_generator_env_factory_accepts_databricks_escaped_json(monk
     calls = []
     sentinel = object()
 
-    def fake_from_pretrained(cls, config, *, layout=None):
+    def fake_from_pretrained(cls, config, *, layout=None, pre_rope=False):
         calls.append((cls, config, layout))
         return sentinel
 
@@ -578,7 +616,7 @@ def test_transformers_generator_env_factory_use_fast_env_overrides_json(monkeypa
     calls = []
     sentinel = object()
 
-    def fake_from_pretrained(cls, config, *, layout=None):
+    def fake_from_pretrained(cls, config, *, layout=None, pre_rope=False):
         calls.append((cls, config, layout))
         return sentinel
 
@@ -602,7 +640,7 @@ def test_transformers_generator_env_factory_treats_blank_values_as_unset(monkeyp
     calls = []
     sentinel = object()
 
-    def fake_from_pretrained(cls, config, *, layout=None):
+    def fake_from_pretrained(cls, config, *, layout=None, pre_rope=False):
         calls.append((cls, config, layout))
         return sentinel
 

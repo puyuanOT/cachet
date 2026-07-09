@@ -6,15 +6,18 @@ import hashlib
 import importlib
 import json
 import math
+import mmap
 import os
 import time
 import warnings
+from concurrent.futures import Future, ThreadPoolExecutor
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Protocol
 
 from document_kv_cache.cache import ByteLRU
+from document_kv_cache.storage import local_path
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
@@ -318,6 +321,50 @@ class DocumentKVNativeProvider:
         self.source = source or KVTransferParamsDocumentKVSource()
         self.provider_factory = _provider_factory_path(provider_factory)
         self.telemetry_jsonl = telemetry_jsonl
+        # When enabled (DOCUMENT_KV_PROFILE_STAGES=1), the per-load layer loop times
+        # the host->device copy and the on-GPU scatter separately, inserting CUDA
+        # synchronizations so the wall time is attributed to the correct stage. This
+        # adds synchronization overhead, so it is off by default and only used for
+        # dedicated profiling runs.
+        self._profile_stages = _env_truthy("DOCUMENT_KV_PROFILE_STAGES")
+        # Cold-read enforcement (opt-in): drop the payload file from the OS page cache
+        # (posix_fadvise POSIX_FADV_DONTNEED) immediately before memory-mapping it, so
+        # the host->device copy faults every page straight from NVMe instead of RAM.
+        # Handoff generation writes the payload files on the same box right before
+        # serving, which leaves them warm in the page cache; without eviction the
+        # "cold_disk_to_gpu_hydrate" protocol actually measures warm page-cache reads.
+        # Enable with DOCUMENT_KV_EVICT_PAGE_CACHE=1 to measure honest cold-disk hydrate.
+        self._evict_page_cache = _env_truthy("DOCUMENT_KV_EVICT_PAGE_CACHE")
+        # posix_fadvise(DONTNEED) can only drop *clean* pages, and freshly generated
+        # payloads still have dirty (not-yet-written-back) pages, so plain eviction
+        # leaves the read partially warm. A one-time global flush before the first
+        # eviction writes those pages back to disk so every subsequent read is fully
+        # cold. The flush cost lands only on the first load.
+        self._page_cache_synced = False
+        # Concurrent prefetch (opt-in): the vLLM scheduler calls ``start_load_kv``
+        # once and the connector hydrates each pending load serially, so at cold-disk
+        # the per-load NVMe read (~0.66 s each) fully serializes (max load
+        # concurrency = 1) and dominates TTFT. A small background thread pool reads
+        # the payload files into the OS page cache concurrently (I/O releases the
+        # GIL, so reads overlap up to the ~3 GB/s device aggregate) as soon as the
+        # step's loads are known, so the on-critical-path host->device copy streams
+        # from warm cache instead of blocking on disk. Purely a cache-warming hint:
+        # correctness is unaffected if a prefetch has not finished (the copy simply
+        # faults the remaining pages). Set DOCUMENT_KV_PREFETCH_WORKERS=N (N>0).
+        self._prefetch_workers = _env_int("DOCUMENT_KV_PREFETCH_WORKERS", 0)
+        # Cap on *concurrent* NVMe reads, independent of how many prefetches are
+        # queued. Profiling showed the connector reads at ~1.86 GB/s single-stream
+        # and the device peaks at ~3.06 GB/s with 4 O_DIRECT streams but *drops* to
+        # ~2.41 GB/s at 8 (over-subscription). vLLM admits requests in waves, so a
+        # whole wave's payloads get submitted at once; without a cap all 8 hammer the
+        # disk together (~0.39 GB/s each, multi-second stalls -> fat P95 tail). Bound
+        # concurrent reads to the sweet spot and let the rest queue (deeper pipeline,
+        # bounded contention). Buffered reads (not O_DIRECT) preserve the OS page
+        # cache so repeated/hot documents still hit RAM.
+        self._prefetch_max_inflight = max(1, _env_int("DOCUMENT_KV_PREFETCH_MAX_INFLIGHT", 4))
+        self._prefetch_pool: object | None = None
+        self._prefetch_futures: dict[str, object] = {}
+        self._stats_prefetch_submitted = 0
         self._payload_cache = (
             None if payload_cache_max_bytes == 0 else _PayloadCache(max_bytes=payload_cache_max_bytes)
         )
@@ -443,6 +490,7 @@ class DocumentKVNativeProvider:
         if not isinstance(connector_metadata, DocumentKVConnectorMetadata):
             raise TypeError("DocumentKVNativeProvider requires DocumentKVConnectorMetadata")
         self._metadata = connector_metadata
+        self._submit_prefetch(connector_metadata.loads)
 
     def clear_connector_metadata(self) -> None:
         self._metadata = DocumentKVConnectorMetadata()
@@ -474,9 +522,8 @@ class DocumentKVNativeProvider:
             self._metadata = DocumentKVConnectorMetadata(loads=loads[index + 1 :])
 
     def wait_for_layer_load(self, layer_name: str) -> None:
-        if layer_name in self._kv_caches:
-            return
-        raise ValueError(f"Unknown vLLM KV cache layer {layer_name!r}")
+        if layer_name not in self._kv_caches:
+            raise ValueError(f"Unknown vLLM KV cache layer {layer_name!r}")
 
     def save_kv_layer(self, layer_name: str, kv_layer: object, attn_metadata: object, **kwargs: object) -> None:
         del layer_name, kv_layer, attn_metadata, kwargs
@@ -571,16 +618,22 @@ class DocumentKVNativeProvider:
 
     def _load_request(self, load: DocumentKVLoadRequest) -> None:
         load_started_ns = time.perf_counter_ns()
+        wall_start_s = time.time()
         payload_materialize_ns = 0
         payload_merge_ns = 0
         payload_view_ns = 0
         layer_load_ns = 0
+        h2d_ns = 0
+        scatter_ns = 0
         layers_loaded = 0
+        profile_stages = self._profile_stages
         cache_hits_before = self._stats_payload_cache_hits
         cache_misses_before = self._stats_payload_cache_misses
         error_type: str | None = None
         error_message: str | None = None
         try:
+            layout = load.actions.reservation.layout
+            block_size = layout.block_size
             started_ns = time.perf_counter_ns()
             try:
                 payload = _materialized_payload(load, payload_reader=self._read_payload)
@@ -602,33 +655,87 @@ class DocumentKVNativeProvider:
                 payload_view_ns = time.perf_counter_ns() - started_ns
                 self._stats_payload_view_ns += payload_view_ns
 
-            block_size = load.actions.reservation.layout.block_size
+            scalars_per_layer = payload_view.scalars_per_layer
+            # Slice the loaded token range once (a contiguous CPU view over the
+            # materialized payload); the per-layer reshape happens on the device so
+            # the transfer is a single contiguous host->device copy.
+            cpu_token_slice = payload_view.token_major[
+                load.source_token_start : load.source_token_start + load.token_count
+            ]
+            h2d_source = cpu_token_slice
+            # Pre-RoPE payloads store keys before rotary; re-rope them to their true
+            # absolute positions (source_token_start + token index) at injection so a
+            # cached chunk is correct at any offset. cos/sin depend only on positions,
+            # so they are computed once per device and reused across the layer loop.
+            pre_rope = bool(getattr(layout, "pre_rope", False))
+            rope_theta = getattr(layout, "rope_theta", None)
+            rope_rotary_dim = getattr(layout, "rope_rotary_dim", None)
+            rope_cos_sin_by_device: dict[object | None, tuple[object, object]] = {}
             slot_mappings: dict[object | None, object] = {}
+            device_token_slices: dict[object | None, object] = {}
             for layer_name, dst_layer in self._kv_caches.items():
                 layer_index = self._layer_indices[layer_name]
-                if layer_index >= load.actions.reservation.layout.num_layers:
+                if layer_index >= layout.num_layers:
                     continue
                 started_ns = time.perf_counter_ns()
                 try:
-                    src_layer = _payload_layer_tensor(
-                        payload_view,
-                        load,
+                    device = getattr(dst_layer, "device", None)
+                    if device not in device_token_slices:
+                        if profile_stages:
+                            h2d_started_ns = time.perf_counter_ns()
+                            device_token_slices[device] = _to_device_contiguous(h2d_source, device)
+                            slot_mappings[device] = slot_mapping_from_blocks(
+                                load.blocks,
+                                block_size=block_size,
+                                device=device,
+                            )
+                            _maybe_cuda_sync(device)
+                            h2d_ns += time.perf_counter_ns() - h2d_started_ns
+                        else:
+                            device_token_slices[device] = _to_device_contiguous(h2d_source, device)
+                            slot_mappings[device] = slot_mapping_from_blocks(
+                                load.blocks,
+                                block_size=block_size,
+                                device=device,
+                            )
+                    if pre_rope and device not in rope_cos_sin_by_device:
+                        rope_cos_sin_by_device[device] = _rope_cos_sin_for_load(
+                            load, dst_layer, rope_theta=rope_theta, rotary_dim=rope_rotary_dim
+                        )
+                    src_layer = _layer_values_from_token_slice(
+                        device_token_slices[device],
+                        scalars_per_layer,
                         layer_index=layer_index,
                         dst_kv_cache_layer=dst_layer,
+                        layout=layout,
                     )
-                    device = getattr(dst_layer, "device", None)
-                    if device not in slot_mappings:
-                        slot_mappings[device] = slot_mapping_from_blocks(
-                            load.blocks,
-                            block_size=block_size,
-                            device=device,
+                    if pre_rope:
+                        cos, sin = rope_cos_sin_by_device[device]
+                        src_layer = _rerope_src_layer_keys(
+                            src_layer,
+                            cos=cos,
+                            sin=sin,
+                            rope_theta=rope_theta,
+                            rotary_dim=rope_rotary_dim,
+                            payload_dtype=layout.dtype,
                         )
-                    inject_kv_cache_layer(
-                        dst_layer,
-                        src_layer,
-                        slot_mappings[device],
-                        block_size=block_size,
-                    )
+                    if profile_stages:
+                        scatter_started_ns = time.perf_counter_ns()
+                        inject_kv_cache_layer(
+                            dst_layer,
+                            src_layer,
+                            slot_mappings[device],
+                            block_size=block_size,
+                        )
+                        _maybe_cuda_sync(device)
+                        scatter_ns += time.perf_counter_ns() - scatter_started_ns
+                    else:
+                        inject_kv_cache_layer(
+                            dst_layer,
+                            src_layer,
+                            slot_mappings[device],
+                            block_size=block_size,
+                        )
                 finally:
                     elapsed_ns = time.perf_counter_ns() - started_ns
                     layer_load_ns += elapsed_ns
@@ -650,6 +757,10 @@ class DocumentKVNativeProvider:
                 payload_merge_ns=payload_merge_ns,
                 payload_view_ns=payload_view_ns,
                 layer_load_ns=layer_load_ns,
+                h2d_ns=h2d_ns if profile_stages else None,
+                scatter_ns=scatter_ns if profile_stages else None,
+                wall_start_s=wall_start_s,
+                wall_end_s=time.time(),
                 layers_loaded=layers_loaded,
                 payload_cache_hits=self._stats_payload_cache_hits - cache_hits_before,
                 payload_cache_misses=self._stats_payload_cache_misses - cache_misses_before,
@@ -663,9 +774,28 @@ class DocumentKVNativeProvider:
         *,
         expected_bytes: int,
         actions: EngineKVConnectorActions,
-    ) -> bytes:
+    ) -> bytes | memoryview:
         if self._payload_cache is None:
-            return read_engine_adapter_payload(payload_uri, expected_bytes=expected_bytes)
+            # No in-process payload cache (the cold-hydrate measurement path): memory-map
+            # the merged payload rather than eagerly reading it. This must stay LAZY so
+            # setting up the mapping costs ~nothing; the host->device copy faults the
+            # pages, which a concurrent prefetch (``_prefetch_payload_uri``) may already
+            # have re-warmed. When concurrent prefetch is active the on-critical-path map
+            # must not re-evict those warm pages; otherwise apply per-read eviction here
+            # for the honest cold-hydrate measurement.
+            evict_here = self._evict_page_cache and self._prefetch_workers <= 0
+            if evict_here and not self._page_cache_synced:
+                # Flush dirty (freshly written) payload pages to disk once so the
+                # per-file DONTNEED eviction below can drop every page and reads are
+                # measured fully cold instead of partially warm.
+                os.sync()
+                self._page_cache_synced = True
+            self._reap_prefetch(payload_uri)
+            return _mmap_payload_view(
+                payload_uri,
+                expected_bytes=expected_bytes,
+                evict_page_cache=evict_here,
+            )
         result = self._payload_cache.read(
             payload_uri,
             expected_bytes=expected_bytes,
@@ -676,6 +806,136 @@ class DocumentKVNativeProvider:
         else:
             self._stats_payload_cache_misses += 1
         return result.payload
+
+    def _ensure_prefetch_pool(self) -> object:
+        pool = self._prefetch_pool
+        if pool is None:
+            # Concurrent reads are bounded to the disk sweet spot; a whole wave of
+            # prefetches can be submitted at once and the surplus queues FIFO on the
+            # executor (deep pipeline, bounded contention).
+            concurrency = min(max(1, self._prefetch_workers), self._prefetch_max_inflight)
+            pool = ThreadPoolExecutor(
+                max_workers=concurrency,
+                thread_name_prefix="dockv-prefetch",
+            )
+            self._prefetch_pool = pool
+        return pool
+
+    def _submit_prefetch(self, loads: "tuple[DocumentKVLoadRequest, ...]") -> None:
+        # Only the mmap cold-hydrate path (no in-process payload cache) reads from
+        # disk on the critical path, so prefetch is pointless when a payload cache
+        # serves hydrates from memory.
+        if self._prefetch_workers <= 0 or self._payload_cache is not None or not loads:
+            return
+        pool = self._ensure_prefetch_pool()
+        for load in loads:
+            payload_uri = load.payload_uri
+            if payload_uri is None or payload_uri in self._prefetch_futures:
+                continue
+            self._prefetch_futures[payload_uri] = pool.submit(
+                self._prefetch_payload_uri, payload_uri, load
+            )
+            self._stats_prefetch_submitted += 1
+
+    def _reap_prefetch(self, payload_uri: str) -> None:
+        future = self._prefetch_futures.pop(payload_uri, None)
+        if future is None:
+            return
+        # Block until the background (cold) read completes, then let the mmap copy
+        # stream from warm cache. Under concurrency this read already finished during
+        # the request's queue wait, so the wait is ~free and the copy is warm. A
+        # non-blocking variant was measured *worse*: skipping lets the background
+        # read contend with the copy's own page faults for disk bandwidth. The
+        # timeout is only a safety net so a wedged prefetch can never stall the
+        # engine's load path indefinitely.
+        try:
+            future.result(timeout=_PREFETCH_WAIT_TIMEOUT_S)
+        except Exception:
+            # Prefetch is a best-effort cache-warming hint; on failure/timeout the
+            # mmap host->device copy below still faults the pages correctly.
+            pass
+
+    def _prefetch_payload_uri(
+        self, payload_uri: str, load: DocumentKVLoadRequest | None = None
+    ) -> None:
+        del load
+        try:
+            path = local_path(payload_uri)
+        except Exception:
+            return
+        wall_start_s = time.time()
+        started_ns = time.perf_counter_ns()
+        evict_ns = 0
+        read_ns = 0
+        read_bytes = 0
+        try:
+            if self._evict_page_cache:
+                if not self._page_cache_synced:
+                    try:
+                        os.sync()
+                    except OSError:
+                        pass
+                    self._page_cache_synced = True
+                evict_started_ns = time.perf_counter_ns()
+                fd = os.open(path, os.O_RDONLY)
+                try:
+                    _evict_file_from_page_cache(fd)
+                finally:
+                    os.close(fd)
+                evict_ns = time.perf_counter_ns() - evict_started_ns
+            buffer = bytearray(_PREFETCH_CHUNK_BYTES)
+            view = memoryview(buffer)
+            read_started_ns = time.perf_counter_ns()
+            with open(path, "rb", buffering=0) as handle:
+                while True:
+                    chunk = handle.readinto(view)
+                    if not chunk:
+                        break
+                    read_bytes += chunk
+            read_ns = time.perf_counter_ns() - read_started_ns
+        except OSError:
+            pass
+        finally:
+            self._write_prefetch_telemetry(
+                payload_uri,
+                read_bytes=read_bytes,
+                read_ns=read_ns,
+                evict_ns=evict_ns,
+                total_ns=time.perf_counter_ns() - started_ns,
+                wall_start_s=wall_start_s,
+                wall_end_s=time.time(),
+            )
+
+    def _write_prefetch_telemetry(
+        self,
+        payload_uri: str,
+        *,
+        read_bytes: int,
+        read_ns: int,
+        evict_ns: int,
+        total_ns: int,
+        wall_start_s: float,
+        wall_end_s: float,
+    ) -> None:
+        if self.telemetry_jsonl is None:
+            return
+        try:
+            gbps = (read_bytes / 1e9) / (read_ns / 1e9) if read_ns > 0 else 0.0
+            _append_jsonl(
+                self.telemetry_jsonl,
+                {
+                    "event": "prefetch_read",
+                    "record_type": "document_kv_prefetch",
+                    "uri_sha256": hashlib.sha256(payload_uri.encode("utf-8")).hexdigest(),
+                    "read_bytes": read_bytes,
+                    "timings_ns": {"read": read_ns, "evict": evict_ns, "total": total_ns},
+                    "read_gbps": gbps,
+                    "prefetch_workers": self._prefetch_workers,
+                    "wall_clock": {"start_s": wall_start_s, "end_s": wall_end_s},
+                },
+            )
+        except Exception:
+            pass
 
     def _write_load_telemetry(
         self,
@@ -691,6 +951,10 @@ class DocumentKVNativeProvider:
         payload_cache_misses: int,
         error_type: str | None,
         error_message: str | None,
+        h2d_ns: int | None = None,
+        scatter_ns: int | None = None,
+        wall_start_s: float | None = None,
+        wall_end_s: float | None = None,
     ) -> None:
         if self.telemetry_jsonl is None:
             return
@@ -699,11 +963,16 @@ class DocumentKVNativeProvider:
                 load,
                 provider_factory=self.provider_factory,
                 payload_cache_enabled=self._payload_cache is not None,
+                page_cache_evicted=self._evict_page_cache,
                 total_ns=total_ns,
                 payload_materialize_ns=payload_materialize_ns,
                 payload_merge_ns=payload_merge_ns,
                 payload_view_ns=payload_view_ns,
                 layer_load_ns=layer_load_ns,
+                h2d_ns=h2d_ns,
+                scatter_ns=scatter_ns,
+                wall_start_s=wall_start_s,
+                wall_end_s=wall_end_s,
                 layers_loaded=layers_loaded,
                 payload_cache_hits=payload_cache_hits,
                 payload_cache_misses=payload_cache_misses,
@@ -1179,6 +1448,7 @@ def _load_telemetry_record(
     *,
     provider_factory: str,
     payload_cache_enabled: bool,
+    page_cache_evicted: bool = False,
     total_ns: int,
     payload_materialize_ns: int,
     payload_merge_ns: int,
@@ -1189,10 +1459,25 @@ def _load_telemetry_record(
     payload_cache_misses: int,
     error_type: str | None,
     error_message: str | None,
+    h2d_ns: int | None = None,
+    scatter_ns: int | None = None,
+    wall_start_s: float | None = None,
+    wall_end_s: float | None = None,
 ) -> dict[str, Any]:
     actions = load.actions
     layout = actions.reservation.layout
     block_ids = [block.block_id for block in load.blocks]
+    timings_ns: dict[str, Any] = {
+        "total": total_ns,
+        "payload_materialize": payload_materialize_ns,
+        "payload_merge": payload_merge_ns,
+        "payload_view": payload_view_ns,
+        "layer_load": layer_load_ns,
+    }
+    if h2d_ns is not None:
+        timings_ns["h2d"] = h2d_ns
+    if scatter_ns is not None:
+        timings_ns["scatter"] = scatter_ns
     record: dict[str, Any] = {
         "record_type": "document_kv.vllm_native_provider_load.v1",
         "schema_version": 1,
@@ -1200,12 +1485,10 @@ def _load_telemetry_record(
         "success": error_type is None,
         "request_id": load.request_id,
         "provider_factory": provider_factory,
-        "timings_ns": {
-            "total": total_ns,
-            "payload_materialize": payload_materialize_ns,
-            "payload_merge": payload_merge_ns,
-            "payload_view": payload_view_ns,
-            "layer_load": layer_load_ns,
+        "timings_ns": timings_ns,
+        "wall_clock": {
+            "start_s": wall_start_s,
+            "end_s": wall_end_s,
         },
         "counts": {
             "source_token_start": load.source_token_start,
@@ -1238,14 +1521,23 @@ def _load_telemetry_record(
             "shares_kv_storage": layout.shares_kv_storage,
             "storage_layout": str(layout.storage_layout),
         },
-        "payload": _payload_telemetry(load, payload_cache_enabled=payload_cache_enabled),
+        "payload": _payload_telemetry(
+            load,
+            payload_cache_enabled=payload_cache_enabled,
+            page_cache_evicted=page_cache_evicted,
+        ),
     }
     if error_type is not None:
         record["error"] = {"type": error_type, "message": error_message or error_type}
     return record
 
 
-def _payload_telemetry(load: DocumentKVLoadRequest, *, payload_cache_enabled: bool) -> dict[str, Any]:
+def _payload_telemetry(
+    load: DocumentKVLoadRequest,
+    *,
+    payload_cache_enabled: bool,
+    page_cache_evicted: bool = False,
+) -> dict[str, Any]:
     payload_uri = load.payload_uri
     if payload_uri is None:
         inline_payload = load.payload
@@ -1259,6 +1551,7 @@ def _payload_telemetry(load: DocumentKVLoadRequest, *, payload_cache_enabled: bo
             "inline_segment_count": len(inline_payload) if isinstance(inline_payload, tuple) else 1,
             "inline_bytes": inline_bytes,
             "payload_cache_enabled": payload_cache_enabled,
+            "page_cache_evicted": page_cache_evicted,
         }
     scheme, separator, remainder = payload_uri.partition(":")
     if not separator:
@@ -1270,6 +1563,7 @@ def _payload_telemetry(load: DocumentKVLoadRequest, *, payload_cache_enabled: bo
         "uri_sha256": hashlib.sha256(payload_uri.encode("utf-8")).hexdigest(),
         "uri_tail": _safe_uri_tail(remainder),
         "payload_cache_enabled": payload_cache_enabled,
+        "page_cache_evicted": page_cache_evicted,
     }
 
 
@@ -1305,6 +1599,133 @@ def _expected_payload_bytes(actions: EngineKVConnectorActions) -> int:
     return actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
 
 
+def _evict_file_from_page_cache(fileno: int) -> None:
+    """Best-effort drop of a file's pages from the OS page cache.
+
+    Uses ``posix_fadvise(POSIX_FADV_DONTNEED)`` so a subsequent mmap+copy faults
+    the pages back in from disk. Advisory and best-effort: it is a no-op on
+    platforms without ``posix_fadvise`` and cannot evict still-dirty pages, so it
+    is only relied on for cold-hydrate benchmarking where the payload was written
+    (and flushed) earlier.
+    """
+
+    fadvise = getattr(os, "posix_fadvise", None)
+    dontneed = getattr(os, "POSIX_FADV_DONTNEED", None)
+    if fadvise is None or dontneed is None:
+        return
+    try:
+        fadvise(fileno, 0, 0, dontneed)
+    except OSError:
+        pass
+
+
+def _read_payload_view(
+    payload_uri: str,
+    *,
+    expected_bytes: int | None = None,
+    evict_page_cache: bool = False,
+) -> memoryview:
+    """Read a merged payload fully into host RAM with a plain buffered read.
+
+    The connector previously memory-mapped the payload and faulted pages on the
+    host->device copy, which reads at only ~0.5 GB/s and does not scale with
+    concurrency. A sequential ``readinto`` in 8 MiB chunks streams at the
+    buffered-read rate (~2.2 GB/s single stream) and returns a ``memoryview`` over a
+    resident buffer.
+
+    When ``evict_page_cache`` is set the file's pages are dropped from the OS page
+    cache before reading.
+    """
+
+    path = local_path(payload_uri)
+    with open(path, "rb", buffering=0) as handle:
+        if evict_page_cache:
+            _evict_file_from_page_cache(handle.fileno())
+        size = os.fstat(handle.fileno()).st_size
+        if expected_bytes is not None and size != expected_bytes:
+            raise ValueError(
+                f"Engine adapter payload length {size} != expected {expected_bytes}"
+            )
+        buffer = bytearray(size)
+        view = memoryview(buffer)
+        offset = 0
+        while offset < size:
+            read = handle.readinto(view[offset : offset + _PREFETCH_CHUNK_BYTES])
+            if not read:
+                break
+            offset += read
+    if offset != size:
+        raise ValueError(
+            f"Engine adapter payload truncated: read {offset} of {size} expected bytes"
+        )
+    return view
+
+
+def _mmap_payload_view(
+    payload_uri: str,
+    *,
+    expected_bytes: int | None = None,
+    evict_page_cache: bool = False,
+) -> memoryview:
+    """Memory-map a merged payload so the device copy faults pages on demand.
+
+    The previous loader read the entire payload into a Python ``bytes`` object
+    before any copy, which on the benchmark workers ran at only ~1.5-1.8 GB/s and
+    accounted for ~70-78% of the per-request hydrate time. Memory-mapping is
+    effectively free and lets the host->device transfer pull pages straight from
+    the OS page cache (warm) or NVMe (cold). Falls back to a plain read when the
+    backing filesystem cannot mmap the file (e.g. some FUSE mounts).
+
+    When ``evict_page_cache`` is set the file's pages are dropped from the OS page
+    cache before mapping, forcing the copy to read cold from disk (honest
+    cold-hydrate measurement).
+    """
+
+    path = local_path(payload_uri)
+    with open(path, "rb") as handle:
+        if evict_page_cache:
+            _evict_file_from_page_cache(handle.fileno())
+        try:
+            mapped = mmap.mmap(handle.fileno(), 0, prot=mmap.PROT_READ)
+        except (ValueError, OSError):
+            data = handle.read()
+            if expected_bytes is not None and len(data) != expected_bytes:
+                raise ValueError(
+                    f"Engine adapter payload length {len(data)} != expected {expected_bytes}"
+                ) from None
+            return memoryview(data)
+    if _MADVISE_READAHEAD_ENABLED:
+        _advise_sequential_readahead(mapped)
+    if expected_bytes is not None and len(mapped) != expected_bytes:
+        mapped.close()
+        raise ValueError(f"Engine adapter payload length {len(mapped)} != expected {expected_bytes}")
+    return memoryview(mapped)
+
+
+def _advise_sequential_readahead(mapped: "mmap.mmap") -> None:
+    """Ask the kernel to read the whole mapping ahead sequentially.
+
+    NOTE: disabled by default (see ``_MADVISE_READAHEAD_ENABLED``). It was intended
+    to widen the read-ahead window so the host->device copy pulls large sequential
+    I/Os, but on the benchmark NVMe the MADV_WILLNEED bulk prefetch competed with
+    the copy's own on-demand faulting and *doubled* the cold read (measured
+    layer_load 656ms -> 1246ms). Retained behind an env flag only. Best-effort: a
+    no-op where madvise is unavailable.
+    """
+
+    madvise = getattr(mapped, "madvise", None)
+    if madvise is None:
+        return
+    for option_name in ("MADV_SEQUENTIAL", "MADV_WILLNEED"):
+        option = getattr(mmap, option_name, None)
+        if option is None:
+            continue
+        try:
+            madvise(option)
+        except (OSError, ValueError):
+            pass
+
+
 def _segmented_payload_from_materialized_payload(
     actions: EngineKVConnectorActions,
     payload: bytes,
@@ -1323,9 +1744,12 @@ def _segmented_payload_from_materialized_payload(
     return tuple(bytes(segment) for segment in segments)
 
 
-def _merged_payload(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> bytes | bytearray:
+def _merged_payload(
+    actions: EngineKVConnectorActions,
+    payload: bytes | bytearray | memoryview | tuple[bytes, ...],
+) -> bytes | bytearray | memoryview:
     _validate_payload_matches_actions(actions, payload)
-    if isinstance(payload, bytes):
+    if isinstance(payload, (bytes, bytearray, memoryview)):
         return payload
     buffer = bytearray(actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token)
     for copy in actions.copies:
@@ -1447,11 +1871,15 @@ def _vllm_layer_indices_from_inspection(
 def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> int:
     block_size = load.actions.reservation.layout.block_size
     prompt_text_mode = _document_kv_prompt_text_mode(request)
-    if prompt_text_mode == "runtime":
-        return (load.total_tokens // block_size) * block_size
     request_tokens = getattr(request, "num_tokens", None)
+    # vLLM's V1 scheduler asserts ``num_computed_tokens <= request.num_tokens``: the
+    # externally loaded document KV must be a strict prefix of the tokens the request
+    # actually carries. We therefore never report more matched tokens than the visible
+    # request length in any prompt mode. The previous "runtime" branch returned the full
+    # cached prefix while ignoring ``request.num_tokens``, so a suffix-only request could
+    # claim more computed tokens than it held and kill EngineCore with an AssertionError.
     if isinstance(request_tokens, int):
-        if request_tokens <= load.total_tokens:
+        if prompt_text_mode != "runtime" and request_tokens <= load.total_tokens:
             raise ValueError(
                 "Document KV vLLM loads require the full logical prompt; "
                 "the visible vLLM request must be longer than the cached prefix"
@@ -1480,6 +1908,20 @@ def _payload_tensor_view(
 ) -> _PayloadTensorView:
     torch = _torch()
     layout = load.actions.reservation.layout
+    # This read path reshapes the payload as token-major
+    # ([token, layer, K/V, kv_head, head_dim]). A layer-major payload is not a
+    # permuted view of that layout, so reading one here would silently corrupt
+    # GPU KV instead of failing. Reject any non-token-major layout loudly until a
+    # layer-major streaming read path exists.
+    axis_order = getattr(layout, "payload_axis_order", None)
+    axis_value = getattr(axis_order, "value", axis_order)
+    if axis_value not in (None, "token_major"):
+        raise ValueError(
+            "vLLM native provider can only read token-major KV payloads; "
+            f"payload_axis_order={axis_value!r} would be misread as token-major "
+            "and corrupt GPU KV (layer-major streaming is not implemented in this "
+            "provider read path)."
+        )
     dtype = _torch_dtype(layout.dtype)
     dtype_width = _dtype_width(layout.dtype)
     total_scalars = len(payload) // dtype_width
@@ -1500,10 +1942,21 @@ def _payload_tensor_view(
     )
 
 
-def _torch_from_payload_buffer(torch: object, payload: bytes | bytearray, *, dtype: object, count: int) -> object:
-    """Create a read-only source tensor; injection only copies from it."""
+def _torch_from_payload_buffer(
+    torch: object,
+    payload: bytes | bytearray | memoryview,
+    *,
+    dtype: object,
+    count: int,
+) -> object:
+    """Create a read-only source tensor; injection only copies from it.
 
-    if isinstance(payload, bytes):
+    Read-only buffers (immutable ``bytes`` and ``PROT_READ`` memory maps) make
+    ``torch.frombuffer`` emit a "buffer is not writable" warning even though we
+    never mutate the tensor, so suppress that specific warning.
+    """
+
+    if isinstance(payload, (bytes, memoryview)):
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
@@ -1514,23 +1967,100 @@ def _torch_from_payload_buffer(torch: object, payload: bytes | bytearray, *, dty
     return torch.frombuffer(payload, dtype=dtype, count=count)
 
 
-def _payload_layer_tensor(
-    payload_view: _PayloadTensorView,
-    load: DocumentKVLoadRequest,
+def _to_device_contiguous(token_slice: object, device: object) -> object:
+    """Stage the contiguous token slice onto ``device`` with one host->device copy."""
+
+    contiguous = token_slice if token_slice.is_contiguous() else token_slice.contiguous()
+    if device is None:
+        return contiguous
+    if getattr(contiguous, "device", None) == device:
+        return contiguous
+    return contiguous.to(device=device)
+
+
+def _rope_cos_sin_for_load(load: object, dst_kv_cache_layer: object, *, rope_theta: object, rotary_dim: object) -> tuple[object, object]:
+    """Precompute (cos, sin) for a load's absolute token positions on the layer device."""
+    torch = _torch()
+    from document_kv_cache.rope import rope_cos_sin
+
+    head_dim = int(dst_kv_cache_layer.shape[-1])
+    rot = int(rotary_dim) if rotary_dim else head_dim
+    positions = torch.arange(
+        load.source_token_start,
+        load.source_token_start + load.token_count,
+        device=getattr(dst_kv_cache_layer, "device", None),
+    )
+    return rope_cos_sin(positions, head_dim=head_dim, rope_theta=rope_theta, rotary_dim=rot)
+
+
+def _fp8_view_dtype(payload_dtype: object) -> object | None:
+    """Return the torch fp8 dtype for an fp8 payload dtype string, else ``None``.
+
+    fp8 KV is stored as raw uint8 bytes, so re-roping must bitcast to the real fp8
+    dtype (not integer-convert the bytes) before decoding to float.
+    """
+    torch = _torch()
+    if not isinstance(payload_dtype, str):
+        return None
+    normalized = payload_dtype.lower()
+    if normalized in ("fp8", "fp8_e5m2", "float8_e5m2"):
+        return getattr(torch, "float8_e5m2", None)
+    if normalized in ("fp8_e4m3", "fp8_e4m3fn", "float8_e4m3"):
+        return getattr(torch, "float8_e4m3fn", None)
+    return None
+
+
+def _rerope_src_layer_keys(
+    src_layer: object,
+    *,
+    cos: object,
+    sin: object,
+    rope_theta: object,
+    rotary_dim: object,
+    payload_dtype: object = None,
+) -> object:
+    """Return ``src_layer`` with RoPE applied to its keys (index 0); values (index 1) untouched.
+
+    ``src_layer`` is the standard ``[T, 2, kv_heads, head_dim]`` layer tensor. Used when
+    the payload stores pre-RoPE keys so the injected K is rotated to its true offset.
+    fp8 keys arrive as raw uint8 bytes; they are bitcast to the real fp8 dtype so the
+    rotation runs on decoded values, then the roped fp8 is bitcast back to uint8 so the
+    injector writes the bytes through unchanged (exactly as the no-rope path does).
+    """
+    torch = _torch()
+    from document_kv_cache.rope import apply_rope_to_keys
+
+    if getattr(src_layer, "dim", None) is None or src_layer.dim() != 4 or src_layer.shape[1] != 2:
+        raise ValueError(
+            "pre-RoPE injection requires a [T, 2, kv_heads, head_dim] layer tensor; "
+            f"got shape {tuple(getattr(src_layer, 'shape', ()))}"
+        )
+    keys = src_layer[:, 0]
+    values = src_layer[:, 1]
+    rot = int(rotary_dim) if rotary_dim else int(keys.shape[-1])
+    fp8_dtype = _fp8_view_dtype(payload_dtype)
+    if fp8_dtype is not None and keys.dtype == torch.uint8:
+        roped = apply_rope_to_keys(keys.view(fp8_dtype), rope_theta=rope_theta, rotary_dim=rot, cos=cos, sin=sin)
+        roped = roped.view(torch.uint8)
+    else:
+        roped = apply_rope_to_keys(keys, rope_theta=rope_theta, rotary_dim=rot, cos=cos, sin=sin)
+    return torch.stack((roped, values), dim=1)
+
+
+def _layer_values_from_token_slice(
+    device_token_slice: object,
+    scalars_per_layer: int,
     *,
     layer_index: int,
     dst_kv_cache_layer: object,
+    layout: object,
 ) -> object:
     torch = _torch()
     if not torch.is_tensor(dst_kv_cache_layer):
         raise TypeError("registered vLLM KV cache layer must be a torch.Tensor")
-    layout = load.actions.reservation.layout
-    token_slice = payload_view.token_major[
-        load.source_token_start : load.source_token_start + load.token_count
-    ]
-    start = layer_index * payload_view.scalars_per_layer
-    end = start + payload_view.scalars_per_layer
-    layer_values = token_slice[:, start:end]
+    start = layer_index * scalars_per_layer
+    end = start + scalars_per_layer
+    layer_values = device_token_slice[:, start:end]
     return _reshape_layer_values(layer_values, dst_kv_cache_layer, layout)
 
 
@@ -1739,3 +2269,54 @@ def _torch() -> Any:
     except ImportError as exc:  # pragma: no cover - optional runtime dependency.
         raise RuntimeError("DocumentKVNativeProvider requires torch at runtime") from exc
     return torch
+
+
+def _env_truthy(name: str) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value.strip())
+    except ValueError:
+        return default
+
+
+# Concurrent-prefetch tuning. The chunk size balances syscall overhead against
+# transient host memory; the wait timeout is only a safety net so a wedged
+# prefetch thread can never stall the engine's load path indefinitely.
+_PREFETCH_CHUNK_BYTES = 8 << 20
+_PREFETCH_WAIT_TIMEOUT_S = 120.0
+
+# MADV_SEQUENTIAL|WILLNEED read-ahead on the payload mmap was measured to *hurt*
+# the cold host->device copy on this NVMe (layer_load 656ms -> 1246ms at par=8,
+# TTFT 7.79s -> 12.42s): WILLNEED kicks a bulk read-ahead that competes with the
+# copy's own on-demand faulting. Left in as an explicit, default-off escape hatch.
+_MADVISE_READAHEAD_ENABLED = _env_truthy("DOCUMENT_KV_MADVISE_READAHEAD")
+
+
+def _maybe_cuda_sync(device: object) -> None:
+    """Synchronize the CUDA device so the surrounding ``perf_counter_ns`` window
+    captures the actual GPU execution time rather than just kernel-launch time.
+
+    No-op for CPU tensors / when CUDA is unavailable so the profiling path stays
+    safe on hosts without a GPU.
+    """
+
+    if device is None:
+        return
+    device_type = getattr(device, "type", None)
+    if device_type != "cuda":
+        return
+    try:
+        torch = _torch()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize(device)
+    except Exception:  # pragma: no cover - profiling must never break a load.
+        return

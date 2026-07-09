@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE = "vllm_kv_injection.document_kv_transfe
 DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION = 1
 DOCUMENT_KV_TRANSFER_CONFIG_PREFIX = "document_kv."
 DOCUMENT_KV_DEFAULT_ROLE = "kv_both"
+MULTI_CONNECTOR_CLASS = "MultiConnector"
 
 __all__ = [
     "DOCUMENT_KV_DEFAULT_ROLE",
@@ -40,10 +41,63 @@ __all__ = [
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY",
     "DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY",
     "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
+    "MULTI_CONNECTOR_CLASS",
     "document_kv_transfer_config",
     "document_kv_transfer_config_json",
+    "multi_connector_transfer_config",
+    "multi_connector_transfer_config_json",
     "main",
 ]
+
+
+def multi_connector_transfer_config(
+    *,
+    connectors: Sequence[Mapping[str, Any]],
+    kv_role: str = DOCUMENT_KV_DEFAULT_ROLE,
+) -> dict[str, Any]:
+    """Return a vLLM ``MultiConnector`` config wrapping ordered child connectors.
+
+    vLLM's ``MultiConnector`` loads KV from the *first* child whose
+    ``get_num_new_matched_tokens`` advertises tokens (in list order) and saves to
+    *all* children. Placing the Cachet document connector first and LMCache second
+    yields the desired handoff: turn-1 document requests (which carry a Cachet
+    handoff) are served by Cachet, while every other request -- turn-2+ follow-ups
+    and document-free conversations -- falls through to LMCache, which also
+    captures the KV via the save-to-all path.
+    """
+
+    child_configs = list(connectors)
+    if len(child_configs) < 2:
+        raise ValueError("MultiConnector requires at least two child connectors")
+    normalized: list[dict[str, Any]] = []
+    for index, child in enumerate(child_configs):
+        if not isinstance(child, Mapping):
+            raise TypeError(f"connectors[{index}] must be a mapping")
+        _validate_non_empty_string(
+            child.get("kv_connector"), field_name=f"connectors[{index}].kv_connector"
+        )
+        normalized.append(dict(child))
+    config = {
+        "kv_connector": MULTI_CONNECTOR_CLASS,
+        "kv_role": kv_role,
+        "kv_connector_extra_config": {"connectors": normalized},
+    }
+    _validate_json_serializable(config, field_name="MultiConnector KV transfer config")
+    return config
+
+
+def multi_connector_transfer_config_json(
+    *,
+    connectors: Sequence[Mapping[str, Any]],
+    kv_role: str = DOCUMENT_KV_DEFAULT_ROLE,
+) -> str:
+    """Return compact JSON for a ``MultiConnector`` config for vLLM CLI launch."""
+
+    return json.dumps(
+        multi_connector_transfer_config(connectors=connectors, kv_role=kv_role),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def document_kv_transfer_config(

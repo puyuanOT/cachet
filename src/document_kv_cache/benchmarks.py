@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import statistics
 from collections.abc import Iterable, Mapping, Sequence
@@ -34,6 +35,13 @@ DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
 DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM = "document_kv.runtime_prefix_text"
 DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
 FINAL_ANSWER_CUE = "Answer:"
+# Controls whether the system/task guidance prompt is placed at the start of the
+# cached document prefix (baked into the cached KV) or after the documents so it is
+# recomputed online. "end" moves the guidance out of the cached KV, so it is prefilled
+# online with full attention over the injected document KV.
+CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV = "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION"
+SYSTEM_PROMPT_POSITIONS = ("start", "end")
+DEFAULT_SYSTEM_PROMPT_POSITION = "start"
 
 __all__ = [
     "SUPPORTED_V1_DATASETS",
@@ -53,6 +61,10 @@ __all__ = [
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM",
     "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
+    "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV",
+    "SYSTEM_PROMPT_POSITIONS",
+    "DEFAULT_SYSTEM_PROMPT_POSITION",
+    "resolve_system_prompt_position",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
     "FINAL_ANSWER_CUE",
@@ -110,20 +122,41 @@ class BenchmarkPromptParts:
     system_prompt: str
     document_context: str
     user_prompt: str
+    system_prompt_position: str = DEFAULT_SYSTEM_PROMPT_POSITION
+
+    def __post_init__(self) -> None:
+        if self.system_prompt_position not in SYSTEM_PROMPT_POSITIONS:
+            raise ValueError(
+                f"system_prompt_position must be one of {SYSTEM_PROMPT_POSITIONS}; "
+                f"got {self.system_prompt_position!r}"
+            )
+
+    @property
+    def _ordered_sections(self) -> tuple[str, str, str]:
+        # "end" places the guidance after the documents so it is not part of the cached
+        # prefix and is recomputed online; "start" keeps it as the leading cached section.
+        if self.system_prompt_position == "end":
+            return (self.document_context, self.system_prompt, self.user_prompt)
+        return (self.system_prompt, self.document_context, self.user_prompt)
 
     @property
     def prefill_prompt(self) -> str:
-        return _join_sections(self.system_prompt, self.document_context, self.user_prompt)
+        return _join_sections(*self._ordered_sections)
 
     @property
     def cache_prefix_text(self) -> str:
+        if self.system_prompt_position == "end":
+            return self.document_context
         return _join_sections(self.system_prompt, self.document_context)
 
     @property
     def cache_suffix_text(self) -> str:
-        if not self.cache_prefix_text:
-            return self.user_prompt
-        return f"\n\n{self.user_prompt}"
+        prefix = self.cache_prefix_text
+        if not prefix:
+            return self.prefill_prompt
+        # cache_prefix_text is always a leading substring of prefill_prompt, so the
+        # online suffix is exactly the remainder (keeps prefix + suffix == prefill).
+        return self.prefill_prompt[len(prefix) :]
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,12 +405,27 @@ def dataset_spec(dataset: str) -> BenchmarkDatasetSpec:
     return _V1_DATASET_SPECS[dataset]
 
 
+def resolve_system_prompt_position() -> str:
+    """Resolve the system-prompt placement from the environment (default ``start``)."""
+
+    value = os.environ.get(
+        CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV, DEFAULT_SYSTEM_PROMPT_POSITION
+    ).strip().lower()
+    if value not in SYSTEM_PROMPT_POSITIONS:
+        raise ValueError(
+            f"{CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV} must be one of "
+            f"{SYSTEM_PROMPT_POSITIONS}; got {value!r}"
+        )
+    return value
+
+
 def build_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
     spec = dataset_spec(example.dataset)
     return BenchmarkPromptParts(
         system_prompt=_system_prompt(spec),
         document_context=format_document_context(example.documents),
         user_prompt=_user_prompt(example, spec),
+        system_prompt_position=resolve_system_prompt_position(),
     )
 
 
@@ -422,26 +470,81 @@ def benchmark_cache_document_id(
     return benchmark_cache_artifact_stem(example, prefix=prefix)
 
 
+def _cache_prefix_chunk_id(index: int) -> str:
+    return f"{BENCHMARK_CACHE_PREFIX_CHUNK_ID}-{index}"
+
+
+def benchmark_cache_prefix_segments(example: BenchmarkExample) -> tuple[tuple[str, str], ...]:
+    """Tile the exact cache-prefix text into one contiguous ``(chunk_id, text)`` per document.
+
+    The concatenation of the returned texts equals ``build_cache_prefix_text(example)``
+    byte-for-byte, so an assembled multi-segment KV lines up with the logical prompt the
+    client sends (the connector matches ``min(handoff_tokens, prompt-1)`` block-aligned, so
+    per-chunk tokenization-boundary drift is absorbed). The leading system prompt +
+    "Documents:" header rides on the first document's segment. Falls back to a single
+    segment when there is one document or the per-document offsets cannot be located.
+    """
+
+    benchmark_example = _benchmark_example(example)
+    prefix = build_cache_prefix_text(benchmark_example)
+    documents = benchmark_example.documents
+    if len(documents) <= 1:
+        return ((BENCHMARK_CACHE_PREFIX_CHUNK_ID, prefix),)
+    starts: list[int] = []
+    cursor = 0
+    for document in documents:
+        formatted = _format_document(document)
+        index = prefix.find(formatted, cursor)
+        if index < 0:
+            return ((BENCHMARK_CACHE_PREFIX_CHUNK_ID, prefix),)
+        starts.append(index)
+        cursor = index + len(formatted)
+    bounds = [0, *starts[1:], len(prefix)]
+    return tuple(
+        (_cache_prefix_chunk_id(i), prefix[bounds[i] : bounds[i + 1]])
+        for i in range(len(documents))
+    )
+
+
 def benchmark_cache_source_document(
     example: BenchmarkExample,
     *,
     document_id: str | None = None,
     chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+    segment_per_document: bool = False,
 ) -> SourceDocument:
-    """Represent the exact V1 benchmark cache prefix as a Cachet source document."""
+    """Represent the exact V1 benchmark cache prefix as a Cachet source document.
+
+    With ``segment_per_document`` the prefix is split into one KV chunk per document
+    (tiling the exact prefix text), so the handoff assembles N independently-prefilled
+    document segments instead of one monolithic prefix chunk.
+    """
 
     benchmark_example = _benchmark_example(example)
     resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
+    document_metadata = {
+        "cachet.benchmark.dataset": benchmark_example.dataset,
+        "cachet.benchmark.example_id": benchmark_example.example_id,
+        "cachet.benchmark.role": "cache_prefix",
+    }
+    if segment_per_document:
+        segments = benchmark_cache_prefix_segments(benchmark_example)
+        if len(segments) > 1:
+            return SourceDocument.from_texts(
+                document_id=resolved_document_id,
+                chunks={segment_chunk_id: text for segment_chunk_id, text in segments},
+                metadata=document_metadata,
+                chunk_metadata={
+                    segment_chunk_id: {"cachet.benchmark.prompt_part": f"document_segment_{index}"}
+                    for index, (segment_chunk_id, _text) in enumerate(segments)
+                },
+            )
     return SourceDocument.from_text(
         document_id=resolved_document_id,
         text=build_cache_prefix_text(benchmark_example),
         chunk_id=chunk_id,
-        metadata={
-            "cachet.benchmark.dataset": benchmark_example.dataset,
-            "cachet.benchmark.example_id": benchmark_example.example_id,
-            "cachet.benchmark.role": "cache_prefix",
-        },
+        metadata=document_metadata,
         chunk_metadata={
             "cachet.benchmark.prompt_part": "system_prompt_and_document_context",
         },
@@ -459,12 +562,31 @@ def benchmark_cache_request(
     document_id: str | None = None,
     chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+    segment_per_document: bool = False,
 ) -> DocumentKVRequest:
-    """Build the Cachet request that materializes this example's cached prefix."""
+    """Build the Cachet request that materializes this example's cached prefix.
+
+    With ``segment_per_document`` the request selects the N per-document prefix chunks
+    (in order) so ``CachePlanner`` emits an N-segment contiguous plan. Chunk ids must
+    match :func:`benchmark_cache_source_document`.
+    """
 
     benchmark_example = _benchmark_example(example)
     resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
     resolved_request_id = request_id or benchmark_cache_artifact_stem(benchmark_example, prefix=prefix)
+    if segment_per_document:
+        segments = benchmark_cache_prefix_segments(benchmark_example)
+        if len(segments) > 1:
+            return DocumentKVRequest.for_document_chunks(
+                request_id=resolved_request_id,
+                task_id=task_id or f"v1-benchmark-{benchmark_example.dataset}",
+                model_id=model_id,
+                lora_id=lora_id,
+                prompt_template_version=prompt_template_version,
+                document_id=resolved_document_id,
+                chunk_ids=tuple(segment_chunk_id for segment_chunk_id, _text in segments),
+                include_static=False,
+            )
     return DocumentKVRequest.for_text_document(
         request_id=resolved_request_id,
         task_id=task_id or f"v1-benchmark-{benchmark_example.dataset}",

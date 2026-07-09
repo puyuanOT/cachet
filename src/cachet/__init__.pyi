@@ -401,6 +401,12 @@ from document_kv_cache.models import (
     chunk_types_for_request as chunk_types_for_request,
 )
 
+from document_kv_cache.methods import (
+    METHOD_SPECS as METHOD_SPECS,
+    MethodSpec as MethodSpec,
+    method_spec as method_spec,
+)
+
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_ADAPTER_CONTRACT as NATIVE_PROBE_ADAPTER_CONTRACT,
     NATIVE_PROBE_DELEGATE_CONTRACT_ATTR as NATIVE_PROBE_DELEGATE_CONTRACT_ATTR,

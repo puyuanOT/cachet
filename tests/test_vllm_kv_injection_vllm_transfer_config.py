@@ -16,9 +16,12 @@ from vllm_kv_injection.vllm_transfer_config import (
     DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
     DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,
     DOCUMENT_KV_TRANSFER_CONFIG_SCHEMA_VERSION,
+    MULTI_CONNECTOR_CLASS,
     document_kv_transfer_config,
     document_kv_transfer_config_json,
     main,
+    multi_connector_transfer_config,
+    multi_connector_transfer_config_json,
 )
 
 
@@ -53,6 +56,43 @@ def test_document_kv_transfer_config_defaults_to_native_provider_factory():
 
     extra = config["kv_connector_extra_config"]
     assert extra["document_kv.provider_factory"] == DOCUMENT_KV_NATIVE_PROVIDER_FACTORY
+
+
+def test_multi_connector_transfer_config_orders_cachet_first_lmcache_second():
+    cachet_child = document_kv_transfer_config()
+    lmcache_child = {"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}
+
+    config = multi_connector_transfer_config(connectors=[cachet_child, lmcache_child])
+
+    assert config["kv_connector"] == MULTI_CONNECTOR_CLASS
+    assert config["kv_role"] == DOCUMENT_KV_DEFAULT_ROLE
+    children = config["kv_connector_extra_config"]["connectors"]
+    # Order matters: MultiConnector loads from the first child that matches, so
+    # Cachet (which only matches turn-1 document handoffs) must precede LMCache.
+    assert children[0]["kv_connector"] == DOCUMENT_KV_CONNECTOR_CLASS
+    assert children[0]["kv_connector_module_path"] == DOCUMENT_KV_CONNECTOR_MODULE_PATH
+    assert children[1]["kv_connector"] == "LMCacheConnectorV1"
+
+
+def test_multi_connector_transfer_config_json_round_trips():
+    payload = json.loads(
+        multi_connector_transfer_config_json(
+            connectors=[
+                document_kv_transfer_config(),
+                {"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"},
+            ]
+        )
+    )
+    assert payload["kv_connector"] == MULTI_CONNECTOR_CLASS
+    assert [child["kv_connector"] for child in payload["kv_connector_extra_config"]["connectors"]] == [
+        DOCUMENT_KV_CONNECTOR_CLASS,
+        "LMCacheConnectorV1",
+    ]
+
+
+def test_multi_connector_transfer_config_requires_two_children():
+    with pytest.raises(ValueError, match="at least two"):
+        multi_connector_transfer_config(connectors=[document_kv_transfer_config()])
 
 
 def test_document_kv_transfer_config_accepts_custom_handoff_source_factory():

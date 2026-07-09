@@ -7,8 +7,8 @@ decode, routing, and cleanup.
 
 Use this guide when wiring the current provider-backed vLLM or SGLang paths into
 a deployment. For benchmark evidence, start with the research-style tables in
-`benchmarks/`; current committed benchmark evidence lives under
-`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`.
+`benchmarks/`; historical A10G warm-prefix evidence (predating the current g6/L4
+protocol) lives under `benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`.
 
 ## Launch Configs
 
@@ -118,8 +118,9 @@ dataset payloads, or local `databricks-runs/` output.
 
 ## Evidence
 
-The current public benchmark evidence is tracked in
-`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`. Refresh that
-appendix folder, the strict release bundle, and
+The current benchmark tables live in `benchmarks/README.md`; historical A10G
+warm-prefix provenance is tracked in
+`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`. Refresh the benchmark
+tables, the strict release bundle, and
 `docs/v1-requirements-matrix.md` whenever benchmark code, runtime pins,
 connector contracts, launch-config fields, or package wheel identity change.

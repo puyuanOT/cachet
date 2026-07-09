@@ -96,6 +96,9 @@ return as a production dependency.
   for native vLLM/SGLang cache-arm requests.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.
 - `materializer.py` loads planned chunks into merged or segmented payloads.
+- `methods.py` maps each benchmark method to its KV pre-computation (post-RoPE
+  vs pre-RoPE, selective recompute) and serving connector through `MethodSpec` /
+  `METHOD_SPECS`.
 - `model_profiles.py` defines model attention geometry, portable JSON profile
   artifacts, and Qwen3 layout helpers.
 - `models.py` defines cache keys, chunk references, request models, and
@@ -123,6 +126,9 @@ return as a production dependency.
   coverage and absence of tracked or untracked generated/secret-like artifacts
   that Git exposes, plus README/package-docstring coverage for repository
   directories.
+- `rope.py` provides the shared rotate-half rotary-position-embedding helper
+  (`apply_rope_to_keys`, `rope_cos_sin`) used to store position-independent
+  pre-RoPE keys and re-rope them to their true offset during KV injection.
 - `runtime_kv_offload_probe.py` writes an empirical evidence record for
   platform-native runtime KV offload launch config and Cachet hierarchical
   document-KV persistence behavior.

@@ -11,8 +11,10 @@ __all__ = [
     "DTYPE_BYTE_WIDTHS",
     "AttentionMechanism",
     "KVStorageLayout",
+    "KVPayloadAxisOrder",
     "dtype_byte_width",
     "kv_storage_layout_from_value",
+    "kv_payload_axis_order_from_value",
     "KVLayout",
     "KVSegment",
     "KVCacheHandle",
@@ -49,6 +51,21 @@ class KVStorageLayout(StrEnum):
     SHARED_KEY_VALUE = "shared_key_value"
 
 
+class KVPayloadAxisOrder(StrEnum):
+    """Ordering of the outer axes in the serialized KV payload blob.
+
+    ``token_major`` lays the payload out as ``[token, layer, K/V, kv_head,
+    head_dim]`` so a token span is one contiguous read but a single layer is
+    strided. ``layer_major`` lays it out as ``[layer, token, K/V, kv_head,
+    head_dim]`` so a single layer's token span is one contiguous read, which is
+    what enables LMCache-style per-layer streaming (overlap a layer's disk read
+    and host->device copy with the previous layer's attention compute).
+    """
+
+    TOKEN_MAJOR = "token_major"
+    LAYER_MAJOR = "layer_major"
+
+
 def dtype_byte_width(dtype: str) -> int:
     if not isinstance(dtype, str):
         raise ValueError("dtype must be a string")
@@ -76,6 +93,16 @@ class KVLayout:
     kv_stride_bytes: int | None = None
     shares_kv_storage: bool = False
     storage_layout: KVStorageLayout | str | None = None
+    payload_axis_order: KVPayloadAxisOrder | str = KVPayloadAxisOrder.TOKEN_MAJOR
+    # Pre-RoPE keys: when True the stored K is captured before rotary position
+    # embedding (post QK-norm for Qwen3), so a cached chunk is position-independent
+    # and must be re-roped at its true absolute offset during injection. rope_theta
+    # (and optionally rope_rotary_dim, defaulting to head_size) make the payload
+    # self-describing so the injector needs no external model handle. Default False
+    # preserves the legacy post-RoPE behavior.
+    pre_rope: bool = False
+    rope_theta: float | None = None
+    rope_rotary_dim: int | None = None
 
     def __post_init__(self) -> None:
         if self.storage_layout is None:
@@ -88,6 +115,11 @@ class KVLayout:
             self,
             "storage_layout",
             kv_storage_layout_from_value(storage_layout, field_name="storage_layout"),
+        )
+        object.__setattr__(
+            self,
+            "payload_axis_order",
+            kv_payload_axis_order_from_value(self.payload_axis_order, field_name="payload_axis_order"),
         )
 
     @property
@@ -135,6 +167,11 @@ class KVLayout:
         _validate_optional_positive_integer("kv_stride_bytes", self.kv_stride_bytes)
         if type(self.shares_kv_storage) is not bool:
             raise ValueError("shares_kv_storage must be a boolean")
+        if type(self.pre_rope) is not bool:
+            raise ValueError("pre_rope must be a boolean")
+        if self.pre_rope and not (isinstance(self.rope_theta, (int, float)) and self.rope_theta > 0):
+            raise ValueError("pre_rope=True requires a positive rope_theta")
+        _validate_optional_positive_integer("rope_rotary_dim", self.rope_rotary_dim)
         attention_fields = (
             self.num_query_heads,
             self.num_kv_heads,
@@ -187,6 +224,19 @@ def kv_storage_layout_from_value(
         value = value.strip().lower()
     try:
         return value if isinstance(value, KVStorageLayout) else KVStorageLayout(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Unsupported {field_name} {value!r}") from exc
+
+
+def kv_payload_axis_order_from_value(
+    value: KVPayloadAxisOrder | str,
+    *,
+    field_name: str = "payload_axis_order",
+) -> KVPayloadAxisOrder:
+    if isinstance(value, str):
+        value = value.strip().lower()
+    try:
+        return value if isinstance(value, KVPayloadAxisOrder) else KVPayloadAxisOrder(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"Unsupported {field_name} {value!r}") from exc
 

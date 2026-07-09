@@ -63,6 +63,8 @@ class CacheGenerationMethod(StrEnum):
     VANILLA_PREFILL = "vanilla_prefill"
     ADAPTER_TRAINED = "adapter_trained"
     KV_PACKET = "kv_packet"
+    CACHEBLEND = "cacheblend"
+    INFOFLOW_KV = "infoflow_kv"
     CUSTOM = "custom"
 
 

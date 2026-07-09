@@ -119,7 +119,7 @@ and release evidence in one repository. The human entry points are:
   `databricks-runs/` scratch output.
 - [`benchmarks/README.md`](../../benchmarks/) is the research-style
   benchmark answer; [`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/)
-  preserves the current Q4-weight + Q8-document-KV evidence.
+  preserves historical A10G warm-prefix evidence (predates the current g6/L4 protocol).
 - [`src/cachet/README.md`](../../src/cachet/) describes the Cachet-branded public
   facade; [`src/document_kv_cache/README.md`](../../src/document_kv_cache/) describes
   the implementation package and migration boundary.
@@ -920,7 +920,7 @@ Curated, human-readable benchmark reports are tracked in
 [`benchmarks/README.md`](../../benchmarks/README.md). Start there for the
 primary comparison table and ablations, then open
 [`benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](../../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/)
-for committed evidence and Databricks run provenance. Historical benchmark
+for historical A10G warm-prefix evidence and Databricks run provenance. Historical benchmark
 records are intentionally not kept in `benchmarks/`; use git history or release
 bundles for audit-only retrieval. Every durable Databricks benchmark under the
 current protocol should update the stable current appendix folder with a

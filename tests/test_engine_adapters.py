@@ -42,9 +42,17 @@ from document_kv_cache.engine_adapters import (
     view_engine_adapter_payload,
     vllm_adapter_spec,
     write_engine_adapter_request_json,
+    _layout_from_record,
+    _layout_to_record,
 )
 from document_kv_cache.engine import EngineReadyRequest
-from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment, KVStorageLayout
+from document_kv_cache.engine_protocol import (
+    KVCacheHandle,
+    KVLayout,
+    KVPayloadAxisOrder,
+    KVSegment,
+    KVStorageLayout,
+)
 from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer
@@ -87,6 +95,23 @@ def layout() -> KVLayout:
         kv_stride_bytes=128,
         shares_kv_storage=True,
     )
+
+
+def test_layout_record_round_trips_payload_axis_order():
+    token_major = layout()
+    layer_major = replace(token_major, payload_axis_order="layer_major")
+
+    token_record = _layout_to_record(token_major)
+    layer_record = _layout_to_record(layer_major)
+
+    assert token_record["payload_axis_order"] == "token_major"
+    assert layer_record["payload_axis_order"] == "layer_major"
+    assert _layout_from_record(token_record).payload_axis_order is KVPayloadAxisOrder.TOKEN_MAJOR
+    assert _layout_from_record(layer_record).payload_axis_order is KVPayloadAxisOrder.LAYER_MAJOR
+
+    legacy_record = {key: value for key, value in token_record.items() if key != "payload_axis_order"}
+    assert "payload_axis_order" not in legacy_record
+    assert _layout_from_record(legacy_record).payload_axis_order is KVPayloadAxisOrder.TOKEN_MAJOR
 
 
 def segment_binding(
@@ -271,6 +296,10 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
         "kv_stride_bytes": 128,
         "shares_kv_storage": True,
         "storage_layout": "shared_key_value",
+        "payload_axis_order": "token_major",
+        "pre_rope": False,
+        "rope_theta": None,
+        "rope_rotary_dim": None,
         "attention_mechanism": "gqa",
         "query_heads_per_kv_head": 4,
     }
@@ -940,6 +969,10 @@ def test_engine_kv_connector_probe_result_record_validates_native_probe_evidence
             "kv_stride_bytes": 128,
             "shares_kv_storage": True,
             "storage_layout": "shared_key_value",
+            "payload_axis_order": "token_major",
+            "pre_rope": False,
+            "rope_theta": None,
+            "rope_rotary_dim": None,
             "attention_mechanism": "gqa",
             "query_heads_per_kv_head": 4,
         },

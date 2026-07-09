@@ -243,6 +243,79 @@ def test_run_benchmark_suite_uses_unique_engine_request_ids_for_cache_repeats():
     assert all(request.kv_transfer_params == kv_transfer_params for request in cache.requests)
 
 
+def test_run_benchmark_suite_groups_example_repeats_by_default():
+    suite = BenchmarkSuite(
+        suite_id="v1-smoke",
+        examples=(
+            example(example_id="biography-1"),
+            example(example_id="biography-2"),
+            example(example_id="biography-3"),
+        ),
+    )
+    baseline_arm = BenchmarkArm(arm_id=BASELINE_PREFILL_ARM, uses_cache=False, description="baseline")
+    engine = RecordingEngine()
+
+    run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: engine},
+        arms=(baseline_arm,),
+        repeats=2,
+        request_parallelism=1,
+    )
+
+    assert [(request.example.example_id, request.repeat_index) for request in engine.requests] == [
+        ("biography-1", 1),
+        ("biography-1", 2),
+        ("biography-2", 1),
+        ("biography-2", 2),
+        ("biography-3", 1),
+        ("biography-3", 2),
+    ]
+
+
+def test_run_benchmark_suite_interleave_examples_round_robins_across_examples():
+    suite = BenchmarkSuite(
+        suite_id="v1-smoke",
+        examples=(
+            example(example_id="biography-1"),
+            example(example_id="biography-2"),
+            example(example_id="biography-3"),
+        ),
+    )
+    baseline_arm = BenchmarkArm(arm_id=BASELINE_PREFILL_ARM, uses_cache=False, description="baseline")
+    engine = RecordingEngine()
+
+    run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: engine},
+        arms=(baseline_arm,),
+        repeats=2,
+        request_parallelism=1,
+        interleave_examples=True,
+    )
+
+    ordered = [(request.example.example_id, request.repeat_index) for request in engine.requests]
+    # Each repeat cycle visits every example once before repeating, so a
+    # request_parallelism=3 wave would draw from three distinct examples.
+    assert ordered == [
+        ("biography-1", 1),
+        ("biography-2", 1),
+        ("biography-3", 1),
+        ("biography-1", 2),
+        ("biography-2", 2),
+        ("biography-3", 2),
+    ]
+    # Interleaving is a pure reordering: identical membership to the grouped order.
+    assert sorted(ordered) == [
+        ("biography-1", 1),
+        ("biography-1", 2),
+        ("biography-2", 1),
+        ("biography-2", 2),
+        ("biography-3", 1),
+        ("biography-3", 2),
+    ]
+
+
 def test_benchmark_generation_validates_output_timing_tokens_and_metadata():
     generation = BenchmarkGeneration(
         output_text="",
@@ -460,6 +533,7 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
         "datasets": ["biography", "hotpotqa", "musique", "niah"],
         "examples": 1,
         "request_parallelism": 1,
+        "isolate_arms": True,
     }
     assert record["measurements"][0]["exact_match"] is False
     assert record["measurements"][1]["answer_found"] is True
@@ -722,6 +796,57 @@ def test_run_benchmark_suite_issues_requests_concurrently():
     assert benchmark_run_result_to_record(result)["suite"]["request_parallelism"] == 4
 
 
+def test_run_benchmark_suite_isolates_arms_by_default():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: RecordingEngine(),
+        },
+        repeats=3,
+    )
+
+    # With isolation the measurements are grouped by arm (all of one arm, then the
+    # other) rather than interleaved per example/repeat.
+    assert [measurement.arm_id for measurement in result.measurements] == [
+        BASELINE_PREFILL_ARM,
+        BASELINE_PREFILL_ARM,
+        BASELINE_PREFILL_ARM,
+        CACHE_REUSE_ARM,
+        CACHE_REUSE_ARM,
+        CACHE_REUSE_ARM,
+    ]
+    assert result.isolate_arms is True
+    assert benchmark_run_result_to_record(result)["suite"]["isolate_arms"] is True
+
+
+def test_run_benchmark_suite_no_isolate_arms_interleaves_arms():
+    suite = BenchmarkSuite(suite_id="v1-smoke", examples=(example(),))
+
+    result = run_benchmark_suite(
+        suite,
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: RecordingEngine(),
+        },
+        repeats=3,
+        isolate_arms=False,
+    )
+
+    assert [measurement.arm_id for measurement in result.measurements] == [
+        BASELINE_PREFILL_ARM,
+        CACHE_REUSE_ARM,
+        BASELINE_PREFILL_ARM,
+        CACHE_REUSE_ARM,
+        BASELINE_PREFILL_ARM,
+        CACHE_REUSE_ARM,
+    ]
+    assert result.isolate_arms is False
+    assert benchmark_run_result_to_record(result)["suite"]["isolate_arms"] is False
+
+
 def test_seeded_shuffle_uses_dataset_and_example_identity():
     suite = BenchmarkSuite(
         suite_id="v1-shared-local-id",
@@ -741,6 +866,9 @@ def test_seeded_shuffle_uses_dataset_and_example_identity():
         repeats=4,
         shuffle=True,
         seed=1,
+        # Observe the interleaved shuffle order directly; arm isolation would regroup
+        # measurements by arm and hide the per-example shuffle ordering under test here.
+        isolate_arms=False,
     )
 
     arm_order_by_dataset = {

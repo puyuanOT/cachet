@@ -45,6 +45,8 @@ from document_kv_cache.vllm_smoke import (
     build_prompt_token_budget_rows,
     build_vllm_native_provider_probe_record,
     build_vllm_server_args,
+    write_lmcache_config,
+    _build_lmcache_pass_args,
     cuda_wheel_env_paths,
     dataset_args,
     dependency_constraints,
@@ -54,6 +56,7 @@ from document_kv_cache.vllm_smoke import (
     apply_vllm_runtime_patches,
     install_document_kv_package,
     install_vllm,
+    kv_transfer_config_json,
     parse_args,
     parse_dataset_specs,
     prepare_generated_benchmark_handoffs,
@@ -431,6 +434,184 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert "--trust-remote-code" in args
     assert "--no-enable-log-requests" in args
     assert "--disable-log-requests" not in args
+
+
+def test_vllm_server_args_default_mode_uses_cachet_connector(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="cachet-mode",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+    decoded = json.loads(args[args.index("--kv-transfer-config") + 1])
+    assert decoded["kv_connector"] == "DocumentKVConnector"
+    assert "--enable-prefix-caching" in args
+
+
+def test_vllm_server_args_lmcache_mode_uses_lmcache_connector(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="lmcache-mode",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        kv_connector_mode="lmcache",
+    )
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+    decoded = json.loads(args[args.index("--kv-transfer-config") + 1])
+    assert decoded == {"kv_connector": "LMCacheConnectorV1", "kv_role": "kv_both"}
+    # LMCache manages reuse; vLLM prefix caching must be off to avoid double caching.
+    assert "--enable-prefix-caching" not in args
+
+
+def test_build_multi_turn_followup_prompt_preserves_prior_conversation():
+    from document_kv_cache.vllm_smoke import build_multi_turn_followup_prompt
+
+    turn1_prompt = "Document A ... question 1"
+    turn1_response = " answer one"
+    followup = "question 2"
+    result = build_multi_turn_followup_prompt(turn1_prompt, turn1_response, followup)
+    # The exact prior text must remain a prefix so the engine reuses the resident KV.
+    assert result.startswith(turn1_prompt + turn1_response)
+    assert result.endswith("question 2\n")
+    # Chaining a second follow-up keeps growing the same prefix.
+    chained = build_multi_turn_followup_prompt(result, " answer two", "question 3")
+    assert chained.startswith(result + " answer two")
+
+
+def test_vllm_server_args_multi_mode_wraps_cachet_then_lmcache(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="multi-mode",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        kv_connector_mode="multi",
+    )
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+    decoded = json.loads(args[args.index("--kv-transfer-config") + 1])
+    assert decoded["kv_connector"] == "MultiConnector"
+    children = decoded["kv_connector_extra_config"]["connectors"]
+    assert [child["kv_connector"] for child in children] == [
+        "DocumentKVConnector",
+        "LMCacheConnectorV1",
+    ]
+    # Hybrid path keeps vLLM prefix caching on for turn-2+ continuation.
+    assert "--enable-prefix-caching" in args
+    # MultiConnector prom-metrics path asserts on Cachet's stats-without-prom-metrics;
+    # server-side stat logging is disabled for the hybrid arm to avoid it.
+    assert "--disable-log-stats" in args
+
+
+def test_write_lmcache_config_targets_disk_tier_with_odirect(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="lm-cfg",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        kv_connector_mode="lmcache",
+        lmcache_local_dir=str(tmp_path / "store"),
+        lmcache_max_disk_gb=64.0,
+        lmcache_chunk_size=256,
+    )
+    path = write_lmcache_config(config)
+    payload = json.loads(path.read_text())
+    assert payload["local_cpu"] is False
+    assert payload["local_disk"] == f"file://{tmp_path / 'store'}/"
+    assert payload["max_local_disk_size"] == 64.0
+    assert payload["chunk_size"] == 256
+    assert payload["extra_config"]["use_odirect"] is True
+
+
+def test_lmcache_pass_args_use_baseline_arm_without_cache_salt(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="lm-pass",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        kv_connector_mode="lmcache",
+        request_parallelism=8,
+        force_max_tokens=True,
+    )
+    dataset_paths = {"biography": tmp_path / "biography.jsonl"}
+    args = _build_lmcache_pass_args(config, dataset_paths, tmp_path / "cold.json", "cold")
+    assert args[args.index("--arm") + 1] == "baseline_prefill"
+    assert args[args.index("--request-parallelism") + 1] == "8"
+    assert args[args.index("--output-json") + 1] == str(tmp_path / "cold.json")
+    assert "--cache-base-url" not in args
+    assert "cache_salt" not in " ".join(args)
+    # forced-decode parity with the Cachet arm
+    assert json.loads(args[args.index("--baseline-extra-body-json") + 1]) == {"ignore_eos": True}
+
+
+def test_parse_args_wires_lmcache_options(tmp_path):
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "lm-1",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--kv-connector-mode",
+            "lmcache",
+            "--lmcache-max-disk-gb",
+            "100",
+            "--lmcache-chunk-size",
+            "512",
+            "--lmcache-local-dir",
+            "/local_disk0/lm",
+        ]
+    )
+    assert config.kv_connector_mode == "lmcache"
+    assert config.lmcache_max_disk_gb == 100.0
+    assert config.lmcache_chunk_size == 512
+    assert config.lmcache_local_dir == "/local_disk0/lm"
+
+
+def test_vllm_config_rejects_unknown_kv_connector_mode(tmp_path):
+    with pytest.raises(ValueError, match="kv_connector_mode"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="bad-mode",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            kv_connector_mode="redis",
+        )
+
+
+def test_parse_args_wires_system_prompt_position(tmp_path):
+    base = ["--benchmark-id", "sp-1", "--output-dir", str(tmp_path / "out")]
+
+    default_config = parse_args(base)
+    assert default_config.system_prompt_position == "start"
+    assert build_metadata(default_config)["benchmark_system_prompt_position"] == "start"
+
+    end_config = parse_args(base + ["--system-prompt-position", "end"])
+    assert end_config.system_prompt_position == "end"
+    assert build_metadata(end_config)["benchmark_system_prompt_position"] == "end"
+
+
+def test_vllm_config_rejects_unknown_system_prompt_position(tmp_path):
+    with pytest.raises(ValueError, match="system_prompt_position"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="bad-position",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            system_prompt_position="middle",
+        )
+
+
+def test_vllm_server_args_omit_data_parallel_by_default(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="dp-default",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+    )
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+    assert "--data-parallel-size" not in args
+
+
+def test_vllm_server_args_emit_data_parallel_size_when_set(tmp_path):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="dp-8",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        data_parallel_size=8,
+    )
+    args = build_vllm_server_args(config, tmp_path / "venv" / "bin" / "python")
+    assert args[args.index("--data-parallel-size") + 1] == "8"
 
 
 def test_vllm_server_args_include_payload_cache_budget(tmp_path):
@@ -1292,6 +1473,26 @@ def test_validate_prepared_benchmark_handoffs_skips_baseline_only_prepared_run(t
     assert not config.prepared_handoff_coverage_path.exists()
 
 
+def test_multi_mode_requires_prepared_handoff_metadata_for_baseline_only(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-multi-baseline-only",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        benchmark_arms=("baseline_prefill",),
+        kv_connector_mode="multi",
+    )
+
+    # The hybrid multi-turn probe always injects a Cachet turn-1 handoff, so a prepared
+    # multi run must validate handoff coverage even with baseline-only client arms
+    # (otherwise the multi-turn artifact is emitted without loadable handoffs).
+    assert config.requires_prepared_handoff_metadata is True
+    with pytest.raises(ValueError, match="kv_transfer_params"):
+        validate_prepared_benchmark_handoffs(config, dataset_paths)
+
+
 def test_validate_prepared_benchmark_handoffs_writes_ok_artifact(tmp_path):
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=True)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
@@ -1373,6 +1574,24 @@ def test_metadata_records_payload_cache_budget(tmp_path):
         payload_cache_max_bytes=4096,
         telemetry_jsonl=str(config.connector_telemetry_path),
     )
+
+
+@pytest.mark.parametrize("mode", ["lmcache", "multi"])
+def test_metadata_records_launched_transfer_config_for_connector_mode(tmp_path, mode):
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="smoke-mode-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        kv_connector_mode=mode,
+    )
+
+    metadata = build_metadata(config)
+
+    # Provenance must describe the connector the server is actually launched with
+    # (kv_transfer_config_json tracks kv_connector_mode), not the Cachet config, so
+    # provenance-driven reruns reproduce the same LMCache/MultiConnector server.
+    assert metadata["vllm_kv_transfer_config"] == json.loads(kv_transfer_config_json(config))
+    assert metadata["vllm_kv_transfer_config"] != document_kv_transfer_config_for_smoke(config)
 
 
 def test_server_env_defaults_q4_handoff_generator_to_matching_transformers_config(tmp_path, monkeypatch):
@@ -1992,6 +2211,52 @@ def test_run_vllm_smoke_benchmark_orchestrates_and_cleans_up(monkeypatch, tmp_pa
     metadata = build_metadata(config)
     assert metadata["server_base_url"] == "http://127.0.0.1:8123"
     assert metadata["hf_home"] == str(tmp_path / "local" / "hf-cache")
+
+
+def test_run_lmcache_cold_benchmark_preflights_prompt_token_budget(monkeypatch, tmp_path):
+    calls = []
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="lmcache-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        kv_connector_mode="lmcache",
+    )
+    dataset_paths = {name: tmp_path / f"{name}.jsonl" for name in smoke_dataset_records()}
+    lmcache_cfg = tmp_path / "lmcache-config.json"
+    lmcache_cfg.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(public_vllm_smoke, "create_venv", lambda path: None)
+    monkeypatch.setattr(public_vllm_smoke, "install_vllm", lambda python: None)
+    monkeypatch.setattr(public_vllm_smoke, "install_lmcache", lambda python, version: "0.3.10")
+    monkeypatch.setattr(public_vllm_smoke, "install_document_kv_package", lambda python, install_spec: None)
+    monkeypatch.setattr(public_vllm_smoke, "apply_vllm_runtime_patches", lambda cfg: [])
+    monkeypatch.setattr(public_vllm_smoke, "installed_versions", lambda python: {"vllm_version_installed": "0.23.0"})
+    monkeypatch.setattr(public_vllm_smoke, "write_lmcache_config", lambda cfg: lmcache_cfg)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "probe_lmcache_import",
+        lambda python, output, *, timeout_seconds, env: None,
+    )
+    monkeypatch.setattr(public_vllm_smoke, "benchmark_dataset_paths", lambda cfg: dataset_paths)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "validate_prompt_token_budget",
+        lambda cfg, paths: calls.append(("validate_prompt_token_budget", paths)),
+    )
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "_run_lmcache_two_pass",
+        lambda cfg, paths, warm, measure: calls.append(("_run_lmcache_two_pass", paths)),
+    )
+
+    public_vllm_smoke.run_lmcache_cold_benchmark(config)
+
+    # The context-budget preflight must run before the expensive warm+measure passes
+    # so over-budget prompts fail fast instead of surfacing as late request errors.
+    assert ("validate_prompt_token_budget", dataset_paths) in calls
+    assert calls.index(("validate_prompt_token_budget", dataset_paths)) < calls.index(
+        ("_run_lmcache_two_pass", dataset_paths)
+    )
 
 
 def test_public_vllm_smoke_main_respects_document_namespace_monkeypatch(monkeypatch, tmp_path):

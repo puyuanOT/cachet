@@ -17,6 +17,7 @@ from document_kv_cache.engine_protocol import (
     KVCacheHandle,
     KVLayout,
     KVSegment,
+    kv_payload_axis_order_from_value,
     kv_storage_layout_from_value,
 )
 from document_kv_cache.storage import local_path
@@ -1483,6 +1484,13 @@ def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
             _required_str(layout, "storage_layout"),
             field_name="layout.storage_layout",
         ),
+        payload_axis_order=kv_payload_axis_order_from_value(
+            layout.get("payload_axis_order", "token_major"),
+            field_name="layout.payload_axis_order",
+        ),
+        pre_rope=bool(layout.get("pre_rope", False)),
+        rope_theta=layout.get("rope_theta"),
+        rope_rotary_dim=_optional_positive_int(layout, "rope_rotary_dim"),
     )
     attention_mechanism = layout.get("attention_mechanism")
     expected_attention = kv_layout.attention_mechanism
@@ -1792,6 +1800,10 @@ def _layout_to_record(layout: KVLayout) -> dict[str, Any]:
         "kv_stride_bytes": layout.kv_stride_bytes,
         "shares_kv_storage": layout.shares_kv_storage,
         "storage_layout": layout.storage_layout.value,
+        "payload_axis_order": layout.payload_axis_order.value,
+        "pre_rope": layout.pre_rope,
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
         "attention_mechanism": attention_mechanism.value if attention_mechanism is not None else None,
         "query_heads_per_kv_head": layout.query_heads_per_kv_head,
     }

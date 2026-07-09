@@ -6,12 +6,19 @@ import hashlib
 import json
 import math
 import os
+from contextlib import contextmanager
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from inspect import signature
 from typing import Any
 
-from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout, dtype_byte_width
+from document_kv_cache.engine_protocol import (
+    KVLayout,
+    KVPayloadAxisOrder,
+    KVStorageLayout,
+    dtype_byte_width,
+    kv_payload_axis_order_from_value,
+)
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID, layout_for_model
 from document_kv_cache.models import KVCacheKey
@@ -35,6 +42,10 @@ CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV = "CACHET_TRANSFORMERS_USE_FAST_TOKEN
 CACHET_TRANSFORMERS_QUANTIZATION_ENV = "CACHET_TRANSFORMERS_QUANTIZATION"
 CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV = "CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON"
 CACHET_TRANSFORMERS_DEVICE_MAP_ENV = "CACHET_TRANSFORMERS_DEVICE_MAP"
+# When truthy, capture keys BEFORE rotary position embedding (post QK-norm for
+# Qwen3) so a cached chunk is position-independent and re-roped at its true offset
+# during injection. Fixes multi-document positional inconsistency.
+CACHET_TRANSFORMERS_PRE_ROPE_ENV = "CACHET_TRANSFORMERS_PRE_ROPE"
 _CACHE_AXIS_ORDER_HEAD_MAJOR = "head_major"
 _CACHE_AXIS_ORDER_TOKEN_MAJOR = "token_major"
 _CACHE_AXIS_ORDERS = frozenset(
@@ -66,6 +77,7 @@ __all__ = [
     "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV",
     "CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV",
     "CACHET_TRANSFORMERS_DEVICE_MAP_ENV",
+    "CACHET_TRANSFORMERS_PRE_ROPE_ENV",
     "TransformersKVGeneratorConfig",
     "TransformersKVChunkGenerator",
     "build_transformers_kv_chunk_generator",
@@ -163,6 +175,7 @@ class TransformersKVChunkGenerator:
         layout: KVLayout | None = None,
         add_special_tokens: bool = False,
         cache_axis_order: str = _CACHE_AXIS_ORDER_HEAD_MAJOR,
+        pre_rope: bool = False,
     ) -> None:
         if model is None:
             raise TypeError("model must be provided")
@@ -177,6 +190,11 @@ class TransformersKVChunkGenerator:
         self.layout = layout
         self.add_special_tokens = add_special_tokens
         self.cache_axis_order = _cache_axis_order_from_value(cache_axis_order)
+        self.pre_rope = bool(pre_rope)
+        self.rope_theta: float | None = None
+        self.rope_rotary_dim: int | None = None
+        if self.pre_rope:
+            self.rope_theta, self.rope_rotary_dim = _model_rope_params(model)
 
     @classmethod
     def from_pretrained(
@@ -184,6 +202,7 @@ class TransformersKVChunkGenerator:
         config: TransformersKVGeneratorConfig | None = None,
         *,
         layout: KVLayout | None = None,
+        pre_rope: bool = False,
     ) -> "TransformersKVChunkGenerator":
         """Load a causal LM/tokenizer pair with optional runtime dependencies."""
 
@@ -232,6 +251,7 @@ class TransformersKVChunkGenerator:
             layout=layout,
             add_special_tokens=resolved.add_special_tokens,
             cache_axis_order=resolved.cache_axis_order,
+            pre_rope=pre_rope,
         )
 
     def generate(
@@ -255,11 +275,22 @@ class TransformersKVChunkGenerator:
             raise ValueError("tokenized chunk must contain at least one token")
         inputs = _inputs_to_device(inputs, _model_device(self.model))
         forward_kwargs = _kv_generation_forward_kwargs(self.model)
-        with torch.no_grad():
-            outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
-        past_key_values = _past_key_values(outputs)
+        if self.pre_rope:
+            with torch.no_grad(), _capture_pre_rope_keys(self.model) as captured_keys:
+                outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
+            post_cache = _legacy_past_key_values(_past_key_values(outputs))
+            source_cache = _pre_rope_cache(
+                captured_keys,
+                post_cache,
+                rope_theta=self.rope_theta,
+                rotary_dim=self.rope_rotary_dim,
+            )
+        else:
+            with torch.no_grad():
+                outputs = self.model(**inputs, use_cache=True, **forward_kwargs)
+            source_cache = _past_key_values(outputs)
         payload = _payload_from_past_key_values(
-            past_key_values,
+            source_cache,
             token_count=token_count,
             layout=layout,
             cache_axis_order=self.cache_axis_order,
@@ -317,7 +348,10 @@ def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
         model_kwargs=_env_json_object(CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV),
         tokenizer_kwargs=_tokenizer_kwargs_from_env(),
     )
-    return TransformersKVChunkGenerator.from_pretrained(config)
+    return TransformersKVChunkGenerator.from_pretrained(
+        config,
+        pre_rope=_env_bool(CACHET_TRANSFORMERS_PRE_ROPE_ENV, default=False),
+    )
 
 
 def _tokenizer_kwargs_from_env() -> dict[str, Any]:
@@ -336,6 +370,7 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
             lora_id=config.lora_id,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
+            payload_axis_order=config.payload_axis_order,
         )
     else:
         layout = explicit_layout
@@ -346,6 +381,7 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         "dtype": config.dtype,
         "layout_version": config.layout_version,
         "storage_layout": config.storage_layout,
+        "payload_axis_order": kv_payload_axis_order_from_value(config.payload_axis_order),
     }
     actual = {
         "model_id": layout.model_id,
@@ -353,6 +389,7 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         "dtype": layout.dtype,
         "layout_version": layout.layout_version,
         "storage_layout": layout.storage_layout,
+        "payload_axis_order": layout.payload_axis_order,
     }
     mismatches = tuple(name for name, value in expected.items() if actual[name] != value)
     if mismatches:
@@ -412,15 +449,27 @@ def _payload_from_past_key_values(
             cache_axis_order=cache_axis_order,
         )
         layer_values = _layer_values(key_values, value_values, dtype=dtype, layout=layout)
+        layer_major = layout.payload_axis_order == KVPayloadAxisOrder.LAYER_MAJOR
         if payload_tensor is None:
             # Keep the full token/layer payload in CPU memory; long L4 runs cannot
             # afford an extra all-layer stack on top of model-owned GPU KV tensors.
+            # token-major: [token, layer, K/V, kv_head, head_dim]; layer-major:
+            # [layer, token, K/V, kv_head, head_dim] so one layer's token span is
+            # contiguous (enables per-layer streaming in the vLLM provider).
+            outer_shape = (
+                (len(legacy_cache), token_count)
+                if layer_major
+                else (token_count, len(legacy_cache))
+            )
             payload_tensor = torch.empty(
-                (token_count, len(legacy_cache), *tuple(layer_values.shape[1:])),
+                (*outer_shape, *tuple(layer_values.shape[1:])),
                 dtype=layer_values.dtype,
                 device="cpu",
             )
-        payload_tensor[:, layer_index, ...].copy_(layer_values)
+        if layer_major:
+            payload_tensor[layer_index].copy_(layer_values)
+        else:
+            payload_tensor[:, layer_index, ...].copy_(layer_values)
         del key_values, value_values, layer_values
         _empty_cuda_cache(torch)
     if payload_tensor is None:  # pragma: no cover - layout validation should reject this first.
@@ -581,6 +630,199 @@ def _model_device(model: object) -> object | None:
         except (StopIteration, TypeError):
             return None
     return None
+
+
+def _model_rope_params(model: object) -> tuple[float, int]:
+    """Read ``(rope_theta, rotary_dim)`` from a loaded HF model.
+
+    Robust across transformers versions: newer configs moved the rope base into a
+    ``rope_parameters``/``rope_scaling`` dict instead of a top-level ``rope_theta``,
+    and multimodal configs nest it under ``text_config``/``get_text_config()``. As a
+    version-agnostic fallback the base is derived from the rotary embedding's
+    ``inv_freq`` buffer. Correctness is ultimately gated by the generation self-check.
+    """
+    config = getattr(model, "config", None)
+    configs: list[Any] = []
+    getter = getattr(config, "get_text_config", None)
+    if callable(getter):
+        try:
+            resolved = getter()
+        except Exception:
+            resolved = None
+        if resolved is not None:
+            configs.append(resolved)
+    for candidate in (getattr(config, "text_config", None), config):
+        if candidate is not None and all(candidate is not existing for existing in configs):
+            configs.append(candidate)
+
+    def _find(attr: str) -> Any:
+        for cfg in configs:
+            value = getattr(cfg, attr, None)
+            if value is not None:
+                return value
+        return None
+
+    rope_theta = _find("rope_theta")
+    if rope_theta is None:
+        for key in ("rope_parameters", "rope_scaling"):
+            params = _find(key)
+            if isinstance(params, Mapping):
+                for name in ("rope_theta", "theta", "base"):
+                    if params.get(name) is not None:
+                        rope_theta = params.get(name)
+                        break
+            if rope_theta is not None:
+                break
+
+    head_dim = _find("head_dim")
+    if not head_dim:
+        hidden = _find("hidden_size")
+        heads = _find("num_attention_heads")
+        if hidden and heads:
+            head_dim = int(hidden) // int(heads)
+    partial = _find("partial_rotary_factor") or 1.0
+
+    if rope_theta is None or not head_dim:
+        theta_iv, rotary_dim_iv = _rope_params_from_inv_freq(model)
+        if rope_theta is None:
+            rope_theta = theta_iv
+        if not head_dim and rotary_dim_iv:
+            head_dim = rotary_dim_iv
+            partial = 1.0
+
+    if rope_theta is None:
+        sample = sorted({k for cfg in configs for k in vars(cfg)}) if configs else []
+        raise ValueError(
+            "model config does not expose rope_theta (checked rope_theta, rope_parameters, "
+            f"rope_scaling, and rotary inv_freq); available config attrs: {sample[:50]}"
+        )
+    if not head_dim:
+        raise ValueError("model config does not expose head_dim; cannot store pre-RoPE keys")
+    rotary_dim = int(round(int(head_dim) * float(partial)))
+    if rotary_dim % 2 != 0:
+        rotary_dim -= 1
+    return float(rope_theta), int(rotary_dim)
+
+
+def _rope_params_from_inv_freq(model: object) -> tuple[float | None, int | None]:
+    """Derive ``(rope_theta, rotary_dim)`` from a rotary embedding's ``inv_freq`` buffer.
+
+    For standard RoPE ``inv_freq[i] = theta**(-2i/rotary_dim)``, so a log-linear fit
+    of ``inv_freq`` recovers ``theta`` and ``2*len(inv_freq)`` is the rotary dim. This
+    is independent of config attribute names; a non-power-law schedule (e.g. YaRN) is
+    caught by the generation self-check.
+    """
+    torch = _torch()
+    modules = getattr(model, "modules", None)
+    if not callable(modules):
+        return None, None
+    for module in modules():
+        inv = getattr(module, "inv_freq", None)
+        if inv is None or not hasattr(inv, "numel") or inv.numel() < 2:
+            continue
+        inv = inv.detach().to("cpu", torch.float64)
+        rotary_dim = int(inv.numel() * 2)
+        idx = torch.arange(inv.numel(), dtype=torch.float64)
+        log_inv = torch.log(inv)
+        denom = float(((idx - idx.mean()) ** 2).sum())
+        if denom <= 0:
+            continue
+        slope = float(((idx - idx.mean()) * (log_inv - log_inv.mean())).sum() / denom)
+        theta = math.exp(-slope * rotary_dim / 2.0)
+        if theta > 1.0:
+            return float(theta), rotary_dim
+    return None, None
+
+
+@contextmanager
+def _capture_pre_rope_keys(model: object):
+    """Patch the model module's ``apply_rotary_pos_emb`` to record pre-RoPE keys.
+
+    Yields a list that, after the forward pass, holds one key tensor per attention
+    layer (in execution order), each captured BEFORE rotary is applied (for Qwen3
+    this is post-QK-norm). The original function is always restored.
+    """
+    import importlib
+
+    module_name = type(model).__module__
+    module = importlib.import_module(module_name)
+    original = getattr(module, "apply_rotary_pos_emb", None)
+    if not callable(original):
+        raise RuntimeError(
+            f"cannot capture pre-RoPE keys: module {module_name!r} has no callable "
+            "apply_rotary_pos_emb (model architecture unsupported for pre-RoPE storage)"
+        )
+    captured: list[Any] = []
+
+    def _patched(q: Any, k: Any, *args: Any, **kwargs: Any) -> Any:
+        captured.append(k.detach())
+        return original(q, k, *args, **kwargs)
+
+    setattr(module, "apply_rotary_pos_emb", _patched)
+    try:
+        yield captured
+    finally:
+        setattr(module, "apply_rotary_pos_emb", original)
+
+
+def _pre_rope_cache(
+    captured_keys: list[Any],
+    post_cache: tuple[Any, ...],
+    *,
+    rope_theta: float | None,
+    rotary_dim: int | None,
+) -> tuple[tuple[Any, Any], ...]:
+    """Build a legacy ``[(pre_rope_K, V), ...]`` cache and self-check the rotation.
+
+    Values come from the model's post-RoPE cache (V is not rotated); keys are the
+    captured pre-RoPE tensors. As a correctness gate, re-roping the first layer's
+    pre-RoPE keys at their local positions must reconstruct the model's own
+    post-RoPE keys — otherwise the capture point or rope params are wrong.
+    """
+    if len(captured_keys) != len(post_cache):
+        raise ValueError(
+            f"captured pre-RoPE key count {len(captured_keys)} != layer count {len(post_cache)}; "
+            "apply_rotary_pos_emb was not called once per layer"
+        )
+    post_key0, _ = _key_value_pair(post_cache[0], layer_index=0)
+    _verify_rope_reconstruction(captured_keys[0], post_key0, rope_theta=rope_theta, rotary_dim=rotary_dim)
+    layers: list[tuple[Any, Any]] = []
+    for index in range(len(post_cache)):
+        _, value = _key_value_pair(post_cache[index], layer_index=index)
+        layers.append((captured_keys[index], value))
+    return tuple(layers)
+
+
+def _verify_rope_reconstruction(
+    pre_key: Any,
+    post_key: Any,
+    *,
+    rope_theta: float | None,
+    rotary_dim: int | None,
+) -> None:
+    torch = _torch()
+    from document_kv_cache.rope import apply_rope_to_keys
+
+    if getattr(pre_key, "dim", None) is None or pre_key.dim() != 4:
+        raise ValueError("captured pre-RoPE key must have shape [batch, kv_heads, seq, head_dim]")
+    if tuple(post_key.shape) != tuple(pre_key.shape):
+        raise ValueError(
+            f"pre/post-RoPE key shapes differ: {tuple(pre_key.shape)} vs {tuple(post_key.shape)}"
+        )
+    _, _, seq, head_dim = pre_key.shape
+    pre = pre_key[0].transpose(0, 1).to(torch.float32)  # [seq, kv_heads, head_dim]
+    post = post_key[0].transpose(0, 1).to(torch.float32)
+    positions = torch.arange(seq, device=pre.device)
+    reconstructed = apply_rope_to_keys(pre, positions, rope_theta=rope_theta, rotary_dim=rotary_dim)
+    max_err = (reconstructed - post).abs().max().item()
+    scale = max(post.abs().max().item(), 1.0)
+    if max_err > 0.02 * scale + 1e-3:
+        raise ValueError(
+            "pre-RoPE self-check failed: re-roping captured keys at local positions deviates from "
+            f"the model's post-RoPE keys by {max_err:.4g} (scale {scale:.4g}). "
+            f"rope_theta={rope_theta}, rotary_dim={rotary_dim}, head_dim={head_dim}. "
+            "The capture point or rope parameters are incorrect."
+        )
 
 
 def _past_key_values(outputs: object) -> object:

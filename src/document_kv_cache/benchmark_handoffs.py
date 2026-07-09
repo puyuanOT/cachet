@@ -30,7 +30,12 @@ from document_kv_cache.benchmarks import (
     benchmark_cache_source_document,
     validate_v1_dataset,
 )
-from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout
+from document_kv_cache.engine_protocol import (
+    KVLayout,
+    KVPayloadAxisOrder,
+    KVStorageLayout,
+    kv_payload_axis_order_from_value,
+)
 from document_kv_cache.dataset_prep import write_v1_jsonl
 from document_kv_cache.engine_adapters import (
     ServingBackend,
@@ -405,6 +410,7 @@ def generate_benchmark_handoff_bundles(
     kv_gpu_bytes_per_payload_byte: float | None = None,
     sglang_hicache_page_size: int | None = None,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
+    segment_per_document: bool = False,
     disk_root: str | Path | None = None,
     uc_volume_root: str | Path | None = None,
 ) -> BenchmarkHandoffBundleResult:
@@ -413,6 +419,10 @@ def generate_benchmark_handoff_bundles(
     The caller supplies the KV chunk generator. The CLI intentionally has no
     built-in fake generator so benchmark evidence cannot silently use placeholder
     bytes.
+
+    With ``segment_per_document`` each multi-document example is materialized as one
+    KV chunk per document, so the handoff assembles N document segments instead of a
+    single monolithic prefix chunk (single-document examples are unchanged).
     """
 
     _validate_generator(generator)
@@ -440,6 +450,19 @@ def generate_benchmark_handoff_bundles(
         raise ValueError("model_id must match layout.model_id")
     if resolved_lora_id != layout.lora_id:
         raise ValueError("lora_id must match layout.lora_id")
+    if getattr(generator, "pre_rope", False):
+        # The generator captured keys before rotary; stamp the layout so injection
+        # re-ropes at the true offset. rope_theta is read from the model config
+        # (authoritative), making the handoff self-describing.
+        import dataclasses
+
+        layout = dataclasses.replace(
+            layout,
+            pre_rope=True,
+            rope_theta=getattr(generator, "rope_theta", None),
+            rope_rotary_dim=getattr(generator, "rope_rotary_dim", None),
+        )
+        layout.validate()
     config = CacheBuildConfig(
         model_id=resolved_model_id,
         lora_id=resolved_lora_id,
@@ -448,9 +471,12 @@ def generate_benchmark_handoff_bundles(
         layout_version=layout.layout_version,
         cache_method=cache_method,
         storage_layout=layout.storage_layout if storage_layout is None else storage_layout,
+        payload_axis_order=layout.payload_axis_order,
     )
     if config.storage_layout != layout.storage_layout:
         raise ValueError("storage_layout must match layout.storage_layout")
+    if kv_payload_axis_order_from_value(config.payload_axis_order) != layout.payload_axis_order:
+        raise ValueError("payload_axis_order must match layout.payload_axis_order")
 
     examples = load_benchmark_jsonl(
         input_jsonl,
@@ -462,7 +488,7 @@ def generate_benchmark_handoff_bundles(
         raise ValueError("input_jsonl must contain at least one benchmark row")
     _validate_unique_benchmark_examples(examples)
     source_documents = tuple(
-        benchmark_cache_source_document(example, prefix=prefix)
+        benchmark_cache_source_document(example, prefix=prefix, segment_per_document=segment_per_document)
         for example in examples
     )
     bundle_targets = _benchmark_handoff_bundle_targets(
@@ -474,6 +500,7 @@ def generate_benchmark_handoff_bundles(
         lora_id=resolved_lora_id,
         prompt_template_version=resolved_template_version,
         prefix=prefix,
+        segment_per_document=segment_per_document,
     )
     _validate_bundle_output_artifact_paths(
         bundle_targets,
@@ -702,6 +729,15 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--kv-stride-bytes", type=int)
     parser.add_argument("--shares-kv-storage", action="store_true")
     parser.add_argument("--storage-layout", choices=[layout.value for layout in KVStorageLayout])
+    parser.add_argument(
+        "--payload-axis-order",
+        choices=[order.value for order in KVPayloadAxisOrder],
+        default=KVPayloadAxisOrder.TOKEN_MAJOR.value,
+        help=(
+            "Outer-axis order of the serialized KV payload. Use 'layer_major' for "
+            "LMCache-style per-layer streaming; defaults to 'token_major'."
+        ),
+    )
     parser.add_argument("--segmented", action="store_true", help="Write segmented payload handoffs.")
     parser.add_argument("--align-bytes", type=int, default=4096)
     parser.add_argument("--kv-gpu-bytes-per-payload-byte", type=float)
@@ -714,6 +750,14 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--prefix", default=BENCHMARK_CACHE_ARTIFACT_PREFIX)
+    parser.add_argument(
+        "--segment-per-document",
+        action="store_true",
+        help=(
+            "Build one KV chunk per document for multi-document examples so the handoff "
+            "assembles N document segments instead of one monolithic prefix chunk."
+        ),
+    )
     parser.add_argument("--disk-root", help="Optional disk root for relative kvpack shard URIs.")
     parser.add_argument("--uc-volume-root", help="Optional UC Volume root for relative kvpack shard URIs.")
     try:
@@ -741,6 +785,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             kv_gpu_bytes_per_payload_byte=args.kv_gpu_bytes_per_payload_byte,
             sglang_hicache_page_size=args.sglang_hicache_page_size,
             prefix=args.prefix,
+            segment_per_document=args.segment_per_document,
             disk_root=args.disk_root,
             uc_volume_root=args.uc_volume_root,
         )
@@ -787,6 +832,7 @@ def _bundle_layout_from_args(args: argparse.Namespace) -> KVLayout:
             kv_stride_bytes=args.kv_stride_bytes,
             shares_kv_storage=args.shares_kv_storage,
             storage_layout=args.storage_layout,
+            payload_axis_order=args.payload_axis_order,
         )
     try:
         return layout_for_model(
@@ -798,6 +844,7 @@ def _bundle_layout_from_args(args: argparse.Namespace) -> KVLayout:
             kv_stride_bytes=args.kv_stride_bytes,
             shares_kv_storage=True if args.shares_kv_storage else None,
             storage_layout=args.storage_layout,
+            payload_axis_order=args.payload_axis_order,
         )
     except KeyError as exc:
         required_flags = ", ".join(_field_to_flag(field) for field in _MANUAL_LAYOUT_REQUIRED_FIELDS)
@@ -1008,9 +1055,10 @@ def _sglang_hicache_page_keys_for_handoff(
         return ()
     if page_size != layout.block_size:
         raise ValueError("sglang_hicache_page_size must match layout.block_size")
-    if len(source_document.chunks) != 1:
-        raise ValueError("SGLang benchmark handoff source document must have one cache-prefix chunk")
-    token_ids = _token_ids_for_generator(generator, source_document.chunks[0].text)
+    token_ids = _token_ids_for_generator(
+        generator,
+        "".join(chunk.text for chunk in source_document.chunks),
+    )
     full_page_token_count = (len(token_ids) // page_size) * page_size
     if full_page_token_count == 0:
         raise ValueError("SGLang benchmark handoff source document must contain at least one full HiCache page")
@@ -1027,9 +1075,10 @@ def _runtime_prefix_text_for_handoff(
     decode = getattr(tokenizer, "decode", None)
     if tokenizer is None or not callable(decode):
         return ""
-    if len(source_document.chunks) != 1:
-        raise ValueError("benchmark handoff source document must have one cache-prefix chunk")
-    token_ids = _token_ids_for_generator(generator, source_document.chunks[0].text)
+    token_ids = _token_ids_for_generator(
+        generator,
+        "".join(chunk.text for chunk in source_document.chunks),
+    )
     tail_token_count = len(token_ids) % layout.block_size
     if tail_token_count == 0:
         return ""
@@ -1250,6 +1299,7 @@ def _benchmark_handoff_bundle_targets(
     lora_id: str,
     prompt_template_version: str,
     prefix: str,
+    segment_per_document: bool = False,
 ) -> tuple[_BenchmarkHandoffBundleTarget, ...]:
     targets: list[_BenchmarkHandoffBundleTarget] = []
     for example in examples:
@@ -1260,6 +1310,7 @@ def _benchmark_handoff_bundle_targets(
             lora_id=lora_id,
             prompt_template_version=prompt_template_version,
             prefix=prefix,
+            segment_per_document=segment_per_document,
         )
         targets.append(
             _BenchmarkHandoffBundleTarget(

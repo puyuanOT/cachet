@@ -13,6 +13,7 @@ from document_kv_cache.engine_protocol import (
     DTYPE_BYTE_WIDTHS,
     AttentionMechanism,
     KVLayout,
+    KVPayloadAxisOrder,
     KVStorageLayout,
     dtype_byte_width,
     kv_storage_layout_from_value,
@@ -148,6 +149,7 @@ class KVModelProfile:
         kv_stride_bytes: int | None = None,
         shares_kv_storage: bool | None = None,
         storage_layout: KVStorageLayout | str | None = None,
+        payload_axis_order: KVPayloadAxisOrder | str | None = None,
     ) -> KVLayout:
         layout_dtype = self.default_dtype if dtype is None else dtype
         byte_width = dtype_byte_width(layout_dtype)
@@ -174,6 +176,11 @@ class KVModelProfile:
                 if resolved_shares_kv_storage
                 else KVStorageLayout.SEPARATE_KEY_VALUE
             )
+        # Only forward payload_axis_order when the caller requests one so KVLayout
+        # keeps defaulting to token_major for backward compatibility.
+        payload_axis_order_kwargs: dict[str, Any] = (
+            {} if payload_axis_order is None else {"payload_axis_order": payload_axis_order}
+        )
         layout = KVLayout(
             model_id=self.model_id if model_id is None else model_id,
             lora_id=self.default_lora_id if lora_id is None else lora_id,
@@ -191,6 +198,7 @@ class KVModelProfile:
             kv_stride_bytes=resolved_kv_stride_bytes,
             shares_kv_storage=resolved_shares_kv_storage,
             storage_layout=resolved_storage_layout,
+            **payload_axis_order_kwargs,
         )
         layout.validate()
         return layout
@@ -300,6 +308,7 @@ class ModelProfileRegistry:
         kv_stride_bytes: int | None = None,
         shares_kv_storage: bool | None = None,
         storage_layout: KVStorageLayout | str | None = None,
+        payload_axis_order: KVPayloadAxisOrder | str | None = None,
     ) -> KVLayout:
         return self.get(model_id).to_layout(
             model_id=model_id,
@@ -310,6 +319,7 @@ class ModelProfileRegistry:
             kv_stride_bytes=kv_stride_bytes,
             shares_kv_storage=shares_kv_storage,
             storage_layout=storage_layout,
+            payload_axis_order=payload_axis_order,
         )
 
 
@@ -513,6 +523,7 @@ def layout_for_model(
     kv_stride_bytes: int | None = None,
     shares_kv_storage: bool | None = None,
     storage_layout: KVStorageLayout | str | None = None,
+    payload_axis_order: KVPayloadAxisOrder | str | None = None,
 ) -> KVLayout:
     return _BUILTIN_MODEL_PROFILE_REGISTRY.layout_for_model(
         model_id,
@@ -523,4 +534,5 @@ def layout_for_model(
         kv_stride_bytes=kv_stride_bytes,
         shares_kv_storage=shares_kv_storage,
         storage_layout=storage_layout,
+        payload_axis_order=payload_axis_order,
     )

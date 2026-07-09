@@ -15,7 +15,11 @@ from document_kv_cache.engine import (
     _normalize_gpu_byte_multiplier,
     build_engine_ready_request,
 )
-from document_kv_cache.engine_protocol import KVStorageLayout, kv_storage_layout_from_value
+from document_kv_cache.engine_protocol import (
+    KVStorageLayout,
+    kv_payload_axis_order_from_value,
+    kv_storage_layout_from_value,
+)
 from document_kv_cache.kvpack import PackChunk, write_kvpack, write_kvpack_bytes
 from document_kv_cache.manifest import ManifestStore
 from document_kv_cache.materializer import KVMaterializer, MaterializedKV, SegmentedMaterializedKV
@@ -156,6 +160,7 @@ class CacheBuildConfig:
     layout_version: str
     cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
     storage_layout: KVStorageLayout | str = KVStorageLayout.SEPARATE_KEY_VALUE
+    payload_axis_order: str = "token_major"
 
     def __post_init__(self) -> None:
         for field_name in ("model_id", "lora_id", "prompt_template_version", "dtype", "layout_version"):
@@ -165,6 +170,11 @@ class CacheBuildConfig:
             self,
             "storage_layout",
             kv_storage_layout_from_value(self.storage_layout, field_name="storage_layout"),
+        )
+        object.__setattr__(
+            self,
+            "payload_axis_order",
+            kv_payload_axis_order_from_value(self.payload_axis_order, field_name="payload_axis_order").value,
         )
 
 

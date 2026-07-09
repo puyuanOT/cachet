@@ -1216,9 +1216,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Q4 packed document KV" in root_readme
     assert "Implementation pending" in root_readme
     assert "Forced 256-token decode" in root_readme
-    assert "8 requests in flight" in root_readme
-    assert "answer-found values were one-example smoke checks" in compact_root_readme
-    assert "not official dataset scores" in compact_root_readme
+    assert "4 requests in flight" in root_readme
+    assert "answer-found rate" in compact_root_readme
+    assert "real full-document dataset samples" in compact_root_readme
     assert "LongBench v2" in root_readme
     assert "RULER" in root_readme
     assert "LongBench v2" in benchmark_template_readme
@@ -1227,9 +1227,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "P50 tok/s" in root_readme
     assert "Max Serving Concurrency" in root_readme
     assert "Peak GPU memory" in root_readme
-    assert "`request_parallelism=8`" in root_readme
-    assert "512 repeats per prepared input" in compact_root_readme
-    assert "2,048 successful request-level measurements" in compact_root_readme
+    assert "`request_parallelism=4`" in root_readme
+    assert "64 repeats per prepared input" in compact_root_readme
+    assert "256 successful request-level measurements" in compact_root_readme
     assert "Accounted GPU memory" not in root_readme
     assert "P50 TTFT (s)" not in root_readme
     assert "P95 TTFT (s)" not in root_readme
@@ -1261,8 +1261,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "packed Q4" in benchmark_template_readme
     assert "Do not infer or estimate missing values" in benchmark_template_readme
 
-    assert "current public benchmark evidence only" in appendix_readme
-    assert "current Q4-weight + Q8-document-KV configuration" in appendix_readme
+    assert "historical benchmark evidence" in appendix_readme
+    assert "Historical A10G warm-prefix" in appendix_readme
     assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in appendix_readme
     assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in vllm_readme
     assert "Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV" in vllm_readme

@@ -31,13 +31,16 @@ from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES, load_v1_
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
+    CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV,
     DEFAULT_HARDWARE_TARGET,
+    DEFAULT_SYSTEM_PROMPT_POSITION,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     SUPPORTED_V1_HARDWARE_TARGETS,
+    SYSTEM_PROMPT_POSITIONS,
     build_prompt_parts,
     validate_v1_hardware_target,
 )
@@ -73,6 +76,7 @@ from document_kv_cache.transformers_generator import (
 from vllm_kv_injection.vllm_transfer_config import (
     document_kv_transfer_config,
     document_kv_transfer_config_json,
+    multi_connector_transfer_config_json,
 )
 from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
@@ -90,6 +94,17 @@ PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
 BENCHMARK_ARM_IDS = (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+CACHET_KV_CONNECTOR_MODE = "cachet"
+LMCACHE_KV_CONNECTOR_MODE = "lmcache"
+# Hybrid handoff: Cachet serves turn-1 document requests, LMCache serves turn-2+
+# follow-ups and document-free conversations (via vLLM MultiConnector).
+MULTI_KV_CONNECTOR_MODE = "multi"
+KV_CONNECTOR_MODES = (
+    CACHET_KV_CONNECTOR_MODE,
+    LMCACHE_KV_CONNECTOR_MODE,
+    MULTI_KV_CONNECTOR_MODE,
+)
+LMCACHE_CONNECTOR_CLASS = "LMCacheConnectorV1"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
@@ -153,6 +168,7 @@ class VLLMPreparedHandoffGenerationConfig:
     align_bytes: int = 4096
     timeout_seconds: float = 1800.0
     limit: int | None = None
+    benchmark_handoff_segment_per_document: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
@@ -168,6 +184,8 @@ class VLLMPreparedHandoffGenerationConfig:
         if self.limit is not None:
             if isinstance(self.limit, bool) or not isinstance(self.limit, int) or self.limit < 0:
                 raise ValueError("benchmark_handoff_limit must be a non-negative integer")
+        if not isinstance(self.benchmark_handoff_segment_per_document, bool):
+            raise ValueError("benchmark_handoff_segment_per_document must be a boolean")
         object.__setattr__(self, "output_dir", Path(self.output_dir))
 
     def to_metadata(self) -> dict[str, object]:
@@ -178,6 +196,7 @@ class VLLMPreparedHandoffGenerationConfig:
             "align_bytes": self.align_bytes,
             "timeout_seconds": self.timeout_seconds,
             "limit": self.limit,
+            "segment_per_document": self.benchmark_handoff_segment_per_document,
         }
 
 
@@ -204,8 +223,17 @@ class VLLMSmokeBenchmarkConfig:
     max_model_len: int = 4096
     max_num_seqs: int = 2
     gpu_memory_utilization: float = 0.85
+    data_parallel_size: int = 1
+    kv_connector_mode: str = "cachet"
+    lmcache_local_dir: str = "/local_disk0/lmcache-store"
+    lmcache_max_disk_gb: float = 80.0
+    lmcache_chunk_size: int = 256
+    lmcache_version: str = ""
+    lmcache_local_cpu: bool = False
+    lmcache_max_cpu_gb: float = 0.0
     benchmark_repeats: int = 1
     request_parallelism: int = 1
+    benchmark_interleave_examples: bool = False
     runtime_telemetry_interval_seconds: float = 1.0
     benchmark_arms: tuple[str, ...] = ()
     prewarm_cache_prefix: bool = False
@@ -217,6 +245,7 @@ class VLLMSmokeBenchmarkConfig:
     package_install_spec: str | None = None
     handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
     payload_cache_max_bytes: int = 0
+    system_prompt_position: str = DEFAULT_SYSTEM_PROMPT_POSITION
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -267,6 +296,14 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError("max_num_seqs must be positive")
         if not 0 < self.gpu_memory_utilization <= 1:
             raise ValueError("gpu_memory_utilization must be in (0, 1]")
+        if self.data_parallel_size <= 0:
+            raise ValueError("data_parallel_size must be positive")
+        if self.kv_connector_mode not in KV_CONNECTOR_MODES:
+            raise ValueError(f"kv_connector_mode must be one of {sorted(KV_CONNECTOR_MODES)}")
+        if self.system_prompt_position not in SYSTEM_PROMPT_POSITIONS:
+            raise ValueError(
+                f"system_prompt_position must be one of {sorted(SYSTEM_PROMPT_POSITIONS)}"
+            )
         if isinstance(self.benchmark_repeats, bool) or not isinstance(self.benchmark_repeats, int):
             raise TypeError("benchmark_repeats must be a positive integer")
         if self.benchmark_repeats <= 0:
@@ -403,7 +440,13 @@ class VLLMSmokeBenchmarkConfig:
 
     @property
     def requires_prepared_handoff_metadata(self) -> bool:
-        return self.uses_prepared_datasets and self.runs_document_kv_cache_arm
+        # Multi (hybrid) mode always runs the multi-turn probe whose turn 1 injects a
+        # Cachet document handoff, so prepared multi runs need loadable handoff
+        # metadata even when the client benchmark arms are baseline-only.
+        return self.uses_prepared_datasets and (
+            self.runs_document_kv_cache_arm
+            or self.kv_connector_mode == MULTI_KV_CONNECTOR_MODE
+        )
 
 
 def _validated_benchmark_arms(value: Sequence[str]) -> tuple[str, ...]:
@@ -431,22 +474,42 @@ def _non_empty_string(value: str, field_name: str) -> str:
 def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
     """Create an isolated vLLM env, start Qwen3, and run the V1 smoke suite."""
 
+    if config.kv_connector_mode == LMCACHE_KV_CONNECTOR_MODE:
+        run_lmcache_cold_benchmark(config)
+        return
+
     config.output_dir.mkdir(parents=True, exist_ok=True)
     config.local_dir.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(config.hf_cache_dir)
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+    # Propagate system-prompt placement to prompt-building subprocesses (handoff
+    # generation, client benchmark runner, budget probe) via inherited os.environ.
+    os.environ[CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV] = config.system_prompt_position
 
+    is_multi = config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE
     metadata = build_metadata(config)
+    metadata["kv_connector_mode"] = config.kv_connector_mode
     write_json(config.metadata_path, metadata)
 
     create_venv(config.venv_dir)
     install_vllm(config.venv_python)
     install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
+    if is_multi:
+        # Hybrid mode runs MultiConnector[Cachet, LMCache]; LMCache must be present
+        # in the vLLM venv and configured with its disk tier for the second connector.
+        lmcache_version = install_lmcache(config.venv_python, config.lmcache_version)
+        lmcache_config_path = write_lmcache_config(config)
+        os.environ["LMCACHE_CONFIG_FILE"] = str(lmcache_config_path)
+        metadata["lmcache_version_installed"] = lmcache_version
+        metadata["lmcache_config_path"] = str(lmcache_config_path)
+        metadata["lmcache_config"] = json.loads(lmcache_config_path.read_text(encoding="utf-8"))
     metadata["vllm_runtime_patches"] = apply_vllm_runtime_patches(config)
     metadata.update(installed_versions(config.venv_python))
     metadata["cuda_wheel_env_paths"] = cuda_wheel_env_paths(config)
     write_json(config.metadata_path, metadata)
-    probe_vllm_import(
+    # Multi mode must import both vLLM and LMCache cleanly (ABI check) before boot.
+    probe = probe_lmcache_import if is_multi else probe_vllm_import
+    probe(
         config.venv_python,
         config.import_probe_path,
         timeout_seconds=config.import_probe_timeout_seconds,
@@ -483,6 +546,9 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
         prewarm_cache_prefixes(config, dataset_paths)
         run_benchmark_runner(config, dataset_paths)
+        if is_multi:
+            # Hybrid handoff: measure per-turn TTFT (turn-1 docs->Cachet, follow-ups->LMCache).
+            run_multi_turn_hybrid_latency(config, dataset_paths)
     finally:
         terminate_process(server)
         runtime_telemetry.stop()
@@ -551,14 +617,21 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
         "gpu_memory_utilization": config.gpu_memory_utilization,
+        "data_parallel_size": config.data_parallel_size,
         "benchmark_repeats": config.benchmark_repeats,
         "request_parallelism": config.request_parallelism,
+        "benchmark_interleave_examples": config.benchmark_interleave_examples,
+        "benchmark_system_prompt_position": config.system_prompt_position,
         "benchmark_arms": list(config.benchmark_arms),
         "hardware_target": config.hardware_target,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "dependency_override_constraints": dependency_override_constraints(),
         "vllm_server_env_overrides": vllm_server_env_overrides(),
-        "vllm_kv_transfer_config": document_kv_transfer_config_for_smoke(config),
+        # Record the transfer config the server is actually launched with so
+        # provenance-driven reruns reproduce the same connector. This tracks
+        # kv_connector_mode (cachet/lmcache/multi); for cachet it is identical to
+        # document_kv_transfer_config_for_smoke(config).
+        "vllm_kv_transfer_config": json.loads(kv_transfer_config_json(config)),
     }
 
 
@@ -928,6 +1001,7 @@ generation = VLLMPreparedHandoffGenerationConfig(
     align_bytes=int(generation_payload["align_bytes"]),
     timeout_seconds=float(generation_payload["timeout_seconds"]),
     limit=generation_payload.get("limit"),
+    benchmark_handoff_segment_per_document=bool(generation_payload.get("segment_per_document", False)),
 )
 config = VLLMSmokeBenchmarkConfig(
     benchmark_id=payload["benchmark_id"],
@@ -1032,6 +1106,7 @@ def _generate_prepared_benchmark_handoff_inputs(
             backend="vllm",
             manifest_json=manifest_json,
             align_bytes=generation.align_bytes,
+            segment_per_document=generation.benchmark_handoff_segment_per_document,
         )
         enriched_rows = enrich_benchmark_jsonl_with_handoffs(
             generation_input_jsonl,
@@ -1199,6 +1274,233 @@ def run_benchmark_runner(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[s
         ) from exc
 
 
+def install_lmcache(python_executable: Path, version: str = "") -> str:
+    """Install LMCache into the vLLM venv and return the resolved version."""
+
+    spec = f"lmcache=={version}" if version else "lmcache"
+    run([str(python_executable), "-m", "pip", "install", spec])
+    return installed_package_version(python_executable, "lmcache")
+
+
+def write_lmcache_config(config: VLLMSmokeBenchmarkConfig) -> Path:
+    """Write an LMCache config with a NVMe disk tier and optional CPU-RAM tier.
+
+    By default ``local_cpu`` is disabled and ``use_odirect`` is enabled so reads are
+    genuine cold NVMe reads. When ``lmcache_local_cpu`` is set, KV is offloaded to a
+    bounded CPU-RAM tier (``max_local_cpu_size`` GB) first and spills to the NVMe disk
+    tier on overflow (LRU) -- the limited-GPU regime where active-conversation KV lives
+    in RAM and only overflows to disk. ``use_odirect`` is left off in that mode so the
+    disk-overflow tier can use the OS page cache.
+    """
+
+    disk_dir = Path(config.lmcache_local_dir)
+    disk_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, object] = {
+        "chunk_size": config.lmcache_chunk_size,
+        "local_cpu": bool(config.lmcache_local_cpu),
+        "local_disk": f"file://{disk_dir}/",
+        "max_local_disk_size": config.lmcache_max_disk_gb,
+    }
+    if config.lmcache_local_cpu:
+        if config.lmcache_max_cpu_gb > 0:
+            payload["max_local_cpu_size"] = config.lmcache_max_cpu_gb
+    else:
+        payload["extra_config"] = {"use_odirect": True}
+    path = config.local_dir / "lmcache-config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def probe_lmcache_import(
+    python_executable: Path,
+    output_path: Path,
+    *,
+    timeout_seconds: float,
+    env: dict[str, str],
+) -> dict[str, object]:
+    """Fail fast if lmcache cannot be imported alongside vLLM (torch ABI check)."""
+
+    script = (
+        "import json\n"
+        "rec = {}\n"
+        "try:\n"
+        "    import torch; rec['torch'] = torch.__version__\n"
+        "    import vllm; rec['vllm'] = vllm.__version__\n"
+        "    import lmcache; rec['lmcache'] = getattr(lmcache, '__version__', 'unknown')\n"
+        "    rec['ok'] = True\n"
+        "except Exception as exc:\n"
+        "    rec['ok'] = False; rec['error'] = f'{type(exc).__name__}: {exc}'\n"
+        "try:\n"
+        "    from lmcache.integration.vllm.vllm_v1_adapter import LMCacheConnectorV1Impl  # noqa: F401\n"
+        "    rec['lmcache_v1_adapter_import'] = True\n"
+        "except Exception as exc:\n"
+        "    rec['lmcache_v1_adapter_import'] = f'{type(exc).__name__}: {exc}'\n"
+        "print(json.dumps(rec))\n"
+    )
+    completed = subprocess.run(
+        [str(python_executable), "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        env=env,
+    )
+    record: dict[str, object]
+    try:
+        record = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        record = {"ok": False, "error": tail_text(completed.stdout + completed.stderr)}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not record.get("ok"):
+        raise RuntimeError(
+            f"lmcache import probe failed: {record.get('error')!r}; "
+            f"stderr tail:\n{tail_text(completed.stderr)}"
+        )
+    return record
+
+
+def _build_lmcache_pass_args(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    output_path: Path,
+    suite_suffix: str,
+) -> list[str]:
+    """Minimal baseline-arm benchmark invocation (LMCache is transparent to the client)."""
+
+    args = [
+        sys.executable,
+        "-m",
+        "document_kv_cache.benchmark_runner",
+        "--suite-id",
+        f"{config.benchmark_id}-{suite_suffix}",
+        "--base-url",
+        config.server_base_url,
+        "--model-id",
+        SERVED_MODEL_NAME,
+        "--hardware-target",
+        config.hardware_target,
+        "--max-tokens",
+        str(config.max_tokens),
+        "--timeout-seconds",
+        str(config.timeout_seconds),
+        "--repeats",
+        "1",
+        "--request-parallelism",
+        str(config.request_parallelism),
+        "--server-usage",
+        "--output-json",
+        str(output_path),
+        "--arm",
+        BASELINE_PREFILL_ARM,
+    ]
+    if config.force_max_tokens:
+        args.extend(["--baseline-extra-body-json", json.dumps({"ignore_eos": True}, sort_keys=True)])
+    args.extend(dataset_args(dataset_paths))
+    return args
+
+
+def _run_lmcache_two_pass(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+    warm_output: Path,
+    measure_output: Path,
+) -> None:
+    """Warm then measure LMCache cold-disk reload on a *single* server.
+
+    LMCache's local-disk backend keeps its lookup index in memory and does not
+    rebuild it from the on-disk chunks when a fresh engine starts, so a
+    warm->restart->measure flow makes the restarted engine miss every chunk it
+    just wrote. Keeping one server preserves the index; ``local_cpu=false`` plus
+    ``use_odirect`` still force the measure pass to read the KV cold from NVMe
+    (no CPU tier, page cache bypassed) rather than from RAM.
+    """
+
+    log_path = config.local_dir / "vllm-server-lmcache.log"
+    server = start_vllm_server(config, config.venv_python, log_path)
+    try:
+        wait_for_server(server, log_path, config, timeout_seconds=config.server_start_timeout_seconds)
+        # Phase 1: warm -- prefill each distinct document once so its KV persists to the disk tier.
+        run(_build_lmcache_pass_args(config, dataset_paths, warm_output, "warm"))
+        # Phase 2: best-effort page-cache drop; O_DIRECT reads bypass it anyway.
+        _evict_between_lmcache_phases()
+        # Phase 3: measure -- same prompts; LMCache reloads KV cold from disk (index still resident).
+        run(_build_lmcache_pass_args(config, dataset_paths, measure_output, "cold"))
+    finally:
+        terminate_process(server)
+        copy_file_if_exists(log_path, config.output_dir / "vllm-server-lmcache.log")
+
+
+def _evict_between_lmcache_phases() -> None:
+    """Best-effort flush so the measured pass reads KV cold from NVMe.
+
+    Both passes share one server, so the GPU KV blocks for the earliest
+    documents are already evicted by the time the measure pass revisits them,
+    and ``local_cpu=false`` means there is no CPU tier to serve from. Here we
+    additionally sync and (best-effort) drop the OS page cache; LMCache's
+    ``use_odirect`` reads bypass the page cache regardless, so this is belt and
+    suspenders rather than the sole guarantee.
+    """
+
+    subprocess.run(["sync"], check=False)
+    try:
+        Path("/proc/sys/vm/drop_caches").write_text("3\n", encoding="utf-8")
+    except OSError:
+        pass
+    time.sleep(2)
+
+
+def run_lmcache_cold_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
+    """Warm then measure LMCache cold-disk KV reload TTFT on a single server."""
+
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    config.local_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(config.hf_cache_dir)
+    os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+    # Propagate system-prompt placement to prompt-building subprocesses (handoff
+    # generation, client benchmark runner, budget probe) via inherited os.environ.
+    os.environ[CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV] = config.system_prompt_position
+
+    metadata = build_metadata(config)
+    metadata["kv_connector_mode"] = LMCACHE_KV_CONNECTOR_MODE
+    write_json(config.metadata_path, metadata)
+
+    create_venv(config.venv_dir)
+    install_vllm(config.venv_python)
+    lmcache_version = install_lmcache(config.venv_python, config.lmcache_version)
+    # cachet-kv is not used by the LMCache connector, but installing it keeps the
+    # shared metadata/version plumbing (installed_versions) consistent.
+    install_document_kv_package(config.venv_python, document_kv_package_install_spec(config))
+    metadata["vllm_runtime_patches"] = apply_vllm_runtime_patches(config)
+    versions = installed_versions(config.venv_python)
+    versions["lmcache_version_installed"] = lmcache_version
+    metadata.update(versions)
+
+    lmcache_config_path = write_lmcache_config(config)
+    os.environ["LMCACHE_CONFIG_FILE"] = str(lmcache_config_path)
+    metadata["lmcache_config_path"] = str(lmcache_config_path)
+    metadata["lmcache_config"] = json.loads(lmcache_config_path.read_text(encoding="utf-8"))
+    metadata["lmcache_warm_benchmark_path"] = str(config.output_dir / "lmcache-warm-benchmark.json")
+    write_json(config.metadata_path, metadata)
+
+    probe_lmcache_import(
+        config.venv_python,
+        config.import_probe_path,
+        timeout_seconds=config.import_probe_timeout_seconds,
+        env=server_env(config),
+    )
+
+    dataset_paths = benchmark_dataset_paths(config)
+    # Preflight the context budget before the expensive warm+measure passes so
+    # over-budget prepared prompts fail fast (mirrors the vLLM-native path) and the
+    # budget artifact is recorded for LMCache runs too.
+    validate_prompt_token_budget(config, dataset_paths)
+    metadata["prompt_token_budget_path"] = str(config.prompt_token_budget_path)
+    write_json(config.metadata_path, metadata)
+    warm_output = config.output_dir / "lmcache-warm-benchmark.json"
+    _run_lmcache_two_pass(config, dataset_paths, warm_output, config.benchmark_output_path)
+
+
 def prewarm_cache_prefixes(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
     """Load prepared cache prefixes into vLLM's resident prefix cache before measurement."""
 
@@ -1276,6 +1578,171 @@ def _prewarm_prompt_text(example: Any) -> str:
 
 def _prewarm_request_id(config: VLLMSmokeBenchmarkConfig, example: Any) -> str:
     return f"cachet-prewarm:{config.benchmark_id}:{example.dataset}:{example.example_id}"
+
+
+# Follow-up turns for the hybrid multi-turn latency measurement. Turn 1 carries the
+# document handoff (served by Cachet); every follow-up turn omits the handoff so the
+# request falls through to LMCache, which reuses the resident conversation KV.
+DEFAULT_MULTI_TURN_FOLLOWUPS = (
+    "Based on the document(s) above, what are the three most important points?",
+    "Summarize your previous answer in a single sentence.",
+)
+
+
+def build_multi_turn_followup_prompt(turn_prompt: str, turn_response: str, followup_question: str) -> str:
+    """Append the model's response and the next user turn to the running conversation.
+
+    Keeping the exact prior text (prompt + generated response) as a prefix is what lets
+    the engine's prefix cache / LMCache reuse the already-computed conversation KV, so
+    only the new follow-up tokens are prefilled.
+    """
+
+    return f"{turn_prompt}{turn_response}\n\n{followup_question}\n"
+
+
+def _stream_completion_ttft(
+    url: str,
+    body: Mapping[str, object],
+    *,
+    timeout_seconds: float,
+) -> tuple[float, str, Mapping[str, Any]]:
+    """POST a streaming completion and return (ttft_seconds, output_text, usage)."""
+
+    payload = json.dumps({**body, "stream": True, "stream_options": {"include_usage": True}}).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    started = time.monotonic()
+    first_token_at: float | None = None
+    parts: list[str] = []
+    usage: Mapping[str, Any] = {}
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        for raw_line in response:
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line or line.startswith(":") or not line.startswith("data:"):
+                continue
+            data_str = line.removeprefix("data:").strip()
+            if data_str == "[DONE]":
+                break
+            data = json.loads(data_str)
+            if isinstance(data.get("usage"), Mapping):
+                usage = data["usage"]
+            choices = data.get("choices") or []
+            text = str(choices[0].get("text", "")) if choices else ""
+            if text:
+                if first_token_at is None:
+                    first_token_at = time.monotonic()
+                parts.append(text)
+    completed = time.monotonic()
+    ttft = (first_token_at or completed) - started
+    return ttft, "".join(parts), usage
+
+
+def run_multi_turn_hybrid_latency(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
+    """Measure per-turn TTFT for the hybrid handoff on a live MultiConnector server.
+
+    Turn 1 sends the logical document prompt with the Cachet handoff, so the document
+    KV is injected by Cachet. Each follow-up turn appends the running conversation and
+    omits the handoff, so Cachet advertises no tokens and LMCache (the second connector)
+    serves the continuation from the resident conversation KV.
+    """
+
+    followups = DEFAULT_MULTI_TURN_FOLLOWUPS
+    suite = load_v1_jsonl_suite(
+        suite_id=f"{config.benchmark_id}-multiturn",
+        paths=dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+    )
+    url = f"{config.server_base_url}/v1/completions"
+    # Round-robin by turn (all turn-1s, then all turn-2s, ...). Processing every
+    # conversation's turn N before any turn N+1 means each conversation's KV is evicted
+    # from the small GPU cache by the other conversations before its follow-up runs, so
+    # follow-ups must reload the conversation KV from LMCache's CPU-RAM / NVMe tier
+    # instead of finding it resident in GPU HBM -- the limited-GPU, many-active-conversation
+    # regime. Turn 1 carries the Cachet document handoff; follow-ups omit it (-> LMCache).
+    convs: list[dict[str, object]] = [
+        {
+            "example": example,
+            "prompt": build_prompt_parts(example).prefill_prompt,
+            "output": "",
+            "base_id": f"cachet-mt:{config.benchmark_id}:{example.dataset}:{example.example_id}",
+            "turns": [],
+            "failed": False,
+        }
+        for example in suite.examples
+    ]
+    num_turns = 1 + len(followups)
+    ok = True
+    for turn_index in range(1, num_turns + 1):
+        for conv in convs:
+            if conv["failed"]:
+                continue
+            example = conv["example"]
+            try:
+                if turn_index == 1:
+                    kv_transfer_params = dict(example.kv_transfer_params)
+                    kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
+                    body: dict[str, object] = {
+                        "model": SERVED_MODEL_NAME,
+                        "prompt": conv["prompt"],
+                        "max_tokens": config.max_tokens,
+                        "temperature": 0,
+                        "request_id": f"{conv['base_id']}:t1",
+                        "kv_transfer_params": kv_transfer_params,
+                    }
+                    served_by, has_handoff = "cachet", True
+                else:
+                    conv["prompt"] = build_multi_turn_followup_prompt(
+                        conv["prompt"], conv["output"], followups[turn_index - 2]
+                    )
+                    body = {
+                        "model": SERVED_MODEL_NAME,
+                        "prompt": conv["prompt"],
+                        "max_tokens": config.max_tokens,
+                        "temperature": 0,
+                        "request_id": f"{conv['base_id']}:t{turn_index}",
+                    }
+                    served_by, has_handoff = "lmcache", False
+                if config.force_max_tokens:
+                    body["ignore_eos"] = True
+                ttft, output_text, usage = _stream_completion_ttft(url, body, timeout_seconds=config.timeout_seconds)
+                conv["output"] = output_text
+                conv["turns"].append(
+                    {
+                        "turn": turn_index,
+                        "served_by": served_by,
+                        "has_document_handoff": has_handoff,
+                        "ttft_seconds": ttft,
+                        "prompt_tokens": usage.get("prompt_tokens") if isinstance(usage, Mapping) else None,
+                    }
+                )
+            except Exception as exc:
+                ok = False
+                conv["failed"] = True
+                conv["turns"].append(
+                    {"turn": turn_index, "error": str(exc) or type(exc).__name__, "error_type": type(exc).__name__}
+                )
+    conversations = [
+        {"dataset": conv["example"].dataset, "example_id": conv["example"].example_id, "turns": conv["turns"]}
+        for conv in convs
+    ]
+    record = {
+        "ok": ok,
+        "benchmark_id": config.benchmark_id,
+        "server_base_url": config.server_base_url,
+        "turn_order": "round_robin_by_turn",
+        "followups": list(followups),
+        "conversations": conversations,
+        "conversation_count": len(conversations),
+    }
+    output_path = config.output_dir / "multi-turn-latency.json"
+    write_json(output_path, record)
+    # Lenient: preserve partial results (an expensive cloud run) rather than aborting on
+    # a single transient turn error; per-turn errors are recorded for the analysis.
 
 
 def _post_json(url: str, body: Mapping[str, object], *, timeout_seconds: float) -> Mapping[str, Any]:
@@ -1746,6 +2213,48 @@ def dataset_args(dataset_paths: dict[str, Path]) -> list[str]:
     return args
 
 
+def lmcache_transfer_config_json() -> str:
+    """KVTransferConfig JSON that routes KV through LMCache's vLLM V1 connector.
+
+    Storage-tier behaviour (CPU/disk sizes, chunk size) is supplied out-of-band
+    via ``LMCACHE_*`` environment variables / ``LMCACHE_CONFIG_FILE`` so the same
+    connector config works for warm-store and cold-load phases.
+    """
+
+    return json.dumps(
+        {"kv_connector": LMCACHE_CONNECTOR_CLASS, "kv_role": "kv_both"},
+        sort_keys=True,
+    )
+
+
+def cachet_transfer_config_json(config: VLLMSmokeBenchmarkConfig) -> str:
+    return document_kv_transfer_config_json(
+        payload_cache_max_bytes=config.payload_cache_max_bytes or None,
+        telemetry_jsonl=str(config.connector_telemetry_path),
+    )
+
+
+def multi_transfer_config_json(config: VLLMSmokeBenchmarkConfig) -> str:
+    """MultiConnector JSON that runs Cachet first, LMCache second.
+
+    Cachet advertises matched tokens only for requests carrying a Cachet handoff
+    (turn-1 document requests); everything else falls through to LMCache. Both
+    receive the save-to-all broadcast so LMCache captures the conversation KV.
+    """
+
+    cachet_child = json.loads(cachet_transfer_config_json(config))
+    lmcache_child = json.loads(lmcache_transfer_config_json())
+    return multi_connector_transfer_config_json(connectors=[cachet_child, lmcache_child])
+
+
+def kv_transfer_config_json(config: VLLMSmokeBenchmarkConfig) -> str:
+    if config.kv_connector_mode == LMCACHE_KV_CONNECTOR_MODE:
+        return lmcache_transfer_config_json()
+    if config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE:
+        return multi_transfer_config_json(config)
+    return cachet_transfer_config_json(config)
+
+
 def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: Path) -> list[str]:
     args = [
         str(python_executable),
@@ -1768,12 +2277,26 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
         str(config.max_num_seqs),
         "--gpu-memory-utilization",
         str(config.gpu_memory_utilization),
-        "--kv-transfer-config",
-        document_kv_transfer_config_json(
-            payload_cache_max_bytes=config.payload_cache_max_bytes or None,
-            telemetry_jsonl=str(config.connector_telemetry_path),
+        *(
+            ["--data-parallel-size", str(config.data_parallel_size)]
+            if config.data_parallel_size > 1
+            else []
         ),
-        "--enable-prefix-caching",
+        "--kv-transfer-config",
+        kv_transfer_config_json(config),
+        # Prefix caching is enabled for the Cachet and hybrid (multi) paths so
+        # turn-2+ continuation can reuse the resident conversation KV. The pure
+        # LMCache arm leaves it off so the two arms are not double-cached.
+        *(
+            ["--enable-prefix-caching"]
+            if config.kv_connector_mode != LMCACHE_KV_CONNECTOR_MODE
+            else []
+        ),
+        # MultiConnector's Prometheus metrics path asserts that every child that
+        # emits KV stats also registered prom metrics; Cachet's connector emits
+        # stats but no prom metrics, so disable server-side stat logging for the
+        # hybrid arm. TTFT is measured client-side, so this does not affect results.
+        *(["--disable-log-stats"] if config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE else []),
         "--trust-remote-code",
         "--no-enable-log-requests",
     ]
@@ -1872,6 +2395,8 @@ def build_benchmark_runner_args(
         "--output-json",
         str(config.benchmark_output_path),
     ]
+    if config.benchmark_interleave_examples:
+        args.append("--interleave-examples")
     if config.uses_prepared_datasets:
         args.extend(
             [
@@ -2061,6 +2586,32 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--max-model-len", type=int, default=4096)
     parser.add_argument("--max-num-seqs", type=int, default=2)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.85)
+    parser.add_argument("--data-parallel-size", type=int, default=1)
+    parser.add_argument(
+        "--kv-connector-mode",
+        choices=KV_CONNECTOR_MODES,
+        default=CACHET_KV_CONNECTOR_MODE,
+        help="KV reuse backend: 'cachet' (default) or 'lmcache' (library-mode cold-load comparison).",
+    )
+    parser.add_argument("--lmcache-local-dir", default="/local_disk0/lmcache-store")
+    parser.add_argument("--lmcache-max-disk-gb", type=float, default=80.0)
+    parser.add_argument("--lmcache-chunk-size", type=int, default=256)
+    parser.add_argument(
+        "--lmcache-local-cpu",
+        action="store_true",
+        help="Offload LMCache KV to a bounded CPU-RAM tier (spills to the NVMe disk tier on overflow).",
+    )
+    parser.add_argument(
+        "--lmcache-max-cpu-gb",
+        type=float,
+        default=0.0,
+        help="CPU-RAM tier budget (GB) when --lmcache-local-cpu is set; 0 uses the LMCache default.",
+    )
+    parser.add_argument(
+        "--lmcache-version",
+        default="",
+        help="Optional pinned lmcache version (empty installs the latest compatible release).",
+    )
     parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
@@ -2081,6 +2632,25 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         type=int,
         default=1,
         help="Maximum number of benchmark requests issued concurrently by the client.",
+    )
+    parser.add_argument(
+        "--benchmark-interleave-examples",
+        action="store_true",
+        help=(
+            "Round-robin benchmark requests across examples so a "
+            "--request-parallelism N wave draws from N distinct documents "
+            "(distinct docs across concurrent requests) instead of repeating one example."
+        ),
+    )
+    parser.add_argument(
+        "--system-prompt-position",
+        choices=SYSTEM_PROMPT_POSITIONS,
+        default=DEFAULT_SYSTEM_PROMPT_POSITION,
+        help=(
+            "Where to place the system/task guidance prompt. 'start' (default) bakes it "
+            "into the cached document prefix; 'end' places it after the documents so it "
+            "is recomputed online with full attention over the injected document KV."
+        ),
     )
     parser.add_argument(
         "--runtime-telemetry-interval-seconds",
@@ -2177,6 +2747,14 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--benchmark-handoff-chunk-per-document",
+        action="store_true",
+        help=(
+            "Generate one KV chunk per document for multi-document examples so each "
+            "prepared handoff assembles N document segments instead of one prefix chunk."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-force-max-tokens",
         action="store_true",
         help=(
@@ -2207,8 +2785,18 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         max_model_len=args.max_model_len,
         max_num_seqs=args.max_num_seqs,
         gpu_memory_utilization=args.gpu_memory_utilization,
+        data_parallel_size=args.data_parallel_size,
+        kv_connector_mode=args.kv_connector_mode,
+        lmcache_local_dir=args.lmcache_local_dir,
+        lmcache_max_disk_gb=args.lmcache_max_disk_gb,
+        lmcache_chunk_size=args.lmcache_chunk_size,
+        lmcache_local_cpu=args.lmcache_local_cpu,
+        lmcache_max_cpu_gb=args.lmcache_max_cpu_gb,
+        lmcache_version=args.lmcache_version,
         benchmark_repeats=args.benchmark_repeats,
         request_parallelism=args.request_parallelism,
+        benchmark_interleave_examples=args.benchmark_interleave_examples,
+        system_prompt_position=args.system_prompt_position,
         runtime_telemetry_interval_seconds=args.runtime_telemetry_interval_seconds,
         benchmark_arms=tuple(args.benchmark_arm or ()),
         prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
@@ -2242,6 +2830,7 @@ def _handoff_generation_config_from_args(
         align_bytes=args.benchmark_handoff_align_bytes,
         timeout_seconds=args.benchmark_handoff_generation_timeout_seconds,
         limit=args.benchmark_handoff_limit,
+        benchmark_handoff_segment_per_document=args.benchmark_handoff_chunk_per_document,
     )
 
 
