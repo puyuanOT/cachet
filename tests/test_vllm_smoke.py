@@ -1196,26 +1196,31 @@ def test_vllm_smoke_config_rejects_legacy_and_arbitrary_arm_mix(tmp_path):
         )
 
 
-def test_generated_handoff_costs_are_recorded_on_matching_arm(tmp_path):
-    matrix = representative_canary_matrix()
-    vanilla_arm = matrix.run_for_arm(
-        "document_kv_cache:vanilla_prefill"
-    ).arm_spec
+@pytest.mark.parametrize(
+    ("arm_index", "cache_method", "segment_per_document"),
+    (
+        (1, "full_prefix_prefill", False),
+        (2, "vanilla_prefill", True),
+    ),
+)
+def test_representative_generated_handoff_costs_are_recorded_on_matching_arm(
+    tmp_path,
+    arm_index,
+    cache_method,
+    segment_per_document,
+):
+    kwargs = representative_vllm_kwargs(tmp_path, arm_index=arm_index)
+    kwargs["handoff_generation"] = VLLMPreparedHandoffGenerationConfig(
+        generator_factory="module:factory",
+        output_dir=tmp_path / "handoffs",
+        benchmark_handoff_segment_per_document=segment_per_document,
+        cache_method=cache_method,
+    )
     config = VLLMSmokeBenchmarkConfig(
-        benchmark_id="vanilla-costs",
+        benchmark_id=f"{cache_method}-costs",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
-        dataset_specs=tuple(
-            f"{dataset}={tmp_path / f'{dataset}.jsonl'}"
-            for dataset in SMOKE_DATASETS
-        ),
-        benchmark_arm_specs=(vanilla_arm,),
-        handoff_generation=VLLMPreparedHandoffGenerationConfig(
-            generator_factory="module:factory",
-            output_dir=tmp_path / "handoffs",
-            benchmark_handoff_segment_per_document=True,
-            cache_method="vanilla_prefill",
-        ),
+        **kwargs,
     )
     config.output_dir.mkdir(parents=True)
     config.prepared_handoff_generation_path.write_text(
@@ -1237,6 +1242,73 @@ def test_generated_handoff_costs_are_recorded_on_matching_arm(tmp_path):
         "artifact_generation_seconds": 12.5,
         "artifact_bytes": 1200,
     }
+
+
+@pytest.mark.parametrize(
+    "offline_costs",
+    (
+        {},
+        {"artifact_generation_seconds": 12.5},
+        {
+            "artifact_generation_seconds": 12.5,
+            "artifact_bytes": 1200,
+            "training_seconds": 1.0,
+        },
+        {"artifact_generation_seconds": -0.1, "artifact_bytes": 1200},
+        {"artifact_generation_seconds": float("inf"), "artifact_bytes": 1200},
+        {"artifact_generation_seconds": float("nan"), "artifact_bytes": 1200},
+        {"artifact_generation_seconds": True, "artifact_bytes": 1200},
+        {"artifact_generation_seconds": 12.5, "artifact_bytes": -1},
+        {"artifact_generation_seconds": 12.5, "artifact_bytes": False},
+    ),
+)
+def test_fixed_representative_arm_rejects_invalid_offline_costs(
+    tmp_path,
+    offline_costs,
+):
+    spec = dict(
+        representative_canary_matrix().run_for_arm(
+            "document_kv_cache:full_prefix_prefill"
+        ).arm_spec
+    )
+    spec["offline_costs"] = offline_costs
+
+    assert not public_vllm_smoke._is_fixed_representative_arm_spec(spec)
+    kwargs = representative_vllm_kwargs(tmp_path, arm_index=1)
+    kwargs["benchmark_arm_specs"] = (spec,)
+    with pytest.raises(ValueError):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="invalid-offline-costs",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            **kwargs,
+        )
+
+
+def test_fixed_representative_arm_rejects_tampered_identity_with_offline_costs(
+    tmp_path,
+):
+    spec = dict(
+        representative_canary_matrix().run_for_arm(
+            "document_kv_cache:vanilla_prefill"
+        ).arm_spec
+    )
+    spec["offline_costs"] = {
+        "artifact_generation_seconds": 12.5,
+        "artifact_bytes": 1200,
+    }
+    spec["physical_transform_version"] = "tampered"
+
+    assert not public_vllm_smoke._is_fixed_representative_arm_spec(spec)
+    kwargs = representative_vllm_kwargs(tmp_path, arm_index=2)
+    kwargs["benchmark_arm_specs"] = (spec,)
+    with pytest.raises(ValueError, match="benchmark_arm_specs"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="tampered-arm",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            **kwargs,
+        )
 
 
 def test_prepared_handoff_coverage_validates_every_arbitrary_cache_arm(

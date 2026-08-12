@@ -1008,6 +1008,24 @@ def _validate_vllm_representative_workload(
 
 def _is_fixed_representative_arm_spec(value: Mapping[str, Any]) -> bool:
     record = benchmark_json_mapping_to_record(value)
+    if "offline_costs" in record:
+        offline_costs = record.pop("offline_costs")
+        if not isinstance(offline_costs, Mapping) or set(offline_costs) != {
+            "artifact_generation_seconds",
+            "artifact_bytes",
+        }:
+            return False
+        generation_seconds = offline_costs["artifact_generation_seconds"]
+        artifact_bytes = offline_costs["artifact_bytes"]
+        if (
+            isinstance(generation_seconds, bool)
+            or not isinstance(generation_seconds, (int, float))
+            or not math.isfinite(generation_seconds)
+            or generation_seconds < 0
+            or type(artifact_bytes) is not int
+            or artifact_bytes < 0
+        ):
+            return False
     return any(
         record == benchmark_json_mapping_to_record(run.arm_spec)
         for run in representative_canary_matrix().runs
