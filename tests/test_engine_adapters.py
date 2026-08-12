@@ -278,6 +278,7 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
         "payload_mode": "segmented",
         "total_bytes": ready.handle.total_bytes,
         "segment_count": 2,
+        "checksum": ready.handle.payload_checksum,
     }
     assert record["handle"]["adapter_ids"] == ["selection-lora"]
     assert record["handle"]["cache_method"] == "vanilla_prefill"
@@ -300,6 +301,7 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
         "pre_rope": False,
         "rope_theta": None,
         "rope_rotary_dim": None,
+        "key_position_encoding": "stored_post_rope",
         "attention_mechanism": "gqa",
         "query_heads_per_kv_head": 4,
     }
@@ -316,6 +318,7 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
             "byte_length": len(STATIC_PAYLOAD),
             "byte_end": len(STATIC_PAYLOAD),
             "content_hash": key(DocumentChunkType.DOCUMENT_STATIC, "static").content_hash,
+                "token_contract": None,
         },
         {
             "document_id": "doc-a",
@@ -329,6 +332,7 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
             "byte_length": len(CHUNK_PAYLOAD),
             "byte_end": len(STATIC_PAYLOAD) + len(CHUNK_PAYLOAD),
             "content_hash": key(DocumentChunkType.DOCUMENT_CHUNK, "section-1").content_hash,
+                "token_contract": None,
         },
     ]
 
@@ -801,7 +805,9 @@ def test_view_engine_adapter_payload_casts_non_byte_memoryview_to_byte_view(tmp_
         adapter_request,
         payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
     )
-    two_byte_items = array("H", [0]) * (ready.handle.total_bytes // 2)
+    assert isinstance(ready.payload, bytes)
+    two_byte_items = array("H")
+    two_byte_items.frombytes(ready.payload)
 
     payload_view = view_engine_adapter_payload(record, memoryview(two_byte_items))
 
@@ -973,6 +979,7 @@ def test_engine_kv_connector_probe_result_record_validates_native_probe_evidence
             "pre_rope": False,
             "rope_theta": None,
             "rope_rotary_dim": None,
+            "key_position_encoding": "stored_post_rope",
             "attention_mechanism": "gqa",
             "query_heads_per_kv_head": 4,
         },

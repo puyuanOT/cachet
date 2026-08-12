@@ -18,6 +18,7 @@ from document_kv_cache._hardware_targets import (
     validate_v1_hardware_target,
     validate_v1_vllm_kv_cache_dtype_for_hardware_target,
 )
+from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
@@ -33,6 +34,7 @@ from document_kv_cache.vllm_smoke import (
     PREPARED_PREFIX_CACHE_SALT_MODE,
     SERVER_HOST,
     SERVER_PORT,
+    _runtime_identity_from_json,
     parse_dataset_specs,
 )
 from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES
@@ -104,6 +106,8 @@ class DatabricksVLLMSmokeJobConfig:
     single_user_name: str | None = None
     wheel_uri: str | None = None
     model_id: str | None = None
+    model_revision: str | None = None
+    tokenizer_revision: str | None = None
     model_dtype: str = "bfloat16"
     model_quantization: str | None = None
     kv_cache_dtype: str | None = None
@@ -136,6 +140,10 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_handoff_align_bytes: int = 4096
     benchmark_handoff_generation_timeout_seconds: float = 1800.0
     benchmark_handoff_limit: int | None = None
+    benchmark_handoff_segment_per_document: bool = False
+    benchmark_handoff_cache_method: str | None = None
+    benchmark_handoff_require_artifact_contract: bool = False
+    runtime_identity: RuntimeIdentity | None = None
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
@@ -161,6 +169,10 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("wheel_uri must be non-empty when provided")
         if self.model_id is not None and not self.model_id.strip():
             raise ValueError("model_id must be non-empty when provided")
+        for field_name in ("model_revision", "tokenizer_revision"):
+            value = getattr(self, field_name)
+            if value is not None and not value.strip():
+                raise ValueError(f"{field_name} must be non-empty when provided")
         if not self.model_dtype.strip():
             raise ValueError("model_dtype must be non-empty")
         if self.model_quantization is not None and not self.model_quantization.strip():
@@ -254,6 +266,59 @@ class DatabricksVLLMSmokeJobConfig:
                 or self.benchmark_handoff_limit < 0
             ):
                 raise ValueError("benchmark_handoff_limit must be a non-negative integer")
+        if type(self.benchmark_handoff_segment_per_document) is not bool:
+            raise TypeError(
+                "benchmark_handoff_segment_per_document must be a boolean"
+            )
+        if self.benchmark_handoff_cache_method is not None:
+            if not self.benchmark_handoff_cache_method.strip():
+                raise ValueError(
+                    "benchmark_handoff_cache_method must be non-empty when provided"
+                )
+            if self.benchmark_handoff_generator_factory is None:
+                raise ValueError(
+                    "benchmark_handoff_cache_method requires "
+                    "benchmark_handoff_generator_factory"
+                )
+        if type(self.benchmark_handoff_require_artifact_contract) is not bool:
+            raise TypeError(
+                "benchmark_handoff_require_artifact_contract must be a boolean"
+            )
+        if (
+            self.benchmark_handoff_segment_per_document
+            or self.benchmark_handoff_require_artifact_contract
+        ) and self.benchmark_handoff_generator_factory is None:
+            raise ValueError(
+                "benchmark handoff options require "
+                "benchmark_handoff_generator_factory"
+            )
+        if self.runtime_identity is not None:
+            if not isinstance(self.runtime_identity, RuntimeIdentity):
+                raise TypeError("runtime_identity must be a RuntimeIdentity or None")
+            if self.model_revision is None or self.tokenizer_revision is None:
+                raise ValueError(
+                    "runtime_identity requires pinned model_revision and "
+                    "tokenizer_revision"
+                )
+            if self.model_id is None:
+                raise ValueError("runtime_identity requires model_id")
+            expected_runtime_identity = {
+                "model_id": self.model_id,
+                "model_revision": self.model_revision,
+                "tokenizer_id": self.model_id,
+                "tokenizer_revision": self.tokenizer_revision,
+                "kv_dtype": self.kv_cache_dtype or self.model_dtype,
+            }
+            mismatches = [
+                field_name
+                for field_name, expected in expected_runtime_identity.items()
+                if getattr(self.runtime_identity, field_name) != expected
+            ]
+            if mismatches:
+                raise ValueError(
+                    "runtime_identity does not match pinned vLLM configuration: "
+                    + ", ".join(mismatches)
+                )
         object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
 
@@ -376,6 +441,12 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
     ]
     if config.model_id:
         parameters.extend(["--model-id", config.model_id])
+    if config.model_revision:
+        parameters.extend(["--model-revision", config.model_revision])
+    if config.tokenizer_revision:
+        parameters.extend(
+            ["--tokenizer-revision", config.tokenizer_revision]
+        )
     if config.model_dtype != "bfloat16":
         parameters.extend(["--model-dtype", config.model_dtype])
     if config.model_quantization:
@@ -386,6 +457,17 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         parameters.extend(["--attention-backend", config.attention_backend])
     if config.payload_cache_max_bytes:
         parameters.extend(["--payload-cache-max-bytes", str(config.payload_cache_max_bytes)])
+    if config.runtime_identity is not None:
+        parameters.extend(
+            [
+                "--runtime-identity-json",
+                json.dumps(
+                    config.runtime_identity.to_record(),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ]
+        )
     for arm_id in config.benchmark_arms:
         parameters.extend(["--benchmark-arm", arm_id])
     if config.benchmark_prewarm_cache_prefix:
@@ -417,6 +499,19 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
             parameters.extend(["--benchmark-handoff-limit", str(config.benchmark_handoff_limit)])
         if config.benchmark_handoff_output_dir is not None:
             parameters.extend(["--benchmark-handoff-output-dir", config.benchmark_handoff_output_dir])
+        if config.benchmark_handoff_segment_per_document:
+            parameters.append("--benchmark-handoff-chunk-per-document")
+        if config.benchmark_handoff_cache_method is not None:
+            parameters.extend(
+                [
+                    "--benchmark-handoff-cache-method",
+                    config.benchmark_handoff_cache_method,
+                ]
+            )
+        if config.benchmark_handoff_require_artifact_contract:
+            parameters.append(
+                "--benchmark-handoff-require-artifact-contract"
+            )
     return parameters
 
 
@@ -443,6 +538,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
     parser.add_argument("--model-id", help="HF model path/id passed to vLLM --model.")
+    parser.add_argument("--model-revision")
+    parser.add_argument("--tokenizer-revision")
     parser.add_argument("--model-dtype", default="bfloat16", help="Model dtype passed to vLLM --dtype.")
     parser.add_argument("--model-quantization", help="Optional vLLM --quantization value.")
     parser.add_argument("--kv-cache-dtype", help="Optional vLLM --kv-cache-dtype value.")
@@ -526,6 +623,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--runtime-identity-json",
+        help=(
+            "RuntimeIdentity JSON used by the native provider compatibility "
+            "handshake."
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         action="append",
         default=None,
@@ -566,6 +670,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--benchmark-handoff-chunk-per-document",
+        action="store_true",
+    )
+    parser.add_argument("--benchmark-handoff-cache-method")
+    parser.add_argument(
+        "--benchmark-handoff-require-artifact-contract",
+        action="store_true",
+    )
+    parser.add_argument(
         "--spark-env-var",
         action="append",
         default=None,
@@ -592,6 +705,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             single_user_name=args.single_user_name,
             wheel_uri=args.wheel_uri,
             model_id=args.model_id,
+            model_revision=args.model_revision,
+            tokenizer_revision=args.tokenizer_revision,
             model_dtype=args.model_dtype,
             model_quantization=args.model_quantization,
             kv_cache_dtype=args.kv_cache_dtype,
@@ -626,6 +741,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.benchmark_handoff_generation_timeout_seconds
             ),
             benchmark_handoff_limit=args.benchmark_handoff_limit,
+            benchmark_handoff_segment_per_document=(
+                args.benchmark_handoff_chunk_per_document
+            ),
+            benchmark_handoff_cache_method=(
+                args.benchmark_handoff_cache_method
+            ),
+            benchmark_handoff_require_artifact_contract=(
+                args.benchmark_handoff_require_artifact_contract
+            ),
+            runtime_identity=(
+                None
+                if args.runtime_identity_json is None
+                else _runtime_identity_from_json(args.runtime_identity_json)
+            ),
             spark_env_vars=_spark_env_vars_from_cli(args.spark_env_var or ()),
         )
         if args.runner_script_output:

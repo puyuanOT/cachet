@@ -16,6 +16,8 @@ from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
     DEFAULT_HARDWARE_TARGET,
     DEFAULT_V1_MODEL_ID,
+    DOCUMENT_KV_ARTIFACT_ID_PARAM,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     BenchmarkArm,
@@ -148,6 +150,18 @@ class BenchmarkRunResult:
     cache_arm_id: str = CACHE_REUSE_ARM
     request_parallelism: int = 1
     isolate_arms: bool = True
+    arms: tuple[BenchmarkArm, ...] = ()
+    repeats: int = 1
+    shuffle: bool = False
+    seed: int | None = None
+    interleave_examples: bool = False
+    prefix_cache_salt_mode: str = "static"
+
+    @property
+    def cache_arm_ids(self) -> tuple[str, ...]:
+        if self.arms:
+            return tuple(arm.arm_id for arm in self.arms if arm.uses_cache)
+        return (self.cache_arm_id,)
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,10 +364,13 @@ def run_benchmark_suite(
     seed: int | None = None,
     isolate_arms: bool = True,
     interleave_examples: bool = False,
+    prefix_cache_salt_mode: str = "static",
 ) -> BenchmarkRunResult:
     if repeats <= 0:
         raise ValueError("repeats must be positive")
     _validate_positive_int(request_parallelism, "request_parallelism")
+    if prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
+        raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
     _validate_engine_mapping(arms, engines)
     requests: list[BenchmarkEngineRequest] = []
     for example in suite.examples:
@@ -411,20 +428,32 @@ def run_benchmark_suite(
         measurements = _run_requests(requests, engines, request_parallelism=request_parallelism)
     report_rows = summarize_measurements(measurements)
     baseline_arm_id = _arm_id_for_prefill(arms)
-    cache_arm_id = _arm_id_for_cache(arms)
+    cache_arm_ids = tuple(arm.arm_id for arm in arms if arm.uses_cache)
+    cache_arm_id = cache_arm_ids[0] if cache_arm_ids else CACHE_REUSE_ARM
+    comparisons = tuple(
+        comparison
+        for candidate_arm_id in cache_arm_ids
+        for comparison in compare_to_baseline(
+            report_rows,
+            baseline_arm_id=baseline_arm_id,
+            cache_arm_id=candidate_arm_id,
+        )
+    )
     return BenchmarkRunResult(
         suite=suite,
         measurements=tuple(measurements),
         report_rows=report_rows,
-        comparisons=compare_to_baseline(
-            report_rows,
-            baseline_arm_id=baseline_arm_id,
-            cache_arm_id=cache_arm_id,
-        ),
+        comparisons=comparisons,
         baseline_arm_id=baseline_arm_id,
         cache_arm_id=cache_arm_id,
         request_parallelism=request_parallelism,
         isolate_arms=isolate_arms if len(arms) > 1 else True,
+        arms=tuple(arms),
+        repeats=repeats,
+        shuffle=shuffle,
+        seed=seed,
+        interleave_examples=interleave_examples,
+        prefix_cache_salt_mode=prefix_cache_salt_mode,
     )
 
 
@@ -515,10 +544,16 @@ def run_openai_compatible_v1_benchmark(
         seed=config.seed,
         isolate_arms=config.isolate_arms,
         interleave_examples=config.interleave_examples,
+        prefix_cache_salt_mode=config.prefix_cache_salt_mode,
     )
 
 
 def benchmark_run_result_to_record(result: BenchmarkRunResult) -> dict[str, Any]:
+    from document_kv_cache.benchmark_statistics import (
+        paired_benchmark_statistics,
+        paired_benchmark_statistics_to_record,
+    )
+
     return {
         "record_type": BENCHMARK_RUN_RECORD_TYPE,
         "suite": {
@@ -529,18 +564,64 @@ def benchmark_run_result_to_record(result: BenchmarkRunResult) -> dict[str, Any]
             "examples": len(result.suite.examples),
             "request_parallelism": result.request_parallelism,
             "isolate_arms": result.isolate_arms,
+            "repeats": result.repeats,
+            "shuffle": result.shuffle,
+            "seed": result.seed,
+            "interleave_examples": result.interleave_examples,
+            "prefix_cache_salt_mode": result.prefix_cache_salt_mode,
+            "arms": [
+                {
+                    "arm_id": arm.arm_id,
+                    "uses_cache": arm.uses_cache,
+                    "cache_method": arm.cache_method,
+                    "connector_mode": arm.connector_mode,
+                    "variant_id": arm.variant_id,
+                    "description": arm.description,
+                }
+                for arm in result.arms
+            ],
         },
         "measurements": [_measurement_to_record(measurement) for measurement in result.measurements],
         "report_rows": [_report_row_to_record(row) for row in result.report_rows],
         "comparisons": [_comparison_to_record(comparison) for comparison in result.comparisons],
+        "paired_statistics": paired_benchmark_statistics_to_record(
+            paired_benchmark_statistics(result)
+        ),
         "v1_evidence": _v1_evidence_to_record(
             evaluate_v1_benchmark_evidence(
-                result.report_rows,
-                result.comparisons,
+                _rows_for_arm_pair(
+                    result.report_rows,
+                    baseline_arm_id=result.baseline_arm_id,
+                    cache_arm_id=result.cache_arm_id,
+                ),
+                _comparisons_for_arm_pair(
+                    result.comparisons,
+                    baseline_arm_id=result.baseline_arm_id,
+                    cache_arm_id=result.cache_arm_id,
+                ),
                 baseline_arm_id=result.baseline_arm_id,
                 cache_arm_id=result.cache_arm_id,
             )
         ),
+        "v1_evidence_by_cache_arm": {
+            cache_arm_id: _v1_evidence_to_record(
+                evaluate_v1_benchmark_evidence(
+                    _rows_for_arm_pair(
+                        result.report_rows,
+                        baseline_arm_id=result.baseline_arm_id,
+                        cache_arm_id=cache_arm_id,
+                    ),
+                    _comparisons_for_arm_pair(
+                        result.comparisons,
+                        baseline_arm_id=result.baseline_arm_id,
+                        cache_arm_id=cache_arm_id,
+                    ),
+                    baseline_arm_id=result.baseline_arm_id,
+                    cache_arm_id=cache_arm_id,
+                )
+            )
+            for cache_arm_id in result.cache_arm_ids
+        },
     }
 
 
@@ -588,6 +669,7 @@ def _run_requests(
 
 
 def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> InferenceMeasurement:
+    cache_method, artifact_id = _request_cache_identity(request)
     try:
         generation = engine.generate(request)
     except Exception as exc:  # pragma: no cover - exercised through tests with concrete exception type.
@@ -603,6 +685,11 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
             expected_answer=request.example.expected_answer,
             error=_exception_message(exc),
             metadata={"error_type": type(exc).__name__},
+            cache_method=cache_method,
+            artifact_id=artifact_id,
+            variant_id=request.arm.variant_id,
+            request_id=request.request_id or "",
+            repeat_index=request.repeat_index,
         )
     return InferenceMeasurement(
         example_id=request.example.example_id,
@@ -615,7 +702,36 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
         output_text=generation.output_text,
         expected_answer=request.example.expected_answer,
         metadata=dict(generation.metadata),
+        cache_method=cache_method,
+        artifact_id=artifact_id,
+        variant_id=request.arm.variant_id,
+        request_id=request.request_id or "",
+        repeat_index=request.repeat_index,
     )
+
+
+def _request_cache_identity(request: BenchmarkEngineRequest) -> tuple[str, str]:
+    if not request.arm.uses_cache:
+        return "", ""
+    cache_method = request.kv_transfer_params.get(
+        DOCUMENT_KV_CACHE_METHOD_PARAM,
+        request.arm.cache_method,
+    )
+    artifact_id = request.kv_transfer_params.get(DOCUMENT_KV_ARTIFACT_ID_PARAM, "")
+    if not isinstance(cache_method, str):
+        raise ValueError(
+            f"kv_transfer_params.{DOCUMENT_KV_CACHE_METHOD_PARAM} must be a string"
+        )
+    if not isinstance(artifact_id, str):
+        raise ValueError(
+            f"kv_transfer_params.{DOCUMENT_KV_ARTIFACT_ID_PARAM} must be a string"
+        )
+    if request.arm.cache_method and cache_method and request.arm.cache_method != cache_method:
+        raise ValueError(
+            f"Benchmark arm method {request.arm.cache_method!r} does not match "
+            f"handoff method {cache_method!r}"
+        )
+    return cache_method, artifact_id
 
 
 def _exception_message(exc: Exception) -> str:
@@ -720,6 +836,11 @@ def _measurement_to_record(measurement: InferenceMeasurement) -> dict[str, Any]:
         "answer_found": measurement.answer_found,
         "error": measurement.error,
         "metadata": dict(measurement.metadata),
+        "cache_method": measurement.cache_method,
+        "artifact_id": measurement.artifact_id,
+        "variant_id": measurement.variant_id,
+        "request_id": measurement.request_id,
+        "repeat_index": measurement.repeat_index,
     }
 
 
@@ -736,6 +857,9 @@ def _report_row_to_record(row: BenchmarkReportRow) -> dict[str, Any]:
         "exact_match_rate": row.exact_match_rate,
         "answer_found_rate": row.answer_found_rate,
         "output_tokens_per_second": row.output_tokens_per_second,
+        "cache_method": row.cache_method,
+        "artifact_id": row.artifact_id,
+        "variant_id": row.variant_id,
     }
 
 
@@ -748,7 +872,34 @@ def _comparison_to_record(comparison: BenchmarkComparison) -> dict[str, Any]:
         "time_to_completion_speedup": comparison.time_to_completion_speedup,
         "exact_match_delta": comparison.exact_match_delta,
         "answer_found_delta": comparison.answer_found_delta,
+        "cache_method": comparison.cache_method,
+        "artifact_id": comparison.artifact_id,
+        "variant_id": comparison.variant_id,
     }
+
+
+def _rows_for_arm_pair(
+    rows: Sequence[BenchmarkReportRow],
+    *,
+    baseline_arm_id: str,
+    cache_arm_id: str,
+) -> tuple[BenchmarkReportRow, ...]:
+    arm_ids = {baseline_arm_id, cache_arm_id}
+    return tuple(row for row in rows if row.arm_id in arm_ids)
+
+
+def _comparisons_for_arm_pair(
+    comparisons: Sequence[BenchmarkComparison],
+    *,
+    baseline_arm_id: str,
+    cache_arm_id: str,
+) -> tuple[BenchmarkComparison, ...]:
+    return tuple(
+        comparison
+        for comparison in comparisons
+        if comparison.baseline_arm_id == baseline_arm_id
+        and comparison.cache_arm_id == cache_arm_id
+    )
 
 
 def _v1_evidence_to_record(evidence: Any) -> dict[str, Any]:

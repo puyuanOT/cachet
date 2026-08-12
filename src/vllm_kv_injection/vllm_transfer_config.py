@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.engine_adapters import (
     ENGINE_ADAPTER_HANDOFF_RECORD_TYPE,
     ENGINE_ADAPTER_HANDOFF_SCHEMA_VERSION,
@@ -22,6 +23,8 @@ from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
+    DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY,
+    DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY,
     DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
 )
 
@@ -110,6 +113,8 @@ def document_kv_transfer_config(
     handoff_source_factory: str | None = None,
     payload_cache_max_bytes: int | None = None,
     telemetry_jsonl: str | None = None,
+    runtime_identity: RuntimeIdentity | None = None,
+    require_runtime_handshake: bool | None = None,
 ) -> dict[str, Any]:
     """Return a vLLM ``KVTransferConfig``-shaped dictionary.
 
@@ -132,6 +137,8 @@ def document_kv_transfer_config(
             handoff_source_factory=handoff_source_factory,
             payload_cache_max_bytes=payload_cache_max_bytes,
             telemetry_jsonl=telemetry_jsonl,
+            runtime_identity=runtime_identity,
+            require_runtime_handshake=require_runtime_handshake,
         ),
     }
     _validate_json_serializable(config, field_name="vLLM KV transfer config")
@@ -148,6 +155,8 @@ def document_kv_transfer_config_json(
     handoff_source_factory: str | None = None,
     payload_cache_max_bytes: int | None = None,
     telemetry_jsonl: str | None = None,
+    runtime_identity: RuntimeIdentity | None = None,
+    require_runtime_handshake: bool | None = None,
 ) -> str:
     """Return compact JSON for passing to vLLM CLI launch paths."""
 
@@ -161,6 +170,8 @@ def document_kv_transfer_config_json(
             handoff_source_factory=handoff_source_factory,
             payload_cache_max_bytes=payload_cache_max_bytes,
             telemetry_jsonl=telemetry_jsonl,
+            runtime_identity=runtime_identity,
+            require_runtime_handshake=require_runtime_handshake,
         ),
         separators=(",", ":"),
         sort_keys=True,
@@ -241,6 +252,8 @@ def _document_kv_extra_config(
     handoff_source_factory: str | None,
     payload_cache_max_bytes: int | None,
     telemetry_jsonl: str | None,
+    runtime_identity: RuntimeIdentity | None,
+    require_runtime_handshake: bool | None,
 ) -> dict[str, Any]:
     spec = vllm_adapter_spec()
     merged: dict[str, Any] = {}
@@ -262,6 +275,20 @@ def _document_kv_extra_config(
     if telemetry_jsonl is not None:
         _validate_non_empty_string(telemetry_jsonl, field_name="telemetry_jsonl")
         merged[DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY] = telemetry_jsonl
+    if runtime_identity is not None:
+        if not isinstance(runtime_identity, RuntimeIdentity):
+            raise TypeError("runtime_identity must be a RuntimeIdentity or None")
+        merged[DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY] = (
+            runtime_identity.to_record()
+        )
+    if require_runtime_handshake is not None:
+        if type(require_runtime_handshake) is not bool:
+            raise TypeError(
+                "require_runtime_handshake must be a boolean or None"
+            )
+        merged[DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY] = (
+            require_runtime_handshake
+        )
     merged.update(
         {
             "document_kv.record_type": DOCUMENT_KV_TRANSFER_CONFIG_RECORD_TYPE,

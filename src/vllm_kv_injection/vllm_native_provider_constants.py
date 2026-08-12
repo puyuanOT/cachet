@@ -8,6 +8,8 @@ DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
 DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY = "document_kv.handoff_source_factory"
 DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY = "document_kv.payload_cache_max_bytes"
 DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY = "document_kv.telemetry_jsonl"
+DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY = "document_kv.runtime_identity"
+DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY = "document_kv.require_runtime_handshake"
 DOCUMENT_KV_NATIVE_PROVIDER_FACTORY = "vllm_kv_injection.vllm_native_provider:build_document_kv_provider"
 
 __all__ = [
@@ -19,5 +21,7 @@ __all__ = [
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "DOCUMENT_KV_REQUEST_ID_PARAM",
+    "DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY",
+    "DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY",
     "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
 ]

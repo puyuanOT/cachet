@@ -520,8 +520,12 @@ def test_native_provider_loads_uri_payload_via_mmap_matches_inline(tmp_path):
     payload_path.write_bytes(payload())
     inline = handoff_load()
     uri_load = DocumentKVHandoffLoad(actions=inline.actions, payload_uri=str(payload_path))
+    telemetry_path = tmp_path / "telemetry.jsonl"
 
-    provider = DocumentKVNativeProvider(source=StaticHandoffSource(uri_load))
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(uri_load),
+        telemetry_jsonl=str(telemetry_path),
+    )
     connector = DocumentKVConnector(provider=provider)
     request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
 
@@ -561,8 +565,12 @@ def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, mo
     payload_path.write_bytes(payload())
     inline = handoff_load()
     uri_load = DocumentKVHandoffLoad(actions=inline.actions, payload_uri=str(payload_path))
+    telemetry_path = tmp_path / "cold-telemetry.jsonl"
 
-    provider = DocumentKVNativeProvider(source=StaticHandoffSource(uri_load))
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(uri_load),
+        telemetry_jsonl=str(telemetry_path),
+    )
     assert provider._evict_page_cache is True
     connector = DocumentKVConnector(provider=provider)
     request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
@@ -581,6 +589,14 @@ def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, mo
     assert sync_calls == [1]  # one-time flush before eviction so reads are fully cold
     assert torch.equal(layer_0[5, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+    cache_state = json.loads(telemetry_path.read_text(encoding="utf-8"))[
+        "cache_state_attestation"
+    ]
+    assert cache_state["source"] == "local_path"
+    assert cache_state["bytes_read"] == len(payload())
+    assert cache_state["eviction_requested"] is True
+    assert cache_state["eviction_succeeded"] is True
+    assert cache_state["cold_read_attested"] is True
 
 
 def test_read_payload_view_streams_full_file(tmp_path):
@@ -826,6 +842,21 @@ def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
     assert row["counts"]["expected_payload_bytes"] == len(payload())
     assert row["layout"]["dtype"] == "int8"
     assert row["payload"]["source"] == "inline"
+    assert row["cache_state_attestation"] == {
+        "cache_method": "vanilla_prefill",
+        "artifact_id": "",
+        "source": "inline",
+        "bytes_read": 0,
+        "payload_cache_hit": False,
+        "eviction_requested": False,
+        "eviction_succeeded": False,
+        "direct_io": False,
+        "expected_bytes": len(payload()),
+        "expected_tokens": 2,
+        "loaded_tokens": 2,
+        "successful_loads": 1,
+        "cold_read_attested": False,
+    }
 
 
 def test_native_provider_telemetry_always_records_wall_clock(tmp_path):

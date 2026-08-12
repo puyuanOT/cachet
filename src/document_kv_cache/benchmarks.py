@@ -15,6 +15,11 @@ from document_kv_cache._hardware_targets import (
     SUPPORTED_V1_HARDWARE_TARGETS,
     validate_v1_hardware_target as _validate_v1_hardware_target,
 )
+from document_kv_cache.benchmark_metrics import (
+    aggregate_decode_tokens_per_second,
+    latency_speedup,
+    quality_delta,
+)
 from document_kv_cache.models import DocumentKVRequest
 from document_kv_cache.workflow import SourceDocument
 
@@ -34,6 +39,8 @@ DOCUMENT_KV_PAYLOAD_URI_PARAM = "document_kv.payload_uri"
 DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM = "document_kv.prompt_text_mode"
 DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM = "document_kv.runtime_prefix_text"
 DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM = "document_kv.sglang_hicache_page_keys"
+DOCUMENT_KV_CACHE_METHOD_PARAM = "document_kv.cache_method"
+DOCUMENT_KV_ARTIFACT_ID_PARAM = "document_kv.artifact_id"
 FINAL_ANSWER_CUE = "Answer:"
 # Controls whether the system/task guidance prompt is placed at the start of the
 # cached document prefix (baked into the cached KV) or after the documents so it is
@@ -61,6 +68,8 @@ __all__ = [
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM",
     "DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM",
+    "DOCUMENT_KV_CACHE_METHOD_PARAM",
+    "DOCUMENT_KV_ARTIFACT_ID_PARAM",
     "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV",
     "SYSTEM_PROMPT_POSITIONS",
     "DEFAULT_SYSTEM_PROMPT_POSITION",
@@ -78,6 +87,7 @@ __all__ = [
     "V1BenchmarkEvidence",
     "baseline_prefill_arm",
     "document_kv_cache_arm",
+    "method_benchmark_arm",
     "v1_dataset_specs",
     "dataset_spec",
     "build_prompt_parts",
@@ -232,6 +242,21 @@ class BenchmarkArm:
     arm_id: str
     uses_cache: bool
     description: str
+    cache_method: str = ""
+    connector_mode: str = ""
+    variant_id: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.arm_id, "arm_id")
+        if type(self.uses_cache) is not bool:
+            raise ValueError("uses_cache must be a boolean")
+        _validate_non_empty_str(self.description, "description")
+        for field_name in ("cache_method", "connector_mode", "variant_id"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str):
+                raise TypeError(f"{field_name} must be a string")
+        if not self.uses_cache and self.cache_method:
+            raise ValueError("non-cache benchmark arms must not declare cache_method")
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +272,11 @@ class InferenceMeasurement:
     expected_answer: str | None = None
     error: str | None = None
     metadata: Mapping[str, str] = field(default_factory=dict)
+    cache_method: str = ""
+    artifact_id: str = ""
+    variant_id: str = ""
+    request_id: str = ""
+    repeat_index: int = 1
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.example_id, "example_id")
@@ -264,6 +294,13 @@ class InferenceMeasurement:
         if self.error is not None:
             _validate_non_empty_str(self.error, "error")
         object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
+        for field_name in ("cache_method", "artifact_id", "variant_id"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if not isinstance(self.request_id, str):
+            raise TypeError("request_id must be a string")
+        if type(self.repeat_index) is not int or self.repeat_index <= 0:
+            raise ValueError("repeat_index must be a positive integer")
 
     @property
     def ok(self) -> bool:
@@ -303,6 +340,9 @@ class BenchmarkReportRow:
     exact_match_rate: float | None
     answer_found_rate: float | None
     output_tokens_per_second: float | None
+    cache_method: str = ""
+    artifact_id: str = ""
+    variant_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +354,9 @@ class BenchmarkComparison:
     time_to_completion_speedup: float | None
     exact_match_delta: float | None
     answer_found_delta: float | None
+    cache_method: str = ""
+    artifact_id: str = ""
+    variant_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,6 +436,28 @@ def document_kv_cache_arm() -> BenchmarkArm:
         arm_id=CACHE_REUSE_ARM,
         uses_cache=True,
         description="Inference path that reuses precomputed document KV cache.",
+        connector_mode="cachet",
+    )
+
+
+def method_benchmark_arm(
+    method: str,
+    *,
+    arm_id: str | None = None,
+    variant_id: str = "default",
+) -> BenchmarkArm:
+    """Create a cache arm directly from the executable method registry."""
+
+    from document_kv_cache.methods import default_method_registry
+
+    spec = default_method_registry().get(method, require_implemented=True)
+    return BenchmarkArm(
+        arm_id=arm_id or f"{CACHE_REUSE_ARM}:{spec.method_id}",
+        uses_cache=True,
+        description=spec.description,
+        cache_method=spec.method_id,
+        connector_mode=spec.connector_mode,
+        variant_id=variant_id,
     )
 
 
@@ -631,13 +696,16 @@ def compare_to_baseline(
                 dataset=dataset,
                 baseline_arm_id=baseline_arm_id,
                 cache_arm_id=cache_arm_id,
-                ttft_speedup=_speedup(baseline.ttft.p50, cache.ttft.p50),
-                time_to_completion_speedup=_speedup(
+                ttft_speedup=latency_speedup(baseline.ttft.p50, cache.ttft.p50),
+                time_to_completion_speedup=latency_speedup(
                     baseline.time_to_completion.p50,
                     cache.time_to_completion.p50,
                 ),
-                exact_match_delta=_delta(cache.exact_match_rate, baseline.exact_match_rate),
-                answer_found_delta=_delta(cache.answer_found_rate, baseline.answer_found_rate),
+                exact_match_delta=quality_delta(cache.exact_match_rate, baseline.exact_match_rate),
+                answer_found_delta=quality_delta(cache.answer_found_rate, baseline.answer_found_rate),
+                cache_method=cache.cache_method,
+                artifact_id=cache.artifact_id,
+                variant_id=cache.variant_id,
             )
         )
     return tuple(comparisons)
@@ -854,6 +922,10 @@ def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
     runtime_prefix_text = kv_transfer_params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM)
     if runtime_prefix_text is not None and not isinstance(runtime_prefix_text, str):
         raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM} must be a string")
+    for parameter in (DOCUMENT_KV_CACHE_METHOD_PARAM, DOCUMENT_KV_ARTIFACT_ID_PARAM):
+        value = kv_transfer_params.get(parameter)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ValueError(f"kv_transfer_params.{parameter} must be a non-empty string")
     if handoff_record is not None:
         if not isinstance(handoff_record, Mapping):
             raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_HANDOFF_RECORD_PARAM} must be an object")
@@ -862,6 +934,22 @@ def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
             request_id=request_id,
             payload_uri_override=payload_uri,
         )
+        handle = handoff_record.get("handle")
+        if isinstance(handle, Mapping):
+            cache_method = kv_transfer_params.get(DOCUMENT_KV_CACHE_METHOD_PARAM)
+            if cache_method is not None and cache_method != handle.get("cache_method"):
+                raise ValueError(
+                    f"kv_transfer_params.{DOCUMENT_KV_CACHE_METHOD_PARAM} must match handoff handle"
+                )
+            artifact_id = kv_transfer_params.get(DOCUMENT_KV_ARTIFACT_ID_PARAM)
+            artifact_identity = handle.get("artifact_identity")
+            if artifact_id is not None and isinstance(artifact_identity, Mapping):
+                from document_kv_cache.artifact_identity import ArtifactIdentity
+
+                if artifact_id != ArtifactIdentity.from_record(artifact_identity).artifact_id:
+                    raise ValueError(
+                        f"kv_transfer_params.{DOCUMENT_KV_ARTIFACT_ID_PARAM} must match handoff handle"
+                    )
 
 
 def _validate_runtime_payload_uri(value: object, *, field_name: str) -> None:
@@ -1000,8 +1088,15 @@ def _summarize_group(dataset: str, arm_id: str, group: Sequence[InferenceMeasure
     completion_tokens = [measurement.completion_tokens for measurement in ok]
     ttft_values = [measurement.ttft_seconds for measurement in ok]
     ttc_values = [measurement.time_to_completion_seconds for measurement in ok]
-    total_completion_tokens = sum(completion_tokens)
-    total_ttc = sum(ttc_values)
+    cache_methods = {measurement.cache_method for measurement in group}
+    artifact_ids = {measurement.artifact_id for measurement in group}
+    variant_ids = {measurement.variant_id for measurement in group}
+    if len(cache_methods) != 1:
+        raise ValueError(f"Benchmark arm {arm_id!r} mixes cache methods: {sorted(cache_methods)}")
+    if len(artifact_ids) != 1:
+        raise ValueError(f"Benchmark arm {arm_id!r} mixes artifact identities: {sorted(artifact_ids)}")
+    if len(variant_ids) != 1:
+        raise ValueError(f"Benchmark arm {arm_id!r} mixes variant identities: {sorted(variant_ids)}")
     return BenchmarkReportRow(
         dataset=dataset,
         arm_id=arm_id,
@@ -1013,7 +1108,19 @@ def _summarize_group(dataset: str, arm_id: str, group: Sequence[InferenceMeasure
         time_to_completion=_latency_summary(ttc_values),
         exact_match_rate=_rate(measurement.exact_match for measurement in ok),
         answer_found_rate=_rate(measurement.answer_found for measurement in ok),
-        output_tokens_per_second=(total_completion_tokens / total_ttc) if total_ttc > 0 else None,
+        output_tokens_per_second=aggregate_decode_tokens_per_second(
+            (
+                (
+                    measurement.completion_tokens,
+                    measurement.ttft_seconds,
+                    measurement.time_to_completion_seconds,
+                )
+                for measurement in ok
+            )
+        ),
+        cache_method=next(iter(cache_methods)),
+        artifact_id=next(iter(artifact_ids)),
+        variant_id=next(iter(variant_ids)),
     )
 
 
@@ -1050,20 +1157,6 @@ def _rate(values: Iterable[bool | None]) -> float | None:
     if not present:
         return None
     return sum(1 for value in present if value) / len(present)
-
-
-def _speedup(baseline_seconds: float | None, candidate_seconds: float | None) -> float | None:
-    if baseline_seconds is None or candidate_seconds is None:
-        return None
-    if baseline_seconds <= 0 or candidate_seconds <= 0:
-        return None
-    return baseline_seconds / candidate_seconds
-
-
-def _delta(left: float | None, right: float | None) -> float | None:
-    if left is None or right is None:
-        return None
-    return left - right
 
 
 def _comparison_has_missing_metrics(comparison: BenchmarkComparison) -> bool:

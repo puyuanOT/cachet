@@ -78,7 +78,7 @@ class ArtifactTrainer:
         adapter = CacheAdapterArtifact(
             adapter_id=f"{config.model_id}-kv-packet",
             artifact_uri="/Volumes/catalog/schema/volume/adapters/qwen3-kv-packet.safetensors",
-            cache_method=CacheGenerationMethod.KV_PACKET,
+            cache_method=config.cache_method,
             metadata={"rank": "8"},
         )
         return TrainingArtifacts(metadata={"trained": "true"}, adapter_artifacts=(adapter,))
@@ -1109,7 +1109,7 @@ def test_workflow_records_training_adapter_artifacts_and_derives_engine_adapters
     result = workflow.generate_cache(
         documents=(document,),
         generator=ByteAlignedGenerator(),
-        config=config(cache_method=CacheGenerationMethod.KV_PACKET),
+        config=config(cache_method=CacheGenerationMethod.VANILLA_PREFILL),
         shard_uri=tmp_path / "artifact-cache.kvpack",
         trainer=ArtifactTrainer(),
         align_bytes=1,
@@ -1124,9 +1124,12 @@ def test_workflow_records_training_adapter_artifacts_and_derives_engine_adapters
     assert result.adapter_ids == ("qwen3:4b-instruct-kv-packet",)
     assert result.training_artifacts is not None
     assert result.training_artifacts.adapter_ids == result.adapter_ids
-    assert result.training_artifacts.adapter_artifacts[0].cache_method == "kv_packet"
+    assert (
+        result.training_artifacts.adapter_artifacts[0].cache_method
+        == "vanilla_prefill"
+    )
     assert result.training_artifacts.adapter_artifacts[0].metadata == {"rank": "8"}
-    assert ready.handle.cache_method == "kv_packet"
+    assert ready.handle.cache_method == "adapter_trained"
     assert ready.handle.adapter_ids == result.adapter_ids
 
 
@@ -1140,7 +1143,7 @@ def test_workflow_prepares_and_submits_engine_ready_request(tmp_path):
     result = workflow.generate_cache(
         documents=(document,),
         generator=ByteAlignedGenerator(),
-        config=config(cache_method=CacheGenerationMethod.KV_PACKET),
+        config=config(cache_method=CacheGenerationMethod.VANILLA_PREFILL),
         shard_uri=tmp_path / "submit-cache.kvpack",
         trainer=ArtifactTrainer(),
         align_bytes=1,
@@ -1159,7 +1162,7 @@ def test_workflow_prepares_and_submits_engine_ready_request(tmp_path):
         b"doc-a:static:static|qwen3:4b-instruct-kv-packet",
         b"doc-a:section-1:body|qwen3:4b-instruct-kv-packet",
     )
-    assert ready.handle.cache_method == "kv_packet"
+    assert ready.handle.cache_method == "adapter_trained"
     assert ready.handle.adapter_ids == ("qwen3:4b-instruct-kv-packet",)
     assert connector.released == []
 
@@ -1181,6 +1184,34 @@ def test_workflow_records_non_vanilla_cache_generation_method(tmp_path):
 
     assert result.cache_method == CacheGenerationMethod.KV_PACKET
     assert result.training_artifacts is None
+
+
+def test_strict_workflow_rejects_unimplemented_kv_packet_before_writing(tmp_path):
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(
+            cache=ChunkCache(cpu_max_bytes=4096),
+            reader=DiskRangeReader(),
+        ),
+    )
+    document = SourceDocument.from_texts(
+        document_id="doc-a",
+        static_text="static",
+        chunks={"section-1": "body"},
+    )
+    shard_path = tmp_path / "kv-packet-cache.kvpack"
+
+    with pytest.raises(NotImplementedError, match="kv_packet"):
+        workflow.generate_cache(
+            documents=(document,),
+            generator=EchoGenerator(),
+            config=config(cache_method=CacheGenerationMethod.KV_PACKET),
+            shard_uri=shard_path,
+            align_bytes=1,
+            require_registered_method=True,
+        )
+
+    assert not shard_path.exists()
 
 
 def test_workflow_preserves_custom_cache_method_into_engine_handle(tmp_path):
@@ -1395,12 +1426,12 @@ def test_workflow_prepares_engine_ready_request(tmp_path):
         request_for("doc-a"),
         layout=one_byte_layout(),
         metadata={"engine": "vllm"},
-        cache_method=CacheGenerationMethod.KV_PACKET,
+        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
         adapter_ids=("qa-lora",),
         segmented=True,
     )
 
-    assert ready.handle.cache_method == "kv_packet"
+    assert ready.handle.cache_method == "vanilla_prefill"
     assert ready.handle.metadata == {"engine": "vllm"}
     assert ready.handle.adapter_ids == ("qa-lora",)
     assert isinstance(ready.payload, tuple)

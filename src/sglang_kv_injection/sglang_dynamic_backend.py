@@ -21,6 +21,11 @@ from document_kv_cache.engine_adapters import (
     read_engine_adapter_request_json,
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
+from document_kv_cache.engine_protocol import (
+    KVKeyPositionEncoding,
+    KVPayloadAxisOrder,
+    KVStorageLayout,
+)
 from document_kv_cache.benchmarks import DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM
 from sglang_kv_injection.sglang_request_metadata_bridge import (
     DOCUMENT_KV_SGLANG_HICACHE_LAST_HASH_EXTRA_INFO_KEY,
@@ -1019,6 +1024,7 @@ def _sglang_hicache_payload_pages(
     plan: EngineKVInjectionPlan,
     payload: bytes,
 ) -> tuple[bytes, ...]:
+    payload = _reposition_hicache_payload(plan, payload)
     page_tokens = plan.layout.block_size
     page_bytes = page_tokens * plan.layout.bytes_per_token
     full_page_count = _sglang_hicache_full_page_count(plan)
@@ -1026,6 +1032,111 @@ def _sglang_hicache_payload_pages(
         payload[index * page_bytes : (index + 1) * page_bytes]
         for index in range(full_page_count)
     )
+
+
+def _reposition_hicache_payload(
+    plan: EngineKVInjectionPlan,
+    payload: bytes,
+) -> bytes:
+    """Apply absolute RoPE before HiCache page hydration."""
+
+    layout = plan.layout
+    encoding = KVKeyPositionEncoding(
+        getattr(
+            getattr(layout, "key_position_encoding", None),
+            "value",
+            getattr(layout, "key_position_encoding", "stored_post_rope"),
+        )
+    )
+    if encoding == KVKeyPositionEncoding.STORED_POST_ROPE:
+        return payload
+    if layout.payload_axis_order != KVPayloadAxisOrder.TOKEN_MAJOR:
+        raise ValueError(
+            "SGLang RoPE repositioning requires token-major payloads"
+        )
+    if layout.storage_layout != KVStorageLayout.SEPARATE_KEY_VALUE:
+        raise ValueError(
+            "SGLang RoPE repositioning requires separate K/V storage"
+        )
+    if (
+        layout.num_kv_heads is None
+        or layout.head_size is None
+        or layout.kv_stride_bytes is None
+    ):
+        raise ValueError(
+            "SGLang RoPE repositioning requires complete KV geometry"
+        )
+    torch = importlib.import_module("torch")
+    from document_kv_cache.rope import apply_rope_to_keys
+
+    dtype = _sglang_rope_torch_dtype(torch, layout.dtype)
+    dtype_width = torch.tensor([], dtype=dtype).element_size()
+    if layout.kv_stride_bytes % dtype_width:
+        raise ValueError("KV stride is not aligned to the payload dtype")
+    stride_scalars = layout.kv_stride_bytes // dtype_width
+    expected_scalars = (
+        plan.total_tokens
+        * layout.num_layers
+        * 2
+        * layout.num_kv_heads
+        * stride_scalars
+    )
+    values = torch.frombuffer(
+        bytearray(payload),
+        dtype=dtype,
+        count=expected_scalars,
+    ).reshape(
+        plan.total_tokens,
+        layout.num_layers,
+        2,
+        layout.num_kv_heads,
+        stride_scalars,
+    )
+    rotary_dim = layout.rope_rotary_dim or layout.head_size
+    if rotary_dim > layout.head_size:
+        raise ValueError("rope_rotary_dim cannot exceed head_size")
+    for segment in plan.segments:
+        start = segment.token_start
+        end = segment.token_end
+        positions = torch.arange(start, end)
+        for layer_index in range(layout.num_layers):
+            keys = values[
+                start:end,
+                layer_index,
+                0,
+                :,
+                : layout.head_size,
+            ]
+            values[
+                start:end,
+                layer_index,
+                0,
+                :,
+                : layout.head_size,
+            ] = apply_rope_to_keys(
+                keys,
+                positions,
+                rope_theta=layout.rope_theta,
+                rotary_dim=rotary_dim,
+            )
+    return bytes(values.contiguous().view(torch.uint8).numpy().tobytes())
+
+
+def _sglang_rope_torch_dtype(torch: Any, dtype: str) -> Any:
+    try:
+        return {
+            "float16": torch.float16,
+            "fp16": torch.float16,
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+        }[dtype.lower()]
+    except KeyError as exc:
+        raise ValueError(
+            "SGLang RoPE repositioning supports float16, bfloat16, "
+            "or float32 raw KV payloads"
+        ) from exc
 
 
 def _sglang_hicache_full_page_count(plan: EngineKVInjectionPlan) -> int:

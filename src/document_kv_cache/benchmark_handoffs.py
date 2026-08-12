@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache.artifact_identity import (
+    UNRESOLVED_IDENTITY,
+    method_config_digest as compute_method_config_digest,
+)
 from document_kv_cache.benchmark_runner import _validate_benchmark_jsonl_record, load_benchmark_jsonl
 from document_kv_cache.benchmarks import (
     BENCHMARK_CACHE_ARTIFACT_PREFIX,
@@ -20,6 +24,8 @@ from document_kv_cache.benchmarks import (
     DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
+    DOCUMENT_KV_ARTIFACT_ID_PARAM,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
@@ -31,6 +37,7 @@ from document_kv_cache.benchmarks import (
     validate_v1_dataset,
 )
 from document_kv_cache.engine_protocol import (
+    KVKeyPositionEncoding,
     KVLayout,
     KVPayloadAxisOrder,
     KVStorageLayout,
@@ -48,7 +55,14 @@ from document_kv_cache.engine_adapters import (
 from document_kv_cache.engine_probe import _validate_local_payload_uri, write_engine_adapter_handoff_bundle
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.model_profiles import layout_for_model
-from document_kv_cache.models import CacheGenerationMethod, ChunkRef
+from document_kv_cache.models import (
+    CacheGenerationMethod,
+    ChunkRef,
+)
+from document_kv_cache.methods import (
+    CACHET_ARTIFACT_EXECUTION,
+    default_method_registry,
+)
 from document_kv_cache.storage import local_path
 from document_kv_cache.workflow import (
     CacheBuildConfig,
@@ -61,8 +75,10 @@ from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 
 
 BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE = "document_kv.benchmark_handoffs.v1"
-BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION = 2
-_BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION})
+BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION = 3
+_BENCHMARK_HANDOFF_MANIFEST_SUPPORTED_SCHEMA_VERSIONS = frozenset(
+    {1, 2, BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION}
+)
 _TEMPLATE_FIELDS = frozenset({"dataset", "example_id"})
 _BUNDLE_TEMPLATE_FIELDS = frozenset({"dataset", "example_id", "artifact_stem"})
 _DEFAULT_BUNDLE_SHARD_FILENAME = "cachet-benchmark.kvpack"
@@ -85,13 +101,15 @@ _ENTRY_KEYS_V1 = frozenset(
         "payload_uri",
     }
 )
-_ENTRY_KEYS = _ENTRY_KEYS_V1 | {
+_ENTRY_KEYS_V2 = _ENTRY_KEYS_V1 | {
     "prompt_text_mode",
     "runtime_prefix_text",
     "sglang_hicache_page_keys",
 }
+_ENTRY_KEYS = _ENTRY_KEYS_V2 | {"cache_method", "artifact_id"}
 _ENTRY_KEYS_BY_SCHEMA_VERSION = {
     1: _ENTRY_KEYS_V1,
+    2: _ENTRY_KEYS_V2,
     BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION: _ENTRY_KEYS,
 }
 
@@ -129,6 +147,8 @@ class BenchmarkHandoffEntry:
     prompt_text_mode: str = "logical"
     runtime_prefix_text: str = ""
     sglang_hicache_page_keys: Sequence[str] = ()
+    cache_method: str = ""
+    artifact_id: str = ""
 
     def __post_init__(self) -> None:
         validate_v1_dataset(_required_string(self.dataset, field_name="dataset"))
@@ -171,6 +191,10 @@ class BenchmarkHandoffEntry:
             raise ValueError("runtime_prefix_text requires prompt_text_mode='runtime'")
         page_keys = _string_tuple(self.sglang_hicache_page_keys, field_name="sglang_hicache_page_keys")
         object.__setattr__(self, "sglang_hicache_page_keys", page_keys)
+        for field_name in ("cache_method", "artifact_id"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str):
+                raise TypeError(f"{field_name} must be a string")
 
     @property
     def key(self) -> tuple[str, str]:
@@ -192,6 +216,10 @@ class BenchmarkHandoffEntry:
             params[DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM] = self.runtime_prefix_text
         if self.sglang_hicache_page_keys:
             params[DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM] = list(self.sglang_hicache_page_keys)
+        if self.cache_method:
+            params[DOCUMENT_KV_CACHE_METHOD_PARAM] = self.cache_method
+        if self.artifact_id:
+            params[DOCUMENT_KV_ARTIFACT_ID_PARAM] = self.artifact_id
         return params
 
 
@@ -372,6 +400,7 @@ def build_benchmark_handoff_manifest_from_jsonl(
             dataset=row_dataset,
             example_id=example_id,
         )
+        cache_method, artifact_id = _handoff_identity(handoff_record)
         entries.append(
             BenchmarkHandoffEntry(
                 dataset=row_dataset,
@@ -380,6 +409,8 @@ def build_benchmark_handoff_manifest_from_jsonl(
                 handoff_json=handoff_json,
                 payload_uri=payload_uri,
                 sglang_hicache_page_keys=sglang_hicache_page_keys,
+                cache_method=cache_method,
+                artifact_id=artifact_id,
             )
         )
     if missing_keys and not allow_missing:
@@ -403,7 +434,16 @@ def generate_benchmark_handoff_bundles(
     model_id: str | None = None,
     lora_id: str | None = None,
     prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
-    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+    cache_method: CacheGenerationMethod | str | None = None,
+    method_version: str | None = None,
+    method_config_digest: str | None = None,
+    model_revision: str = UNRESOLVED_IDENTITY,
+    tokenizer_id: str | None = None,
+    tokenizer_revision: str = UNRESOLVED_IDENTITY,
+    generator_family: str = "transformers",
+    generator_version: str = UNRESOLVED_IDENTITY,
+    tensor_parallel_size: int = 1,
+    pipeline_parallel_size: int = 1,
     storage_layout: KVStorageLayout | str | None = None,
     segmented: bool = False,
     align_bytes: int = 4096,
@@ -413,6 +453,7 @@ def generate_benchmark_handoff_bundles(
     segment_per_document: bool = False,
     disk_root: str | Path | None = None,
     uc_volume_root: str | Path | None = None,
+    require_artifact_contract: bool = False,
 ) -> BenchmarkHandoffBundleResult:
     """Generate Cachet handoff JSON/payload bundles for prepared benchmark rows.
 
@@ -446,6 +487,28 @@ def generate_benchmark_handoff_bundles(
         prompt_template_version,
         field_name="prompt_template_version",
     )
+    resolved_cache_method = (
+        CacheGenerationMethod.VANILLA_PREFILL
+        if cache_method is None and segment_per_document
+        else CacheGenerationMethod.FULL_PREFIX_PREFILL
+        if cache_method is None
+        else cache_method
+    )
+    method_registry = default_method_registry()
+    method = method_registry.get(
+        resolved_cache_method,
+        require_implemented=require_artifact_contract,
+    )
+    if method.execution_kind != CACHET_ARTIFACT_EXECUTION:
+        raise ValueError(
+            f"Method {method.method_id!r} is engine-native and cannot generate Cachet handoff bundles"
+        )
+    resolved_method_version = method.artifact_version if method_version is None else method_version
+    resolved_method_config_digest = (
+        compute_method_config_digest(getattr(generator, "method_config", {}))
+        if method_config_digest is None
+        else method_config_digest
+    )
     if resolved_model_id != layout.model_id:
         raise ValueError("model_id must match layout.model_id")
     if resolved_lora_id != layout.lora_id:
@@ -461,6 +524,7 @@ def generate_benchmark_handoff_bundles(
             pre_rope=True,
             rope_theta=getattr(generator, "rope_theta", None),
             rope_rotary_dim=getattr(generator, "rope_rotary_dim", None),
+            key_position_encoding=KVKeyPositionEncoding.PRE_ROPE,
         )
         layout.validate()
     config = CacheBuildConfig(
@@ -469,9 +533,21 @@ def generate_benchmark_handoff_bundles(
         prompt_template_version=resolved_template_version,
         dtype=layout.dtype,
         layout_version=layout.layout_version,
-        cache_method=cache_method,
+        cache_method=resolved_cache_method,
         storage_layout=layout.storage_layout if storage_layout is None else storage_layout,
         payload_axis_order=layout.payload_axis_order,
+        method_version=resolved_method_version,
+        method_config_digest=resolved_method_config_digest,
+        model_revision=model_revision,
+        tokenizer_id=tokenizer_id,
+        tokenizer_revision=tokenizer_revision,
+        generator_family=generator_family,
+        generator_version=generator_version,
+        tensor_parallel_size=tensor_parallel_size,
+        pipeline_parallel_size=pipeline_parallel_size,
+        artifact_format_id=method.artifact_format.format_id,
+        artifact_format_version=method.artifact_format.version,
+        runtime_kv_dtype=layout.dtype,
     )
     if config.storage_layout != layout.storage_layout:
         raise ValueError("storage_layout must match layout.storage_layout")
@@ -488,7 +564,11 @@ def generate_benchmark_handoff_bundles(
         raise ValueError("input_jsonl must contain at least one benchmark row")
     _validate_unique_benchmark_examples(examples)
     source_documents = tuple(
-        benchmark_cache_source_document(example, prefix=prefix, segment_per_document=segment_per_document)
+        benchmark_cache_source_document(
+            example,
+            prefix=prefix,
+            segment_per_document=segment_per_document,
+        )
         for example in examples
     )
     bundle_targets = _benchmark_handoff_bundle_targets(
@@ -510,6 +590,26 @@ def generate_benchmark_handoff_bundles(
         disk_root=disk_root,
         uc_volume_root=uc_volume_root,
     )
+    runtime_metadata: list[tuple[tuple[str, ...], str]] = []
+    for target, source_document in zip(
+        bundle_targets,
+        source_documents,
+        strict=True,
+    ):
+        sglang_page_keys = _sglang_hicache_page_keys_for_handoff(
+            generator,
+            layout=layout,
+            source_document=source_document,
+            page_size=sglang_hicache_page_size,
+        )
+        runtime_prefix_text = _runtime_prefix_text_for_handoff(
+            generator,
+            layout=layout,
+            source_document=source_document,
+        )
+        runtime_metadata.append(
+            (sglang_page_keys, runtime_prefix_text)
+        )
 
     manifest_store = InMemoryManifestStore()
     workflow = DocumentKVWorkflow.with_storage(
@@ -523,13 +623,21 @@ def generate_benchmark_handoff_bundles(
         config=config,
         shard_uri=shard_uri_text,
         align_bytes=align_bytes,
+        require_registered_method=require_artifact_contract,
     )
 
     entries: list[BenchmarkHandoffEntry] = []
     handoff_json_paths: list[str] = []
     payload_uris: list[str] = []
     adapter_spec = _adapter_spec(backend)
-    for target, source_document in zip(bundle_targets, source_documents, strict=True):
+    for target, (
+        sglang_page_keys,
+        runtime_prefix_text,
+    ) in zip(
+        bundle_targets,
+        runtime_metadata,
+        strict=True,
+    ):
         ready = workflow.prepare_for_engine(
             target.request,
             layout=layout,
@@ -549,17 +657,6 @@ def generate_benchmark_handoff_bundles(
             payload_uri=target.payload_uri,
             require_external_payload_uri=True,
         )
-        sglang_page_keys = _sglang_hicache_page_keys_for_handoff(
-            generator,
-            layout=layout,
-            source_document=source_document,
-            page_size=sglang_hicache_page_size,
-        )
-        runtime_prefix_text = _runtime_prefix_text_for_handoff(
-            generator,
-            layout=layout,
-            source_document=source_document,
-        )
         entries.append(
             BenchmarkHandoffEntry(
                 dataset=target.example.dataset,
@@ -570,6 +667,12 @@ def generate_benchmark_handoff_bundles(
                 prompt_text_mode="runtime",
                 runtime_prefix_text=runtime_prefix_text,
                 sglang_hicache_page_keys=sglang_page_keys,
+                cache_method=ready.handle.cache_method,
+                artifact_id=(
+                    ""
+                    if ready.handle.artifact_identity is None
+                    else ready.handle.artifact_identity.artifact_id
+                ),
             )
         )
         handoff_json_paths.append(target.handoff_json)
@@ -718,6 +821,30 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model-id", default=DEFAULT_V1_MODEL_ID)
     parser.add_argument("--lora-id", default=DEFAULT_V1_LORA_ID)
     parser.add_argument("--prompt-template-version", default=DEFAULT_V1_PROMPT_TEMPLATE_VERSION)
+    parser.add_argument(
+        "--cache-method",
+        choices=sorted(
+            spec.method_id
+            for spec in default_method_registry().specs.values()
+            if spec.execution_kind == CACHET_ARTIFACT_EXECUTION
+        ),
+        help=(
+            "KV reuse method identity. Defaults to full_prefix_prefill for monolithic "
+            "artifacts and vanilla_prefill with --segment-per-document."
+        ),
+    )
+    parser.add_argument("--method-version", help="Override the registered method artifact version.")
+    parser.add_argument(
+        "--method-config-json",
+        help="JSON object whose canonical digest is included in artifact identity.",
+    )
+    parser.add_argument("--model-revision", default=UNRESOLVED_IDENTITY)
+    parser.add_argument("--tokenizer-id")
+    parser.add_argument("--tokenizer-revision", default=UNRESOLVED_IDENTITY)
+    parser.add_argument("--generator-family", default="transformers")
+    parser.add_argument("--generator-version", default=UNRESOLVED_IDENTITY)
+    parser.add_argument("--tensor-parallel-size", type=int, default=1)
+    parser.add_argument("--pipeline-parallel-size", type=int, default=1)
     parser.add_argument("--layout-version", help="Override the built-in model profile layout version.")
     parser.add_argument("--dtype", help="Override the built-in model profile dtype.")
     parser.add_argument("--num-layers", type=int, help="Manual layout layer count for custom models.")
@@ -760,10 +887,28 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--disk-root", help="Optional disk root for relative kvpack shard URIs.")
     parser.add_argument("--uc-volume-root", help="Optional UC Volume root for relative kvpack shard URIs.")
+    parser.add_argument(
+        "--allow-legacy-artifact",
+        action="store_true",
+        help=(
+            "Debug-only escape hatch for generators that do not stamp ArtifactIdentity, "
+            "TokenContract, and payload hashes. Such bundles are not publication-ready."
+        ),
+    )
     try:
         args = parser.parse_args(argv)
         layout = _bundle_layout_from_args(args)
         generator = load_benchmark_kv_chunk_generator(args.generator_factory)
+        method_config_digest = (
+            None
+            if args.method_config_json is None
+            else compute_method_config_digest(
+                _json_object(
+                    json.loads(args.method_config_json),
+                    field_name="method_config_json",
+                )
+            )
+        )
         result = generate_benchmark_handoff_bundles(
             args.input_jsonl,
             output_dir=args.output_dir,
@@ -779,6 +924,16 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             model_id=args.model_id,
             lora_id=args.lora_id,
             prompt_template_version=args.prompt_template_version,
+            cache_method=args.cache_method,
+            method_version=args.method_version,
+            method_config_digest=method_config_digest,
+            model_revision=args.model_revision,
+            tokenizer_id=args.tokenizer_id,
+            tokenizer_revision=args.tokenizer_revision,
+            generator_family=args.generator_family,
+            generator_version=args.generator_version,
+            tensor_parallel_size=args.tensor_parallel_size,
+            pipeline_parallel_size=args.pipeline_parallel_size,
             storage_layout=args.storage_layout,
             segmented=args.segmented,
             align_bytes=args.align_bytes,
@@ -788,6 +943,7 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
             segment_per_document=args.segment_per_document,
             disk_root=args.disk_root,
             uc_volume_root=args.uc_volume_root,
+            require_artifact_contract=not args.allow_legacy_artifact,
         )
         print(
             json.dumps(
@@ -797,6 +953,10 @@ def bundle_main(argv: Sequence[str] | None = None) -> int:
                     "cache_refs": len(result.cache_refs),
                     "shard_uri": result.shard_uri,
                     "manifest_json": args.manifest_json,
+                    "cache_method": result.cache_generation.cache_method.value
+                    if isinstance(result.cache_generation.cache_method, CacheGenerationMethod)
+                    else result.cache_generation.cache_method,
+                    "artifact_id": result.cache_generation.artifact_id,
                 },
                 sort_keys=True,
             )
@@ -967,6 +1127,16 @@ def _entry_from_record(record: object, *, index: int, schema_version: int) -> Be
             field_name=f"entries[{index}].runtime_prefix_text",
         ),
         sglang_hicache_page_keys=record.get("sglang_hicache_page_keys", ()),
+        cache_method=_optional_string(
+            record.get("cache_method"),
+            default="",
+            field_name=f"entries[{index}].cache_method",
+        ),
+        artifact_id=_optional_string(
+            record.get("artifact_id"),
+            default="",
+            field_name=f"entries[{index}].artifact_id",
+        ),
     )
 
 
@@ -988,6 +1158,10 @@ def _entry_to_record(entry: BenchmarkHandoffEntry) -> dict[str, Any]:
         record["runtime_prefix_text"] = entry.runtime_prefix_text
     if entry.sglang_hicache_page_keys:
         record["sglang_hicache_page_keys"] = list(entry.sglang_hicache_page_keys)
+    if entry.cache_method:
+        record["cache_method"] = entry.cache_method
+    if entry.artifact_id:
+        record["artifact_id"] = entry.artifact_id
     return record
 
 
@@ -1009,6 +1183,27 @@ def _payload_uri_from_handoff_record(record: Mapping[str, Any]) -> str:
     if not isinstance(payload_source, Mapping):
         raise ValueError("handoff_record.payload_source must be an object")
     return _runtime_payload_uri(payload_source.get("uri"), field_name="handoff_record.payload_source.uri")
+
+
+def _handoff_identity(record: Mapping[str, Any]) -> tuple[str, str]:
+    handle = record.get("handle")
+    if not isinstance(handle, Mapping):
+        raise ValueError("handoff_record.handle must be an object")
+    cache_method = _required_string(
+        handle.get("cache_method"),
+        field_name="handoff_record.handle.cache_method",
+    )
+    artifact_record = handle.get("artifact_identity")
+    if artifact_record is None:
+        return cache_method, ""
+    if not isinstance(artifact_record, Mapping):
+        raise ValueError("handoff_record.handle.artifact_identity must be an object")
+    from document_kv_cache.artifact_identity import ArtifactIdentity
+
+    artifact = ArtifactIdentity.from_record(artifact_record)
+    if artifact.method_id != cache_method:
+        raise ValueError("handoff artifact method does not match handle.cache_method")
+    return cache_method, artifact.artifact_id
 
 
 def _sglang_hicache_page_keys_from_template(

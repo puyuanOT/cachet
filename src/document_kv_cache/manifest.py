@@ -106,6 +106,10 @@ def _same_cache_identity_ignoring_content_hash(left: KVCacheKey, right: KVCacheK
         and left.document_id == right.document_id
         and left.chunk_type == right.chunk_type
         and left.chunk_id == right.chunk_id
+        and (
+            right.artifact_identity is None
+            or left.artifact_identity == right.artifact_identity
+        )
     )
 
 

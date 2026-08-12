@@ -27,6 +27,8 @@ lengths.
 | Repeats | e.g. 64 repeats per prepared input, or `N/A` |
 | Input context length | e.g. 8k, 16k, 32k, or measured prompt-token range |
 | Method | Baseline, vanilla KV, KV Packet, etc. |
+| Method ID / version | Stable `MethodSpec.method_id` and artifact-semantics version |
+| Artifact ID | SHA-256 `ArtifactIdentity.artifact_id`, or `N/A` for baseline |
 | Document KV precision | bf16, Q8 / `fp8_e5m2`, packed Q4, or `N/A` |
 | Runtime KV dtype | e.g. `fp8_e5m2`, `bfloat16`, or `N/A` |
 | Storage tier / cache residency | RAM, disk, Unity Catalog, hybrid, or `N/A` |
@@ -35,6 +37,7 @@ lengths.
 | Dataset / task scope | Dataset names and example count |
 | Quality metric | Full-dataset task score, answer-found containment, strict exact match, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
+| Publication gate | Passing `document_kv.benchmark_publication_gate.v1` record |
 
 ## Latency And Resource Table
 
@@ -98,9 +101,9 @@ GPU memory rather than peak GPU process memory.
 | --- | --- |
 | Primary-table comparability | State whether this result matches the current Q4-weight + Q8-document-KV protocol |
 | Model coverage | List covered models or say `not yet measured` |
-| Method coverage | List covered methods; mark planned methods such as KV Packet as `not implemented yet` |
+| Method coverage | List covered methods and mark genuinely unimplemented methods explicitly |
 | Context coverage | List covered context lengths or prompt-token ranges |
-| Precision coverage | List covered document KV precisions; explain any pending packed-Q4 support |
+| Precision coverage | List covered document KV precisions; treat pending packed-Q4 support as compression rather than a KV Packet method label |
 | Quality coverage | State whether quality rows are smoke checks, official dataset scores, or another metric |
 | Resource metrics | Say which memory/utilization/cache-footprint fields are missing |
 
@@ -112,6 +115,8 @@ List sanitized records committed beside this README, such as:
 - `v1-benchmark.json`
 - `metadata.json`
 - `document-kv-connector-telemetry.jsonl`
+- `cache-state-attestations.jsonl`
+- `benchmark-publication-gate.json`
 - `prepared-handoff-generation.json`
 - `prewarm-cache-prefix.json`, only for warm/prewarmed-prefix measurements
 

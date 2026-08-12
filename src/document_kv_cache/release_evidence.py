@@ -21,6 +21,7 @@ from document_kv_cache.benchmarks import (
     exact_match as _benchmark_exact_match,
 )
 from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_metrics import aggregate_decode_tokens_per_second
 from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
     ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
@@ -1091,8 +1092,7 @@ class _V1MeasurementAggregate:
     prompt_tokens_count: int = 0
     completion_tokens_sum: int = 0
     completion_tokens_count: int = 0
-    output_tokens_sum: int = 0
-    time_to_completion_sum: float = 0.0
+    decode_throughput_samples: list[tuple[int, float, float]] = field(default_factory=list)
     throughput_count: int = 0
     ttft_values: list[float] = field(default_factory=list)
     time_to_completion_values: list[float] = field(default_factory=list)
@@ -1141,9 +1141,15 @@ def _validate_v1_report_aggregates_match_measurements(
             aggregate.ttft_values.append(float(ttft))
         if _is_non_negative_number(time_to_completion):
             aggregate.time_to_completion_values.append(float(time_to_completion))
-        if _is_positive_int(completion_tokens) and _is_non_negative_number(time_to_completion):
-            aggregate.output_tokens_sum += completion_tokens
-            aggregate.time_to_completion_sum += float(time_to_completion)
+        if (
+            _is_positive_int(completion_tokens)
+            and _is_non_negative_number(ttft)
+            and _is_non_negative_number(time_to_completion)
+            and float(time_to_completion) >= float(ttft)
+        ):
+            aggregate.decode_throughput_samples.append(
+                (completion_tokens, float(ttft), float(time_to_completion))
+            )
             aggregate.throughput_count += 1
         if type(exact_match) is bool:
             aggregate.exact_match_true_count += int(exact_match)
@@ -1195,17 +1201,20 @@ def _validate_v1_report_aggregates_match_measurements(
             and measurement_successes > 0
         ):
             throughput_label = f"v1 benchmark report row {dataset}:{arm_id} output_tokens_per_second"
-            if aggregate.time_to_completion_sum > 0:
+            expected_throughput = aggregate_decode_tokens_per_second(
+                aggregate.decode_throughput_samples
+            )
+            if expected_throughput is not None:
                 _validate_v1_report_aggregate_number(
                     row.get("output_tokens_per_second"),
-                    aggregate.output_tokens_sum / aggregate.time_to_completion_sum,
+                    expected_throughput,
                     throughput_label,
                     issues,
                 )
             elif row.get("output_tokens_per_second") is not None:
                 issues.append(
                     f"{throughput_label} must be absent when measurements have zero total "
-                    "time_to_completion_seconds"
+                    "post-TTFT decode time"
                 )
         if (
             row.get("exact_match_rate") is not None

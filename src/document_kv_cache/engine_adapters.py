@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Mapping
@@ -11,12 +12,13 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
+from document_kv_cache.artifact_identity import ArtifactIdentity, TokenContract
 from document_kv_cache.cache import CacheTier
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_protocol import (
-    KVCacheHandle,
     KVLayout,
     KVSegment,
+    kv_key_position_encoding_from_value,
     kv_payload_axis_order_from_value,
     kv_storage_layout_from_value,
 )
@@ -69,6 +71,8 @@ _ENGINE_KV_RESERVATION_ACTION_KEYS = frozenset(
         "estimated_gpu_bytes",
         "adapter_ids",
         "layout",
+        "artifact_identity",
+        "payload_checksum",
     }
 )
 _ENGINE_KV_COPY_ACTION_KEYS = frozenset(
@@ -89,6 +93,7 @@ _ENGINE_KV_COPY_ACTION_KEYS = frozenset(
         "first_block_index",
         "last_block_index_exclusive",
         "content_hash",
+        "token_contract",
         "cache_tier",
     }
 )
@@ -245,6 +250,7 @@ class EngineKVSegmentBinding:
     last_block_index_exclusive: int
     content_hash: str = ""
     cache_tier: CacheTier | str = CacheTier.COLD_STORAGE
+    token_contract: TokenContract | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cache_tier", _cache_tier_from_value(self.cache_tier, field_name="cache_tier"))
@@ -274,6 +280,11 @@ class EngineKVSegmentBinding:
             raise ValueError("block range must be positive")
         if not isinstance(self.content_hash, str):
             raise TypeError("content_hash must be a string")
+        if self.token_contract is not None:
+            if not isinstance(self.token_contract, TokenContract):
+                raise TypeError("token_contract must be a TokenContract or None")
+            if self.token_contract.token_count != self.token_count:
+                raise ValueError("token_contract token_count must match token_count")
 
     @property
     def block_count(self) -> int:
@@ -300,6 +311,8 @@ class EngineKVInjectionPlan:
     estimated_gpu_bytes: int
     segments: tuple[EngineKVSegmentBinding, ...]
     metadata: Mapping[str, str]
+    artifact_identity: ArtifactIdentity | None = None
+    payload_checksum: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", _backend_from_value(self.backend, field_name="backend"))
@@ -309,6 +322,12 @@ class EngineKVInjectionPlan:
         _validate_nonempty_str_value(self.handle_uri, field_name="handle_uri")
         _validate_nonempty_str_value(self.kv_injection_method, field_name="kv_injection_method")
         _validate_nonempty_str_value(self.cache_method, field_name="cache_method")
+        if self.artifact_identity is not None:
+            if not isinstance(self.artifact_identity, ArtifactIdentity):
+                raise TypeError("artifact_identity must be an ArtifactIdentity or None")
+            if self.artifact_identity.method_id != self.cache_method:
+                raise ValueError("artifact_identity.method_id must match cache_method")
+        _validate_optional_sha256(self.payload_checksum, field_name="payload_checksum")
         self.layout.validate()
         _validate_nonnegative_int_value(self.total_tokens, field_name="total_tokens")
         _validate_nonnegative_int_value(self.total_bytes, field_name="total_bytes")
@@ -347,6 +366,8 @@ class EngineKVReservationAction:
     estimated_gpu_bytes: int
     layout: KVLayout
     adapter_ids: tuple[str, ...]
+    artifact_identity: ArtifactIdentity | None = None
+    payload_checksum: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "backend", _backend_from_value(self.backend, field_name="backend"))
@@ -357,6 +378,33 @@ class EngineKVReservationAction:
             raise ValueError("total_blocks does not match total_tokens and layout.block_size")
         _validate_nonnegative_int_value(self.estimated_gpu_bytes, field_name="estimated_gpu_bytes")
         object.__setattr__(self, "adapter_ids", _normalize_connector_adapter_ids(self.adapter_ids))
+        if self.artifact_identity is not None and not isinstance(self.artifact_identity, ArtifactIdentity):
+            raise TypeError("artifact_identity must be an ArtifactIdentity or None")
+        if self.artifact_identity is not None:
+            identity_layout = {
+                "model_id": self.layout.model_id,
+                "lora_id": self.layout.lora_id,
+                "layout_version": self.layout.layout_version,
+                "runtime_kv_dtype": self.layout.dtype,
+                "block_size": self.layout.block_size,
+                "payload_axis_order": self.layout.payload_axis_order.value,
+                "key_position_encoding": (
+                    self.layout.key_position_encoding.value
+                ),
+                "rope_theta": self.layout.rope_theta,
+                "rope_rotary_dim": self.layout.rope_rotary_dim,
+            }
+            mismatches = [
+                name
+                for name, value in identity_layout.items()
+                if getattr(self.artifact_identity, name) != value
+            ]
+            if mismatches:
+                raise ValueError(
+                    "artifact_identity does not match reservation layout: "
+                    + ", ".join(mismatches)
+                )
+        _validate_optional_sha256(self.payload_checksum, field_name="payload_checksum")
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +427,7 @@ class EngineKVSegmentCopyAction:
     last_block_index_exclusive: int
     content_hash: str = ""
     cache_tier: CacheTier | str = CacheTier.COLD_STORAGE
+    token_contract: TokenContract | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cache_tier", _cache_tier_from_value(self.cache_tier, field_name="cache_tier"))
@@ -412,6 +461,11 @@ class EngineKVSegmentCopyAction:
             raise ValueError("block range must be positive")
         if not isinstance(self.content_hash, str):
             raise TypeError("content_hash must be a string")
+        if self.token_contract is not None:
+            if not isinstance(self.token_contract, TokenContract):
+                raise TypeError("token_contract must be a TokenContract or None")
+            if self.token_contract.token_count != self.token_count:
+                raise ValueError("token_contract token_count must match token_count")
 
     @property
     def source_byte_end(self) -> int:
@@ -655,6 +709,10 @@ def build_engine_adapter_request(
         "document_kv.total_tokens": str(handle.total_tokens),
         "document_kv.total_bytes": str(handle.total_bytes),
         "document_kv.cache_method": handle.cache_method,
+        "document_kv.artifact_id": (
+            "" if handle.artifact_identity is None else handle.artifact_identity.artifact_id
+        ),
+        "document_kv.payload_checksum": handle.payload_checksum,
         "document_kv.payload_mode": payload_mode_for(ready_request).value,
         "engine.backend": spec.backend.value,
         "engine.connector_package": spec.connector_package,
@@ -786,6 +844,10 @@ def validate_engine_adapter_request_record(
         raise ValueError("payload_source.total_bytes does not match handle.total_bytes")
     if _required_nonnegative_int(payload_source, "segment_count") != len(_required_sequence(handle, "segments")):
         raise ValueError("payload_source.segment_count does not match handle.segments")
+    if (_optional_str(payload_source, "checksum") or "") != (
+        _optional_str(handle, "payload_checksum") or ""
+    ):
+        raise ValueError("payload_source.checksum does not match handle.payload_checksum")
     _validate_reserved_record_metadata(record, handle, metadata)
 
 
@@ -803,6 +865,9 @@ def view_engine_adapter_payload(
     payload_view = _byte_memoryview(payload)
     if payload_view.nbytes != total_bytes:
         raise ValueError(f"Engine adapter payload length {payload_view.nbytes} != handle.total_bytes {total_bytes}")
+    expected_checksum = _optional_str(handle, "payload_checksum") or ""
+    if expected_checksum and hashlib.sha256(payload_view).hexdigest() != expected_checksum:
+        raise ValueError("Engine adapter payload checksum does not match handle.payload_checksum")
     payload_mode = _payload_mode_from_value(_required_str(record, "payload_mode"), field_name="payload_mode")
     if payload_mode == PayloadMode.MERGED:
         return payload_view
@@ -861,6 +926,8 @@ def build_engine_kv_injection_plan(
             for segment in _required_mapping_sequence(handle, "segments")
         ),
         metadata=_required_mapping(record, "metadata"),
+        artifact_identity=_optional_artifact_identity(handle, "artifact_identity"),
+        payload_checksum=_optional_str(handle, "payload_checksum") or "",
     )
 
 
@@ -874,6 +941,7 @@ def build_engine_kv_connector_actions(
     if payload_mode != plan.payload_mode:
         raise ValueError("Connector payload mode does not match injection plan payload_mode")
     _validate_connector_payload_lengths(plan, payload_or_segments)
+    _validate_connector_payload_checksum(plan, payload_or_segments)
     return EngineKVConnectorActions(
         reservation=EngineKVReservationAction(
             backend=plan.backend,
@@ -883,6 +951,8 @@ def build_engine_kv_connector_actions(
             estimated_gpu_bytes=plan.estimated_gpu_bytes,
             layout=plan.layout,
             adapter_ids=plan.adapter_ids,
+            artifact_identity=plan.artifact_identity,
+            payload_checksum=plan.payload_checksum,
         ),
         copies=tuple(
             _copy_action_from_binding(
@@ -914,6 +984,9 @@ def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> N
         raise ValueError("Connector actions must include at least one copy action")
     if actions.bind.adapter_ids != actions.reservation.adapter_ids:
         raise ValueError("Connector bind adapter_ids do not match reservation adapter_ids")
+    artifact_identity = actions.reservation.artifact_identity
+    if artifact_identity is not None and actions.bind.cache_method != artifact_identity.method_id:
+        raise ValueError("Connector bind cache_method does not match artifact identity")
     metadata_backend = actions.bind.metadata.get("engine.backend", actions.reservation.backend.value)
     if _backend_from_value(metadata_backend, field_name="engine.backend") != actions.reservation.backend:
         raise ValueError("Connector bind engine.backend metadata does not match reservation backend")
@@ -950,6 +1023,13 @@ def validate_engine_kv_connector_actions(actions: EngineKVConnectorActions) -> N
                 f"Copy action {copy_action.chunk_id!r} source length "
                 f"{copy_action.source_byte_length} != token_count * bytes_per_token {expected_copy_bytes}"
             )
+        if copy_action.token_contract is not None and artifact_identity is not None:
+            if copy_action.token_contract.tokenizer_id != artifact_identity.tokenizer_id:
+                raise ValueError("Copy token_contract tokenizer_id does not match artifact identity")
+            if copy_action.token_contract.tokenizer_revision != artifact_identity.tokenizer_revision:
+                raise ValueError(
+                    "Copy token_contract tokenizer_revision does not match artifact identity"
+                )
         if copy_action.last_block_index_exclusive > actions.reservation.total_blocks:
             raise ValueError(f"Copy action {copy_action.chunk_id!r} block range exceeds reservation")
         token_cursor = copy_action.token_end
@@ -1127,6 +1207,22 @@ def _validate_connector_payload_lengths(
             )
 
 
+def _validate_connector_payload_checksum(
+    plan: EngineKVInjectionPlan,
+    payload_or_segments: bytes | memoryview | tuple[bytes | memoryview, ...],
+) -> None:
+    if not plan.payload_checksum:
+        return
+    digest = hashlib.sha256()
+    if _is_payload_buffer(payload_or_segments):
+        digest.update(_byte_memoryview(payload_or_segments))
+    else:
+        for payload in payload_or_segments:
+            digest.update(_byte_memoryview(payload))
+    if digest.hexdigest() != plan.payload_checksum:
+        raise ValueError("Connector payload checksum does not match injection plan")
+
+
 def _is_payload_buffer(value: Any) -> bool:
     if isinstance(value, bytes):
         return True
@@ -1201,6 +1297,7 @@ def _copy_action_from_binding(
         last_block_index_exclusive=binding.last_block_index_exclusive,
         content_hash=binding.content_hash,
         cache_tier=binding.cache_tier,
+        token_contract=binding.token_contract,
     )
 
 
@@ -1213,6 +1310,12 @@ def _reservation_action_to_record(action: EngineKVReservationAction) -> dict[str
         "estimated_gpu_bytes": action.estimated_gpu_bytes,
         "adapter_ids": list(action.adapter_ids),
         "layout": _layout_to_record(action.layout),
+        "artifact_identity": (
+            None
+            if action.artifact_identity is None
+            else action.artifact_identity.to_record()
+        ),
+        "payload_checksum": action.payload_checksum,
     }
 
 
@@ -1226,6 +1329,8 @@ def _reservation_action_from_record(record: Mapping[str, Any]) -> EngineKVReserv
         estimated_gpu_bytes=_required_nonnegative_int(record, "estimated_gpu_bytes"),
         layout=_layout_from_record(_required_mapping(record, "layout")),
         adapter_ids=_required_str_sequence(record, "adapter_ids"),
+        artifact_identity=_optional_artifact_identity(record, "artifact_identity"),
+        payload_checksum=_optional_str(record, "payload_checksum") or "",
     )
 
 
@@ -1247,6 +1352,9 @@ def _copy_action_to_record(action: EngineKVSegmentCopyAction) -> dict[str, Any]:
         "first_block_index": action.first_block_index,
         "last_block_index_exclusive": action.last_block_index_exclusive,
         "content_hash": action.content_hash,
+        "token_contract": (
+            None if action.token_contract is None else action.token_contract.to_record()
+        ),
         "cache_tier": action.cache_tier.value,
     }
 
@@ -1276,6 +1384,7 @@ def _copy_action_from_record(record: Mapping[str, Any], *, index: int) -> Engine
         last_block_index_exclusive=_required_nonnegative_int(record, "last_block_index_exclusive"),
         content_hash=_optional_str(record, "content_hash") or "",
         cache_tier=_cache_tier_from_value(_required_str(record, "cache_tier"), field_name="copy.cache_tier"),
+        token_contract=_optional_token_contract(record, "token_contract"),
     )
 
 
@@ -1319,6 +1428,12 @@ def _handle_to_record(request: EngineReadyRequest) -> dict[str, Any]:
         "cache_method": handle.cache_method,
         "adapter_ids": list(handle.adapter_ids),
         "metadata": dict(handle.metadata),
+        "artifact_identity": (
+            None
+            if handle.artifact_identity is None
+            else handle.artifact_identity.to_record()
+        ),
+        "payload_checksum": handle.payload_checksum,
         "layout": _layout_to_record(handle.layout),
         "segments": [
             _segment_to_record(segment, cache_tier)
@@ -1336,6 +1451,7 @@ def _payload_source_to_record(request: EngineAdapterRequest, payload_uri: str | 
         "payload_mode": request.payload_mode.value,
         "total_bytes": request.ready_request.handle.total_bytes,
         "segment_count": len(request.ready_request.handle.segments),
+        "checksum": request.ready_request.handle.payload_checksum,
     }
 
 
@@ -1376,6 +1492,10 @@ def _validate_payload_source_record(
         raise ValueError("payload_source.payload_mode does not match record payload_mode")
     _required_nonnegative_int(payload_source, "total_bytes")
     _required_nonnegative_int(payload_source, "segment_count")
+    _validate_optional_sha256(
+        _optional_str(payload_source, "checksum") or "",
+        field_name="payload_source.checksum",
+    )
 
 
 def _validate_handle_record(handle: Mapping[str, Any]) -> None:
@@ -1391,6 +1511,34 @@ def _validate_handle_record(handle: Mapping[str, Any]) -> None:
         raise ValueError("handle.handle_uri must be non-empty")
     if not _required_str(handle, "cache_method"):
         raise ValueError("handle.cache_method must be non-empty")
+    artifact_identity = _optional_artifact_identity(handle, "artifact_identity")
+    payload_checksum = _optional_str(handle, "payload_checksum") or ""
+    _validate_optional_sha256(payload_checksum, field_name="handle.payload_checksum")
+    if artifact_identity is not None:
+        if artifact_identity.method_id != _required_str(handle, "cache_method"):
+            raise ValueError("handle.artifact_identity.method_id must match cache_method")
+        identity_layout = {
+            "model_id": kv_layout.model_id,
+            "lora_id": kv_layout.lora_id,
+            "layout_version": kv_layout.layout_version,
+            "runtime_kv_dtype": kv_layout.dtype,
+            "block_size": kv_layout.block_size,
+            "payload_axis_order": kv_layout.payload_axis_order.value,
+            "key_position_encoding": (
+                kv_layout.key_position_encoding.value
+            ),
+            "rope_theta": kv_layout.rope_theta,
+            "rope_rotary_dim": kv_layout.rope_rotary_dim,
+        }
+        mismatches = [
+            name
+            for name, value in identity_layout.items()
+            if getattr(artifact_identity, name) != value
+        ]
+        if mismatches:
+            raise ValueError(
+                "handle.artifact_identity does not match layout: " + ", ".join(mismatches)
+            )
     _required_adapter_ids(handle, "adapter_ids", field_name="handle.adapter_ids")
     _reject_reserved_metadata(_required_mapping(handle, "metadata"))
 
@@ -1431,6 +1579,17 @@ def _validate_handle_record(handle: Mapping[str, Any]) -> None:
         content_hash = segment.get("content_hash", "")
         if not isinstance(content_hash, str):
             raise TypeError("segment.content_hash must be a string")
+        token_contract = _optional_token_contract(segment, "token_contract")
+        if token_contract is not None:
+            if token_contract.token_count != token_count:
+                raise ValueError("segment.token_contract token_count does not match segment")
+            if artifact_identity is not None:
+                if token_contract.tokenizer_id != artifact_identity.tokenizer_id:
+                    raise ValueError("segment.token_contract tokenizer_id does not match artifact")
+                if token_contract.tokenizer_revision != artifact_identity.tokenizer_revision:
+                    raise ValueError(
+                        "segment.token_contract tokenizer_revision does not match artifact"
+                    )
         token_cursor = token_end
         byte_cursor = byte_end
     if token_cursor != total_tokens:
@@ -1452,6 +1611,12 @@ def _validate_reserved_record_metadata(
         "document_kv.total_tokens": str(_required_nonnegative_int(handle, "total_tokens")),
         "document_kv.total_bytes": str(_required_nonnegative_int(handle, "total_bytes")),
         "document_kv.cache_method": _required_str(handle, "cache_method"),
+        "document_kv.artifact_id": (
+            ""
+            if _optional_artifact_identity(handle, "artifact_identity") is None
+            else _optional_artifact_identity(handle, "artifact_identity").artifact_id
+        ),
+        "document_kv.payload_checksum": _optional_str(handle, "payload_checksum") or "",
         "document_kv.payload_mode": payload_mode.value,
         "engine.backend": backend.value,
         "engine.connector_package": _required_str(record, "connector_package"),
@@ -1491,6 +1656,13 @@ def _layout_from_record(layout: Mapping[str, Any]) -> KVLayout:
         pre_rope=bool(layout.get("pre_rope", False)),
         rope_theta=layout.get("rope_theta"),
         rope_rotary_dim=_optional_positive_int(layout, "rope_rotary_dim"),
+        key_position_encoding=kv_key_position_encoding_from_value(
+            layout.get(
+                "key_position_encoding",
+                "pre_rope" if layout.get("pre_rope", False) else "stored_post_rope",
+            ),
+            field_name="layout.key_position_encoding",
+        ),
     )
     attention_mechanism = layout.get("attention_mechanism")
     expected_attention = kv_layout.attention_mechanism
@@ -1536,6 +1708,7 @@ def _segment_binding_from_record(segment: Mapping[str, Any], *, block_size: int)
         last_block_index_exclusive=_block_count(token_end, block_size),
         content_hash=_optional_str(segment, "content_hash") or "",
         cache_tier=_cache_tier_from_value(_required_str(segment, "cache_tier"), field_name="segment.cache_tier"),
+        token_contract=_optional_token_contract(segment, "token_contract"),
     )
 
 
@@ -1603,6 +1776,30 @@ def _required_mapping(record: Mapping[str, Any], key: str) -> Mapping[str, Any]:
     return value
 
 
+def _optional_artifact_identity(
+    record: Mapping[str, Any],
+    key: str,
+) -> ArtifactIdentity | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{key} must be null or a mapping")
+    return ArtifactIdentity.from_record(value)
+
+
+def _optional_token_contract(
+    record: Mapping[str, Any],
+    key: str,
+) -> TokenContract | None:
+    value = record.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{key} must be null or a mapping")
+    return TokenContract.from_record(value)
+
+
 def _reject_unsupported_keys(record: Mapping[str, Any], allowed_keys: frozenset[str], *, label: str) -> None:
     unsupported = sorted(str(key) for key in record if key not in allowed_keys)
     if unsupported:
@@ -1653,6 +1850,13 @@ def _optional_str(record: Mapping[str, Any], key: str) -> str | None:
     if not isinstance(value, str):
         raise TypeError(f"{key} must be null or a string")
     return value
+
+
+def _validate_optional_sha256(value: str, *, field_name: str) -> None:
+    if not value:
+        return
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 hex digest")
 
 
 def _required_nonnegative_int(record: Mapping[str, Any], key: str) -> int:
@@ -1804,6 +2008,7 @@ def _layout_to_record(layout: KVLayout) -> dict[str, Any]:
         "pre_rope": layout.pre_rope,
         "rope_theta": layout.rope_theta,
         "rope_rotary_dim": layout.rope_rotary_dim,
+        "key_position_encoding": layout.key_position_encoding.value,
         "attention_mechanism": attention_mechanism.value if attention_mechanism is not None else None,
         "query_heads_per_kv_head": layout.query_heads_per_kv_head,
     }
@@ -1822,6 +2027,9 @@ def _segment_to_record(segment: KVSegment, cache_tier: CacheTier | str) -> dict[
         "byte_length": segment.byte_length,
         "byte_end": segment.byte_end,
         "content_hash": segment.content_hash,
+        "token_contract": (
+            None if segment.token_contract is None else segment.token_contract.to_record()
+        ),
     }
 
 

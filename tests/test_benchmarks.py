@@ -602,7 +602,7 @@ def test_summarize_measurements_computes_latency_quality_and_errors():
     assert baseline.ttft.p95 == pytest.approx(19.5)
     assert baseline.exact_match_rate == pytest.approx(0.5)
     assert baseline.answer_found_rate == pytest.approx(0.5)
-    assert baseline.output_tokens_per_second == pytest.approx(40 / 70)
+    assert baseline.output_tokens_per_second == pytest.approx(40 / 40)
 
     assert cache.errors == 0
     assert cache.prompt_tokens_mean == pytest.approx(100.0)

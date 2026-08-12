@@ -534,6 +534,29 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
         "examples": 1,
         "request_parallelism": 1,
         "isolate_arms": True,
+        "repeats": 1,
+        "shuffle": False,
+        "seed": None,
+        "interleave_examples": False,
+        "prefix_cache_salt_mode": "static",
+        "arms": [
+            {
+                "arm_id": "baseline_prefill",
+                "uses_cache": False,
+                "cache_method": "",
+                "connector_mode": "",
+                    "variant_id": "",
+                "description": "Standard inference prefill that recomputes all document tokens.",
+            },
+            {
+                "arm_id": "document_kv_cache",
+                "uses_cache": True,
+                "cache_method": "",
+                "connector_mode": "cachet",
+                    "variant_id": "",
+                "description": "Inference path that reuses precomputed document KV cache.",
+            },
+        ],
     }
     assert record["measurements"][0]["exact_match"] is False
     assert record["measurements"][1]["answer_found"] is True

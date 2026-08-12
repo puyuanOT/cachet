@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -53,11 +54,17 @@ class EngineReadyRequest:
                         f"Segmented payload {index} byte length {len(payload)} "
                         f"!= segment byte_length {segment.byte_length}"
                     )
-            return
-        if not isinstance(self.payload, bytes):
-            raise TypeError("Payload must be bytes or a tuple of bytes")
-        if len(self.payload) != self.handle.total_bytes:
-            raise ValueError(f"Payload byte length {len(self.payload)} != handle total_bytes {self.handle.total_bytes}")
+        else:
+            if not isinstance(self.payload, bytes):
+                raise TypeError("Payload must be bytes or a tuple of bytes")
+            if len(self.payload) != self.handle.total_bytes:
+                raise ValueError(
+                    f"Payload byte length {len(self.payload)} != handle total_bytes {self.handle.total_bytes}"
+                )
+        if self.handle.payload_checksum:
+            actual_checksum = _payload_checksum(self.payload)
+            if actual_checksum != self.handle.payload_checksum:
+                raise ValueError("Payload checksum does not match KV handle")
 
 
 class ServingEngineConnector(Protocol):
@@ -74,12 +81,15 @@ def build_handle_from_materialized(
     layout: KVLayout,
     handle_uri: str | None = None,
     metadata: Mapping[str, str] | None = None,
-    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+    cache_method: CacheGenerationMethod | str | None = None,
     adapter_ids: Iterable[str] = (),
 ) -> KVCacheHandle:
     request_id = materialized.plan.request.request_id
     _validate_layout_matches_materialized(materialized, layout)
     segments = tuple(_segment_from_plan(index, materialized) for index in range(len(materialized.plan.segments)))
+    artifact_identity = _artifact_identity_from_materialized(materialized)
+    resolved_cache_method = _resolved_cache_method(cache_method, artifact_identity)
+    payload = _payload(materialized)
     handle = KVCacheHandle(
         request_id=request_id,
         handle_uri=handle_uri or f"document-kv://{request_id}",
@@ -88,8 +98,10 @@ def build_handle_from_materialized(
         total_tokens=materialized.plan.total_tokens,
         total_bytes=_total_bytes(materialized),
         metadata={} if metadata is None else metadata,
-        cache_method=_cache_method_value(cache_method),
+        cache_method=resolved_cache_method,
         adapter_ids=adapter_ids,
+        artifact_identity=artifact_identity,
+        payload_checksum=_payload_checksum(payload),
     )
     handle.validate()
     return handle
@@ -101,7 +113,7 @@ def build_engine_ready_request(
     layout: KVLayout,
     handle_uri: str | None = None,
     metadata: Mapping[str, str] | None = None,
-    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL,
+    cache_method: CacheGenerationMethod | str | None = None,
     adapter_ids: Iterable[str] = (),
     kv_gpu_bytes_per_payload_byte: float = 1.0,
 ) -> EngineReadyRequest:
@@ -166,6 +178,7 @@ def _segment_from_plan(index: int, materialized: MaterializedKV | SegmentedMater
         byte_start=materialized.segment_byte_offsets[index],
         byte_length=ref.byte_length,
         content_hash=ref.key.content_hash,
+        token_contract=ref.key.token_contract,
     )
 
 
@@ -214,3 +227,44 @@ def _cache_method_value(cache_method: CacheGenerationMethod | str) -> str:
     if isinstance(cache_method, CacheGenerationMethod):
         return cache_method.value
     return cache_method
+
+
+def _artifact_identity_from_materialized(
+    materialized: MaterializedKV | SegmentedMaterializedKV,
+):
+    identities = {
+        segment.ref.key.artifact_identity
+        for segment in materialized.plan.segments
+    }
+    if len(identities) > 1:
+        raise ValueError("Materialized KV segments must share one artifact_identity")
+    identity = next(iter(identities), None)
+    request_identity = materialized.plan.request.artifact_identity
+    if request_identity is not None and request_identity != identity:
+        raise ValueError("Materialized KV artifact_identity does not match request")
+    return identity
+
+
+def _resolved_cache_method(
+    cache_method: CacheGenerationMethod | str | None,
+    artifact_identity,
+) -> str:
+    artifact_method = None if artifact_identity is None else artifact_identity.method_id
+    if cache_method is None:
+        return artifact_method or CacheGenerationMethod.VANILLA_PREFILL.value
+    explicit = _cache_method_value(cache_method)
+    if artifact_method is not None and explicit != artifact_method:
+        raise ValueError(
+            f"cache_method {explicit!r} does not match artifact method {artifact_method!r}"
+        )
+    return explicit
+
+
+def _payload_checksum(payload: bytes | tuple[bytes, ...]) -> str:
+    digest = hashlib.sha256()
+    if isinstance(payload, bytes):
+        digest.update(payload)
+    else:
+        for segment in payload:
+            digest.update(segment)
+    return digest.hexdigest()

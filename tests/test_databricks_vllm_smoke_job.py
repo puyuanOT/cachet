@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-import document_kv_cache.databricks_vllm_smoke_job as public_vllm_smoke_job
+from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.databricks_vllm_smoke_job import (
     DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
     DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME,
@@ -24,6 +24,23 @@ DATASET_SPECS = tuple(
     f"{dataset}=/Volumes/catalog/schema/volume/v1/{dataset}.jsonl"
     for dataset in ("biography", "hotpotqa", "musique", "niah")
 )
+MODEL_REVISION = "a" * 40
+
+
+def stored_post_rope_runtime_identity() -> RuntimeIdentity:
+    return RuntimeIdentity(
+        model_id="Qwen/Qwen3-4B-Instruct-2507",
+        model_revision=MODEL_REVISION,
+        tokenizer_id="Qwen/Qwen3-4B-Instruct-2507",
+        tokenizer_revision=MODEL_REVISION,
+        lora_id="base",
+        prompt_template_version="v1",
+        layout_version="qwen3-v1",
+        kv_dtype="bfloat16",
+        block_size=16,
+        payload_axis_order="token_major",
+        key_position_encoding="stored_post_rope",
+    )
 
 
 def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
@@ -241,6 +258,10 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
             {"benchmark_handoff_limit": -1},
             "benchmark_handoff_limit must be a non-negative integer",
         ),
+        (
+            {"benchmark_handoff_segment_per_document": True},
+            "benchmark handoff options require",
+        ),
         ({"spark_env_vars": {"BAD-NAME": "value"}}, "valid environment variable name"),
         ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}}, "looks secret-bearing"),
     ]
@@ -301,6 +322,13 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
         benchmark_handoff_align_bytes=1,
         benchmark_handoff_generation_timeout_seconds=1234.0,
         benchmark_handoff_limit=2,
+        benchmark_handoff_segment_per_document=True,
+        benchmark_handoff_cache_method="vanilla_prefill",
+        benchmark_handoff_require_artifact_contract=True,
+        model_id="Qwen/Qwen3-4B-Instruct-2507",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        runtime_identity=stored_post_rope_runtime_identity(),
         spark_env_vars={
             "CACHET_TRANSFORMERS_DEVICE": "cuda",
             "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",
@@ -324,6 +352,21 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
         == "1234.0"
     )
     assert parameters[parameters.index("--benchmark-handoff-limit") + 1] == "2"
+    assert "--benchmark-handoff-chunk-per-document" in parameters
+    assert (
+        parameters[parameters.index("--benchmark-handoff-cache-method") + 1]
+        == "vanilla_prefill"
+    )
+    assert "--benchmark-handoff-require-artifact-contract" in parameters
+    assert parameters[parameters.index("--model-revision") + 1] == MODEL_REVISION
+    assert (
+        parameters[parameters.index("--tokenizer-revision") + 1]
+        == MODEL_REVISION
+    )
+    runtime_identity = json.loads(
+        parameters[parameters.index("--runtime-identity-json") + 1]
+    )
+    assert runtime_identity == stored_post_rope_runtime_identity().to_record()
     assert task["new_cluster"]["spark_env_vars"] == {
         "CACHET_TRANSFORMERS_DEVICE": "cuda",
         "CACHET_TRANSFORMERS_TORCH_DTYPE": "bfloat16",

@@ -132,6 +132,7 @@ including the toy generator and local materialization step.
 | New users | [`docs/getting-started.md`](docs/getting-started.md) |
 | Concepts and vocabulary | [`docs/concepts.md`](docs/concepts.md) |
 | Local runnable example | [`examples/quickstart_local.py`](examples/quickstart_local.py) |
+| KV reuse method authors | [`docs/adding-a-kv-method.md`](docs/adding-a-kv-method.md) |
 | Production serving | [`docs/production.md`](docs/production.md) |
 | vLLM/SGLang adapter maintainers | [`docs/native-engine-integration.md`](docs/native-engine-integration.md) |
 | Benchmarks | [`benchmarks/README.md`](benchmarks/) |

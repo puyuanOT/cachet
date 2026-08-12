@@ -155,12 +155,17 @@ in code as the source of truth in
 
 - **Baseline** - no cache; vLLM recomputes all KV at request time (full prefill). Arm `baseline_prefill`.
 - **vanilla KV** (implemented) - per-document KV computed independently, stored **post-RoPE**, hydrated into GPU KV by the `cachet` connector; no cross-chunk recomputation. Correct for single-document / true-prefix reuse; multi-document quality is limited by missing cross-document attention. Arm `document_kv_cache`.
-- **KV Packet** (planned) - packed-Q4 document KV payloads with provider dequant (or native serving-engine Q4 KV). Packed pre-computation layout not yet defined.
+- **KV Packet** (planned) - no executable Cachet path is present. The upstream
+  implementation must first be pinned and reproduced before its artifact and
+  serving contracts are defined here. Q4 compression is orthogonal to the
+  method.
 - **CacheBlend** (planned) - stores **position-independent pre-RoPE keys** (re-roped to their true offset at injection; foundation implemented, flag-gated via `CACHET_TRANSFORMERS_PRE_ROPE`) **and** recomputes a small fraction of cross-chunk tokens with full context to recover multi-document quality. The selective-recompute step is not yet implemented.
 - **InfoFlow KV** (planned) - recovers cross-document information flow over reused KV; expected to build on the same position-independent pre-RoPE foundation. Routine not yet defined.
 
-In short: vanilla KV and KV Packet use post-RoPE pre-computation; CacheBlend and
-InfoFlow KV require position-independent pre-RoPE pre-computation.
+In short: vanilla KV uses post-RoPE pre-computation; CacheBlend and InfoFlow KV
+require position-independent pre-RoPE pre-computation. KV Packet's Cachet
+pre-computation contract remains intentionally unspecified pending upstream
+reproduction.
 
 ## Benchmark Dataset Score Table
 
@@ -225,7 +230,7 @@ native packed-Q4 KV pages.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | bf16 |  |  |  |  |  |  |  |  |  |  | Not yet re-measured under the current protocol |
 | Q8 (`fp8_e5m2`) |  |  |  |  |  |  |  |  |  |  | Default document KV precision; not yet re-measured under the current protocol |
-| Q4 packed document KV |  |  |  |  |  |  |  |  |  |  | Implementation pending; requires packed-Q4 payload layout and provider dequant or native serving-engine Q4 KV support (the planned KV Packet method) |
+| Q4 packed document KV |  |  |  |  |  |  |  |  |  |  | Implementation pending; requires a packed-Q4 payload layout and provider dequant or native serving-engine Q4 KV support. This compression can be combined with methods such as KV Packet but is not KV Packet itself. |
 
 These rows are not yet re-measured under the current protocol (g6/L4, request
 parallelism 4, N x 2k distinct documents, 64 repeats). The current L4 startup

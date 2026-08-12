@@ -215,6 +215,7 @@ def _handle_from_probe_actions(
             byte_start=copy.global_byte_start,
             byte_length=copy.source_byte_length,
             content_hash=copy.content_hash,
+            token_contract=copy.token_contract,
         )
         for copy in copies
     )
@@ -229,6 +230,8 @@ def _handle_from_probe_actions(
         metadata=dict(bind.metadata),
         cache_method=bind.cache_method,
         adapter_ids=bind.adapter_ids,
+        artifact_identity=reservation.action.artifact_identity,
+        payload_checksum=reservation.action.payload_checksum,
     )
 
 

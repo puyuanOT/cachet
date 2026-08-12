@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from inspect import signature
 from typing import Any
 
+from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.engine_protocol import (
     KVLayout,
     KVPayloadAxisOrder,
@@ -309,6 +310,14 @@ class TransformersKVChunkGenerator:
                 chunk_type=chunk.chunk_type,
                 chunk_id=chunk.chunk_id,
                 content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    _token_id_tuple(input_ids),
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=self.add_special_tokens,
+                    prompt_template_version=config.prompt_template_version,
+                ),
             ),
             payload=payload,
             token_count=token_count,
@@ -607,6 +616,11 @@ def _input_ids(inputs: Mapping[str, object]) -> object:
     if input_ids.ndim != 2 or input_ids.shape[0] != 1:
         raise ValueError("tokenizer input_ids must have shape [1, tokens]")
     return input_ids
+
+
+def _token_id_tuple(input_ids: object) -> tuple[int, ...]:
+    values = input_ids.detach().to(device="cpu").reshape(-1).tolist()
+    return tuple(int(value) for value in values)
 
 
 def _inputs_to_device(inputs: Mapping[str, object], device: object | None) -> dict[str, object]:

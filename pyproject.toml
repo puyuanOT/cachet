@@ -47,6 +47,8 @@ cachet-benchmark-handoffs = "cachet.benchmark_handoffs:main"
 cachet-benchmark-handoff-manifest = "cachet.benchmark_handoffs:manifest_main"
 cachet-benchmark-handoff-bundles = "cachet.benchmark_handoffs:bundle_main"
 cachet-native-probe-scaffold = "cachet.adapter_scaffold:main"
+cachet-method-scaffold = "cachet.method_scaffold:main"
+cachet-method-conformance = "cachet.method_conformance:main"
 cachet-run-benchmark-plan = "cachet.benchmark_plan_executor:main"
 cachet-databricks-job = "cachet.databricks_job:main"
 cachet-databricks-runs = "cachet.databricks_runs:main"
@@ -77,6 +79,8 @@ document-kv-benchmark-handoffs = "document_kv_cache.benchmark_handoffs:main"
 document-kv-benchmark-handoff-manifest = "document_kv_cache.benchmark_handoffs:manifest_main"
 document-kv-benchmark-handoff-bundles = "document_kv_cache.benchmark_handoffs:bundle_main"
 document-kv-native-probe-scaffold = "document_kv_cache.adapter_scaffold:main"
+document-kv-method-scaffold = "document_kv_cache.method_scaffold:main"
+document-kv-method-conformance = "document_kv_cache.method_conformance:main"
 document-kv-run-benchmark-plan = "document_kv_cache.benchmark_plan_executor:main"
 document-kv-databricks-job = "document_kv_cache.databricks_job:main"
 document-kv-databricks-runs = "document_kv_cache.databricks_runs:main"
@@ -118,6 +122,19 @@ include = [
   { path = "src/document_kv_cache/templates/**/*.yml", format = ["sdist", "wheel"] },
   { path = "src/document_kv_cache/templates/**/*.md", format = ["sdist", "wheel"] },
 ]
+
+[tool.poetry.group.dev.dependencies]
+mypy = "==2.2.0"
+ruff = "==0.15.21"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+show_error_codes = true
+warn_unused_configs = true
+
+[tool.ruff]
+target-version = "py311"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

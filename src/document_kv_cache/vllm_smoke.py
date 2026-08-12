@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import gc
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import os
 from pathlib import Path
@@ -21,6 +21,10 @@ import urllib.request
 
 from document_kv_cache._hardware_targets import (
     validate_v1_vllm_kv_cache_dtype_for_hardware_target,
+)
+from document_kv_cache.artifact_identity import (
+    RuntimeIdentity,
+    UNRESOLVED_IDENTITY,
 )
 from document_kv_cache.benchmark_handoffs import (
     enrich_benchmark_jsonl_with_handoffs,
@@ -75,7 +79,6 @@ from document_kv_cache.transformers_generator import (
 )
 from vllm_kv_injection.vllm_transfer_config import (
     document_kv_transfer_config,
-    document_kv_transfer_config_json,
     multi_connector_transfer_config_json,
 )
 from vllm_kv_injection.vllm_dynamic_connector import (
@@ -169,6 +172,8 @@ class VLLMPreparedHandoffGenerationConfig:
     timeout_seconds: float = 1800.0
     limit: int | None = None
     benchmark_handoff_segment_per_document: bool = False
+    cache_method: str | None = None
+    require_artifact_contract: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
@@ -186,6 +191,19 @@ class VLLMPreparedHandoffGenerationConfig:
                 raise ValueError("benchmark_handoff_limit must be a non-negative integer")
         if not isinstance(self.benchmark_handoff_segment_per_document, bool):
             raise ValueError("benchmark_handoff_segment_per_document must be a boolean")
+        if self.cache_method is not None:
+            object.__setattr__(
+                self,
+                "cache_method",
+                _non_empty_string(
+                    self.cache_method,
+                    "benchmark_handoff_cache_method",
+                ),
+            )
+        if type(self.require_artifact_contract) is not bool:
+            raise ValueError(
+                "benchmark_handoff_require_artifact_contract must be a boolean"
+            )
         object.__setattr__(self, "output_dir", Path(self.output_dir))
 
     def to_metadata(self) -> dict[str, object]:
@@ -197,6 +215,8 @@ class VLLMPreparedHandoffGenerationConfig:
             "timeout_seconds": self.timeout_seconds,
             "limit": self.limit,
             "segment_per_document": self.benchmark_handoff_segment_per_document,
+            "cache_method": self.cache_method,
+            "require_artifact_contract": self.require_artifact_contract,
         }
 
 
@@ -207,6 +227,8 @@ class VLLMSmokeBenchmarkConfig:
     benchmark_id: str
     output_dir: Path
     model_id: str = HF_MODEL_ID
+    model_revision: str | None = None
+    tokenizer_revision: str | None = None
     model_dtype: str = "bfloat16"
     model_quantization: str | None = None
     kv_cache_dtype: str | None = None
@@ -244,6 +266,7 @@ class VLLMSmokeBenchmarkConfig:
     allow_dataset_subset: bool = False
     package_install_spec: str | None = None
     handoff_generation: VLLMPreparedHandoffGenerationConfig | None = None
+    runtime_identity: RuntimeIdentity | None = None
     payload_cache_max_bytes: int = 0
     system_prompt_position: str = DEFAULT_SYSTEM_PROMPT_POSITION
 
@@ -253,6 +276,14 @@ class VLLMSmokeBenchmarkConfig:
         if self.output_dir is None:
             raise ValueError("output_dir must be provided")
         object.__setattr__(self, "model_id", _non_empty_string(self.model_id, "model_id"))
+        for field_name in ("model_revision", "tokenizer_revision"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _non_empty_string(value, field_name),
+                )
         object.__setattr__(self, "model_dtype", _non_empty_string(self.model_dtype, "model_dtype"))
         if self.model_quantization is not None:
             object.__setattr__(
@@ -342,6 +373,34 @@ class VLLMSmokeBenchmarkConfig:
                 raise TypeError("handoff_generation must be a VLLMPreparedHandoffGenerationConfig")
             if not self.dataset_specs:
                 raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+        if self.runtime_identity is not None and not isinstance(
+            self.runtime_identity,
+            RuntimeIdentity,
+        ):
+            raise TypeError("runtime_identity must be a RuntimeIdentity or None")
+        if self.runtime_identity is not None:
+            if self.model_revision is None or self.tokenizer_revision is None:
+                raise ValueError(
+                    "runtime_identity requires pinned model_revision and "
+                    "tokenizer_revision"
+                )
+            expected_runtime_identity = {
+                "model_id": self.model_id,
+                "model_revision": self.model_revision,
+                "tokenizer_id": self.model_id,
+                "tokenizer_revision": self.tokenizer_revision,
+                "kv_dtype": self.kv_cache_dtype or self.model_dtype,
+            }
+            mismatches = [
+                field_name
+                for field_name, expected in expected_runtime_identity.items()
+                if getattr(self.runtime_identity, field_name) != expected
+            ]
+            if mismatches:
+                raise ValueError(
+                    "runtime_identity does not match pinned vLLM configuration: "
+                    + ", ".join(mismatches)
+                )
         if self.prewarm_cache_prefix and not self.dataset_specs:
             raise ValueError("benchmark_prewarm_cache_prefix requires prepared dataset specs")
         if self.cache_runtime_prompt and not self.dataset_specs:
@@ -561,6 +620,8 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
     return {
         "benchmark_id": config.benchmark_id,
         "hf_model_id": config.model_id,
+        "model_revision": config.model_revision,
+        "tokenizer_revision": config.tokenizer_revision,
         "served_model_name": SERVED_MODEL_NAME,
         "model_dtype": config.model_dtype,
         "model_quantization": config.model_quantization,
@@ -613,6 +674,11 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "generates_prepared_handoffs": config.handoff_generation is not None,
         "benchmark_handoff_generation": (
             None if config.handoff_generation is None else config.handoff_generation.to_metadata()
+        ),
+        "runtime_identity": (
+            None
+            if config.runtime_identity is None
+            else config.runtime_identity.to_record()
         ),
         "max_model_len": config.max_model_len,
         "max_num_seqs": config.max_num_seqs,
@@ -686,6 +752,10 @@ def document_kv_transfer_config_for_smoke(config: VLLMSmokeBenchmarkConfig) -> d
     return document_kv_transfer_config(
         payload_cache_max_bytes=config.payload_cache_max_bytes or None,
         telemetry_jsonl=str(config.connector_telemetry_path),
+        runtime_identity=config.runtime_identity,
+        require_runtime_handshake=(
+            True if config.runtime_identity is not None else None
+        ),
     )
 
 
@@ -1002,6 +1072,8 @@ generation = VLLMPreparedHandoffGenerationConfig(
     timeout_seconds=float(generation_payload["timeout_seconds"]),
     limit=generation_payload.get("limit"),
     benchmark_handoff_segment_per_document=bool(generation_payload.get("segment_per_document", False)),
+    cache_method=generation_payload.get("cache_method"),
+    require_artifact_contract=bool(generation_payload.get("require_artifact_contract", False)),
 )
 config = VLLMSmokeBenchmarkConfig(
     benchmark_id=payload["benchmark_id"],
@@ -1085,6 +1157,56 @@ def _generate_prepared_benchmark_handoff_inputs(
 ) -> tuple[dict[str, Path], dict[str, object]]:
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
     layout = layout_for_model(SERVED_MODEL_NAME, dtype=generation.dtype)
+    generator_config = getattr(generator, "config", None)
+    adapter_config = getattr(
+        getattr(generator, "adapter", None),
+        "config",
+        None,
+    )
+    model_id = (
+        getattr(adapter_config, "model_id", None)
+        or getattr(generator_config, "model_id", None)
+        or layout.model_id
+    )
+    tokenizer_id = (
+        getattr(adapter_config, "tokenizer_id", None)
+        or getattr(generator_config, "tokenizer_id", None)
+        or model_id
+    )
+    model_revision = (
+        getattr(adapter_config, "model_revision", None)
+        or getattr(generator_config, "model_revision", None)
+        or UNRESOLVED_IDENTITY
+    )
+    tokenizer_revision = (
+        getattr(adapter_config, "tokenizer_revision", None)
+        or getattr(generator_config, "tokenizer_revision", None)
+        or UNRESOLVED_IDENTITY
+    )
+    generator_family = getattr(generator, "generator_family", "transformers")
+    generator_version = getattr(
+        generator,
+        "generator_version",
+        UNRESOLVED_IDENTITY,
+    )
+    position_handling = getattr(generator, "position_handling", None)
+    layout = replace(
+        layout,
+        model_id=model_id,
+        shares_kv_storage=(
+            False
+            if getattr(position_handling, "value", position_handling)
+            == "rerotate_at_injection"
+            else layout.shares_kv_storage
+        ),
+        storage_layout=(
+            "separate_key_value"
+            if getattr(position_handling, "value", position_handling)
+            == "rerotate_at_injection"
+            else layout.storage_layout
+        ),
+    )
+    layout.validate()
     generated_paths: dict[str, Path] = {}
     dataset_records: dict[str, dict[str, object]] = {}
     for dataset in dataset_paths:
@@ -1107,6 +1229,14 @@ def _generate_prepared_benchmark_handoff_inputs(
             manifest_json=manifest_json,
             align_bytes=generation.align_bytes,
             segment_per_document=generation.benchmark_handoff_segment_per_document,
+            cache_method=generation.cache_method,
+            model_id=model_id,
+            model_revision=model_revision,
+            tokenizer_id=tokenizer_id,
+            tokenizer_revision=tokenizer_revision,
+            generator_family=generator_family,
+            generator_version=generator_version,
+            require_artifact_contract=generation.require_artifact_contract,
         )
         enriched_rows = enrich_benchmark_jsonl_with_handoffs(
             generation_input_jsonl,
@@ -1136,6 +1266,14 @@ def _generate_prepared_benchmark_handoff_inputs(
         "output_dir": str(generation.output_dir),
         "dtype": generation.dtype,
         "align_bytes": generation.align_bytes,
+        "cache_method": generation.cache_method,
+        "require_artifact_contract": generation.require_artifact_contract,
+        "artifact_model_id": model_id,
+        "artifact_model_revision": model_revision,
+        "artifact_tokenizer_id": tokenizer_id,
+        "artifact_tokenizer_revision": tokenizer_revision,
+        "generator_family": generator_family,
+        "generator_version": generator_version,
         "datasets": dataset_records,
     }
     return generated_paths, record
@@ -2228,9 +2366,10 @@ def lmcache_transfer_config_json() -> str:
 
 
 def cachet_transfer_config_json(config: VLLMSmokeBenchmarkConfig) -> str:
-    return document_kv_transfer_config_json(
-        payload_cache_max_bytes=config.payload_cache_max_bytes or None,
-        telemetry_jsonl=str(config.connector_telemetry_path),
+    return json.dumps(
+        document_kv_transfer_config_for_smoke(config),
+        separators=(",", ":"),
+        sort_keys=True,
     )
 
 
@@ -2302,6 +2441,10 @@ def build_vllm_server_args(config: VLLMSmokeBenchmarkConfig, python_executable: 
     ]
     if config.model_quantization is not None:
         args.extend(["--quantization", config.model_quantization])
+    if config.model_revision is not None:
+        args.extend(["--revision", config.model_revision])
+    if config.tokenizer_revision is not None:
+        args.extend(["--tokenizer-revision", config.tokenizer_revision])
     if config.kv_cache_dtype is not None:
         args.extend(["--kv-cache-dtype", config.kv_cache_dtype])
     if config.attention_backend is not None:
@@ -2571,6 +2714,17 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model-id", default=HF_MODEL_ID, help="HF model path/id passed to vLLM --model.")
+    parser.add_argument(
+        "--model-revision",
+        help="Immutable Hugging Face model revision passed to vLLM --revision.",
+    )
+    parser.add_argument(
+        "--tokenizer-revision",
+        help=(
+            "Immutable Hugging Face tokenizer revision passed to vLLM "
+            "--tokenizer-revision."
+        ),
+    )
     parser.add_argument("--model-dtype", default="bfloat16", help="Model dtype passed to vLLM --dtype.")
     parser.add_argument("--model-quantization", help="Optional vLLM --quantization value.")
     parser.add_argument("--kv-cache-dtype", help="Optional vLLM --kv-cache-dtype value.")
@@ -2700,6 +2854,13 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--runtime-identity-json",
+        help=(
+            "RuntimeIdentity JSON used by the native provider compatibility "
+            "handshake. Requires pinned model and tokenizer revisions."
+        ),
+    )
+    parser.add_argument(
         "--package-install-spec",
         help=(
             "Cachet wheel path or source checkout to install into the isolated vLLM environment. "
@@ -2755,6 +2916,21 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--benchmark-handoff-cache-method",
+        help=(
+            "Method identity stamped on generated handoffs, for example "
+            "'vanilla_prefill'."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-handoff-require-artifact-contract",
+        action="store_true",
+        help=(
+            "Require the registered method's complete artifact contract during "
+            "handoff generation."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-force-max-tokens",
         action="store_true",
         help=(
@@ -2765,10 +2941,17 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     args = parser.parse_args(argv)
     output_dir = Path(_cluster_file_path(args.output_dir))
     handoff_generation = _handoff_generation_config_from_args(args, output_dir=output_dir)
+    runtime_identity = (
+        None
+        if args.runtime_identity_json is None
+        else _runtime_identity_from_json(args.runtime_identity_json)
+    )
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
         output_dir=output_dir,
         model_id=args.model_id,
+        model_revision=args.model_revision,
+        tokenizer_revision=args.tokenizer_revision,
         model_dtype=args.model_dtype,
         model_quantization=args.model_quantization,
         kv_cache_dtype=args.kv_cache_dtype,
@@ -2808,6 +2991,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         allow_dataset_subset=args.allow_dataset_subset,
         package_install_spec=args.package_install_spec,
         handoff_generation=handoff_generation,
+        runtime_identity=runtime_identity,
     )
 
 
@@ -2817,9 +3001,15 @@ def _handoff_generation_config_from_args(
     output_dir: Path,
 ) -> VLLMPreparedHandoffGenerationConfig | None:
     if args.benchmark_handoff_generator_factory is None:
-        if args.benchmark_handoff_output_dir is not None:
+        if (
+            args.benchmark_handoff_output_dir is not None
+            or args.benchmark_handoff_cache_method is not None
+            or args.benchmark_handoff_require_artifact_contract
+            or args.benchmark_handoff_chunk_per_document
+        ):
             raise ValueError(
-                "--benchmark-handoff-output-dir requires --benchmark-handoff-generator-factory"
+                "benchmark handoff options require "
+                "--benchmark-handoff-generator-factory"
             )
         return None
     output = args.benchmark_handoff_output_dir or str(output_dir / "generated-handoffs")
@@ -2831,7 +3021,23 @@ def _handoff_generation_config_from_args(
         timeout_seconds=args.benchmark_handoff_generation_timeout_seconds,
         limit=args.benchmark_handoff_limit,
         benchmark_handoff_segment_per_document=args.benchmark_handoff_chunk_per_document,
+        cache_method=args.benchmark_handoff_cache_method,
+        require_artifact_contract=(
+            args.benchmark_handoff_require_artifact_contract
+        ),
     )
+
+
+def _runtime_identity_from_json(value: str) -> RuntimeIdentity:
+    try:
+        record = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"--runtime-identity-json must be valid JSON: {exc.msg}"
+        ) from exc
+    if not isinstance(record, Mapping):
+        raise ValueError("--runtime-identity-json must contain a JSON object")
+    return RuntimeIdentity.from_record(record)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1587,7 +1587,10 @@ def test_github_main_branch_protection_payload_requires_pr_review_and_ci():
     ci_text = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     ci_job_names = re.findall(r"^    name: (.+)$", ci_text, flags=re.MULTILINE)
 
-    assert ci_job_names == ["Test and build"]
+    assert ci_job_names == [
+        "Test and build (Python ${{ matrix.python-version }})",
+        "Test and build",
+    ]
     assert len(ci_job_names) == len(set(ci_job_names))
     assert payload["enforce_admins"] is True
     assert payload["required_linear_history"] is True
@@ -1637,7 +1640,8 @@ def test_github_ci_workflow_runs_pr_quality_gate():
         "contents: read",
         "actions/checkout@v6",
         "actions/setup-python@v6",
-        'python-version: "3.11"',
+        'python-version: ["3.11", "3.12"]',
+        "python-version: ${{ matrix.python-version }}",
     ):
         assert required in text
 
@@ -1653,9 +1657,16 @@ def test_github_ci_workflow_runs_pr_quality_gate():
         "poetry install --dry-run",
         "poetry install --dry-run --extras databricks --extras test",
         "poetry install -E test",
+        "poetry run python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu",
+        ">-",
+        ">-",
         "poetry run pytest -q",
         "poetry build",
+        'test "${{ needs.test.result }}" = "success"',
     ]
+    assert "poetry run ruff check" in text
+    assert "poetry run mypy" in text
+    assert "src/document_kv_cache/reference_method.py" in text
 
 
 def test_github_ci_workflow_verifies_installed_console_scripts():

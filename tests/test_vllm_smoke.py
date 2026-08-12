@@ -1,16 +1,15 @@
 from pathlib import Path
 import gc
 import json
-import os
 import subprocess
 import sys
 from types import ModuleType
-import urllib.error
 import weakref
 
 import pytest
 
 import document_kv_cache.vllm_smoke as public_vllm_smoke
+from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.serving_env import VLLM_SERVING_ENVIRONMENT_PROFILE
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
@@ -47,7 +46,6 @@ from document_kv_cache.vllm_smoke import (
     build_vllm_server_args,
     write_lmcache_config,
     _build_lmcache_pass_args,
-    cuda_wheel_env_paths,
     dataset_args,
     dependency_constraints,
     dependency_override_constraints,
@@ -65,7 +63,6 @@ from document_kv_cache.vllm_smoke import (
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
     server_env,
-    site_packages_dirs,
     smoke_dataset_records,
     validate_prepared_benchmark_handoffs,
 )
@@ -91,6 +88,23 @@ from vllm_kv_injection.vllm_dynamic_connector import DOCUMENT_KV_PROVIDER_FACTOR
 from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+MODEL_REVISION = "a" * 40
+
+
+def stored_post_rope_runtime_identity() -> RuntimeIdentity:
+    return RuntimeIdentity(
+        model_id=HF_MODEL_ID,
+        model_revision=MODEL_REVISION,
+        tokenizer_id=HF_MODEL_ID,
+        tokenizer_revision=MODEL_REVISION,
+        lora_id="base",
+        prompt_template_version="v1",
+        layout_version="qwen3-v1",
+        kv_dtype="bfloat16",
+        block_size=16,
+        payload_axis_order="token_major",
+        key_position_encoding="stored_post_rope",
+    )
 
 
 def prepared_dataset_paths(tmp_path, *, include_handoffs=True):
@@ -434,6 +448,35 @@ def test_vllm_server_args_use_qwen3_instruct_and_g5_safe_limits(tmp_path):
     assert "--trust-remote-code" in args
     assert "--no-enable-log-requests" in args
     assert "--disable-log-requests" not in args
+
+
+def test_vllm_server_args_pin_runtime_identity(tmp_path):
+    identity = stored_post_rope_runtime_identity()
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="runtime-identity-live",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        runtime_identity=identity,
+    )
+
+    args = build_vllm_server_args(
+        config,
+        tmp_path / "venv" / "bin" / "python",
+    )
+    transfer_config = json.loads(
+        args[args.index("--kv-transfer-config") + 1]
+    )
+    extra_config = transfer_config["kv_connector_extra_config"]
+
+    assert args[args.index("--revision") + 1] == MODEL_REVISION
+    assert (
+        args[args.index("--tokenizer-revision") + 1]
+        == MODEL_REVISION
+    )
+    assert extra_config["document_kv.runtime_identity"] == identity.to_record()
+    assert extra_config["document_kv.require_runtime_handshake"] is True
 
 
 def test_vllm_server_args_default_mode_uses_cachet_connector(tmp_path):
@@ -1938,6 +1981,58 @@ def test_parse_args_builds_config_with_overrides(tmp_path):
             timeout_seconds=1234.0,
             limit=2,
         ),
+    )
+
+
+def test_parse_args_wires_strict_method_handoff_contract(tmp_path):
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}"
+        for dataset in SMOKE_DATASETS
+    )
+    identity = stored_post_rope_runtime_identity()
+
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "method-handoff-live",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--model-revision",
+            MODEL_REVISION,
+            "--tokenizer-revision",
+            MODEL_REVISION,
+            "--runtime-identity-json",
+            json.dumps(identity.to_record()),
+            "--benchmark-handoff-generator-factory",
+            "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator",
+            "--benchmark-handoff-chunk-per-document",
+            "--benchmark-handoff-cache-method",
+            "vanilla_prefill",
+            "--benchmark-handoff-require-artifact-contract",
+            "--benchmark-cache-runtime-prompt",
+            *sum((["--dataset", spec] for spec in specs), []),
+        ]
+    )
+
+    assert config.model_revision == MODEL_REVISION
+    assert config.tokenizer_revision == MODEL_REVISION
+    assert config.runtime_identity == identity
+    assert config.handoff_generation is not None
+    assert config.handoff_generation.cache_method == "vanilla_prefill"
+    assert (
+        config.handoff_generation.benchmark_handoff_segment_per_document
+        is True
+    )
+    assert config.handoff_generation.require_artifact_contract is True
+    runner_args = build_benchmark_runner_args(
+        config,
+        parse_dataset_specs(specs),
+    )
+    assert "add_special_tokens" not in json.loads(
+        runner_args[runner_args.index("--baseline-extra-body-json") + 1]
+    )
+    assert "add_special_tokens" not in json.loads(
+        runner_args[runner_args.index("--cache-extra-body-json") + 1]
     )
 
 

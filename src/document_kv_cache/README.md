@@ -25,6 +25,8 @@ return as a production dependency.
 - `admission.py` exposes pending GPU-memory admission controls.
 - `adapter_scaffold.py` generates fail-closed native-probe delegate modules for
   backend-specific vLLM/SGLang adapter packages.
+- `artifact_identity.py` defines immutable artifact, tokenizer, and runtime
+  compatibility identities.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
   native engine-probe, release-readiness sidecar, and release-evidence command
   plans.
@@ -34,6 +36,12 @@ return as a production dependency.
   handoffs to prepared benchmark JSONL rows.
 - `benchmark_handoff_bundles.py` is the `python -m` entry point for the
   handoff-bundle generation CLI used by reproducible benchmark plans.
+- `benchmark_gates.py` rejects benchmark publication without method identity,
+  paired quality, and mechanically attested cache-state evidence.
+- `benchmark_metrics.py` single-sources canonical latency, quality, and
+  post-TTFT decode-throughput formulas.
+- `benchmark_statistics.py` computes deterministic paired bootstrap confidence
+  intervals for every dataset and cache arm.
 - `benchmark_dataset_sources.py` stages public full-dataset benchmark sources
   into canonical V1 JSONL with source, split, count, and synthetic NIAH-grid
   provenance.
@@ -96,6 +104,9 @@ return as a production dependency.
   for native vLLM/SGLang cache-arm requests.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.
 - `materializer.py` loads planned chunks into merged or segmented payloads.
+- `method_conformance.py` checks application method plugins and emits a
+  machine-readable conformance record.
+- `method_scaffold.py` generates fail-closed application method plugins.
 - `methods.py` maps each benchmark method to its KV pre-computation (post-RoPE
   vs pre-RoPE, selective recompute) and serving connector through `MethodSpec` /
   `METHOD_SPECS`.
@@ -122,13 +133,16 @@ return as a production dependency.
   strict V1 mode requires the full release artifact set before publishing.
 - `release_evidence.py` validates V1 benchmark, storage, and native engine-probe
   artifacts, including the pinned serving-engine package/version metadata.
+- `reference_method.py` provides the CPU-only method extension and strict
+  workflow conformance fixture; it is not model-quality evidence.
 - `repository_hygiene.py` emits a release-readiness sidecar proving `.gitignore`
   coverage and absence of tracked or untracked generated/secret-like artifacts
   that Git exposes, plus README/package-docstring coverage for repository
   directories.
+- `reuse_contract.py` separates persisted artifact encoding from typed reuse
+  operations and concrete runtime KV layout.
 - `rope.py` provides the shared rotate-half rotary-position-embedding helper
-  (`apply_rope_to_keys`, `rope_cos_sin`) used to store position-independent
-  pre-RoPE keys and re-rope them to their true offset during KV injection.
+  (`apply_rope_to_keys`, `rope_cos_sin`) used for absolute pre-RoPE positioning.
 - `runtime_kv_offload_probe.py` writes an empirical evidence record for
   platform-native runtime KV offload launch config and Cachet hierarchical
   document-KV persistence behavior.
@@ -180,6 +194,8 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-benchmark-handoff-manifest`
 - `document-kv-benchmark-handoff-bundles`
 - `document-kv-native-probe-scaffold`
+- `document-kv-method-scaffold`
+- `document-kv-method-conformance`
 - `document-kv-run-benchmark-plan`
 - `document-kv-databricks-job`
 - `document-kv-databricks-runs`
@@ -213,6 +229,8 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-benchmark-handoff-manifest`
 - `cachet-benchmark-handoff-bundles`
 - `cachet-native-probe-scaffold`
+- `cachet-method-scaffold`
+- `cachet-method-conformance`
 - `cachet-run-benchmark-plan`
 - `cachet-databricks-job`
 - `cachet-databricks-runs`

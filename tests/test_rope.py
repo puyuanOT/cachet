@@ -8,9 +8,9 @@ is caught locally before any on-cluster run.
 
 import pytest
 
-torch = pytest.importorskip("torch")
-
 from document_kv_cache.rope import apply_rope_to_keys, rope_cos_sin
+
+torch = pytest.importorskip("torch")
 
 
 THETA = 1_000_000.0  # Qwen3 rope_theta

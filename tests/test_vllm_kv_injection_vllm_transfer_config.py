@@ -1,11 +1,9 @@
 import json
-import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
+from document_kv_cache.artifact_identity import RuntimeIdentity
 import vllm_kv_injection
 from vllm_kv_injection.vllm_transfer_config import (
     DOCUMENT_KV_CONNECTOR_CLASS,
@@ -120,6 +118,30 @@ def test_document_kv_transfer_config_accepts_telemetry_jsonl_path():
 
     extra = config["kv_connector_extra_config"]
     assert extra[DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY] == "/local_disk0/cachet/connector.jsonl"
+
+
+def test_document_kv_transfer_config_accepts_runtime_handshake_identity():
+    identity = RuntimeIdentity(
+        model_id="model",
+        model_revision="revision",
+        tokenizer_id="model",
+        tokenizer_revision="revision",
+        lora_id="base",
+        prompt_template_version="v1",
+        layout_version="layout-v1",
+        kv_dtype="bfloat16",
+        block_size=16,
+        payload_axis_order="token_major",
+    )
+
+    config = document_kv_transfer_config(
+        runtime_identity=identity,
+        require_runtime_handshake=True,
+    )
+    extra = config["kv_connector_extra_config"]
+
+    assert extra["document_kv.runtime_identity"] == identity.to_record()
+    assert extra["document_kv.require_runtime_handshake"] is True
 
 
 @pytest.mark.parametrize("value", [-1, True, "4096"])

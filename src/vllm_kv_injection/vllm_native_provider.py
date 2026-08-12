@@ -10,13 +10,20 @@ import mmap
 import os
 import time
 import warnings
-from concurrent.futures import Future, ThreadPoolExecutor
-from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any, Protocol
 
+from document_kv_cache.artifact_identity import (
+    RuntimeCompatibilityHandshake,
+    RuntimeIdentity,
+)
 from document_kv_cache.cache import ByteLRU
+from document_kv_cache.engine_protocol import (
+    KVKeyPositionEncoding,
+)
 from document_kv_cache.storage import local_path
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -45,7 +52,9 @@ from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+    DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY,
     DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
 )
 from vllm_kv_injection.vllm_layer_mapping import (
@@ -70,6 +79,8 @@ __all__ = [
     "DOCUMENT_KV_PAYLOAD_URI_PARAM",
     "DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM",
     "DOCUMENT_KV_REQUEST_ID_PARAM",
+    "DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY",
+    "DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY",
     "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION",
@@ -309,6 +320,8 @@ class DocumentKVNativeProvider:
         provider_factory: str = DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
         payload_cache_max_bytes: int = 0,
         telemetry_jsonl: str | None = None,
+        runtime_identity: RuntimeIdentity | None = None,
+        require_runtime_handshake: bool = False,
     ) -> None:
         payload_cache_max_bytes = _non_negative_int(
             payload_cache_max_bytes,
@@ -318,9 +331,15 @@ class DocumentKVNativeProvider:
             telemetry_jsonl,
             field_name="telemetry_jsonl",
         )
+        if runtime_identity is not None and not isinstance(runtime_identity, RuntimeIdentity):
+            raise TypeError("runtime_identity must be a RuntimeIdentity or None")
+        if type(require_runtime_handshake) is not bool:
+            raise TypeError("require_runtime_handshake must be a boolean")
         self.source = source or KVTransferParamsDocumentKVSource()
         self.provider_factory = _provider_factory_path(provider_factory)
         self.telemetry_jsonl = telemetry_jsonl
+        self.runtime_identity = runtime_identity
+        self.require_runtime_handshake = require_runtime_handshake
         # When enabled (DOCUMENT_KV_PROFILE_STAGES=1), the per-load layer loop times
         # the host->device copy and the on-GPU scatter separately, inserting CUDA
         # synchronizations so the wall time is attributed to the correct stage. This
@@ -387,6 +406,7 @@ class DocumentKVNativeProvider:
         self._stats_layer_load_ns = 0
         self._stats_payload_cache_hits = 0
         self._stats_payload_cache_misses = 0
+        self._cache_state_observations: dict[str, dict[str, object]] = {}
 
     def get_num_new_matched_tokens(
         self,
@@ -402,7 +422,6 @@ class DocumentKVNativeProvider:
         if load is None:
             self._loads.pop(request_id, None)
             return 0, False
-
         block_size = load.actions.reservation.layout.block_size
         available_tokens = _matchable_prefix_tokens(load, request)
         if num_computed_tokens % block_size != 0:
@@ -425,11 +444,16 @@ class DocumentKVNativeProvider:
         available_tokens = _matchable_prefix_tokens(load, request)
         if num_external_tokens > available_tokens:
             raise ValueError("num_external_tokens exceeds the available document KV token count")
-        if num_external_tokens % block_size != 0:
-            raise ValueError("num_external_tokens must be block-aligned for document KV loads")
         source_token_start = available_tokens - num_external_tokens
+        if num_external_tokens % block_size != 0:
+            raise ValueError(
+                "num_external_tokens must be block-aligned for document "
+                "KV loads"
+            )
         if source_token_start % block_size != 0:
-            raise ValueError("document KV load source_token_start must be block-aligned")
+            raise ValueError(
+                "document KV load source_token_start must be block-aligned"
+            )
 
         block_spans = _block_spans_for_token_range(
             blocks,
@@ -663,11 +687,21 @@ class DocumentKVNativeProvider:
                 load.source_token_start : load.source_token_start + load.token_count
             ]
             h2d_source = cpu_token_slice
-            # Pre-RoPE payloads store keys before rotary; re-rope them to their true
-            # absolute positions (source_token_start + token index) at injection so a
-            # cached chunk is correct at any offset. cos/sin depend only on positions,
-            # so they are computed once per device and reused across the layer loop.
-            pre_rope = bool(getattr(layout, "pre_rope", False))
+            # Position-independent payloads use absolute positions. cos/sin are
+            # shared across layers on each device.
+            key_position_encoding = getattr(
+                layout,
+                "key_position_encoding",
+                (
+                    KVKeyPositionEncoding.PRE_ROPE
+                    if bool(getattr(layout, "pre_rope", False))
+                    else KVKeyPositionEncoding.STORED_POST_ROPE
+                ),
+            )
+            key_position_encoding = KVKeyPositionEncoding(
+                getattr(key_position_encoding, "value", key_position_encoding)
+            )
+            reposition_keys = key_position_encoding == KVKeyPositionEncoding.PRE_ROPE
             rope_theta = getattr(layout, "rope_theta", None)
             rope_rotary_dim = getattr(layout, "rope_rotary_dim", None)
             rope_cos_sin_by_device: dict[object | None, tuple[object, object]] = {}
@@ -698,9 +732,13 @@ class DocumentKVNativeProvider:
                                 block_size=block_size,
                                 device=device,
                             )
-                    if pre_rope and device not in rope_cos_sin_by_device:
+                    if reposition_keys and device not in rope_cos_sin_by_device:
                         rope_cos_sin_by_device[device] = _rope_cos_sin_for_load(
-                            load, dst_layer, rope_theta=rope_theta, rotary_dim=rope_rotary_dim
+                            load,
+                            dst_layer,
+                            rope_theta=rope_theta,
+                            rotary_dim=rope_rotary_dim,
+                            key_position_encoding=key_position_encoding,
                         )
                     src_layer = _layer_values_from_token_slice(
                         device_token_slices[device],
@@ -709,7 +747,7 @@ class DocumentKVNativeProvider:
                         dst_kv_cache_layer=dst_layer,
                         layout=layout,
                     )
-                    if pre_rope:
+                    if reposition_keys:
                         cos, sin = rope_cos_sin_by_device[device]
                         src_layer = _rerope_src_layer_keys(
                             src_layer,
@@ -791,11 +829,27 @@ class DocumentKVNativeProvider:
                 os.sync()
                 self._page_cache_synced = True
             self._reap_prefetch(payload_uri)
-            return _mmap_payload_view(
+            eviction_succeeded = False
+
+            def mark_evicted() -> None:
+                nonlocal eviction_succeeded
+                eviction_succeeded = True
+
+            payload = _mmap_payload_view(
                 payload_uri,
                 expected_bytes=expected_bytes,
                 evict_page_cache=evict_here,
+                on_page_cache_evicted=mark_evicted,
             )
+            self._cache_state_observations[actions.reservation.request_id] = {
+                "source": _payload_source_name(payload_uri),
+                "bytes_read": expected_bytes,
+                "payload_cache_hit": False,
+                "eviction_requested": self._evict_page_cache,
+                "eviction_succeeded": eviction_succeeded,
+                "direct_io": False,
+            }
+            return payload
         result = self._payload_cache.read(
             payload_uri,
             expected_bytes=expected_bytes,
@@ -805,6 +859,14 @@ class DocumentKVNativeProvider:
             self._stats_payload_cache_hits += 1
         else:
             self._stats_payload_cache_misses += 1
+        self._cache_state_observations[actions.reservation.request_id] = {
+            "source": _payload_source_name(payload_uri),
+            "bytes_read": 0 if result.hit else expected_bytes,
+            "payload_cache_hit": result.hit,
+            "eviction_requested": False,
+            "eviction_succeeded": False,
+            "direct_io": False,
+        }
         return result.payload
 
     def _ensure_prefetch_pool(self) -> object:
@@ -956,6 +1018,10 @@ class DocumentKVNativeProvider:
         wall_start_s: float | None = None,
         wall_end_s: float | None = None,
     ) -> None:
+        cache_state_observation = self._cache_state_observations.pop(
+            load.request_id,
+            None,
+        )
         if self.telemetry_jsonl is None:
             return
         try:
@@ -964,6 +1030,7 @@ class DocumentKVNativeProvider:
                 provider_factory=self.provider_factory,
                 payload_cache_enabled=self._payload_cache is not None,
                 page_cache_evicted=self._evict_page_cache,
+                cache_state_observation=cache_state_observation,
                 total_ns=total_ns,
                 payload_materialize_ns=payload_materialize_ns,
                 payload_merge_ns=payload_merge_ns,
@@ -1003,8 +1070,25 @@ class DocumentKVNativeProvider:
         load = self.source.get_load(request)
         if load is None:
             return None
+        self._verify_runtime_compatibility(load)
+        _verify_request_token_contracts(load.actions, request)
         self._loads[request_id] = load
         return load
+
+    def _verify_runtime_compatibility(self, load: DocumentKVHandoffLoad) -> None:
+        artifact_identity = load.actions.reservation.artifact_identity
+        if artifact_identity is None:
+            return
+        if self.runtime_identity is None:
+            if self.require_runtime_handshake:
+                raise ValueError(
+                    "document KV artifact requires a configured runtime identity handshake"
+                )
+            return
+        RuntimeCompatibilityHandshake.compare(
+            artifact_identity,
+            self.runtime_identity,
+        ).require_compatible()
 
 
 class _MutableHandoffSource:
@@ -1158,10 +1242,14 @@ def build_document_kv_provider(*, vllm_config: object | None, extra_config: Mapp
     source_factory = extra_config.get(DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY)
     payload_cache_max_bytes = _payload_cache_max_bytes_from_config(extra_config)
     telemetry_jsonl = _telemetry_jsonl_from_config(extra_config)
+    runtime_identity = _runtime_identity_from_config(extra_config)
+    require_runtime_handshake = _require_runtime_handshake_from_config(extra_config)
     if source_factory is None:
         return DocumentKVNativeProvider(
             payload_cache_max_bytes=payload_cache_max_bytes,
             telemetry_jsonl=telemetry_jsonl,
+            runtime_identity=runtime_identity,
+            require_runtime_handshake=require_runtime_handshake,
         )
     if not isinstance(source_factory, str) or not source_factory.strip():
         raise ValueError(f"{DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY} must be a non-empty module:attribute string")
@@ -1171,6 +1259,8 @@ def build_document_kv_provider(*, vllm_config: object | None, extra_config: Mapp
         source=source,
         payload_cache_max_bytes=payload_cache_max_bytes,
         telemetry_jsonl=telemetry_jsonl,
+        runtime_identity=runtime_identity,
+        require_runtime_handshake=require_runtime_handshake,
     )
 
 
@@ -1182,6 +1272,30 @@ def _payload_cache_max_bytes_from_config(extra_config: Mapping[str, Any]) -> int
 def _telemetry_jsonl_from_config(extra_config: Mapping[str, Any]) -> str | None:
     value = extra_config.get(DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY)
     return _optional_config_path(value, field_name=DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY)
+
+
+def _runtime_identity_from_config(
+    extra_config: Mapping[str, Any],
+) -> RuntimeIdentity | None:
+    value = extra_config.get(DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            f"{DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY} must be a runtime identity mapping"
+        )
+    return RuntimeIdentity.from_record(value)
+
+
+def _require_runtime_handshake_from_config(
+    extra_config: Mapping[str, Any],
+) -> bool:
+    value = extra_config.get(DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY, False)
+    if type(value) is not bool:
+        raise TypeError(
+            f"{DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY} must be a boolean"
+        )
+    return value
 
 
 def _optional_config_path(value: object, *, field_name: str) -> str | None:
@@ -1260,12 +1374,31 @@ def _validate_payload_matches_actions(actions: EngineKVConnectorActions, payload
             assert copy.payload_index is not None
             if copy.source_byte_end > len(payload[copy.payload_index]):
                 raise ValueError("segmented payload is shorter than connector copy source range")
+        _verify_payload_checksum(actions, payload)
         return
     if expected_mode != PayloadMode.MERGED:
         raise ValueError("merged payload requires merged connector actions")
     expected_bytes = actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
     if len(payload) != expected_bytes:
         raise ValueError(f"payload length {len(payload)} != expected {expected_bytes}")
+    _verify_payload_checksum(actions, payload)
+
+
+def _verify_payload_checksum(
+    actions: EngineKVConnectorActions,
+    payload: bytes | memoryview | tuple[bytes | memoryview, ...],
+) -> None:
+    expected = actions.reservation.payload_checksum
+    if not expected:
+        return
+    digest = hashlib.sha256()
+    if isinstance(payload, (bytes, memoryview)):
+        digest.update(payload)
+    else:
+        for segment in payload:
+            digest.update(segment)
+    if digest.hexdigest() != expected:
+        raise ValueError("document KV payload checksum does not match handoff")
 
 
 def _payload_mode(actions: EngineKVConnectorActions) -> PayloadMode:
@@ -1336,6 +1469,8 @@ def _connector_actions_from_plan(plan: EngineKVInjectionPlan) -> EngineKVConnect
             estimated_gpu_bytes=plan.estimated_gpu_bytes,
             layout=plan.layout,
             adapter_ids=plan.adapter_ids,
+            artifact_identity=plan.artifact_identity,
+            payload_checksum=plan.payload_checksum,
         ),
         copies=tuple(
             EngineKVSegmentCopyAction(
@@ -1355,6 +1490,7 @@ def _connector_actions_from_plan(plan: EngineKVInjectionPlan) -> EngineKVConnect
                 last_block_index_exclusive=segment.last_block_index_exclusive,
                 content_hash=segment.content_hash,
                 cache_tier=segment.cache_tier,
+                token_contract=segment.token_contract,
             )
             for index, segment in enumerate(plan.segments)
         ),
@@ -1384,6 +1520,7 @@ def _materialized_payload(
         expected_bytes=_expected_payload_bytes(load.actions),
         actions=load.actions,
     )
+    _verify_payload_checksum(load.actions, payload)
     if _payload_mode(load.actions) == PayloadMode.MERGED:
         return payload
     return _segmented_payload_from_materialized_payload(load.actions, payload)
@@ -1449,6 +1586,7 @@ def _load_telemetry_record(
     provider_factory: str,
     payload_cache_enabled: bool,
     page_cache_evicted: bool = False,
+    cache_state_observation: Mapping[str, object] | None = None,
     total_ns: int,
     payload_materialize_ns: int,
     payload_merge_ns: int,
@@ -1526,10 +1664,69 @@ def _load_telemetry_record(
             payload_cache_enabled=payload_cache_enabled,
             page_cache_evicted=page_cache_evicted,
         ),
+        "cache_state_attestation": _cache_state_attestation_record(
+            load,
+            cache_state_observation=cache_state_observation,
+            successful=error_type is None,
+        ),
     }
     if error_type is not None:
         record["error"] = {"type": error_type, "message": error_message or error_type}
     return record
+
+
+def _cache_state_attestation_record(
+    load: DocumentKVLoadRequest,
+    *,
+    cache_state_observation: Mapping[str, object] | None,
+    successful: bool,
+) -> dict[str, object]:
+    actions = load.actions
+    identity = actions.reservation.artifact_identity
+    observation = dict(cache_state_observation or {})
+    source = observation.get("source", "inline" if load.payload is not None else "unknown")
+    bytes_read = observation.get("bytes_read", 0)
+    payload_cache_hit = observation.get("payload_cache_hit", False)
+    eviction_requested = observation.get("eviction_requested", False)
+    eviction_succeeded = observation.get("eviction_succeeded", False)
+    direct_io = observation.get("direct_io", False)
+    if not isinstance(source, str):
+        source = "unknown"
+    if type(bytes_read) is not int or bytes_read < 0:
+        bytes_read = 0
+    payload_cache_hit = payload_cache_hit is True
+    eviction_requested = eviction_requested is True
+    eviction_succeeded = eviction_succeeded is True
+    direct_io = direct_io is True
+    expected_bytes = (
+        actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
+    )
+    expected_tokens = load.token_count
+    loaded_tokens = load.token_count if successful else 0
+    cold_read_attested = (
+        source in {"disk", "file", "local_path", "uri"}
+        and bytes_read > 0
+        and not payload_cache_hit
+        and (direct_io or (eviction_requested and eviction_succeeded))
+        and successful
+        and bytes_read == expected_bytes
+        and loaded_tokens == expected_tokens
+    )
+    return {
+        "cache_method": actions.bind.cache_method,
+        "artifact_id": "" if identity is None else identity.artifact_id,
+        "source": source,
+        "bytes_read": bytes_read,
+        "payload_cache_hit": payload_cache_hit,
+        "eviction_requested": eviction_requested,
+        "eviction_succeeded": eviction_succeeded,
+        "direct_io": direct_io,
+        "expected_bytes": expected_bytes,
+        "expected_tokens": expected_tokens,
+        "loaded_tokens": loaded_tokens,
+        "successful_loads": 1 if successful else 0,
+        "cold_read_attested": cold_read_attested,
+    }
 
 
 def _payload_telemetry(
@@ -1565,6 +1762,13 @@ def _payload_telemetry(
         "payload_cache_enabled": payload_cache_enabled,
         "page_cache_evicted": page_cache_evicted,
     }
+
+
+def _payload_source_name(payload_uri: str) -> str:
+    scheme, separator, _ = payload_uri.partition(":")
+    if not separator:
+        return "local_path"
+    return scheme.lower() or "uri"
 
 
 def _safe_uri_tail(value: str) -> str | None:
@@ -1666,6 +1870,7 @@ def _mmap_payload_view(
     *,
     expected_bytes: int | None = None,
     evict_page_cache: bool = False,
+    on_page_cache_evicted: Callable[[], None] | None = None,
 ) -> memoryview:
     """Memory-map a merged payload so the device copy faults pages on demand.
 
@@ -1685,6 +1890,8 @@ def _mmap_payload_view(
     with open(path, "rb") as handle:
         if evict_page_cache:
             _evict_file_from_page_cache(handle.fileno())
+            if on_page_cache_evicted is not None:
+                on_page_cache_evicted()
         try:
             mapped = mmap.mmap(handle.fileno(), 0, prot=mmap.PROT_READ)
         except (ValueError, OSError):
@@ -1890,6 +2097,59 @@ def _matchable_prefix_tokens(load: DocumentKVHandoffLoad, request: object) -> in
     return (candidate_tokens // block_size) * block_size
 
 
+def _verify_request_token_contracts(
+    actions: EngineKVConnectorActions,
+    request: object,
+) -> None:
+    contracts = tuple(copy.token_contract for copy in actions.copies)
+    if not any(contract is not None for contract in contracts):
+        return
+    if any(contract is None for contract in contracts):
+        raise ValueError("document KV handoff must provide token contracts for every segment")
+    token_ids = _request_token_ids(request)
+    if token_ids is None:
+        raise ValueError(
+            "vLLM request does not expose token ids required by the document KV token contract"
+        )
+    total_tokens = actions.reservation.total_tokens
+    if len(token_ids) < total_tokens:
+        raise ValueError(
+            f"vLLM request exposes {len(token_ids)} token ids, fewer than "
+            f"the cached prefix length {total_tokens}"
+        )
+    for copy, contract in zip(actions.copies, contracts, strict=True):
+        assert contract is not None
+        contract.require_match(
+            token_ids[copy.token_start : copy.token_end],
+            label=f"runtime tokens for {copy.document_id}:{copy.chunk_id}",
+        )
+
+
+def _request_token_ids(request: object) -> tuple[int, ...] | None:
+    for attribute in ("prompt_token_ids", "all_token_ids", "token_ids"):
+        value = getattr(request, attribute, None)
+        if callable(value):
+            value = value()
+        if value is None:
+            continue
+        converter = getattr(value, "tolist", None)
+        if callable(converter):
+            value = converter()
+        if isinstance(value, Sequence) and not isinstance(
+            value,
+            (str, bytes, bytearray, memoryview),
+        ):
+            values = tuple(value)
+            if len(values) == 1 and isinstance(values[0], Sequence) and not isinstance(
+                values[0],
+                (str, bytes, bytearray, memoryview),
+            ):
+                values = tuple(values[0])
+            if all(type(token_id) is int and token_id >= 0 for token_id in values):
+                return values
+    return None
+
+
 def _document_kv_prompt_text_mode(request: object) -> str | None:
     params = getattr(request, "kv_transfer_params", None)
     if not isinstance(params, Mapping):
@@ -1978,17 +2238,32 @@ def _to_device_contiguous(token_slice: object, device: object) -> object:
     return contiguous.to(device=device)
 
 
-def _rope_cos_sin_for_load(load: object, dst_kv_cache_layer: object, *, rope_theta: object, rotary_dim: object) -> tuple[object, object]:
-    """Precompute (cos, sin) for a load's absolute token positions on the layer device."""
+def _rope_cos_sin_for_load(
+    load: object,
+    dst_kv_cache_layer: object,
+    *,
+    rope_theta: object,
+    rotary_dim: object,
+    key_position_encoding: KVKeyPositionEncoding = (
+        KVKeyPositionEncoding.PRE_ROPE
+    ),
+) -> tuple[object, object]:
+    """Precompute RoPE factors for absolute positions."""
+
     torch = _torch()
     from document_kv_cache.rope import rope_cos_sin
 
     head_dim = int(dst_kv_cache_layer.shape[-1])
     rot = int(rotary_dim) if rotary_dim else head_dim
+    device = getattr(dst_kv_cache_layer, "device", None)
+    if key_position_encoding != KVKeyPositionEncoding.PRE_ROPE:
+        raise ValueError(
+            "RoPE factors requested for non-repositionable KV keys"
+        )
     positions = torch.arange(
         load.source_token_start,
         load.source_token_start + load.token_count,
-        device=getattr(dst_kv_cache_layer, "device", None),
+        device=device,
     )
     return rope_cos_sin(positions, head_dim=head_dim, rope_theta=rope_theta, rotary_dim=rot)
 
@@ -2019,10 +2294,10 @@ def _rerope_src_layer_keys(
     rotary_dim: object,
     payload_dtype: object = None,
 ) -> object:
-    """Return ``src_layer`` with RoPE applied to its keys (index 0); values (index 1) untouched.
+    """Return ``src_layer`` with RoPE applied to its keys; values untouched.
 
-    ``src_layer`` is the standard ``[T, 2, kv_heads, head_dim]`` layer tensor. Used when
-    the payload stores pre-RoPE keys so the injected K is rotated to its true offset.
+    ``src_layer`` is the standard ``[T, 2, kv_heads, head_dim]`` layer tensor.
+    This handles pre-RoPE keys at absolute positions.
     fp8 keys arrive as raw uint8 bytes; they are bitcast to the real fp8 dtype so the
     rotation runs on decoded values, then the roped fp8 is bitcast back to uint8 so the
     injector writes the bytes through unchanged (exactly as the no-rope path does).
@@ -2032,7 +2307,7 @@ def _rerope_src_layer_keys(
 
     if getattr(src_layer, "dim", None) is None or src_layer.dim() != 4 or src_layer.shape[1] != 2:
         raise ValueError(
-            "pre-RoPE injection requires a [T, 2, kv_heads, head_dim] layer tensor; "
+            "RoPE repositioning requires a [T, 2, kv_heads, head_dim] layer tensor; "
             f"got shape {tuple(getattr(src_layer, 'shape', ()))}"
         )
     keys = src_layer[:, 0]
@@ -2065,7 +2340,6 @@ def _layer_values_from_token_slice(
 
 
 def _reshape_layer_values(layer_values: object, dst_kv_cache_layer: object, layout: object) -> object:
-    torch = _torch()
     token_count = int(layer_values.shape[0])
     if dst_kv_cache_layer.ndim >= 4 and dst_kv_cache_layer.shape[1] == 2:
         expected_shape = (token_count, 2, *tuple(dst_kv_cache_layer.shape[3:]))
@@ -2169,6 +2443,8 @@ def _probe_actions_from_handle(
             estimated_gpu_bytes=total_bytes,
             layout=layout,
             adapter_ids=tuple(getattr(handle, "adapter_ids", ())),
+            artifact_identity=getattr(handle, "artifact_identity", None),
+            payload_checksum=getattr(handle, "payload_checksum", ""),
         ),
         copies=tuple(
             EngineKVSegmentCopyAction(
@@ -2187,6 +2463,7 @@ def _probe_actions_from_handle(
                 first_block_index=segment.token_start // block_size,
                 last_block_index_exclusive=(segment.token_end + block_size - 1) // block_size,
                 content_hash=segment.content_hash,
+                token_contract=getattr(segment, "token_contract", None),
             )
             for index, segment in enumerate(segments)
         ),

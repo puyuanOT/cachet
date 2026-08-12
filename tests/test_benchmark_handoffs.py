@@ -2,7 +2,6 @@ import json
 
 import pytest
 
-import cachet.benchmark_handoffs as cachet_benchmark_handoffs
 import document_kv_cache.benchmark_handoffs as public_benchmark_handoffs
 from document_kv_cache.benchmark_handoffs import (
     BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE,
@@ -394,6 +393,7 @@ def test_build_manifest_from_jsonl_reads_handoff_records(tmp_path):
             "request_id": "cachet-bio-1",
             "handoff_json": str(first_handoff),
             "payload_uri": "disk:/tmp/cachet-bio-1.kv",
+                "cache_method": "vanilla_prefill",
         },
         {
             "dataset": "biography",
@@ -401,6 +401,7 @@ def test_build_manifest_from_jsonl_reads_handoff_records(tmp_path):
             "request_id": "cachet-bio-2",
             "handoff_json": str(second_handoff),
             "payload_uri": "disk:/tmp/cachet-bio-2.kv",
+                "cache_method": "vanilla_prefill",
         },
     ]
 
@@ -980,6 +981,7 @@ def test_bundle_main_writes_manifest_from_generator_factory(tmp_path, monkeypatc
             "1",
             "--align-bytes",
             "1",
+            "--allow-legacy-artifact",
         ]
     )
 
@@ -1025,6 +1027,7 @@ def test_bundle_main_can_write_sglang_hicache_page_keys(tmp_path, monkeypatch, c
             "8",
             "--align-bytes",
             "1",
+            "--allow-legacy-artifact",
         ]
     )
 
@@ -1058,6 +1061,7 @@ def test_bundle_main_defaults_to_builtin_model_profile_layout(tmp_path, monkeypa
             "profile_cli_generator:factory",
             "--align-bytes",
             "1",
+            "--allow-legacy-artifact",
         ]
     )
 
@@ -1110,6 +1114,7 @@ def test_bundle_main_threads_layer_major_payload_axis_order(tmp_path, monkeypatc
             "layer_major",
             "--align-bytes",
             "1",
+            "--allow-legacy-artifact",
         ]
     )
 

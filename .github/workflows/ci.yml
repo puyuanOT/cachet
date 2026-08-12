@@ -15,8 +15,12 @@ concurrency:
 
 jobs:
   test:
-    name: Test and build
+    name: Test and build (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -24,7 +28,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
 
       - name: Install Poetry
         run: python -m pip install poetry==2.4.1
@@ -43,6 +47,35 @@ jobs:
 
       - name: Install package with test extras
         run: poetry install -E test
+
+      - name: Install CPU PyTorch contract dependency
+        run: poetry run python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Lint method framework
+        run: >-
+          poetry run ruff check
+          src/document_kv_cache/artifact_identity.py
+          src/document_kv_cache/reuse_contract.py
+          src/document_kv_cache/methods.py
+          src/document_kv_cache/benchmark_metrics.py
+          src/document_kv_cache/benchmark_statistics.py
+          src/document_kv_cache/benchmark_gates.py
+          src/document_kv_cache/method_scaffold.py
+          src/document_kv_cache/method_conformance.py
+          src/document_kv_cache/reference_method.py
+
+      - name: Type-check method and benchmark contracts
+        run: >-
+          poetry run mypy
+          src/document_kv_cache/artifact_identity.py
+          src/document_kv_cache/reuse_contract.py
+          src/document_kv_cache/methods.py
+          src/document_kv_cache/benchmark_metrics.py
+          src/document_kv_cache/benchmark_statistics.py
+          src/document_kv_cache/benchmark_gates.py
+          src/document_kv_cache/method_scaffold.py
+          src/document_kv_cache/method_conformance.py
+          src/document_kv_cache/reference_method.py
 
       - name: Verify console script entry points
         run: |
@@ -154,3 +187,12 @@ jobs:
           assert importlib.util.find_spec(legacy_package) is None
           PY
           /tmp/cachet-wheel-smoke/bin/cachet-pr-evidence --help >/dev/null
+
+  gate:
+    name: Test and build
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every Python matrix job
+        run: test "${{ needs.test.result }}" = "success"
