@@ -1,6 +1,5 @@
 import json
 import os
-import pickle
 from pathlib import Path
 import subprocess
 import sys
@@ -27,7 +26,6 @@ from document_kv_cache.databricks_job import (
     write_databricks_run_submit_json,
 )
 from document_kv_cache.databricks_engine_probe_job import (
-    SGLANG_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
     VLLM_PROVIDER_BACKED_CONNECTOR_FACTORY_METADATA,
 )
 from document_kv_cache._hardware_targets import (
@@ -73,6 +71,9 @@ def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
     cluster = task["new_cluster"]
 
     assert payload["run_name"] == "document-kv-v1-benchmark"
+    assert payload["timeout_seconds"] == 14_400
+    assert task["timeout_seconds"] == 14_400
+    assert task["max_retries"] == 0
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
     assert cluster["data_security_mode"] == "SINGLE_USER"
@@ -95,6 +96,32 @@ def test_build_databricks_run_submit_payload_uses_single_node_g5_cluster():
         ],
     }
     assert "libraries" not in task
+
+
+@pytest.mark.parametrize("timeout_seconds", (0, 14_401, True, 1.5))
+def test_databricks_benchmark_job_rejects_unbounded_timeout(
+    timeout_seconds: object,
+) -> None:
+    with pytest.raises(ValueError, match="run_timeout_seconds"):
+        DatabricksBenchmarkJobConfig(
+            plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+            runner_python_file="dbfs:/benchmarks/run_plan.py",
+            single_user_name=SINGLE_USER_NAME,
+            run_timeout_seconds=timeout_seconds,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("max_retries", (-1, 1, True, 0.0))
+def test_databricks_benchmark_job_rejects_automatic_retries(
+    max_retries: object,
+) -> None:
+    with pytest.raises(ValueError, match="task_max_retries"):
+        DatabricksBenchmarkJobConfig(
+            plan_json_uri="dbfs:/benchmarks/v1-plan.json",
+            runner_python_file="dbfs:/benchmarks/run_plan.py",
+            single_user_name=SINGLE_USER_NAME,
+            task_max_retries=max_retries,  # type: ignore[arg-type]
+        )
 
 
 def test_build_single_node_g5_cluster_is_reusable_with_custom_purpose():

@@ -23,21 +23,41 @@ from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
     DatabricksSingleNodeGPUClusterConfig,
     _spark_env_vars_from_cli,
     _validated_spark_env_vars,
+    _validated_databricks_run_timeout_seconds,
+    _validated_databricks_task_max_retries,
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.vllm_smoke import (
     BENCHMARK_ARM_IDS,
     DEFAULT_LOCAL_ROOT,
+    HF_MODEL_ID,
     PREPARED_PREFIX_CACHE_SALT_MODE,
     SERVER_HOST,
     SERVER_PORT,
+    VLLM_REPRESENTATIVE_WORKLOAD_PROFILES,
+    VLLM_VERSION,
+    VLLMRepresentativeWorkloadProfile,
     _runtime_identity_from_json,
     parse_dataset_specs,
+    vllm_representative_workload_profile,
 )
 from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_VLLM_PACKAGE_PINS,
+    benchmark_json_mapping_to_record,
+    representative_canary_matrix,
+    require_pinned_revision,
+    resolved_layout_rope_provenance,
+    validated_representative_wheel_binding,
+    validated_benchmark_arm_specs,
+    validated_benchmark_manifest_provenance,
+)
+from document_kv_cache.model_profiles import layout_for_model
 
 
 DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME = "document-kv-vllm-smoke"
@@ -46,6 +66,8 @@ DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE = "document-kv-vllm-smoke"
 VLLM_SMOKE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import os
 import subprocess
 import sys
@@ -60,9 +82,19 @@ def _cluster_file_path(uri: str) -> str:
 def _install_package_wheel(argv: list[str]) -> list[str]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--package-wheel-uri")
+    parser.add_argument("--package-wheel-sha256")
     args, remaining = parser.parse_known_args(argv)
+    if args.package_wheel_sha256 and not args.package_wheel_uri:
+        raise ValueError("--package-wheel-sha256 requires --package-wheel-uri")
     if args.package_wheel_uri:
         package_wheel_path = _cluster_file_path(args.package_wheel_uri)
+        if args.package_wheel_sha256:
+            digest = hashlib.sha256()
+            with open(package_wheel_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if not hmac.compare_digest(digest.hexdigest(), args.package_wheel_sha256):
+                raise ValueError("Cachet package wheel SHA-256 does not match")
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", package_wheel_path]
         )
@@ -99,12 +131,15 @@ class DatabricksVLLMSmokeJobConfig:
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
     hardware_target: str | None = None
     node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
     wheel_uri: str | None = None
+    wheel_sha256: str | None = None
     model_id: str | None = None
     model_revision: str | None = None
     tokenizer_revision: str | None = None
@@ -127,6 +162,11 @@ class DatabricksVLLMSmokeJobConfig:
     request_parallelism: int = 1
     runtime_telemetry_interval_seconds: float = 1.0
     benchmark_arms: tuple[str, ...] = ()
+    benchmark_arm_specs: tuple[Mapping[str, Any], ...] = ()
+    benchmark_evidence_policy: str | None = None
+    representative_canary: bool = False
+    representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = None
+    benchmark_manifest_provenance: Mapping[str, Any] = field(default_factory=dict)
     benchmark_prewarm_cache_prefix: bool = False
     benchmark_cache_runtime_prompt: bool = False
     benchmark_force_max_tokens: bool = False
@@ -142,7 +182,7 @@ class DatabricksVLLMSmokeJobConfig:
     benchmark_handoff_limit: int | None = None
     benchmark_handoff_segment_per_document: bool = False
     benchmark_handoff_cache_method: str | None = None
-    benchmark_handoff_require_artifact_contract: bool = False
+    benchmark_handoff_require_artifact_contract: bool = True
     runtime_identity: RuntimeIdentity | None = None
     availability: str = "ON_DEMAND"
     zone_id: str = "auto"
@@ -160,13 +200,22 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
-        object.__setattr__(
-            self,
-            "hardware_target",
-            _resolve_hardware_target(self.hardware_target, self.node_type_id),
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        _validated_databricks_task_max_retries(self.task_max_retries)
+        resolved_hardware_target = _resolve_hardware_target(
+            self.hardware_target,
+            self.node_type_id,
         )
+        object.__setattr__(self, "hardware_target", resolved_hardware_target)
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
+        if self.wheel_sha256 is not None and (
+            len(self.wheel_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.wheel_sha256)
+        ):
+            raise ValueError("wheel_sha256 must be a lowercase SHA-256 digest")
+        if self.wheel_sha256 is not None and self.wheel_uri is None:
+            raise ValueError("wheel_sha256 requires wheel_uri")
         if self.model_id is not None and not self.model_id.strip():
             raise ValueError("model_id must be non-empty when provided")
         for field_name in ("model_revision", "tokenizer_revision"):
@@ -180,7 +229,7 @@ class DatabricksVLLMSmokeJobConfig:
         if self.kv_cache_dtype is not None and not self.kv_cache_dtype.strip():
             raise ValueError("kv_cache_dtype must be non-empty when provided")
         validate_v1_vllm_kv_cache_dtype_for_hardware_target(
-            hardware_target=self.hardware_target,
+            hardware_target=resolved_hardware_target,
             kv_cache_dtype=self.kv_cache_dtype,
         )
         if self.attention_backend is not None and not self.attention_backend.strip():
@@ -218,6 +267,109 @@ class DatabricksVLLMSmokeJobConfig:
         if self.runtime_telemetry_interval_seconds <= 0:
             raise ValueError("runtime_telemetry_interval_seconds must be positive")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
+        object.__setattr__(
+            self,
+            "benchmark_arm_specs",
+            validated_benchmark_arm_specs(self.benchmark_arm_specs),
+        )
+        if self.benchmark_arms and self.benchmark_arm_specs:
+            raise ValueError("benchmark_arms and benchmark_arm_specs are mutually exclusive")
+        if self.benchmark_evidence_policy not in {None, "smoke", "canary", "publication"}:
+            raise ValueError(
+                "benchmark_evidence_policy must be smoke, canary, publication, or None"
+            )
+        if type(self.representative_canary) is not bool:
+            raise TypeError("representative_canary must be a boolean")
+        representative_profile = (
+            None
+            if self.representative_workload_profile is None
+            else vllm_representative_workload_profile(
+                self.representative_workload_profile
+            )
+        )
+        if self.representative_canary != (representative_profile is not None):
+            raise ValueError(
+                "representative_canary and representative_workload_profile must "
+                "be provided together"
+            )
+        object.__setattr__(
+            self,
+            "representative_workload_profile",
+            representative_profile,
+        )
+        if (
+            self.representative_canary
+            and self.run_timeout_seconds != DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "representative_canary requires run and task timeout_seconds "
+                f"to be exactly {DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS}"
+            )
+        if self.is_representative_submission and (
+            len(self.benchmark_arm_specs) != 1
+            or not _is_fixed_representative_canary_arm(self.benchmark_arm_specs[0])
+        ):
+            raise ValueError(
+                "representative_canary requires exactly one fixed matrix arm per task"
+            )
+        provenance = validated_benchmark_manifest_provenance(
+            self.benchmark_manifest_provenance
+        )
+        if self.requires_pinned_revisions:
+            if (
+                self.benchmark_handoff_generator_factory is not None
+                and not self.benchmark_handoff_require_artifact_contract
+            ):
+                raise ValueError(
+                    "canary and publication handoff generation require the complete "
+                    "registered method artifact contract"
+                )
+            if self.model_revision is None and "model_revision" in provenance:
+                object.__setattr__(
+                    self,
+                    "model_revision",
+                    require_pinned_revision(
+                        provenance["model_revision"],
+                        "benchmark_manifest_provenance.model_revision",
+                    ),
+                )
+            if self.tokenizer_revision is None and "tokenizer_revision" in provenance:
+                object.__setattr__(
+                    self,
+                    "tokenizer_revision",
+                    require_pinned_revision(
+                        provenance["tokenizer_revision"],
+                        "benchmark_manifest_provenance.tokenizer_revision",
+                    ),
+                )
+            require_pinned_revision(self.model_revision, "model_revision")
+            require_pinned_revision(self.tokenizer_revision, "tokenizer_revision")
+        if self.is_representative_submission:
+            provenance = _representative_vllm_provenance(self, provenance)
+        if (
+            self.model_revision is not None
+            and "model_revision" in provenance
+            and provenance["model_revision"] != self.model_revision
+        ):
+            raise ValueError(
+                "benchmark_manifest_provenance.model_revision must match model_revision"
+            )
+        if (
+            self.tokenizer_revision is not None
+            and "tokenizer_revision" in provenance
+            and provenance["tokenizer_revision"] != self.tokenizer_revision
+        ):
+            raise ValueError(
+                "benchmark_manifest_provenance.tokenizer_revision must match tokenizer_revision"
+            )
+        object.__setattr__(self, "benchmark_manifest_provenance", provenance)
+        if (
+            "input_tokens_target" in provenance
+            and provenance.get("tokenizer_revision", self.tokenizer_revision) is None
+        ):
+            raise ValueError(
+                "benchmark input_tokens_target requires a pinned tokenizer_revision"
+            )
         if isinstance(self.payload_cache_max_bytes, bool) or not isinstance(self.payload_cache_max_bytes, int):
             raise TypeError("payload_cache_max_bytes must be a non-negative integer")
         if self.payload_cache_max_bytes < 0:
@@ -280,18 +432,46 @@ class DatabricksVLLMSmokeJobConfig:
                     "benchmark_handoff_cache_method requires "
                     "benchmark_handoff_generator_factory"
                 )
+        if (
+            self.benchmark_handoff_cache_method == "vanilla_prefill"
+            and not self.benchmark_handoff_segment_per_document
+        ):
+            raise ValueError(
+                "vanilla_prefill handoff generation requires one segment per document"
+            )
+        if (
+            self.benchmark_handoff_cache_method == "full_prefix_prefill"
+            and self.benchmark_handoff_segment_per_document
+        ):
+            raise ValueError(
+                "full_prefix_prefill handoff generation requires one full-prefix segment"
+            )
         if type(self.benchmark_handoff_require_artifact_contract) is not bool:
             raise TypeError(
                 "benchmark_handoff_require_artifact_contract must be a boolean"
             )
         if (
             self.benchmark_handoff_segment_per_document
-            or self.benchmark_handoff_require_artifact_contract
         ) and self.benchmark_handoff_generator_factory is None:
             raise ValueError(
                 "benchmark handoff options require "
                 "benchmark_handoff_generator_factory"
             )
+        if (
+            self.benchmark_handoff_generator_factory is not None
+            and not self.benchmark_handoff_require_artifact_contract
+            and self.benchmark_evidence_policy in {"canary", "publication"}
+        ):
+            raise ValueError(
+                "canary and publication handoff generation require the complete "
+                "registered method artifact contract"
+            )
+        if self.is_representative_submission:
+            validated_representative_wheel_binding(
+                self.wheel_uri,
+                self.wheel_sha256,
+            )
+            _validate_representative_vllm_workload(self)
         if self.runtime_identity is not None:
             if not isinstance(self.runtime_identity, RuntimeIdentity):
                 raise TypeError("runtime_identity must be a RuntimeIdentity or None")
@@ -319,8 +499,184 @@ class DatabricksVLLMSmokeJobConfig:
                     "runtime_identity does not match pinned vLLM configuration: "
                     + ", ".join(mismatches)
                 )
-        object.__setattr__(self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars))
+        spark_env_vars = dict(_validated_spark_env_vars(self.spark_env_vars))
+        if self.is_representative_submission:
+            _validate_representative_node_type_id(
+                self.node_type_id,
+                self.hardware_target,
+            )
+            if Path(self.local_root) != DEFAULT_LOCAL_ROOT:
+                raise ValueError("representative canary local_root must be /local_disk0")
+            if self.benchmark_handoff_output_dir is not None:
+                _require_local_disk0_path(
+                    self.benchmark_handoff_output_dir,
+                    "benchmark_handoff_output_dir",
+                )
+            existing_evict = spark_env_vars.get("DOCUMENT_KV_EVICT_PAGE_CACHE")
+            if existing_evict not in {None, "1"}:
+                raise ValueError(
+                    "DOCUMENT_KV_EVICT_PAGE_CACHE must be 1 for representative canaries"
+                )
+            spark_env_vars["DOCUMENT_KV_EVICT_PAGE_CACHE"] = "1"
+        object.__setattr__(self, "spark_env_vars", spark_env_vars)
         _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB(self)
+
+    @property
+    def is_representative_submission(self) -> bool:
+        return self.representative_canary
+
+    @property
+    def requires_pinned_revisions(self) -> bool:
+        return self.is_representative_submission or self.benchmark_evidence_policy in {
+            "canary",
+            "publication",
+        }
+
+
+def _is_fixed_representative_canary_arm(value: Mapping[str, Any]) -> bool:
+    record = benchmark_json_mapping_to_record(value)
+    return any(
+        record == benchmark_json_mapping_to_record(run.arm_spec)
+        for run in representative_canary_matrix().runs
+    )
+
+
+def _validate_representative_vllm_workload(
+    config: DatabricksVLLMSmokeJobConfig,
+) -> None:
+    profile = config.representative_workload_profile
+    if not isinstance(profile, VLLMRepresentativeWorkloadProfile):
+        raise ValueError(
+            "representative vLLM submission requires a typed workload profile"
+        )
+    mismatches: list[str] = []
+    if (
+        config.benchmark_manifest_provenance.get("input_tokens_target")
+        != profile.input_tokens_target
+    ):
+        mismatches.append("input_tokens_target")
+    if config.max_tokens != profile.max_output_tokens:
+        mismatches.append("max_tokens")
+    if config.max_model_len != profile.max_model_len:
+        mismatches.append("max_model_len")
+    if config.max_num_seqs != profile.max_num_seqs:
+        mismatches.append("max_num_seqs")
+    if config.gpu_memory_utilization != profile.gpu_memory_utilization:
+        mismatches.append("gpu_memory_utilization")
+    if config.model_dtype != profile.model_dtype:
+        mismatches.append("model_dtype")
+    if (config.kv_cache_dtype or config.model_dtype) != profile.runtime_kv_dtype:
+        mismatches.append("kv_cache_dtype")
+    if config.benchmark_repeats != profile.benchmark_repeats:
+        mismatches.append("benchmark_repeats")
+    if config.request_parallelism != profile.request_parallelism:
+        mismatches.append("request_parallelism")
+    if config.benchmark_force_max_tokens != profile.force_max_tokens:
+        mismatches.append("benchmark_force_max_tokens")
+    if (
+        config.benchmark_prefix_cache_salt_mode
+        != profile.prefix_cache_salt_mode
+    ):
+        mismatches.append("benchmark_prefix_cache_salt_mode")
+    if config.benchmark_prewarm_cache_prefix != profile.prewarm_cache_prefix:
+        mismatches.append("benchmark_prewarm_cache_prefix")
+    if config.benchmark_cache_runtime_prompt != profile.cache_runtime_prompt:
+        mismatches.append("benchmark_cache_runtime_prompt")
+    if config.payload_cache_max_bytes != profile.payload_cache_max_bytes:
+        mismatches.append("payload_cache_max_bytes")
+    if config.benchmark_evidence_policy != profile.benchmark_evidence_policy:
+        mismatches.append("benchmark_evidence_policy")
+    if not config.dataset_specs:
+        mismatches.append("dataset_specs")
+    else:
+        dataset_names = {
+            spec.split("=", 1)[0]
+            for spec in config.dataset_specs
+            if isinstance(spec, str) and "=" in spec
+        }
+        if dataset_names.isdisjoint(profile.multi_document_datasets):
+            mismatches.append("multi_document_dataset")
+    if mismatches:
+        raise ValueError(
+            f"representative workload profile {profile.profile_id!r} does not "
+            "match config: "
+            + ", ".join(mismatches)
+        )
+
+
+def _representative_vllm_provenance(
+    config: DatabricksVLLMSmokeJobConfig,
+    provenance: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    resolved_model_id = config.model_id or HF_MODEL_ID
+    if resolved_model_id != HF_MODEL_ID:
+        raise ValueError(
+            f"representative canary model_id must be the canonical {HF_MODEL_ID!r}"
+        )
+    runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
+    layout = layout_for_model(HF_MODEL_ID, dtype=runtime_kv_dtype)
+    expected: dict[str, Any] = {
+        "canonical_model_id": HF_MODEL_ID,
+        "model_revision": config.model_revision,
+        "tokenizer_id": HF_MODEL_ID,
+        "tokenizer_revision": config.tokenizer_revision,
+        "lora_id": layout.lora_id,
+        "engine_id": "vllm",
+        "engine_version": VLLM_VERSION,
+        "serving_platform": "vllm",
+        "model_dtype": config.model_dtype,
+        "model_quantization": config.model_quantization or "none",
+        "runtime_kv_dtype": runtime_kv_dtype,
+        "layout_version": layout.layout_version,
+        "payload_axis_order": getattr(
+            layout.payload_axis_order,
+            "value",
+            layout.payload_axis_order,
+        ),
+        "block_size": layout.block_size,
+        "key_position_encoding": getattr(
+            layout.key_position_encoding,
+            "value",
+            layout.key_position_encoding,
+        ),
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+        "package_revisions": {
+            package: version
+            for package, version in (
+                pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
+            )
+        },
+    }
+    resolved_rope = resolved_layout_rope_provenance(layout)
+    expected.update(resolved_rope)
+    record = dict(provenance)
+    conflicts = {
+        field_name
+        for field_name, expected_value in expected.items()
+        if field_name in record and record[field_name] != expected_value
+    }
+    if not resolved_rope:
+        conflicts.update(
+            field_name
+            for field_name in ("rope_theta", "rope_rotary_dim")
+            if field_name in record
+        )
+    if conflicts:
+        raise ValueError(
+            "representative benchmark provenance conflicts with the resolved runtime: "
+            + ", ".join(sorted(conflicts))
+        )
+    record.update(expected)
+    return validated_benchmark_manifest_provenance(record)
+
+
+def _require_local_disk0_path(value: str, field_name: str) -> None:
+    path = Path(value).resolve(strict=False)
+    try:
+        path.relative_to(DEFAULT_LOCAL_ROOT.resolve(strict=False))
+    except ValueError as exc:
+        raise ValueError(f"representative canary {field_name} must be under /local_disk0") from exc
 
 
 def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJobConfig) -> dict[str, Any]:
@@ -329,6 +685,8 @@ def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJo
         cluster["spark_env_vars"] = dict(config.spark_env_vars)
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": config.task_max_retries,
         "new_cluster": cluster,
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -337,8 +695,13 @@ def build_databricks_vllm_smoke_run_submit_payload(config: DatabricksVLLMSmokeJo
     }
     if config.wheel_uri is not None:
         task["spark_python_task"]["parameters"].extend(["--package-wheel-uri", config.wheel_uri])
+        if config.wheel_sha256 is not None:
+            task["spark_python_task"]["parameters"].extend(
+                ["--package-wheel-sha256", config.wheel_sha256]
+            )
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -373,6 +736,19 @@ def _cluster_config_from_vllm_smoke_job(config: DatabricksVLLMSmokeJobConfig) ->
 _DEFAULT_CLUSTER_CONFIG_FROM_VLLM_SMOKE_JOB = _cluster_config_from_vllm_smoke_job
 
 
+def _validate_representative_node_type_id(
+    node_type_id: str,
+    hardware_target: str | None,
+) -> None:
+    expected = databricks_node_type_for_hardware_target(hardware_target)
+    if node_type_id != expected:
+        raise ValueError(
+            "representative canary node_type_id must be the exact V1 node type "
+            f"{expected!r} for hardware target {hardware_target!r}, got "
+            f"{node_type_id!r}"
+        )
+
+
 def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> str:
     if hardware_target is not None:
         validate_v1_hardware_target(hardware_target)
@@ -382,7 +758,7 @@ def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> 
     lowered = node_type_id.lower()
     for target, prefixes in HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.items():
         if lowered.startswith(prefixes):
-            return target
+            return str(target)
     raise ValueError(f"Unable to derive V1 hardware target from node_type_id {node_type_id!r}")
 
 
@@ -439,23 +815,33 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         "--runtime-telemetry-interval-seconds",
         str(config.runtime_telemetry_interval_seconds),
     ]
-    if config.model_id:
-        parameters.extend(["--model-id", config.model_id])
+    resolved_model_id = (
+        config.model_id
+        if config.model_id is not None
+        else HF_MODEL_ID
+        if config.is_representative_submission
+        else None
+    )
+    if resolved_model_id:
+        parameters.extend(["--model-id", resolved_model_id])
     if config.model_revision:
         parameters.extend(["--model-revision", config.model_revision])
     if config.tokenizer_revision:
         parameters.extend(
             ["--tokenizer-revision", config.tokenizer_revision]
         )
-    if config.model_dtype != "bfloat16":
+    if config.model_dtype != "bfloat16" or config.is_representative_submission:
         parameters.extend(["--model-dtype", config.model_dtype])
     if config.model_quantization:
         parameters.extend(["--model-quantization", config.model_quantization])
-    if config.kv_cache_dtype:
-        parameters.extend(["--kv-cache-dtype", config.kv_cache_dtype])
+    resolved_kv_cache_dtype = config.kv_cache_dtype
+    if resolved_kv_cache_dtype is None and config.is_representative_submission:
+        resolved_kv_cache_dtype = config.model_dtype
+    if resolved_kv_cache_dtype:
+        parameters.extend(["--kv-cache-dtype", resolved_kv_cache_dtype])
     if config.attention_backend:
         parameters.extend(["--attention-backend", config.attention_backend])
-    if config.payload_cache_max_bytes:
+    if config.payload_cache_max_bytes or config.is_representative_submission:
         parameters.extend(["--payload-cache-max-bytes", str(config.payload_cache_max_bytes)])
     if config.runtime_identity is not None:
         parameters.extend(
@@ -470,13 +856,61 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         )
     for arm_id in config.benchmark_arms:
         parameters.extend(["--benchmark-arm", arm_id])
+    for arm_spec in config.benchmark_arm_specs:
+        parameters.extend(
+            [
+                "--benchmark-arm-spec-json",
+                json.dumps(
+                    benchmark_json_mapping_to_record(arm_spec),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ]
+        )
+    if config.benchmark_evidence_policy is not None:
+        parameters.extend(
+            ["--benchmark-evidence-policy", config.benchmark_evidence_policy]
+        )
+    if config.is_representative_submission:
+        parameters.append("--representative-canary")
+        if not isinstance(
+            config.representative_workload_profile,
+            VLLMRepresentativeWorkloadProfile,
+        ):
+            raise TypeError(
+                "representative submission must have a typed workload profile"
+            )
+        parameters.extend(
+            [
+                "--representative-workload-profile",
+                config.representative_workload_profile.profile_id,
+            ]
+        )
+    if config.benchmark_manifest_provenance:
+        parameters.extend(
+            [
+                "--benchmark-manifest-provenance-json",
+                json.dumps(
+                    benchmark_json_mapping_to_record(
+                        config.benchmark_manifest_provenance
+                    ),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ]
+        )
     if config.benchmark_prewarm_cache_prefix:
         parameters.append("--benchmark-prewarm-cache-prefix")
     if config.benchmark_cache_runtime_prompt:
         parameters.append("--benchmark-cache-runtime-prompt")
     if config.benchmark_force_max_tokens:
         parameters.append("--benchmark-force-max-tokens")
-    if config.benchmark_prewarm_cache_prefix or config.benchmark_prefix_cache_salt_mode != PREPARED_PREFIX_CACHE_SALT_MODE:
+    if (
+        config.is_representative_submission
+        or config.benchmark_prewarm_cache_prefix
+        or config.benchmark_prefix_cache_salt_mode
+        != PREPARED_PREFIX_CACHE_SALT_MODE
+    ):
         parameters.extend(["--benchmark-prefix-cache-salt-mode", config.benchmark_prefix_cache_salt_mode])
     for dataset_spec in config.dataset_specs:
         parameters.extend(["--dataset", dataset_spec])
@@ -508,11 +942,21 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
                     config.benchmark_handoff_cache_method,
                 ]
             )
-        if config.benchmark_handoff_require_artifact_contract:
+        if not config.benchmark_handoff_require_artifact_contract:
             parameters.append(
-                "--benchmark-handoff-require-artifact-contract"
+                "--benchmark-handoff-allow-legacy-artifact-contract"
             )
     return parameters
+
+
+def _json_object_from_cli(value: str, option_name: str) -> Mapping[str, Any]:
+    try:
+        record = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{option_name} must be valid JSON: {exc.msg}") from exc
+    if not isinstance(record, Mapping):
+        raise ValueError(f"{option_name} must contain a JSON object")
+    return record
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -524,6 +968,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY)
+    parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--task-max-retries",
+        type=int,
+        default=DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
+    )
     parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
@@ -537,6 +991,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--data-security-mode", default=DEFAULT_DATABRICKS_DATA_SECURITY_MODE)
     parser.add_argument("--single-user-name", help="Required when --data-security-mode SINGLE_USER.")
     parser.add_argument("--wheel-uri", help="Optional cluster-visible wheel URI to install before the task.")
+    parser.add_argument("--wheel-sha256")
     parser.add_argument("--model-id", help="HF model path/id passed to vLLM --model.")
     parser.add_argument("--model-revision")
     parser.add_argument("--tokenizer-revision")
@@ -585,6 +1040,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             "Benchmark only this arm. Repeat for multiple arms; omit to run "
             "baseline_prefill and document_kv_cache."
         ),
+    )
+    parser.add_argument(
+        "--benchmark-arm-spec-json",
+        action="append",
+        default=None,
+        help=(
+            "Validated arbitrary benchmark arm JSON. Repeat for N-way comparisons; "
+            "mutually exclusive with --benchmark-arm."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-evidence-policy",
+        choices=("smoke", "canary", "publication"),
+    )
+    parser.add_argument("--representative-canary", action="store_true")
+    parser.add_argument(
+        "--representative-workload-profile",
+        choices=tuple(
+            profile.profile_id
+            for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES
+        ),
+        help=(
+            "Registered exact representative workload profile. Must be supplied "
+            "together with --representative-canary."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-manifest-provenance-json",
+        help="Benchmark manifest provenance JSON forwarded unchanged to the smoke task.",
     )
     parser.add_argument(
         "--benchmark-cache-runtime-prompt",
@@ -675,8 +1159,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--benchmark-handoff-cache-method")
     parser.add_argument(
-        "--benchmark-handoff-require-artifact-contract",
+        "--benchmark-handoff-allow-legacy-artifact-contract",
         action="store_true",
+        help=(
+            "Legacy/debug opt-out for incomplete method artifacts; never use for "
+            "canary or publication evidence."
+        ),
     )
     parser.add_argument(
         "--spark-env-var",
@@ -698,12 +1186,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner_python_file=args.runner_python_file,
             run_name=args.run_name,
             task_key=args.task_key,
+            run_timeout_seconds=args.run_timeout_seconds,
+            task_max_retries=args.task_max_retries,
             node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
             hardware_target=args.hardware_target,
             spark_version=args.spark_version,
             data_security_mode=args.data_security_mode,
             single_user_name=args.single_user_name,
             wheel_uri=args.wheel_uri,
+            wheel_sha256=args.wheel_sha256,
             model_id=args.model_id,
             model_revision=args.model_revision,
             tokenizer_revision=args.tokenizer_revision,
@@ -726,6 +1217,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             request_parallelism=args.request_parallelism,
             runtime_telemetry_interval_seconds=args.runtime_telemetry_interval_seconds,
             benchmark_arms=tuple(args.benchmark_arm or ()),
+            benchmark_arm_specs=tuple(
+                _json_object_from_cli(value, "--benchmark-arm-spec-json")
+                for value in (args.benchmark_arm_spec_json or ())
+            ),
+            benchmark_evidence_policy=args.benchmark_evidence_policy,
+            representative_canary=args.representative_canary,
+            representative_workload_profile=args.representative_workload_profile,
+            benchmark_manifest_provenance=(
+                {}
+                if args.benchmark_manifest_provenance_json is None
+                else _json_object_from_cli(
+                    args.benchmark_manifest_provenance_json,
+                    "--benchmark-manifest-provenance-json",
+                )
+            ),
             benchmark_prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
             benchmark_cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
             benchmark_force_max_tokens=args.benchmark_force_max_tokens,
@@ -748,7 +1254,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.benchmark_handoff_cache_method
             ),
             benchmark_handoff_require_artifact_contract=(
-                args.benchmark_handoff_require_artifact_contract
+                not args.benchmark_handoff_allow_legacy_artifact_contract
             ),
             runtime_identity=(
                 None

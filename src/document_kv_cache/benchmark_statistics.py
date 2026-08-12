@@ -7,8 +7,9 @@ import math
 import random
 import statistics
 from collections import defaultdict
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from document_kv_cache.benchmarks import InferenceMeasurement
@@ -45,6 +46,7 @@ class ConfidenceInterval:
     confidence_level: float
     bootstrap_samples: int
     paired_samples: int
+    independent_examples: int | None = None
 
     def __post_init__(self) -> None:
         for field_name in ("estimate", "lower", "upper", "confidence_level"):
@@ -57,6 +59,11 @@ class ConfidenceInterval:
             raise ValueError("bootstrap_samples must be positive")
         if type(self.paired_samples) is not int or self.paired_samples <= 0:
             raise ValueError("paired_samples must be positive")
+        if self.independent_examples is not None and (
+            type(self.independent_examples) is not int
+            or self.independent_examples <= 0
+        ):
+            raise ValueError("independent_examples must be positive when provided")
         if self.lower > self.estimate or self.estimate > self.upper:
             raise ValueError("confidence interval must contain its estimate")
 
@@ -70,6 +77,7 @@ class PairedBenchmarkStatistics:
     variant_id: str
     artifact_id: str
     paired_samples: int
+    paired_examples: int
     missing_baseline_pairs: int
     missing_cache_pairs: int
     duplicate_pair_keys: tuple[str, ...]
@@ -77,6 +85,16 @@ class PairedBenchmarkStatistics:
     time_to_completion_speedup: ConfidenceInterval | None
     exact_match_delta: ConfidenceInterval | None
     answer_found_delta: ConfidenceInterval | None
+    quality_score_deltas: Mapping[str, ConfidenceInterval] = field(
+        default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "quality_score_deltas",
+            MappingProxyType(dict(self.quality_score_deltas)),
+        )
 
     @property
     def complete(self) -> bool:
@@ -87,8 +105,6 @@ class PairedBenchmarkStatistics:
             and not self.duplicate_pair_keys
             and self.ttft_speedup is not None
             and self.time_to_completion_speedup is not None
-            and self.exact_match_delta is not None
-            and self.answer_found_delta is not None
         )
 
 
@@ -167,7 +183,17 @@ def _paired_statistics_for_arm(
     baseline_keys = set(baseline)
     cache_keys = set(cache)
     common_keys = sorted(baseline_keys.intersection(cache_keys))
-    pairs = tuple((baseline[key], cache[key]) for key in common_keys)
+    keyed_pairs = tuple((key, (baseline[key], cache[key])) for key in common_keys)
+    pairs = tuple(pair for _, pair in keyed_pairs)
+    clusters_by_example: dict[str, list[tuple[InferenceMeasurement, InferenceMeasurement]]] = (
+        defaultdict(list)
+    )
+    for (example_id, _repeat_index), pair in keyed_pairs:
+        clusters_by_example[example_id].append(pair)
+    measurement_clusters = tuple(
+        tuple(clusters_by_example[example_id])
+        for example_id in sorted(clusters_by_example)
+    )
     cache_methods = {candidate.cache_method for _, candidate in pairs}
     artifact_ids = {candidate.artifact_id for _, candidate in pairs}
     variant_ids = {candidate.variant_id for _, candidate in pairs}
@@ -175,6 +201,26 @@ def _paired_statistics_for_arm(
     artifact_id = next(iter(artifact_ids)) if len(artifact_ids) == 1 else ""
     variant_id = next(iter(variant_ids)) if len(variant_ids) == 1 else ""
     duplicate_keys = tuple(sorted(baseline_duplicates.union(cache_duplicates)))
+    quality_metric_names = sorted(
+        {
+            metric_name
+            for baseline_measurement, cache_measurement in pairs
+            for metric_name in set(baseline_measurement.quality_scores).intersection(
+                cache_measurement.quality_scores
+            )
+        }
+    )
+    quality_score_deltas: dict[str, ConfidenceInterval] = {}
+    for metric_name in quality_metric_names:
+        interval = _quality_interval(
+            measurement_clusters,
+            quality=_quality_score_getter(metric_name),
+            confidence_level=confidence_level,
+            bootstrap_samples=bootstrap_samples,
+            seed=seed,
+        )
+        if interval is not None:
+            quality_score_deltas[metric_name] = interval
     return PairedBenchmarkStatistics(
         dataset=dataset,
         baseline_arm_id=baseline_arm_id,
@@ -183,41 +229,64 @@ def _paired_statistics_for_arm(
         variant_id=variant_id,
         artifact_id=artifact_id,
         paired_samples=len(pairs),
+        paired_examples=len(measurement_clusters),
         missing_baseline_pairs=len(cache_keys.difference(baseline_keys)),
         missing_cache_pairs=len(baseline_keys.difference(cache_keys)),
         duplicate_pair_keys=duplicate_keys,
-        ttft_speedup=_bootstrap_interval(
-            [(left.ttft_seconds, right.ttft_seconds) for left, right in pairs],
+        ttft_speedup=_clustered_bootstrap_interval(
+            tuple(
+                tuple(
+                    (left.ttft_seconds, right.ttft_seconds)
+                    for left, right in cluster
+                )
+                for cluster in measurement_clusters
+            ),
             _speedup_estimator,
             confidence_level=confidence_level,
             bootstrap_samples=bootstrap_samples,
             seed=seed,
         ),
-        time_to_completion_speedup=_bootstrap_interval(
-            [
-                (left.time_to_completion_seconds, right.time_to_completion_seconds)
-                for left, right in pairs
-            ],
+        time_to_completion_speedup=_clustered_bootstrap_interval(
+            tuple(
+                tuple(
+                    (
+                        left.time_to_completion_seconds,
+                        right.time_to_completion_seconds,
+                    )
+                    for left, right in cluster
+                )
+                for cluster in measurement_clusters
+            ),
             _speedup_estimator,
             confidence_level=confidence_level,
             bootstrap_samples=bootstrap_samples,
             seed=seed,
         ),
         exact_match_delta=_quality_interval(
-            pairs,
+            measurement_clusters,
             quality=lambda measurement: measurement.exact_match,
             confidence_level=confidence_level,
             bootstrap_samples=bootstrap_samples,
             seed=seed,
         ),
         answer_found_delta=_quality_interval(
-            pairs,
+            measurement_clusters,
             quality=lambda measurement: measurement.answer_found,
             confidence_level=confidence_level,
             bootstrap_samples=bootstrap_samples,
             seed=seed,
         ),
+        quality_score_deltas=quality_score_deltas,
     )
+
+
+def _quality_score_getter(
+    metric_name: str,
+) -> Callable[[InferenceMeasurement], float | None]:
+    def get_quality_score(measurement: InferenceMeasurement) -> float | None:
+        return measurement.quality_scores.get(metric_name)
+
+    return get_quality_score
 
 
 def _measurements_by_pair_key(
@@ -240,26 +309,78 @@ def _measurements_by_pair_key(
 
 
 def _quality_interval(
-    pairs: Sequence[tuple[InferenceMeasurement, InferenceMeasurement]],
+    clusters: Sequence[Sequence[tuple[InferenceMeasurement, InferenceMeasurement]]],
     *,
-    quality: Callable[[InferenceMeasurement], bool | None],
+    quality: Callable[[InferenceMeasurement], bool | float | None],
     confidence_level: float,
     bootstrap_samples: int,
     seed: int,
 ) -> ConfidenceInterval | None:
     quality_pairs: list[tuple[float, float]] = []
-    for baseline, cache in pairs:
-        baseline_value = quality(baseline)
-        cache_value = quality(cache)
-        if baseline_value is None or cache_value is None:
-            continue
-        quality_pairs.append((float(baseline_value), float(cache_value)))
-    return _bootstrap_interval(
-        quality_pairs,
+    for cluster in clusters:
+        baseline_values: list[float] = []
+        cache_values: list[float] = []
+        for baseline, cache in cluster:
+            baseline_value = quality(baseline)
+            cache_value = quality(cache)
+            if baseline_value is None or cache_value is None:
+                continue
+            baseline_values.append(float(baseline_value))
+            cache_values.append(float(cache_value))
+        if baseline_values and cache_values:
+            quality_pairs.append(
+                (statistics.fmean(baseline_values), statistics.fmean(cache_values))
+            )
+    return _clustered_bootstrap_interval(
+        tuple((pair,) for pair in quality_pairs),
         _delta_estimator,
         confidence_level=confidence_level,
         bootstrap_samples=bootstrap_samples,
         seed=seed,
+    )
+
+
+def _clustered_bootstrap_interval(
+    clusters: Sequence[Sequence[tuple[float, float]]],
+    estimator: Callable[[Sequence[tuple[float, float]]], float | None],
+    *,
+    confidence_level: float,
+    bootstrap_samples: int,
+    seed: int,
+) -> ConfidenceInterval | None:
+    nonempty = tuple(tuple(cluster) for cluster in clusters if cluster)
+    if not nonempty:
+        return None
+    pairs = tuple(pair for cluster in nonempty for pair in cluster)
+    estimate = estimator(pairs)
+    if estimate is None:
+        return None
+    generator = random.Random(seed)
+    estimates: list[float] = []
+    cluster_count = len(nonempty)
+    for _ in range(bootstrap_samples):
+        sampled = tuple(
+            pair
+            for _ in range(cluster_count)
+            for pair in nonempty[generator.randrange(cluster_count)]
+        )
+        value = estimator(sampled)
+        if value is not None:
+            estimates.append(value)
+    if not estimates:
+        return None
+    estimates.sort()
+    alpha = 1.0 - confidence_level
+    lower = min(estimate, _percentile(estimates, alpha / 2.0))
+    upper = max(estimate, _percentile(estimates, 1.0 - alpha / 2.0))
+    return ConfidenceInterval(
+        estimate=estimate,
+        lower=lower,
+        upper=upper,
+        confidence_level=confidence_level,
+        bootstrap_samples=bootstrap_samples,
+        paired_samples=len(pairs),
+        independent_examples=cluster_count,
     )
 
 
@@ -301,11 +422,11 @@ def _bootstrap_interval(
 
 
 def _speedup_estimator(pairs: Sequence[tuple[float, float]]) -> float | None:
-    baseline = statistics.fmean(left for left, _ in pairs)
-    candidate = statistics.fmean(right for _, right in pairs)
-    if baseline <= 0 or candidate <= 0:
+    if any(baseline <= 0 or candidate <= 0 for baseline, candidate in pairs):
         return None
-    return baseline / candidate
+    return statistics.median(
+        baseline / candidate for baseline, candidate in pairs
+    )
 
 
 def _delta_estimator(pairs: Sequence[tuple[float, float]]) -> float:
@@ -336,14 +457,23 @@ def _paired_row_to_record(row: PairedBenchmarkStatistics) -> dict[str, Any]:
         "variant_id": row.variant_id,
         "artifact_id": row.artifact_id,
         "paired_samples": row.paired_samples,
+        "paired_examples": row.paired_examples,
         "missing_baseline_pairs": row.missing_baseline_pairs,
         "missing_cache_pairs": row.missing_cache_pairs,
         "duplicate_pair_keys": list(row.duplicate_pair_keys),
         "complete": row.complete,
         "ttft_speedup": _interval_to_record(row.ttft_speedup),
         "time_to_completion_speedup": _interval_to_record(row.time_to_completion_speedup),
+        "paired_median_ttft_speedup": _interval_to_record(row.ttft_speedup),
+        "paired_median_time_to_completion_speedup": _interval_to_record(
+            row.time_to_completion_speedup
+        ),
         "exact_match_delta": _interval_to_record(row.exact_match_delta),
         "answer_found_delta": _interval_to_record(row.answer_found_delta),
+        "quality_score_deltas": {
+            metric_name: _interval_to_record(interval)
+            for metric_name, interval in row.quality_score_deltas.items()
+        },
     }
 
 
@@ -357,4 +487,6 @@ def _interval_to_record(interval: ConfidenceInterval | None) -> dict[str, Any] |
         "confidence_level": interval.confidence_level,
         "bootstrap_samples": interval.bootstrap_samples,
         "paired_samples": interval.paired_samples,
+        "independent_examples": interval.independent_examples,
+        "bootstrap_unit": "example" if interval.independent_examples is not None else "pair",
     }

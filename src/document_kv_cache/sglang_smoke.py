@@ -6,6 +6,7 @@ import argparse
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 import gc
+import hashlib
 import json
 import math
 import os
@@ -21,6 +22,7 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+from document_kv_cache.artifact_identity import UNRESOLVED_IDENTITY
 from document_kv_cache.benchmark_handoffs import (
     enrich_benchmark_jsonl_with_handoffs,
     generate_benchmark_handoff_bundles,
@@ -30,6 +32,16 @@ from document_kv_cache.benchmark_runner import (
     BenchmarkEngine,
     BenchmarkEngineRequest,
     load_v1_jsonl_suite,
+)
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_SGLANG_PACKAGE_PINS,
+    build_handoff_topology_attestation,
+    build_handoff_topology_attestation_record,
+    generator_token_counter,
+    merge_handoff_topology_attestations,
+    require_pinned_revision,
+    resolved_layout_rope_provenance,
+    validate_handoff_topology_attestation,
 )
 from document_kv_cache.benchmarks import (
     DEFAULT_HARDWARE_TARGET,
@@ -72,6 +84,7 @@ from document_kv_cache.live_server import (
     LiveServerCheckConfig,
     LiveServerCheckResult,
     _live_check_chat_messages,
+    _live_check_prompt_parts,
     _live_check_request_prompt_format,
     build_live_server_check_request,
     live_check_kv_transfer_params,
@@ -92,6 +105,12 @@ from document_kv_cache.serving_env import (
     SGLANG_DEPENDENCY_CONSTRAINTS,
     SGLANG_SERVING_ENVIRONMENT_PROFILE,
     SGLANG_VERSION,
+)
+from document_kv_cache.transformers_generator import (
+    CACHET_TRANSFORMERS_MODEL_ID_ENV,
+    CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
+    CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
+    CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
 )
 from document_kv_cache.workflow import (
     CacheBuildConfig,
@@ -230,6 +249,9 @@ __all__ = [
     "SGLANG_SAMPLING_BACKEND_CHOICES",
     "SGLANG_DETERMINISTIC_ATTENTION_BACKEND_CHOICES",
     "SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES",
+    "SGLangRepresentativeWorkloadProfile",
+    "SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES",
+    "sglang_representative_workload_profile",
     "LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX",
     "SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE",
     "SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE",
@@ -265,6 +287,181 @@ __all__ = [
     "write_json",
     "main",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class SGLangRepresentativeWorkloadProfile:
+    """One allowed, reproducible representative SGLang canary workload."""
+
+    profile_id: str
+    context_length: int
+    max_tokens: int
+    live_benchmark_repeats: int
+    attention_backend: str
+    sampling_backend: str
+    enable_deterministic_inference: bool
+    cache_prompt_text_mode: str
+    live_check_prompt_format: LiveCheckPromptFormat
+    live_check_request_mode: OpenAICompatibleRequestMode
+    live_check_temperature: float
+    flush_cache_before_cache_arm: bool
+    flush_cache_before_canary: bool
+    flush_cache_timeout_seconds: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile_id, str) or not self.profile_id:
+            raise ValueError("profile_id must be non-empty")
+        for field_name in (
+            "context_length",
+            "max_tokens",
+            "live_benchmark_repeats",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer")
+        if self.attention_backend not in SGLANG_ATTENTION_BACKEND_CHOICES:
+            raise ValueError("attention_backend must be a supported SGLang backend")
+        if self.sampling_backend not in SGLANG_SAMPLING_BACKEND_CHOICES:
+            raise ValueError("sampling_backend must be a supported SGLang backend")
+        if self.enable_deterministic_inference is not True:
+            raise ValueError(
+                "representative SGLang profiles require deterministic inference"
+            )
+        if self.cache_prompt_text_mode not in {"logical", "runtime"}:
+            raise ValueError("cache_prompt_text_mode must be 'logical' or 'runtime'")
+        if self.live_check_prompt_format not in {"plain", "qwen3_chat"}:
+            raise ValueError("live_check_prompt_format must be 'plain' or 'qwen3_chat'")
+        if self.live_check_request_mode not in {"completion", "chat"}:
+            raise ValueError("live_check_request_mode must be 'completion' or 'chat'")
+        if (
+            isinstance(self.live_check_temperature, bool)
+            or not isinstance(self.live_check_temperature, (int, float))
+            or not math.isfinite(self.live_check_temperature)
+            or self.live_check_temperature < 0
+        ):
+            raise ValueError(
+                "live_check_temperature must be a non-negative finite number"
+            )
+        if self.flush_cache_before_cache_arm is not True:
+            raise ValueError(
+                "representative SGLang profiles must flush before the cache arm"
+            )
+        if self.flush_cache_before_canary is not True:
+            raise ValueError(
+                "representative SGLang profiles must flush before the canary"
+            )
+        if (
+            isinstance(self.flush_cache_timeout_seconds, bool)
+            or not isinstance(self.flush_cache_timeout_seconds, (int, float))
+            or not math.isfinite(self.flush_cache_timeout_seconds)
+            or self.flush_cache_timeout_seconds <= 0
+        ):
+            raise ValueError(
+                "flush_cache_timeout_seconds must be a positive finite number"
+            )
+
+    def validate_runtime_values(
+        self,
+        *,
+        context_length: int,
+        max_tokens: int,
+        live_benchmark_repeats: int,
+        attention_backend: str | None,
+        sampling_backend: str | None,
+        enable_deterministic_inference: bool,
+        cache_prompt_text_mode: str,
+        live_check_prompt_format: str,
+        live_check_request_mode: str,
+        live_check_temperature: float,
+        flush_cache_before_cache_arm: bool,
+        flush_cache_before_canary: bool,
+        flush_cache_timeout_seconds: float,
+    ) -> None:
+        expected = {
+            "context_length": self.context_length,
+            "max_tokens": self.max_tokens,
+            "live_benchmark_repeats": self.live_benchmark_repeats,
+            "sglang_attention_backend": self.attention_backend,
+            "sglang_sampling_backend": self.sampling_backend,
+            "sglang_enable_deterministic_inference": (
+                self.enable_deterministic_inference
+            ),
+            "cache_prompt_text_mode": self.cache_prompt_text_mode,
+            "live_check_prompt_format": self.live_check_prompt_format,
+            "live_check_request_mode": self.live_check_request_mode,
+            "live_check_temperature": self.live_check_temperature,
+            "flush_cache_before_cache_arm": self.flush_cache_before_cache_arm,
+            "flush_cache_before_canary": self.flush_cache_before_canary,
+            "flush_cache_timeout_seconds": self.flush_cache_timeout_seconds,
+        }
+        actual = {
+            "context_length": context_length,
+            "max_tokens": max_tokens,
+            "live_benchmark_repeats": live_benchmark_repeats,
+            "sglang_attention_backend": attention_backend,
+            "sglang_sampling_backend": sampling_backend,
+            "sglang_enable_deterministic_inference": enable_deterministic_inference,
+            "cache_prompt_text_mode": cache_prompt_text_mode,
+            "live_check_prompt_format": live_check_prompt_format,
+            "live_check_request_mode": live_check_request_mode,
+            "live_check_temperature": live_check_temperature,
+            "flush_cache_before_cache_arm": flush_cache_before_cache_arm,
+            "flush_cache_before_canary": flush_cache_before_canary,
+            "flush_cache_timeout_seconds": flush_cache_timeout_seconds,
+        }
+        mismatches = [
+            f"{field_name}={actual[field_name]!r} (expected {expected_value!r})"
+            for field_name, expected_value in expected.items()
+            if actual[field_name] != expected_value
+        ]
+        if mismatches:
+            raise ValueError(
+                f"representative workload profile {self.profile_id!r} requires "
+                + ", ".join(mismatches)
+            )
+
+
+SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES = (
+    SGLangRepresentativeWorkloadProfile(
+        profile_id="sglang-4k-32-v1",
+        context_length=4_096,
+        max_tokens=32,
+        live_benchmark_repeats=2,
+        attention_backend="triton",
+        sampling_backend="pytorch",
+        enable_deterministic_inference=True,
+        cache_prompt_text_mode="logical",
+        live_check_prompt_format="qwen3_chat",
+        live_check_request_mode="chat",
+        live_check_temperature=0.0,
+        flush_cache_before_cache_arm=True,
+        flush_cache_before_canary=True,
+        flush_cache_timeout_seconds=30.0,
+    ),
+)
+
+
+def sglang_representative_workload_profile(
+    value: SGLangRepresentativeWorkloadProfile | str,
+) -> SGLangRepresentativeWorkloadProfile:
+    if isinstance(value, SGLangRepresentativeWorkloadProfile):
+        if value not in SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES:
+            raise ValueError(
+                "representative_workload_profile must be a registered profile"
+            )
+        return value
+    if not isinstance(value, str) or not value:
+        raise ValueError("representative_workload_profile must be a profile ID")
+    for profile in SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES:
+        if profile.profile_id == value:
+            return profile
+    supported = tuple(
+        profile.profile_id for profile in SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES
+    )
+    raise ValueError(
+        f"unknown representative_workload_profile {value!r}; expected one of "
+        f"{supported}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -371,6 +568,12 @@ class SGLangSmokeBenchmarkConfig:
 
     benchmark_id: str
     output_dir: Path
+    model_revision: str | None = None
+    tokenizer_revision: str | None = None
+    representative_canary: bool = False
+    representative_workload_profile: (
+        SGLangRepresentativeWorkloadProfile | str | None
+    ) = None
     max_tokens: int = 32
     timeout_seconds: float = 240.0
     import_probe_timeout_seconds: float = 180.0
@@ -433,6 +636,48 @@ class SGLangSmokeBenchmarkConfig:
             raise ValueError("benchmark_id must be non-empty")
         if self.output_dir is None:
             raise ValueError("output_dir must be provided")
+        for field_name in ("model_revision", "tokenizer_revision"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{field_name} must be non-empty when provided")
+        if (self.model_revision is None) != (self.tokenizer_revision is None):
+            raise ValueError(
+                "model_revision and tokenizer_revision must be provided together"
+            )
+        if (
+            self.model_revision is not None
+            and self.model_revision != self.tokenizer_revision
+        ):
+            raise ValueError(
+                "SGLang uses one --revision for both model and tokenizer; revisions must match"
+            )
+        if type(self.representative_canary) is not bool:
+            raise TypeError("representative_canary must be a boolean")
+        representative_profile = (
+            None
+            if self.representative_workload_profile is None
+            else sglang_representative_workload_profile(
+                self.representative_workload_profile
+            )
+        )
+        if self.representative_canary != (representative_profile is not None):
+            raise ValueError(
+                "representative_canary and representative_workload_profile must "
+                "be provided together"
+            )
+        object.__setattr__(
+            self,
+            "representative_workload_profile",
+            representative_profile,
+        )
+        if self.representative_canary:
+            require_pinned_revision(self.model_revision, "model_revision")
+            require_pinned_revision(self.tokenizer_revision, "tokenizer_revision")
+            if SGLANG_DEPENDENCY_CONSTRAINTS != REPRESENTATIVE_SGLANG_PACKAGE_PINS:
+                raise ValueError(
+                    "representative SGLang serving package pins do not match the "
+                    "approved workload manifest"
+                )
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
         if self.timeout_seconds <= 0:
@@ -541,6 +786,24 @@ class SGLangSmokeBenchmarkConfig:
         ):
             raise ValueError(
                 "live_benchmark_repeats must be a non-negative integer"
+            )
+        if representative_profile is not None:
+            representative_profile.validate_runtime_values(
+                context_length=self.context_length,
+                max_tokens=self.max_tokens,
+                live_benchmark_repeats=self.live_benchmark_repeats,
+                attention_backend=sglang_attention_backend,
+                sampling_backend=sglang_sampling_backend,
+                enable_deterministic_inference=(
+                    self.sglang_enable_deterministic_inference
+                ),
+                cache_prompt_text_mode=self.cache_prompt_text_mode,
+                live_check_prompt_format=self.live_check_prompt_format,
+                live_check_request_mode=self.live_check_request_mode,
+                live_check_temperature=self.live_check_temperature,
+                flush_cache_before_cache_arm=self.flush_cache_before_cache_arm,
+                flush_cache_before_canary=self.flush_cache_before_canary,
+                flush_cache_timeout_seconds=self.flush_cache_timeout_seconds,
             )
         if self.handoff_json and self.handoff_record is not None:
             raise ValueError(
@@ -679,6 +942,15 @@ class SGLangSmokeBenchmarkConfig:
     @property
     def local_dir(self) -> Path:
         return self.local_root / f"document-kv-sglang-smoke-{self.benchmark_id}"
+
+    @property
+    def representative_workload_profile_id(self) -> str | None:
+        profile = self.representative_workload_profile
+        if profile is None:
+            return None
+        if not isinstance(profile, SGLangRepresentativeWorkloadProfile):
+            raise AssertionError("representative workload profile was not normalized")
+        return profile.profile_id
 
     @property
     def hf_cache_dir(self) -> Path:
@@ -860,7 +1132,14 @@ def build_metadata(
         "benchmark_id": config.benchmark_id,
         "model_id": CACHET_MODEL_ID,
         "hf_model_id": HF_MODEL_ID,
+        "model_revision": config.model_revision,
+        "tokenizer_revision": config.tokenizer_revision,
         "served_model_name": SERVED_MODEL_NAME,
+        "representative_canary": config.representative_canary,
+        "representative_workload_profile": (
+            config.representative_workload_profile_id
+        ),
+        "benchmark_manifest_provenance": _resolved_sglang_provenance(config),
         "sglang_version_requested": SGLANG_VERSION,
         "server_bind_host": config.server_host,
         "server_client_host": config.client_host,
@@ -948,6 +1227,53 @@ def build_metadata(
     }
     metadata.update(_metadata_from_import_probe(import_probe_record))
     return metadata
+
+
+def _resolved_sglang_provenance(
+    config: SGLangSmokeBenchmarkConfig,
+) -> dict[str, Any]:
+    runtime_kv_dtype = (
+        config.prepared_handoff_generation.dtype
+        if config.prepared_handoff_generation is not None
+        else config.handoff_generation.dtype
+        if config.handoff_generation is not None
+        else "bfloat16"
+    )
+    block_size = config.hicache_page_size
+    layout = layout_for_model(
+        HF_MODEL_ID,
+        dtype=runtime_kv_dtype,
+        **({} if block_size is None else {"block_size": block_size}),
+    )
+    provenance = {
+        "canonical_model_id": HF_MODEL_ID,
+        "model_revision": config.model_revision or UNRESOLVED_IDENTITY,
+        "tokenizer_id": HF_MODEL_ID,
+        "tokenizer_revision": config.tokenizer_revision or UNRESOLVED_IDENTITY,
+        "lora_id": layout.lora_id,
+        "engine_id": "sglang",
+        "engine_version": SGLANG_VERSION,
+        "serving_platform": "sglang",
+        "model_dtype": "bfloat16",
+        "model_quantization": "none",
+        "runtime_kv_dtype": runtime_kv_dtype,
+        "layout_version": layout.layout_version,
+        "payload_axis_order": getattr(
+            layout.payload_axis_order,
+            "value",
+            layout.payload_axis_order,
+        ),
+        "block_size": layout.block_size,
+        "key_position_encoding": getattr(
+            layout.key_position_encoding,
+            "value",
+            layout.key_position_encoding,
+        ),
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+    }
+    provenance.update(resolved_layout_rope_provenance(layout))
+    return provenance
 
 
 def benchmark_dataset_paths(config: SGLangSmokeBenchmarkConfig) -> dict[str, Path]:
@@ -1061,6 +1387,7 @@ def prepared_sglang_benchmark_handoff_coverage_record(
         issues.append(
             "prepared benchmark rows reference unloadable SGLang handoffs or missing HiCache page keys"
         )
+    topology_attestation = _prepared_sglang_generation_topology_attestation(config)
     return {
         "ok": not missing and not invalid,
         "required": True,
@@ -1075,7 +1402,39 @@ def prepared_sglang_benchmark_handoff_coverage_record(
         "missing_kv_transfer_params": list(missing),
         "invalid_handoff_references": list(invalid),
         "issues": issues,
+        "handoff_topology_attestation": topology_attestation,
     }
+
+
+def _prepared_sglang_generation_topology_attestation(
+    config: SGLangSmokeBenchmarkConfig,
+) -> dict[str, Any] | None:
+    if config.prepared_handoff_generation is None:
+        return None
+    try:
+        generation_record = json.loads(
+            config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        if config.representative_canary:
+            raise ValueError(
+                "representative SGLang coverage requires its generation summary"
+            ) from exc
+        return None
+    topology = (
+        generation_record.get("handoff_topology_attestation")
+        if isinstance(generation_record, Mapping)
+        else None
+    )
+    if topology is None:
+        if config.representative_canary:
+            raise ValueError(
+                "representative SGLang generation summary is missing topology attestation"
+            )
+        return None
+    if not isinstance(topology, Mapping):
+        raise ValueError("handoff topology attestation must be an object")
+    return validate_handoff_topology_attestation(topology)
 
 
 def _prepared_sglang_handoff_reference_issue(
@@ -1340,6 +1699,20 @@ def _generate_prepared_sglang_benchmark_handoff_inputs_in_subprocess(
         "output_dir": str(config.output_dir),
         "local_root": str(config.local_root),
         "hardware_target": config.hardware_target,
+        "model_revision": config.model_revision,
+        "tokenizer_revision": config.tokenizer_revision,
+        "representative_canary": config.representative_canary,
+        "representative_workload_profile": (
+            config.representative_workload_profile_id
+        ),
+        "max_tokens": config.max_tokens,
+        "context_length": config.context_length,
+        "sglang_attention_backend": config.sglang_attention_backend,
+        "sglang_sampling_backend": config.sglang_sampling_backend,
+        "sglang_enable_deterministic_inference": (
+            config.sglang_enable_deterministic_inference
+        ),
+        "live_benchmark_repeats": config.live_benchmark_repeats,
         "dataset_paths": {
             dataset: str(path) for dataset, path in dataset_paths.items()
         },
@@ -1381,8 +1754,19 @@ config = SGLangSmokeBenchmarkConfig(
     output_dir=Path(payload["output_dir"]),
     local_root=Path(payload["local_root"]),
     hardware_target=payload["hardware_target"],
+    model_revision=payload.get("model_revision"),
+    tokenizer_revision=payload.get("tokenizer_revision"),
+    representative_canary=bool(payload.get("representative_canary", False)),
+    representative_workload_profile=payload.get("representative_workload_profile"),
+    max_tokens=int(payload.get("max_tokens", 32)),
+    context_length=int(payload.get("context_length", 4096)),
+    sglang_attention_backend=payload.get("sglang_attention_backend"),
+    sglang_sampling_backend=payload.get("sglang_sampling_backend"),
+    sglang_enable_deterministic_inference=bool(
+        payload.get("sglang_enable_deterministic_inference", False)
+    ),
     dataset_specs=_dataset_specs_from_paths(dataset_paths),
-    live_benchmark_repeats=1,
+    live_benchmark_repeats=int(payload.get("live_benchmark_repeats", 1)),
     prepared_handoff_generation=generation,
     hicache_page_size=generation.page_size,
 )
@@ -1486,13 +1870,68 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
     generation: SGLangPreparedHandoffGenerationConfig,
 ) -> tuple[dict[str, Path], dict[str, object]]:
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
+    generator_config = getattr(generator, "config", None)
+    model_id = (
+        getattr(generator, "model_id", None)
+        or getattr(generator_config, "model_id", None)
+        or HF_MODEL_ID
+    )
+    tokenizer_id = (
+        getattr(generator, "tokenizer_id", None)
+        or getattr(generator_config, "resolved_tokenizer_id", None)
+        or model_id
+    )
+    model_revision = (
+        getattr(generator, "model_revision", None)
+        or getattr(generator_config, "model_revision", None)
+        or UNRESOLVED_IDENTITY
+    )
+    tokenizer_revision = (
+        getattr(generator, "tokenizer_revision", None)
+        or getattr(generator_config, "tokenizer_revision", None)
+        or UNRESOLVED_IDENTITY
+    )
+    generator_family = getattr(generator, "generator_family", "transformers")
+    generator_version = getattr(
+        generator,
+        "generator_version",
+        UNRESOLVED_IDENTITY,
+    )
+    if config.representative_canary:
+        model_revision = require_pinned_revision(
+            model_revision,
+            "handoff generator model_revision",
+        )
+        tokenizer_revision = require_pinned_revision(
+            tokenizer_revision,
+            "handoff generator tokenizer_revision",
+        )
+        require_pinned_revision(generator_version, "handoff generator generator_version")
+        if (
+            model_id != HF_MODEL_ID
+            or tokenizer_id != HF_MODEL_ID
+            or model_revision != config.model_revision
+            or tokenizer_revision != config.tokenizer_revision
+        ):
+            raise ValueError(
+                "handoff generator identity differs from the SGLang serving identity"
+            )
     layout = layout_for_model(
         CACHET_MODEL_ID,
         dtype=generation.dtype,
         block_size=generation.page_size,
     )
+    layout = replace(layout, model_id=model_id)
+    layout.validate()
     generated_paths: dict[str, Path] = {}
     dataset_records: dict[str, dict[str, object]] = {}
+    topology_attestations: list[dict[str, Any]] = []
+    try:
+        topology_token_counter = generator_token_counter(generator)
+    except TypeError:
+        if config.representative_canary:
+            raise
+        topology_token_counter = None
     for dataset in SUPPORTED_V1_DATASETS:
         input_jsonl = Path(dataset_paths[dataset])
         dataset_output_dir = generation.output_dir / dataset
@@ -1508,6 +1947,12 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
             manifest_json=manifest_json,
             align_bytes=generation.align_bytes,
             sglang_hicache_page_size=generation.page_size,
+            model_id=model_id,
+            model_revision=model_revision,
+            tokenizer_id=tokenizer_id,
+            tokenizer_revision=tokenizer_revision,
+            generator_family=generator_family,
+            generator_version=generator_version,
         )
         enriched_rows = enrich_benchmark_jsonl_with_handoffs(
             input_jsonl,
@@ -1516,6 +1961,17 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
             dataset=dataset,
             overwrite=True,
         )
+        topology_attestation = (
+            None
+            if topology_token_counter is None
+            else build_handoff_topology_attestation(
+                input_jsonl,
+                result.manifest,
+                token_counter=topology_token_counter,
+            )
+        )
+        if topology_attestation is not None:
+            topology_attestations.append(topology_attestation)
         generated_paths[dataset] = output_jsonl
         dataset_records[dataset] = {
             "input_jsonl": str(input_jsonl),
@@ -1526,6 +1982,7 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
             "enriched_rows": enriched_rows,
             "cache_refs": len(result.cache_refs),
             "shard_uri": result.shard_uri,
+            "handoff_topology_attestation": topology_attestation,
         }
 
     record = {
@@ -1538,6 +1995,17 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
         "dtype": generation.dtype,
         "align_bytes": generation.align_bytes,
         "sglang_hicache_page_size": generation.page_size,
+        "artifact_model_id": model_id,
+        "artifact_model_revision": model_revision,
+        "artifact_tokenizer_id": tokenizer_id,
+        "artifact_tokenizer_revision": tokenizer_revision,
+        "generator_family": generator_family,
+        "generator_version": generator_version,
+        "handoff_topology_attestation": (
+            merge_handoff_topology_attestations(topology_attestations)
+            if topology_attestations
+            else None
+        ),
         "datasets": dataset_records,
     }
     return generated_paths, record
@@ -1574,6 +2042,20 @@ def _generate_live_handoff_inputs_in_subprocess(
         "output_dir": str(config.output_dir),
         "local_root": str(config.local_root),
         "hardware_target": config.hardware_target,
+        "model_revision": config.model_revision,
+        "tokenizer_revision": config.tokenizer_revision,
+        "representative_canary": config.representative_canary,
+        "representative_workload_profile": (
+            config.representative_workload_profile_id
+        ),
+        "max_tokens": config.max_tokens,
+        "context_length": config.context_length,
+        "sglang_attention_backend": config.sglang_attention_backend,
+        "sglang_sampling_backend": config.sglang_sampling_backend,
+        "sglang_enable_deterministic_inference": (
+            config.sglang_enable_deterministic_inference
+        ),
+        "live_benchmark_repeats": config.live_benchmark_repeats,
         "live_check_prompt_format": config.live_check_prompt_format,
         "live_check_request_mode": config.live_check_request_mode,
         "live_check_temperature": config.live_check_temperature,
@@ -1615,6 +2097,18 @@ config = SGLangSmokeBenchmarkConfig(
     output_dir=Path(payload["output_dir"]),
     local_root=Path(payload["local_root"]),
     hardware_target=payload["hardware_target"],
+    model_revision=payload.get("model_revision"),
+    tokenizer_revision=payload.get("tokenizer_revision"),
+    representative_canary=bool(payload.get("representative_canary", False)),
+    representative_workload_profile=payload.get("representative_workload_profile"),
+    max_tokens=int(payload.get("max_tokens", 32)),
+    context_length=int(payload.get("context_length", 4096)),
+    sglang_attention_backend=payload.get("sglang_attention_backend"),
+    sglang_sampling_backend=payload.get("sglang_sampling_backend"),
+    sglang_enable_deterministic_inference=bool(
+        payload.get("sglang_enable_deterministic_inference", False)
+    ),
+    live_benchmark_repeats=int(payload.get("live_benchmark_repeats", 0)),
     live_check_prompt_format=payload.get("live_check_prompt_format", DEFAULT_SGLANG_LIVE_CHECK_PROMPT_FORMAT),
     live_check_request_mode=payload.get("live_check_request_mode", DEFAULT_SGLANG_LIVE_CHECK_REQUEST_MODE),
     live_check_temperature=float(payload.get("live_check_temperature", DEFAULT_SGLANG_LIVE_CHECK_TEMPERATURE)),
@@ -1681,11 +2175,56 @@ def _generate_live_handoff_inputs(
 ) -> dict[str, object]:
     generation.output_dir.mkdir(parents=True, exist_ok=True)
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
+    generator_config = getattr(generator, "config", None)
+    model_id = (
+        getattr(generator, "model_id", None)
+        or getattr(generator_config, "model_id", None)
+        or HF_MODEL_ID
+    )
+    tokenizer_id = (
+        getattr(generator, "tokenizer_id", None)
+        or getattr(generator_config, "resolved_tokenizer_id", None)
+        or model_id
+    )
+    model_revision = (
+        getattr(generator, "model_revision", None)
+        or getattr(generator_config, "model_revision", None)
+        or UNRESOLVED_IDENTITY
+    )
+    tokenizer_revision = (
+        getattr(generator, "tokenizer_revision", None)
+        or getattr(generator_config, "tokenizer_revision", None)
+        or UNRESOLVED_IDENTITY
+    )
+    generator_family = getattr(generator, "generator_family", "transformers")
+    generator_version = getattr(
+        generator,
+        "generator_version",
+        UNRESOLVED_IDENTITY,
+    )
+    if config.representative_canary:
+        require_pinned_revision(model_revision, "handoff generator model_revision")
+        require_pinned_revision(
+            tokenizer_revision,
+            "handoff generator tokenizer_revision",
+        )
+        require_pinned_revision(generator_version, "handoff generator generator_version")
+        if (
+            model_id != HF_MODEL_ID
+            or tokenizer_id != HF_MODEL_ID
+            or model_revision != config.model_revision
+            or tokenizer_revision != config.tokenizer_revision
+        ):
+            raise ValueError(
+                "handoff generator identity differs from the SGLang serving identity"
+            )
     layout = layout_for_model(
         CACHET_MODEL_ID,
         dtype=generation.dtype,
         block_size=generation.page_size,
     )
+    layout = replace(layout, model_id=model_id)
+    layout.validate()
     live_request = build_live_server_check_request(
         model_id=CACHET_MODEL_ID,
         hardware_target=config.hardware_target,
@@ -1740,7 +2279,7 @@ def _generate_live_handoff_inputs(
     request_id = f"{LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX}-{config.benchmark_id}"
     document_request = benchmark_cache_request(
         live_request.example,
-        model_id=CACHET_MODEL_ID,
+        model_id=model_id,
         request_id=request_id,
         prefix=LIVE_HANDOFF_CACHE_ARTIFACT_PREFIX,
     )
@@ -1751,6 +2290,12 @@ def _generate_live_handoff_inputs(
         dtype=layout.dtype,
         layout_version=layout.layout_version,
         storage_layout=layout.storage_layout,
+        model_revision=model_revision,
+        tokenizer_id=tokenizer_id,
+        tokenizer_revision=tokenizer_revision,
+        generator_family=generator_family,
+        generator_version=generator_version,
+        runtime_kv_dtype=layout.dtype,
     )
     workflow = DocumentKVWorkflow.with_storage(manifest=InMemoryManifestStore())
     source_shard_uri = f"disk:{generation.output_dir / 'sglang-live-source.kvpack'}"
@@ -1780,6 +2325,41 @@ def _generate_live_handoff_inputs(
         payload_uri=payload_uri,
         require_external_payload_uri=True,
     )
+    identity = ready.handle.artifact_identity
+    if identity is None:
+        raise RuntimeError("generated SGLang handoff is missing ArtifactIdentity")
+    topology_attestation = None
+    if config.representative_canary:
+        logical_prompt = live_request.logical_prompt_text
+        topology_attestation = build_handoff_topology_attestation_record(
+            (
+                {
+                    "example_key_sha256": hashlib.sha256(
+                        json.dumps(
+                            {
+                                "dataset": live_request.example.dataset,
+                                "example_id": live_request.example.example_id,
+                            },
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                            sort_keys=True,
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    "method_id": identity.method_id,
+                    "method_version": identity.method_version,
+                    "method_config_digest": identity.method_config_digest,
+                    "artifact_id": identity.artifact_id,
+                    "document_count": len(live_request.example.documents),
+                    "segment_count": len(ready.handle.segments),
+                    "logical_token_count": generator_token_counter(generator)(
+                        logical_prompt
+                    ),
+                    "logical_prompt_sha256": hashlib.sha256(
+                        logical_prompt.encode("utf-8")
+                    ).hexdigest(),
+                },
+            )
+        )
     return {
         "ok": True,
         "backend": ServingBackend.SGLANG.value,
@@ -1815,6 +2395,13 @@ def _generate_live_handoff_inputs(
         "output_dir": str(generation.output_dir),
         "dtype": generation.dtype,
         "align_bytes": generation.align_bytes,
+        "artifact_model_id": model_id,
+        "artifact_model_revision": model_revision,
+        "artifact_tokenizer_id": tokenizer_id,
+        "artifact_tokenizer_revision": tokenizer_revision,
+        "generator_family": generator_family,
+        "generator_version": generator_version,
+        "handoff_topology_attestation": topology_attestation,
     }
 
 
@@ -3363,6 +3950,8 @@ def build_sglang_server_args(
         str(config.mem_fraction_static),
         "--trust-remote-code",
     ]
+    if config.model_revision is not None:
+        args.extend(["--revision", config.model_revision])
     if config.sglang_attention_backend is not None:
         args.extend(["--attention-backend", config.sglang_attention_backend])
     if config.sglang_sampling_backend is not None:
@@ -3618,7 +4207,33 @@ def server_env(config: SGLangSmokeBenchmarkConfig) -> dict[str, str]:
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     env["HF_HOME"] = str(config.hf_cache_dir)
+    if config.representative_canary:
+        _set_or_validate_env(env, "DOCUMENT_KV_EVICT_PAGE_CACHE", "1")
+    if config.handoff_generation is not None or config.prepared_handoff_generation is not None:
+        _set_or_validate_env(env, CACHET_TRANSFORMERS_MODEL_ID_ENV, HF_MODEL_ID)
+        _set_or_validate_env(env, CACHET_TRANSFORMERS_TOKENIZER_ID_ENV, HF_MODEL_ID)
+        if config.model_revision is not None:
+            _set_or_validate_env(
+                env,
+                CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
+                config.model_revision,
+            )
+        if config.tokenizer_revision is not None:
+            _set_or_validate_env(
+                env,
+                CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
+                config.tokenizer_revision,
+            )
     return env
+
+
+def _set_or_validate_env(env: dict[str, str], name: str, value: str) -> None:
+    existing = env.get(name)
+    if existing is not None and existing != value:
+        raise ValueError(
+            f"{name}={existing!r} conflicts with the pinned value {value!r}"
+        )
+    env[name] = value
 
 
 def terminate_process(process: subprocess.Popen) -> None:
@@ -3678,6 +4293,17 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     )
     parser.add_argument("--benchmark-id", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--model-revision")
+    parser.add_argument("--tokenizer-revision")
+    parser.add_argument("--representative-canary", action="store_true")
+    parser.add_argument(
+        "--representative-workload-profile",
+        choices=tuple(
+            profile.profile_id
+            for profile in SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES
+        ),
+    )
+    parser.add_argument("--representative-package-pin", action="append")
     parser.add_argument("--max-tokens", type=int, default=32)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
     parser.add_argument("--import-probe-timeout-seconds", type=float, default=180.0)
@@ -3814,6 +4440,16 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     )
     parser.add_argument("--hicache-write-policy")
     args = parser.parse_args(argv)
+    representative_package_pins = tuple(args.representative_package_pin or ())
+    if args.representative_canary:
+        if representative_package_pins != REPRESENTATIVE_SGLANG_PACKAGE_PINS:
+            raise ValueError(
+                "representative SGLang canary requires the exact serving package pins"
+            )
+    elif representative_package_pins:
+        raise ValueError(
+            "--representative-package-pin requires --representative-canary"
+        )
 
     output_dir = Path(args.output_dir)
     handoff_generation = _live_handoff_generation_from_args(args, output_dir)
@@ -3826,6 +4462,10 @@ def parse_args(argv: list[str] | None = None) -> SGLangSmokeBenchmarkConfig:
     return SGLangSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
         output_dir=output_dir,
+        model_revision=args.model_revision,
+        tokenizer_revision=args.tokenizer_revision,
+        representative_canary=args.representative_canary,
+        representative_workload_profile=args.representative_workload_profile,
         max_tokens=args.max_tokens,
         timeout_seconds=args.timeout_seconds,
         import_probe_timeout_seconds=args.import_probe_timeout_seconds,
@@ -3968,6 +4608,10 @@ def _live_handoff_generation_from_args(
         output_dir=(
             Path(args.live_handoff_output_dir)
             if args.live_handoff_output_dir
+            else Path(args.local_root)
+            / f"document-kv-sglang-smoke-{args.benchmark_id}"
+            / "live-handoff"
+            if args.representative_canary
             else output_dir / "live-handoff"
         ),
         generator_factory=args.live_handoff_generator_factory,
@@ -3994,7 +4638,11 @@ def _prepared_handoff_generation_from_args(
             )
         return None
     output = args.benchmark_handoff_output_dir or str(
-        output_dir / "generated-handoffs"
+        Path(args.local_root)
+        / f"document-kv-sglang-smoke-{args.benchmark_id}"
+        / "generated-handoffs"
+        if args.representative_canary
+        else output_dir / "generated-handoffs"
     )
     return SGLangPreparedHandoffGenerationConfig(
         output_dir=Path(_cluster_file_path(output)),

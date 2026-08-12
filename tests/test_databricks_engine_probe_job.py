@@ -1,13 +1,11 @@
 import json
 import os
-import pickle
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
 
-import document_kv_cache.databricks_engine_probe_job as public_engine_probe_job
 import document_kv_cache._databricks_engine_probe_runner as engine_probe_runner
 from document_kv_cache.databricks_engine_probe_job import (
     DEFAULT_DATABRICKS_ENGINE_PROBE_BACKEND_CONFIG_KEY,
@@ -131,7 +129,10 @@ def test_build_databricks_engine_probe_payload_uses_single_node_g5_cluster():
     cluster = task["new_cluster"]
 
     assert payload["run_name"] == DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
+    assert payload["timeout_seconds"] == 14400
     assert task["task_key"] == DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY
+    assert task["timeout_seconds"] == 14400
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
@@ -635,6 +636,7 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
     payload = build_databricks_engine_probe_matrix_run_submit_payload(config)
 
     assert payload["run_name"] == DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME
+    assert payload["timeout_seconds"] == 14400
     assert [task["task_key"] for task in payload["tasks"]] == [
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm",
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang",
@@ -642,6 +644,8 @@ def test_build_databricks_engine_probe_matrix_release_safe_payload_runs_required
     for task, backend in zip(payload["tasks"], ("vllm", "sglang"), strict=True):
         cluster = task["new_cluster"]
         parameters = task["spark_python_task"]["parameters"]
+        assert task["timeout_seconds"] == 14400
+        assert task["max_retries"] == 0
         assert "libraries" not in task
         assert cluster["node_type_id"].startswith(("g6.",))
         assert cluster["driver_node_type_id"] == cluster["node_type_id"]
@@ -712,6 +716,44 @@ def test_databricks_engine_probe_matrix_config_preserves_existing_positional_arg
     assert config.custom_tags == {"team": "document-kv"}
     assert config.extra_wheel_uris == ()
     assert config.serial_tasks is False
+    assert config.run_timeout_seconds == 14400
+    assert config.task_max_retries == 0
+
+
+@pytest.mark.parametrize(
+    ("config_type", "overrides", "message"),
+    (
+        ("single", {"run_timeout_seconds": 0}, "run_timeout_seconds"),
+        ("single", {"run_timeout_seconds": 14401}, "run_timeout_seconds"),
+        ("single", {"task_max_retries": 1}, "task_max_retries"),
+        ("matrix", {"run_timeout_seconds": 0}, "run_timeout_seconds"),
+        ("matrix", {"run_timeout_seconds": 14401}, "run_timeout_seconds"),
+        ("matrix", {"task_max_retries": 1}, "task_max_retries"),
+    ),
+)
+def test_engine_probe_job_configs_reject_unbounded_execution(
+    config_type,
+    overrides,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        if config_type == "single":
+            DatabricksEngineProbeJobConfig(
+                handoff_json="/Volumes/catalog/schema/volume/probes/vllm-handoff.json",
+                probe_factory="vllm_probe:build_probe",
+                output_json="/Volumes/catalog/schema/volume/probes/vllm-probe.json",
+                runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+                expected_backend="vllm",
+                single_user_name=SINGLE_USER_NAME,
+                **overrides,
+            )
+        else:
+            DatabricksEngineProbeMatrixJobConfig(
+                probe_targets=(_target("vllm"),),
+                runner_python_file="dbfs:/benchmarks/run_engine_probe.py",
+                single_user_name=SINGLE_USER_NAME,
+                **overrides,
+            )
 
 
 def test_build_databricks_engine_probe_matrix_payload_installs_extra_wheels_for_each_task():
@@ -2475,6 +2517,10 @@ def test_main_honors_release_safe_engine_probe_targets_envelope_without_cli_flag
             "dbfs:/benchmarks/run_engine_probe.py",
             "--single-user-name",
             SINGLE_USER_NAME,
+            "--run-timeout-seconds",
+            "3600",
+            "--task-max-retries",
+            "0",
             "--output-json",
             str(payload_path),
         ]
@@ -2482,6 +2528,9 @@ def test_main_honors_release_safe_engine_probe_targets_envelope_without_cli_flag
 
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     assert exit_code == 0
+    assert payload["timeout_seconds"] == 3600
+    assert all(task["timeout_seconds"] == 3600 for task in payload["tasks"])
+    assert all(task["max_retries"] == 0 for task in payload["tasks"])
     assert [task["task_key"] for task in payload["tasks"]] == [
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_vllm",
         f"{DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY}_sglang",
@@ -2883,6 +2932,10 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
             "vllm",
             "--single-user-name",
             SINGLE_USER_NAME,
+            "--run-timeout-seconds",
+            "3600",
+            "--task-max-retries",
+            "0",
             "--wheel-uri",
             WHEEL_URI,
             "--extra-wheel-uri",
@@ -2897,6 +2950,9 @@ def test_main_writes_engine_probe_payload_and_runner_script(tmp_path):
     assert exit_code == 0
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     task = payload["tasks"][0]
+    assert payload["timeout_seconds"] == 3600
+    assert task["timeout_seconds"] == 3600
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert "--actions-output-json" in task["spark_python_task"]["parameters"]
     assert task["spark_python_task"]["parameters"][-4:] == [

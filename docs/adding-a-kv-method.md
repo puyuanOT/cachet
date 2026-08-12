@@ -81,6 +81,58 @@ generation produces these contracts, and an established serving-engine
 connector consumes the artifact. Engine-native methods instead declare
 `execution_kind="engine_native"` and must not declare a generator factory.
 
+## Declare The Physical Handoff Topology
+
+Physical segmentation is method semantics, not a benchmark-wrapper toggle.
+Declare `MethodSpec.handoff_topology` with an immutable
+`HandoffTopologySpec`. Cachet's full-prefix control requires
+`segment_per_document=False`; vanilla KV requires
+`segment_per_document=True`. The public handoff generator rejects a conflicting
+flag before it creates an output directory, writes a manifest, or invokes the
+generator.
+
+Custom methods can set `segment_per_document=None` for a method-owned topology
+that is not expressible as either built-in mode. They must then validate and
+attest their custom topology in their own generation path. Do not reuse a
+built-in method ID to bypass its declared segmentation contract.
+
+## Track Lifecycle And Evidence Separately
+
+Every `MethodSpec` carries a closed `MethodLifecycle` record. Code readiness is
+either `planned` or `runnable`; independent fields record upstream
+reproduction, engine validation, live-canary evidence, and publication
+evidence. Do not use `implemented=True` as a claim that an upstream result was
+reproduced or that publication evidence exists. It remains a compatibility
+view of runnable code and must agree with `lifecycle.code_status`.
+
+A planned method cannot produce a `ReusePlan`. Keep proposed algorithms such as
+selective recomputation out of executable descriptors until an implementation
+and handler exist. Promote each evidence field only after its corresponding
+record has passed. A passing live canary requires passing engine validation,
+and publication evidence requires a passing canary. Upstream reproduction
+remains independent because it may be `not_applicable` for a Cachet-native
+control method.
+
+## Declare Runtime Customizations
+
+Method-owned provider decoding, token selection, and token recomputation use
+immutable `RuntimeOperationDescriptor` values containing a strategy ID,
+version, and canonical configuration digest. The descriptors are authenticated
+inside `ReusePlan` and survive handoff and connector-action round trips.
+
+The serving application injects an immutable
+`RuntimeOperationHandlerRegistry`. Each binding is exact for phase, strategy,
+version, and configuration digest. A backend must advertise that exact
+phase/strategy/version and the registry must resolve the authenticated digest
+before any payload read or KV injection. This keeps custom configuration
+application-owned without process-global mutation. Handlers receive the
+descriptor, including its verified digest, plus the immutable request context.
+
+Provider decoding runs before the runtime KV tensor/page view. Selection and
+recomputation remain distinct hooks and run in that order. Cachet supplies the
+contract and fail-closed dispatch boundary; each method supplies its own
+algorithm and configuration resolver.
+
 ## Required Tests
 
 At minimum, add CPU tests for:
@@ -92,6 +144,10 @@ At minimum, add CPU tests for:
 5. runtime compatibility rejection;
 6. method-aware benchmark serialization;
 7. quality and cache-state publication gates.
+8. operation-handler round trips and configuration-digest mismatch rejection
+   when the method declares runtime customizations.
+9. correct and incorrect physical handoff topology, including rejection before
+   any output write.
 
 GPU integration tests should prove that the target vLLM or SGLang version
 hydrates engine-owned KV blocks and produces the same answer as full prefill.
@@ -100,18 +156,42 @@ hydrates engine-owned KV blocks and produces the same answer as full prefill.
 
 Use the same order for team experiments:
 
-1. clean checkout: `poetry install -E test`;
-2. CPU reference and method conformance;
-3. one pinned-revision Transformers artifact with
+1. pin the author's upstream repository and reproduce its documented result
+   before changing Cachet;
+2. preserve that upstream implementation as a separately identified reference
+   arm and record its environment;
+3. clean Cachet checkout: `poetry install -E test`;
+4. CPU reference and method conformance;
+5. one pinned-revision Transformers artifact with
    `examples/transformers_kv_generation.py`;
-4. local engine probe and handoff validation;
-5. sanitized Databricks vLLM/SGLang smoke jobs;
-6. paired N-way benchmark runs and publication-gate evaluation.
+6. local engine probe and handoff validation;
+7. sanitized Databricks vLLM/SGLang smoke jobs;
+8. paired N-way runs of baseline, upstream reference, and Cachet integration;
+9. optimize only after the integrated result is functionally and statistically
+   comparable with the reproduced reference.
 
 Keep Databricks tokens and workspace identifiers in the approved secret store.
 Generated payloads, raw prompts, service responses, and local run records stay
 under ignored scratch paths. Only sanitized identity, telemetry, statistics,
 and gate records move into benchmark evidence.
+
+Method-specific prompt or token transformations are allowed, but they must be
+versioned and recorded. Comparisons hold the logical documents, query, expected
+answer, and decode budget fixed while accounting for the physical tokens each
+arm actually serves. Training, preprocessing, artifact generation, checkpoint
+loading, and artifact footprint are offline costs; report them separately from
+online TTFT, TTC, throughput, and serving resources.
+
+For a custom dataset, register one versioned `DatasetScorer` with both its
+metric function and `prompt_function`, then pass the same immutable
+`DatasetScorerRegistry` to `run_benchmark_suite` (or
+`run_openai_compatible_benchmark`) and `generate_benchmark_handoff_bundles`.
+This makes the cached prefix come from the scorer-owned logical prompt instead
+of the built-in V1 template. All custom scorers in one run/bundle must share a
+prompt-template version, and that version must match the manifest and artifact
+identity. The checked-in remote benchmark-plan CLI remains deliberately
+V1-closed; custom scorer code is an explicit programmatic integration rather
+than a dynamically imported command-line plugin.
 
 ## Benchmark Evidence
 
@@ -128,6 +208,12 @@ against `baseline_prefill`. Publication requires:
 `evaluate_benchmark_publication_gate` fails closed when any of those records are
 missing. A prefetch or payload-cache hit is warm evidence and cannot be
 published as cold disk-to-GPU latency.
+
+Use the evidence levels in [`evidence-policy.md`](evidence-policy.md): smoke for
+execution-only checks, canary for reproducible paired engineering evidence, and
+publication only for sanitized evidence that satisfies the publication gate.
+A private workspace or DBFS path can supplement provenance but cannot be the
+only evidence behind a public comparison.
 
 ## Review Checklist
 

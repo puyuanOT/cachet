@@ -12,7 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,6 +24,12 @@ from document_kv_cache._hardware_targets import (
     V1_HARDWARE_TARGET_PROFILES,
 )
 from document_kv_cache.probe_fixtures import DEFAULT_ENGINE_PROBE_FIXTURE_FILENAMES
+from document_kv_cache.databricks_resource_ledger import (
+    DatabricksClusterHourReservation,
+    DatabricksReservationValidator,
+    canonical_databricks_submit_payload_snapshot,
+    reserve_databricks_run_attempt_json,
+)
 
 
 __all__ = [
@@ -42,6 +48,8 @@ __all__ = [
     "databricks_workspace_config_from_sdk_profile",
     "check_databricks_auth",
     "submit_databricks_run",
+    "reserve_and_submit_databricks_run",
+    "reserve_and_submit_databricks_run_json",
     "get_databricks_run",
     "put_databricks_dbfs_file",
     "plan_databricks_stage_and_submit",
@@ -414,6 +422,91 @@ def submit_databricks_run(
     )
 
 
+def reserve_and_submit_databricks_run(
+    config: DatabricksWorkspaceConfig,
+    payload: Mapping[str, Any],
+    *,
+    ledger_path: str | Path,
+    attempt_id: str,
+    workload_id: str,
+    reservation_validator: DatabricksReservationValidator | None = None,
+    opener: DatabricksURLOpener | None = None,
+) -> dict[str, Any]:
+    """Reserve and submit one immutable payload snapshot as a single local action.
+
+    Reservation is durably written immediately before the POST.  The wire body
+    is the same canonical byte snapshot whose digest is stored in the ledger.
+    Submission failures deliberately do not reconcile or remove the reservation.
+    """
+
+    resolved_opener = (
+        cast(DatabricksURLOpener, urllib.request.urlopen)
+        if opener is None
+        else opener
+    )
+    snapshot, canonical_payload = canonical_databricks_submit_payload_snapshot(
+        payload
+    )
+    payload_sha256 = hashlib.sha256(canonical_payload).hexdigest()
+
+    def validate_exact_reservation(
+        reservation: DatabricksClusterHourReservation,
+        validated_snapshot: Mapping[str, Any],
+    ) -> None:
+        if reservation.submit_payload_sha256 != payload_sha256:
+            raise RuntimeError(
+                "ledger reservation digest does not match the submit payload snapshot"
+            )
+        if reservation_validator is not None:
+            reservation_validator(reservation, validated_snapshot)
+
+    ledger = reserve_databricks_run_attempt_json(
+        ledger_path,
+        snapshot,
+        attempt_id=attempt_id,
+        workload_id=workload_id,
+        reservation_validator=validate_exact_reservation,
+    )
+    persisted_reservation = next(
+        item for item in ledger.reservations if item.attempt_id == attempt_id
+    )
+    if persisted_reservation.submit_payload_sha256 != payload_sha256:
+        raise RuntimeError(
+            "persisted ledger reservation digest does not match the submit payload snapshot"
+        )
+    return _databricks_api_json(
+        config,
+        "POST",
+        "/api/2.1/jobs/runs/submit",
+        payload_json_bytes=canonical_payload,
+        opener=resolved_opener,
+    )
+
+
+def reserve_and_submit_databricks_run_json(
+    config: DatabricksWorkspaceConfig,
+    payload_path: str | Path,
+    *,
+    ledger_path: str | Path,
+    attempt_id: str,
+    workload_id: str,
+    reservation_validator: DatabricksReservationValidator | None = None,
+    opener: DatabricksURLOpener | None = None,
+) -> dict[str, Any]:
+    """Read a payload once, then reserve and submit that isolated snapshot."""
+
+    payload = read_databricks_run_submit_payload(payload_path)
+    return reserve_and_submit_databricks_run(
+        config,
+        payload,
+        ledger_path=ledger_path,
+        attempt_id=attempt_id,
+        workload_id=workload_id,
+        reservation_validator=reservation_validator,
+        opener=opener,
+    )
+
+
 def check_databricks_auth(
     config: DatabricksWorkspaceConfig,
     *,
@@ -757,6 +850,7 @@ def _databricks_api_json(
     *,
     opener: DatabricksURLOpener,
     payload: dict[str, Any] | None = None,
+    payload_json_bytes: bytes | None = None,
 ) -> dict[str, Any]:
     parsed, _status = _databricks_api_response_json(
         config,
@@ -764,6 +858,7 @@ def _databricks_api_json(
         path_and_query,
         opener=opener,
         payload=payload,
+        payload_json_bytes=payload_json_bytes,
     )
     return parsed
 
@@ -775,8 +870,15 @@ def _databricks_api_response_json(
     *,
     opener: DatabricksURLOpener,
     payload: dict[str, Any] | None = None,
+    payload_json_bytes: bytes | None = None,
 ) -> tuple[dict[str, Any], int | None]:
-    request = _databricks_request(config, method, path_and_query, payload=payload)
+    request = _databricks_request(
+        config,
+        method,
+        path_and_query,
+        payload=payload,
+        payload_json_bytes=payload_json_bytes,
+    )
     try:
         with opener(request, timeout=config.timeout_seconds) as response:
             body = response.read().decode("utf-8")
@@ -1710,8 +1812,15 @@ def _databricks_request(
     path_and_query: str,
     *,
     payload: dict[str, Any] | None,
+    payload_json_bytes: bytes | None = None,
 ) -> urllib.request.Request:
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    if payload is not None and payload_json_bytes is not None:
+        raise ValueError("payload and payload_json_bytes are mutually exclusive")
+    data = (
+        payload_json_bytes
+        if payload_json_bytes is not None
+        else None if payload is None else json.dumps(payload).encode("utf-8")
+    )
     return urllib.request.Request(
         f"{config.normalized_host}{path_and_query}",
         data=data,
@@ -1793,6 +1902,26 @@ def main(argv: list[str] | None = None) -> int:
 
     submit_parser = subparsers.add_parser("submit", help="POST a Jobs runs/submit payload JSON.")
     submit_parser.add_argument("--payload-json", required=True)
+
+    reserved_submit_parser = subparsers.add_parser(
+        "reserve-and-submit",
+        help=(
+            "Atomically reserve a bounded payload in the cluster-hour ledger, "
+            "then POST that exact immutable snapshot."
+        ),
+    )
+    reserved_submit_parser.add_argument("--payload-json", required=True)
+    reserved_submit_parser.add_argument("--ledger-json", required=True)
+    reserved_submit_parser.add_argument("--attempt-id", required=True)
+    reserved_submit_parser.add_argument("--workload-id", required=True)
+    reserved_submit_parser.add_argument(
+        "--representative-canary",
+        action="store_true",
+        help=(
+            "Require workload_id and the exact payload to match Cachet's ordered "
+            "representative canary manifest."
+        ),
+    )
 
     subparsers.add_parser(
         "auth-check",
@@ -1930,6 +2059,19 @@ def main(argv: list[str] | None = None) -> int:
             config = _databricks_workspace_config_from_args(args)
             if args.command == "submit":
                 response = submit_databricks_run(config, read_databricks_run_submit_payload(args.payload_json))
+            elif args.command == "reserve-and-submit":
+                reservation_validator = _cli_reservation_validator(
+                    args.workload_id,
+                    representative_canary=args.representative_canary,
+                )
+                response = reserve_and_submit_databricks_run_json(
+                    config,
+                    args.payload_json,
+                    ledger_path=args.ledger_json,
+                    attempt_id=args.attempt_id,
+                    workload_id=args.workload_id,
+                    reservation_validator=reservation_validator,
+                )
             elif args.command == "auth-check":
                 result = _success_record(args.command)
                 result["auth"] = check_databricks_auth(config)
@@ -2051,6 +2193,35 @@ def _databricks_workspace_config_from_args(args: argparse.Namespace) -> Databric
         token_env=args.token_env,
         timeout_seconds=args.timeout_seconds,
     )
+
+
+def _cli_reservation_validator(
+    workload_id: str,
+    *,
+    representative_canary: bool,
+) -> DatabricksReservationValidator | None:
+    from document_kv_cache.canary_orchestration import (
+        representative_canary_workload_manifest,
+        validate_representative_canary_reservation,
+    )
+
+    manifest = representative_canary_workload_manifest()
+    try:
+        manifest.workload_for_id(workload_id)
+    except KeyError:
+        is_representative_workload = False
+    else:
+        is_representative_workload = True
+    if representative_canary and not is_representative_workload:
+        raise ValueError(
+            "--representative-canary requires a workload_id from the exact "
+            "representative canary manifest"
+        )
+    if is_representative_workload and not representative_canary:
+        raise ValueError(
+            "representative canary workload_id requires --representative-canary"
+        )
+    return validate_representative_canary_reservation if representative_canary else None
 
 
 if __name__ == "__main__":  # pragma: no cover

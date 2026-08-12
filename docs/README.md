@@ -31,6 +31,8 @@ release-operation material.
   freshness evidence.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
+- `representative-hotpotqa-inputs.md` documents tokenizer-only preparation of
+  exact 8k/16k HotpotQA inputs for the representative canary matrix.
 - `../benchmarks/README.md` is the human-facing research-style benchmark page;
   `../benchmarks/appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/` keeps historical
   A10G warm-prefix evidence and Databricks provenance (predates the current

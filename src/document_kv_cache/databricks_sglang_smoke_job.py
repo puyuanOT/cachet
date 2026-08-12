@@ -22,10 +22,19 @@ from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
     DatabricksSingleNodeGPUClusterConfig,
     _spark_env_vars_from_cli,
+    _validated_databricks_run_timeout_seconds,
+    _validated_databricks_task_max_retries,
     _validated_spark_env_vars,
     build_single_node_gpu_cluster,
+)
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_SGLANG_PACKAGE_PINS,
+    require_pinned_revision,
+    validated_representative_wheel_binding,
 )
 from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_HICACHE_PAGE_SIZE,
@@ -46,10 +55,13 @@ from document_kv_cache.sglang_smoke import (
     SERVER_PORT,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_RADIX_SUPPORTED_DETERMINISTIC_ATTENTION_BACKEND_CHOICES,
+    SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES,
     SGLANG_SAMPLING_BACKEND_CHOICES,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
+    SGLangRepresentativeWorkloadProfile,
     parse_dataset_specs,
+    sglang_representative_workload_profile,
 )
 
 
@@ -59,6 +71,8 @@ DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE = "document-kv-sglang-smoke"
 SGLANG_SMOKE_RUNNER_SCRIPT = """from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import os
 import subprocess
 import sys
@@ -73,9 +87,19 @@ def _cluster_file_path(uri: str) -> str:
 def _install_package_wheel(argv: list[str]) -> list[str]:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--package-wheel-uri")
+    parser.add_argument("--package-wheel-sha256")
     args, remaining = parser.parse_known_args(argv)
+    if args.package_wheel_sha256 and not args.package_wheel_uri:
+        raise ValueError("--package-wheel-sha256 requires --package-wheel-uri")
     if args.package_wheel_uri:
         package_wheel_path = _cluster_file_path(args.package_wheel_uri)
+        if args.package_wheel_sha256:
+            digest = hashlib.sha256()
+            with open(package_wheel_path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            if not hmac.compare_digest(digest.hexdigest(), args.package_wheel_sha256):
+                raise ValueError("Cachet package wheel SHA-256 does not match")
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", package_wheel_path]
         )
@@ -112,12 +136,21 @@ class DatabricksSGLangSmokeJobConfig:
     runner_python_file: str
     run_name: str = DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME
     task_key: str = DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
     hardware_target: str | None = None
     node_type_id: str = DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE
     spark_version: str = DEFAULT_DATABRICKS_SPARK_VERSION
     data_security_mode: str = DEFAULT_DATABRICKS_DATA_SECURITY_MODE
     single_user_name: str | None = None
     wheel_uri: str | None = None
+    wheel_sha256: str | None = None
+    model_revision: str | None = None
+    tokenizer_revision: str | None = None
+    representative_canary: bool = False
+    representative_workload_profile: (
+        SGLangRepresentativeWorkloadProfile | str | None
+    ) = None
     max_tokens: int = 32
     timeout_seconds: float = 240.0
     import_probe_timeout_seconds: float = 180.0
@@ -188,6 +221,8 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        _validated_databricks_task_max_retries(self.task_max_retries)
         object.__setattr__(
             self,
             "hardware_target",
@@ -195,6 +230,58 @@ class DatabricksSGLangSmokeJobConfig:
         )
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
+        if self.wheel_sha256 is not None and (
+            len(self.wheel_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.wheel_sha256)
+        ):
+            raise ValueError("wheel_sha256 must be a lowercase SHA-256 digest")
+        if self.wheel_sha256 is not None and self.wheel_uri is None:
+            raise ValueError("wheel_sha256 requires wheel_uri")
+        for field_name in ("model_revision", "tokenizer_revision"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{field_name} must be non-empty when provided")
+        if (self.model_revision is None) != (self.tokenizer_revision is None):
+            raise ValueError(
+                "model_revision and tokenizer_revision must be provided together"
+            )
+        if (
+            self.model_revision is not None
+            and self.model_revision != self.tokenizer_revision
+        ):
+            raise ValueError(
+                "SGLang uses one --revision for both model and tokenizer; revisions must match"
+            )
+        if type(self.representative_canary) is not bool:
+            raise TypeError("representative_canary must be a boolean")
+        representative_profile = (
+            None
+            if self.representative_workload_profile is None
+            else sglang_representative_workload_profile(
+                self.representative_workload_profile
+            )
+        )
+        if self.representative_canary != (representative_profile is not None):
+            raise ValueError(
+                "representative_canary and representative_workload_profile must "
+                "be provided together"
+            )
+        object.__setattr__(
+            self,
+            "representative_workload_profile",
+            representative_profile,
+        )
+        if (
+            self.representative_canary
+            and self.run_timeout_seconds != DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "representative_canary requires run and task timeout_seconds "
+                f"to be exactly {DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS}"
+            )
+        if self.representative_canary:
+            require_pinned_revision(self.model_revision, "model_revision")
+            require_pinned_revision(self.tokenizer_revision, "tokenizer_revision")
         if self.max_tokens <= 0:
             raise ValueError("max_tokens must be positive")
         if self.timeout_seconds <= 0:
@@ -298,6 +385,24 @@ class DatabricksSGLangSmokeJobConfig:
         ):
             raise ValueError(
                 "live_benchmark_repeats must be a non-negative integer"
+            )
+        if representative_profile is not None:
+            representative_profile.validate_runtime_values(
+                context_length=self.context_length,
+                max_tokens=self.max_tokens,
+                live_benchmark_repeats=self.live_benchmark_repeats,
+                attention_backend=sglang_attention_backend,
+                sampling_backend=sglang_sampling_backend,
+                enable_deterministic_inference=(
+                    self.sglang_enable_deterministic_inference
+                ),
+                cache_prompt_text_mode=self.cache_prompt_text_mode,
+                live_check_prompt_format=self.live_check_prompt_format,
+                live_check_request_mode=self.live_check_request_mode,
+                live_check_temperature=self.live_check_temperature,
+                flush_cache_before_cache_arm=self.flush_cache_before_cache_arm,
+                flush_cache_before_canary=self.flush_cache_before_canary,
+                flush_cache_timeout_seconds=self.flush_cache_timeout_seconds,
             )
         if self.handoff_json and self.handoff_record_json:
             raise ValueError(
@@ -444,12 +549,45 @@ class DatabricksSGLangSmokeJobConfig:
             raise ValueError(
                 "hicache_storage_prefetch_threshold must be a positive integer when provided"
             )
-        object.__setattr__(
-            self, "spark_env_vars", _validated_spark_env_vars(self.spark_env_vars)
-        )
+        spark_env_vars = dict(_validated_spark_env_vars(self.spark_env_vars))
+        if self.representative_canary:
+            validated_representative_wheel_binding(
+                self.wheel_uri,
+                self.wheel_sha256,
+            )
+            _validate_representative_node_type_id(
+                self.node_type_id,
+                self.hardware_target,
+            )
+            if Path(self.local_root) != DEFAULT_LOCAL_ROOT:
+                raise ValueError("representative canary local_root must be /local_disk0")
+            for field_name in (
+                "live_handoff_output_dir",
+                "benchmark_handoff_output_dir",
+            ):
+                value = getattr(self, field_name)
+                if value is not None:
+                    _require_local_disk0_path(value, field_name)
+            existing_evict = spark_env_vars.get("DOCUMENT_KV_EVICT_PAGE_CACHE")
+            if existing_evict not in {None, "1"}:
+                raise ValueError(
+                    "DOCUMENT_KV_EVICT_PAGE_CACHE must be 1 for representative canaries"
+                )
+            spark_env_vars["DOCUMENT_KV_EVICT_PAGE_CACHE"] = "1"
+        object.__setattr__(self, "spark_env_vars", spark_env_vars)
         object.__setattr__(self, "dataset_specs", dataset_specs)
         object.__setattr__(self, "sglang_hicache_page_size", sglang_hicache_page_size)
         _DEFAULT_CLUSTER_CONFIG_FROM_SGLANG_SMOKE_JOB(self)
+
+
+def _require_local_disk0_path(value: str, field_name: str) -> None:
+    path = Path(value).resolve(strict=False)
+    try:
+        path.relative_to(DEFAULT_LOCAL_ROOT.resolve(strict=False))
+    except ValueError as exc:
+        raise ValueError(
+            f"representative canary {field_name} must be under /local_disk0"
+        ) from exc
 
 
 def build_databricks_sglang_smoke_run_submit_payload(
@@ -462,6 +600,8 @@ def build_databricks_sglang_smoke_run_submit_payload(
         cluster["spark_env_vars"] = dict(config.spark_env_vars)
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": config.task_max_retries,
         "new_cluster": cluster,
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -472,8 +612,13 @@ def build_databricks_sglang_smoke_run_submit_payload(
         task["spark_python_task"]["parameters"].extend(
             ["--package-wheel-uri", config.wheel_uri]
         )
+        if config.wheel_sha256 is not None:
+            task["spark_python_task"]["parameters"].extend(
+                ["--package-wheel-sha256", config.wheel_sha256]
+            )
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -515,6 +660,19 @@ def _cluster_config_from_sglang_smoke_job(
 _DEFAULT_CLUSTER_CONFIG_FROM_SGLANG_SMOKE_JOB = _cluster_config_from_sglang_smoke_job
 
 
+def _validate_representative_node_type_id(
+    node_type_id: str,
+    hardware_target: str | None,
+) -> None:
+    expected = databricks_node_type_for_hardware_target(hardware_target)
+    if node_type_id != expected:
+        raise ValueError(
+            "representative canary node_type_id must be the exact V1 node type "
+            f"{expected!r} for hardware target {hardware_target!r}, got "
+            f"{node_type_id!r}"
+        )
+
+
 def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> str:
     if hardware_target is not None:
         validate_v1_hardware_target(hardware_target)
@@ -526,7 +684,7 @@ def _resolve_hardware_target(hardware_target: str | None, node_type_id: str) -> 
     lowered = node_type_id.lower()
     for target, prefixes in HARDWARE_TARGET_AWS_SINGLE_NODE_GPU_PREFIXES.items():
         if lowered.startswith(prefixes):
-            return target
+            return str(target)
     raise ValueError(
         f"Unable to derive V1 hardware target from node_type_id {node_type_id!r}"
     )
@@ -588,6 +746,25 @@ def _runner_parameters(config: DatabricksSGLangSmokeJobConfig) -> list[str]:
         "--live-check-temperature",
         str(config.live_check_temperature),
     ]
+    if config.model_revision is not None:
+        parameters.extend(["--model-revision", config.model_revision])
+        assert config.tokenizer_revision is not None
+        parameters.extend(["--tokenizer-revision", config.tokenizer_revision])
+    if config.representative_canary:
+        parameters.append("--representative-canary")
+        representative_profile = config.representative_workload_profile
+        assert isinstance(
+            representative_profile,
+            SGLangRepresentativeWorkloadProfile,
+        )
+        parameters.extend(
+            [
+                "--representative-workload-profile",
+                representative_profile.profile_id,
+            ]
+        )
+        for package_pin in REPRESENTATIVE_SGLANG_PACKAGE_PINS:
+            parameters.extend(["--representative-package-pin", package_pin])
     if config.live_check_extra_body_json is not None:
         parameters.extend(
             ["--live-check-extra-body-json", config.live_check_extra_body_json]
@@ -719,6 +896,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME)
     parser.add_argument("--task-key", default=DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY)
     parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--task-max-retries",
+        type=int,
+        default=DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
+    )
+    parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
         help="V1 hardware target used to derive --node-type-id when it is omitted.",
@@ -737,6 +924,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--wheel-uri",
         help="Optional cluster-visible wheel URI to install before the task.",
+    )
+    parser.add_argument("--wheel-sha256")
+    parser.add_argument("--model-revision")
+    parser.add_argument("--tokenizer-revision")
+    parser.add_argument("--representative-canary", action="store_true")
+    parser.add_argument(
+        "--representative-workload-profile",
+        choices=tuple(
+            profile.profile_id
+            for profile in SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES
+        ),
     )
     parser.add_argument("--max-tokens", type=int, default=32)
     parser.add_argument("--timeout-seconds", type=float, default=240.0)
@@ -877,6 +1075,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             runner_python_file=args.runner_python_file,
             run_name=args.run_name,
             task_key=args.task_key,
+            run_timeout_seconds=args.run_timeout_seconds,
+            task_max_retries=args.task_max_retries,
             node_type_id=databricks_node_type_for_hardware_target(
                 args.hardware_target, args.node_type_id
             ),
@@ -885,6 +1085,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             data_security_mode=args.data_security_mode,
             single_user_name=args.single_user_name,
             wheel_uri=args.wheel_uri,
+            wheel_sha256=args.wheel_sha256,
+            model_revision=args.model_revision,
+            tokenizer_revision=args.tokenizer_revision,
+            representative_canary=args.representative_canary,
+            representative_workload_profile=args.representative_workload_profile,
             max_tokens=args.max_tokens,
             timeout_seconds=args.timeout_seconds,
             import_probe_timeout_seconds=args.import_probe_timeout_seconds,

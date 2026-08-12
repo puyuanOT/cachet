@@ -1,8 +1,10 @@
+import hashlib
 import json
 
 import pytest
 
 import document_kv_cache.benchmark_handoffs as public_benchmark_handoffs
+from document_kv_cache.artifact_identity import TokenContract
 from document_kv_cache.benchmark_handoffs import (
     BENCHMARK_HANDOFF_MANIFEST_RECORD_TYPE,
     BENCHMARK_HANDOFF_MANIFEST_SCHEMA_VERSION,
@@ -18,7 +20,12 @@ from document_kv_cache.benchmark_handoffs import (
     load_benchmark_kv_chunk_generator,
     read_benchmark_handoff_manifest_json,
 )
-from document_kv_cache.benchmark_runner import load_benchmark_jsonl
+from document_kv_cache.benchmark_runner import (
+    BenchmarkGeneration,
+    BenchmarkManifestContext,
+    load_benchmark_jsonl,
+    run_benchmark_suite,
+)
 from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
@@ -27,6 +34,11 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
+    BenchmarkArm,
+    BenchmarkPromptParts,
+    BenchmarkSuite,
+    DatasetScorer,
+    DatasetScorerRegistry,
     benchmark_cache_source_document,
 )
 from document_kv_cache.engine import EngineReadyRequest
@@ -38,7 +50,18 @@ from document_kv_cache.engine_adapters import (
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import layout_for_model
-from document_kv_cache.models import KVCacheKey
+from document_kv_cache.methods import (
+    CACHET_CONNECTOR_MODE,
+    DOCUMENT_KV_CACHE_ARM,
+    HandoffTopologySpec,
+    MethodSpec,
+    default_method_registry,
+)
+from document_kv_cache.models import CacheGenerationMethod, KVCacheKey
+from document_kv_cache.reference_method import (
+    REFERENCE_METHOD_ID,
+    register as register_reference_method,
+)
 from sglang_kv_injection.hicache_keys import sglang_hicache_page_keys
 
 
@@ -60,6 +83,54 @@ class AlignedGenerator:
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
+
+
+class StrictAlignedGenerator:
+    pre_rope = False
+
+    def __init__(self, layout):
+        self.layout = layout
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        token_ids = tuple(chunk.text.encode("utf-8")) or (0,)
+        payload = b"q" * (len(token_ids) * self.layout.bytes_per_token)
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(self.layout),
+                token_contract=TokenContract.from_token_ids(
+                    token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
+            ),
+            payload=payload,
+            token_count=len(token_ids),
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+def custom_dataset_score(_context):
+    return {"score": 1.0}
+
+
+def custom_dataset_prompt(_example):
+    return BenchmarkPromptParts(
+        system_prompt="CUSTOM SYSTEM",
+        document_context="CUSTOM PREFIX WITH EVIDENCE",
+        user_prompt="CUSTOM SUFFIX QUESTION",
+    )
 
 
 class PageKeyTokenizer:
@@ -519,6 +590,7 @@ def test_generate_benchmark_handoff_bundles_writes_payloads_manifest_and_handoff
         layout=layout,
         manifest_json=manifest_path,
         align_bytes=1,
+        require_artifact_contract=False,
     )
 
     assert isinstance(result, BenchmarkHandoffBundleResult)
@@ -546,7 +618,141 @@ def test_generate_benchmark_handoff_bundles_writes_payloads_manifest_and_handoff
         assert handoff_record["handle"]["total_bytes"] == payload_path.stat().st_size
 
 
-def test_generate_benchmark_handoff_bundles_threads_layer_major_payload_axis_order(tmp_path):
+def test_custom_dataset_handoff_uses_the_runner_scorer_prompt_prefix(tmp_path):
+    input_path = tmp_path / "custom.jsonl"
+    input_path.write_text(
+        json.dumps(
+            {
+                "dataset": "custom_qa",
+                "example_id": "custom-1",
+                "documents": [
+                    {"document_id": "custom-doc", "text": "Custom evidence."}
+                ],
+                "query": "Custom question?",
+                "answer": "Custom answer",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    scorer = DatasetScorer(
+        scorer_id="custom.qa",
+        version="1",
+        metric_names=("score",),
+        score_function=custom_dataset_score,
+        plugin_path="tests.test_benchmark_handoffs:custom_dataset_score",
+        prompt_function=custom_dataset_prompt,
+        prompt_plugin_path=(
+            "tests.test_benchmark_handoffs:custom_dataset_prompt"
+        ),
+        prompt_template_version="custom-prompt-v1",
+    )
+    registry = DatasetScorerRegistry().register("custom_qa", scorer)
+    example = load_benchmark_jsonl(input_path)[0]
+    expected_parts = scorer.prompt_parts(example)
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=AlignedGenerator(),
+        layout=tiny_layout(),
+        scorer_registry=registry,
+        align_bytes=1,
+        require_artifact_contract=False,
+    )
+
+    entry = result.manifest.entries[0]
+    assert entry.dataset == "custom_qa"
+    assert benchmark_handoff_manifest_from_record(
+        benchmark_handoff_manifest_to_record(result.manifest)
+    ) == result.manifest
+    payload_path = tmp_path / "bundles" / "custom_qa" / f"{entry.request_id}.kv"
+    assert payload_path.read_bytes().endswith(
+        expected_parts.cache_prefix_text.encode("utf-8")
+    )
+
+    class CaptureEngine:
+        def __init__(self) -> None:
+            self.logical_prompt = ""
+
+        def generate(self, request):
+            self.logical_prompt = request.logical_prompt_text
+            return BenchmarkGeneration(
+                output_text="Custom answer",
+                prompt_tokens=4,
+                completion_tokens=2,
+                ttft_seconds=0.1,
+                time_to_completion_seconds=0.2,
+            )
+
+    engine = CaptureEngine()
+    arm = BenchmarkArm(
+        arm_id="custom-baseline",
+        uses_cache=False,
+        description="custom baseline",
+    )
+    run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="custom-suite",
+            examples=(example,),
+            datasets=("custom_qa",),
+        ),
+        {arm.arm_id: engine},
+        arms=(arm,),
+        scorer_registry=registry,
+        manifest_context=BenchmarkManifestContext(
+            prompt_template_version="custom-prompt-v1"
+        ),
+    )
+    assert engine.logical_prompt == expected_parts.prefill_prompt
+    assert engine.logical_prompt.startswith(expected_parts.cache_prefix_text)
+
+    with pytest.raises(ValueError, match="scorer-owned prompt template"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=tmp_path / "wrong-template",
+            generator=AlignedGenerator(),
+            layout=tiny_layout(),
+            scorer_registry=registry,
+            prompt_template_version="wrong-template",
+            align_bytes=1,
+            require_artifact_contract=False,
+        )
+
+
+def test_bundle_generation_uses_injected_registry_and_strict_contract(tmp_path):
+    input_path = tmp_path / "bio.jsonl"
+    input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
+    layout = tiny_layout()
+    registry = register_reference_method(default_method_registry())
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "bundles",
+        generator=StrictAlignedGenerator(layout),
+        layout=layout,
+        cache_method=REFERENCE_METHOD_ID,
+        method_registry=registry,
+        align_bytes=1,
+    )
+
+    assert result.cache_generation.reuse_plan is not None
+    assert result.cache_generation.reuse_plan.method_id == REFERENCE_METHOD_ID
+    entry = result.manifest.entries[0]
+    assert entry.handoff_json is not None
+    handoff = json.loads(
+        (tmp_path / "bundles" / "biography" / f"{entry.request_id}.handoff.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert handoff["reuse_plan"]["method_id"] == REFERENCE_METHOD_ID
+    assert handoff["reuse_plan"]["capability_id"]
+
+
+def test_generate_benchmark_handoff_bundles_rejects_layer_major_payload_axis_order(
+    tmp_path,
+):
     input_path = tmp_path / "bio.jsonl"
     input_path.write_text(json.dumps(record("bio-1")) + "\n", encoding="utf-8")
     layout = KVLayout(
@@ -560,18 +766,17 @@ def test_generate_benchmark_handoff_bundles_threads_layer_major_payload_axis_ord
         payload_axis_order="layer_major",
     )
 
-    result = generate_benchmark_handoff_bundles(
-        input_path,
-        output_dir=tmp_path / "bundles",
-        generator=AlignedGenerator(),
-        layout=layout,
-        align_bytes=1,
-    )
+    with pytest.raises(ValueError, match="payload axis order 'layer_major'"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=tmp_path / "bundles",
+            generator=AlignedGenerator(),
+            layout=layout,
+            align_bytes=1,
+            require_artifact_contract=False,
+        )
 
-    entry = result.manifest.entries[0]
-    handoff_path = tmp_path / "bundles" / "biography" / f"{entry.request_id}.handoff.json"
-    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
-    assert handoff_record["handle"]["layout"]["payload_axis_order"] == "layer_major"
+    assert not (tmp_path / "bundles").exists()
 
 
 def test_generate_benchmark_handoff_bundles_segments_multi_document_handle(tmp_path):
@@ -595,6 +800,7 @@ def test_generate_benchmark_handoff_bundles_segments_multi_document_handle(tmp_p
         manifest_json=manifest_path,
         segment_per_document=True,
         align_bytes=1,
+        require_artifact_contract=False,
     )
 
     entry = result.manifest.entries[0]
@@ -603,6 +809,116 @@ def test_generate_benchmark_handoff_bundles_segments_multi_document_handle(tmp_p
 
     assert len(handoff_record["handle"]["segments"]) == document_count
     assert handoff_record["payload_source"]["segment_count"] == document_count
+
+
+@pytest.mark.parametrize(
+    ("cache_method", "segment_per_document"),
+    [
+        (CacheGenerationMethod.VANILLA_PREFILL, False),
+        (CacheGenerationMethod.FULL_PREFIX_PREFILL, True),
+    ],
+)
+def test_generate_benchmark_handoffs_rejects_method_topology_before_writes(
+    tmp_path,
+    cache_method,
+    segment_per_document,
+):
+    input_path = tmp_path / "hotpot.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=3)) + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "bundles"
+    manifest_path = tmp_path / "manifest.json"
+
+    with pytest.raises(ValueError, match="requires handoff topology"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=output_dir,
+            generator=AlignedGenerator(),
+            layout=tiny_layout(),
+            manifest_json=manifest_path,
+            cache_method=cache_method,
+            segment_per_document=segment_per_document,
+            align_bytes=1,
+        )
+
+    assert not output_dir.exists()
+    assert not manifest_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("cache_method", "segment_per_document", "expected_segments"),
+    [
+        (CacheGenerationMethod.FULL_PREFIX_PREFILL, False, 1),
+        (CacheGenerationMethod.VANILLA_PREFILL, True, 3),
+    ],
+)
+def test_generate_benchmark_handoffs_accepts_declared_method_topology(
+    tmp_path,
+    cache_method,
+    segment_per_document,
+    expected_segments,
+):
+    input_path = tmp_path / f"{cache_method.value}.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=3)) + "\n",
+        encoding="utf-8",
+    )
+
+    output_dir = tmp_path / cache_method.value
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=output_dir,
+        generator=AlignedGenerator(),
+        layout=tiny_layout(),
+        cache_method=cache_method,
+        segment_per_document=segment_per_document,
+        align_bytes=1,
+        require_artifact_contract=False,
+    )
+
+    entry = result.manifest.entries[0]
+    handoff_path = output_dir / "hotpotqa" / f"{entry.request_id}.handoff.json"
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert len(handoff["handle"]["segments"]) == expected_segments
+
+
+def test_generate_benchmark_handoffs_supports_custom_unconstrained_topology(tmp_path):
+    input_path = tmp_path / "custom.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=2)) + "\n",
+        encoding="utf-8",
+    )
+    custom = MethodSpec(
+        method="custom.paired_windows",
+        display_name="Custom paired windows",
+        arm_id=DOCUMENT_KV_CACHE_ARM,
+        connector_mode=CACHET_CONNECTOR_MODE,
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        generator_factory="document_kv_cache.reference_method:build_generator",
+        handoff_topology=HandoffTopologySpec(
+            topology_id="custom.paired_windows",
+            segment_per_document=None,
+        ),
+        description="Custom method owns its physical window topology.",
+    )
+    registry = default_method_registry().with_spec(custom)
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "custom-bundles",
+        generator=StrictAlignedGenerator(tiny_layout()),
+        layout=tiny_layout(),
+        cache_method=custom.method_id,
+        method_registry=registry,
+        segment_per_document=True,
+        align_bytes=1,
+    )
+
+    assert len(result.manifest.entries) == 1
 
 
 def test_generate_benchmark_handoff_bundles_keeps_single_segment_by_default(tmp_path):
@@ -618,6 +934,7 @@ def test_generate_benchmark_handoff_bundles_keeps_single_segment_by_default(tmp_
         generator=AlignedGenerator(),
         layout=tiny_layout(),
         align_bytes=1,
+        require_artifact_contract=False,
     )
 
     entry = result.manifest.entries[0]
@@ -646,6 +963,7 @@ def test_generate_benchmark_handoff_bundles_records_runtime_prefix_tail(tmp_path
         generator=RuntimeTailGenerator(),
         layout=layout,
         align_bytes=1,
+        require_artifact_contract=False,
     )
 
     source_document = benchmark_cache_source_document(load_benchmark_jsonl(input_path)[0])
@@ -686,6 +1004,7 @@ def test_generate_benchmark_handoff_bundles_can_emit_sglang_records(tmp_path):
         layout=layout,
         backend="sglang",
         align_bytes=1,
+        require_artifact_contract=False,
     )
 
     handoff_path = tmp_path / "bundles" / "biography" / f"{result.manifest.entries[0].request_id}.handoff.json"
@@ -709,6 +1028,7 @@ def test_generate_sglang_handoff_bundles_can_emit_hicache_page_keys(tmp_path):
         manifest_json=manifest_path,
         sglang_hicache_page_size=layout.block_size,
         align_bytes=1,
+        require_artifact_contract=False,
     )
 
     example = load_benchmark_jsonl(input_path)[0]
@@ -1083,7 +1403,11 @@ def test_bundle_main_defaults_to_builtin_model_profile_layout(tmp_path, monkeypa
     assert handoff_record["handle"]["total_bytes"] == expected_layout.bytes_per_token
 
 
-def test_bundle_main_threads_layer_major_payload_axis_order(tmp_path, monkeypatch, capsys):
+def test_bundle_main_rejects_layer_major_payload_axis_order(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
     write_generator_module(tmp_path, "axis_cli_generator")
     monkeypatch.syspath_prepend(str(tmp_path))
     input_path = tmp_path / "bio.jsonl"
@@ -1119,13 +1443,10 @@ def test_bundle_main_threads_layer_major_payload_axis_order(tmp_path, monkeypatc
     )
 
     output = json.loads(capsys.readouterr().out)
-    entry = read_benchmark_handoff_manifest_json(manifest_path).entries[0]
-    handoff_path = tmp_path / "bundles" / "biography" / f"{entry.request_id}.handoff.json"
-    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
-
-    assert exit_code == 0
-    assert output["ok"] is True
-    assert handoff_record["handle"]["layout"]["payload_axis_order"] == "layer_major"
+    assert exit_code == 1
+    assert output["ok"] is False
+    assert "payload axis order 'layer_major'" in output["error"]
+    assert not manifest_path.exists()
 
 
 def test_bundle_main_rejects_partial_manual_layout(tmp_path, monkeypatch, capsys):
@@ -1305,6 +1626,89 @@ def test_enrich_records_overwrites_existing_kv_transfer_params_when_requested():
     )
 
     assert enriched[0]["kv_transfer_params"][DOCUMENT_KV_REQUEST_ID_PARAM] == "cachet-bio-1"
+
+
+def test_enrich_records_merges_handoffs_for_distinct_cache_arms():
+    first = enrich_benchmark_records_with_handoffs(
+        [record()],
+        manifest(entry(request_id="cachet-vanilla")),
+        arm_id="document_kv_cache:vanilla_prefill",
+    )
+    enriched = enrich_benchmark_records_with_handoffs(
+        first,
+        manifest(entry(request_id="cachet-reference")),
+        arm_id="document_kv_cache:cpu_reference",
+    )
+
+    assert "kv_transfer_params" not in enriched[0]
+    arm_params = enriched[0]["arm_kv_transfer_params"]
+    assert set(arm_params) == {
+        "document_kv_cache:vanilla_prefill",
+        "document_kv_cache:cpu_reference",
+    }
+    assert (
+        arm_params["document_kv_cache:vanilla_prefill"][DOCUMENT_KV_REQUEST_ID_PARAM]
+        == "cachet-vanilla"
+    )
+    assert (
+        arm_params["document_kv_cache:cpu_reference"][DOCUMENT_KV_REQUEST_ID_PARAM]
+        == "cachet-reference"
+    )
+
+    with pytest.raises(ValueError, match="already has arm_kv_transfer_params"):
+        enrich_benchmark_records_with_handoffs(
+            enriched,
+            manifest(entry()),
+            arm_id="document_kv_cache:vanilla_prefill",
+        )
+
+
+def test_sequential_arm_enrichment_write_reload_preserves_all_arms(tmp_path):
+    input_path = tmp_path / "input.jsonl"
+    first_manifest = tmp_path / "first.manifest.json"
+    second_manifest = tmp_path / "second.manifest.json"
+    intermediate = tmp_path / "intermediate.jsonl"
+    output = tmp_path / "output.jsonl"
+    input_path.write_text(json.dumps(record()) + "\n", encoding="utf-8")
+    first_manifest.write_text(
+        json.dumps(
+            benchmark_handoff_manifest_to_record(
+                manifest(entry(request_id="cachet-vanilla"))
+            )
+        ),
+        encoding="utf-8",
+    )
+    second_manifest.write_text(
+        json.dumps(
+            benchmark_handoff_manifest_to_record(
+                manifest(entry(request_id="cachet-reference"))
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    enrich_benchmark_jsonl_with_handoffs(
+        input_path,
+        first_manifest,
+        intermediate,
+        arm_id="document_kv_cache:vanilla_prefill",
+    )
+    enrich_benchmark_jsonl_with_handoffs(
+        intermediate,
+        second_manifest,
+        output,
+        arm_id="document_kv_cache:cpu_reference",
+    )
+
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert set(written["arm_kv_transfer_params"]) == {
+        "document_kv_cache:vanilla_prefill",
+        "document_kv_cache:cpu_reference",
+    }
+    loaded = load_benchmark_jsonl(output)
+    assert set(loaded[0].arm_kv_transfer_params) == set(
+        written["arm_kv_transfer_params"]
+    )
 
 
 def test_inline_handoff_record_must_match_manifest_request_id():

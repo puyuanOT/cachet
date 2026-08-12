@@ -1,16 +1,47 @@
 from __future__ import annotations
 
-import argparse
 from concurrent.futures import ThreadPoolExecutor
-from itertools import islice, zip_longest
-import json
+from itertools import zip_longest
+from hashlib import sha256
 import math
 import random
-from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Literal, Protocol
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol
 
+if TYPE_CHECKING:
+    from document_kv_cache.methods import MethodRegistry
+
+from document_kv_cache._benchmark_datasets import (
+    _validate_benchmark_jsonl_record as _validate_benchmark_jsonl_record,
+    load_benchmark_jsonl,
+    load_jsonl_suite,
+    load_v1_jsonl_suite,
+)
+from document_kv_cache._benchmark_manifest import (
+    BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE,
+    _build_experiment_manifest,
+    _kv_transfer_params_for_arm,
+    _resolve_reference_arm_id,
+    _sha256_json,
+    _validate_comparison_design,
+    benchmark_experiment_manifest_to_record,
+)
+from document_kv_cache._benchmark_records import (
+    BENCHMARK_RUN_RECORD_TYPE,
+    benchmark_experiment_manifest_from_record,
+    benchmark_record_aggregate_issues,
+    benchmark_record_payload_digest,
+    benchmark_run_result_from_record,
+    benchmark_run_result_payload_to_record,
+    benchmark_run_result_to_evidence_record,
+    benchmark_run_result_to_record,
+    merge_isolated_benchmark_run_records,
+    write_benchmark_run_result_json,
+)
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
@@ -21,45 +52,80 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     BenchmarkArm,
-    BenchmarkComparison,
     BenchmarkExample,
     BenchmarkPromptParts,
-    BenchmarkReportRow,
     BenchmarkSuite,
+    DatasetScoreContext,
     InferenceMeasurement,
+    DatasetScorerRegistry,
     baseline_prefill_arm,
     build_prompt_parts,
     compare_to_baseline,
     document_kv_cache_arm,
-    evaluate_v1_benchmark_evidence,
+    default_dataset_scorer_registry,
+    require_runnable_cachet_benchmark_arm,
     summarize_measurements,
     validate_v1_dataset,
     validate_v1_hardware_target,
 )
-from document_kv_cache.models import DocumentChunkType
-from document_kv_cache.storage import local_path
-from document_kv_cache.workflow import SourceChunk, SourceDocument
+from document_kv_cache._benchmark_models import (
+    BENCHMARK_DECODE_SETTING_KEYS,
+    EMPTY_REQUEST_CUSTOMIZATION_DIGEST,
+    BenchmarkArmEnvironment,
+    BenchmarkArmManifest,
+    BenchmarkExecutionWindow,
+    BenchmarkExperimentManifest,
+    BenchmarkManifestContext,
+    BenchmarkRunResult,
+    BenchmarkScorerManifest,
+    _deep_freeze_json_mapping,
+    _json_object_mapping,
+    _validate_non_empty_string,
+    _validate_non_negative_finite_number,
+    _validate_positive_finite_number,
+    _validate_positive_int,
+    _validated_decode_settings,
+)
 
 
 DEFAULT_OPENAI_COMPLETIONS_ENDPOINT = "/v1/completions"
-BENCHMARK_RUN_RECORD_TYPE = "document_kv.benchmark_run.v1"
 PREFIX_CACHE_SALT_MODES = ("static", "per_request")
+
 
 __all__ = [
     "BENCHMARK_RUN_RECORD_TYPE",
+    "BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE",
     "DEFAULT_OPENAI_COMPLETIONS_ENDPOINT",
     "BenchmarkGeneration",
     "BenchmarkEngineRequest",
     "BenchmarkEngine",
     "BenchmarkRunResult",
+    "BenchmarkExecutionWindow",
+    "BenchmarkArmManifest",
+    "BenchmarkArmEnvironment",
+    "BenchmarkScorerManifest",
+    "BenchmarkExperimentManifest",
+    "BenchmarkManifestContext",
     "OpenAICompatibleBenchmarkConfig",
     "OpenAICompatibleEngineFactory",
     "default_benchmark_arms",
     "run_benchmark_suite",
+    "load_jsonl_suite",
     "load_v1_jsonl_suite",
     "load_benchmark_jsonl",
+    "benchmark_run_result_payload_to_record",
     "benchmark_run_result_to_record",
+    "benchmark_run_result_to_evidence_record",
+    "benchmark_record_payload_digest",
+    "benchmark_experiment_manifest_to_record",
+    "benchmark_experiment_manifest_from_record",
+    "benchmark_run_result_from_record",
+    "merge_isolated_benchmark_run_records",
+    "benchmark_record_aggregate_issues",
+    "parse_benchmark_arm_specs",
+    "validate_arm_extra_body_contract",
     "write_benchmark_run_result_json",
+    "run_openai_compatible_benchmark",
     "run_openai_compatible_v1_benchmark",
     "main",
 ]
@@ -77,14 +143,20 @@ class BenchmarkGeneration:
     def __post_init__(self) -> None:
         _validate_generation_text(self.output_text, "output_text")
         _validate_generation_non_negative_int(self.prompt_tokens, "prompt_tokens")
-        _validate_generation_non_negative_int(self.completion_tokens, "completion_tokens")
-        _validate_generation_non_negative_finite_number(self.ttft_seconds, "ttft_seconds")
+        _validate_generation_non_negative_int(
+            self.completion_tokens, "completion_tokens"
+        )
+        _validate_generation_non_negative_finite_number(
+            self.ttft_seconds, "ttft_seconds"
+        )
         _validate_generation_non_negative_finite_number(
             self.time_to_completion_seconds,
             "time_to_completion_seconds",
         )
         if self.time_to_completion_seconds < self.ttft_seconds:
-            raise ValueError("time_to_completion_seconds must be greater than or equal to ttft_seconds")
+            raise ValueError(
+                "time_to_completion_seconds must be greater than or equal to ttft_seconds"
+            )
         object.__setattr__(self, "metadata", _generation_metadata(self.metadata))
 
 
@@ -107,7 +179,9 @@ class BenchmarkEngineRequest:
         object.__setattr__(
             self,
             "kv_transfer_params",
-            _json_object_mapping(self.kv_transfer_params, "kv_transfer_params"),
+            _deep_freeze_json_mapping(
+                _json_object_mapping(self.kv_transfer_params, "kv_transfer_params")
+            ),
         )
 
     @property
@@ -120,8 +194,10 @@ class BenchmarkEngineRequest:
 
     @property
     def runtime_prompt_text(self) -> str:
-        if self.arm.uses_cache:
-            runtime_prefix_text = self.kv_transfer_params.get(DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM)
+        if self.arm.requires_cachet_handoff:
+            runtime_prefix_text = self.kv_transfer_params.get(
+                DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM
+            )
             if isinstance(runtime_prefix_text, str) and runtime_prefix_text:
                 return f"{runtime_prefix_text}{self.prompt_parts.cache_suffix_text}"
             return self.prompt_parts.cache_suffix_text
@@ -141,30 +217,6 @@ class BenchmarkEngine(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class BenchmarkRunResult:
-    suite: BenchmarkSuite
-    measurements: tuple[InferenceMeasurement, ...]
-    report_rows: tuple[BenchmarkReportRow, ...]
-    comparisons: tuple[BenchmarkComparison, ...]
-    baseline_arm_id: str = BASELINE_PREFILL_ARM
-    cache_arm_id: str = CACHE_REUSE_ARM
-    request_parallelism: int = 1
-    isolate_arms: bool = True
-    arms: tuple[BenchmarkArm, ...] = ()
-    repeats: int = 1
-    shuffle: bool = False
-    seed: int | None = None
-    interleave_examples: bool = False
-    prefix_cache_salt_mode: str = "static"
-
-    @property
-    def cache_arm_ids(self) -> tuple[str, ...]:
-        if self.arms:
-            return tuple(arm.arm_id for arm in self.arms if arm.uses_cache)
-        return (self.cache_arm_id,)
-
-
-@dataclass(frozen=True, slots=True)
 class OpenAICompatibleBenchmarkConfig:
     suite_id: str
     dataset_paths: Mapping[str, str | Path]
@@ -178,6 +230,10 @@ class OpenAICompatibleBenchmarkConfig:
     repeats: int = 1
     request_parallelism: int = 1
     arm_ids: tuple[str, ...] = ()
+    arms: tuple[BenchmarkArm, ...] = ()
+    arm_base_urls: Mapping[str, str] = field(default_factory=dict)
+    arm_endpoints: Mapping[str, str] = field(default_factory=dict)
+    arm_extra_bodies: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     shuffle: bool = False
     seed: int | None = None
     isolate_arms: bool = True
@@ -192,14 +248,55 @@ class OpenAICompatibleBenchmarkConfig:
     cache_extra_body: Mapping[str, Any] = field(default_factory=dict)
     prefix_cache_salt_mode: Literal["static", "per_request"] = "static"
     interleave_examples: bool = False
+    warmups: int = 0
+    evidence_policy: Literal["smoke", "canary", "publication"] = "smoke"
+    model_revision: str = "unresolved"
+    canonical_model_id: str = ""
+    tokenizer_id: str = "unresolved"
+    tokenizer_revision: str = "unresolved"
+    lora_id: str = "base"
+    engine_id: str = "unresolved"
+    engine_version: str = "unresolved"
+    serving_platform: str = "unresolved"
+    model_dtype: str = "unresolved"
+    model_quantization: str = "none"
+    runtime_kv_dtype: str = "unresolved"
+    layout_version: str = "unresolved"
+    payload_axis_order: str = "unresolved"
+    block_size: int | None = None
+    key_position_encoding: str = "unresolved"
+    rope_theta: float | None = None
+    rope_rotary_dim: int | None = None
+    tensor_parallel_size: int | None = None
+    pipeline_parallel_size: int | None = None
+    package_revisions: tuple[tuple[str, str], ...] = ()
+    prompt_template_version: str = "v1-benchmark"
+    input_tokens_target: int | None = None
+    generation_seed: int | None = None
+    hardware_fingerprint: str = "unresolved"
+    runtime_id: str = "unresolved"
+    runtime_version: str = "unresolved"
+    storage_identity: str = "unresolved"
+    cache_state: str = "unresolved"
+    complete_dataset_split: bool = False
+    measurement_scopes: tuple[str, ...] = ("latency", "quality")
+    comparison_mode: Literal[
+        "methods_same_setting", "single_method_setting_variation"
+    ] = "methods_same_setting"
+    varied_setting: str = ""
+    reference_arm_id: str = ""
+    suite_contract: Literal["v1", "generalized"] = "v1"
 
     def __post_init__(self) -> None:
         _validate_non_empty_string(self.suite_id, "suite_id")
         dataset_paths = _validated_dataset_paths(self.dataset_paths)
         if not dataset_paths:
             raise ValueError("dataset_paths must be non-empty")
-        for dataset in dataset_paths:
-            validate_v1_dataset(dataset)
+        if self.suite_contract not in {"v1", "generalized"}:
+            raise ValueError("suite_contract must be v1 or generalized")
+        if self.suite_contract == "v1":
+            for dataset in dataset_paths:
+                validate_v1_dataset(dataset)
         _validate_non_empty_string(self.base_url, "base_url")
         if self.cache_base_url is not None:
             _validate_non_empty_string(self.cache_base_url, "cache_base_url")
@@ -208,7 +305,8 @@ class OpenAICompatibleBenchmarkConfig:
             _validate_non_empty_string(self.cache_endpoint, "cache_endpoint")
         _validate_non_empty_string(self.model_id, "model_id")
         _validate_non_empty_string(self.hardware_target, "hardware_target")
-        validate_v1_hardware_target(self.hardware_target)
+        if self.suite_contract == "v1":
+            validate_v1_hardware_target(self.hardware_target)
         if self.limit_per_dataset is not None and (
             type(self.limit_per_dataset) is not int or self.limit_per_dataset <= 0
         ):
@@ -216,6 +314,14 @@ class OpenAICompatibleBenchmarkConfig:
         _validate_positive_int(self.repeats, "repeats")
         _validate_positive_int(self.request_parallelism, "request_parallelism")
         object.__setattr__(self, "arm_ids", _validated_arm_ids(self.arm_ids))
+        arms = tuple(self.arms)
+        if self.arm_ids and arms:
+            raise ValueError("arm_ids and arms are mutually exclusive")
+        if any(not isinstance(arm, BenchmarkArm) for arm in arms):
+            raise TypeError("arms entries must be BenchmarkArm")
+        if len({arm.arm_id for arm in arms}) != len(arms):
+            raise ValueError("arms must not contain duplicate arm ids")
+        object.__setattr__(self, "arms", arms)
         if self.seed is not None and type(self.seed) is not int:
             raise ValueError("seed must be an integer when provided")
         if type(self.shuffle) is not bool:
@@ -232,55 +338,131 @@ class OpenAICompatibleBenchmarkConfig:
         if self.api_key is not None and not isinstance(self.api_key, str):
             raise ValueError("api_key must be a string when provided")
         if self.prompt_token_accounting not in {"logical", "server_usage"}:
-            raise ValueError("prompt_token_accounting must be 'logical' or 'server_usage'")
+            raise ValueError(
+                "prompt_token_accounting must be 'logical' or 'server_usage'"
+            )
         if self.prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
             raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
         if self.cache_runtime_prompt and self.cache_base_url is None:
-            raise ValueError("cache_runtime_prompt requires cache_base_url; pass the cache proxy URL explicitly")
-        object.__setattr__(self, "dataset_paths", dataset_paths)
+            raise ValueError(
+                "cache_runtime_prompt requires cache_base_url; pass the cache proxy URL explicitly"
+            )
+        object.__setattr__(self, "dataset_paths", MappingProxyType(dataset_paths))
         object.__setattr__(
             self,
             "baseline_extra_body",
-            _json_object_mapping(self.baseline_extra_body, "baseline_extra_body"),
+            _deep_freeze_json_mapping(
+                _json_object_mapping(self.baseline_extra_body, "baseline_extra_body")
+            ),
         )
         object.__setattr__(
             self,
             "cache_extra_body",
-            _json_object_mapping(self.cache_extra_body, "cache_extra_body"),
+            _deep_freeze_json_mapping(
+                _json_object_mapping(self.cache_extra_body, "cache_extra_body")
+            ),
+        )
+        object.__setattr__(
+            self,
+            "arm_base_urls",
+            MappingProxyType(
+                _validated_arm_string_mapping(self.arm_base_urls, "arm_base_urls", arms)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "arm_endpoints",
+            MappingProxyType(
+                _validated_arm_string_mapping(self.arm_endpoints, "arm_endpoints", arms)
+            ),
+        )
+        object.__setattr__(
+            self,
+            "arm_extra_bodies",
+            MappingProxyType(
+                {
+                    arm_id: _deep_freeze_json_mapping(body)
+                    for arm_id, body in _validated_arm_json_mapping(
+                        self.arm_extra_bodies,
+                        "arm_extra_bodies",
+                        arms,
+                    ).items()
+                }
+            ),
+        )
+        _validate_comparable_decode_settings(
+            self.baseline_extra_body,
+            self.cache_extra_body,
+            self.arm_extra_bodies,
+            self.arms,
+        )
+        if type(self.warmups) is not int or self.warmups < 0:
+            raise ValueError("warmups must be a non-negative integer")
+        if self.evidence_policy not in {"smoke", "canary", "publication"}:
+            raise ValueError("evidence_policy must be smoke, canary, or publication")
+        # Validate all manifest metadata and normalize package/decode settings once.
+        context = self.manifest_context
+        object.__setattr__(self, "package_revisions", context.package_revisions)
+        resolved_arms = self.arms or _benchmark_arms_for_ids(self.arm_ids)
+        _validate_comparison_design(
+            resolved_arms,
+            comparison_mode=self.comparison_mode,
+            varied_setting=self.varied_setting,
+            reference_arm_id=self.reference_arm_id,
+        )
+
+    @property
+    def manifest_context(self) -> BenchmarkManifestContext:
+        decode_settings = _common_decode_settings(
+            self.baseline_extra_body,
+            self.cache_extra_body,
+            self.arm_extra_bodies,
+            self.arms,
+        )
+        return BenchmarkManifestContext(
+            model_revision=self.model_revision,
+            canonical_model_id=self.canonical_model_id,
+            tokenizer_id=self.tokenizer_id,
+            tokenizer_revision=self.tokenizer_revision,
+            lora_id=self.lora_id,
+            engine_id=self.engine_id,
+            engine_version=self.engine_version,
+            serving_platform=self.serving_platform,
+            model_dtype=self.model_dtype,
+            model_quantization=self.model_quantization,
+            runtime_kv_dtype=self.runtime_kv_dtype,
+            layout_version=self.layout_version,
+            payload_axis_order=self.payload_axis_order,
+            block_size=self.block_size,
+            key_position_encoding=self.key_position_encoding,
+            rope_theta=self.rope_theta,
+            rope_rotary_dim=self.rope_rotary_dim,
+            tensor_parallel_size=self.tensor_parallel_size,
+            pipeline_parallel_size=self.pipeline_parallel_size,
+            package_revisions=self.package_revisions,
+            prompt_template_version=self.prompt_template_version,
+            input_tokens_target=self.input_tokens_target,
+            max_output_tokens=self.max_tokens,
+            temperature=self.temperature,
+            stream=self.stream,
+            generation_seed=self.generation_seed,
+            decode_settings=decode_settings,
+            hardware_fingerprint=self.hardware_fingerprint,
+            runtime_id=self.runtime_id,
+            runtime_version=self.runtime_version,
+            storage_identity=self.storage_identity,
+            cache_state=self.cache_state,
+            complete_dataset_split=self.complete_dataset_split,
+            measurement_scopes=self.measurement_scopes,
+            comparison_mode=self.comparison_mode,
+            varied_setting=self.varied_setting,
+            reference_arm_id=self.reference_arm_id,
         )
 
 
-OpenAICompatibleEngineFactory = Callable[[BenchmarkArm, OpenAICompatibleBenchmarkConfig], BenchmarkEngine]
-
-
-def _validate_non_empty_string(value: Any, field_name: str) -> None:
-    if not isinstance(value, str) or not value:
-        raise ValueError(f"{field_name} must be non-empty")
-
-
-def _validate_positive_int(value: Any, field_name: str) -> None:
-    if type(value) is not int or value <= 0:
-        raise ValueError(f"{field_name} must be positive")
-
-
-def _validate_non_negative_finite_number(value: Any, field_name: str) -> None:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value < 0
-    ):
-        raise ValueError(f"{field_name} must be a non-negative finite number")
-
-
-def _validate_positive_finite_number(value: Any, field_name: str) -> None:
-    if (
-        not isinstance(value, (int, float))
-        or isinstance(value, bool)
-        or not math.isfinite(value)
-        or value <= 0
-    ):
-        raise ValueError(f"{field_name} must be a positive finite number")
+OpenAICompatibleEngineFactory = Callable[
+    [BenchmarkArm, OpenAICompatibleBenchmarkConfig], BenchmarkEngine
+]
 
 
 def _validated_dataset_paths(value: Any) -> dict[str, str | Path]:
@@ -296,31 +478,215 @@ def _validated_dataset_paths(value: Any) -> dict[str, str | Path]:
     return paths
 
 
-def _json_object_mapping(value: Any, field_name: str) -> dict[str, Any]:
+_RESERVED_ARM_EXTRA_BODY_FIELDS = frozenset(
+    {
+        "model",
+        "prompt",
+        "messages",
+        "max_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "stream",
+        "stream_options",
+        "request_id",
+        "kv_transfer_params",
+    }
+)
+
+
+def _validated_arm_string_mapping(
+    value: Any,
+    field_name: str,
+    arms: Sequence[BenchmarkArm],
+) -> dict[str, str]:
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a mapping")
-    normalized: dict[str, Any] = {}
-    for key, item in value.items():
-        if not isinstance(key, str) or not key:
-            raise ValueError(f"{field_name} keys must be non-empty strings")
-        normalized[key] = _json_compatible_value(item, f"{field_name}.{key}")
+    known = {arm.arm_id for arm in arms} or {
+        arm.arm_id for arm in default_benchmark_arms()
+    }
+    normalized: dict[str, str] = {}
+    for arm_id, item in value.items():
+        if arm_id not in known:
+            raise ValueError(f"{field_name} references unknown arm {arm_id!r}")
+        _validate_non_empty_string(item, f"{field_name}.{arm_id}")
+        normalized[arm_id] = item
     return normalized
 
 
-def _json_compatible_value(value: Any, field_name: str) -> Any:
-    if value is None or isinstance(value, (str, bool)):
-        return value
-    if type(value) is int:
-        return value
-    if type(value) is float:
-        if not math.isfinite(value):
-            raise ValueError(f"{field_name} must be JSON-compatible")
-        return value
-    if isinstance(value, Mapping):
-        return _json_object_mapping(value, field_name)
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
-        return [_json_compatible_value(item, f"{field_name}[{index}]") for index, item in enumerate(value)]
-    raise ValueError(f"{field_name} must be JSON-compatible")
+def _validated_arm_json_mapping(
+    value: Any,
+    field_name: str,
+    arms: Sequence[BenchmarkArm],
+) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{field_name} must be a mapping")
+    known = {arm.arm_id for arm in arms} or {
+        arm.arm_id for arm in default_benchmark_arms()
+    }
+    normalized: dict[str, Mapping[str, Any]] = {}
+    for arm_id, item in value.items():
+        if arm_id not in known:
+            raise ValueError(f"{field_name} references unknown arm {arm_id!r}")
+        normalized[arm_id] = _json_object_mapping(item, f"{field_name}.{arm_id}")
+    return normalized
+
+
+def _decode_settings(extra_body: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: extra_body[key]
+        for key in sorted(BENCHMARK_DECODE_SETTING_KEYS.intersection(extra_body))
+    }
+
+
+def _request_customization_digest(
+    extra_body: Mapping[str, Any],
+    *,
+    dynamic_cache_salt: bool,
+) -> str:
+    """Hash static backend request customizations without retaining raw values."""
+
+    has_dynamic_cache_salt = (
+        dynamic_cache_salt
+        and isinstance(extra_body.get("cache_salt"), str)
+        and bool(extra_body["cache_salt"])
+    )
+    customization = {
+        key: value
+        for key, value in extra_body.items()
+        if key not in BENCHMARK_DECODE_SETTING_KEYS
+        and not (has_dynamic_cache_salt and key == "cache_salt")
+    }
+    return _sha256_json(customization)
+
+
+def _validated_request_customization_digests(
+    arms: Sequence[BenchmarkArm],
+    value: Mapping[str, str] | None,
+    *,
+    comparison_mode: str,
+    varied_setting: str,
+) -> dict[str, str]:
+    arm_ids = {arm.arm_id for arm in arms}
+    if value is None:
+        normalized = {
+            arm.arm_id: EMPTY_REQUEST_CUSTOMIZATION_DIGEST for arm in arms
+        }
+    else:
+        if not isinstance(value, Mapping):
+            raise TypeError("request_customization_digests must be a mapping or None")
+        supplied_ids = set(value)
+        if supplied_ids != arm_ids:
+            missing = sorted(arm_ids.difference(supplied_ids))
+            unexpected = sorted(
+                str(item) for item in supplied_ids.difference(arm_ids)
+            )
+            raise ValueError(
+                "request_customization_digests must cover every benchmark arm "
+                f"exactly; missing={missing}, unexpected={unexpected}"
+            )
+        normalized = dict(value)
+    for arm_id, digest in normalized.items():
+        if (
+            not isinstance(arm_id, str)
+            or not arm_id
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
+            raise ValueError(
+                "request_customization_digests must contain non-empty arm ids "
+                "and lowercase SHA-256 digests"
+            )
+    if (
+        comparison_mode == "single_method_setting_variation"
+        and varied_setting != "serving_platform"
+        and len(set(normalized.values())) > 1
+    ):
+        raise ValueError(
+            "single_method_setting_variation requires invariant static request "
+            "customizations unless serving_platform is varied"
+        )
+    return normalized
+
+
+def _validate_comparable_decode_settings(
+    baseline_extra_body: Mapping[str, Any],
+    cache_extra_body: Mapping[str, Any],
+    arm_extra_bodies: Mapping[str, Mapping[str, Any]],
+    arms: Sequence[BenchmarkArm],
+) -> None:
+    for label, extra_body in (
+        ("baseline_extra_body", baseline_extra_body),
+        ("cache_extra_body", cache_extra_body),
+        *(
+            (f"arm_extra_bodies.{arm_id}", body)
+            for arm_id, body in arm_extra_bodies.items()
+        ),
+    ):
+        validate_arm_extra_body_contract(extra_body, label)
+    settings = _active_decode_settings(
+        baseline_extra_body,
+        cache_extra_body,
+        arm_extra_bodies,
+        arms,
+    )
+    if settings and any(setting != settings[0] for setting in settings):
+        raise ValueError(
+            "comparable benchmark arms must use identical decode settings; "
+            "method-specific request fields must not alter decoding"
+        )
+
+
+def validate_arm_extra_body_contract(
+    extra_body: Mapping[str, Any],
+    field_name: str,
+) -> None:
+    reserved = sorted(_RESERVED_ARM_EXTRA_BODY_FIELDS.intersection(extra_body))
+    if reserved:
+        raise ValueError(
+            f"{field_name} must not override reserved request fields: "
+            f"{', '.join(reserved)}"
+        )
+    custom_params = extra_body.get("custom_params")
+    if isinstance(custom_params, Mapping) and "kv_transfer_params" in custom_params:
+        raise ValueError(
+            f"{field_name}.custom_params must not override reserved kv_transfer_params"
+        )
+    _validated_decode_settings(_decode_settings(extra_body), field_name)
+
+
+def _common_decode_settings(
+    baseline_extra_body: Mapping[str, Any],
+    cache_extra_body: Mapping[str, Any],
+    arm_extra_bodies: Mapping[str, Mapping[str, Any]],
+    arms: Sequence[BenchmarkArm],
+) -> Mapping[str, Any]:
+    candidates = _active_decode_settings(
+        baseline_extra_body,
+        cache_extra_body,
+        arm_extra_bodies,
+        arms,
+    )
+    return next((candidate for candidate in candidates if candidate), {})
+
+
+def _active_decode_settings(
+    baseline_extra_body: Mapping[str, Any],
+    cache_extra_body: Mapping[str, Any],
+    arm_extra_bodies: Mapping[str, Mapping[str, Any]],
+    arms: Sequence[BenchmarkArm],
+) -> list[dict[str, Any]]:
+    active_arms = tuple(arms) or default_benchmark_arms()
+    return [
+        _decode_settings(
+            arm_extra_bodies.get(
+                arm.arm_id,
+                cache_extra_body if arm.uses_cache else baseline_extra_body,
+            )
+        )
+        for arm in active_arms
+    ]
+
 
 def default_benchmark_arms() -> tuple[BenchmarkArm, ...]:
     return (baseline_prefill_arm(), document_kv_cache_arm())
@@ -365,22 +731,93 @@ def run_benchmark_suite(
     isolate_arms: bool = True,
     interleave_examples: bool = False,
     prefix_cache_salt_mode: str = "static",
+    warmups: int = 0,
+    scorer_registry: DatasetScorerRegistry | None = None,
+    manifest_context: BenchmarkManifestContext | None = None,
+    evidence_policy: Literal["smoke", "canary", "publication"] = "smoke",
+    reference_arm_id: str | None = None,
+    method_registry: MethodRegistry | None = None,
+    request_customization_digests: Mapping[str, str] | None = None,
 ) -> BenchmarkRunResult:
     if repeats <= 0:
         raise ValueError("repeats must be positive")
     _validate_positive_int(request_parallelism, "request_parallelism")
     if prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
         raise ValueError("prefix_cache_salt_mode must be 'static' or 'per_request'")
+    if type(warmups) is not int or warmups < 0:
+        raise ValueError("warmups must be a non-negative integer")
+    if evidence_policy not in {"smoke", "canary", "publication"}:
+        raise ValueError("evidence_policy must be smoke, canary, or publication")
+    for arm in arms:
+        require_runnable_cachet_benchmark_arm(
+            arm,
+            registry=method_registry,
+            allow_unidentified_smoke=evidence_policy == "smoke",
+        )
     _validate_engine_mapping(arms, engines)
+    resolved_context = manifest_context or BenchmarkManifestContext()
+    resolved_request_customization_digests = (
+        _validated_request_customization_digests(
+            arms,
+            request_customization_digests,
+            comparison_mode=resolved_context.comparison_mode,
+            varied_setting=resolved_context.varied_setting,
+        )
+    )
+    requested_reference = reference_arm_id or resolved_context.reference_arm_id
+    resolved_reference_arm_id = _resolve_reference_arm_id(
+        arms,
+        requested_reference,
+        comparison_mode=resolved_context.comparison_mode,
+    )
+    _validate_comparison_design(
+        arms,
+        comparison_mode=resolved_context.comparison_mode,
+        varied_setting=resolved_context.varied_setting,
+        reference_arm_id=resolved_reference_arm_id,
+    )
+    _validate_example_arm_params(suite, arms)
+    allow_legacy_cache_params = (
+        sum(1 for arm in arms if arm.requires_cachet_handoff) == 1
+    )
+    scorers = scorer_registry or default_dataset_scorer_registry()
+    if not isinstance(scorers, DatasetScorerRegistry):
+        raise TypeError("scorer_registry must be DatasetScorerRegistry")
+    for dataset in suite.datasets:
+        scorers.get(dataset)
+    _validate_scorer_prompt_template_versions(
+        suite,
+        scorers,
+        manifest_context=resolved_context,
+    )
+    if warmups:
+        _run_benchmark_warmups(
+            suite,
+            arms,
+            engines,
+            scorers,
+            warmups=warmups,
+            allow_legacy_cache_params=allow_legacy_cache_params,
+        )
     requests: list[BenchmarkEngineRequest] = []
     for example in suite.examples:
-        prompt_parts = build_prompt_parts(example)
+        prompt_parts = build_prompt_parts(
+            example,
+            scorer=scorers.get(example.dataset),
+        )
         arm_sequence = list(arms) * repeats
         if shuffle:
-            random.Random(_example_seed(seed, example.dataset, example.example_id)).shuffle(arm_sequence)
+            random.Random(
+                _example_seed(seed, example.dataset, example.example_id)
+            ).shuffle(arm_sequence)
         repeat_indices_by_arm = {arm.arm_id: 0 for arm in arms}
         for arm in arm_sequence:
             repeat_indices_by_arm[arm.arm_id] += 1
+            kv_transfer_params = _kv_transfer_params_for_arm(
+                example,
+                arm,
+                allow_legacy=allow_legacy_cache_params,
+            )
             request = BenchmarkEngineRequest(
                 suite_id=suite.suite_id,
                 model_id=suite.model_id,
@@ -393,8 +830,9 @@ def run_benchmark_suite(
                     example=example,
                     arm=arm,
                     repeat_index=repeat_indices_by_arm[arm.arm_id],
+                    kv_transfer_params=kv_transfer_params,
                 ),
-                kv_transfer_params=_kv_transfer_params_for_arm(example, arm),
+                kv_transfer_params=kv_transfer_params,
                 repeat_index=repeat_indices_by_arm[arm.arm_id],
             )
             requests.append(request)
@@ -415,20 +853,67 @@ def run_benchmark_suite(
     # measurements is identical; only the execution order/contention differs.
     if isolate_arms and len(arms) > 1:
         measurements = []
+        execution_windows: list[BenchmarkExecutionWindow] = []
         requests_by_arm: dict[str, list[BenchmarkEngineRequest]] = {}
         for request in requests:
             requests_by_arm.setdefault(request.arm.arm_id, []).append(request)
         for arm in arms:
             arm_requests = requests_by_arm.get(arm.arm_id)
             if arm_requests:
-                measurements.extend(
-                    _run_requests(arm_requests, engines, request_parallelism=request_parallelism)
+                window_started = time.monotonic()
+                arm_measurements = _run_requests(
+                    arm_requests,
+                    engines,
+                    scorer_registry=scorers,
+                    request_parallelism=request_parallelism,
+                )
+                window_seconds = max(time.monotonic() - window_started, 1e-12)
+                measurements.extend(arm_measurements)
+                execution_windows.append(
+                    _execution_window(
+                        arm.arm_id,
+                        arm_measurements,
+                        wall_seconds=window_seconds,
+                    )
                 )
     else:
-        measurements = _run_requests(requests, engines, request_parallelism=request_parallelism)
-    report_rows = summarize_measurements(measurements)
-    baseline_arm_id = _arm_id_for_prefill(arms)
-    cache_arm_ids = tuple(arm.arm_id for arm in arms if arm.uses_cache)
+        window_started = time.monotonic()
+        measurements = _run_requests(
+            requests,
+            engines,
+            scorer_registry=scorers,
+            request_parallelism=request_parallelism,
+        )
+        window_seconds = max(time.monotonic() - window_started, 1e-12)
+        if len(arms) == 1:
+            execution_windows = [
+                _execution_window(
+                    arms[0].arm_id,
+                    measurements,
+                    wall_seconds=window_seconds,
+                )
+            ]
+        else:
+            execution_windows = [
+                _execution_window(
+                    "all_arms",
+                    measurements,
+                    wall_seconds=window_seconds,
+                )
+            ]
+    aggregate_throughput = {
+        window.arm_id: window.aggregate_output_tokens_per_second
+        for window in execution_windows
+    }
+    report_rows = tuple(
+        replace(
+            row,
+            aggregate_output_tokens_per_second=aggregate_throughput.get(row.arm_id),
+        )
+        for row in summarize_measurements(measurements)
+    )
+    baseline_arm_id = resolved_reference_arm_id
+    cache_arm_ids = tuple(arm.arm_id for arm in arms if arm.arm_id != baseline_arm_id)
     cache_arm_id = cache_arm_ids[0] if cache_arm_ids else CACHE_REUSE_ARM
     comparisons = tuple(
         comparison
@@ -438,6 +923,24 @@ def run_benchmark_suite(
             baseline_arm_id=baseline_arm_id,
             cache_arm_id=candidate_arm_id,
         )
+    )
+    experiment_manifest = _build_experiment_manifest(
+        suite,
+        arms=arms,
+        measurements=measurements,
+        scorer_registry=scorers,
+        context=resolved_context,
+        request_parallelism=request_parallelism,
+        repeats=repeats,
+        warmups=warmups,
+        isolate_arms=isolate_arms if len(arms) > 1 else True,
+        shuffle=shuffle,
+        seed=seed,
+        interleave_examples=interleave_examples,
+        baseline_arm_id=baseline_arm_id,
+        request_customization_digests=(
+            resolved_request_customization_digests
+        ),
     )
     return BenchmarkRunResult(
         suite=suite,
@@ -454,77 +957,91 @@ def run_benchmark_suite(
         seed=seed,
         interleave_examples=interleave_examples,
         prefix_cache_salt_mode=prefix_cache_salt_mode,
+        warmups=warmups,
+        experiment_manifest=experiment_manifest,
+        evidence_policy=evidence_policy,
+        execution_windows=tuple(execution_windows),
+        execution_isolation_mode=(
+            "shared_process_sequential"
+            if isolate_arms or len(arms) == 1
+            else "shared_process_concurrent"
+        ),
     )
 
 
-def load_v1_jsonl_suite(
+def _execution_window(
+    arm_id: str,
+    measurements: Sequence[InferenceMeasurement],
     *,
-    suite_id: str,
-    paths: Mapping[str, str | Path],
-    model_id: str | None = None,
-    hardware_target: str | None = None,
-    limit_per_dataset: int | None = None,
-) -> BenchmarkSuite:
-    examples: list[BenchmarkExample] = []
-    for dataset, path in paths.items():
-        validate_v1_dataset(dataset)
-        dataset_examples = load_benchmark_jsonl(
-            path,
-            dataset=dataset,
-            limit=limit_per_dataset,
-            require_dataset=True,
-        )
-        if not dataset_examples:
-            raise ValueError(f"Dataset {dataset!r} must include at least one example")
-        examples.extend(dataset_examples)
-    kwargs: dict[str, Any] = {
-        "suite_id": suite_id,
-        "examples": tuple(examples),
-        "datasets": tuple(paths),
+    wall_seconds: float,
+) -> BenchmarkExecutionWindow:
+    successful = tuple(measurement for measurement in measurements if measurement.ok)
+    return BenchmarkExecutionWindow(
+        arm_id=arm_id,
+        wall_seconds=wall_seconds,
+        completion_tokens=sum(
+            measurement.completion_tokens for measurement in successful
+        ),
+        successful_requests=len(successful),
+    )
+
+
+def _validate_scorer_prompt_template_versions(
+    suite: BenchmarkSuite,
+    scorer_registry: DatasetScorerRegistry,
+    *,
+    manifest_context: BenchmarkManifestContext,
+) -> None:
+    declared = {
+        scorer_registry.get(dataset).prompt_template_version
+        for dataset in suite.datasets
+        if scorer_registry.get(dataset).prompt_template_version
     }
-    if model_id is not None:
-        kwargs["model_id"] = model_id
-    if hardware_target is not None:
-        kwargs["hardware_target"] = hardware_target
-    suite = BenchmarkSuite(**kwargs)
-    if not suite.examples:
-        raise ValueError("Benchmark suite must include at least one example")
-    return suite
-
-
-def load_benchmark_jsonl(
-    path: str | Path,
-    *,
-    dataset: str | None = None,
-    limit: int | None = None,
-    require_dataset: bool = False,
-) -> tuple[BenchmarkExample, ...]:
-    if limit is not None and limit < 0:
-        raise ValueError("limit must be non-negative")
-    examples: list[BenchmarkExample] = []
-    records = _iter_jsonl(path)
-    if limit is not None:
-        records = islice(records, limit)
-    for record_index, (line_number, record) in enumerate(records, start=1):
-        try:
-            example = _example_from_record(
-                record,
-                default_dataset=dataset,
-                record_index=record_index,
-                require_dataset=require_dataset,
-            )
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f"Benchmark JSONL line {line_number}: {exc}") from exc
-        examples.append(example)
-    return tuple(examples)
+    if len(declared) > 1:
+        raise ValueError(
+            "benchmark scorers must declare one shared prompt_template_version; "
+            f"got {sorted(declared)}"
+        )
+    if declared and next(iter(declared)) != manifest_context.prompt_template_version:
+        raise ValueError(
+            "scorer prompt_template_version must match "
+            "manifest_context.prompt_template_version"
+        )
 
 
 def run_openai_compatible_v1_benchmark(
     config: OpenAICompatibleBenchmarkConfig,
     *,
     engine_factory: OpenAICompatibleEngineFactory | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> BenchmarkRunResult:
-    suite = load_v1_jsonl_suite(
+    if config.suite_contract != "v1":
+        raise ValueError(
+            "run_openai_compatible_v1_benchmark requires suite_contract='v1'"
+        )
+    return run_openai_compatible_benchmark(
+        config,
+        scorer_registry=default_dataset_scorer_registry(),
+        engine_factory=engine_factory,
+        method_registry=method_registry,
+    )
+
+
+def run_openai_compatible_benchmark(
+    config: OpenAICompatibleBenchmarkConfig,
+    *,
+    scorer_registry: DatasetScorerRegistry,
+    engine_factory: OpenAICompatibleEngineFactory | None = None,
+    method_registry: MethodRegistry | None = None,
+) -> BenchmarkRunResult:
+    """Run the generalized OpenAI-compatible path with an explicit scorer registry."""
+
+    if not isinstance(scorer_registry, DatasetScorerRegistry):
+        raise TypeError("scorer_registry must be DatasetScorerRegistry")
+    suite_loader = (
+        load_v1_jsonl_suite if config.suite_contract == "v1" else load_jsonl_suite
+    )
+    suite = suite_loader(
         suite_id=config.suite_id,
         paths=config.dataset_paths,
         model_id=config.model_id,
@@ -532,7 +1049,14 @@ def run_openai_compatible_v1_benchmark(
         limit_per_dataset=config.limit_per_dataset,
     )
     factory = engine_factory or _openai_compatible_engine
-    arms = _benchmark_arms_for_ids(config.arm_ids)
+    arms = config.arms or _benchmark_arms_for_ids(config.arm_ids)
+    request_customization_digests = {
+        arm.arm_id: _request_customization_digest(
+            _effective_arm_extra_body(arm, config),
+            dynamic_cache_salt=config.prefix_cache_salt_mode == "per_request",
+        )
+        for arm in arms
+    }
     engines = {arm.arm_id: factory(arm, config) for arm in arms}
     return run_benchmark_suite(
         suite,
@@ -545,90 +1069,14 @@ def run_openai_compatible_v1_benchmark(
         isolate_arms=config.isolate_arms,
         interleave_examples=config.interleave_examples,
         prefix_cache_salt_mode=config.prefix_cache_salt_mode,
+        warmups=config.warmups,
+        scorer_registry=scorer_registry,
+        manifest_context=config.manifest_context,
+        evidence_policy=config.evidence_policy,
+        reference_arm_id=config.reference_arm_id or None,
+        method_registry=method_registry,
+        request_customization_digests=request_customization_digests,
     )
-
-
-def benchmark_run_result_to_record(result: BenchmarkRunResult) -> dict[str, Any]:
-    from document_kv_cache.benchmark_statistics import (
-        paired_benchmark_statistics,
-        paired_benchmark_statistics_to_record,
-    )
-
-    return {
-        "record_type": BENCHMARK_RUN_RECORD_TYPE,
-        "suite": {
-            "suite_id": result.suite.suite_id,
-            "model_id": result.suite.model_id,
-            "hardware_target": result.suite.hardware_target,
-            "datasets": list(result.suite.datasets),
-            "examples": len(result.suite.examples),
-            "request_parallelism": result.request_parallelism,
-            "isolate_arms": result.isolate_arms,
-            "repeats": result.repeats,
-            "shuffle": result.shuffle,
-            "seed": result.seed,
-            "interleave_examples": result.interleave_examples,
-            "prefix_cache_salt_mode": result.prefix_cache_salt_mode,
-            "arms": [
-                {
-                    "arm_id": arm.arm_id,
-                    "uses_cache": arm.uses_cache,
-                    "cache_method": arm.cache_method,
-                    "connector_mode": arm.connector_mode,
-                    "variant_id": arm.variant_id,
-                    "description": arm.description,
-                }
-                for arm in result.arms
-            ],
-        },
-        "measurements": [_measurement_to_record(measurement) for measurement in result.measurements],
-        "report_rows": [_report_row_to_record(row) for row in result.report_rows],
-        "comparisons": [_comparison_to_record(comparison) for comparison in result.comparisons],
-        "paired_statistics": paired_benchmark_statistics_to_record(
-            paired_benchmark_statistics(result)
-        ),
-        "v1_evidence": _v1_evidence_to_record(
-            evaluate_v1_benchmark_evidence(
-                _rows_for_arm_pair(
-                    result.report_rows,
-                    baseline_arm_id=result.baseline_arm_id,
-                    cache_arm_id=result.cache_arm_id,
-                ),
-                _comparisons_for_arm_pair(
-                    result.comparisons,
-                    baseline_arm_id=result.baseline_arm_id,
-                    cache_arm_id=result.cache_arm_id,
-                ),
-                baseline_arm_id=result.baseline_arm_id,
-                cache_arm_id=result.cache_arm_id,
-            )
-        ),
-        "v1_evidence_by_cache_arm": {
-            cache_arm_id: _v1_evidence_to_record(
-                evaluate_v1_benchmark_evidence(
-                    _rows_for_arm_pair(
-                        result.report_rows,
-                        baseline_arm_id=result.baseline_arm_id,
-                        cache_arm_id=cache_arm_id,
-                    ),
-                    _comparisons_for_arm_pair(
-                        result.comparisons,
-                        baseline_arm_id=result.baseline_arm_id,
-                        cache_arm_id=cache_arm_id,
-                    ),
-                    baseline_arm_id=result.baseline_arm_id,
-                    cache_arm_id=cache_arm_id,
-                )
-            )
-            for cache_arm_id in result.cache_arm_ids
-        },
-    }
-
-
-def write_benchmark_run_result_json(result: BenchmarkRunResult, path: str | Path) -> None:
-    output_path = local_path(str(path))
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(benchmark_run_result_to_record(result), indent=2, sort_keys=True) + "\n")
 
 
 def _interleave_requests_by_example(
@@ -655,20 +1103,37 @@ def _run_requests(
     requests: Sequence[BenchmarkEngineRequest],
     engines: Mapping[str, BenchmarkEngine],
     *,
+    scorer_registry: DatasetScorerRegistry,
     request_parallelism: int,
 ) -> list[InferenceMeasurement]:
     if request_parallelism == 1:
-        return [_run_engine(request, engines[request.arm.arm_id]) for request in requests]
+        return [
+            _run_engine(
+                request,
+                engines[request.arm.arm_id],
+                scorer_registry=scorer_registry,
+            )
+            for request in requests
+        ]
     with ThreadPoolExecutor(max_workers=request_parallelism) as executor:
         return list(
             executor.map(
-                lambda request: _run_engine(request, engines[request.arm.arm_id]),
+                lambda request: _run_engine(
+                    request,
+                    engines[request.arm.arm_id],
+                    scorer_registry=scorer_registry,
+                ),
                 requests,
             )
         )
 
 
-def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> InferenceMeasurement:
+def _run_engine(
+    request: BenchmarkEngineRequest,
+    engine: BenchmarkEngine,
+    *,
+    scorer_registry: DatasetScorerRegistry,
+) -> InferenceMeasurement:
     cache_method, artifact_id = _request_cache_identity(request)
     try:
         generation = engine.generate(request)
@@ -683,6 +1148,7 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
             time_to_completion_seconds=0.0,
             output_text="",
             expected_answer=request.example.expected_answer,
+            references=request.example.references,
             error=_exception_message(exc),
             metadata={"error_type": type(exc).__name__},
             cache_method=cache_method,
@@ -691,6 +1157,29 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
             request_id=request.request_id or "",
             repeat_index=request.repeat_index,
         )
+    scorer = scorer_registry.get(request.example.dataset)
+    quality_scores = scorer.score(
+        DatasetScoreContext(
+            dataset=request.example.dataset,
+            example_id=request.example.example_id,
+            output_text=generation.output_text,
+            references=request.example.references,
+            metadata=request.example.metadata,
+        )
+    )
+    metadata = dict(generation.metadata)
+    metadata.update(
+        {
+            "logical_prompt_sha256": sha256(
+                request.logical_prompt_text.encode("utf-8")
+            ).hexdigest(),
+            "runtime_prompt_sha256": sha256(
+                request.runtime_prompt_text.encode("utf-8")
+            ).hexdigest(),
+            "physical_transform_id": request.arm.physical_transform_id,
+            "physical_transform_version": request.arm.physical_transform_version,
+        }
+    )
     return InferenceMeasurement(
         example_id=request.example.example_id,
         dataset=request.example.dataset,
@@ -701,13 +1190,67 @@ def _run_engine(request: BenchmarkEngineRequest, engine: BenchmarkEngine) -> Inf
         time_to_completion_seconds=generation.time_to_completion_seconds,
         output_text=generation.output_text,
         expected_answer=request.example.expected_answer,
-        metadata=dict(generation.metadata),
+        references=request.example.references,
+        metadata=metadata,
         cache_method=cache_method,
         artifact_id=artifact_id,
         variant_id=request.arm.variant_id,
         request_id=request.request_id or "",
         repeat_index=request.repeat_index,
+        scorer_id=scorer.scorer_id,
+        scorer_version=scorer.version,
+        quality_scores=quality_scores,
     )
+
+
+def _run_benchmark_warmups(
+    suite: BenchmarkSuite,
+    arms: Sequence[BenchmarkArm],
+    engines: Mapping[str, BenchmarkEngine],
+    scorer_registry: DatasetScorerRegistry,
+    *,
+    warmups: int,
+    allow_legacy_cache_params: bool,
+) -> None:
+    example = suite.examples[0]
+    prompt_parts = build_prompt_parts(
+        example,
+        scorer=scorer_registry.get(example.dataset),
+    )
+    for arm in arms:
+        for warmup_index in range(1, warmups + 1):
+            kv_transfer_params = _kv_transfer_params_for_arm(
+                example,
+                arm,
+                allow_legacy=allow_legacy_cache_params,
+            )
+            request = BenchmarkEngineRequest(
+                suite_id=f"{suite.suite_id}:warmup",
+                model_id=suite.model_id,
+                hardware_target=suite.hardware_target,
+                example=example,
+                arm=arm,
+                prompt_parts=prompt_parts,
+                request_id=_request_id_for_arm(
+                    suite_id=f"{suite.suite_id}:warmup",
+                    example=example,
+                    arm=arm,
+                    repeat_index=warmup_index,
+                    kv_transfer_params=kv_transfer_params,
+                ),
+                kv_transfer_params=kv_transfer_params,
+                repeat_index=warmup_index,
+            )
+            measurement = _run_engine(
+                request,
+                engines[arm.arm_id],
+                scorer_registry=scorer_registry,
+            )
+            if not measurement.ok:
+                raise RuntimeError(
+                    f"warmup {warmup_index} for arm {arm.arm_id!r} failed: "
+                    f"{measurement.error}"
+                )
 
 
 def _request_cache_identity(request: BenchmarkEngineRequest) -> tuple[str, str]:
@@ -726,7 +1269,11 @@ def _request_cache_identity(request: BenchmarkEngineRequest) -> tuple[str, str]:
         raise ValueError(
             f"kv_transfer_params.{DOCUMENT_KV_ARTIFACT_ID_PARAM} must be a string"
         )
-    if request.arm.cache_method and cache_method and request.arm.cache_method != cache_method:
+    if (
+        request.arm.cache_method
+        and cache_method
+        and request.arm.cache_method != cache_method
+    ):
         raise ValueError(
             f"Benchmark arm method {request.arm.cache_method!r} does not match "
             f"handoff method {cache_method!r}"
@@ -748,12 +1295,19 @@ def _validate_generation_non_negative_int(value: Any, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a non-negative integer")
 
 
-def _validate_generation_non_negative_finite_number(value: Any, field_name: str) -> None:
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+def _validate_generation_non_negative_finite_number(
+    value: Any, field_name: str
+) -> None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
         raise ValueError(f"{field_name} must be a non-negative finite number")
 
 
-def _generation_metadata(metadata: Mapping[str, str]) -> dict[str, str]:
+def _generation_metadata(metadata: Mapping[str, str]) -> Mapping[str, str]:
     if not isinstance(metadata, Mapping):
         raise TypeError("metadata must be a mapping")
     normalized = {}
@@ -763,19 +1317,50 @@ def _generation_metadata(metadata: Mapping[str, str]) -> dict[str, str]:
         if not isinstance(value, str):
             raise ValueError(f"metadata.{key} must be a string")
         normalized[key] = value
-    return normalized
+    return MappingProxyType(normalized)
 
 
-def _openai_compatible_engine(arm: BenchmarkArm, config: OpenAICompatibleBenchmarkConfig) -> BenchmarkEngine:
+def _effective_arm_extra_body(
+    arm: BenchmarkArm,
+    config: OpenAICompatibleBenchmarkConfig,
+) -> Mapping[str, Any]:
+    return config.arm_extra_bodies.get(
+        arm.arm_id,
+        config.cache_extra_body if arm.uses_cache else config.baseline_extra_body,
+    )
+
+
+def _openai_compatible_engine(
+    arm: BenchmarkArm, config: OpenAICompatibleBenchmarkConfig
+) -> BenchmarkEngine:
     from document_kv_cache.openai_compatible import (  # Local import avoids an import cycle.
         OpenAICompatibleCompletionEngine,
         OpenAICompatibleEngineConfig,
     )
 
-    base_url = config.cache_base_url if arm.uses_cache and config.cache_base_url is not None else config.base_url
-    endpoint = config.cache_endpoint if arm.uses_cache and config.cache_endpoint is not None else config.endpoint
-    prompt_text_mode = "runtime" if arm.uses_cache and config.cache_runtime_prompt else "logical"
-    extra_body = config.cache_extra_body if arm.uses_cache else config.baseline_extra_body
+    default_base_url = (
+        config.cache_base_url
+        if arm.uses_cache and config.cache_base_url is not None
+        else config.base_url
+    )
+    default_endpoint = (
+        config.cache_endpoint
+        if arm.uses_cache and config.cache_endpoint is not None
+        else config.endpoint
+    )
+    base_url = config.arm_base_urls.get(arm.arm_id, default_base_url)
+    endpoint = config.arm_endpoints.get(arm.arm_id, default_endpoint)
+    prompt_text_mode: Literal["logical", "runtime"] = (
+        "runtime" if arm.uses_cache and config.cache_runtime_prompt else "logical"
+    )
+    extra_body = dict(_effective_arm_extra_body(arm, config))
+    if config.generation_seed is not None:
+        configured_seed = extra_body.get("seed")
+        if configured_seed is not None and configured_seed != config.generation_seed:
+            raise ValueError(
+                f"arm {arm.arm_id!r} extra_body seed conflicts with generation_seed"
+            )
+        extra_body["seed"] = config.generation_seed
     extra_body_factory = (
         _prefix_cache_salt_extra_body_factory(extra_body)
         if config.prefix_cache_salt_mode == "per_request"
@@ -821,117 +1406,6 @@ def _prefix_cache_salt_extra_body_factory(
     return extra_body
 
 
-def _measurement_to_record(measurement: InferenceMeasurement) -> dict[str, Any]:
-    return {
-        "example_id": measurement.example_id,
-        "dataset": measurement.dataset,
-        "arm_id": measurement.arm_id,
-        "prompt_tokens": measurement.prompt_tokens,
-        "completion_tokens": measurement.completion_tokens,
-        "ttft_seconds": measurement.ttft_seconds,
-        "time_to_completion_seconds": measurement.time_to_completion_seconds,
-        "output_text": measurement.output_text,
-        "expected_answer": measurement.expected_answer,
-        "exact_match": measurement.exact_match,
-        "answer_found": measurement.answer_found,
-        "error": measurement.error,
-        "metadata": dict(measurement.metadata),
-        "cache_method": measurement.cache_method,
-        "artifact_id": measurement.artifact_id,
-        "variant_id": measurement.variant_id,
-        "request_id": measurement.request_id,
-        "repeat_index": measurement.repeat_index,
-    }
-
-
-def _report_row_to_record(row: BenchmarkReportRow) -> dict[str, Any]:
-    return {
-        "dataset": row.dataset,
-        "arm_id": row.arm_id,
-        "requests": row.requests,
-        "errors": row.errors,
-        "prompt_tokens_mean": row.prompt_tokens_mean,
-        "completion_tokens_mean": row.completion_tokens_mean,
-        "ttft": _latency_to_record(row.ttft),
-        "time_to_completion": _latency_to_record(row.time_to_completion),
-        "exact_match_rate": row.exact_match_rate,
-        "answer_found_rate": row.answer_found_rate,
-        "output_tokens_per_second": row.output_tokens_per_second,
-        "cache_method": row.cache_method,
-        "artifact_id": row.artifact_id,
-        "variant_id": row.variant_id,
-    }
-
-
-def _comparison_to_record(comparison: BenchmarkComparison) -> dict[str, Any]:
-    return {
-        "dataset": comparison.dataset,
-        "baseline_arm_id": comparison.baseline_arm_id,
-        "cache_arm_id": comparison.cache_arm_id,
-        "ttft_speedup": comparison.ttft_speedup,
-        "time_to_completion_speedup": comparison.time_to_completion_speedup,
-        "exact_match_delta": comparison.exact_match_delta,
-        "answer_found_delta": comparison.answer_found_delta,
-        "cache_method": comparison.cache_method,
-        "artifact_id": comparison.artifact_id,
-        "variant_id": comparison.variant_id,
-    }
-
-
-def _rows_for_arm_pair(
-    rows: Sequence[BenchmarkReportRow],
-    *,
-    baseline_arm_id: str,
-    cache_arm_id: str,
-) -> tuple[BenchmarkReportRow, ...]:
-    arm_ids = {baseline_arm_id, cache_arm_id}
-    return tuple(row for row in rows if row.arm_id in arm_ids)
-
-
-def _comparisons_for_arm_pair(
-    comparisons: Sequence[BenchmarkComparison],
-    *,
-    baseline_arm_id: str,
-    cache_arm_id: str,
-) -> tuple[BenchmarkComparison, ...]:
-    return tuple(
-        comparison
-        for comparison in comparisons
-        if comparison.baseline_arm_id == baseline_arm_id
-        and comparison.cache_arm_id == cache_arm_id
-    )
-
-
-def _v1_evidence_to_record(evidence: Any) -> dict[str, Any]:
-    return {
-        "ok": evidence.ok,
-        "required_datasets": list(evidence.required_datasets),
-        "baseline_arm_id": evidence.baseline_arm_id,
-        "cache_arm_id": evidence.cache_arm_id,
-        "duplicate_required_datasets": list(evidence.duplicate_required_datasets),
-        "duplicate_report_rows": list(evidence.duplicate_report_rows),
-        "duplicate_comparisons": list(evidence.duplicate_comparisons),
-        "missing_report_rows": list(evidence.missing_report_rows),
-        "missing_comparisons": list(evidence.missing_comparisons),
-        "comparisons_without_metrics": list(evidence.comparisons_without_metrics),
-        "rows_without_successful_requests": list(evidence.rows_without_successful_requests),
-        "rows_without_latency": list(evidence.rows_without_latency),
-        "rows_without_quality": list(evidence.rows_without_quality),
-        "unexpected_arms": list(evidence.unexpected_arms),
-        "unexpected_datasets": list(evidence.unexpected_datasets),
-        "issues": list(evidence.issues),
-    }
-
-
-def _latency_to_record(summary: Any) -> dict[str, Any]:
-    return {
-        "count": summary.count,
-        "mean": summary.mean,
-        "p50": summary.p50,
-        "p95": summary.p95,
-    }
-
-
 def _normalize_openai_base_url(base_url: str, *, endpoint: str) -> str:
     stripped = base_url.rstrip("/")
     if endpoint == DEFAULT_OPENAI_COMPLETIONS_ENDPOINT and stripped.endswith("/v1"):
@@ -939,13 +1413,68 @@ def _normalize_openai_base_url(base_url: str, *, endpoint: str) -> str:
     return stripped
 
 
-def _validate_engine_mapping(arms: Sequence[BenchmarkArm], engines: Mapping[str, BenchmarkEngine]) -> None:
+def _validate_engine_mapping(
+    arms: Sequence[BenchmarkArm], engines: Mapping[str, BenchmarkEngine]
+) -> None:
     missing = [arm.arm_id for arm in arms if arm.arm_id not in engines]
     if missing:
         raise ValueError(f"Missing benchmark engines for arms: {missing}")
     arm_ids = [arm.arm_id for arm in arms]
     if len(set(arm_ids)) != len(arm_ids):
         raise ValueError(f"Duplicate benchmark arm ids: {arm_ids}")
+
+
+def _validate_example_arm_params(
+    suite: BenchmarkSuite,
+    arms: Sequence[BenchmarkArm],
+) -> None:
+    arms_by_id = {arm.arm_id: arm for arm in arms}
+    cache_arm_ids = {arm.arm_id for arm in arms if arm.requires_cachet_handoff}
+    for example in suite.examples:
+        unknown = set(example.arm_kv_transfer_params).difference(arms_by_id)
+        if unknown:
+            raise ValueError(
+                f"example {example.dataset}:{example.example_id} has request params "
+                f"for unknown arms: {sorted(unknown)}"
+            )
+        non_cache = {
+            arm_id
+            for arm_id in example.arm_kv_transfer_params
+            if not arms_by_id[arm_id].requires_cachet_handoff
+        }
+        if non_cache:
+            raise ValueError(
+                f"example {example.dataset}:{example.example_id} assigns KV transfer "
+                f"params to non-cache arms: {sorted(non_cache)}"
+            )
+        if len(cache_arm_ids) > 1:
+            missing = cache_arm_ids.difference(example.arm_kv_transfer_params)
+            if missing:
+                raise ValueError(
+                    f"example {example.dataset}:{example.example_id} must declare distinct "
+                    f"arm_kv_transfer_params for every cache arm; missing {sorted(missing)}"
+                )
+        for arm_id, params in example.arm_kv_transfer_params.items():
+            declared_method = params.get(DOCUMENT_KV_CACHE_METHOD_PARAM)
+            expected_method = arms_by_id[arm_id].cache_method
+            if declared_method is not None and declared_method != expected_method:
+                raise ValueError(
+                    f"example {example.dataset}:{example.example_id} arm {arm_id!r} "
+                    f"declares cache method {declared_method!r}, expected "
+                    f"{expected_method!r}"
+                )
+        if len(cache_arm_ids) == 1 and example.kv_transfer_params:
+            arm_id = next(iter(cache_arm_ids))
+            declared_method = example.kv_transfer_params.get(
+                DOCUMENT_KV_CACHE_METHOD_PARAM
+            )
+            expected_method = arms_by_id[arm_id].cache_method
+            if declared_method is not None and declared_method != expected_method:
+                raise ValueError(
+                    f"example {example.dataset}:{example.example_id} legacy KV params "
+                    f"declare cache method {declared_method!r}, expected "
+                    f"{expected_method!r} for arm {arm_id!r}"
+                )
 
 
 def _arm_id_for_prefill(arms: Sequence[BenchmarkArm]) -> str:
@@ -962,26 +1491,23 @@ def _arm_id_for_cache(arms: Sequence[BenchmarkArm]) -> str:
     return CACHE_REUSE_ARM
 
 
-def _kv_transfer_params_for_arm(example: BenchmarkExample, arm: BenchmarkArm) -> Mapping[str, Any]:
-    if not arm.uses_cache:
-        return {}
-    return example.kv_transfer_params
-
-
 def _request_id_for_arm(
     *,
     suite_id: str,
     example: BenchmarkExample,
     arm: BenchmarkArm,
     repeat_index: int,
+    kv_transfer_params: Mapping[str, Any],
 ) -> str | None:
     if not arm.uses_cache:
         return None
-    handoff_request_id = example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+    handoff_request_id = kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
     if handoff_request_id is None:
         return None
     if not isinstance(handoff_request_id, str) or not handoff_request_id:
-        raise ValueError(f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} must be a non-empty string")
+        raise ValueError(
+            f"kv_transfer_params.{DOCUMENT_KV_REQUEST_ID_PARAM} must be a non-empty string"
+        )
     return (
         f"{suite_id}:"
         f"{example.dataset}:"
@@ -1000,391 +1526,30 @@ def _example_seed(seed: int | None, dataset: str, example_id: str) -> int:
     return value
 
 
-def _iter_jsonl(path: str | Path) -> Iterable[tuple[int, Mapping[str, Any]]]:
-    with local_path(str(path)).open("r", encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Benchmark JSONL line {line_number} is not valid JSON: {exc.msg}") from exc
-            if not isinstance(record, Mapping):
-                raise ValueError(f"Benchmark JSONL line {line_number} must be an object")
-            yield line_number, record
-
-
-def _example_from_record(
-    record: Mapping[str, Any],
-    *,
-    default_dataset: str | None,
-    record_index: int,
-    require_dataset: bool,
-) -> BenchmarkExample:
-    dataset = _string_field(record, "dataset", default=default_dataset)
-    validate_v1_dataset(dataset)
-    if require_dataset and default_dataset is not None and dataset != default_dataset:
-        raise ValueError(
-            f"dataset {dataset!r} does not match expected dataset {default_dataset!r}"
-        )
-    return BenchmarkExample(
-        example_id=_string_field(record, "example_id", fallback_fields=("id",), default=f"{dataset}-{record_index}"),
-        dataset=dataset,
-        documents=tuple(_documents_from_record(record)),
-        query=_string_field(record, "query", fallback_fields=("question",)),
-        expected_answer=_optional_string_field(record, "expected_answer", fallback_fields=("answer", "target")),
-        metadata=_string_mapping(record.get("metadata", {}), field_name="metadata"),
-        kv_transfer_params=_json_object_mapping(record.get("kv_transfer_params", {}), "kv_transfer_params"),
-    )
-
-
-def _validate_benchmark_jsonl_record(
-    record: Mapping[str, Any],
-    *,
-    dataset: str | None = None,
-    record_index: int = 1,
-    require_dataset: bool = False,
-) -> None:
-    _example_from_record(
-        record,
-        default_dataset=dataset,
-        record_index=record_index,
-        require_dataset=require_dataset,
-    )
-
-
-def _documents_from_record(record: Mapping[str, Any]) -> tuple[SourceDocument, ...]:
-    raw_documents = record.get("documents")
-    if raw_documents is None:
-        raw_documents = record.get("contexts")
-    if raw_documents is None:
-        raw_documents = record.get("paragraphs")
-    if raw_documents is None:
-        raw_documents = record.get("context")
-    if raw_documents is None:
-        raise ValueError("Benchmark JSONL record must include documents, contexts, paragraphs, or context")
-    normalized_documents = _normalize_raw_documents(raw_documents)
-    documents = tuple(_document_from_record(document, index=index) for index, document in enumerate(normalized_documents))
-    if not documents:
-        raise ValueError("documents must contain at least one document")
-    return documents
-
-
-def _normalize_raw_documents(raw_documents: Any) -> tuple[Any, ...]:
-    if isinstance(raw_documents, Mapping):
-        return tuple({"document_id": key, "text": value} for key, value in raw_documents.items())
-    if isinstance(raw_documents, str):
-        return (raw_documents,)
-    if not isinstance(raw_documents, Sequence) or isinstance(raw_documents, bytes):
-        raise ValueError("documents must be a sequence of document objects")
-    if raw_documents and _looks_like_hotpot_context_pair(raw_documents[0]):
-        return tuple(_hotpot_pair_to_document(item, index=index) for index, item in enumerate(raw_documents))
-    return tuple(raw_documents)
-
-
-def _looks_like_hotpot_context_pair(value: Any) -> bool:
-    return (
-        isinstance(value, Sequence)
-        and not isinstance(value, (str, bytes))
-        and len(value) == 2
-        and isinstance(value[1], Sequence)
-        and not isinstance(value[1], (str, bytes))
-    )
-
-
-def _hotpot_pair_to_document(value: Any, *, index: int) -> Mapping[str, Any]:
-    if not _looks_like_hotpot_context_pair(value):
-        raise ValueError(f"HotpotQA context entry {index} must be [title, sentences]")
-    title = _coerce_string(value[0], field_name=f"context {index} title")
-    return {
-        "document_id": title or f"doc-{index}",
-        "title": title,
-        "sentences": value[1],
-    }
-
-
-def _document_from_record(record: Any, *, index: int) -> SourceDocument:
-    if isinstance(record, str):
-        return SourceDocument.from_texts(document_id=f"doc-{index}", chunks={"text": record})
-    if not isinstance(record, Mapping):
-        raise ValueError("documents entries must be objects or strings")
-    document_id = _string_field(record, "document_id", fallback_fields=("id", "title", "idx"), default=f"doc-{index}")
-    metadata = _string_mapping(record.get("metadata", {}), field_name="document metadata")
-    title = _optional_string_field(record, "title", fallback_fields=("name",))
-    if title is not None and "title" not in metadata:
-        metadata = {**metadata, "title": title}
-    return SourceDocument(
-        document_id=document_id,
-        chunks=_chunks_from_record(record),
-        metadata=metadata,
-    )
-
-
-def _chunks_from_record(record: Mapping[str, Any]) -> tuple[SourceChunk, ...]:
-    chunks: list[SourceChunk] = []
-    static_text = _optional_string_field(record, "static_text", fallback_fields=("summary",))
-    if static_text is not None:
-        chunks.append(
-            SourceChunk(
-                chunk_id="static",
-                text=static_text,
-                chunk_type=DocumentChunkType.DOCUMENT_STATIC,
-            )
-        )
-    raw_chunks = record.get("chunks")
-    if raw_chunks is None:
-        raw_chunks = record.get("sentences")
-    if raw_chunks is None:
-        text = _optional_string_field(record, "text", fallback_fields=("body", "context", "paragraph_text"))
-        if text is not None:
-            raw_chunks = {"text": text}
-    if raw_chunks is not None:
-        chunks.extend(_iter_chunks(raw_chunks))
-    if not chunks:
-        raise ValueError("document record must include static_text, chunks, or text")
-    return tuple(chunks)
-
-
-def _iter_chunks(raw_chunks: Any) -> Iterable[SourceChunk]:
-    if isinstance(raw_chunks, Mapping):
-        for chunk_id, text in raw_chunks.items():
-            yield SourceChunk(chunk_id=str(chunk_id), text=_coerce_string(text, field_name=f"chunk {chunk_id}"))
-        return
-    if isinstance(raw_chunks, Sequence) and not isinstance(raw_chunks, (str, bytes)):
-        for index, chunk in enumerate(raw_chunks):
-            yield _chunk_from_record(chunk, index=index)
-        return
-    raise ValueError("chunks must be a mapping or sequence")
-
-
-def _chunk_from_record(record: Any, *, index: int) -> SourceChunk:
-    if isinstance(record, str):
-        return SourceChunk(chunk_id=f"chunk-{index}", text=record)
-    if not isinstance(record, Mapping):
-        raise ValueError("chunk entries must be objects or strings")
-    chunk_type_value = _string_field(record, "chunk_type", default=DocumentChunkType.DOCUMENT_CHUNK.value)
-    try:
-        chunk_type = DocumentChunkType(chunk_type_value)
-    except ValueError as exc:
-        raise ValueError(f"Unsupported chunk_type {chunk_type_value!r}") from exc
-    return SourceChunk(
-        chunk_id=_string_field(record, "chunk_id", fallback_fields=("id", "idx"), default=f"chunk-{index}"),
-        text=_string_field(record, "text", fallback_fields=("body", "context", "paragraph_text")),
-        chunk_type=chunk_type,
-        metadata=_string_mapping(record.get("metadata", {}), field_name="chunk metadata"),
-    )
-
-
-def _string_field(
-    record: Mapping[str, Any],
-    field_name: str,
-    *,
-    fallback_fields: Sequence[str] = (),
-    default: str | None = None,
-) -> str:
-    value = _field_value(record, field_name, fallback_fields=fallback_fields, default=default)
-    if value is None:
-        expected = ", ".join((field_name, *fallback_fields))
-        raise ValueError(f"Missing required field: {expected}")
-    return _coerce_string(value, field_name=field_name)
-
-
-def _optional_string_field(
-    record: Mapping[str, Any],
-    field_name: str,
-    *,
-    fallback_fields: Sequence[str] = (),
-) -> str | None:
-    value = _field_value(record, field_name, fallback_fields=fallback_fields)
-    if value is None:
-        return None
-    return _coerce_string(value, field_name=field_name)
-
-
-def _field_value(
-    record: Mapping[str, Any],
-    field_name: str,
-    *,
-    fallback_fields: Sequence[str],
-    default: str | None = None,
-) -> Any:
-    for candidate in (field_name, *fallback_fields):
-        if candidate in record and record[candidate] is not None:
-            return record[candidate]
-    return default
-
-
-def _coerce_string(value: Any, *, field_name: str) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (int, float, bool)):
-        return str(value)
-    raise ValueError(f"{field_name} must be string-like")
-
-
-def _string_mapping(value: Any, *, field_name: str) -> Mapping[str, str]:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{field_name} must be an object")
-    return {str(key): _coerce_string(item, field_name=f"{field_name}.{key}") for key, item in value.items()}
-
-
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Run the V1 document KV-cache benchmark against OpenAI-compatible vLLM/SGLang servers."
-    )
-    parser.add_argument(
-        "--dataset",
-        action="append",
-        required=True,
-        metavar="DATASET=PATH",
-        help="Dataset JSONL path. Repeat for biography, hotpotqa, musique, and niah.",
-    )
-    parser.add_argument("--suite-id", default="v1-openai-compatible")
-    parser.add_argument("--base-url", required=True, help="Baseline server base URL, for example http://localhost:8000")
-    parser.add_argument("--cache-base-url", help="Optional KV-aware cache server/proxy URL. Defaults to --base-url.")
-    parser.add_argument(
-        "--endpoint",
-        default=DEFAULT_OPENAI_COMPLETIONS_ENDPOINT,
-        help="Completions endpoint appended to --base-url.",
-    )
-    parser.add_argument("--cache-endpoint", help="Optional endpoint appended to --cache-base-url for the cache arm.")
-    parser.add_argument("--model-id", default=DEFAULT_V1_MODEL_ID)
-    parser.add_argument("--hardware-target", default=DEFAULT_HARDWARE_TARGET)
-    parser.add_argument("--limit-per-dataset", type=int)
-    parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument(
-        "--request-parallelism",
-        type=int,
-        default=1,
-        help="Maximum number of benchmark requests issued concurrently by the client.",
-    )
-    parser.add_argument(
-        "--arm",
-        action="append",
-        choices=(BASELINE_PREFILL_ARM, CACHE_REUSE_ARM),
-        help=(
-            "Benchmark only this arm. Repeat to select multiple arms; omit to run "
-            "baseline_prefill and document_kv_cache."
-        ),
-    )
-    parser.add_argument("--shuffle", action="store_true")
-    parser.add_argument(
-        "--interleave-examples",
-        action="store_true",
-        help=(
-            "Round-robin requests across examples so a request_parallelism=N wave "
-            "draws from N distinct documents instead of repeating one example."
-        ),
-    )
-    parser.add_argument("--seed", type=int)
-    parser.add_argument("--api-key")
-    parser.add_argument("--max-tokens", type=int, default=128)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--timeout-seconds", type=float, default=120.0)
-    parser.add_argument("--no-stream", action="store_true")
-    parser.add_argument(
-        "--cache-runtime-prompt",
-        action="store_true",
-        help="Send only the runtime suffix for the cache arm; requires a KV-aware proxy that binds cached prefixes.",
-    )
-    parser.add_argument(
-        "--server-usage",
-        action="store_true",
-        help=(
-            "Record server usage.prompt_tokens in metadata when present; "
-            "reported prompt_tokens still follow the logical/runtime prompt context."
-        ),
-    )
-    parser.add_argument("--baseline-extra-body-json", default="{}", help="JSON object merged into baseline requests.")
-    parser.add_argument("--cache-extra-body-json", default="{}", help="JSON object merged into cache-arm requests.")
-    parser.add_argument(
-        "--prefix-cache-salt-mode",
-        choices=PREFIX_CACHE_SALT_MODES,
-        default="static",
-        help=(
-            "How to apply cache_salt from extra-body JSON. 'static' sends it unchanged; "
-            "'per_request' derives a deterministic salt per dataset/example/arm/repeat."
-        ),
-    )
-    parser.add_argument(
-        "--no-isolate-arms",
-        dest="isolate_arms",
-        action="store_false",
-        help=(
-            "Interleave all arms through one shared concurrency pool instead of running "
-            "each arm in its own phase. Off by default (arms are isolated) because "
-            "co-scheduling the cache arm behind baseline full-prefill requests inflates "
-            "the measured cache-arm TTFT."
-        ),
-    )
-    parser.set_defaults(isolate_arms=True)
-    parser.add_argument("--output-json", help="Write the full benchmark result JSON to this path instead of stdout.")
-    args = parser.parse_args(argv)
+    from document_kv_cache._benchmark_cli import main as _main
 
-    try:
-        config = OpenAICompatibleBenchmarkConfig(
-            suite_id=args.suite_id,
-            dataset_paths=_dataset_paths_from_cli(args.dataset),
-            base_url=args.base_url,
-            cache_base_url=args.cache_base_url,
-            endpoint=args.endpoint,
-            cache_endpoint=args.cache_endpoint,
-            model_id=args.model_id,
-            hardware_target=args.hardware_target,
-            limit_per_dataset=args.limit_per_dataset,
-            repeats=args.repeats,
-            request_parallelism=args.request_parallelism,
-            arm_ids=tuple(args.arm or ()),
-            shuffle=args.shuffle,
-            interleave_examples=args.interleave_examples,
-            seed=args.seed,
-            isolate_arms=args.isolate_arms,
-            api_key=args.api_key,
-            max_tokens=args.max_tokens,
-            temperature=args.temperature,
-            timeout_seconds=args.timeout_seconds,
-            stream=not args.no_stream,
-            cache_runtime_prompt=args.cache_runtime_prompt,
-            prompt_token_accounting="server_usage" if args.server_usage else "logical",
-            baseline_extra_body=_json_object_option(args.baseline_extra_body_json, "--baseline-extra-body-json"),
-            cache_extra_body=_json_object_option(args.cache_extra_body_json, "--cache-extra-body-json"),
-            prefix_cache_salt_mode=args.prefix_cache_salt_mode,
-        )
-        result = run_openai_compatible_v1_benchmark(config)
-        if args.output_json:
-            write_benchmark_run_result_json(result, args.output_json)
-        else:
-            print(json.dumps(benchmark_run_result_to_record(result), indent=2, sort_keys=True))
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc), "error_type": type(exc).__name__}, indent=2, sort_keys=True))
-        return 1
-
-    return 0 if not any(measurement.error for measurement in result.measurements) else 2
+    return _main(argv)
 
 
-def _dataset_paths_from_cli(values: Sequence[str]) -> Mapping[str, Path]:
-    dataset_paths: dict[str, Path] = {}
-    for value in values:
-        if "=" not in value:
-            raise ValueError("--dataset must use DATASET=PATH")
-        dataset, raw_path = value.split("=", 1)
-        validate_v1_dataset(dataset)
-        if not raw_path:
-            raise ValueError(f"--dataset {dataset}=PATH must include a path")
-        if dataset in dataset_paths:
-            raise ValueError(f"Duplicate dataset path for {dataset!r}")
-        dataset_paths[dataset] = local_path(raw_path)
-    return dataset_paths
+def parse_benchmark_arm_specs(
+    raw_specs: Sequence[Mapping[str, Any]],
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> tuple[
+    tuple[BenchmarkArm, ...],
+    Mapping[str, str],
+    Mapping[str, str],
+    Mapping[str, Mapping[str, Any]],
+]:
+    from document_kv_cache._benchmark_cli import (
+        parse_benchmark_arm_specs as _parse_benchmark_arm_specs,
+    )
 
-
-def _json_object_option(raw_json: str, option_name: str) -> Mapping[str, Any]:
-    value = json.loads(raw_json)
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{option_name} must decode to a JSON object")
-    return value
+    return _parse_benchmark_arm_specs(
+        raw_specs,
+        method_registry=method_registry,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -31,6 +31,8 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
+    DatasetScorer,
+    DatasetScorerRegistry,
     benchmark_cache_artifact_stem,
     benchmark_cache_request,
     benchmark_cache_source_document,
@@ -43,8 +45,8 @@ from document_kv_cache.engine_protocol import (
     KVStorageLayout,
     kv_payload_axis_order_from_value,
 )
-from document_kv_cache.dataset_prep import write_v1_jsonl
 from document_kv_cache.engine_adapters import (
+    EngineAdapterSpec,
     ServingBackend,
     build_engine_adapter_request,
     read_engine_adapter_request_json,
@@ -52,6 +54,7 @@ from document_kv_cache.engine_adapters import (
     validate_engine_adapter_request_record,
     vllm_adapter_spec,
 )
+from document_kv_cache.reuse_contract import RuntimeOperationHandlerRegistry
 from document_kv_cache.engine_probe import _validate_local_payload_uri, write_engine_adapter_handoff_bundle
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.model_profiles import layout_for_model
@@ -61,6 +64,7 @@ from document_kv_cache.models import (
 )
 from document_kv_cache.methods import (
     CACHET_ARTIFACT_EXECUTION,
+    MethodRegistry,
     default_method_registry,
 )
 from document_kv_cache.storage import local_path
@@ -151,7 +155,7 @@ class BenchmarkHandoffEntry:
     artifact_id: str = ""
 
     def __post_init__(self) -> None:
-        validate_v1_dataset(_required_string(self.dataset, field_name="dataset"))
+        _required_string(self.dataset, field_name="dataset")
         _required_string(self.example_id, field_name="example_id")
         _required_string(self.request_id, field_name="request_id")
         handoff_json = self.handoff_json
@@ -433,7 +437,7 @@ def generate_benchmark_handoff_bundles(
     payload_uri_template: str | None = None,
     model_id: str | None = None,
     lora_id: str | None = None,
-    prompt_template_version: str = DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    prompt_template_version: str | None = None,
     cache_method: CacheGenerationMethod | str | None = None,
     method_version: str | None = None,
     method_config_digest: str | None = None,
@@ -453,7 +457,11 @@ def generate_benchmark_handoff_bundles(
     segment_per_document: bool = False,
     disk_root: str | Path | None = None,
     uc_volume_root: str | Path | None = None,
-    require_artifact_contract: bool = False,
+    require_artifact_contract: bool = True,
+    method_registry: MethodRegistry | None = None,
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    scorer_registry: DatasetScorerRegistry | None = None,
 ) -> BenchmarkHandoffBundleResult:
     """Generate Cachet handoff JSON/payload bundles for prepared benchmark rows.
 
@@ -465,6 +473,35 @@ def generate_benchmark_handoff_bundles(
     KV chunk per document, so the handoff assembles N document segments instead of a
     single monolithic prefix chunk (single-document examples are unchanged).
     """
+
+    if type(segment_per_document) is not bool:
+        raise TypeError("segment_per_document must be a boolean")
+    if scorer_registry is not None and not isinstance(
+        scorer_registry,
+        DatasetScorerRegistry,
+    ):
+        raise TypeError("scorer_registry must be a DatasetScorerRegistry or None")
+    resolved_cache_method = (
+        CacheGenerationMethod.VANILLA_PREFILL
+        if cache_method is None and segment_per_document
+        else CacheGenerationMethod.FULL_PREFIX_PREFILL
+        if cache_method is None
+        else cache_method
+    )
+    registry = default_method_registry() if method_registry is None else method_registry
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("method_registry must be a MethodRegistry or None")
+    method = registry.get(
+        resolved_cache_method,
+        require_implemented=require_artifact_contract,
+    )
+    if method.execution_kind != CACHET_ARTIFACT_EXECUTION:
+        raise ValueError(
+            f"Method {method.method_id!r} is engine-native and cannot generate Cachet handoff bundles"
+        )
+    method.validate_handoff_generation_mode(
+        segment_per_document=segment_per_document
+    )
 
     _validate_generator(generator)
     if not isinstance(layout, KVLayout):
@@ -483,25 +520,35 @@ def generate_benchmark_handoff_bundles(
     shard_uri_text = _default_bundle_shard_uri(output_base, shard_uri=shard_uri)
     resolved_model_id = _optional_string(model_id, default=layout.model_id, field_name="model_id")
     resolved_lora_id = _optional_string(lora_id, default=layout.lora_id, field_name="lora_id")
-    resolved_template_version = _required_string(
-        prompt_template_version,
-        field_name="prompt_template_version",
+    scorer_prompt_versions = (
+        {
+            scorer.prompt_template_version
+            for _dataset, scorer in scorer_registry.entries
+            if scorer.prompt_template_version
+        }
+        if scorer_registry is not None
+        else set()
     )
-    resolved_cache_method = (
-        CacheGenerationMethod.VANILLA_PREFILL
-        if cache_method is None and segment_per_document
-        else CacheGenerationMethod.FULL_PREFIX_PREFILL
-        if cache_method is None
-        else cache_method
-    )
-    method_registry = default_method_registry()
-    method = method_registry.get(
-        resolved_cache_method,
-        require_implemented=require_artifact_contract,
-    )
-    if method.execution_kind != CACHET_ARTIFACT_EXECUTION:
+    if len(scorer_prompt_versions) > 1:
         raise ValueError(
-            f"Method {method.method_id!r} is engine-native and cannot generate Cachet handoff bundles"
+            "scorer_registry must use one shared prompt_template_version for "
+            "a handoff bundle"
+        )
+    scorer_prompt_version = next(
+        iter(scorer_prompt_versions),
+        DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
+    )
+    resolved_template_version = (
+        scorer_prompt_version
+        if prompt_template_version is None
+        else _required_string(
+            prompt_template_version,
+            field_name="prompt_template_version",
+        )
+    )
+    if scorer_prompt_versions and resolved_template_version != scorer_prompt_version:
+        raise ValueError(
+            "prompt_template_version must match the scorer-owned prompt template"
         )
     resolved_method_version = method.artifact_version if method_version is None else method_version
     resolved_method_config_digest = (
@@ -527,6 +574,22 @@ def generate_benchmark_handoff_bundles(
             key_position_encoding=KVKeyPositionEncoding.PRE_ROPE,
         )
         layout.validate()
+    resolved_adapter_spec = (
+        _adapter_spec(backend) if adapter_spec is None else adapter_spec
+    )
+    if not isinstance(resolved_adapter_spec, EngineAdapterSpec):
+        raise TypeError("adapter_spec must be an EngineAdapterSpec or None")
+    if resolved_adapter_spec.backend != backend:
+        raise ValueError("adapter_spec.backend must match backend")
+    resolved_adapter_spec.validate_reuse_plan(
+        method.reuse_plan(),
+        layout=layout,
+        operation_handlers=operation_handlers,
+        method_registry=registry,
+    )
+    resolved_storage_layout = layout.storage_layout if storage_layout is None else storage_layout
+    if resolved_storage_layout is None:
+        raise ValueError("storage_layout must be provided by the layout or caller")
     config = CacheBuildConfig(
         model_id=resolved_model_id,
         lora_id=resolved_lora_id,
@@ -534,7 +597,7 @@ def generate_benchmark_handoff_bundles(
         dtype=layout.dtype,
         layout_version=layout.layout_version,
         cache_method=resolved_cache_method,
-        storage_layout=layout.storage_layout if storage_layout is None else storage_layout,
+        storage_layout=resolved_storage_layout,
         payload_axis_order=layout.payload_axis_order,
         method_version=resolved_method_version,
         method_config_digest=resolved_method_config_digest,
@@ -563,13 +626,18 @@ def generate_benchmark_handoff_bundles(
     if not examples:
         raise ValueError("input_jsonl must contain at least one benchmark row")
     _validate_unique_benchmark_examples(examples)
+    example_scorers: tuple[DatasetScorer | None, ...] = tuple(
+        None if scorer_registry is None else scorer_registry.get(example.dataset)
+        for example in examples
+    )
     source_documents = tuple(
         benchmark_cache_source_document(
             example,
             prefix=prefix,
             segment_per_document=segment_per_document,
+            scorer=scorer,
         )
-        for example in examples
+        for example, scorer in zip(examples, example_scorers, strict=True)
     )
     bundle_targets = _benchmark_handoff_bundle_targets(
         examples,
@@ -581,6 +649,7 @@ def generate_benchmark_handoff_bundles(
         prompt_template_version=resolved_template_version,
         prefix=prefix,
         segment_per_document=segment_per_document,
+        scorers=example_scorers,
     )
     _validate_bundle_output_artifact_paths(
         bundle_targets,
@@ -616,6 +685,7 @@ def generate_benchmark_handoff_bundles(
         manifest=manifest_store,
         disk_root=disk_root,
         uc_volume_root=uc_volume_root,
+        method_registry=registry,
     )
     cache_generation = workflow.generate_cache(
         documents=source_documents,
@@ -629,7 +699,6 @@ def generate_benchmark_handoff_bundles(
     entries: list[BenchmarkHandoffEntry] = []
     handoff_json_paths: list[str] = []
     payload_uris: list[str] = []
-    adapter_spec = _adapter_spec(backend)
     for target, (
         sglang_page_keys,
         runtime_prefix_text,
@@ -649,13 +718,22 @@ def generate_benchmark_handoff_bundles(
             training_artifacts=cache_generation.training_artifacts,
             segmented=segmented,
             kv_gpu_bytes_per_payload_byte=kv_gpu_bytes_per_payload_byte,
+            require_registered_method=require_artifact_contract,
         )
-        adapter_request = build_engine_adapter_request(ready, spec=adapter_spec)
+        adapter_request = build_engine_adapter_request(
+            ready,
+            spec=resolved_adapter_spec,
+            operation_handlers=operation_handlers,
+            method_registry=registry,
+        )
         write_engine_adapter_handoff_bundle(
             adapter_request,
             target.handoff_json,
             payload_uri=target.payload_uri,
             require_external_payload_uri=True,
+            adapter_spec=resolved_adapter_spec,
+            operation_handlers=operation_handlers,
+            method_registry=registry,
         )
         entries.append(
             BenchmarkHandoffEntry(
@@ -719,6 +797,7 @@ def enrich_benchmark_jsonl_with_handoffs(
     overwrite: bool = False,
     allow_missing: bool = False,
     allow_unmatched: bool = False,
+    arm_id: str | None = None,
 ) -> int:
     """Attach manifest handoffs to benchmark JSONL and write validated output."""
 
@@ -731,8 +810,9 @@ def enrich_benchmark_jsonl_with_handoffs(
         overwrite=overwrite,
         allow_missing=allow_missing,
         allow_unmatched=allow_unmatched,
+        arm_id=arm_id,
     )
-    return write_v1_jsonl(enriched, output_jsonl)
+    return _write_enriched_benchmark_jsonl(enriched, output_jsonl)
 
 
 def enrich_benchmark_records_with_handoffs(
@@ -743,10 +823,16 @@ def enrich_benchmark_records_with_handoffs(
     overwrite: bool = False,
     allow_missing: bool = False,
     allow_unmatched: bool = False,
+    arm_id: str | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Return benchmark records enriched with manifest-provided handoffs."""
 
     default_dataset = _default_dataset(dataset)
+    target_arm_id = (
+        None
+        if arm_id is None
+        else _required_string(arm_id, field_name="arm_id")
+    )
     by_key = _entries_by_key(manifest.entries)
     used_keys: set[tuple[str, str]] = set()
     seen_record_keys: set[tuple[str, str]] = set()
@@ -765,15 +851,38 @@ def enrich_benchmark_records_with_handoffs(
             missing_keys.append(key)
             enriched_records.append(dict(record))
             continue
-        if "kv_transfer_params" in record and not overwrite:
-            raise ValueError(
-                f"Record line {line_number} already has kv_transfer_params; pass overwrite=True to replace it"
+        if target_arm_id is None:
+            if "kv_transfer_params" in record and not overwrite:
+                raise ValueError(
+                    f"Record line {line_number} already has kv_transfer_params; "
+                    "pass overwrite=True to replace it"
+                )
+        else:
+            existing_arm_params = _validated_arm_handoff_params(
+                record.get("arm_kv_transfer_params", {}),
+                line_number=line_number,
             )
+            if target_arm_id in existing_arm_params and not overwrite:
+                raise ValueError(
+                    f"Record line {line_number} already has arm_kv_transfer_params "
+                    f"for {target_arm_id!r}; pass overwrite=True to replace it"
+                )
         used_keys.add(key)
         enriched = dict(record)
         if "dataset" not in enriched and default_dataset is not None:
             enriched["dataset"] = default_dataset
-        enriched["kv_transfer_params"] = entry.kv_transfer_params()
+        if target_arm_id is None:
+            enriched["kv_transfer_params"] = entry.kv_transfer_params()
+        else:
+            arm_params = {
+                existing_arm_id: dict(existing_params)
+                for existing_arm_id, existing_params in _validated_arm_handoff_params(
+                    record.get("arm_kv_transfer_params", {}),
+                    line_number=line_number,
+                ).items()
+            }
+            arm_params[target_arm_id] = entry.kv_transfer_params()
+            enriched["arm_kv_transfer_params"] = arm_params
         _validate_benchmark_jsonl_record(
             enriched,
             dataset=default_dataset,
@@ -788,6 +897,49 @@ def enrich_benchmark_records_with_handoffs(
     if unmatched_keys and not allow_unmatched:
         raise ValueError("Unmatched handoff manifest entries for " + _format_keys(unmatched_keys))
     return tuple(enriched_records)
+
+
+def _validated_arm_handoff_params(
+    value: object,
+    *,
+    line_number: int,
+) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            f"Record line {line_number} arm_kv_transfer_params must be an object"
+        )
+    normalized: dict[str, Mapping[str, Any]] = {}
+    for arm_id, params in value.items():
+        if not isinstance(arm_id, str) or not arm_id:
+            raise ValueError(
+                f"Record line {line_number} arm_kv_transfer_params arm ids "
+                "must be non-empty strings"
+            )
+        if not isinstance(params, Mapping):
+            raise TypeError(
+                f"Record line {line_number} arm_kv_transfer_params[{arm_id!r}] "
+                "must be an object"
+            )
+        normalized[arm_id] = params
+    return normalized
+
+
+def _write_enriched_benchmark_jsonl(
+    records: Sequence[Mapping[str, Any]],
+    output_jsonl: str | Path,
+) -> int:
+    """Write already-validated rows without dropping per-arm handoff fields."""
+
+    target = Path(output_jsonl)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "".join(
+            json.dumps(dict(record), sort_keys=True) + "\n"
+            for record in records
+        ),
+        encoding="utf-8",
+    )
+    return len(records)
 
 
 def bundle_main(argv: Sequence[str] | None = None) -> int:
@@ -1081,6 +1233,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--output-jsonl", required=True, help="Validated enriched JSONL output path.")
     parser.add_argument("--dataset", help="Default dataset for JSONL rows without a dataset field.")
+    parser.add_argument(
+        "--arm-id",
+        help=(
+            "Attach params under arm_kv_transfer_params[ARM_ID] for N-way runs. "
+            "Without this option, write the legacy single-arm kv_transfer_params."
+        ),
+    )
     parser.add_argument("--overwrite", action="store_true", help="Replace existing kv_transfer_params.")
     parser.add_argument("--allow-missing", action="store_true", help="Leave rows without manifest entries unchanged.")
     parser.add_argument("--allow-unmatched", action="store_true", help="Permit manifest entries unused by the input JSONL.")
@@ -1094,6 +1253,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             overwrite=args.overwrite,
             allow_missing=args.allow_missing,
             allow_unmatched=args.allow_unmatched,
+            arm_id=args.arm_id,
         )
         print(json.dumps({"ok": True, "records": count}, sort_keys=True))
     except Exception as exc:
@@ -1141,7 +1301,7 @@ def _entry_from_record(record: object, *, index: int, schema_version: int) -> Be
 
 
 def _entry_to_record(entry: BenchmarkHandoffEntry) -> dict[str, Any]:
-    record = {
+    record: dict[str, Any] = {
         "dataset": entry.dataset,
         "example_id": entry.example_id,
         "request_id": entry.request_id,
@@ -1257,7 +1417,12 @@ def _sglang_hicache_page_keys_for_handoff(
     full_page_token_count = (len(token_ids) // page_size) * page_size
     if full_page_token_count == 0:
         raise ValueError("SGLang benchmark handoff source document must contain at least one full HiCache page")
-    return sglang_hicache_page_keys(token_ids[:full_page_token_count], page_size=page_size)
+    return tuple(
+        sglang_hicache_page_keys(
+            token_ids[:full_page_token_count],
+            page_size=page_size,
+        )
+    )
 
 
 def _runtime_prefix_text_for_handoff(
@@ -1495,9 +1660,17 @@ def _benchmark_handoff_bundle_targets(
     prompt_template_version: str,
     prefix: str,
     segment_per_document: bool = False,
+    scorers: Sequence[DatasetScorer | None] | None = None,
 ) -> tuple[_BenchmarkHandoffBundleTarget, ...]:
     targets: list[_BenchmarkHandoffBundleTarget] = []
-    for example in examples:
+    resolved_scorers = (
+        tuple(None for _example in examples)
+        if scorers is None
+        else tuple(scorers)
+    )
+    if len(resolved_scorers) != len(examples):
+        raise ValueError("scorers must contain one entry per benchmark example")
+    for example, scorer in zip(examples, resolved_scorers, strict=True):
         artifact_stem = benchmark_cache_artifact_stem(example, prefix=prefix)
         request = benchmark_cache_request(
             example,
@@ -1506,6 +1679,7 @@ def _benchmark_handoff_bundle_targets(
             prompt_template_version=prompt_template_version,
             prefix=prefix,
             segment_per_document=segment_per_document,
+            scorer=scorer,
         )
         targets.append(
             _BenchmarkHandoffBundleTarget(
@@ -1578,7 +1752,7 @@ def _duplicate_artifact_paths(named_paths: Iterable[tuple[str, Path]]) -> tuple[
 
 
 def _artifact_local_path(uri: str | Path, *, root: str | Path | None = None) -> Path:
-    return local_path(str(uri), root=root).expanduser().resolve(strict=False)
+    return Path(local_path(str(uri), root=root)).expanduser().resolve(strict=False)
 
 
 def _shard_artifact_local_path(
@@ -1619,7 +1793,7 @@ def _backend_from_value(value: ServingBackend | str) -> ServingBackend:
 
 
 def _bundle_output_base(output_dir: str | Path) -> Path:
-    return local_path(str(output_dir)).expanduser().resolve(strict=False)
+    return Path(local_path(str(output_dir))).expanduser().resolve(strict=False)
 
 
 def _default_bundle_shard_uri(output_base: Path, *, shard_uri: str | Path | None) -> str:

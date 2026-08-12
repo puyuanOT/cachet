@@ -15,6 +15,7 @@ These tests cover the document KV-cache orchestration package.
 - `test_workflow.py` verifies source-document cache generation, optional training, explicit cache-generation method labels, manifest registration, materialization, enqueue handoff, and workflow-level engine-ready handoff.
 - `test_benchmarks.py` verifies V1 dataset specs, prompt/context builders, measurements, quality helpers, summary rows, baseline-vs-cache comparisons, and release-evaluable evidence checks.
 - `test_dataset_prep.py` verifies raw Biography, HotpotQA, MusiQue, and NIAH conversion into canonical benchmark JSONL, including CLI and synthetic NIAH generation.
+- `test_representative_hotpotqa.py` verifies deterministic tokenizer-only HotpotQA selection, exact 8k/16k prompt sizing, pinned tokenizer loading, canonical output, and prompt-free provenance.
 - `test_benchmark_plan.py` verifies reproducible V1 dataset-preparation plus benchmark-runner command plans for AWS g6/L4/Qwen3 jobs.
 - `test_benchmark_plan_executor.py` verifies command-plan validation, dry-run behavior, real subprocess execution, and result JSON emission.
 - `test_databricks_job.py` verifies AWS g6/L4 Databricks run-submit payload generation and runner-script rendering.

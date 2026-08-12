@@ -1,9 +1,6 @@
 import hashlib
 import json
 import os
-import pickle
-from pathlib import Path
-import subprocess
 import sys
 import types
 import urllib.error
@@ -16,7 +13,6 @@ from document_kv_cache._hardware_targets import (
     SUPPORTED_AWS_SINGLE_NODE_GPU_PREFIXES,
 )
 from document_kv_cache.databricks_runs import (
-    DEFAULT_DATABRICKS_CONFIG_FILE,
     DEFAULT_DATABRICKS_HOST_ENV,
     DEFAULT_DATABRICKS_TOKEN_ENV,
     DATABRICKS_PROFILE_AUTH_MODES,
@@ -32,16 +28,21 @@ from document_kv_cache.databricks_runs import (
     databricks_workspace_config_from_profile,
     databricks_workspace_config_from_sdk_profile,
     get_databricks_run,
-    main,
     plan_databricks_stage_and_submit,
     put_databricks_dbfs_file,
     read_databricks_run_submit_payload,
+    reserve_and_submit_databricks_run,
+    reserve_and_submit_databricks_run_json,
     stage_and_submit_databricks_run,
     submit_databricks_run,
     summarize_databricks_run,
     summarize_databricks_run_submit_payload,
     validate_databricks_run_status_sidecar,
     write_databricks_run_response_json,
+)
+from document_kv_cache.databricks_resource_ledger import (
+    create_databricks_cluster_hour_ledger_json,
+    read_databricks_cluster_hour_ledger_json,
 )
 
 
@@ -476,6 +477,238 @@ def test_submit_databricks_run_posts_payload_with_bearer_token():
     assert request.headers["Authorization"] == "Bearer secret-token"
     assert json.loads(request.data.decode("utf-8")) == {"run_name": "document-kv-vllm-smoke"}
     assert opener.timeouts == [9]
+
+
+def test_reserved_submit_posts_exact_digest_and_resists_payload_file_mutation(
+    tmp_path,
+):
+    payload_path = tmp_path / "submit.json"
+    ledger_path = tmp_path / "cluster-hours.json"
+    original_payload = _bounded_submit_payload(run_name="original-run")
+    payload_path.write_text(json.dumps(original_payload), encoding="utf-8")
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="representative-canary-2026",
+    )
+    opener = _FakeOpener({"run_id": 123})
+    config = DatabricksWorkspaceConfig(
+        "https://dbc.example/",
+        "secret-token",
+        timeout_seconds=9,
+    )
+
+    def mutate_file_after_snapshot(_reservation, snapshot):
+        assert snapshot["run_name"] == "original-run"
+        payload_path.write_text(
+            json.dumps(_bounded_submit_payload(run_name="mutated-run")),
+            encoding="utf-8",
+        )
+
+    response = reserve_and_submit_databricks_run_json(
+        config,
+        payload_path,
+        ledger_path=ledger_path,
+        attempt_id="attempt-001",
+        workload_id="vllm-8k-baseline",
+        reservation_validator=mutate_file_after_snapshot,
+        opener=opener,
+    )
+
+    assert response == {"run_id": 123}
+    assert len(opener.requests) == 1
+    request = opener.requests[0]
+    assert json.loads(request.data.decode("utf-8")) == original_payload
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    reservation = ledger.reservations[0]
+    assert reservation.submit_payload_sha256 == hashlib.sha256(request.data).hexdigest()
+    assert json.loads(payload_path.read_text(encoding="utf-8"))["run_name"] == (
+        "mutated-run"
+    )
+
+
+def test_reserved_submit_rejects_over_cap_without_calling_opener(tmp_path):
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="representative-canary-2026",
+        cap_cluster_hours=4.0,
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+    first_opener = _FakeOpener({"run_id": 123})
+    reserve_and_submit_databricks_run(
+        config,
+        _bounded_submit_payload(),
+        ledger_path=ledger_path,
+        attempt_id="attempt-001",
+        workload_id="vllm-8k-baseline",
+        opener=first_opener,
+    )
+    blocked_opener = _FakeOpener({"run_id": 124})
+
+    with pytest.raises(ValueError, match="would exceed.*cluster-hour cap"):
+        reserve_and_submit_databricks_run(
+            config,
+            _bounded_submit_payload(),
+            ledger_path=ledger_path,
+            attempt_id="attempt-002",
+            workload_id="vllm-8k-baseline",
+            opener=blocked_opener,
+        )
+
+    assert blocked_opener.requests == []
+    assert len(read_databricks_cluster_hour_ledger_json(ledger_path).reservations) == 1
+
+
+def test_failed_reserved_submit_conservatively_keeps_reservation(tmp_path):
+    ledger_path = tmp_path / "cluster-hours.json"
+    create_databricks_cluster_hour_ledger_json(
+        ledger_path,
+        ledger_id="representative-canary-2026",
+    )
+    config = DatabricksWorkspaceConfig("https://dbc.example/", "secret-token")
+    error = urllib.error.HTTPError(
+        "https://dbc.example/api/2.1/jobs/runs/submit",
+        503,
+        "unavailable",
+        {},
+        _BytesFile(b'{"message":"temporarily unavailable"}'),
+    )
+    opener = _RecordingHTTPErrorOpener(error)
+
+    with pytest.raises(RuntimeError, match="HTTP 503"):
+        reserve_and_submit_databricks_run(
+            config,
+            _bounded_submit_payload(),
+            ledger_path=ledger_path,
+            attempt_id="attempt-failed",
+            workload_id="vllm-8k-baseline",
+            opener=opener,
+        )
+
+    assert len(opener.requests) == 1
+    ledger = read_databricks_cluster_hour_ledger_json(ledger_path)
+    assert [item.attempt_id for item in ledger.reservations] == ["attempt-failed"]
+    assert ledger.active_reserved_cluster_hours == 4.0
+    assert ledger.terminal_actuals == ()
+
+
+def test_reserve_and_submit_cli_uses_coupled_json_entrypoint(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    payload_path = tmp_path / "submit.json"
+    ledger_path = tmp_path / "cluster-hours.json"
+    payload_path.write_text(json.dumps(_bounded_submit_payload()), encoding="utf-8")
+    captured = {}
+
+    def fake_reserved_submit(config, path, **kwargs):
+        captured.update(
+            {
+                "host": config.normalized_host,
+                "payload_path": path,
+                **kwargs,
+            }
+        )
+        return {"run_id": 321}
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "reserve_and_submit_databricks_run_json",
+        fake_reserved_submit,
+    )
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example/")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+
+    exit_code = public_databricks_runs.main(
+        [
+            "reserve-and-submit",
+            "--payload-json",
+            str(payload_path),
+            "--ledger-json",
+            str(ledger_path),
+            "--attempt-id",
+            "attempt-001",
+            "--workload-id",
+            "g6-vllm-8k-64-baseline",
+            "--representative-canary",
+        ]
+    )
+
+    assert exit_code == 0
+    reservation_validator = captured.pop("reservation_validator")
+    assert callable(reservation_validator)
+    assert (
+        reservation_validator.__name__ == "validate_representative_canary_reservation"
+    )
+    assert captured == {
+        "host": "https://dbc.example",
+        "payload_path": str(payload_path),
+        "ledger_path": str(ledger_path),
+        "attempt_id": "attempt-001",
+        "workload_id": "g6-vllm-8k-64-baseline",
+    }
+    assert json.loads(capsys.readouterr().out)["response"] == {"run_id": 321}
+
+
+@pytest.mark.parametrize(
+    ("workload_id", "extra_args", "error_match"),
+    [
+        (
+            "g6-vllm-8k-64-baseline",
+            (),
+            "representative canary workload_id requires --representative-canary",
+        ),
+        (
+            "unknown-canary-workload",
+            ("--representative-canary",),
+            "--representative-canary requires a workload_id from the exact ",
+        ),
+    ],
+)
+def test_reserve_and_submit_cli_fails_closed_for_representative_flag_mismatch(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    workload_id,
+    extra_args,
+    error_match,
+):
+    payload_path = tmp_path / "submit.json"
+    ledger_path = tmp_path / "cluster-hours.json"
+    payload_path.write_text(json.dumps(_bounded_submit_payload()), encoding="utf-8")
+    calls = []
+
+    def fake_reserved_submit(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"run_id": 321}
+
+    monkeypatch.setattr(
+        public_databricks_runs,
+        "reserve_and_submit_databricks_run_json",
+        fake_reserved_submit,
+    )
+    monkeypatch.setenv(DEFAULT_DATABRICKS_HOST_ENV, "https://dbc.example/")
+    monkeypatch.setenv(DEFAULT_DATABRICKS_TOKEN_ENV, "secret-token")
+
+    exit_code = public_databricks_runs.main(
+        [
+            "reserve-and-submit",
+            "--payload-json",
+            str(payload_path),
+            "--ledger-json",
+            str(ledger_path),
+            "--attempt-id",
+            "attempt-001",
+            "--workload-id",
+            workload_id,
+            *extra_args,
+        ]
+    )
+
+    assert exit_code == 1
+    assert calls == []
+    assert error_match in json.loads(capsys.readouterr().out)["error"]
 
 
 def test_get_databricks_run_fetches_run_by_id():
@@ -1681,6 +1914,30 @@ def _single_node_g5_submit_payload():
                         "ResourceClass": "SingleNode",
                         "purpose": "document-kv-benchmark",
                     },
+                },
+            }
+        ],
+    }
+
+
+def _bounded_submit_payload(*, run_name="representative-canary"):
+    return {
+        "run_name": run_name,
+        "timeout_seconds": 14400,
+        "tasks": [
+            {
+                "task_key": "representative-canary",
+                "timeout_seconds": 14400,
+                "max_retries": 0,
+                "new_cluster": {
+                    "spark_version": "15.4.x-gpu-ml-scala2.12",
+                    "node_type_id": "g6.8xlarge",
+                    "driver_node_type_id": "g6.8xlarge",
+                    "num_workers": 0,
+                },
+                "spark_python_task": {
+                    "python_file": "dbfs:/cachet/run.py",
+                    "parameters": [],
                 },
             }
         ],

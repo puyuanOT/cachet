@@ -3,11 +3,11 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-import document_kv_cache.release_evidence as public_release_evidence
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
     EngineKVConnectorActions,
@@ -26,7 +26,16 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
-from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_RUN_RECORD_TYPE,
+    BenchmarkGeneration,
+    BenchmarkManifestContext,
+    benchmark_record_payload_digest,
+    benchmark_run_result_to_evidence_record,
+    merge_isolated_benchmark_run_records,
+    run_benchmark_suite,
+)
+from document_kv_cache.benchmarks import BenchmarkArm, BenchmarkExample, BenchmarkSuite
 from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_RECORD_TYPE,
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
@@ -45,8 +54,10 @@ from document_kv_cache.release_evidence import (
     sglang_live_v1_benchmark_issues,
 )
 from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.methods import default_method_registry, method_spec
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
+from document_kv_cache.workflow import SourceDocument
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +98,324 @@ def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_
         "artifact_sources": [],
         "issues": [],
     }
+
+
+def test_release_evidence_accepts_manifest_n_way_record_with_matching_standalone_gate():
+    benchmark = _manifest_benchmark_record()
+    gate = benchmark["evidence_gate"]
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=gate,
+    )
+
+    assert evidence.v1_benchmark_ok
+    assert evidence.ok, evidence.issues
+
+
+@pytest.mark.parametrize("mutation", ("missing", "invalid", "tampered"))
+def test_release_evidence_rejects_missing_or_tampered_request_customization_identity(
+    mutation,
+):
+    benchmark = json.loads(json.dumps(_manifest_benchmark_record()))
+    request_customization = benchmark["experiment_manifest"]["arms"][0][
+        "request_customization"
+    ]
+    if mutation == "missing":
+        benchmark["experiment_manifest"]["arms"][0].pop(
+            "request_customization"
+        )
+    elif mutation == "invalid":
+        request_customization["config_digest"] = "not-a-digest"
+    else:
+        request_customization["config_digest"] = "f" * 64
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    if mutation == "tampered":
+        assert any("benchmark_payload_digest" in issue for issue in evidence.issues)
+    else:
+        assert any("request customization" in issue for issue in evidence.issues)
+
+
+def test_release_evidence_recomputes_custom_method_gate_with_explicit_registry() -> None:
+    base_registry = default_method_registry()
+    custom = replace(
+        base_registry.get("lmcache", require_implemented=True),
+        method="vendor_custom_cache",
+        display_name="Vendor custom cache",
+        arm_id="vendor_custom_cache",
+    )
+    registry = base_registry.with_spec(custom)
+    arm = BenchmarkArm(
+        arm_id="vendor",
+        uses_cache=True,
+        description="vendor",
+        cache_method=custom.method_id,
+        connector_mode=custom.connector_mode,
+        implementation_kind="cachet",
+        method_version=custom.artifact_version,
+        method_config_digest="1" * 64,
+        physical_transform_id="vendor.cache",
+        requires_cachet_handoff=False,
+    )
+
+    class _Engine:
+        def generate(self, request):
+            return BenchmarkGeneration(
+                output_text="Paris",
+                prompt_tokens=32,
+                completion_tokens=1,
+                ttft_seconds=0.5,
+                time_to_completion_seconds=0.7,
+            )
+
+    result = run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="custom-registry-release",
+            examples=(
+                BenchmarkExample(
+                    example_id="custom-1",
+                    dataset="hotpotqa",
+                    documents=(
+                        SourceDocument.from_text(
+                            document_id="custom-document",
+                            text="Paris is the answer.",
+                        ),
+                    ),
+                    query="What is the answer?",
+                    expected_answer="Paris",
+                ),
+            ),
+            datasets=("hotpotqa",),
+        ),
+        {arm.arm_id: _Engine()},
+        arms=(arm,),
+        manifest_context=BenchmarkManifestContext(
+            reference_arm_id=arm.arm_id,
+            measurement_scopes=("latency",),
+        ),
+        evidence_policy="publication",
+        reference_arm_id=arm.arm_id,
+        method_registry=registry,
+    )
+    record = benchmark_run_result_to_evidence_record(
+        result,
+        method_registry=registry,
+    )
+
+    explicit = evaluate_release_evidence(
+        record,
+        _storage_record(ok=True),
+        method_registry=registry,
+    )
+    implicit = evaluate_release_evidence(
+        record,
+        _storage_record(ok=True),
+    )
+
+    mismatch = "evidence_gate does not match recomputed publication evidence"
+    assert not any(mismatch in issue for issue in explicit.issues)
+    assert any(mismatch in issue for issue in implicit.issues)
+
+
+def test_release_evidence_rejects_forged_sanitized_measurement_metadata():
+    benchmark = json.loads(json.dumps(_manifest_benchmark_record()))
+    benchmark["measurements"][0]["metadata"]["raw_prompt"] = "TOP_SECRET_PROMPT"
+    benchmark["evidence_gate"]["benchmark_payload_digest"] = (
+        benchmark_record_payload_digest(benchmark)
+    )
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    assert any("non-sanitized keys" in issue for issue in evidence.issues)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "issue_fragment"),
+    (
+        ("output_text", "TOP_SECRET_OUTPUT", "output_text must be empty"),
+        (
+            "expected_answer",
+            "TOP_SECRET_EXPECTED",
+            "expected_answer must be null",
+        ),
+        ("references", ["TOP_SECRET_REFERENCE"], "references must be empty"),
+        ("error", "TOP_SECRET_ERROR", "error must be null or redacted"),
+        ("request_id", "TOP_SECRET_REQUEST", "request_id must be SHA-256"),
+    ),
+)
+def test_release_evidence_rejects_forged_sanitized_measurement_content(
+    field_name,
+    value,
+    issue_fragment,
+):
+    benchmark = json.loads(json.dumps(_manifest_benchmark_record()))
+    benchmark["measurements"][0][field_name] = value
+    benchmark["evidence_gate"]["benchmark_payload_digest"] = (
+        benchmark_record_payload_digest(benchmark)
+    )
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    assert any(issue_fragment in issue for issue in evidence.issues)
+
+
+def test_release_evidence_rejects_missing_or_mismatched_standalone_manifest_gate():
+    benchmark = _manifest_benchmark_record()
+    missing = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+    )
+    mismatched_gate = {**benchmark["evidence_gate"], "checked_cache_requests": 99}
+    mismatched = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=mismatched_gate,
+    )
+
+    assert any("standalone evidence gate" in issue for issue in missing.issues)
+    assert any("does not match" in issue for issue in mismatched.issues)
+
+
+def test_release_evidence_rejects_tampered_manifest_physical_transform_digest():
+    benchmark = _manifest_benchmark_record()
+    benchmark["experiment_manifest"]["arms"][1]["physical_transform"][
+        "config_digest"
+    ] = "not-a-digest"
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert any("invalid physical transform" in issue for issue in evidence.issues)
+    assert not evidence.v1_benchmark_ok
+
+
+def test_release_evidence_rejects_decode_settings_without_matching_digest():
+    benchmark = _manifest_benchmark_record()
+    benchmark["experiment_manifest"]["decoding"]["settings"]["ignore_eos"] = True
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert any("decoding_config_digest" in issue for issue in evidence.issues)
+    assert not evidence.v1_benchmark_ok
+
+
+def test_release_evidence_recomputes_aggregates_even_with_forged_matching_gate():
+    benchmark = _manifest_benchmark_record()
+    benchmark["report_rows"][0]["ttft"]["p50"] = 999.0
+    benchmark["evidence_gate"]["benchmark_payload_digest"] = (
+        benchmark_record_payload_digest(benchmark)
+    )
+    benchmark["evidence_gate"]["ok"] = True
+    benchmark["evidence_gate"]["issues"] = []
+
+    evidence = evaluate_release_evidence(
+        benchmark,
+        _storage_record(ok=True),
+        engine_probe_records=(
+            _probe_record(ServingBackend.VLLM),
+            _probe_record(ServingBackend.SGLANG),
+        ),
+        engine_action_records=(
+            _actions_record(ServingBackend.VLLM),
+            _actions_record(ServingBackend.SGLANG),
+        ),
+        benchmark_evidence_gate_record=benchmark["evidence_gate"],
+    )
+
+    assert not evidence.v1_benchmark_ok
+    assert any(
+        "report_rows do not match raw benchmark measurements" in issue
+        for issue in evidence.issues
+    )
 
 
 def test_evaluate_release_evidence_accepts_native_logical_cache_prompt_mode():
@@ -2409,6 +2738,119 @@ def _v1_record(*, ok: bool, hardware_target: str = "aws-g6-l4", model_id: str = 
     }
 
 
+def _manifest_benchmark_record():
+    class _Engine:
+        def generate(self, request):
+            return BenchmarkGeneration(
+                output_text="Paris",
+                prompt_tokens=128,
+                completion_tokens=8,
+                ttft_seconds=0.5 if request.arm.uses_cache else 1.0,
+                time_to_completion_seconds=1.0 if request.arm.uses_cache else 1.5,
+                metadata={"logical_prompt_tokens": "128"},
+            )
+
+    examples = tuple(
+        BenchmarkExample(
+            example_id=f"example-{index}",
+            dataset="hotpotqa",
+            documents=(
+                SourceDocument.from_text(
+                    document_id=f"document-{index}",
+                    text="Paris is the answer.",
+                ),
+            ),
+            query="What is the answer?",
+            expected_answer="Paris",
+        )
+        for index in range(4)
+    )
+    suite = BenchmarkSuite(
+        suite_id="manifest-n-way",
+        examples=examples,
+        datasets=("hotpotqa",),
+    )
+    arms = (
+        BenchmarkArm(
+            arm_id="baseline",
+            uses_cache=False,
+            description="baseline",
+        ),
+        BenchmarkArm(
+            arm_id="vanilla",
+            uses_cache=True,
+            description="vanilla upstream",
+            cache_method="vanilla",
+            variant_id="default",
+            implementation_kind="upstream",
+            method_version="1",
+            method_config_digest="1" * 64,
+            physical_transform_id="test.vanilla",
+            source_revision="vanilla-commit",
+            checkpoint_identity="vanilla-checkpoint",
+            requires_cachet_handoff=False,
+        ),
+        BenchmarkArm(
+            arm_id="upstream",
+            uses_cache=True,
+            description="upstream",
+            cache_method="upstream",
+            variant_id="default",
+            implementation_kind="upstream",
+            method_version="1",
+            method_config_digest="2" * 64,
+            physical_transform_id="test.upstream",
+            source_revision="upstream-commit",
+            checkpoint_identity="upstream-checkpoint",
+            requires_cachet_handoff=False,
+        ),
+    )
+    records = []
+    for index, arm in enumerate(arms):
+        context = BenchmarkManifestContext(
+            model_revision="model-revision",
+            canonical_model_id=suite.model_id,
+            tokenizer_id=suite.model_id,
+            tokenizer_revision="tokenizer-revision",
+            lora_id="none",
+            engine_id="test-engine",
+            engine_version="1",
+            serving_platform="test-serving-platform",
+            model_dtype="bfloat16",
+            runtime_kv_dtype="bfloat16",
+            layout_version="test-layout-v1",
+            payload_axis_order="token_major",
+            block_size=16,
+            key_position_encoding="stored_post_rope",
+            tensor_parallel_size=1,
+            pipeline_parallel_size=1,
+            package_revisions=(("cachet", "test-revision"),),
+            input_tokens_target=128,
+            max_output_tokens=8,
+            temperature=0.0,
+            stream=False,
+            hardware_fingerprint="test-hardware",
+            runtime_id=f"test-runtime-{index}",
+            runtime_version="1",
+            storage_identity="test-storage",
+            cache_state="warm",
+            measurement_scopes=("latency",),
+        )
+        result = run_benchmark_suite(
+            suite,
+            {arm.arm_id: _Engine()},
+            arms=(arm,),
+            manifest_context=context,
+            evidence_policy="publication",
+        )
+        records.append(benchmark_run_result_to_evidence_record(result))
+    return merge_isolated_benchmark_run_records(
+        records,
+        reference_arm_id="baseline",
+        policy="publication",
+    )
+
+
 def _sglang_live_v1_benchmark_record(*, ok: bool = True):
     datasets = ("biography", "hotpotqa", "musique", "niah")
     arms = ("baseline_prefill", "document_kv_cache")
@@ -2684,7 +3126,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
             bind=EngineKVBindAction(
                 request_id=request_id,
                 handle_uri=f"engine://{backend.value}/{request_id}",
-                cache_method="vanilla",
+                cache_method="vanilla_prefill",
                 adapter_ids=("base",),
                 metadata={
                     "engine.backend": backend.value,
@@ -2692,6 +3134,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
                 },
             ),
             release=EngineKVReleaseAction(request_id=request_id),
+            reuse_plan=method_spec("vanilla_prefill").reuse_plan(),
         )
     )
 

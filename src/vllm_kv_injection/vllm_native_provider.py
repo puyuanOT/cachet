@@ -12,7 +12,7 @@ import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any, Protocol
 
@@ -26,7 +26,9 @@ from document_kv_cache.engine_protocol import (
 )
 from document_kv_cache.storage import local_path
 from document_kv_cache.engine import EngineReadyRequest
+from document_kv_cache.methods import MethodRegistry, default_method_registry
 from document_kv_cache.engine_adapters import (
+    EngineAdapterSpec,
     EngineKVBindAction,
     EngineKVConnectorActions,
     EngineKVInjectionPlan,
@@ -40,6 +42,11 @@ from document_kv_cache.engine_adapters import (
     engine_kv_connector_actions_to_record,
     read_engine_adapter_request_json,
     validate_engine_kv_connector_actions,
+    vllm_adapter_spec,
+)
+from document_kv_cache.reuse_contract import (
+    RuntimeOperationHandlerRegistry,
+    apply_runtime_operation_handlers,
 )
 from document_kv_cache.engine_probe import read_engine_adapter_payload
 from vllm_kv_injection.block_mapping import BlockSpan, plan_token_blocks
@@ -124,9 +131,19 @@ class DocumentKVHandoffLoad:
     actions: EngineKVConnectorActions
     payload: bytes | tuple[bytes, ...] | None = None
     payload_uri: str | None = None
+    method_registry: MethodRegistry | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
-        validate_engine_kv_connector_actions(self.actions)
+        registry = _method_registry(self.method_registry)
+        validate_engine_kv_connector_actions(
+            self.actions,
+            method_registry=registry,
+        )
+        object.__setattr__(self, "method_registry", registry)
         if self.actions.reservation.backend != ServingBackend.VLLM:
             raise ValueError("Document KV vLLM loads require vllm connector actions")
         _validate_payload_reference(self.actions, payload=self.payload, payload_uri=self.payload_uri)
@@ -151,24 +168,60 @@ class DocumentKVLoadRequest:
     source_token_start: int
     token_count: int
     payload_uri: str | None = None
+    _validated_actions: EngineKVConnectorActions | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
-        actions_record = _actions_record(self.actions_record)
-        actions = engine_kv_connector_actions_from_record(actions_record, expected_backend=ServingBackend.VLLM)
-        if self.request_id != actions.reservation.request_id:
-            raise ValueError("load request_id must match connector actions")
+        actions_record = _normalized_actions_record(self.actions_record)
+        _required_string(self.request_id, field_name="request_id")
         if self.source_token_start < 0:
             raise ValueError("source_token_start must be non-negative")
         if self.token_count <= 0:
             raise ValueError("token_count must be positive")
+        object.__setattr__(self, "actions_record", actions_record)
+
+    def validate_method_contract(
+        self,
+        method_registry: MethodRegistry | None = None,
+    ) -> EngineKVConnectorActions:
+        actions = engine_kv_connector_actions_from_record(
+            self.actions_record,
+            expected_backend=ServingBackend.VLLM,
+            method_registry=method_registry,
+        )
+        if self.request_id != actions.reservation.request_id:
+            raise ValueError("load request_id must match connector actions")
         if self.source_token_start + self.token_count > actions.reservation.total_tokens:
             raise ValueError("load token span exceeds connector actions")
         _validate_payload_reference(actions, payload=self.payload, payload_uri=self.payload_uri)
-        object.__setattr__(self, "actions_record", actions_record)
+        object.__setattr__(self, "_validated_actions", actions)
+        return actions
 
     @property
     def actions(self) -> EngineKVConnectorActions:
-        return engine_kv_connector_actions_from_record(self.actions_record, expected_backend=ServingBackend.VLLM)
+        if self._validated_actions is not None:
+            return self._validated_actions
+        return self.validate_method_contract()
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Exclude the process-local validated action cache from worker metadata."""
+
+        return (
+            type(self),
+            (
+                self.request_id,
+                self.actions_record,
+                self.payload,
+                self.blocks,
+                self.source_token_start,
+                self.token_count,
+                self.payload_uri,
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,6 +308,32 @@ class KVTransferParamsDocumentKVSource:
     - ``document_kv.payload_uri``: optional payload URI override.
     """
 
+    def __init__(
+        self,
+        *,
+        adapter_spec: EngineAdapterSpec | None = None,
+        operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+        method_registry: MethodRegistry | None = None,
+    ) -> None:
+        self.adapter_spec = adapter_spec or vllm_adapter_spec()
+        if not isinstance(self.adapter_spec, EngineAdapterSpec):
+            raise TypeError("adapter_spec must be an EngineAdapterSpec")
+        if self.adapter_spec.backend != ServingBackend.VLLM:
+            raise ValueError("vLLM handoff sources require a vllm adapter spec")
+        self.operation_handlers = (
+            RuntimeOperationHandlerRegistry()
+            if operation_handlers is None
+            else operation_handlers
+        )
+        if not isinstance(
+            self.operation_handlers,
+            RuntimeOperationHandlerRegistry,
+        ):
+            raise TypeError(
+                "operation_handlers must be a RuntimeOperationHandlerRegistry"
+            )
+        self.method_registry = _method_registry(method_registry)
+
     def get_load(self, request: object) -> DocumentKVHandoffLoad | None:
         params = getattr(request, "kv_transfer_params", None)
         if not isinstance(params, Mapping):
@@ -279,6 +358,9 @@ class KVTransferParamsDocumentKVSource:
                 handoff_path,
                 expected_backend=ServingBackend.VLLM,
                 require_external_payload_uri=payload_uri_override is None,
+                adapter_spec=self.adapter_spec,
+                operation_handlers=self.operation_handlers,
+                method_registry=self.method_registry,
             )
 
         handoff_request_id = _handoff_request_id(params, record)
@@ -294,12 +376,22 @@ class KVTransferParamsDocumentKVSource:
             record,
             expected_backend=ServingBackend.VLLM,
             require_external_payload_uri=payload_uri_override is None,
+            adapter_spec=self.adapter_spec,
+            operation_handlers=self.operation_handlers,
+            method_registry=self.method_registry,
         )
         payload_uri = payload_uri_override or plan.payload_source_uri
         if payload_uri is None:
             raise ValueError("document KV handoff requires an external payload URI")
-        actions = _connector_actions_from_plan(plan)
-        return DocumentKVHandoffLoad(actions=actions, payload_uri=payload_uri)
+        actions = _connector_actions_from_plan(
+            plan,
+            method_registry=self.method_registry,
+        )
+        return DocumentKVHandoffLoad(
+            actions=actions,
+            payload_uri=payload_uri,
+            method_registry=self.method_registry,
+        )
 
 
 class DocumentKVNativeProvider:
@@ -322,6 +414,9 @@ class DocumentKVNativeProvider:
         telemetry_jsonl: str | None = None,
         runtime_identity: RuntimeIdentity | None = None,
         require_runtime_handshake: bool = False,
+        adapter_spec: EngineAdapterSpec | None = None,
+        operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+        method_registry: MethodRegistry | None = None,
     ) -> None:
         payload_cache_max_bytes = _non_negative_int(
             payload_cache_max_bytes,
@@ -335,7 +430,29 @@ class DocumentKVNativeProvider:
             raise TypeError("runtime_identity must be a RuntimeIdentity or None")
         if type(require_runtime_handshake) is not bool:
             raise TypeError("require_runtime_handshake must be a boolean")
-        self.source = source or KVTransferParamsDocumentKVSource()
+        self.adapter_spec = adapter_spec or vllm_adapter_spec()
+        if not isinstance(self.adapter_spec, EngineAdapterSpec):
+            raise TypeError("adapter_spec must be an EngineAdapterSpec")
+        if self.adapter_spec.backend != ServingBackend.VLLM:
+            raise ValueError("DocumentKVNativeProvider requires a vllm adapter spec")
+        self.operation_handlers = (
+            RuntimeOperationHandlerRegistry()
+            if operation_handlers is None
+            else operation_handlers
+        )
+        if not isinstance(
+            self.operation_handlers,
+            RuntimeOperationHandlerRegistry,
+        ):
+            raise TypeError(
+                "operation_handlers must be a RuntimeOperationHandlerRegistry"
+            )
+        self.method_registry = _method_registry(method_registry)
+        self.source = source or KVTransferParamsDocumentKVSource(
+            adapter_spec=self.adapter_spec,
+            operation_handlers=self.operation_handlers,
+            method_registry=self.method_registry,
+        )
         self.provider_factory = _provider_factory_path(provider_factory)
         self.telemetry_jsonl = telemetry_jsonl
         self.runtime_identity = runtime_identity
@@ -461,16 +578,25 @@ class DocumentKVNativeProvider:
             source_token_start=source_token_start,
             token_count=num_external_tokens,
         )
-        runtime_actions = _connector_actions_for_runtime_request(load.actions, request_id)
-        self._allocated[request_id] = DocumentKVLoadRequest(
+        runtime_actions = _connector_actions_for_runtime_request(
+            load.actions,
+            request_id,
+            method_registry=self.method_registry,
+        )
+        allocated = DocumentKVLoadRequest(
             request_id=request_id,
-            actions_record=engine_kv_connector_actions_to_record(runtime_actions),
+            actions_record=engine_kv_connector_actions_to_record(
+                runtime_actions,
+                method_registry=self.method_registry,
+            ),
             payload=load.payload,
             blocks=block_spans,
             source_token_start=source_token_start,
             token_count=num_external_tokens,
             payload_uri=load.payload_uri,
         )
+        allocated.validate_method_contract(self.method_registry)
+        self._allocated[request_id] = allocated
 
     def build_connector_meta(self, scheduler_output: object) -> DocumentKVConnectorMetadata:
         loads: list[DocumentKVLoadRequest] = []
@@ -488,17 +614,17 @@ class DocumentKVNativeProvider:
                 source_token_start=source_token_start,
                 token_count=allocated.token_count,
             )
-            loads.append(
-                DocumentKVLoadRequest(
-                    request_id=allocated.request_id,
-                    actions_record=allocated.actions_record,
-                    payload=allocated.payload,
-                    blocks=blocks,
-                    source_token_start=allocated.source_token_start,
-                    token_count=allocated.token_count,
-                    payload_uri=allocated.payload_uri,
-                )
+            scheduled_load = DocumentKVLoadRequest(
+                request_id=allocated.request_id,
+                actions_record=allocated.actions_record,
+                payload=allocated.payload,
+                blocks=blocks,
+                source_token_start=allocated.source_token_start,
+                token_count=allocated.token_count,
+                payload_uri=allocated.payload_uri,
             )
+            scheduled_load.validate_method_contract(self.method_registry)
+            loads.append(scheduled_load)
         if missing_request_ids:
             raise ValueError(
                 "Document KV allocation is missing scheduled vLLM block ids for request(s): "
@@ -513,6 +639,8 @@ class DocumentKVNativeProvider:
     def bind_connector_metadata(self, connector_metadata: object) -> None:
         if not isinstance(connector_metadata, DocumentKVConnectorMetadata):
             raise TypeError("DocumentKVNativeProvider requires DocumentKVConnectorMetadata")
+        for load in connector_metadata.loads:
+            load.validate_method_contract(self.method_registry)
         self._metadata = connector_metadata
         self._submit_prefetch(connector_metadata.loads)
 
@@ -650,6 +778,7 @@ class DocumentKVNativeProvider:
         h2d_ns = 0
         scatter_ns = 0
         layers_loaded = 0
+        decoded_runtime_bytes = 0
         profile_stages = self._profile_stages
         cache_hits_before = self._stats_payload_cache_hits
         cache_misses_before = self._stats_payload_cache_misses
@@ -668,6 +797,27 @@ class DocumentKVNativeProvider:
             started_ns = time.perf_counter_ns()
             try:
                 merged_payload = _merged_payload(load.actions, payload)
+                assert load.actions.reuse_plan is not None
+                reuse_plan = load.actions.reuse_plan
+                if reuse_plan.runtime_operations:
+                    # Method-owned transforms operate on immutable bytes. Only
+                    # materialize here when a declared decoder/selector/recomputer
+                    # actually needs them; raw KV must preserve the lazy mmap view
+                    # so page faults occur during the measured H2D copy.
+                    operation_result = apply_runtime_operation_handlers(
+                        reuse_plan,
+                        bytes(merged_payload),
+                        layout=layout,
+                        total_tokens=load.actions.reservation.total_tokens,
+                        handler_registry=self.operation_handlers,
+                        metadata=load.actions.bind.metadata,
+                        runtime_context=load,
+                    )
+                    assert operation_result.payload is not None
+                    merged_payload = operation_result.payload
+                else:
+                    reuse_plan.validate_runtime_layout(layout)
+                decoded_runtime_bytes = len(merged_payload)
             finally:
                 payload_merge_ns = time.perf_counter_ns() - started_ns
                 self._stats_payload_merge_ns += payload_merge_ns
@@ -800,6 +950,7 @@ class DocumentKVNativeProvider:
                 wall_start_s=wall_start_s,
                 wall_end_s=time.time(),
                 layers_loaded=layers_loaded,
+                decoded_runtime_bytes=decoded_runtime_bytes,
                 payload_cache_hits=self._stats_payload_cache_hits - cache_hits_before,
                 payload_cache_misses=self._stats_payload_cache_misses - cache_misses_before,
                 error_type=error_type,
@@ -1009,6 +1160,7 @@ class DocumentKVNativeProvider:
         payload_view_ns: int,
         layer_load_ns: int,
         layers_loaded: int,
+        decoded_runtime_bytes: int,
         payload_cache_hits: int,
         payload_cache_misses: int,
         error_type: str | None,
@@ -1041,6 +1193,7 @@ class DocumentKVNativeProvider:
                 wall_start_s=wall_start_s,
                 wall_end_s=wall_end_s,
                 layers_loaded=layers_loaded,
+                decoded_runtime_bytes=decoded_runtime_bytes,
                 payload_cache_hits=payload_cache_hits,
                 payload_cache_misses=payload_cache_misses,
                 error_type=error_type,
@@ -1070,12 +1223,24 @@ class DocumentKVNativeProvider:
         load = self.source.get_load(request)
         if load is None:
             return None
+        validate_engine_kv_connector_actions(
+            load.actions,
+            method_registry=self.method_registry,
+        )
         self._verify_runtime_compatibility(load)
         _verify_request_token_contracts(load.actions, request)
         self._loads[request_id] = load
         return load
 
     def _verify_runtime_compatibility(self, load: DocumentKVHandoffLoad) -> None:
+        assert load.actions.reuse_plan is not None
+        self.adapter_spec.validate_reuse_plan(
+            load.actions.reuse_plan,
+            layout=load.actions.reservation.layout,
+            artifact_identity=load.actions.reservation.artifact_identity,
+            operation_handlers=self.operation_handlers,
+            method_registry=self.method_registry,
+        )
         artifact_identity = load.actions.reservation.artifact_identity
         if artifact_identity is None:
             return
@@ -1235,7 +1400,14 @@ class DocumentKVNativeProbeConnector(VLLMSupportsHMA):
         self._probe_source.release(request_id)
 
 
-def build_document_kv_provider(*, vllm_config: object | None, extra_config: Mapping[str, Any]) -> DocumentKVNativeProvider:
+def build_document_kv_provider(
+    *,
+    vllm_config: object | None,
+    extra_config: Mapping[str, Any],
+    adapter_spec: EngineAdapterSpec | None = None,
+    operation_handlers: RuntimeOperationHandlerRegistry | None = None,
+    method_registry: MethodRegistry | None = None,
+) -> DocumentKVNativeProvider:
     """Provider factory consumed by ``document_kv.provider_factory``."""
 
     del vllm_config
@@ -1250,6 +1422,9 @@ def build_document_kv_provider(*, vllm_config: object | None, extra_config: Mapp
             telemetry_jsonl=telemetry_jsonl,
             runtime_identity=runtime_identity,
             require_runtime_handshake=require_runtime_handshake,
+            adapter_spec=adapter_spec,
+            operation_handlers=operation_handlers,
+            method_registry=method_registry,
         )
     if not isinstance(source_factory, str) or not source_factory.strip():
         raise ValueError(f"{DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY} must be a non-empty module:attribute string")
@@ -1261,6 +1436,9 @@ def build_document_kv_provider(*, vllm_config: object | None, extra_config: Mapp
         telemetry_jsonl=telemetry_jsonl,
         runtime_identity=runtime_identity,
         require_runtime_handshake=require_runtime_handshake,
+        adapter_spec=adapter_spec,
+        operation_handlers=operation_handlers,
+        method_registry=method_registry,
     )
 
 
@@ -1304,6 +1482,14 @@ def _optional_config_path(value: object, *, field_name: str) -> str | None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string when provided")
     return value
+
+
+def _method_registry(registry: MethodRegistry | None) -> MethodRegistry:
+    if registry is None:
+        return default_method_registry()
+    if not isinstance(registry, MethodRegistry):
+        raise TypeError("method_registry must be a MethodRegistry or None")
+    return registry
 
 
 def _load_source_factory(factory_path: str) -> object:
@@ -1378,7 +1564,7 @@ def _validate_payload_matches_actions(actions: EngineKVConnectorActions, payload
         return
     if expected_mode != PayloadMode.MERGED:
         raise ValueError("merged payload requires merged connector actions")
-    expected_bytes = actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
+    expected_bytes = _expected_payload_bytes(actions)
     if len(payload) != expected_bytes:
         raise ValueError(f"payload length {len(payload)} != expected {expected_bytes}")
     _verify_payload_checksum(actions, payload)
@@ -1409,13 +1595,12 @@ def _payload_mode(actions: EngineKVConnectorActions) -> PayloadMode:
     return PayloadMode.SEGMENTED
 
 
-def _actions_record(actions_record: Mapping[str, Any]) -> dict[str, Any]:
+def _normalized_actions_record(actions_record: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(actions_record, Mapping):
         raise TypeError("actions_record must be a mapping")
     # Normalize away MappingProxyType and other immutable mapping wrappers so
     # vLLM can pickle scheduler-to-worker connector metadata.
     normalized = json.loads(json.dumps(actions_record))
-    engine_kv_connector_actions_from_record(normalized, expected_backend=ServingBackend.VLLM)
     return normalized
 
 
@@ -1445,20 +1630,34 @@ def _handoff_request_id(params: Mapping[str, Any], record: Mapping[str, Any]) ->
 def _connector_actions_for_runtime_request(
     actions: EngineKVConnectorActions,
     runtime_request_id: str,
+    *,
+    method_registry: MethodRegistry | None = None,
 ) -> EngineKVConnectorActions:
     if actions.reservation.request_id == runtime_request_id:
+        validate_engine_kv_connector_actions(
+            actions,
+            method_registry=method_registry,
+        )
         return actions
     rebound = EngineKVConnectorActions(
         reservation=replace(actions.reservation, request_id=runtime_request_id),
         copies=tuple(replace(copy, request_id=runtime_request_id) for copy in actions.copies),
         bind=replace(actions.bind, request_id=runtime_request_id),
         release=replace(actions.release, request_id=runtime_request_id),
+        reuse_plan=actions.reuse_plan,
     )
-    validate_engine_kv_connector_actions(rebound)
+    validate_engine_kv_connector_actions(
+        rebound,
+        method_registry=method_registry,
+    )
     return rebound
 
 
-def _connector_actions_from_plan(plan: EngineKVInjectionPlan) -> EngineKVConnectorActions:
+def _connector_actions_from_plan(
+    plan: EngineKVInjectionPlan,
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> EngineKVConnectorActions:
     payload_mode = plan.payload_mode
     actions = EngineKVConnectorActions(
         reservation=EngineKVReservationAction(
@@ -1502,8 +1701,12 @@ def _connector_actions_from_plan(plan: EngineKVInjectionPlan) -> EngineKVConnect
             metadata=plan.metadata,
         ),
         release=EngineKVReleaseAction(request_id=plan.request_id),
+        reuse_plan=plan.reuse_plan,
     )
-    validate_engine_kv_connector_actions(actions)
+    validate_engine_kv_connector_actions(
+        actions,
+        method_registry=method_registry,
+    )
     return actions
 
 
@@ -1511,7 +1714,7 @@ def _materialized_payload(
     load: DocumentKVLoadRequest,
     *,
     payload_reader: _PayloadReader,
-) -> bytes | tuple[bytes, ...]:
+) -> bytes | memoryview | tuple[bytes, ...]:
     if load.payload is not None:
         return load.payload
     payload_uri = _required_string(load.payload_uri, field_name="payload_uri")
@@ -1556,6 +1759,9 @@ def _payload_cache_identity(actions: EngineKVConnectorActions) -> str:
         "schema": "vllm_kv_injection.payload_cache_identity.v1",
         "backend": actions.reservation.backend.value,
         "payload_mode": _payload_mode(actions).value,
+        "reuse_capability_id": (
+            "" if actions.reuse_plan is None else actions.reuse_plan.capability_id
+        ),
         "total_blocks": actions.reservation.total_blocks,
         "total_tokens": actions.reservation.total_tokens,
         "layout": {
@@ -1597,6 +1803,7 @@ def _load_telemetry_record(
     payload_cache_misses: int,
     error_type: str | None,
     error_message: str | None,
+    decoded_runtime_bytes: int | None = None,
     h2d_ns: int | None = None,
     scatter_ns: int | None = None,
     wall_start_s: float | None = None,
@@ -1605,6 +1812,22 @@ def _load_telemetry_record(
     actions = load.actions
     layout = actions.reservation.layout
     block_ids = [block.block_id for block in load.blocks]
+    expected_runtime_payload_bytes = (
+        actions.reservation.total_tokens * layout.bytes_per_token
+    )
+    if decoded_runtime_bytes is None:
+        decoded_runtime_bytes = (
+            expected_runtime_payload_bytes if error_type is None else 0
+        )
+    if type(decoded_runtime_bytes) is not int or decoded_runtime_bytes < 0:
+        raise ValueError("decoded_runtime_bytes must be a non-negative integer")
+    if (
+        error_type is None
+        and decoded_runtime_bytes != expected_runtime_payload_bytes
+    ):
+        raise ValueError(
+            "successful load decoded_runtime_bytes must match runtime KV layout"
+        )
     timings_ns: dict[str, Any] = {
         "total": total_ns,
         "payload_materialize": payload_materialize_ns,
@@ -1641,6 +1864,11 @@ def _load_telemetry_record(
             "copy_count": len(actions.copies),
             "layers_loaded": layers_loaded,
             "expected_payload_bytes": _expected_payload_bytes(actions),
+            "expected_stored_payload_bytes": _expected_payload_bytes(actions),
+            "expected_runtime_payload_bytes": (
+                expected_runtime_payload_bytes
+            ),
+            "decoded_runtime_payload_bytes": decoded_runtime_bytes,
             "payload_cache_hits": payload_cache_hits,
             "payload_cache_misses": payload_cache_misses,
         },
@@ -1668,6 +1896,7 @@ def _load_telemetry_record(
             load,
             cache_state_observation=cache_state_observation,
             successful=error_type is None,
+            decoded_runtime_bytes=decoded_runtime_bytes,
         ),
     }
     if error_type is not None:
@@ -1680,6 +1909,7 @@ def _cache_state_attestation_record(
     *,
     cache_state_observation: Mapping[str, object] | None,
     successful: bool,
+    decoded_runtime_bytes: int,
 ) -> dict[str, object]:
     actions = load.actions
     identity = actions.reservation.artifact_identity
@@ -1698,7 +1928,8 @@ def _cache_state_attestation_record(
     eviction_requested = eviction_requested is True
     eviction_succeeded = eviction_succeeded is True
     direct_io = direct_io is True
-    expected_bytes = (
+    expected_stored_bytes = _expected_payload_bytes(actions)
+    expected_runtime_bytes = (
         actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
     )
     expected_tokens = load.token_count
@@ -1709,7 +1940,8 @@ def _cache_state_attestation_record(
         and not payload_cache_hit
         and (direct_io or (eviction_requested and eviction_succeeded))
         and successful
-        and bytes_read == expected_bytes
+        and bytes_read == expected_stored_bytes
+        and decoded_runtime_bytes == expected_runtime_bytes
         and loaded_tokens == expected_tokens
     )
     return {
@@ -1721,7 +1953,13 @@ def _cache_state_attestation_record(
         "eviction_requested": eviction_requested,
         "eviction_succeeded": eviction_succeeded,
         "direct_io": direct_io,
-        "expected_bytes": expected_bytes,
+        # ``expected_bytes`` remains the v1 compatibility alias for physical
+        # bytes expected from storage. Encoded artifacts may expand to a larger
+        # runtime KV payload after the provider decoder runs.
+        "expected_bytes": expected_stored_bytes,
+        "expected_stored_bytes": expected_stored_bytes,
+        "expected_runtime_bytes": expected_runtime_bytes,
+        "decoded_runtime_bytes": decoded_runtime_bytes,
         "expected_tokens": expected_tokens,
         "loaded_tokens": loaded_tokens,
         "successful_loads": 1 if successful else 0,
@@ -1800,7 +2038,7 @@ def _truncated_error_message(exc: Exception, *, max_chars: int = 500) -> str:
 
 
 def _expected_payload_bytes(actions: EngineKVConnectorActions) -> int:
-    return actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token
+    return max(copy.global_byte_end for copy in actions.copies)
 
 
 def _evict_file_from_page_cache(fileno: int) -> None:
@@ -1958,7 +2196,7 @@ def _merged_payload(
     _validate_payload_matches_actions(actions, payload)
     if isinstance(payload, (bytes, bytearray, memoryview)):
         return payload
-    buffer = bytearray(actions.reservation.total_tokens * actions.reservation.layout.bytes_per_token)
+    buffer = bytearray(_expected_payload_bytes(actions))
     for copy in actions.copies:
         assert copy.payload_index is not None
         source = payload[copy.payload_index]
@@ -2163,7 +2401,7 @@ def _document_kv_prompt_text_mode(request: object) -> str | None:
 
 
 def _payload_tensor_view(
-    payload: bytes | bytearray,
+    payload: bytes | bytearray | memoryview,
     load: DocumentKVLoadRequest,
 ) -> _PayloadTensorView:
     torch = _torch()

@@ -6,13 +6,14 @@ import hashlib
 import json
 import math
 import os
+from ctypes import string_at
 from contextlib import contextmanager
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from inspect import signature
 from typing import Any
 
-from document_kv_cache.artifact_identity import TokenContract
+from document_kv_cache.artifact_identity import UNRESOLVED_IDENTITY, TokenContract
 from document_kv_cache.engine_protocol import (
     KVLayout,
     KVPayloadAxisOrder,
@@ -31,7 +32,9 @@ from document_kv_cache.workflow import (
 )
 
 CACHET_TRANSFORMERS_MODEL_ID_ENV = "CACHET_TRANSFORMERS_MODEL_ID"
+CACHET_TRANSFORMERS_MODEL_REVISION_ENV = "CACHET_TRANSFORMERS_MODEL_REVISION"
 CACHET_TRANSFORMERS_TOKENIZER_ID_ENV = "CACHET_TRANSFORMERS_TOKENIZER_ID"
+CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV = "CACHET_TRANSFORMERS_TOKENIZER_REVISION"
 CACHET_TRANSFORMERS_DEVICE_ENV = "CACHET_TRANSFORMERS_DEVICE"
 CACHET_TRANSFORMERS_TORCH_DTYPE_ENV = "CACHET_TRANSFORMERS_TORCH_DTYPE"
 CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV = "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE"
@@ -69,10 +72,12 @@ __all__ = [
     "CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV",
     "CACHET_TRANSFORMERS_DEVICE_ENV",
     "CACHET_TRANSFORMERS_MODEL_ID_ENV",
+    "CACHET_TRANSFORMERS_MODEL_REVISION_ENV",
     "CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV",
     "CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV",
     "CACHET_TRANSFORMERS_QUANTIZATION_ENV",
     "CACHET_TRANSFORMERS_TOKENIZER_ID_ENV",
+    "CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV",
     "CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV",
     "CACHET_TRANSFORMERS_TORCH_DTYPE_ENV",
     "CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV",
@@ -90,7 +95,9 @@ class TransformersKVGeneratorConfig:
     """Configuration for loading a Hugging Face causal LM as a Cachet generator."""
 
     model_id: str = QWEN3_4B_INSTRUCT_HF_MODEL_ID
+    model_revision: str | None = None
     tokenizer_id: str | None = None
+    tokenizer_revision: str | None = None
     device: str | None = None
     torch_dtype: str | None = "auto"
     trust_remote_code: bool = False
@@ -104,11 +111,23 @@ class TransformersKVGeneratorConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "model_id", _non_empty_string(self.model_id, "model_id"))
+        if self.model_revision is not None:
+            object.__setattr__(
+                self,
+                "model_revision",
+                _non_empty_string(self.model_revision, "model_revision"),
+            )
         if self.tokenizer_id is not None:
             object.__setattr__(
                 self,
                 "tokenizer_id",
                 _non_empty_string(self.tokenizer_id, "tokenizer_id"),
+            )
+        if self.tokenizer_revision is not None:
+            object.__setattr__(
+                self,
+                "tokenizer_revision",
+                _non_empty_string(self.tokenizer_revision, "tokenizer_revision"),
             )
         if self.device is not None:
             object.__setattr__(self, "device", _non_empty_string(self.device, "device"))
@@ -174,6 +193,11 @@ class TransformersKVChunkGenerator:
         model: object,
         tokenizer: object,
         layout: KVLayout | None = None,
+        model_id: str = UNRESOLVED_IDENTITY,
+        model_revision: str = UNRESOLVED_IDENTITY,
+        tokenizer_id: str = UNRESOLVED_IDENTITY,
+        tokenizer_revision: str = UNRESOLVED_IDENTITY,
+        generator_version: str = UNRESOLVED_IDENTITY,
         add_special_tokens: bool = False,
         cache_axis_order: str = _CACHE_AXIS_ORDER_HEAD_MAJOR,
         pre_rope: bool = False,
@@ -188,6 +212,18 @@ class TransformersKVChunkGenerator:
             layout.validate()
         self.model = model
         self.tokenizer = tokenizer
+        self.model_id = _non_empty_string(model_id, "model_id")
+        self.model_revision = _non_empty_string(model_revision, "model_revision")
+        self.tokenizer_id = _non_empty_string(tokenizer_id, "tokenizer_id")
+        self.tokenizer_revision = _non_empty_string(
+            tokenizer_revision,
+            "tokenizer_revision",
+        )
+        self.generator_family = "transformers"
+        self.generator_version = _non_empty_string(
+            generator_version,
+            "generator_version",
+        )
         self.layout = layout
         self.add_special_tokens = add_special_tokens
         self.cache_axis_order = _cache_axis_order_from_value(cache_axis_order)
@@ -211,6 +247,11 @@ class TransformersKVChunkGenerator:
         torch = _torch()
         transformers = _transformers()
         model_kwargs = dict(resolved.model_kwargs)
+        _set_pinned_revision(
+            model_kwargs,
+            resolved.model_revision,
+            field_name="model_kwargs.revision",
+        )
         _apply_transformers_quantization_config(
             transformers,
             torch,
@@ -231,6 +272,11 @@ class TransformersKVChunkGenerator:
             model_kwargs.setdefault("device_map", resolved.device)
         model_kwargs.setdefault("trust_remote_code", resolved.trust_remote_code)
         tokenizer_kwargs = dict(resolved.tokenizer_kwargs)
+        _set_pinned_revision(
+            tokenizer_kwargs,
+            resolved.tokenizer_revision,
+            field_name="tokenizer_kwargs.revision",
+        )
         tokenizer_kwargs.setdefault("trust_remote_code", resolved.trust_remote_code)
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -246,14 +292,23 @@ class TransformersKVChunkGenerator:
         evaluator = getattr(model, "eval", None)
         if callable(evaluator):
             evaluator()
-        return cls(
+        generator = cls(
             model=model,
             tokenizer=tokenizer,
             layout=layout,
+            model_id=resolved.model_id,
+            model_revision=resolved.model_revision or UNRESOLVED_IDENTITY,
+            tokenizer_id=resolved.resolved_tokenizer_id,
+            tokenizer_revision=(
+                resolved.tokenizer_revision or UNRESOLVED_IDENTITY
+            ),
+            generator_version=_transformers_version(transformers),
             add_special_tokens=resolved.add_special_tokens,
             cache_axis_order=resolved.cache_axis_order,
             pre_rope=pre_rope,
         )
+        generator.config = resolved
+        return generator
 
     def generate(
         self,
@@ -336,13 +391,20 @@ class TransformersKVChunkGenerator:
             raise TypeError("tokenizer must return a mapping")
         return encoded
 
+    def logical_token_count(self, text: str) -> int:
+        """Count a logical prompt with the exact tokenizer/load configuration."""
+
+        return int(_input_ids(self._tokenize(text)).shape[-1])
+
 
 def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
     """Build a Transformers generator from Cachet environment variables."""
 
     config = TransformersKVGeneratorConfig(
         model_id=_env_string(CACHET_TRANSFORMERS_MODEL_ID_ENV, default=QWEN3_4B_INSTRUCT_HF_MODEL_ID),
+        model_revision=_env_string(CACHET_TRANSFORMERS_MODEL_REVISION_ENV),
         tokenizer_id=_env_string(CACHET_TRANSFORMERS_TOKENIZER_ID_ENV),
+        tokenizer_revision=_env_string(CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV),
         device=_env_string(CACHET_TRANSFORMERS_DEVICE_ENV),
         torch_dtype=_env_string(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, default="auto"),
         trust_remote_code=_env_bool(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, default=False),
@@ -605,7 +667,10 @@ def _pad_kv_stride(tensor: object, *, layout: KVLayout) -> object:
 
 def _tensor_bytes(tensor: object) -> bytes:
     torch = _torch()
-    return tensor.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
+    byte_tensor = tensor.detach().cpu().contiguous().view(torch.uint8)
+    if byte_tensor.numel() == 0:
+        return b""
+    return string_at(byte_tensor.data_ptr(), byte_tensor.numel())
 
 
 def _input_ids(inputs: Mapping[str, object]) -> object:
@@ -970,6 +1035,29 @@ def _cache_axis_order_from_value(value: object) -> str:
         supported = ", ".join(sorted(_CACHE_AXIS_ORDERS))
         raise ValueError(f"Unsupported cache_axis_order {value!r}; supported values: {supported}")
     return normalized
+
+
+def _set_pinned_revision(
+    kwargs: dict[str, Any],
+    revision: str | None,
+    *,
+    field_name: str,
+) -> None:
+    if revision is None:
+        return
+    existing = kwargs.get("revision")
+    if existing is not None and existing != revision:
+        raise ValueError(
+            f"{field_name} conflicts with the pinned revision {revision!r}"
+        )
+    kwargs["revision"] = revision
+
+
+def _transformers_version(transformers: object) -> str:
+    version = getattr(transformers, "__version__", None)
+    if not isinstance(version, str) or not version:
+        return UNRESOLVED_IDENTITY
+    return version
 
 
 def _torch() -> Any:

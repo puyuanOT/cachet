@@ -6,6 +6,19 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from document_kv_cache._representative_hotpotqa import (
+    REPRESENTATIVE_HOTPOTQA_ADD_SPECIAL_TOKENS,
+    REPRESENTATIVE_HOTPOTQA_RECORD_TYPE,
+    REPRESENTATIVE_HOTPOTQA_SCHEMA_VERSION,
+    REPRESENTATIVE_HOTPOTQA_TOKEN_TARGETS,
+    REPRESENTATIVE_HOTPOTQA_TOKENIZER_ID,
+    REPRESENTATIVE_HOTPOTQA_TOKENIZER_REVISION,
+    PreparedRepresentativeHotpotQA,
+    RepresentativeTokenizer,
+    load_representative_hotpotqa_tokenizer,
+    prepare_representative_hotpotqa_jsonl,
+    representative_hotpotqa_main,
+)
 from document_kv_cache.benchmarks import validate_v1_dataset
 from document_kv_cache.storage import local_path
 
@@ -18,6 +31,17 @@ __all__ = [
     "convert_v1_jsonl",
     "write_v1_jsonl",
     "build_niah_record",
+    "REPRESENTATIVE_HOTPOTQA_RECORD_TYPE",
+    "REPRESENTATIVE_HOTPOTQA_SCHEMA_VERSION",
+    "REPRESENTATIVE_HOTPOTQA_TOKENIZER_ID",
+    "REPRESENTATIVE_HOTPOTQA_TOKENIZER_REVISION",
+    "REPRESENTATIVE_HOTPOTQA_TOKEN_TARGETS",
+    "REPRESENTATIVE_HOTPOTQA_ADD_SPECIAL_TOKENS",
+    "RepresentativeTokenizer",
+    "PreparedRepresentativeHotpotQA",
+    "prepare_representative_hotpotqa_jsonl",
+    "load_representative_hotpotqa_tokenizer",
+    "representative_hotpotqa_main",
     "main",
 ]
 
@@ -599,7 +623,7 @@ def _synthetic_haystack(args: argparse.Namespace) -> str:
     if args.haystack_file:
         return local_path(args.haystack_file).read_text(encoding="utf-8")
     if args.haystack_text:
-        return args.haystack_text
+        return str(args.haystack_text)
     raise ValueError("Synthetic NIAH generation requires --haystack-text or --haystack-file")
 
 

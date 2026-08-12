@@ -16,6 +16,9 @@ from document_kv_cache.benchmarks import (
     BenchmarkExample,
     BenchmarkPromptParts,
     BenchmarkSuite,
+    DatasetScoreContext,
+    DatasetScorer,
+    DatasetScorerRegistry,
     InferenceMeasurement,
     answer_found,
     baseline_prefill_arm,
@@ -30,10 +33,12 @@ from document_kv_cache.benchmarks import (
     benchmark_cache_source_document,
     compare_to_baseline,
     dataset_spec,
+    default_dataset_scorer_registry,
     document_kv_cache_arm,
     evaluate_v1_benchmark_evidence,
     exact_match,
     format_document_context,
+    hotpotqa_official_answer_scores,
     normalize_answer,
     summarize_measurements,
     validate_v1_hardware_target,
@@ -85,6 +90,46 @@ def qualityless_measurement(*, arm_id: str, dataset: str = "biography") -> Infer
         time_to_completion_seconds=2.0,
         output_text="answer without expected answer",
     )
+
+
+def test_hotpotqa_official_answer_scorer_matches_pinned_answer_metrics() -> None:
+    exact = hotpotqa_official_answer_scores(
+        DatasetScoreContext(
+            dataset="hotpotqa",
+            example_id="exact",
+            output_text="The Eiffel, Tower!",
+            references=("Eiffel Tower",),
+        )
+    )
+    partial = hotpotqa_official_answer_scores(
+        DatasetScoreContext(
+            dataset="hotpotqa",
+            example_id="partial",
+            output_text="Charles Babbage mathematician",
+            references=("Charles Babbage",),
+        )
+    )
+    categorical_mismatch = hotpotqa_official_answer_scores(
+        DatasetScoreContext(
+            dataset="hotpotqa",
+            example_id="yes-no",
+            output_text="yes indeed",
+            references=("yes",),
+        )
+    )
+
+    assert exact == {"exact_match": 1.0, "f1": 1.0}
+    assert partial == {"exact_match": 0.0, "f1": pytest.approx(0.8)}
+    assert categorical_mismatch == {"exact_match": 0.0, "f1": 0.0}
+
+
+def test_default_hotpotqa_scorer_is_pinned_and_publication_approved() -> None:
+    scorer = default_dataset_scorer_registry().get("hotpotqa")
+
+    assert scorer.scorer_id == "hotpotqa.official_answer"
+    assert scorer.version == "hotpot_evaluate_v1@3635853403a8"
+    assert scorer.publication_approved is True
+    assert scorer.metric_names == ("exact_match", "f1")
 
 
 def test_benchmark_suite_defaults_to_v1_contract():
@@ -215,8 +260,13 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         BenchmarkSuite(suite_id="v1", examples=(example,), model_id="")
     with pytest.raises(ValueError, match="hardware_target must be non-empty"):
         BenchmarkSuite(suite_id="v1", examples=(example,), hardware_target="")
-    with pytest.raises(ValueError, match="Unsupported V1 hardware target"):
-        BenchmarkSuite(suite_id="v1", examples=(example,), hardware_target="aws-g6e")
+    generalized = BenchmarkSuite(
+        suite_id="generalized",
+        examples=(example,),
+        datasets=("biography",),
+        hardware_target="aws-g6e",
+    )
+    assert generalized.hardware_target == "aws-g6e"
     with pytest.raises(ValueError, match="examples must include"):
         BenchmarkSuite(suite_id="v1", examples=())
     with pytest.raises(TypeError, match=r"examples\[0\]"):
@@ -235,7 +285,7 @@ def test_benchmark_suite_validates_identity_examples_and_datasets():
         )
     with pytest.raises(ValueError, match="datasets must include"):
         BenchmarkSuite(suite_id="v1", examples=(example,), datasets=())
-    with pytest.raises(ValueError, match="duplicate V1 dataset ids: biography"):
+    with pytest.raises(ValueError, match="duplicate dataset ids: biography"):
         BenchmarkSuite(suite_id="v1", examples=(example,), datasets=("biography", "biography"))
 
 
@@ -562,14 +612,15 @@ def test_format_document_context_rejects_empty_document_set():
         format_document_context(())
 
 
-def test_benchmark_suite_rejects_unknown_dataset():
-    with pytest.raises(ValueError, match="Unsupported V1 dataset"):
-        BenchmarkExample(
-            example_id="unknown-1",
-            dataset="natural-questions",
-            documents=(document(),),
-            query="Who is this about?",
-        )
+def test_benchmark_example_accepts_extensible_dataset_identity():
+    example = BenchmarkExample(
+        example_id="unknown-1",
+        dataset="natural-questions",
+        documents=(document(),),
+        query="Who is this about?",
+    )
+
+    assert example.dataset == "natural-questions"
 
 
 def test_answer_quality_helpers_normalize_articles_and_punctuation():
@@ -578,6 +629,37 @@ def test_answer_quality_helpers_normalize_articles_and_punctuation():
     assert answer_found("The answer is Ada Lovelace.", "Ada Lovelace")
     assert not answer_found("The answer is Charles Babbage.", "Ada Lovelace")
     assert not answer_found("The answer is Canada.", "Ada")
+
+
+def test_versioned_scorer_registry_is_dataset_extensible_and_receives_context():
+    observed = []
+
+    def score(context):
+        observed.append(context)
+        return {"official_score": 0.75}
+
+    scorer = DatasetScorer(
+        scorer_id="author.future_dataset",
+        version="2026.1",
+        metric_names=("official_score",),
+        score_function=score,
+        publication_approved=True,
+        plugin_path="author.metrics:score",
+    )
+    registry = DatasetScorerRegistry().register("future-dataset", scorer)
+    context = DatasetScoreContext(
+        dataset="future-dataset",
+        example_id="example-1",
+        output_text="answer",
+        references=("answer", "alternate"),
+        metadata={"split": "test"},
+    )
+
+    assert registry.get("future-dataset").score(context) == {"official_score": 0.75}
+    assert observed == [context]
+    assert registry.identities(("future-dataset",)) == (
+        ("future-dataset", "author.future_dataset@2026.1", True),
+    )
 
 
 def test_summarize_measurements_computes_latency_quality_and_errors():

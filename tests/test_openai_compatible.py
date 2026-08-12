@@ -606,3 +606,36 @@ def test_openai_compatible_engine_config_normalizes_json_body_tuples():
     )
 
     assert config.extra_body == {"guided_choice": ["yes", "no"]}
+
+
+@pytest.mark.parametrize(
+    "reserved_field",
+    (
+        "model",
+        "prompt",
+        "messages",
+        "max_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "stream",
+        "stream_options",
+        "request_id",
+        "kv_transfer_params",
+    ),
+)
+def test_openai_compatible_engine_rejects_reserved_extra_body_fields(
+    reserved_field,
+):
+    with pytest.raises(ValueError, match="reserved request fields"):
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            extra_body={reserved_field: "override"},
+        )
+
+
+def test_openai_compatible_engine_rejects_nested_handoff_override():
+    with pytest.raises(ValueError, match="custom_params.*kv_transfer_params"):
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            extra_body={"custom_params": {"kv_transfer_params": {"forged": True}}},
+        )

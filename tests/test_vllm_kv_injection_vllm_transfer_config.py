@@ -44,7 +44,7 @@ def test_document_kv_transfer_config_builds_vllm_payload():
     assert extra["document_kv.backend"] == "vllm"
     assert extra["document_kv.kv_injection_method"] == "engine-native-kv-block-import"
     assert extra["document_kv.engine_handoff_record_type"] == "document_kv.engine_adapter_request.v1"
-    assert extra["document_kv.engine_handoff_schema_version"] == 2
+    assert extra["document_kv.engine_handoff_schema_version"] == 4
     assert extra["document_kv.provider_factory"] == "company_vllm_patch.document_kv_provider:build_provider"
     assert extra["document_kv.requires_native_runtime"] is True
 

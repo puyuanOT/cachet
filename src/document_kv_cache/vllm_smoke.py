@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import argparse
 import gc
+import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import json
 import os
 from pathlib import Path
@@ -32,6 +33,20 @@ from document_kv_cache.benchmark_handoffs import (
     load_benchmark_kv_chunk_generator,
 )
 from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES, load_v1_jsonl_suite
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_VLLM_PACKAGE_PINS,
+    benchmark_json_mapping_to_record,
+    benchmark_manifest_provenance_runner_args,
+    build_handoff_topology_attestation,
+    generator_token_counter,
+    merge_handoff_topology_attestations,
+    representative_canary_matrix,
+    require_pinned_revision,
+    resolved_layout_rope_provenance,
+    validate_handoff_topology_attestation,
+    validated_benchmark_arm_specs,
+    validated_benchmark_manifest_provenance,
+)
 from document_kv_cache.benchmarks import (
     BASELINE_PREFILL_ARM,
     CACHE_REUSE_ARM,
@@ -57,7 +72,9 @@ from document_kv_cache.engine_probe import _validate_local_payload_uri
 from document_kv_cache.dataset_prep import write_v1_jsonl
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.runtime_telemetry import RuntimeTelemetrySampler
+from document_kv_cache.storage import local_path
 from document_kv_cache.serving_env import (
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
@@ -71,9 +88,11 @@ from document_kv_cache.serving_env import (
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
     CACHET_TRANSFORMERS_MODEL_ID_ENV,
+    CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
     CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
     CACHET_TRANSFORMERS_QUANTIZATION_ENV,
     CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
+    CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
     CACHET_TRANSFORMERS_TORCH_DTYPE_ENV,
     CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV,
 )
@@ -112,6 +131,7 @@ DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
 VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
+PROMPT_TOKEN_PROBE_ADD_SPECIAL_TOKENS = False
 
 __all__ = [
     "VLLM_VERSION",
@@ -126,6 +146,9 @@ __all__ = [
     "SERVER_BASE_URL",
     "SMOKE_DATASETS",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
+    "VLLMRepresentativeWorkloadProfile",
+    "VLLM_REPRESENTATIVE_WORKLOAD_PROFILES",
+    "vllm_representative_workload_profile",
     "VLLMSmokeBenchmarkConfig",
     "VLLMPreparedHandoffGenerationConfig",
     "run_vllm_smoke_benchmark",
@@ -162,6 +185,114 @@ __all__ = [
 
 
 @dataclass(frozen=True, slots=True)
+class VLLMRepresentativeWorkloadProfile:
+    """One allowed, reproducible representative vLLM canary workload."""
+
+    profile_id: str
+    input_tokens_target: int
+    max_output_tokens: int
+    max_model_len: int
+    max_num_seqs: int = 2
+    gpu_memory_utilization: float = 0.85
+    model_dtype: str = "bfloat16"
+    runtime_kv_dtype: str = "bfloat16"
+    benchmark_repeats: int = 3
+    request_parallelism: int = 1
+    prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
+    force_max_tokens: bool = True
+    prewarm_cache_prefix: bool = False
+    cache_runtime_prompt: bool = False
+    payload_cache_max_bytes: int = 0
+    kv_connector_mode: str = CACHET_KV_CONNECTOR_MODE
+    benchmark_evidence_policy: str = "canary"
+    multi_document_datasets: tuple[str, ...] = ("hotpotqa", "musique")
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.profile_id, str) or not self.profile_id:
+            raise ValueError("profile_id must be non-empty")
+        for field_name in (
+            "input_tokens_target",
+            "max_output_tokens",
+            "max_model_len",
+            "max_num_seqs",
+            "benchmark_repeats",
+            "request_parallelism",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer")
+        if self.gpu_memory_utilization != 0.85:
+            raise ValueError(
+                "representative vLLM profiles require gpu_memory_utilization=0.85"
+            )
+        if self.model_dtype != "bfloat16" or self.runtime_kv_dtype != "bfloat16":
+            raise ValueError(
+                "representative vLLM profiles require BF16 model and KV dtypes"
+            )
+        if self.prefix_cache_salt_mode != "per_request":
+            raise ValueError(
+                "representative vLLM profiles require per_request cache salts"
+            )
+        if self.force_max_tokens is not True:
+            raise ValueError("representative vLLM profiles must force max tokens")
+        if self.prewarm_cache_prefix is not False:
+            raise ValueError("representative vLLM profiles must disable prewarming")
+        if self.cache_runtime_prompt is not False:
+            raise ValueError(
+                "representative vLLM profiles must send the logical prompt"
+            )
+        if self.payload_cache_max_bytes != 0:
+            raise ValueError(
+                "representative vLLM profiles must disable the payload cache"
+            )
+        if self.kv_connector_mode != CACHET_KV_CONNECTOR_MODE:
+            raise ValueError("representative vLLM profiles require the Cachet connector")
+        if self.benchmark_evidence_policy != "canary":
+            raise ValueError("representative vLLM profiles require canary evidence")
+        if not self.multi_document_datasets or any(
+            not isinstance(dataset, str) or not dataset
+            for dataset in self.multi_document_datasets
+        ):
+            raise ValueError(
+                "representative vLLM profiles require named multi-document datasets"
+            )
+
+
+VLLM_REPRESENTATIVE_WORKLOAD_PROFILES = (
+    VLLMRepresentativeWorkloadProfile(
+        profile_id="vllm-8k-64-v1",
+        input_tokens_target=8_192,
+        max_output_tokens=64,
+        max_model_len=8_512,
+    ),
+    VLLMRepresentativeWorkloadProfile(
+        profile_id="vllm-16k-256-v1",
+        input_tokens_target=16_384,
+        max_output_tokens=256,
+        max_model_len=16_896,
+    ),
+)
+
+
+def vllm_representative_workload_profile(
+    value: VLLMRepresentativeWorkloadProfile | str,
+) -> VLLMRepresentativeWorkloadProfile:
+    if isinstance(value, VLLMRepresentativeWorkloadProfile):
+        if value not in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES:
+            raise ValueError("representative_workload_profile must be a registered profile")
+        return value
+    if not isinstance(value, str) or not value:
+        raise ValueError("representative_workload_profile must be a profile ID")
+    for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES:
+        if profile.profile_id == value:
+            return profile
+    supported = tuple(profile.profile_id for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES)
+    raise ValueError(
+        f"unknown representative_workload_profile {value!r}; expected one of {supported}"
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class VLLMPreparedHandoffGenerationConfig:
     """Optional generation settings for prepared vLLM benchmark handoffs."""
 
@@ -173,7 +304,7 @@ class VLLMPreparedHandoffGenerationConfig:
     limit: int | None = None
     benchmark_handoff_segment_per_document: bool = False
     cache_method: str | None = None
-    require_artifact_contract: bool = False
+    require_artifact_contract: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.generator_factory, str) or not self.generator_factory.strip():
@@ -199,6 +330,20 @@ class VLLMPreparedHandoffGenerationConfig:
                     self.cache_method,
                     "benchmark_handoff_cache_method",
                 ),
+            )
+        if (
+            self.cache_method == CacheGenerationMethod.VANILLA_PREFILL.value
+            and not self.benchmark_handoff_segment_per_document
+        ):
+            raise ValueError(
+                "vanilla_prefill handoff generation requires one segment per document"
+            )
+        if (
+            self.cache_method == CacheGenerationMethod.FULL_PREFIX_PREFILL.value
+            and self.benchmark_handoff_segment_per_document
+        ):
+            raise ValueError(
+                "full_prefix_prefill handoff generation requires one full-prefix segment"
             )
         if type(self.require_artifact_contract) is not bool:
             raise ValueError(
@@ -258,6 +403,11 @@ class VLLMSmokeBenchmarkConfig:
     benchmark_interleave_examples: bool = False
     runtime_telemetry_interval_seconds: float = 1.0
     benchmark_arms: tuple[str, ...] = ()
+    benchmark_arm_specs: tuple[Mapping[str, Any], ...] = ()
+    benchmark_evidence_policy: str | None = None
+    representative_canary: bool = False
+    representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = None
+    benchmark_manifest_provenance: Mapping[str, Any] = field(default_factory=dict)
     prewarm_cache_prefix: bool = False
     cache_runtime_prompt: bool = False
     prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
@@ -346,6 +496,116 @@ class VLLMSmokeBenchmarkConfig:
         if self.runtime_telemetry_interval_seconds <= 0:
             raise ValueError("runtime_telemetry_interval_seconds must be positive")
         object.__setattr__(self, "benchmark_arms", _validated_benchmark_arms(self.benchmark_arms))
+        object.__setattr__(
+            self,
+            "benchmark_arm_specs",
+            validated_benchmark_arm_specs(self.benchmark_arm_specs),
+        )
+        if self.benchmark_arms and self.benchmark_arm_specs:
+            raise ValueError("benchmark_arms and benchmark_arm_specs are mutually exclusive")
+        if self.benchmark_evidence_policy not in {None, "smoke", "canary", "publication"}:
+            raise ValueError(
+                "benchmark_evidence_policy must be smoke, canary, publication, or None"
+            )
+        if type(self.representative_canary) is not bool:
+            raise TypeError("representative_canary must be a boolean")
+        representative_profile = (
+            None
+            if self.representative_workload_profile is None
+            else vllm_representative_workload_profile(
+                self.representative_workload_profile
+            )
+        )
+        if self.representative_canary != (representative_profile is not None):
+            raise ValueError(
+                "representative_canary and representative_workload_profile must "
+                "be provided together"
+            )
+        object.__setattr__(
+            self,
+            "representative_workload_profile",
+            representative_profile,
+        )
+        provenance = validated_benchmark_manifest_provenance(
+            self.benchmark_manifest_provenance
+        )
+        if (
+            self.model_revision is not None
+            and "model_revision" in provenance
+            and provenance["model_revision"] != self.model_revision
+        ):
+            raise ValueError(
+                "benchmark_manifest_provenance.model_revision must match model_revision"
+            )
+        if (
+            self.tokenizer_revision is not None
+            and "tokenizer_revision" in provenance
+            and provenance["tokenizer_revision"] != self.tokenizer_revision
+        ):
+            raise ValueError(
+                "benchmark_manifest_provenance.tokenizer_revision must match tokenizer_revision"
+            )
+        object.__setattr__(self, "benchmark_manifest_provenance", provenance)
+        if self.requires_pinned_revisions:
+            if (
+                isinstance(
+                    self.handoff_generation,
+                    VLLMPreparedHandoffGenerationConfig,
+                )
+                and not self.handoff_generation.require_artifact_contract
+            ):
+                raise ValueError(
+                    "canary and publication handoff generation require the complete "
+                    "registered method artifact contract"
+                )
+            if self.model_revision is None and "model_revision" in provenance:
+                object.__setattr__(
+                    self,
+                    "model_revision",
+                    require_pinned_revision(
+                        provenance["model_revision"],
+                        "benchmark_manifest_provenance.model_revision",
+                    ),
+                )
+            if self.tokenizer_revision is None and "tokenizer_revision" in provenance:
+                object.__setattr__(
+                    self,
+                    "tokenizer_revision",
+                    require_pinned_revision(
+                        provenance["tokenizer_revision"],
+                        "benchmark_manifest_provenance.tokenizer_revision",
+                    ),
+                )
+            model_revision = require_pinned_revision(
+                self.model_revision,
+                "model_revision",
+            )
+            tokenizer_revision = require_pinned_revision(
+                self.tokenizer_revision,
+                "tokenizer_revision",
+            )
+            if provenance.get("model_revision", model_revision) != model_revision:
+                raise ValueError(
+                    "benchmark_manifest_provenance.model_revision must match model_revision"
+                )
+            if (
+                provenance.get("tokenizer_revision", tokenizer_revision)
+                != tokenizer_revision
+            ):
+                raise ValueError(
+                    "benchmark_manifest_provenance.tokenizer_revision must match "
+                    "tokenizer_revision"
+                )
+        if self.is_representative_submission:
+            provenance = _resolved_representative_vllm_provenance(self, provenance)
+            object.__setattr__(self, "benchmark_manifest_provenance", provenance)
+        if (
+            "input_tokens_target" in provenance
+            and provenance.get("tokenizer_revision", self.tokenizer_revision) is None
+        ):
+            raise ValueError(
+                "benchmark input_tokens_target requires a pinned tokenizer_revision"
+            )
         if type(self.prewarm_cache_prefix) is not bool:
             raise TypeError("prewarm_cache_prefix must be a boolean")
         if type(self.cache_runtime_prompt) is not bool:
@@ -373,6 +633,14 @@ class VLLMSmokeBenchmarkConfig:
                 raise TypeError("handoff_generation must be a VLLMPreparedHandoffGenerationConfig")
             if not self.dataset_specs:
                 raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
+            if (
+                not self.handoff_generation.require_artifact_contract
+                and self.benchmark_evidence_policy in {"canary", "publication"}
+            ):
+                raise ValueError(
+                    "canary and publication handoff generation require the complete "
+                    "registered method artifact contract"
+                )
         if self.runtime_identity is not None and not isinstance(
             self.runtime_identity,
             RuntimeIdentity,
@@ -412,6 +680,16 @@ class VLLMSmokeBenchmarkConfig:
                 "benchmark_prewarm_cache_prefix requires prefix_cache_salt_mode='static' "
                 "so prewarmed prefix-cache blocks can be reused"
             )
+        if self.is_representative_submission:
+            if (
+                VLLM_SERVING_ENVIRONMENT_PROFILE.dependency_constraints
+                != REPRESENTATIVE_VLLM_PACKAGE_PINS
+            ):
+                raise ValueError(
+                    "representative vLLM serving package pins do not match the "
+                    "approved workload manifest"
+                )
+            _validate_vllm_representative_workload(self)
 
     @property
     def local_dir(self) -> Path:
@@ -486,6 +764,26 @@ class VLLMSmokeBenchmarkConfig:
         return self.output_dir / "prepared-handoff-coverage.json"
 
     @property
+    def is_representative_submission(self) -> bool:
+        return self.representative_canary
+
+    @property
+    def representative_workload_profile_id(self) -> str | None:
+        profile = self.representative_workload_profile
+        if profile is None:
+            return None
+        if not isinstance(profile, VLLMRepresentativeWorkloadProfile):
+            raise TypeError("representative_workload_profile was not normalized")
+        return profile.profile_id
+
+    @property
+    def requires_pinned_revisions(self) -> bool:
+        return self.is_representative_submission or self.benchmark_evidence_policy in {
+            "canary",
+            "publication",
+        }
+
+    @property
     def prepared_handoff_generation_path(self) -> Path:
         return self.output_dir / "prepared-handoff-generation.json"
 
@@ -495,6 +793,11 @@ class VLLMSmokeBenchmarkConfig:
 
     @property
     def runs_document_kv_cache_arm(self) -> bool:
+        if self.benchmark_arm_specs:
+            return any(
+                _arm_spec_requires_cachet_handoff(spec)
+                for spec in self.benchmark_arm_specs
+            )
         return not self.benchmark_arms or CACHE_REUSE_ARM in self.benchmark_arms
 
     @property
@@ -506,6 +809,142 @@ class VLLMSmokeBenchmarkConfig:
             self.runs_document_kv_cache_arm
             or self.kv_connector_mode == MULTI_KV_CONNECTOR_MODE
         )
+
+
+def _resolved_representative_vllm_provenance(
+    config: VLLMSmokeBenchmarkConfig,
+    provenance: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
+    layout = layout_for_model(config.model_id, dtype=runtime_kv_dtype)
+    expected: dict[str, Any] = {
+        "canonical_model_id": config.model_id,
+        "model_revision": config.model_revision,
+        "tokenizer_id": config.model_id,
+        "tokenizer_revision": config.tokenizer_revision,
+        "lora_id": layout.lora_id,
+        "engine_id": "vllm",
+        "engine_version": VLLM_VERSION,
+        "serving_platform": "vllm",
+        "model_dtype": config.model_dtype,
+        "model_quantization": config.model_quantization or "none",
+        "runtime_kv_dtype": runtime_kv_dtype,
+        "layout_version": layout.layout_version,
+        "payload_axis_order": getattr(
+            layout.payload_axis_order,
+            "value",
+            layout.payload_axis_order,
+        ),
+        "block_size": layout.block_size,
+        "key_position_encoding": getattr(
+            layout.key_position_encoding,
+            "value",
+            layout.key_position_encoding,
+        ),
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+        "package_revisions": {
+            package: version
+            for package, version in (
+                pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
+            )
+        },
+    }
+    resolved_rope = resolved_layout_rope_provenance(layout)
+    expected.update(resolved_rope)
+    record = dict(provenance)
+    conflicts = {
+        field_name
+        for field_name, expected_value in expected.items()
+        if field_name in record and record[field_name] != expected_value
+    }
+    if not resolved_rope:
+        conflicts.update(
+            field_name
+            for field_name in ("rope_theta", "rope_rotary_dim")
+            if field_name in record
+        )
+    if conflicts:
+        raise ValueError(
+            "benchmark_manifest_provenance conflicts with resolved vLLM settings: "
+            + ", ".join(sorted(conflicts))
+        )
+    record.update(expected)
+    return validated_benchmark_manifest_provenance(record)
+
+
+def _validate_vllm_representative_workload(
+    config: VLLMSmokeBenchmarkConfig,
+) -> None:
+    profile = config.representative_workload_profile
+    if not isinstance(profile, VLLMRepresentativeWorkloadProfile):
+        raise ValueError(
+            "representative vLLM submission requires a typed workload profile"
+        )
+    input_tokens_target = config.benchmark_manifest_provenance.get(
+        "input_tokens_target"
+    )
+    mismatches: list[str] = []
+    if input_tokens_target != profile.input_tokens_target:
+        mismatches.append("input_tokens_target")
+    if config.max_tokens != profile.max_output_tokens:
+        mismatches.append("max_tokens")
+    if config.max_model_len != profile.max_model_len:
+        mismatches.append("max_model_len")
+    if config.max_num_seqs != profile.max_num_seqs:
+        mismatches.append("max_num_seqs")
+    if config.gpu_memory_utilization != profile.gpu_memory_utilization:
+        mismatches.append("gpu_memory_utilization")
+    if config.model_dtype != profile.model_dtype:
+        mismatches.append("model_dtype")
+    if (config.kv_cache_dtype or config.model_dtype) != profile.runtime_kv_dtype:
+        mismatches.append("kv_cache_dtype")
+    if config.benchmark_repeats != profile.benchmark_repeats:
+        mismatches.append("benchmark_repeats")
+    if config.request_parallelism != profile.request_parallelism:
+        mismatches.append("request_parallelism")
+    if config.force_max_tokens != profile.force_max_tokens:
+        mismatches.append("force_max_tokens")
+    if config.prefix_cache_salt_mode != profile.prefix_cache_salt_mode:
+        mismatches.append("prefix_cache_salt_mode")
+    if config.prewarm_cache_prefix != profile.prewarm_cache_prefix:
+        mismatches.append("prewarm_cache_prefix")
+    if config.cache_runtime_prompt != profile.cache_runtime_prompt:
+        mismatches.append("cache_runtime_prompt")
+    if config.payload_cache_max_bytes != profile.payload_cache_max_bytes:
+        mismatches.append("payload_cache_max_bytes")
+    if config.kv_connector_mode != profile.kv_connector_mode:
+        mismatches.append("kv_connector_mode")
+    if config.benchmark_evidence_policy != profile.benchmark_evidence_policy:
+        mismatches.append("benchmark_evidence_policy")
+    if len(config.benchmark_arm_specs) != 1 or not _is_fixed_representative_arm_spec(
+        config.benchmark_arm_specs[0]
+    ):
+        mismatches.append("benchmark_arm_specs")
+    if not config.dataset_specs:
+        mismatches.append("dataset_specs")
+    else:
+        dataset_names = {
+            spec.split("=", 1)[0]
+            for spec in config.dataset_specs
+            if isinstance(spec, str) and "=" in spec
+        }
+        if dataset_names.isdisjoint(profile.multi_document_datasets):
+            mismatches.append("multi_document_dataset")
+    if mismatches:
+        raise ValueError(
+            f"representative workload profile {profile.profile_id!r} does not "
+            "match config: "
+            + ", ".join(mismatches)
+        )
+
+
+def _is_fixed_representative_arm_spec(value: Mapping[str, Any]) -> bool:
+    record = benchmark_json_mapping_to_record(value)
+    return any(
+        record == benchmark_json_mapping_to_record(run.arm_spec)
+        for run in representative_canary_matrix().runs
+    )
 
 
 def _validated_benchmark_arms(value: Sequence[str]) -> tuple[str, ...]:
@@ -577,6 +1016,11 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
 
     dataset_paths = benchmark_dataset_paths(config)
     dataset_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
+    config = _config_with_generated_handoff_offline_costs(config)
+    metadata["benchmark_arm_specs"] = [
+        benchmark_json_mapping_to_record(spec)
+        for spec in config.benchmark_arm_specs
+    ]
     validate_prepared_benchmark_handoffs(config, dataset_paths)
     validate_prompt_token_budget(config, dataset_paths)
     metadata["vllm_server_local_log"] = str(config.server_log_path)
@@ -689,6 +1133,16 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "benchmark_interleave_examples": config.benchmark_interleave_examples,
         "benchmark_system_prompt_position": config.system_prompt_position,
         "benchmark_arms": list(config.benchmark_arms),
+        "benchmark_arm_specs": [
+            benchmark_json_mapping_to_record(spec)
+            for spec in config.benchmark_arm_specs
+        ],
+        "benchmark_evidence_policy": config.benchmark_evidence_policy,
+        "representative_canary": config.is_representative_submission,
+        "representative_workload_profile": config.representative_workload_profile_id,
+        "benchmark_manifest_provenance": benchmark_json_mapping_to_record(
+            config.benchmark_manifest_provenance
+        ),
         "hardware_target": config.hardware_target,
         "document_kv_package_install_spec": document_kv_package_install_spec(config),
         "dependency_override_constraints": dependency_override_constraints(),
@@ -820,10 +1274,30 @@ def run(argv: list[str]) -> None:
 def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict[str, Path]) -> None:
     rows = build_prompt_token_budget_rows(config, dataset_paths)
     write_prompt_token_budget_jsonl(config.prompt_token_budget_input_path, rows)
+    expected_prompt_tokens = config.benchmark_manifest_provenance.get(
+        "input_tokens_target"
+    )
+    tokenizer_id = config.benchmark_manifest_provenance.get(
+        "tokenizer_id",
+        config.model_id,
+    )
+    tokenizer_revision = config.benchmark_manifest_provenance.get(
+        "tokenizer_revision",
+        config.tokenizer_revision,
+    )
     record = run_prompt_token_budget_probe(
         config.venv_python,
         config.prompt_token_budget_input_path,
         model_id=config.model_id,
+        model_revision=config.model_revision,
+        tokenizer_id=str(tokenizer_id),
+        tokenizer_revision=(
+            None if tokenizer_revision is None else str(tokenizer_revision)
+        ),
+        add_special_tokens=PROMPT_TOKEN_PROBE_ADD_SPECIAL_TOKENS,
+        expected_prompt_tokens=(
+            None if expected_prompt_tokens is None else int(expected_prompt_tokens)
+        ),
         max_model_len=config.max_model_len,
         max_tokens=config.max_tokens,
         timeout_seconds=config.import_probe_timeout_seconds,
@@ -834,6 +1308,14 @@ def validate_prompt_token_budget(config: VLLMSmokeBenchmarkConfig, dataset_paths
         raise RuntimeError(
             f"Prompt token budget probe failed: {record.get('error') or record.get('error_type')}. "
             f"See {config.prompt_token_budget_path}."
+        )
+    token_count_mismatches = record.get("token_count_mismatches")
+    if isinstance(token_count_mismatches, list) and token_count_mismatches:
+        first = token_count_mismatches[0]
+        raise ValueError(
+            "Prepared vLLM benchmark prompts do not match the exact logical "
+            f"input token target; {len(token_count_mismatches)} prompt(s) differ, "
+            f"first={first!r}. See {config.prompt_token_budget_path}."
         )
     over_budget = record.get("over_budget")
     if isinstance(over_budget, list) and over_budget:
@@ -855,6 +1337,13 @@ def build_prompt_token_budget_rows(
         model_id=SERVED_MODEL_NAME,
         hardware_target=config.hardware_target,
     )
+    if config.is_representative_submission and not any(
+        len(example.documents) >= 2 for example in suite.examples
+    ):
+        raise ValueError(
+            "representative vLLM workload requires at least one prepared "
+            "multi-document example"
+        )
     rows = []
     for example in suite.examples:
         prompt = build_prompt_parts(example).prefill_prompt
@@ -876,7 +1365,7 @@ def validate_prepared_benchmark_handoffs(
         missing = record.get("missing_kv_transfer_params")
         invalid = record.get("invalid_handoff_references")
         raise ValueError(
-            "Prepared vLLM benchmark datasets must be enriched with Cachet kv_transfer_params "
+            "Prepared vLLM benchmark datasets must be enriched with Cachet per-arm or legacy kv_transfer_params "
             "that reference readable vLLM handoffs; "
             f"missing rows: {missing!r}; invalid handoff references: {invalid!r}. "
             f"See {config.prepared_handoff_coverage_path}."
@@ -894,17 +1383,40 @@ def prepared_benchmark_handoff_coverage_record(
         model_id=SERVED_MODEL_NAME,
         hardware_target=config.hardware_target,
     )
-    missing = tuple(
-        f"{example.dataset}/{example.example_id}"
+    cache_arm_ids = _prepared_cache_arm_ids(config)
+    params_by_example = {
+        (example.dataset, example.example_id): _prepared_params_by_arm(
+            example,
+            cache_arm_ids=cache_arm_ids,
+        )
         for example in suite.examples
-        if not example.kv_transfer_params
+    }
+    missing = tuple(
+        f"{example.dataset}/{example.example_id}:{arm_id}"
+        for example in suite.examples
+        for arm_id, params in params_by_example[(example.dataset, example.example_id)].items()
+        if not params
     )
     invalid = tuple(
         issue
         for example in suite.examples
-        if example.kv_transfer_params
-        for issue in (_prepared_handoff_reference_issue(example),)
+        for arm_id, params in params_by_example[(example.dataset, example.example_id)].items()
+        if params
+        for issue in (
+            _prepared_handoff_reference_issue(
+                example,
+                params=params,
+                arm_id=arm_id,
+            ),
+        )
         if issue is not None
+    )
+    incomplete_examples = {
+        (item.split(":", 1)[0])
+        for item in missing
+    }.union(
+        f"{issue['dataset']}/{issue['example_id']}"
+        for issue in invalid
     )
     counts_by_dataset: dict[str, int] = {}
     for example in suite.examples:
@@ -914,22 +1426,117 @@ def prepared_benchmark_handoff_coverage_record(
         issues.append("prepared benchmark rows missing kv_transfer_params")
     if invalid:
         issues.append("prepared benchmark rows reference unloadable Cachet handoffs")
+    topology_attestation = _prepared_generation_topology_attestation(config)
     return {
         "ok": not missing and not invalid,
         "required": True,
         "dataset_source": "prepared",
         "datasets": counts_by_dataset,
+        "cache_arm_ids": list(cache_arm_ids),
         "examples": len(suite.examples),
-        "examples_with_kv_transfer_params": len(suite.examples) - len(missing),
-        "examples_with_loadable_handoff_references": len(suite.examples) - len(missing) - len(invalid),
+        "examples_with_kv_transfer_params": len(suite.examples) - len(
+            {item.split(":", 1)[0] for item in missing}
+        ),
+        "examples_with_loadable_handoff_references": (
+            len(suite.examples) - len(incomplete_examples)
+        ),
         "missing_kv_transfer_params": list(missing),
         "invalid_handoff_references": list(invalid),
         "issues": issues,
+        "handoff_topology_attestation": topology_attestation,
     }
 
 
-def _prepared_handoff_reference_issue(example: object) -> dict[str, object] | None:
-    params = getattr(example, "kv_transfer_params", {})
+def _prepared_generation_topology_attestation(
+    config: VLLMSmokeBenchmarkConfig,
+) -> dict[str, Any] | None:
+    if config.handoff_generation is None:
+        return None
+    try:
+        generation_record = json.loads(
+            config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        if config.requires_pinned_revisions:
+            raise ValueError(
+                "representative handoff coverage requires its generation summary"
+            ) from exc
+        return None
+    topology = (
+        generation_record.get("handoff_topology_attestation")
+        if isinstance(generation_record, Mapping)
+        else None
+    )
+    if topology is None:
+        if config.requires_pinned_revisions:
+            raise ValueError(
+                "representative handoff generation summary is missing topology attestation"
+            )
+        return None
+    if not isinstance(topology, Mapping):
+        raise ValueError("handoff topology attestation must be an object")
+    return validate_handoff_topology_attestation(topology)
+
+
+def _prepared_cache_arm_ids(config: VLLMSmokeBenchmarkConfig) -> tuple[str, ...]:
+    if config.benchmark_arm_specs:
+        arm_ids = tuple(
+            str(spec["arm_id"])
+            for spec in config.benchmark_arm_specs
+            if _arm_spec_requires_cachet_handoff(spec)
+        )
+    elif config.benchmark_arms:
+        arm_ids = (
+            (CACHE_REUSE_ARM,)
+            if CACHE_REUSE_ARM in config.benchmark_arms
+            else ()
+        )
+    else:
+        arm_ids = (CACHE_REUSE_ARM,)
+    if not arm_ids and config.kv_connector_mode == MULTI_KV_CONNECTOR_MODE:
+        return (CACHE_REUSE_ARM,)
+    return arm_ids
+
+
+def _arm_spec_requires_cachet_handoff(spec: Mapping[str, Any]) -> bool:
+    explicit = spec.get("requires_cachet_handoff")
+    if explicit is not None:
+        return explicit is True
+    implementation_kind = spec.get("implementation_kind")
+    if not implementation_kind:
+        implementation_kind = "cachet" if spec.get("uses_cache") is True else "baseline"
+    return spec.get("uses_cache") is True and implementation_kind == "cachet"
+
+
+def _prepared_params_by_arm(
+    example: object,
+    *,
+    cache_arm_ids: Sequence[str],
+) -> dict[str, Mapping[str, Any]]:
+    per_arm = getattr(example, "arm_kv_transfer_params", {})
+    if not isinstance(per_arm, Mapping):
+        raise TypeError("arm_kv_transfer_params must be a mapping")
+    legacy = getattr(example, "kv_transfer_params", {})
+    if not isinstance(legacy, Mapping):
+        raise TypeError("kv_transfer_params must be a mapping")
+    return {
+        arm_id: (
+            per_arm[arm_id]
+            if arm_id in per_arm
+            else legacy
+            if len(cache_arm_ids) == 1
+            else {}
+        )
+        for arm_id in cache_arm_ids
+    }
+
+
+def _prepared_handoff_reference_issue(
+    example: object,
+    *,
+    params: Mapping[str, Any],
+    arm_id: str,
+) -> dict[str, object] | None:
     if not isinstance(params, Mapping):
         return _handoff_reference_issue(example, "kv_transfer_params must be a mapping")
     handoff_json: str | None = None
@@ -973,12 +1580,14 @@ def _prepared_handoff_reference_issue(example: object) -> dict[str, object] | No
             raise ValueError("handoff payload URI must be a non-empty string")
         _validate_local_payload_uri(payload_uri)
     except Exception as exc:
-        return _handoff_reference_issue(
+        issue = _handoff_reference_issue(
             example,
             str(exc),
             error_type=type(exc).__name__,
             handoff_json=handoff_json,
         )
+        issue["arm_id"] = arm_id
+        return issue
     return None
 
 
@@ -1043,6 +1652,38 @@ def _generate_prepared_benchmark_handoff_inputs_in_subprocess(
     payload: dict[str, object] = {
         "benchmark_id": config.benchmark_id,
         "output_dir": str(config.output_dir),
+        "local_root": str(config.local_root),
+        "model_id": config.model_id,
+        "model_revision": config.model_revision,
+        "tokenizer_revision": config.tokenizer_revision,
+        "model_dtype": config.model_dtype,
+        "model_quantization": config.model_quantization,
+        "kv_cache_dtype": config.kv_cache_dtype,
+        "attention_backend": config.attention_backend,
+        "max_tokens": config.max_tokens,
+        "force_max_tokens": config.force_max_tokens,
+        "max_model_len": config.max_model_len,
+        "data_parallel_size": config.data_parallel_size,
+        "kv_connector_mode": config.kv_connector_mode,
+        "benchmark_repeats": config.benchmark_repeats,
+        "request_parallelism": config.request_parallelism,
+        "benchmark_arm_specs": [
+            benchmark_json_mapping_to_record(spec)
+            for spec in config.benchmark_arm_specs
+        ],
+        "benchmark_evidence_policy": config.benchmark_evidence_policy,
+        "representative_canary": config.is_representative_submission,
+        "representative_workload_profile": config.representative_workload_profile_id,
+        "benchmark_manifest_provenance": benchmark_json_mapping_to_record(
+            config.benchmark_manifest_provenance
+        ),
+        "prewarm_cache_prefix": config.prewarm_cache_prefix,
+        "cache_runtime_prompt": config.cache_runtime_prompt,
+        "prefix_cache_salt_mode": config.prefix_cache_salt_mode,
+        "payload_cache_max_bytes": config.payload_cache_max_bytes,
+        "hardware_target": config.hardware_target,
+        "system_prompt_position": config.system_prompt_position,
+        "allow_dataset_subset": config.allow_dataset_subset,
         "dataset_paths": {dataset: str(path) for dataset, path in dataset_paths.items()},
         "handoff_generation": generation.to_metadata(),
     }
@@ -1073,11 +1714,42 @@ generation = VLLMPreparedHandoffGenerationConfig(
     limit=generation_payload.get("limit"),
     benchmark_handoff_segment_per_document=bool(generation_payload.get("segment_per_document", False)),
     cache_method=generation_payload.get("cache_method"),
-    require_artifact_contract=bool(generation_payload.get("require_artifact_contract", False)),
+    require_artifact_contract=bool(generation_payload.get("require_artifact_contract", True)),
 )
 config = VLLMSmokeBenchmarkConfig(
     benchmark_id=payload["benchmark_id"],
     output_dir=Path(payload["output_dir"]),
+    local_root=Path(payload["local_root"]),
+    model_id=payload["model_id"],
+    model_revision=payload.get("model_revision"),
+    tokenizer_revision=payload.get("tokenizer_revision"),
+    model_dtype=payload["model_dtype"],
+    model_quantization=payload.get("model_quantization"),
+    kv_cache_dtype=payload.get("kv_cache_dtype"),
+    attention_backend=payload.get("attention_backend"),
+    max_tokens=int(payload["max_tokens"]),
+    force_max_tokens=bool(payload.get("force_max_tokens", False)),
+    max_model_len=int(payload["max_model_len"]),
+    data_parallel_size=int(payload.get("data_parallel_size", 1)),
+    kv_connector_mode=payload.get("kv_connector_mode", "cachet"),
+    benchmark_repeats=int(payload.get("benchmark_repeats", 1)),
+    request_parallelism=int(payload.get("request_parallelism", 1)),
+    benchmark_arm_specs=tuple(payload.get("benchmark_arm_specs", ())),
+    benchmark_evidence_policy=payload.get("benchmark_evidence_policy"),
+    representative_canary=bool(payload.get("representative_canary", False)),
+    representative_workload_profile=payload.get("representative_workload_profile"),
+    benchmark_manifest_provenance=payload.get("benchmark_manifest_provenance", {}),
+    prewarm_cache_prefix=bool(payload.get("prewarm_cache_prefix", False)),
+    cache_runtime_prompt=bool(payload.get("cache_runtime_prompt", False)),
+    prefix_cache_salt_mode=payload.get("prefix_cache_salt_mode", "per_request"),
+    payload_cache_max_bytes=int(payload.get("payload_cache_max_bytes", 0)),
+    hardware_target=payload.get("hardware_target", "aws-g6-l4"),
+    system_prompt_position=payload.get("system_prompt_position", "start"),
+    dataset_specs=tuple(
+        f"{dataset}={path}" for dataset, path in payload["dataset_paths"].items()
+    ),
+    allow_dataset_subset=bool(payload.get("allow_dataset_subset", False)),
+    handoff_generation=generation,
 )
 dataset_paths = {
     dataset: Path(path)
@@ -1155,6 +1827,7 @@ def _generate_prepared_benchmark_handoff_inputs(
     dataset_paths: dict[str, Path],
     generation: VLLMPreparedHandoffGenerationConfig,
 ) -> tuple[dict[str, Path], dict[str, object]]:
+    generation_started = time.perf_counter()
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
     layout = layout_for_model(SERVED_MODEL_NAME, dtype=generation.dtype)
     generator_config = getattr(generator, "config", None)
@@ -1164,22 +1837,26 @@ def _generate_prepared_benchmark_handoff_inputs(
         None,
     )
     model_id = (
-        getattr(adapter_config, "model_id", None)
+        getattr(generator, "model_id", None)
+        or getattr(adapter_config, "model_id", None)
         or getattr(generator_config, "model_id", None)
         or layout.model_id
     )
     tokenizer_id = (
-        getattr(adapter_config, "tokenizer_id", None)
+        getattr(generator, "tokenizer_id", None)
+        or getattr(adapter_config, "tokenizer_id", None)
         or getattr(generator_config, "tokenizer_id", None)
         or model_id
     )
     model_revision = (
-        getattr(adapter_config, "model_revision", None)
+        getattr(generator, "model_revision", None)
+        or getattr(adapter_config, "model_revision", None)
         or getattr(generator_config, "model_revision", None)
         or UNRESOLVED_IDENTITY
     )
     tokenizer_revision = (
-        getattr(adapter_config, "tokenizer_revision", None)
+        getattr(generator, "tokenizer_revision", None)
+        or getattr(adapter_config, "tokenizer_revision", None)
         or getattr(generator_config, "tokenizer_revision", None)
         or UNRESOLVED_IDENTITY
     )
@@ -1189,6 +1866,41 @@ def _generate_prepared_benchmark_handoff_inputs(
         "generator_version",
         UNRESOLVED_IDENTITY,
     )
+    if config.requires_pinned_revisions:
+        model_revision = require_pinned_revision(
+            model_revision,
+            "handoff generator model_revision",
+        )
+        tokenizer_revision = require_pinned_revision(
+            tokenizer_revision,
+            "handoff generator tokenizer_revision",
+        )
+        require_pinned_revision(
+            generator_version,
+            "handoff generator generator_version",
+        )
+        expected_generator_identity = {
+            "model_id": config.model_id,
+            "model_revision": config.model_revision,
+            "tokenizer_id": config.model_id,
+            "tokenizer_revision": config.tokenizer_revision,
+        }
+        observed_generator_identity = {
+            "model_id": model_id,
+            "model_revision": model_revision,
+            "tokenizer_id": tokenizer_id,
+            "tokenizer_revision": tokenizer_revision,
+        }
+        mismatches = sorted(
+            key
+            for key, expected in expected_generator_identity.items()
+            if observed_generator_identity[key] != expected
+        )
+        if mismatches:
+            raise ValueError(
+                "handoff generator identity differs from the serving identity: "
+                + ", ".join(mismatches)
+            )
     position_handling = getattr(generator, "position_handling", None)
     layout = replace(
         layout,
@@ -1209,7 +1921,15 @@ def _generate_prepared_benchmark_handoff_inputs(
     layout.validate()
     generated_paths: dict[str, Path] = {}
     dataset_records: dict[str, dict[str, object]] = {}
+    topology_attestations: list[dict[str, Any]] = []
+    try:
+        topology_token_counter = generator_token_counter(generator)
+    except TypeError:
+        if config.requires_pinned_revisions:
+            raise
+        topology_token_counter = None
     for dataset in dataset_paths:
+        dataset_generation_started = time.perf_counter()
         input_jsonl = dataset_paths[dataset]
         dataset_output_dir = generation.output_dir / dataset
         generation_input_jsonl = _handoff_generation_input_jsonl(
@@ -1228,6 +1948,7 @@ def _generate_prepared_benchmark_handoff_inputs(
             backend="vllm",
             manifest_json=manifest_json,
             align_bytes=generation.align_bytes,
+            segmented=generation.benchmark_handoff_segment_per_document,
             segment_per_document=generation.benchmark_handoff_segment_per_document,
             cache_method=generation.cache_method,
             model_id=model_id,
@@ -1245,7 +1966,19 @@ def _generate_prepared_benchmark_handoff_inputs(
             dataset=dataset,
             overwrite=True,
         )
+        topology_attestation = (
+            None
+            if topology_token_counter is None
+            else build_handoff_topology_attestation(
+                generation_input_jsonl,
+                result.manifest,
+                token_counter=topology_token_counter,
+            )
+        )
+        if topology_attestation is not None:
+            topology_attestations.append(topology_attestation)
         generated_paths[dataset] = output_jsonl
+        artifact_storage_bytes = _artifact_storage_bytes(result.shard_uri)
         dataset_records[dataset] = {
             "input_jsonl": str(input_jsonl),
             "generation_input_jsonl": str(generation_input_jsonl),
@@ -1256,8 +1989,23 @@ def _generate_prepared_benchmark_handoff_inputs(
             "enriched_rows": enriched_rows,
             "cache_refs": len(result.cache_refs),
             "shard_uri": result.shard_uri,
+            "artifact_generation_seconds": (
+                time.perf_counter() - dataset_generation_started
+            ),
+            "artifact_payload_bytes": result.cache_generation.total_bytes,
+            "artifact_storage_bytes": artifact_storage_bytes,
+            "handoff_topology_attestation": topology_attestation,
         }
 
+    artifact_payload_bytes = sum(
+        int(dataset_record["artifact_payload_bytes"])
+        for dataset_record in dataset_records.values()
+    )
+    artifact_storage_values = [
+        int(value)
+        for dataset_record in dataset_records.values()
+        if (value := dataset_record["artifact_storage_bytes"]) is not None
+    ]
     record = {
         "ok": True,
         "dataset_source": "prepared",
@@ -1274,9 +2022,86 @@ def _generate_prepared_benchmark_handoff_inputs(
         "artifact_tokenizer_revision": tokenizer_revision,
         "generator_family": generator_family,
         "generator_version": generator_version,
+        "artifact_generation_seconds": time.perf_counter() - generation_started,
+        "artifact_payload_bytes": artifact_payload_bytes,
+        "artifact_storage_bytes": (
+            sum(artifact_storage_values)
+            if len(artifact_storage_values) == len(dataset_records)
+            else None
+        ),
+        "handoff_topology_attestation": (
+            merge_handoff_topology_attestations(topology_attestations)
+            if topology_attestations
+            else None
+        ),
         "datasets": dataset_records,
     }
     return generated_paths, record
+
+
+def _artifact_storage_bytes(shard_uri: str) -> int | None:
+    try:
+        path = local_path(shard_uri)
+    except (TypeError, ValueError):
+        return None
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def _config_with_generated_handoff_offline_costs(
+    config: VLLMSmokeBenchmarkConfig,
+) -> VLLMSmokeBenchmarkConfig:
+    generation = config.handoff_generation
+    if generation is None or not config.benchmark_arm_specs:
+        return config
+    record = json.loads(
+        config.prepared_handoff_generation_path.read_text(encoding="utf-8")
+    )
+    duration = record.get("artifact_generation_seconds")
+    artifact_bytes = record.get("artifact_storage_bytes")
+    if artifact_bytes is None:
+        artifact_bytes = record.get("artifact_payload_bytes")
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(float(duration))
+        or duration < 0
+    ):
+        raise ValueError(
+            "prepared handoff generation record must include non-negative "
+            "artifact_generation_seconds"
+        )
+    if type(artifact_bytes) is not int or artifact_bytes < 0:
+        raise ValueError(
+            "prepared handoff generation record must include non-negative artifact bytes"
+        )
+    expected_method = generation.cache_method or (
+        CacheGenerationMethod.VANILLA_PREFILL.value
+        if generation.benchmark_handoff_segment_per_document
+        else CacheGenerationMethod.FULL_PREFIX_PREFILL.value
+    )
+    updated_specs: list[Mapping[str, Any]] = []
+    matched = 0
+    for raw_spec in config.benchmark_arm_specs:
+        spec = benchmark_json_mapping_to_record(raw_spec)
+        if (
+            _arm_spec_requires_cachet_handoff(spec)
+            and spec.get("cache_method") == expected_method
+        ):
+            matched += 1
+            costs = dict(spec.get("offline_costs", {}))
+            costs["artifact_generation_seconds"] = float(duration)
+            costs["artifact_bytes"] = artifact_bytes
+            spec["offline_costs"] = costs
+        updated_specs.append(spec)
+    if matched != 1:
+        raise ValueError(
+            "generated handoff costs must map to exactly one benchmark arm for "
+            f"method {expected_method!r}; matched {matched}"
+        )
+    return replace(config, benchmark_arm_specs=tuple(updated_specs))
 
 
 def _handoff_generation_input_jsonl(
@@ -1319,30 +2144,78 @@ def run_prompt_token_budget_probe(
     input_path: Path,
     *,
     model_id: str,
+    model_revision: str | None = None,
+    tokenizer_id: str | None = None,
+    tokenizer_revision: str | None = None,
+    add_special_tokens: bool = PROMPT_TOKEN_PROBE_ADD_SPECIAL_TOKENS,
+    expected_prompt_tokens: int | None = None,
     max_model_len: int,
     max_tokens: int,
     timeout_seconds: float,
     env: dict[str, str] | None = None,
 ) -> dict[str, object]:
+    if model_revision is not None and (
+        not isinstance(model_revision, str) or not model_revision
+    ):
+        raise ValueError("model_revision must be non-empty when provided")
+    resolved_tokenizer_id = tokenizer_id or model_id
+    if not isinstance(resolved_tokenizer_id, str) or not resolved_tokenizer_id:
+        raise ValueError("tokenizer_id must be non-empty")
+    if tokenizer_revision is not None and (
+        not isinstance(tokenizer_revision, str) or not tokenizer_revision
+    ):
+        raise ValueError("tokenizer_revision must be non-empty when provided")
+    if type(add_special_tokens) is not bool:
+        raise TypeError("add_special_tokens must be a boolean")
+    if expected_prompt_tokens is not None and (
+        type(expected_prompt_tokens) is not int or expected_prompt_tokens <= 0
+    ):
+        raise ValueError("expected_prompt_tokens must be positive when provided")
+    tokenizer_record = {
+        "tokenizer_id": resolved_tokenizer_id,
+        "tokenizer_revision": tokenizer_revision,
+        "add_special_tokens": add_special_tokens,
+    }
+    model_record = {"model_id": model_id, "model_revision": model_revision}
     code = """
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 from transformers import AutoTokenizer
 
-model_id, input_path, max_model_len, max_tokens = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
-tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+tokenizer_id = sys.argv[1]
+tokenizer_revision = sys.argv[2] or None
+model_id = sys.argv[3]
+model_revision = sys.argv[4] or None
+add_special_tokens = sys.argv[5] == "true"
+expected_prompt_tokens = None if sys.argv[6] == "" else int(sys.argv[6])
+input_path, max_model_len, max_tokens = Path(sys.argv[7]), int(sys.argv[8]), int(sys.argv[9])
+tokenizer = AutoTokenizer.from_pretrained(
+    tokenizer_id,
+    revision=tokenizer_revision,
+    trust_remote_code=True,
+)
 rows = []
 over_budget = []
+token_count_mismatches = []
 with input_path.open("r", encoding="utf-8") as handle:
     for raw_line in handle:
         row = json.loads(raw_line)
-        prompt_tokens = len(tokenizer(row["prompt"])["input_ids"])
+        prompt_tokens = len(
+            tokenizer(
+                row["prompt"],
+                add_special_tokens=add_special_tokens,
+            )["input_ids"]
+        )
         total_tokens = prompt_tokens + max_tokens
         measured = {
             "dataset": row["dataset"],
             "example_id": row["example_id"],
+            "logical_prompt_sha256": hashlib.sha256(
+                row["prompt"].encode("utf-8")
+            ).hexdigest(),
             "prompt_tokens": prompt_tokens,
             "max_tokens": max_tokens,
             "total_tokens": total_tokens,
@@ -1351,13 +2224,40 @@ with input_path.open("r", encoding="utf-8") as handle:
         rows.append(measured)
         if total_tokens > max_model_len:
             over_budget.append(measured)
-print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), flush=True)
+        if (
+            expected_prompt_tokens is not None
+            and prompt_tokens != expected_prompt_tokens
+        ):
+            token_count_mismatches.append(measured)
+print(
+    json.dumps(
+        {
+            "model": {"model_id": model_id, "model_revision": model_revision},
+            "tokenizer": {
+                "tokenizer_id": tokenizer_id,
+                "tokenizer_revision": tokenizer_revision,
+                "add_special_tokens": add_special_tokens,
+            },
+            "expected_prompt_tokens": expected_prompt_tokens,
+            "rows": rows,
+            "over_budget": over_budget,
+            "token_count_mismatches": token_count_mismatches,
+        },
+        sort_keys=True,
+    ),
+    flush=True,
+)
 """
     argv = [
         str(python_executable),
         "-c",
         code,
+        resolved_tokenizer_id,
+        tokenizer_revision or "",
         model_id,
+        model_revision or "",
+        "true" if add_special_tokens else "false",
+        "" if expected_prompt_tokens is None else str(expected_prompt_tokens),
         str(input_path),
         str(max_model_len),
         str(max_tokens),
@@ -1379,14 +2279,21 @@ print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), fl
             "error": f"prompt token budget probe timed out after {timeout_seconds:.1f}s",
             "stdout_tail": tail_text(exc.stdout),
             "stderr_tail": tail_text(exc.stderr),
+            "tokenizer": tokenizer_record,
+            "model": model_record,
+            "expected_prompt_tokens": expected_prompt_tokens,
             "rows": [],
             "over_budget": [],
+            "token_count_mismatches": [],
         }
     record = last_json_object(completed.stdout)
     record.update(
         {
             "ok": completed.returncode == 0,
             "returncode": completed.returncode,
+            "tokenizer": tokenizer_record,
+            "model": model_record,
+            "expected_prompt_tokens": expected_prompt_tokens,
             "stdout_tail": tail_text(completed.stdout),
             "stderr_tail": tail_text(completed.stderr),
         }
@@ -1399,6 +2306,7 @@ print(json.dumps({"rows": rows, "over_budget": over_budget}, sort_keys=True), fl
         record.setdefault("error_type", "CalledProcessError")
         record.setdefault("rows", [])
         record.setdefault("over_budget", [])
+        record.setdefault("token_count_mismatches", [])
     return record
 
 
@@ -2557,6 +3465,24 @@ def build_benchmark_runner_args(
         args.append("--cache-runtime-prompt")
     for arm_id in config.benchmark_arms:
         args.extend(["--arm", arm_id])
+    for arm_spec in config.benchmark_arm_specs:
+        args.extend(
+            [
+                "--arm-spec-json",
+                json.dumps(
+                    benchmark_json_mapping_to_record(arm_spec),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+            ]
+        )
+    if config.benchmark_evidence_policy is not None:
+        args.extend(["--evidence-policy", config.benchmark_evidence_policy])
+    args.extend(
+        benchmark_manifest_provenance_runner_args(
+            config.benchmark_manifest_provenance
+        )
+    )
     args.extend(dataset_args(dataset_paths))
     return args
 
@@ -2609,10 +3535,24 @@ def server_env(config: VLLMSmokeBenchmarkConfig) -> dict[str, str]:
 
 
 def _populate_handoff_generation_env(env: dict[str, str], config: VLLMSmokeBenchmarkConfig) -> None:
+    if config.is_representative_submission:
+        _set_or_validate_env(env, "DOCUMENT_KV_EVICT_PAGE_CACHE", "1")
     if config.handoff_generation is None:
         return
-    env.setdefault(CACHET_TRANSFORMERS_MODEL_ID_ENV, config.model_id)
-    env.setdefault(CACHET_TRANSFORMERS_TOKENIZER_ID_ENV, config.model_id)
+    _set_or_validate_env(env, CACHET_TRANSFORMERS_MODEL_ID_ENV, config.model_id)
+    _set_or_validate_env(env, CACHET_TRANSFORMERS_TOKENIZER_ID_ENV, config.model_id)
+    if config.model_revision is not None:
+        _set_or_validate_env(
+            env,
+            CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
+            config.model_revision,
+        )
+    if config.tokenizer_revision is not None:
+        _set_or_validate_env(
+            env,
+            CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
+            config.tokenizer_revision,
+        )
     env.setdefault(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, config.model_dtype)
     env.setdefault(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, "true")
     if _is_bitsandbytes_4bit_quantization(config.model_quantization):
@@ -2627,6 +3567,15 @@ def _populate_handoff_generation_env(env: dict[str, str], config: VLLMSmokeBench
                 sort_keys=True,
             ),
         )
+
+
+def _set_or_validate_env(env: dict[str, str], name: str, value: str) -> None:
+    existing = env.get(name)
+    if existing is not None and existing != value:
+        raise ValueError(
+            f"{name}={existing!r} conflicts with the pinned value {value!r}"
+        )
+    env[name] = value
 
 
 def _is_bitsandbytes_4bit_quantization(value: str | None) -> bool:
@@ -2823,6 +3772,46 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--benchmark-arm-spec-json",
+        action="append",
+        default=None,
+        help=(
+            "Validated arbitrary benchmark-runner arm JSON. Repeat for N-way "
+            "method comparisons; mutually exclusive with --benchmark-arm."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-evidence-policy",
+        choices=("smoke", "canary", "publication"),
+        help="Evidence maturity passed to the benchmark runner.",
+    )
+    parser.add_argument(
+        "--representative-canary",
+        action="store_true",
+        help=(
+            "Require immutable model/tokenizer revisions and local-NVMe handoff "
+            "generation for representative evidence."
+        ),
+    )
+    parser.add_argument(
+        "--representative-workload-profile",
+        choices=tuple(
+            profile.profile_id
+            for profile in VLLM_REPRESENTATIVE_WORKLOAD_PROFILES
+        ),
+        help=(
+            "Registered exact representative workload profile. Must be supplied "
+            "together with --representative-canary."
+        ),
+    )
+    parser.add_argument(
+        "--benchmark-manifest-provenance-json",
+        help=(
+            "JSON object containing benchmark manifest provenance such as pinned "
+            "engine/package/hardware/runtime identities and measurement scopes."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-cache-runtime-prompt",
         action="store_true",
         help="Pass --cache-runtime-prompt to the benchmark runner so cache arms send only the runtime suffix.",
@@ -2923,11 +3912,11 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
-        "--benchmark-handoff-require-artifact-contract",
+        "--benchmark-handoff-allow-legacy-artifact-contract",
         action="store_true",
         help=(
-            "Require the registered method's complete artifact contract during "
-            "handoff generation."
+            "Legacy/debug opt-out: allow handoff generation without the registered "
+            "method's complete artifact contract. Never use for canary evidence."
         ),
     )
     parser.add_argument(
@@ -2945,6 +3934,18 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         None
         if args.runtime_identity_json is None
         else _runtime_identity_from_json(args.runtime_identity_json)
+    )
+    benchmark_arm_specs = tuple(
+        _json_object_from_cli(value, "--benchmark-arm-spec-json")
+        for value in (args.benchmark_arm_spec_json or ())
+    )
+    benchmark_manifest_provenance = (
+        {}
+        if args.benchmark_manifest_provenance_json is None
+        else _json_object_from_cli(
+            args.benchmark_manifest_provenance_json,
+            "--benchmark-manifest-provenance-json",
+        )
     )
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
@@ -2982,6 +3983,11 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         system_prompt_position=args.system_prompt_position,
         runtime_telemetry_interval_seconds=args.runtime_telemetry_interval_seconds,
         benchmark_arms=tuple(args.benchmark_arm or ()),
+        benchmark_arm_specs=benchmark_arm_specs,
+        benchmark_evidence_policy=args.benchmark_evidence_policy,
+        representative_canary=args.representative_canary,
+        representative_workload_profile=args.representative_workload_profile,
+        benchmark_manifest_provenance=benchmark_manifest_provenance,
         prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
         cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
         prefix_cache_salt_mode=args.benchmark_prefix_cache_salt_mode,
@@ -3004,7 +4010,7 @@ def _handoff_generation_config_from_args(
         if (
             args.benchmark_handoff_output_dir is not None
             or args.benchmark_handoff_cache_method is not None
-            or args.benchmark_handoff_require_artifact_contract
+            or args.benchmark_handoff_allow_legacy_artifact_contract
             or args.benchmark_handoff_chunk_per_document
         ):
             raise ValueError(
@@ -3012,7 +4018,13 @@ def _handoff_generation_config_from_args(
                 "--benchmark-handoff-generator-factory"
             )
         return None
-    output = args.benchmark_handoff_output_dir or str(output_dir / "generated-handoffs")
+    output = args.benchmark_handoff_output_dir or str(
+        Path(args.local_root)
+        / f"document-kv-smoke-{args.benchmark_id}"
+        / "generated-handoffs"
+        if args.representative_canary
+        else output_dir / "generated-handoffs"
+    )
     return VLLMPreparedHandoffGenerationConfig(
         generator_factory=args.benchmark_handoff_generator_factory,
         output_dir=Path(_cluster_file_path(output)),
@@ -3023,7 +4035,7 @@ def _handoff_generation_config_from_args(
         benchmark_handoff_segment_per_document=args.benchmark_handoff_chunk_per_document,
         cache_method=args.benchmark_handoff_cache_method,
         require_artifact_contract=(
-            args.benchmark_handoff_require_artifact_contract
+            not args.benchmark_handoff_allow_legacy_artifact_contract
         ),
     )
 
@@ -3038,6 +4050,16 @@ def _runtime_identity_from_json(value: str) -> RuntimeIdentity:
     if not isinstance(record, Mapping):
         raise ValueError("--runtime-identity-json must contain a JSON object")
     return RuntimeIdentity.from_record(record)
+
+
+def _json_object_from_cli(value: str, option_name: str) -> Mapping[str, Any]:
+    try:
+        record = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{option_name} must be valid JSON: {exc.msg}") from exc
+    if not isinstance(record, Mapping):
+        raise ValueError(f"{option_name} must contain a JSON object")
+    return record
 
 
 def main(argv: list[str] | None = None) -> int:

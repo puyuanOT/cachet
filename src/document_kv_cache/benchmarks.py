@@ -4,11 +4,17 @@ import math
 import os
 import re
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+import string
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
 from html import escape
-from typing import Any
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
+
+if TYPE_CHECKING:
+    from document_kv_cache.methods import MethodRegistry
 
 from document_kv_cache._hardware_targets import (
     DEFAULT_HARDWARE_TARGET,
@@ -19,6 +25,7 @@ from document_kv_cache.benchmark_metrics import (
     aggregate_decode_tokens_per_second,
     latency_speedup,
     quality_delta,
+    request_decode_tokens_per_second,
 )
 from document_kv_cache.models import DocumentKVRequest
 from document_kv_cache.workflow import SourceDocument
@@ -49,6 +56,25 @@ FINAL_ANSWER_CUE = "Answer:"
 CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV = "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION"
 SYSTEM_PROMPT_POSITIONS = ("start", "end")
 DEFAULT_SYSTEM_PROMPT_POSITION = "start"
+BENCHMARK_ARM_IMPLEMENTATION_KINDS = ("baseline", "cachet", "upstream", "external")
+
+
+class _FrozenList(list[Any]):
+    def _immutable(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("evaluation JSON values are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable  # type: ignore[assignment]
+    __imul__ = _immutable  # type: ignore[assignment]
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
 
 __all__ = [
     "SUPPORTED_V1_DATASETS",
@@ -73,6 +99,7 @@ __all__ = [
     "CACHET_BENCHMARK_SYSTEM_PROMPT_POSITION_ENV",
     "SYSTEM_PROMPT_POSITIONS",
     "DEFAULT_SYSTEM_PROMPT_POSITION",
+    "BENCHMARK_ARM_IMPLEMENTATION_KINDS",
     "resolve_system_prompt_position",
     "BenchmarkDatasetSpec",
     "BenchmarkPromptParts",
@@ -80,6 +107,11 @@ __all__ = [
     "BenchmarkExample",
     "BenchmarkSuite",
     "BenchmarkArm",
+    "BenchmarkOfflineCosts",
+    "DatasetScorer",
+    "DatasetMetricSpec",
+    "DatasetScoreContext",
+    "DatasetScorerRegistry",
     "InferenceMeasurement",
     "LatencySummary",
     "BenchmarkReportRow",
@@ -87,7 +119,12 @@ __all__ = [
     "V1BenchmarkEvidence",
     "baseline_prefill_arm",
     "document_kv_cache_arm",
+    "external_benchmark_arm",
     "method_benchmark_arm",
+    "require_runnable_cachet_benchmark_arm",
+    "default_dataset_scorer_registry",
+    "diagnostic_answer_scores",
+    "hotpotqa_official_answer_scores",
     "v1_dataset_specs",
     "dataset_spec",
     "build_prompt_parts",
@@ -108,6 +145,286 @@ __all__ = [
     "validate_v1_hardware_target",
     "validate_v1_dataset",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetScoreContext:
+    dataset: str
+    example_id: str
+    output_text: str
+    references: tuple[str, ...]
+    metadata: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.dataset, "dataset")
+        _validate_non_empty_str(self.example_id, "example_id")
+        if not isinstance(self.output_text, str):
+            raise TypeError("output_text must be a string")
+        references = tuple(self.references)
+        if any(not isinstance(reference, str) or not reference for reference in references):
+            raise ValueError("references must contain non-empty strings")
+        object.__setattr__(self, "references", references)
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(_dict_from_str_mapping(self.metadata, "metadata")),
+        )
+
+
+ScoreFunction = Callable[[DatasetScoreContext], Mapping[str, float]]
+PromptFunction = Callable[["BenchmarkExample"], "BenchmarkPromptParts"]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetMetricSpec:
+    """Comparison semantics for one versioned dataset metric."""
+
+    metric_name: str
+    direction: Literal["higher_is_better", "lower_is_better"] = "higher_is_better"
+    max_regression: float = 0.02
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.metric_name, "metric_name")
+        if self.direction not in {"higher_is_better", "lower_is_better"}:
+            raise ValueError(
+                "direction must be higher_is_better or lower_is_better"
+            )
+        if (
+            isinstance(self.max_regression, bool)
+            or not isinstance(self.max_regression, (int, float))
+            or not math.isfinite(float(self.max_regression))
+            or self.max_regression < 0
+        ):
+            raise ValueError("max_regression must be a non-negative finite number")
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetScorer:
+    """Versioned scorer used for one or more benchmark datasets."""
+
+    scorer_id: str
+    version: str
+    metric_names: tuple[str, ...]
+    score_function: ScoreFunction = field(repr=False, compare=False)
+    publication_approved: bool = False
+    plugin_path: str = ""
+    metric_specs: tuple[DatasetMetricSpec, ...] = ()
+    prompt_function: PromptFunction | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    prompt_plugin_path: str = ""
+    prompt_template_version: str = ""
+
+    def __post_init__(self) -> None:
+        _validate_non_empty_str(self.scorer_id, "scorer_id")
+        _validate_non_empty_str(self.version, "version")
+        names = tuple(self.metric_names)
+        if not names or any(not isinstance(name, str) or not name for name in names):
+            raise ValueError("metric_names must contain non-empty strings")
+        if len(set(names)) != len(names):
+            raise ValueError("metric_names must not contain duplicates")
+        if not callable(self.score_function):
+            raise TypeError("score_function must be callable")
+        if type(self.publication_approved) is not bool:
+            raise ValueError("publication_approved must be a boolean")
+        if not isinstance(self.plugin_path, str):
+            raise TypeError("plugin_path must be a string")
+        specs = tuple(self.metric_specs) or tuple(
+            DatasetMetricSpec(metric_name=name) for name in names
+        )
+        if any(not isinstance(spec, DatasetMetricSpec) for spec in specs):
+            raise TypeError("metric_specs entries must be DatasetMetricSpec")
+        if tuple(spec.metric_name for spec in specs) != names:
+            raise ValueError(
+                "metric_specs must declare each metric_name once and in the same order"
+            )
+        if self.prompt_function is not None and not callable(self.prompt_function):
+            raise TypeError("prompt_function must be callable when provided")
+        for field_name in ("prompt_plugin_path", "prompt_template_version"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if self.prompt_function is not None:
+            _validate_non_empty_str(self.prompt_plugin_path, "prompt_plugin_path")
+            _validate_non_empty_str(
+                self.prompt_template_version,
+                "prompt_template_version",
+            )
+        object.__setattr__(self, "metric_names", names)
+        object.__setattr__(self, "metric_specs", specs)
+
+    @property
+    def identity(self) -> str:
+        return f"{self.scorer_id}@{self.version}"
+
+    def score(self, context: DatasetScoreContext) -> Mapping[str, float]:
+        if not isinstance(context, DatasetScoreContext):
+            raise TypeError("context must be DatasetScoreContext")
+        raw = self.score_function(context)
+        if not isinstance(raw, Mapping):
+            raise TypeError("score_function must return a mapping")
+        if not raw:
+            return MappingProxyType({})
+        scores: dict[str, float] = {}
+        for metric_name in self.metric_names:
+            value = raw.get(metric_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(
+                    f"scorer {self.identity} must return finite numeric metric {metric_name!r}"
+                )
+            scores[metric_name] = float(value)
+        unexpected = set(raw).difference(self.metric_names)
+        if unexpected:
+            raise ValueError(
+                f"scorer {self.identity} returned undeclared metrics: {sorted(unexpected)}"
+            )
+        return MappingProxyType(scores)
+
+    def prompt_parts(self, example: "BenchmarkExample") -> "BenchmarkPromptParts":
+        if self.prompt_function is None:
+            return _default_prompt_parts(example)
+        prompt_parts = self.prompt_function(example)
+        if not isinstance(prompt_parts, BenchmarkPromptParts):
+            raise TypeError("prompt_function must return BenchmarkPromptParts")
+        return prompt_parts
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetScorerRegistry:
+    """Immutable dataset-to-scorer registry."""
+
+    entries: tuple[tuple[str, DatasetScorer], ...] = ()
+
+    def __post_init__(self) -> None:
+        normalized = tuple(self.entries)
+        datasets: list[str] = []
+        for dataset, scorer in normalized:
+            _validate_non_empty_str(dataset, "dataset")
+            if not isinstance(scorer, DatasetScorer):
+                raise TypeError("scorer registry values must be DatasetScorer")
+            datasets.append(dataset)
+        if len(set(datasets)) != len(datasets):
+            raise ValueError("scorer registry must not contain duplicate datasets")
+        object.__setattr__(self, "entries", normalized)
+
+    def register(self, dataset: str, scorer: DatasetScorer) -> "DatasetScorerRegistry":
+        _validate_non_empty_str(dataset, "dataset")
+        if not isinstance(scorer, DatasetScorer):
+            raise TypeError("scorer must be a DatasetScorer")
+        return DatasetScorerRegistry(
+            tuple((key, value) for key, value in self.entries if key != dataset)
+            + ((dataset, scorer),)
+        )
+
+    def get(self, dataset: str) -> DatasetScorer:
+        _validate_non_empty_str(dataset, "dataset")
+        for candidate, scorer in self.entries:
+            if candidate == dataset:
+                return scorer
+        raise KeyError(f"No scorer is registered for dataset {dataset!r}")
+
+    def identities(self, datasets: Sequence[str]) -> tuple[tuple[str, str, bool], ...]:
+        return tuple(
+            (
+                dataset,
+                self.get(dataset).identity,
+                self.get(dataset).publication_approved,
+            )
+            for dataset in datasets
+        )
+
+
+def diagnostic_answer_scores(context: DatasetScoreContext) -> Mapping[str, float]:
+    """Common answer diagnostics; not a substitute for an official dataset metric."""
+
+    if not context.references:
+        return {}
+    expected_answer = context.references[0]
+    return {
+        "exact_match": float(exact_match(context.output_text, expected_answer)),
+        "answer_found": float(answer_found(context.output_text, expected_answer)),
+    }
+
+
+def default_dataset_scorer_registry() -> DatasetScorerRegistry:
+    diagnostic = DatasetScorer(
+        scorer_id="cachet.answer_diagnostics",
+        version="1",
+        metric_names=("exact_match", "answer_found"),
+        score_function=diagnostic_answer_scores,
+        publication_approved=False,
+        plugin_path="document_kv_cache.benchmarks:diagnostic_answer_scores",
+    )
+    hotpotqa = DatasetScorer(
+        scorer_id="hotpotqa.official_answer",
+        version="hotpot_evaluate_v1@3635853403a8",
+        metric_names=("exact_match", "f1"),
+        metric_specs=(
+            DatasetMetricSpec("exact_match", max_regression=0.02),
+            DatasetMetricSpec("f1", max_regression=0.02),
+        ),
+        score_function=hotpotqa_official_answer_scores,
+        publication_approved=True,
+        plugin_path=(
+            "document_kv_cache.benchmarks:hotpotqa_official_answer_scores"
+        ),
+    )
+    return DatasetScorerRegistry(
+        tuple(
+            (dataset, hotpotqa if dataset == "hotpotqa" else diagnostic)
+            for dataset in SUPPORTED_V1_DATASETS
+        )
+    )
+
+
+def hotpotqa_official_answer_scores(
+    context: DatasetScoreContext,
+) -> Mapping[str, float]:
+    """Return the official HotpotQA answer EM/F1 metrics for one prediction.
+
+    This is an answer-only port of ``hotpot_evaluate_v1.py`` pinned by the
+    scorer version above. Cachet does not claim the script's supporting-fact or
+    joint metrics because its generation contract does not collect supporting
+    fact predictions.
+    """
+
+    if not isinstance(context, DatasetScoreContext):
+        raise TypeError("context must be a DatasetScoreContext")
+    if not context.references:
+        return MappingProxyType({"exact_match": 0.0, "f1": 0.0})
+    prediction = _hotpotqa_normalize_answer(context.output_text)
+    ground_truth = _hotpotqa_normalize_answer(context.references[0])
+    exact = float(prediction == ground_truth)
+    if (
+        prediction in {"yes", "no", "noanswer"}
+        or ground_truth in {"yes", "no", "noanswer"}
+    ) and prediction != ground_truth:
+        return MappingProxyType({"exact_match": exact, "f1": 0.0})
+    prediction_tokens = prediction.split()
+    ground_truth_tokens = ground_truth.split()
+    common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
+    shared = sum(common.values())
+    if shared == 0 or not prediction_tokens or not ground_truth_tokens:
+        f1 = 0.0
+    else:
+        precision = shared / len(prediction_tokens)
+        recall = shared / len(ground_truth_tokens)
+        f1 = 2 * precision * recall / (precision + recall)
+    return MappingProxyType({"exact_match": exact, "f1": f1})
+
+
+def _hotpotqa_normalize_answer(value: str) -> str:
+    lowered = value.lower()
+    without_punctuation = "".join(
+        character for character in lowered if character not in string.punctuation
+    )
+    without_articles = re.sub(r"\b(a|an|the)\b", " ", without_punctuation)
+    return " ".join(without_articles.split())
 
 
 @dataclass(frozen=True, slots=True)
@@ -176,15 +493,32 @@ class BenchmarkExample:
     documents: tuple[SourceDocument, ...]
     query: str
     expected_answer: str | None = None
+    references: tuple[str, ...] = ()
     metadata: Mapping[str, str] = field(default_factory=dict)
     kv_transfer_params: Mapping[str, Any] = field(default_factory=dict)
+    arm_kv_transfer_params: Mapping[str, Mapping[str, Any]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.example_id, "example_id")
-        validate_v1_dataset(self.dataset)
+        _validate_non_empty_str(self.dataset, "dataset")
         _validate_non_empty_str(self.query, "query")
         if self.expected_answer is not None:
             _validate_non_empty_str(self.expected_answer, "expected_answer")
+        references = tuple(self.references)
+        if any(not isinstance(reference, str) or not reference for reference in references):
+            raise ValueError("references must contain non-empty strings")
+        if self.expected_answer is not None:
+            if references and references[0] != self.expected_answer:
+                raise ValueError(
+                    "expected_answer must equal the first reference when both are provided"
+                )
+            if not references:
+                references = (self.expected_answer,)
+        elif references:
+            object.__setattr__(self, "expected_answer", references[0])
+        object.__setattr__(self, "references", references)
         documents = _tuple_from_sequence(self.documents, "documents")
         if not documents:
             raise ValueError("documents must include at least one SourceDocument")
@@ -192,10 +526,34 @@ class BenchmarkExample:
             if not isinstance(document, SourceDocument):
                 raise TypeError(f"documents[{index}] must be a SourceDocument")
         object.__setattr__(self, "documents", documents)
-        object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(_dict_from_str_mapping(self.metadata, "metadata")),
+        )
         kv_transfer_params = _dict_from_json_object_mapping(self.kv_transfer_params, "kv_transfer_params")
         _validate_kv_transfer_params(kv_transfer_params)
-        object.__setattr__(self, "kv_transfer_params", kv_transfer_params)
+        object.__setattr__(
+            self,
+            "kv_transfer_params",
+            _deep_freeze_mapping(kv_transfer_params),
+        )
+        if not isinstance(self.arm_kv_transfer_params, Mapping):
+            raise TypeError("arm_kv_transfer_params must be a mapping")
+        arm_params: dict[str, Mapping[str, Any]] = {}
+        for arm_id, raw_params in self.arm_kv_transfer_params.items():
+            _validate_non_empty_str(arm_id, "arm_kv_transfer_params arm id")
+            params = _dict_from_json_object_mapping(
+                raw_params,
+                f"arm_kv_transfer_params.{arm_id}",
+            )
+            _validate_kv_transfer_params(params)
+            arm_params[arm_id] = _deep_freeze_mapping(params)
+        object.__setattr__(
+            self,
+            "arm_kv_transfer_params",
+            MappingProxyType(arm_params),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +568,6 @@ class BenchmarkSuite:
         _validate_non_empty_str(self.suite_id, "suite_id")
         _validate_non_empty_str(self.model_id, "model_id")
         _validate_non_empty_str(self.hardware_target, "hardware_target")
-        validate_v1_hardware_target(self.hardware_target)
         examples = _tuple_from_sequence(self.examples, "examples")
         if not examples:
             raise ValueError("examples must include at least one BenchmarkExample")
@@ -223,18 +580,43 @@ class BenchmarkSuite:
             raise ValueError(f"examples contain duplicate dataset/example ids: {duplicate_ids}")
         datasets = _tuple_from_sequence(self.datasets, "datasets")
         if not datasets:
-            raise ValueError("datasets must include at least one V1 dataset")
+            raise ValueError("datasets must include at least one dataset")
         for dataset in datasets:
-            validate_v1_dataset(dataset)
+            _validate_non_empty_str(dataset, "dataset")
         duplicate_datasets = _duplicate_labels(datasets)
         if duplicate_datasets:
-            raise ValueError(f"datasets contain duplicate V1 dataset ids: {', '.join(duplicate_datasets)}")
+            raise ValueError(f"datasets contain duplicate dataset ids: {', '.join(duplicate_datasets)}")
         object.__setattr__(self, "examples", examples)
         object.__setattr__(self, "datasets", datasets)
         example_datasets = {example.dataset for example in examples}
         missing = example_datasets.difference(datasets)
         if missing:
             raise ValueError(f"Examples reference datasets outside this suite: {sorted(missing)}")
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkOfflineCosts:
+    """Method preparation costs kept outside the online serving boundary."""
+
+    training_seconds: float | None = None
+    artifact_generation_seconds: float | None = None
+    checkpoint_load_seconds: float | None = None
+    artifact_bytes: int | None = None
+    peak_memory_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "training_seconds",
+            "artifact_generation_seconds",
+            "checkpoint_load_seconds",
+        ):
+            value = getattr(self, field_name)
+            if value is not None:
+                _validate_non_negative_finite_number(value, field_name)
+        for field_name in ("artifact_bytes", "peak_memory_bytes"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _validate_non_negative_int(value, field_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,18 +627,88 @@ class BenchmarkArm:
     cache_method: str = ""
     connector_mode: str = ""
     variant_id: str = ""
+    implementation_kind: Literal["baseline", "cachet", "upstream", "external"] | str = ""
+    method_version: str = ""
+    method_config_digest: str = ""
+    physical_transform_id: str = "identity"
+    physical_transform_version: str = "1"
+    physical_transform_config_digest: str = ""
+    scorer_plugin_path: str = ""
+    offline_costs: BenchmarkOfflineCosts = field(default_factory=BenchmarkOfflineCosts)
+    source_revision: str = ""
+    checkpoint_identity: str = ""
+    setting_overrides: Mapping[str, Any] = field(default_factory=dict)
+    runtime_environment_overrides: Mapping[str, Any] = field(default_factory=dict)
+    requires_cachet_handoff: bool | None = None
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.arm_id, "arm_id")
         if type(self.uses_cache) is not bool:
             raise ValueError("uses_cache must be a boolean")
         _validate_non_empty_str(self.description, "description")
-        for field_name in ("cache_method", "connector_mode", "variant_id"):
+        for field_name in (
+            "cache_method",
+            "connector_mode",
+            "variant_id",
+            "method_version",
+            "method_config_digest",
+            "physical_transform_id",
+            "physical_transform_version",
+            "physical_transform_config_digest",
+            "scorer_plugin_path",
+            "source_revision",
+            "checkpoint_identity",
+        ):
             value = getattr(self, field_name)
             if not isinstance(value, str):
                 raise TypeError(f"{field_name} must be a string")
+        implementation_kind = self.implementation_kind or (
+            "cachet" if self.uses_cache else "baseline"
+        )
+        if implementation_kind not in BENCHMARK_ARM_IMPLEMENTATION_KINDS:
+            raise ValueError(
+                "implementation_kind must be one of "
+                f"{BENCHMARK_ARM_IMPLEMENTATION_KINDS}"
+            )
+        object.__setattr__(self, "implementation_kind", implementation_kind)
+        requires_cachet_handoff = self.requires_cachet_handoff
+        if requires_cachet_handoff is None:
+            requires_cachet_handoff = self.uses_cache and implementation_kind == "cachet"
+        if type(requires_cachet_handoff) is not bool:
+            raise ValueError("requires_cachet_handoff must be a boolean")
+        if requires_cachet_handoff and not self.uses_cache:
+            raise ValueError("requires_cachet_handoff requires uses_cache")
+        object.__setattr__(self, "requires_cachet_handoff", requires_cachet_handoff)
         if not self.uses_cache and self.cache_method:
             raise ValueError("non-cache benchmark arms must not declare cache_method")
+        if not self.physical_transform_id:
+            raise ValueError("physical_transform_id must be non-empty")
+        if not self.physical_transform_version:
+            raise ValueError("physical_transform_version must be non-empty")
+        for field_name in ("method_config_digest", "physical_transform_config_digest"):
+            value = getattr(self, field_name)
+            if value and (len(value) != 64 or any(char not in "0123456789abcdef" for char in value)):
+                raise ValueError(f"{field_name} must be a lowercase SHA-256 digest when provided")
+        if not isinstance(self.offline_costs, BenchmarkOfflineCosts):
+            raise TypeError("offline_costs must be BenchmarkOfflineCosts")
+        setting_overrides = _dict_from_json_object_mapping(
+            self.setting_overrides,
+            "setting_overrides",
+        )
+        object.__setattr__(
+            self,
+            "setting_overrides",
+            _deep_freeze_mapping(setting_overrides),
+        )
+        runtime_environment_overrides = _dict_from_json_object_mapping(
+            self.runtime_environment_overrides,
+            "runtime_environment_overrides",
+        )
+        object.__setattr__(
+            self,
+            "runtime_environment_overrides",
+            _deep_freeze_mapping(runtime_environment_overrides),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,10 +729,14 @@ class InferenceMeasurement:
     variant_id: str = ""
     request_id: str = ""
     repeat_index: int = 1
+    scorer_id: str = ""
+    scorer_version: str = ""
+    quality_scores: Mapping[str, float] = field(default_factory=dict)
+    references: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_non_empty_str(self.example_id, "example_id")
-        validate_v1_dataset(self.dataset)
+        _validate_non_empty_str(self.dataset, "dataset")
         _validate_non_empty_str(self.arm_id, "arm_id")
         _validate_non_negative_int(self.prompt_tokens, "prompt_tokens")
         _validate_non_negative_int(self.completion_tokens, "completion_tokens")
@@ -291,9 +747,26 @@ class InferenceMeasurement:
         _validate_str(self.output_text, "output_text")
         if self.expected_answer is not None:
             _validate_non_empty_str(self.expected_answer, "expected_answer")
+        references = tuple(self.references)
+        if any(not isinstance(reference, str) or not reference for reference in references):
+            raise ValueError("references must contain non-empty strings")
+        if self.expected_answer is not None:
+            if references and references[0] != self.expected_answer:
+                raise ValueError(
+                    "expected_answer must equal the first reference when both are provided"
+                )
+            if not references:
+                references = (self.expected_answer,)
+        elif references:
+            object.__setattr__(self, "expected_answer", references[0])
+        object.__setattr__(self, "references", references)
         if self.error is not None:
             _validate_non_empty_str(self.error, "error")
-        object.__setattr__(self, "metadata", _dict_from_str_mapping(self.metadata, "metadata"))
+        object.__setattr__(
+            self,
+            "metadata",
+            MappingProxyType(_dict_from_str_mapping(self.metadata, "metadata")),
+        )
         for field_name in ("cache_method", "artifact_id", "variant_id"):
             if not isinstance(getattr(self, field_name), str):
                 raise TypeError(f"{field_name} must be a string")
@@ -301,6 +774,23 @@ class InferenceMeasurement:
             raise TypeError("request_id must be a string")
         if type(self.repeat_index) is not int or self.repeat_index <= 0:
             raise ValueError("repeat_index must be a positive integer")
+        for field_name in ("scorer_id", "scorer_version"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        quality_scores: dict[str, float] = {}
+        if not isinstance(self.quality_scores, Mapping):
+            raise TypeError("quality_scores must be a mapping")
+        for metric_name, value in self.quality_scores.items():
+            if not isinstance(metric_name, str) or not metric_name:
+                raise ValueError("quality_scores keys must be non-empty strings")
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+            ):
+                raise ValueError(f"quality_scores.{metric_name} must be finite numeric")
+            quality_scores[metric_name] = float(value)
+        object.__setattr__(self, "quality_scores", MappingProxyType(quality_scores))
 
     @property
     def ok(self) -> bool:
@@ -308,12 +798,18 @@ class InferenceMeasurement:
 
     @property
     def exact_match(self) -> bool | None:
+        explicit = self.quality_scores.get("exact_match")
+        if explicit is not None:
+            return explicit >= 0.5
         if self.expected_answer is None or not self.ok:
             return None
         return exact_match(self.output_text, self.expected_answer)
 
     @property
     def answer_found(self) -> bool | None:
+        explicit = self.quality_scores.get("answer_found")
+        if explicit is not None:
+            return explicit >= 0.5
         if self.expected_answer is None or not self.ok:
             return None
         return answer_found(self.output_text, self.expected_answer)
@@ -343,6 +839,24 @@ class BenchmarkReportRow:
     cache_method: str = ""
     artifact_id: str = ""
     variant_id: str = ""
+    unique_examples: int = 0
+    quality_score_means: Mapping[str, float] = field(default_factory=dict)
+    request_decode_tokens_per_second: LatencySummary = field(
+        default_factory=lambda: LatencySummary(count=0, mean=None, p50=None, p95=None)
+    )
+    aggregate_output_tokens_per_second: float | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "quality_score_means",
+            MappingProxyType(dict(self.quality_score_means)),
+        )
+        if self.aggregate_output_tokens_per_second is not None:
+            _validate_non_negative_finite_number(
+                self.aggregate_output_tokens_per_second,
+                "aggregate_output_tokens_per_second",
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +871,14 @@ class BenchmarkComparison:
     cache_method: str = ""
     artifact_id: str = ""
     variant_id: str = ""
+    quality_score_deltas: Mapping[str, float] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "quality_score_deltas",
+            MappingProxyType(dict(self.quality_score_deltas)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -428,6 +950,8 @@ def baseline_prefill_arm() -> BenchmarkArm:
         arm_id=BASELINE_PREFILL_ARM,
         uses_cache=False,
         description="Standard inference prefill that recomputes all document tokens.",
+        implementation_kind="baseline",
+        physical_transform_id="identity",
     )
 
 
@@ -437,6 +961,47 @@ def document_kv_cache_arm() -> BenchmarkArm:
         uses_cache=True,
         description="Inference path that reuses precomputed document KV cache.",
         connector_mode="cachet",
+        implementation_kind="cachet",
+        physical_transform_id="cachet.prefix_reuse",
+    )
+
+
+def external_benchmark_arm(
+    arm_id: str,
+    *,
+    description: str,
+    implementation_kind: Literal["upstream", "external"] = "upstream",
+    uses_cache: bool = True,
+    method: str = "",
+    method_version: str = "",
+    method_config_digest: str = "",
+    variant_id: str = "default",
+    physical_transform_id: str,
+    physical_transform_version: str,
+    physical_transform_config_digest: str,
+    offline_costs: BenchmarkOfflineCosts | None = None,
+    source_revision: str,
+    checkpoint_identity: str,
+    setting_overrides: Mapping[str, Any] | None = None,
+) -> BenchmarkArm:
+    """Describe an author/upstream or other externally executed comparison arm."""
+
+    return BenchmarkArm(
+        arm_id=arm_id,
+        uses_cache=uses_cache,
+        description=description,
+        cache_method=method if uses_cache else "",
+        variant_id=variant_id,
+        implementation_kind=implementation_kind,
+        method_version=method_version,
+        method_config_digest=method_config_digest,
+        physical_transform_id=physical_transform_id,
+        physical_transform_version=physical_transform_version,
+        physical_transform_config_digest=physical_transform_config_digest,
+        offline_costs=offline_costs or BenchmarkOfflineCosts(),
+        source_revision=source_revision,
+        checkpoint_identity=checkpoint_identity,
+        setting_overrides=setting_overrides or {},
     )
 
 
@@ -445,12 +1010,32 @@ def method_benchmark_arm(
     *,
     arm_id: str | None = None,
     variant_id: str = "default",
+    registry: Any | None = None,
+    method_config_digest: str = "",
+    physical_transform_id: str | None = None,
+    physical_transform_version: str = "1",
+    physical_transform_config_digest: str = "",
+    offline_costs: BenchmarkOfflineCosts | None = None,
+    setting_overrides: Mapping[str, Any] | None = None,
 ) -> BenchmarkArm:
     """Create a cache arm directly from the executable method registry."""
 
-    from document_kv_cache.methods import default_method_registry
+    from document_kv_cache.methods import (
+        CACHET_ARTIFACT_EXECUTION,
+        MethodRegistry,
+        default_method_registry,
+    )
 
-    spec = default_method_registry().get(method, require_implemented=True)
+    resolved_registry = default_method_registry() if registry is None else registry
+    if not isinstance(resolved_registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry")
+    spec = resolved_registry.get(method, require_implemented=True)
+    if not method_config_digest:
+        from document_kv_cache.artifact_identity import (
+            method_config_digest as digest_method_config,
+        )
+
+        method_config_digest = digest_method_config({})
     return BenchmarkArm(
         arm_id=arm_id or f"{CACHE_REUSE_ARM}:{spec.method_id}",
         uses_cache=True,
@@ -458,7 +1043,76 @@ def method_benchmark_arm(
         cache_method=spec.method_id,
         connector_mode=spec.connector_mode,
         variant_id=variant_id,
+        implementation_kind="cachet",
+        method_version=spec.artifact_version,
+        method_config_digest=method_config_digest,
+        physical_transform_id=(
+            physical_transform_id or f"cachet.{spec.method_id}.runtime_input"
+        ),
+        physical_transform_version=physical_transform_version,
+        physical_transform_config_digest=physical_transform_config_digest,
+        offline_costs=offline_costs or BenchmarkOfflineCosts(),
+        setting_overrides=setting_overrides or {},
+        requires_cachet_handoff=(
+            spec.execution_kind == CACHET_ARTIFACT_EXECUTION
+        ),
     )
+
+
+def require_runnable_cachet_benchmark_arm(
+    arm: BenchmarkArm,
+    *,
+    registry: MethodRegistry | None = None,
+    allow_unidentified_smoke: bool = False,
+) -> None:
+    """Fail before a Cachet-labeled arm can claim an unregistered method."""
+
+    from document_kv_cache.methods import (
+        CACHET_ARTIFACT_EXECUTION,
+        MethodRegistry,
+        default_method_registry,
+    )
+
+    if not isinstance(arm, BenchmarkArm):
+        raise TypeError("arm must be a BenchmarkArm")
+    if arm.implementation_kind != "cachet":
+        return
+    resolved_registry = default_method_registry() if registry is None else registry
+    if not isinstance(resolved_registry, MethodRegistry):
+        raise TypeError("registry must be a MethodRegistry or None")
+    if not arm.uses_cache:
+        raise ValueError("Cachet benchmark arms must use cache")
+    if not arm.cache_method:
+        if allow_unidentified_smoke:
+            return
+        raise ValueError("Cachet benchmark arms must declare cache_method")
+    try:
+        method = resolved_registry.get(arm.cache_method, require_implemented=True)
+    except (KeyError, NotImplementedError) as exc:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} must name a registered runnable "
+            "Cachet method"
+        ) from exc
+    if arm.method_version != method.artifact_version:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} method_version must match "
+            f"{method.artifact_version!r}"
+        )
+    if arm.connector_mode != method.connector_mode:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} connector_mode must match "
+            f"{method.connector_mode!r}"
+        )
+    if not arm.method_config_digest:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} must declare method_config_digest"
+        )
+    expected_handoff = method.execution_kind == CACHET_ARTIFACT_EXECUTION
+    if arm.requires_cachet_handoff is not expected_handoff:
+        raise ValueError(
+            f"Cachet benchmark arm {arm.arm_id!r} requires_cachet_handoff must be "
+            f"{str(expected_handoff).lower()} for the registered execution kind"
+        )
 
 
 def v1_dataset_specs() -> tuple[BenchmarkDatasetSpec, ...]:
@@ -484,7 +1138,24 @@ def resolve_system_prompt_position() -> str:
     return value
 
 
-def build_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
+def build_prompt_parts(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> BenchmarkPromptParts:
+    if scorer is not None:
+        if not isinstance(scorer, DatasetScorer):
+            raise TypeError("scorer must be DatasetScorer when provided")
+        return scorer.prompt_parts(example)
+    return _default_prompt_parts(example)
+
+
+def _default_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
+    if example.dataset not in SUPPORTED_V1_DATASETS:
+        raise ValueError(
+            f"Dataset {example.dataset!r} requires a registered scorer with a "
+            "versioned prompt_function"
+        )
     spec = dataset_spec(example.dataset)
     return BenchmarkPromptParts(
         system_prompt=_system_prompt(spec),
@@ -494,16 +1165,28 @@ def build_prompt_parts(example: BenchmarkExample) -> BenchmarkPromptParts:
     )
 
 
-def build_prefill_prompt(example: BenchmarkExample) -> str:
-    return build_prompt_parts(example).prefill_prompt
+def build_prefill_prompt(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> str:
+    return build_prompt_parts(example, scorer=scorer).prefill_prompt
 
 
-def build_cache_prefix_text(example: BenchmarkExample) -> str:
-    return build_prompt_parts(example).cache_prefix_text
+def build_cache_prefix_text(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> str:
+    return build_prompt_parts(example, scorer=scorer).cache_prefix_text
 
 
-def build_cache_suffix_text(example: BenchmarkExample) -> str:
-    return build_prompt_parts(example).cache_suffix_text
+def build_cache_suffix_text(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> str:
+    return build_prompt_parts(example, scorer=scorer).cache_suffix_text
 
 
 def benchmark_cache_artifact_stem(
@@ -539,7 +1222,11 @@ def _cache_prefix_chunk_id(index: int) -> str:
     return f"{BENCHMARK_CACHE_PREFIX_CHUNK_ID}-{index}"
 
 
-def benchmark_cache_prefix_segments(example: BenchmarkExample) -> tuple[tuple[str, str], ...]:
+def benchmark_cache_prefix_segments(
+    example: BenchmarkExample,
+    *,
+    scorer: DatasetScorer | None = None,
+) -> tuple[tuple[str, str], ...]:
     """Tile the exact cache-prefix text into one contiguous ``(chunk_id, text)`` per document.
 
     The concatenation of the returned texts equals ``build_cache_prefix_text(example)``
@@ -551,7 +1238,7 @@ def benchmark_cache_prefix_segments(example: BenchmarkExample) -> tuple[tuple[st
     """
 
     benchmark_example = _benchmark_example(example)
-    prefix = build_cache_prefix_text(benchmark_example)
+    prefix = build_cache_prefix_text(benchmark_example, scorer=scorer)
     documents = benchmark_example.documents
     if len(documents) <= 1:
         return ((BENCHMARK_CACHE_PREFIX_CHUNK_ID, prefix),)
@@ -578,6 +1265,7 @@ def benchmark_cache_source_document(
     chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
     segment_per_document: bool = False,
+    scorer: DatasetScorer | None = None,
 ) -> SourceDocument:
     """Represent the exact V1 benchmark cache prefix as a Cachet source document.
 
@@ -594,7 +1282,10 @@ def benchmark_cache_source_document(
         "cachet.benchmark.role": "cache_prefix",
     }
     if segment_per_document:
-        segments = benchmark_cache_prefix_segments(benchmark_example)
+        segments = benchmark_cache_prefix_segments(
+            benchmark_example,
+            scorer=scorer,
+        )
         if len(segments) > 1:
             return SourceDocument.from_texts(
                 document_id=resolved_document_id,
@@ -607,7 +1298,7 @@ def benchmark_cache_source_document(
             )
     return SourceDocument.from_text(
         document_id=resolved_document_id,
-        text=build_cache_prefix_text(benchmark_example),
+        text=build_cache_prefix_text(benchmark_example, scorer=scorer),
         chunk_id=chunk_id,
         metadata=document_metadata,
         chunk_metadata={
@@ -628,6 +1319,7 @@ def benchmark_cache_request(
     chunk_id: str = BENCHMARK_CACHE_PREFIX_CHUNK_ID,
     prefix: str = BENCHMARK_CACHE_ARTIFACT_PREFIX,
     segment_per_document: bool = False,
+    scorer: DatasetScorer | None = None,
 ) -> DocumentKVRequest:
     """Build the Cachet request that materializes this example's cached prefix.
 
@@ -640,7 +1332,10 @@ def benchmark_cache_request(
     resolved_document_id = document_id or benchmark_cache_document_id(benchmark_example, prefix=prefix)
     resolved_request_id = request_id or benchmark_cache_artifact_stem(benchmark_example, prefix=prefix)
     if segment_per_document:
-        segments = benchmark_cache_prefix_segments(benchmark_example)
+        segments = benchmark_cache_prefix_segments(
+            benchmark_example,
+            scorer=scorer,
+        )
         if len(segments) > 1:
             return DocumentKVRequest.for_document_chunks(
                 request_id=resolved_request_id,
@@ -706,6 +1401,15 @@ def compare_to_baseline(
                 cache_method=cache.cache_method,
                 artifact_id=cache.artifact_id,
                 variant_id=cache.variant_id,
+                quality_score_deltas={
+                    metric_name: cache.quality_score_means[metric_name]
+                    - baseline.quality_score_means[metric_name]
+                    for metric_name in sorted(
+                        set(baseline.quality_score_means).intersection(
+                            cache.quality_score_means
+                        )
+                    )
+                },
             )
         )
     return tuple(comparisons)
@@ -839,7 +1543,13 @@ def _validate_str(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} must be a string")
 
 
-def _tuple_from_sequence(value: Sequence[object], field_name: str) -> tuple[object, ...]:
+_SequenceItem = TypeVar("_SequenceItem")
+
+
+def _tuple_from_sequence(
+    value: Sequence[_SequenceItem],
+    field_name: str,
+) -> tuple[_SequenceItem, ...]:
     if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
         raise TypeError(f"{field_name} must be a sequence")
     return tuple(value)
@@ -883,6 +1593,23 @@ def _json_compatible_value(value: Any, field_name: str) -> Any:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray, memoryview)):
         return [_json_compatible_value(item, f"{field_name}[{index}]") for index, item in enumerate(value)]
     raise ValueError(f"{field_name} must be JSON-compatible")
+
+
+def _deep_freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {key: _deep_freeze_value(item) for key, item in value.items()}
+    )
+
+
+def _deep_freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _deep_freeze_mapping(value)
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return _FrozenList(_deep_freeze_value(item) for item in value)
+    return value
 
 
 def _validate_kv_transfer_params(kv_transfer_params: Mapping[str, Any]) -> None:
@@ -1063,7 +1790,18 @@ def _user_prompt(example: BenchmarkExample, spec: BenchmarkDatasetSpec) -> str:
 
 def _format_document(document: SourceDocument) -> str:
     title = document.metadata.get("title") or document.metadata.get("name") or document.document_id
-    chunks = tuple(_format_chunk(chunk.chunk_id, chunk.chunk_type.value, chunk.text) for chunk in document.chunks)
+    chunks = tuple(
+        _format_chunk(
+            chunk.chunk_id,
+            (
+                chunk.chunk_type.value
+                if hasattr(chunk.chunk_type, "value")
+                else chunk.chunk_type
+            ),
+            chunk.text,
+        )
+        for chunk in document.chunks
+    )
     return _join_sections(
         f'[document id="{_attribute_text(document.document_id)}" title="{_attribute_text(title)}"]',
         *chunks,
@@ -1088,6 +1826,18 @@ def _summarize_group(dataset: str, arm_id: str, group: Sequence[InferenceMeasure
     completion_tokens = [measurement.completion_tokens for measurement in ok]
     ttft_values = [measurement.ttft_seconds for measurement in ok]
     ttc_values = [measurement.time_to_completion_seconds for measurement in ok]
+    request_decode_rates = [
+        rate
+        for measurement in ok
+        if (
+            rate := request_decode_tokens_per_second(
+                measurement.completion_tokens,
+                measurement.ttft_seconds,
+                measurement.time_to_completion_seconds,
+            )
+        )
+        is not None
+    ]
     cache_methods = {measurement.cache_method for measurement in group}
     artifact_ids = {measurement.artifact_id for measurement in group}
     variant_ids = {measurement.variant_id for measurement in group}
@@ -1106,8 +1856,8 @@ def _summarize_group(dataset: str, arm_id: str, group: Sequence[InferenceMeasure
         completion_tokens_mean=_mean(completion_tokens),
         ttft=_latency_summary(ttft_values),
         time_to_completion=_latency_summary(ttc_values),
-        exact_match_rate=_rate(measurement.exact_match for measurement in ok),
-        answer_found_rate=_rate(measurement.answer_found for measurement in ok),
+        exact_match_rate=_unique_example_rate(ok, "exact_match"),
+        answer_found_rate=_unique_example_rate(ok, "answer_found"),
         output_tokens_per_second=aggregate_decode_tokens_per_second(
             (
                 (
@@ -1121,6 +1871,9 @@ def _summarize_group(dataset: str, arm_id: str, group: Sequence[InferenceMeasure
         cache_method=next(iter(cache_methods)),
         artifact_id=next(iter(artifact_ids)),
         variant_id=next(iter(variant_ids)),
+        unique_examples=len({measurement.example_id for measurement in ok}),
+        quality_score_means=_unique_example_quality_means(ok),
+        request_decode_tokens_per_second=_latency_summary(request_decode_rates),
     )
 
 
@@ -1157,6 +1910,42 @@ def _rate(values: Iterable[bool | None]) -> float | None:
     if not present:
         return None
     return sum(1 for value in present if value) / len(present)
+
+
+def _unique_example_rate(
+    measurements: Sequence[InferenceMeasurement],
+    property_name: Literal["exact_match", "answer_found"],
+) -> float | None:
+    by_example: dict[str, list[bool]] = {}
+    for measurement in measurements:
+        value = getattr(measurement, property_name)
+        if value is not None:
+            by_example.setdefault(measurement.example_id, []).append(value)
+    if not by_example:
+        return None
+    # Repeats estimate one example's success probability; examples remain the
+    # independent quality units and therefore receive equal weight.
+    return statistics.fmean(
+        statistics.fmean(float(value) for value in values)
+        for values in by_example.values()
+    )
+
+
+def _unique_example_quality_means(
+    measurements: Sequence[InferenceMeasurement],
+) -> Mapping[str, float]:
+    metric_examples: dict[str, dict[str, list[float]]] = {}
+    for measurement in measurements:
+        for metric_name, value in measurement.quality_scores.items():
+            metric_examples.setdefault(metric_name, {}).setdefault(
+                measurement.example_id, []
+            ).append(value)
+    return {
+        metric_name: statistics.fmean(
+            statistics.fmean(values) for values in example_values.values()
+        )
+        for metric_name, example_values in sorted(metric_examples.items())
+    }
 
 
 def _comparison_has_missing_metrics(comparison: BenchmarkComparison) -> bool:

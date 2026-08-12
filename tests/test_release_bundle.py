@@ -59,6 +59,7 @@ from document_kv_cache.engine_launch_config import (
 from document_kv_cache.github_governance import GITHUB_REPOSITORY_GOVERNANCE_RECORD_TYPE
 from document_kv_cache.legacy_compatibility import LEGACY_COMPATIBILITY_MIGRATION_RECORD_TYPE
 from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.methods import method_spec
 from document_kv_cache.native_probe_factories import (
     NATIVE_PROBE_FACTORIES_RECORD_TYPE,
     SGLANG_NATIVE_PROBE_FACTORY,
@@ -4063,7 +4064,7 @@ def _actions_record(backend: ServingBackend, *, layout=None):
             bind=EngineKVBindAction(
                 request_id=request_id,
                 handle_uri=f"engine://{backend.value}/{request_id}",
-                cache_method="vanilla",
+                cache_method="vanilla_prefill",
                 adapter_ids=("base",),
                 metadata={
                     "engine.backend": backend.value,
@@ -4071,6 +4072,7 @@ def _actions_record(backend: ServingBackend, *, layout=None):
                 },
             ),
             release=EngineKVReleaseAction(request_id=request_id),
+            reuse_plan=method_spec("vanilla_prefill").reuse_plan(),
         )
     )
 

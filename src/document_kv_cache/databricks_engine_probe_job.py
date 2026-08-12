@@ -16,8 +16,12 @@ from document_kv_cache._hardware_targets import (
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
+    DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
     DEFAULT_DATABRICKS_SPARK_VERSION,
+    DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
     DatabricksSingleNodeGPUClusterConfig,
+    _validated_databricks_run_timeout_seconds,
+    _validated_databricks_task_max_retries,
     build_single_node_gpu_cluster,
 )
 from document_kv_cache.engine_adapters import PayloadMode, ServingBackend
@@ -362,6 +366,8 @@ class DatabricksEngineProbeMatrixJobConfig:
     extra_wheel_uris: tuple[str, ...] = ()
     serial_tasks: bool = False
     extra_pip_packages: tuple[str, ...] = ()
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
 
     def __post_init__(self) -> None:
         if not self.probe_targets:
@@ -370,6 +376,8 @@ class DatabricksEngineProbeMatrixJobConfig:
             raise ValueError("runner_python_file must be non-empty")
         if not self.run_name:
             raise ValueError("run_name must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        _validated_databricks_task_max_retries(self.task_max_retries)
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
         _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
@@ -421,6 +429,8 @@ class DatabricksEngineProbeJobConfig:
     sglang_runtime_preflight_output_json: str | None = None
     sglang_runtime_preflight_launch_config_json: str | None = None
     native_probe_factories_output_json: str | None = None
+    run_timeout_seconds: int = DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
+    task_max_retries: int = DEFAULT_DATABRICKS_TASK_MAX_RETRIES
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "expected_backend", _DEFAULT_SERVING_BACKEND(self.expected_backend))
@@ -443,6 +453,8 @@ class DatabricksEngineProbeJobConfig:
             object.__setattr__(self, "task_key", _default_task_key_for_backend(self.expected_backend))
         if not self.task_key:
             raise ValueError("task_key must be non-empty")
+        _validated_databricks_run_timeout_seconds(self.run_timeout_seconds)
+        _validated_databricks_task_max_retries(self.task_max_retries)
         if self.wheel_uri is not None and not self.wheel_uri:
             raise ValueError("wheel_uri must be non-empty when provided")
         _DEFAULT_VALIDATE_WHEEL_URIS(self.extra_wheel_uris, field_name="extra_wheel_uris")
@@ -489,6 +501,8 @@ class DatabricksEngineProbeJobConfig:
 def build_databricks_engine_probe_run_submit_payload(config: DatabricksEngineProbeJobConfig) -> dict[str, Any]:
     task: dict[str, Any] = {
         "task_key": config.task_key,
+        "timeout_seconds": config.run_timeout_seconds,
+        "max_retries": config.task_max_retries,
         "new_cluster": _engine_probe_cluster(config),
         "spark_python_task": {
             "python_file": config.runner_python_file,
@@ -502,6 +516,7 @@ def build_databricks_engine_probe_run_submit_payload(config: DatabricksEnginePro
     task["spark_python_task"]["parameters"].extend(_package_wheel_parameters(config))
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": [task],
     }
 
@@ -517,6 +532,7 @@ def build_databricks_engine_probe_matrix_run_submit_payload(
         _add_serial_task_dependencies(tasks)
     return {
         "run_name": config.run_name,
+        "timeout_seconds": config.run_timeout_seconds,
         "tasks": tasks,
     }
 
@@ -596,6 +612,8 @@ def _engine_probe_task_from_target(
         payload_uri=target.payload_uri,
         run_name=config.run_name,
         task_key=target.task_key or _default_task_key_for_backend(target.expected_backend),
+        run_timeout_seconds=config.run_timeout_seconds,
+        task_max_retries=config.task_max_retries,
         node_type_id=config.node_type_id,
         spark_version=config.spark_version,
         data_security_mode=config.data_security_mode,
@@ -1643,6 +1661,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_ENGINE_PROBE_RUN_NAME)
     parser.add_argument("--task-key")
     parser.add_argument(
+        "--run-timeout-seconds",
+        type=int,
+        default=DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--task-max-retries",
+        type=int,
+        default=DEFAULT_DATABRICKS_TASK_MAX_RETRIES,
+    )
+    parser.add_argument(
         "--hardware-target",
         choices=SUPPORTED_V1_HARDWARE_TARGETS,
         help="V1 hardware target used to derive --node-type-id when it is omitted.",
@@ -1716,6 +1744,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 probe_targets=targets_file.probe_targets,
                 runner_python_file=args.runner_python_file,
                 run_name=args.run_name,
+                run_timeout_seconds=args.run_timeout_seconds,
+                task_max_retries=args.task_max_retries,
                 node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
                 spark_version=args.spark_version,
                 data_security_mode=args.data_security_mode,
@@ -1751,6 +1781,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 payload_uri=args.payload_uri,
                 run_name=args.run_name,
                 task_key=args.task_key or DEFAULT_DATABRICKS_ENGINE_PROBE_TASK_KEY,
+                run_timeout_seconds=args.run_timeout_seconds,
+                task_max_retries=args.task_max_retries,
                 node_type_id=databricks_node_type_for_hardware_target(args.hardware_target, args.node_type_id),
                 spark_version=args.spark_version,
                 data_security_mode=args.data_security_mode,

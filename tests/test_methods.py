@@ -7,11 +7,18 @@ from document_kv_cache.methods import (
     CACHET_CONNECTOR_MODE,
     DOCUMENT_KV_CACHE_ARM,
     ENGINE_NATIVE_EXECUTION,
+    FULL_PREFIX_HANDOFF_TOPOLOGY,
+    HandoffTopologySpec,
     LMCACHE_CONNECTOR_MODE,
     METHOD_SPECS,
+    MethodCodeStatus,
+    MethodLifecycle,
     MethodRegistry,
     MethodSpec,
+    MethodValidationStatus,
     NON_BENCHMARK_METHODS,
+    PER_DOCUMENT_HANDOFF_TOPOLOGY,
+    UpstreamReproductionStatus,
     default_method_registry,
     method_spec,
 )
@@ -80,6 +87,37 @@ def test_full_prefix_control_has_a_distinct_method_identity():
     assert spec.implemented is True
 
 
+def test_builtin_handoff_topology_is_method_owned_and_immutable():
+    full_prefix = method_spec(CacheGenerationMethod.FULL_PREFIX_PREFILL)
+    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
+
+    assert full_prefix.handoff_topology == FULL_PREFIX_HANDOFF_TOPOLOGY
+    assert vanilla.handoff_topology == PER_DOCUMENT_HANDOFF_TOPOLOGY
+    with pytest.raises((AttributeError, TypeError)):
+        vanilla.handoff_topology.segment_per_document = False  # type: ignore[misc,union-attr]
+
+
+def test_custom_handoff_topology_can_leave_segmentation_method_defined():
+    topology = HandoffTopologySpec(
+        topology_id="custom.paired_windows",
+        segment_per_document=None,
+    )
+    spec = MethodSpec(
+        method="custom.paired_windows",
+        display_name="Custom paired windows",
+        arm_id=DOCUMENT_KV_CACHE_ARM,
+        connector_mode=CACHET_CONNECTOR_MODE,
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=False,
+        handoff_topology=topology,
+        description="Custom method owns a non-document physical topology.",
+    )
+
+    spec.validate_handoff_generation_mode(segment_per_document=False)
+    spec.validate_handoff_generation_mode(segment_per_document=True)
+
+
 def test_cacheblend_requires_pre_rope_and_selective_recompute():
     spec = method_spec(CacheGenerationMethod.CACHEBLEND)
     assert spec.pre_rope is True
@@ -97,8 +135,14 @@ def test_kv_packet_is_a_fail_closed_placeholder():
     spec = method_spec(CacheGenerationMethod.KV_PACKET)
     assert spec.implemented is False
     assert spec.generator_factory is None
+    assert spec.lifecycle == MethodLifecycle(
+        code_status=MethodCodeStatus.PLANNED,
+        upstream_reproduction=UpstreamReproductionStatus.NOT_REPRODUCED,
+    )
     with pytest.raises(NotImplementedError, match="kv_packet"):
         spec.require_implemented()
+    with pytest.raises(NotImplementedError, match="kv_packet"):
+        spec.reuse_plan()
 
 
 def test_lmcache_is_an_engine_native_method():
@@ -170,3 +214,42 @@ def test_method_spec_is_frozen():
     spec = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
     with pytest.raises((AttributeError, TypeError)):
         spec.implemented = True  # type: ignore[misc]
+
+
+def test_method_lifecycle_record_is_closed_and_round_trips() -> None:
+    lifecycle = MethodLifecycle(
+        code_status=MethodCodeStatus.RUNNABLE,
+        upstream_reproduction=UpstreamReproductionStatus.REPRODUCED,
+        engine_validation=MethodValidationStatus.PASSED,
+        live_canary=MethodValidationStatus.PASSED,
+        publication_evidence=MethodValidationStatus.PASSED,
+    )
+
+    assert MethodLifecycle.from_record(lifecycle.to_record()) == lifecycle
+    unsupported = {**lifecycle.to_record(), "future_stage": "passed"}
+    with pytest.raises(ValueError, match="unsupported keys"):
+        MethodLifecycle.from_record(unsupported)
+
+
+def test_method_lifecycle_cannot_overstate_runnable_or_evidence_state() -> None:
+    with pytest.raises(ValueError, match="implemented must match"):
+        MethodSpec(
+            method="bad-lifecycle",
+            display_name="Bad lifecycle",
+            arm_id=DOCUMENT_KV_CACHE_ARM,
+            connector_mode=CACHET_CONNECTOR_MODE,
+            pre_rope=False,
+            selective_recompute=False,
+            implemented=False,
+            lifecycle=MethodLifecycle(
+                code_status=MethodCodeStatus.RUNNABLE,
+                upstream_reproduction=UpstreamReproductionStatus.NOT_RECORDED,
+            ),
+            description="Invalid test fixture.",
+        )
+    with pytest.raises(ValueError, match="passing live canary"):
+        MethodLifecycle(
+            code_status=MethodCodeStatus.RUNNABLE,
+            upstream_reproduction=UpstreamReproductionStatus.NOT_RECORDED,
+            live_canary=MethodValidationStatus.PASSED,
+        )

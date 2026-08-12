@@ -1,14 +1,21 @@
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from document_kv_cache.benchmarks import SUPPORTED_V1_DATASETS
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_SGLANG_RUNNER_SHA256,
+)
 from document_kv_cache.databricks_sglang_smoke_job import (
     DEFAULT_DATABRICKS_SGLANG_SMOKE_PURPOSE,
     DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME,
     DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY,
+    SGLANG_SMOKE_RUNNER_SCRIPT,
     DatabricksSGLangSmokeJobConfig,
     build_databricks_sglang_smoke_run_submit_payload,
     main,
@@ -28,6 +35,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_FLUSH_CACHE_BEFORE_CANARY,
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
     DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
+    SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE,
@@ -42,6 +50,260 @@ DATASET_SPECS = tuple(
     f"{dataset}=/Volumes/catalog/schema/volume/v1/{dataset}.jsonl"
     for dataset in SUPPORTED_V1_DATASETS
 )
+REPRESENTATIVE_WORKLOAD_PROFILE_ID = "sglang-4k-32-v1"
+REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
+REPRESENTATIVE_WHEEL_URI = (
+    "dbfs:/cachet/wheels/"
+    f"{REPRESENTATIVE_WHEEL_SHA256}/cachet_kv-0.2.0-py3-none-any.whl"
+)
+REPRESENTATIVE_WORKLOAD_KWARGS = {
+    "wheel_uri": REPRESENTATIVE_WHEEL_URI,
+    "wheel_sha256": REPRESENTATIVE_WHEEL_SHA256,
+    "representative_canary": True,
+    "representative_workload_profile": REPRESENTATIVE_WORKLOAD_PROFILE_ID,
+    "context_length": 4096,
+    "max_tokens": 32,
+    "live_benchmark_repeats": 2,
+    "sglang_attention_backend": "triton",
+    "sglang_sampling_backend": "pytorch",
+    "sglang_enable_deterministic_inference": True,
+}
+
+
+def test_databricks_sglang_representative_requires_content_addressed_wheel():
+    kwargs = dict(REPRESENTATIVE_WORKLOAD_KWARGS)
+    kwargs.pop("wheel_sha256")
+
+    with pytest.raises(ValueError, match="wheel_sha256"):
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="representative-sglang-missing-wheel-digest",
+            output_dir=(
+                "/Volumes/catalog/schema/volume/"
+                "representative-sglang-missing-wheel-digest"
+            ),
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            model_revision="a" * 40,
+            tokenizer_revision="a" * 40,
+            generate_live_handoff=True,
+            **kwargs,
+        )
+
+
+def test_databricks_sglang_forwards_matching_pinned_model_and_tokenizer_revision():
+    revision = "a" * 40
+    config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="pinned-sglang-canary",
+        output_dir="/Volumes/catalog/schema/volume/pinned-sglang-canary",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        model_revision=revision,
+        tokenizer_revision=revision,
+        generate_live_handoff=True,
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+    )
+
+    parameters = build_databricks_sglang_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    assert parameters[parameters.index("--model-revision") + 1] == revision
+    assert parameters[parameters.index("--tokenizer-revision") + 1] == revision
+    assert "--representative-canary" in parameters
+    assert (
+        parameters[parameters.index("--representative-workload-profile") + 1]
+        == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+    payload = build_databricks_sglang_smoke_run_submit_payload(config)
+    assert payload["timeout_seconds"] == 14400
+    assert payload["tasks"][0]["timeout_seconds"] == 14400
+    assert payload["tasks"][0]["max_retries"] == 0
+    assert payload["tasks"][0]["new_cluster"]["spark_env_vars"][
+        "DOCUMENT_KV_EVICT_PAGE_CACHE"
+    ] == "1"
+
+    with pytest.raises(ValueError, match="revisions must match"):
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="mismatched-sglang-canary",
+            output_dir="/Volumes/catalog/schema/volume/mismatched-sglang-canary",
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            baseline_only=True,
+            model_revision="a" * 40,
+            tokenizer_revision="b" * 40,
+        )
+    with pytest.raises(ValueError, match="under /local_disk0"):
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="traversal-sglang-canary",
+            output_dir="/Volumes/catalog/schema/volume/traversal-sglang-canary",
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            model_revision=revision,
+            tokenizer_revision=revision,
+            generate_live_handoff=True,
+            live_handoff_output_dir="/local_disk0/../tmp/handoff",
+            **REPRESENTATIVE_WORKLOAD_KWARGS,
+        )
+
+
+def test_databricks_sglang_representative_profile_is_registered():
+    assert len(SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES) == 1
+    assert (
+        SGLANG_REPRESENTATIVE_WORKLOAD_PROFILES[0].profile_id
+        == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"representative_canary": True},
+        {"representative_workload_profile": REPRESENTATIVE_WORKLOAD_PROFILE_ID},
+    ],
+)
+def test_databricks_sglang_representative_flag_and_profile_are_required_together(
+    kwargs,
+):
+    with pytest.raises(ValueError, match="must be provided together"):
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="unpaired-sglang-canary",
+            output_dir="/Volumes/catalog/schema/volume/unpaired-sglang-canary",
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            baseline_only=True,
+            **kwargs,
+        )
+
+
+@pytest.mark.parametrize(
+    ("override", "field_name"),
+    [
+        ({"context_length": 8192}, "context_length"),
+        ({"max_tokens": 64}, "max_tokens"),
+        ({"live_benchmark_repeats": 1}, "live_benchmark_repeats"),
+        ({"sglang_attention_backend": "fa3"}, "sglang_attention_backend"),
+        ({"sglang_sampling_backend": "flashinfer"}, "sglang_sampling_backend"),
+        (
+            {"sglang_enable_deterministic_inference": False},
+            "sglang_enable_deterministic_inference",
+        ),
+    ],
+)
+def test_databricks_sglang_representative_profile_rejects_arbitrary_values(
+    override,
+    field_name,
+):
+    revision = "a" * 40
+    kwargs = {
+        "benchmark_id": "mismatched-sglang-canary",
+        "output_dir": "/Volumes/catalog/schema/volume/mismatched-sglang-canary",
+        "runner_python_file": "dbfs:/benchmarks/run_sglang_smoke.py",
+        "node_type_id": "g6.8xlarge",
+        "single_user_name": SINGLE_USER_NAME,
+        "model_revision": revision,
+        "tokenizer_revision": revision,
+        "generate_live_handoff": True,
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+        **override,
+    }
+
+    with pytest.raises(ValueError, match=field_name):
+        DatabricksSGLangSmokeJobConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("hardware_target", "node_type_id"),
+    [
+        ("aws-g6-l4", "g6.4xlarge"),
+        ("aws-g5-a10g", "g5.12xlarge"),
+    ],
+)
+def test_databricks_sglang_representative_canary_requires_exact_node_size(
+    hardware_target,
+    node_type_id,
+):
+    revision = "a" * 40
+    with pytest.raises(ValueError, match="exact V1 node type"):
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="wrong-size-sglang-canary",
+            output_dir="/Volumes/catalog/schema/volume/wrong-size-sglang-canary",
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            hardware_target=hardware_target,
+            node_type_id=node_type_id,
+            single_user_name=SINGLE_USER_NAME,
+            generate_live_handoff=True,
+            model_revision=revision,
+            tokenizer_revision=revision,
+            **REPRESENTATIVE_WORKLOAD_KWARGS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("hardware_target", "node_type_id"),
+    [
+        ("aws-g6-l4", "g6.4xlarge"),
+        ("aws-g5-a10g", "g5.12xlarge"),
+    ],
+)
+def test_databricks_sglang_debug_job_preserves_family_node_overrides(
+    hardware_target,
+    node_type_id,
+):
+    config = DatabricksSGLangSmokeJobConfig(
+        benchmark_id="debug-sglang-node-override",
+        output_dir="/Volumes/catalog/schema/volume/debug-sglang-node-override",
+        runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+        hardware_target=hardware_target,
+        node_type_id=node_type_id,
+        single_user_name=SINGLE_USER_NAME,
+        baseline_only=True,
+    )
+
+    assert config.node_type_id == node_type_id
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"run_timeout_seconds": 0}, "run_timeout_seconds"),
+        ({"run_timeout_seconds": 14401}, "run_timeout_seconds"),
+        ({"task_max_retries": 1}, "task_max_retries"),
+    ],
+)
+def test_databricks_sglang_submission_bounds_cluster_runtime(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="bounded-sglang-canary",
+            output_dir="/Volumes/catalog/schema/volume/bounded-sglang-canary",
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            baseline_only=True,
+            **overrides,
+        )
+
+
+def test_databricks_sglang_representative_canary_requires_exact_timeout():
+    revision = "a" * 40
+    with pytest.raises(ValueError, match="exactly 14400"):
+        DatabricksSGLangSmokeJobConfig(
+            benchmark_id="short-representative-sglang-canary",
+            output_dir=(
+                "/Volumes/catalog/schema/volume/short-representative-sglang-canary"
+            ),
+            runner_python_file="dbfs:/benchmarks/run_sglang_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            model_revision=revision,
+            tokenizer_revision=revision,
+            generate_live_handoff=True,
+            run_timeout_seconds=3600,
+            **REPRESENTATIVE_WORKLOAD_KWARGS,
+        )
 
 
 def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
@@ -74,7 +336,10 @@ def test_build_databricks_sglang_smoke_payload_uses_single_node_g6_cluster():
     cluster = task["new_cluster"]
 
     assert payload["run_name"] == DEFAULT_DATABRICKS_SGLANG_SMOKE_RUN_NAME
+    assert payload["timeout_seconds"] == 14400
     assert task["task_key"] == DEFAULT_DATABRICKS_SGLANG_SMOKE_TASK_KEY
+    assert task["timeout_seconds"] == 14400
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
@@ -688,6 +953,13 @@ def test_write_databricks_sglang_smoke_runner_script_imports_smoke_main(tmp_path
     assert "if exit_code:" in runner_text
 
 
+def test_representative_sglang_runner_digest_matches_embedded_script():
+    assert (
+        hashlib.sha256(SGLANG_SMOKE_RUNNER_SCRIPT.encode("utf-8")).hexdigest()
+        == REPRESENTATIVE_SGLANG_RUNNER_SHA256
+    )
+
+
 def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp_path):
     runner_path = tmp_path / "run_sglang_smoke.py"
     pip_call_path = tmp_path / "pip-call.json"
@@ -825,6 +1097,10 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
             SINGLE_USER_NAME,
             "--wheel-uri",
             WHEEL_URI,
+            "--run-timeout-seconds",
+            "3600",
+            "--task-max-retries",
+            "0",
             "--baseline-only",
             "--live-check-temperature",
             "0.25",
@@ -843,7 +1119,11 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
     )
 
     assert exit_code == 0
-    task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    task = payload["tasks"][0]
+    assert payload["timeout_seconds"] == 3600
+    assert task["timeout_seconds"] == 3600
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == [
         "--package-wheel-uri",
@@ -859,6 +1139,69 @@ def test_main_writes_sglang_smoke_payload_and_runner_script(tmp_path):
     assert "--sglang-enable-deterministic-inference" in parameters
     assert task["new_cluster"]["spark_env_vars"] == {"CACHET_SGLANG_TRACE": "1"}
     assert "sglang_smoke" in runner_path.read_text(encoding="utf-8")
+
+
+def test_main_propagates_explicit_representative_workload_profile(tmp_path):
+    revision = "a" * 40
+    payload_path = tmp_path / "representative-payload.json"
+
+    exit_code = main(
+        [
+            "--benchmark-id",
+            "representative-sglang-canary",
+            "--output-dir",
+            "/Volumes/catalog/schema/volume/representative-sglang-canary",
+            "--runner-python-file",
+            "dbfs:/benchmarks/run_sglang_smoke.py",
+            "--run-timeout-seconds",
+            "14400",
+            "--node-type-id",
+            "g6.8xlarge",
+            "--single-user-name",
+            SINGLE_USER_NAME,
+            "--wheel-uri",
+            REPRESENTATIVE_WHEEL_URI,
+            "--wheel-sha256",
+            REPRESENTATIVE_WHEEL_SHA256,
+            "--model-revision",
+            revision,
+            "--tokenizer-revision",
+            revision,
+            "--representative-canary",
+            "--representative-workload-profile",
+            REPRESENTATIVE_WORKLOAD_PROFILE_ID,
+            "--context-length",
+            "4096",
+            "--max-tokens",
+            "32",
+            "--live-benchmark-repeats",
+            "2",
+            "--sglang-attention-backend",
+            "triton",
+            "--sglang-sampling-backend",
+            "pytorch",
+            "--sglang-enable-deterministic-inference",
+            "--generate-live-handoff",
+            "--output-json",
+            str(payload_path),
+        ]
+    )
+
+    assert exit_code == 0
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    task = payload["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
+    assert payload["timeout_seconds"] == 14400
+    assert task["timeout_seconds"] == 14400
+    assert "--representative-canary" in parameters
+    assert (
+        parameters[parameters.index("--representative-workload-profile") + 1]
+        == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+    assert parameters[parameters.index("--live-benchmark-repeats") + 1] == "2"
+    assert payload["tasks"][0]["new_cluster"]["spark_env_vars"][
+        "DOCUMENT_KV_EVICT_PAGE_CACHE"
+    ] == "1"
 
 
 def test_main_writes_prepared_v1_dataset_parameters(tmp_path):

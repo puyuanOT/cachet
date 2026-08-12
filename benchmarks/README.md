@@ -15,6 +15,39 @@ audit work.
 Blank numeric cells mean the row has not been measured, or the run has not
 completed, under the current protocol yet. A blank cell is not a zero.
 
+> **Evidence status: provisional / non-publication-qualified.** The populated
+> numbers below are retained as engineering observations, but their detailed
+> measurements are currently referenced only through private DBFS paths. The
+> score arms also use different sample counts. Until matched sanitized evidence
+> and a passing publication gate are committed, these rows must not be cited as
+> released Cachet performance or quality claims. See the
+> [evidence policy](../docs/evidence-policy.md).
+
+## Comparison And Measurement Rules
+
+The main method table compares multiple methods under one fixed experiment
+setting. Model and tokenizer revisions, engine, exact hardware shape, weight
+and KV precision, storage and hydration boundary, logical samples, input/output
+budgets, decoding options, concurrency, cache state, ordering, and seeds must
+match across arms. By contrast, an ablation keeps one method and all other
+settings fixed while varying exactly one declared factor, such as hardware,
+quantization, storage tier, or serving platform. A run that changes several
+factors is a separate setting comparison, not a one-variable ablation.
+
+All arms start from the same logical documents, question, expected answer, and
+decode budget. A method may transform its physical prompt, token sequence, or
+artifact layout, but the transformation and version, physical token accounting,
+and resulting artifact identity must be recorded. This permits legitimate
+method-specific processing without hiding unequal inputs.
+
+Online latency and resource tables use an explicitly declared serving boundary.
+Offline training, artifact generation, checkpoint loading, peak generation
+resources, and artifact footprint are reported separately and are never folded
+silently into TTFT or TTC. Evidence is labeled **smoke** for execution-only
+checks, **canary** for paired reproducible engineering evidence without a public
+claim, or **publication** only after the sample, scorer, provenance, statistics,
+cache-state, and publication-gate requirements in the evidence policy pass.
+
 ## Shared Main Table Configuration
 
 The configuration below applies to both the Main Latency And Resource Table and
@@ -120,8 +153,10 @@ pressure-probe batch sizes.
 `Peak GPU memory` is populated only from sampled runtime telemetry such as
 `nvidia-smi` peak process/device memory during the benchmark run.
 
-The populated rows come from the `dbfs:/benchmarks/cachet/lat4-20260708/runs/`
-jobs (256 successful request-level measurements per cell, zero errors). Each
+The provisional populated rows come from the private
+`dbfs:/benchmarks/cachet/lat4-20260708/runs/` jobs (256 successful request-level
+measurements per cell, zero errors). The private paths preserve workspace
+provenance but are not sanitized committed publication evidence. Each
 request carries the full logical prompt plus a `DocumentKVConnector` that marks
 the document/system prefix as already computed and hydrates those pages into
 vLLM-managed GPU KV state from the persisted per-document handoff bundles on
@@ -129,9 +164,10 @@ local disk. The connector defensively caps the matched prefix to the visible
 request length, so a misconfigured request can never violate vLLM's V1 scheduler
 assertion (`num_computed_tokens <= request.num_tokens`) and crash EngineCore.
 
-The headline result is that on `g6.8xlarge`/L4 at `request_parallelism=4` with
-distinct multi-document contexts, vanilla external KV now **reduces** first-token
-latency versus baseline at every measured context, and the advantage grows with
+The provisional engineering observation is that on `g6.8xlarge`/L4 at
+`request_parallelism=4` with distinct multi-document contexts, vanilla external
+KV **reduced** first-token latency versus baseline at every measured context,
+and the advantage grows with
 context length: P50 TTFT drops from 5.000 s to 1.806 s at 8k (2.8×), from
 11.849 s to 3.980 s at 16k (3.0×), and from 35.923 s to 7.772 s at 32k (4.6×),
 because hydrating the cached document/system prefix from local disk is cheaper
@@ -169,6 +205,12 @@ reproduction.
 
 ## Benchmark Dataset Score Table
 
+**Provisional comparison:** the raw scores are retained, but Baseline used 200
+examples per dataset while vanilla KV used 50. The rows are not a matched,
+paired comparison and their detailed evidence is available only at private
+DBFS paths. They are therefore non-publication-qualified and cannot establish
+quality parity or a statistically supported quality delta.
+
 | Method | Biography score | HotpotQA score | MusiQue score | NIAH score | LongBench v2 score | RULER score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Baseline | 0.730 | 0.840 | 0.505 | 0.995 |  |  |
@@ -177,8 +219,9 @@ reproduction.
 | CacheBlend |  |  |  |  |  |  |
 | InfoFlow&nbsp;KV |  |  |  |  |  |  |
 
-Scores are the **answer-found rate** — the fraction of examples whose gold answer
-appears in the generated output — over real full-document dataset samples on
+Scores are the diagnostic **answer-found rate** — the fraction of examples
+whose gold answer appears in the generated output — over real full-document
+dataset samples on
 `g6.8xlarge`/L4 (Qwen3-4B-Instruct, 4-bit weights, `fp8_e5m2` runtime KV). Exact
 match is ≈0.00 across all datasets because the instruct model returns verbose,
 explanatory answers rather than the bare gold span, so answer-found is the
@@ -193,12 +236,15 @@ zero request errors); a reduced count was used because per-document KV handoff
 generation over real multi-document examples (MuSiQue carries 20 documents per
 example) OOMs the host at 200 samples per dataset.
 
-The score table exposes a quality caveat the latency table cannot: vanilla
-external KV preserves answer quality on **single-document** inputs (Biography
-0.68 vs 0.73, NIAH 1.00 vs 1.00 — parity within the 50-sample margin) but
-**degrades sharply on multi-document** inputs (HotpotQA 0.30 vs 0.84 with 10
-documents; MuSiQue 0.00 vs 0.505 with 20 documents). This is the cross-chunk
-positional-consistency problem: each document's KV is materialized independently
+The provisional score table flags a quality risk the latency table cannot:
+vanilla external KV is close to the unmatched Baseline row on the two
+single-document diagnostics (Biography 0.68 vs 0.73, NIAH 1.00 vs 1.00), while
+the unmatched multi-document diagnostics are substantially lower (HotpotQA
+0.30 vs 0.84 with 10 documents; MuSiQue 0.00 vs 0.505 with 20 documents).
+Because sample identities and counts are not matched, this is a hypothesis to
+verify with paired evidence rather than a parity or degradation claim. The
+suspected mechanism is the cross-chunk positional-consistency problem: each
+document's KV is materialized independently
 with its cached positions starting at 0, so concatenating several documents into
 one prefix yields positionally inconsistent KV that vanilla reuse does not
 correct. Recovering multi-document quality requires two things: (1) RoPE

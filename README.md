@@ -136,6 +136,7 @@ including the toy generator and local materialization step.
 | Production serving | [`docs/production.md`](docs/production.md) |
 | vLLM/SGLang adapter maintainers | [`docs/native-engine-integration.md`](docs/native-engine-integration.md) |
 | Benchmarks | [`benchmarks/README.md`](benchmarks/) |
+| Databricks canary budget | [`docs/databricks-cluster-hour-ledger.md`](docs/databricks-cluster-hour-ledger.md) |
 | Repository map | [`docs/repo-map.md`](docs/repo-map.md) |
 | Maintainer operations | [`docs/release-ops/README.md`](docs/release-ops/README.md) |
 
@@ -169,8 +170,9 @@ Maintainer-only CLIs are documented under
 ## Current Status
 
 Cachet is alpha software. The current human-readable benchmark summary lives in
-[`benchmarks/README.md`](benchmarks/). You do not need cloud
-infrastructure to try the local quickstart.
+[`benchmarks/README.md`](benchmarks/). Its currently populated comparisons are
+explicitly provisional until sanitized matched evidence passes the publication
+gate. You do not need cloud infrastructure to try the local quickstart.
 
 ## Contributing
 

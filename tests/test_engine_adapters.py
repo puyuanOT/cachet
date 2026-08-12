@@ -1,7 +1,7 @@
 import json
-import importlib
 from array import array
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +22,7 @@ from document_kv_cache.engine_adapters import (
     EngineKVSegmentCopyAction,
     EngineKVSegmentBinding,
     PayloadMode,
+    RuntimeOperationSupport,
     ServingBackend,
     build_engine_adapter_request,
     build_engine_kv_connector_actions,
@@ -48,6 +49,7 @@ from document_kv_cache.engine_adapters import (
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_protocol import (
     KVCacheHandle,
+    KVKeyPositionEncoding,
     KVLayout,
     KVPayloadAxisOrder,
     KVSegment,
@@ -57,9 +59,22 @@ from document_kv_cache.kvpack import PackChunk, write_kvpack
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer
 from document_kv_cache.models import CacheGenerationMethod, DocumentChunkType, DocumentKVRequest, KVCacheKey
+from document_kv_cache.methods import method_spec
 from document_kv_cache.planner import CachePlanner
+from document_kv_cache.reuse_contract import (
+    PACKED_Q4_ARTIFACT_FORMAT,
+    PayloadDecodeStage,
+    PositionHandling,
+    ReusePlan,
+    RuntimeOperationDescriptor,
+    RuntimeOperationHandlerRegistry,
+    RuntimeOperationPhase,
+    TokenRecomputePolicy,
+    runtime_operation_config_digest,
+)
 from document_kv_cache.service import DocumentKVService
 from document_kv_cache.storage import DiskRangeReader
+from document_kv_cache.workflow import CacheBuildConfig
 
 
 TEST_BYTES_PER_TOKEN = 36 * 8 * 128 * 2
@@ -177,6 +192,7 @@ def injection_plan_kwargs(**overrides):
         "estimated_gpu_bytes": TEST_BYTES_PER_TOKEN,
         "segments": (segment_binding(),),
         "metadata": {},
+        "reuse_plan": method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
     }
     values.update(overrides)
     return values
@@ -229,7 +245,7 @@ def test_vllm_adapter_request_carries_engine_handoff_metadata(tmp_path):
         request(),
         layout=layout(),
         metadata={"tenant": "qa"},
-        cache_method=CacheGenerationMethod.KV_PACKET,
+        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
         adapter_ids=("selection-lora",),
         segmented=True,
     )
@@ -243,7 +259,8 @@ def test_vllm_adapter_request_carries_engine_handoff_metadata(tmp_path):
     assert adapter_request.connector_package == "vllm"
     assert adapter_request.metadata["tenant"] == "qa"
     assert adapter_request.metadata["engine.backend"] == "vllm"
-    assert adapter_request.metadata["document_kv.cache_method"] == "kv_packet"
+    assert adapter_request.metadata["document_kv.cache_method"] == "vanilla_prefill"
+    assert adapter_request.metadata["document_kv.reuse_capability_id"]
     assert adapter_request.metadata["document_kv.payload_mode"] == "segmented"
     assert adapter_request.metadata["document_kv.total_tokens"] == "5"
     assert "schedule_decode_with_engine" in adapter_request.required_steps
@@ -263,7 +280,8 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
 
     assert "payload" not in record
     assert record["record_type"] == "document_kv.engine_adapter_request.v1"
-    assert record["schema_version"] == 2
+    assert record["schema_version"] == 4
+    assert record["reuse_plan"] == adapter_request.reuse_plan.to_record()
     assert record["backend"] == "vllm"
     assert record["request_id"] == "req-1"
     assert record["handle_uri"] == "document-kv://req-1"
@@ -335,6 +353,388 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
                 "token_contract": None,
         },
     ]
+
+
+def test_schema_v2_raw_handoff_fixture_requires_explicit_legacy_opt_in():
+    fixture_path = (
+        Path(__file__).with_name("fixtures") / "engine_adapter_handoff_v2.json"
+    )
+    legacy = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+    assert legacy["schema_version"] == 2
+    assert "reuse_plan" not in legacy
+    assert "document_kv.reuse_capability_id" not in legacy["metadata"]
+
+    with pytest.raises(ValueError, match="omits reuse_plan"):
+        validate_engine_adapter_request_record(
+            legacy,
+            require_external_payload_uri=False,
+        )
+
+    validate_engine_adapter_request_record(
+        legacy,
+        require_external_payload_uri=False,
+        allow_legacy_reuse_plan=True,
+    )
+    injection_plan = build_engine_kv_injection_plan(
+        legacy,
+        require_external_payload_uri=False,
+        allow_legacy_reuse_plan=True,
+    )
+    assert injection_plan.reuse_plan == method_spec(
+        CacheGenerationMethod.VANILLA_PREFILL
+    ).reuse_plan()
+    mismatched = {
+        **legacy,
+        "metadata": {
+            **legacy["metadata"],
+            "document_kv.reuse_capability_id": "0" * 64,
+        },
+    }
+    with pytest.raises(ValueError, match="Reserved metadata"):
+        validate_engine_adapter_request_record(
+            mismatched,
+            require_external_payload_uri=False,
+            allow_legacy_reuse_plan=True,
+        )
+
+
+def test_schema_v4_handoff_rejects_unknown_top_level_capabilities(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    record = engine_adapter_request_to_record(
+        build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    )
+    record["future_runtime_operation"] = {"mode": "opaque"}
+
+    with pytest.raises(ValueError, match="unsupported keys"):
+        validate_engine_adapter_request_record(
+            record,
+            require_external_payload_uri=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "method_id",
+    ("kv_packet", "cacheblend", "infoflow_kv", "unknown_method"),
+)
+def test_schema_v4_handoff_rejects_non_runnable_method_before_execution(
+    tmp_path,
+    method_id,
+):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    record = engine_adapter_request_to_record(
+        build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    )
+    assert ready.reuse_plan is not None
+    forged_plan = replace(ready.reuse_plan, method_id=method_id)
+    record["reuse_plan"] = forged_plan.to_record()
+    record["handle"]["cache_method"] = method_id
+    record["metadata"]["document_kv.cache_method"] = method_id
+    record["metadata"][
+        "document_kv.reuse_capability_id"
+    ] = forged_plan.capability_id
+
+    with pytest.raises(ValueError, match="not a runnable registered Cachet method"):
+        validate_engine_adapter_request_record(
+            record,
+            require_external_payload_uri=False,
+        )
+    with pytest.raises(ValueError, match="not a runnable registered Cachet method"):
+        build_engine_kv_injection_plan(
+            record,
+            require_external_payload_uri=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "method_id",
+    ("kv_packet", "cacheblend", "infoflow_kv", "unknown_method"),
+)
+def test_connector_action_builder_rejects_non_runnable_method(
+    method_id,
+):
+    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    forged_plan = replace(vanilla, method_id=method_id)
+    plan = EngineKVInjectionPlan(
+        **injection_plan_kwargs(
+            cache_method=method_id,
+            reuse_plan=forged_plan,
+        )
+    )
+
+    with pytest.raises(ValueError, match="not a runnable registered Cachet method"):
+        build_engine_kv_connector_actions(
+            plan,
+            b"x" * TEST_BYTES_PER_TOKEN,
+        )
+
+
+def test_adapter_rejects_method_specific_recompute_before_handoff(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    selective = ReusePlan(
+        method_id=vanilla.method_id,
+        connector_mode=vanilla.connector_mode,
+        artifact_format=vanilla.artifact_format,
+        position_handling=vanilla.position_handling,
+        payload_decode_stage=vanilla.payload_decode_stage,
+        token_recompute_policy=TokenRecomputePolicy.SELECTIVE,
+        token_selector=RuntimeOperationDescriptor(
+            strategy_id="toy.selector",
+            version="1",
+            config_digest=runtime_operation_config_digest({}),
+        ),
+        token_recomputer=RuntimeOperationDescriptor(
+            strategy_id="toy.recomputer",
+            version="1",
+            config_digest=runtime_operation_config_digest({}),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="token recompute policy 'selective'"):
+        build_engine_adapter_request(
+            replace(ready, reuse_plan=selective),
+            spec=vllm_adapter_spec(),
+        )
+
+
+def test_adapter_fails_closed_when_advertised_operation_handler_is_unresolved(
+    tmp_path,
+):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    selector = RuntimeOperationDescriptor(
+        strategy_id="toy.selector",
+        version="1",
+        config_digest=runtime_operation_config_digest({"count": 1}),
+    )
+    recomputer = RuntimeOperationDescriptor(
+        strategy_id="toy.recomputer",
+        version="1",
+        config_digest=runtime_operation_config_digest({"mode": "identity"}),
+    )
+    selective = replace(
+        vanilla,
+        token_recompute_policy=TokenRecomputePolicy.SELECTIVE,
+        token_selector=selector,
+        token_recomputer=recomputer,
+    )
+    spec = replace(
+        vllm_adapter_spec(),
+        supported_token_recompute_policies=(
+            TokenRecomputePolicy.NONE,
+            TokenRecomputePolicy.SELECTIVE,
+        ),
+        supported_runtime_operations=(
+            RuntimeOperationSupport(
+                RuntimeOperationPhase.TOKEN_SELECT,
+                selector.strategy_id,
+                selector.version,
+            ),
+            RuntimeOperationSupport(
+                RuntimeOperationPhase.TOKEN_RECOMPUTE,
+                recomputer.strategy_id,
+                recomputer.version,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="no injected handler"):
+        build_engine_adapter_request(
+            replace(ready, reuse_plan=selective),
+            spec=spec,
+            operation_handlers=RuntimeOperationHandlerRegistry(),
+        )
+
+
+def test_adapter_rejects_packed_decode_before_handoff(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    packed_layout = replace(
+        ready.handle.layout,
+        layout_version="packed-test-v1",
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+        shares_kv_storage=False,
+        pre_rope=False,
+        key_position_encoding=KVKeyPositionEncoding.STORED_POST_ROPE,
+    )
+    packed = ReusePlan(
+        method_id=ready.handle.cache_method,
+        connector_mode="cachet",
+        artifact_format=PACKED_Q4_ARTIFACT_FORMAT,
+        position_handling=PositionHandling.STORED_POST_ROPE,
+        payload_decode_stage=PayloadDecodeStage.PROVIDER,
+        token_recompute_policy=TokenRecomputePolicy.NONE,
+        payload_decoder=RuntimeOperationDescriptor(
+            strategy_id="toy.decoder",
+            version="1",
+            config_digest=runtime_operation_config_digest({}),
+        ),
+    )
+    packed_ready = replace(
+        ready,
+        handle=replace(ready.handle, layout=packed_layout),
+        reuse_plan=packed,
+    )
+
+    with pytest.raises(ValueError, match="artifact encoding 'packed_q4'"):
+        build_engine_adapter_request(packed_ready, spec=vllm_adapter_spec())
+
+
+@pytest.mark.parametrize("spec", [vllm_adapter_spec(), sglang_adapter_spec()])
+def test_adapter_rejects_layer_major_layout_before_handoff(tmp_path, spec):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    layer_major = replace(
+        ready.handle.layout,
+        payload_axis_order=KVPayloadAxisOrder.LAYER_MAJOR,
+    )
+
+    with pytest.raises(ValueError, match="payload axis order 'layer_major'"):
+        build_engine_adapter_request(
+            replace(ready, handle=replace(ready.handle, layout=layer_major)),
+            spec=spec,
+        )
+
+
+def test_adapter_rejects_unsupported_rerope_dtype_before_handoff(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    pre_rope_layout = replace(
+        ready.handle.layout,
+        layout_version="pre-rope-test-v1",
+        dtype="int8",
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+        shares_kv_storage=False,
+        pre_rope=True,
+        rope_theta=10_000.0,
+        key_position_encoding=KVKeyPositionEncoding.PRE_ROPE,
+    )
+    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    pre_rope_plan = replace(
+        vanilla,
+        position_handling=PositionHandling.REROPE_AT_INJECTION,
+    )
+
+    with pytest.raises(ValueError, match="re-rope dtype 'int8'"):
+        build_engine_adapter_request(
+            replace(
+                ready,
+                handle=replace(ready.handle, layout=pre_rope_layout),
+                reuse_plan=pre_rope_plan,
+            ),
+            spec=vllm_adapter_spec(),
+        )
+
+
+def test_adapter_rejects_missing_rerope_geometry_before_handoff(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    incomplete_layout = KVLayout(
+        model_id="tiny-pre-rope",
+        lora_id="base",
+        layout_version="pre-rope-v1",
+        dtype="float16",
+        num_layers=1,
+        block_size=2,
+        bytes_per_token=8,
+        pre_rope=True,
+        rope_theta=10_000.0,
+        key_position_encoding=KVKeyPositionEncoding.PRE_ROPE,
+    )
+    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    pre_rope_plan = replace(
+        vanilla,
+        position_handling=PositionHandling.REROPE_AT_INJECTION,
+    )
+
+    with pytest.raises(ValueError, match="re-rope geometry missing"):
+        build_engine_adapter_request(
+            replace(
+                ready,
+                handle=replace(ready.handle, layout=incomplete_layout),
+                reuse_plan=pre_rope_plan,
+            ),
+            spec=vllm_adapter_spec(),
+        )
+
+
+def test_deserialized_reuse_plan_must_match_artifact_format_identity(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    record = engine_adapter_request_to_record(
+        build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    )
+    identity = CacheBuildConfig(
+        model_id=ready.handle.layout.model_id,
+        lora_id=ready.handle.layout.lora_id,
+        prompt_template_version="v1",
+        dtype=ready.handle.layout.dtype,
+        layout_version=ready.handle.layout.layout_version,
+        storage_layout=ready.handle.layout.storage_layout,
+    ).artifact_identity_for(ready.handle.layout)
+    record["handle"]["artifact_identity"] = identity.to_record()
+    record["metadata"]["document_kv.artifact_id"] = identity.artifact_id
+    plan = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    incompatible_plan = replace(
+        plan,
+        artifact_format=replace(plan.artifact_format, version="2"),
+    )
+    record["reuse_plan"] = incompatible_plan.to_record()
+    record["metadata"][
+        "document_kv.reuse_capability_id"
+    ] = incompatible_plan.capability_id
+
+    with pytest.raises(ValueError, match="artifact format/version"):
+        validate_engine_adapter_request_record(
+            record,
+            require_external_payload_uri=False,
+        )
+
+
+def test_schema_v4_metadata_binds_artifact_method_version_and_config(tmp_path):
+    ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
+    record = engine_adapter_request_to_record(
+        build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    )
+    identity = CacheBuildConfig(
+        model_id=ready.handle.layout.model_id,
+        lora_id=ready.handle.layout.lora_id,
+        prompt_template_version="v1",
+        dtype=ready.handle.layout.dtype,
+        layout_version=ready.handle.layout.layout_version,
+        storage_layout=ready.handle.layout.storage_layout,
+    ).artifact_identity_for(ready.handle.layout)
+    record["handle"]["artifact_identity"] = identity.to_record()
+    record["metadata"]["document_kv.artifact_id"] = identity.artifact_id
+    record["metadata"]["document_kv.method_version"] = identity.method_version
+    record["metadata"][
+        "document_kv.method_config_digest"
+    ] = identity.method_config_digest
+
+    validate_engine_adapter_request_record(
+        record,
+        require_external_payload_uri=False,
+    )
+
+    wrong_version_identity = replace(identity, method_version="2")
+    wrong_version_record = json.loads(json.dumps(record))
+    wrong_version_record["handle"][
+        "artifact_identity"
+    ] = wrong_version_identity.to_record()
+    wrong_version_record["metadata"][
+        "document_kv.artifact_id"
+    ] = wrong_version_identity.artifact_id
+    wrong_version_record["metadata"][
+        "document_kv.method_version"
+    ] = wrong_version_identity.method_version
+    with pytest.raises(ValueError, match="method_version"):
+        validate_engine_adapter_request_record(
+            wrong_version_record,
+            require_external_payload_uri=False,
+        )
+
+    record["metadata"]["document_kv.method_config_digest"] = "f" * 64
+    with pytest.raises(ValueError, match="Reserved metadata"):
+        validate_engine_adapter_request_record(
+            record,
+            require_external_payload_uri=False,
+        )
 
 
 def test_write_engine_adapter_request_json_requires_external_payload_source_by_default(tmp_path):
@@ -1178,6 +1578,7 @@ def test_engine_kv_connector_actions_record_round_trips_segmented_handoff(tmp_pa
     assert actions_record["schema_version"] == ENGINE_KV_CONNECTOR_ACTIONS_SCHEMA_VERSION
     assert actions_record["backend"] == "vllm"
     assert actions_record["request_id"] == "req-1"
+    assert actions_record["reuse_plan"] == injection_plan.reuse_plan.to_record()
     assert actions_record["reservation"]["layout"]["storage_layout"] == "shared_key_value"
     assert actions_record["reservation"]["adapter_ids"] == ["selection-lora"]
     assert [copy["payload_index"] for copy in actions_record["copies"]] == [0, 1]
@@ -1190,6 +1591,7 @@ def test_engine_kv_connector_actions_record_round_trips_segmented_handoff(tmp_pa
     assert restored.bind.adapter_ids == actions.bind.adapter_ids
     assert dict(restored.bind.metadata) == dict(actions.bind.metadata)
     assert restored.release == actions.release
+    assert restored.reuse_plan == injection_plan.reuse_plan
     validate_engine_kv_connector_actions_record(json_record, expected_backend="vllm")
 
 
@@ -1575,6 +1977,7 @@ def test_engine_adapter_dataclasses_normalize_known_backend_strings(tmp_path):
         estimated_gpu_bytes=0,
         segments=(),
         metadata={},
+        reuse_plan=method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
     )
     probe_result = EngineKVConnectorProbeResult(
         backend="SGLang",  # type: ignore[arg-type]
@@ -1619,10 +2022,11 @@ def test_engine_kv_injection_plan_rejects_invalid_estimated_gpu_bytes(estimated_
             total_tokens=0,
             total_bytes=0,
             total_blocks=0,
-            estimated_gpu_bytes=estimated_gpu_bytes,
-            segments=(),
-            metadata={},
-        )
+                estimated_gpu_bytes=estimated_gpu_bytes,
+                segments=(),
+                metadata={},
+                reuse_plan=method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
+            )
 
 
 @pytest.mark.parametrize(

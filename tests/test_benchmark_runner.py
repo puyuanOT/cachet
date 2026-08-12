@@ -2,20 +2,32 @@ import json
 import math
 import threading
 import time
+from dataclasses import replace
 
 import pytest
 
-import document_kv_cache.benchmark_runner as public_benchmark_runner
+from document_kv_cache.benchmark_gates import (
+    CacheStateAttestation,
+    evaluate_benchmark_evidence_gate,
+)
+
 from document_kv_cache.benchmark_runner import (
     BENCHMARK_RUN_RECORD_TYPE,
     BenchmarkEngineRequest,
     BenchmarkGeneration,
+    BenchmarkManifestContext,
     OpenAICompatibleBenchmarkConfig,
     benchmark_run_result_to_record,
+    benchmark_run_result_to_evidence_record,
+    benchmark_run_result_from_record,
+    benchmark_record_aggregate_issues,
     default_benchmark_arms,
     load_benchmark_jsonl,
     load_v1_jsonl_suite,
+    merge_isolated_benchmark_run_records,
+    parse_benchmark_arm_specs,
     run_benchmark_suite,
+    run_openai_compatible_benchmark,
     run_openai_compatible_v1_benchmark,
 )
 from document_kv_cache.benchmarks import (
@@ -25,11 +37,15 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_CACHE_METHOD_PARAM,
     DOCUMENT_KV_RUNTIME_PREFIX_TEXT_PARAM,
     DOCUMENT_KV_SGLANG_HICACHE_PAGE_KEYS_PARAM,
     BenchmarkArm,
     BenchmarkExample,
     BenchmarkSuite,
+    BenchmarkPromptParts,
+    DatasetScorer,
+    DatasetScorerRegistry,
     document_kv_cache_arm,
 )
 from document_kv_cache.engine import EngineReadyRequest
@@ -39,6 +55,7 @@ from document_kv_cache.engine_adapters import (
     vllm_adapter_spec,
 )
 from document_kv_cache.engine_protocol import KVCacheHandle, KVLayout, KVSegment
+from document_kv_cache.methods import default_method_registry
 from document_kv_cache.workflow import SourceDocument
 
 
@@ -102,6 +119,149 @@ class InvalidGenerationEngine:
         }
         kwargs.update(self.generation_overrides)
         return BenchmarkGeneration(**kwargs)
+
+
+def _cachet_arm_spec(method_id: str, *, method_version: str = "1") -> dict[str, object]:
+    registry = default_method_registry()
+    connector_mode = (
+        registry.get(method_id).connector_mode
+        if method_id in registry.specs
+        else "cachet"
+    )
+    return {
+        "arm_id": f"cachet:{method_id}",
+        "uses_cache": True,
+        "description": f"Cachet method {method_id}",
+        "cache_method": method_id,
+        "connector_mode": connector_mode,
+        "implementation_kind": "cachet",
+        "method_version": method_version,
+        "method_config_digest": "0" * 64,
+        "physical_transform_id": f"cachet.{method_id}",
+        "requires_cachet_handoff": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "method_id",
+    ("kv_packet", "cacheblend", "infoflow_kv", "unknown_method"),
+)
+def test_arbitrary_cachet_arm_specs_reject_planned_and_unknown_methods(
+    method_id: str,
+) -> None:
+    with pytest.raises(ValueError, match="registered runnable Cachet method"):
+        parse_benchmark_arm_specs((_cachet_arm_spec(method_id),))
+
+
+def test_arbitrary_cachet_arm_specs_accept_explicit_runnable_custom_registry() -> None:
+    registry = default_method_registry()
+    vanilla = registry.get("vanilla_prefill", require_implemented=True)
+    custom = replace(
+        vanilla,
+        method="vendor_custom_prefill",
+        arm_id="document_kv_cache:vendor_custom_prefill",
+        display_name="Vendor custom prefill",
+    )
+    custom_registry = registry.with_spec(custom)
+
+    arms, _, _, _ = parse_benchmark_arm_specs(
+        (
+            {
+                **_cachet_arm_spec(
+                    custom.method_id,
+                    method_version=custom.artifact_version,
+                ),
+                "connector_mode": custom.connector_mode,
+            },
+        ),
+        method_registry=custom_registry,
+    )
+
+    assert arms[0].cache_method == custom.method_id
+
+
+def test_arbitrary_upstream_arm_spec_does_not_require_cachet_registration() -> None:
+    arms, _, _, _ = parse_benchmark_arm_specs(
+        (
+            {
+                "arm_id": "upstream:author_method",
+                "uses_cache": True,
+                "description": "Author implementation",
+                "cache_method": "author_method",
+                "implementation_kind": "upstream",
+                "method_version": "paper-revision",
+                "method_config_digest": "1" * 64,
+                "physical_transform_id": "author.packetization",
+                "source_revision": "author-commit",
+                "checkpoint_identity": "checkpoint-sha256",
+                "requires_cachet_handoff": False,
+            },
+        )
+    )
+
+    assert arms[0].implementation_kind == "upstream"
+
+
+def test_arm_spec_parses_only_typed_runtime_environment_overrides() -> None:
+    spec = {
+        "arm_id": "upstream",
+        "uses_cache": True,
+        "description": "upstream",
+        "cache_method": "upstream_method",
+        "implementation_kind": "upstream",
+        "source_revision": "source",
+        "checkpoint_identity": "checkpoint",
+        "requires_cachet_handoff": False,
+        "runtime_environment_overrides": {
+            "serving_platform": "vllm",
+            "tensor_parallel_size": 2,
+        },
+    }
+
+    arms, _, _, _ = parse_benchmark_arm_specs((spec,))
+
+    assert dict(arms[0].runtime_environment_overrides) == {
+        "serving_platform": "vllm",
+        "tensor_parallel_size": 2,
+    }
+    with pytest.raises(ValueError, match="unknown fields"):
+        parse_benchmark_arm_specs(
+            ({**spec, "runtime_environment_overrides": {"label_only": "bad"}},)
+        )
+
+
+def test_arbitrary_engine_native_cachet_arm_does_not_require_cachet_handoff() -> None:
+    lmcache = default_method_registry().get("lmcache", require_implemented=True)
+    spec = _cachet_arm_spec("lmcache", method_version=lmcache.artifact_version)
+    spec["requires_cachet_handoff"] = False
+
+    arms, _, _, _ = parse_benchmark_arm_specs((spec,))
+
+    assert arms[0].cache_method == "lmcache"
+    assert arms[0].requires_cachet_handoff is False
+
+
+def test_programmatic_runner_rejects_planned_cachet_arm_before_execution() -> None:
+    planned = default_method_registry().get("kv_packet")
+    arm = BenchmarkArm(
+        arm_id="cachet:kv_packet",
+        uses_cache=True,
+        description="planned KV Packet",
+        cache_method=planned.method_id,
+        connector_mode=planned.connector_mode,
+        implementation_kind="cachet",
+        method_version=planned.artifact_version,
+        method_config_digest="0" * 64,
+        physical_transform_id="cachet.kv_packet",
+        requires_cachet_handoff=True,
+    )
+
+    with pytest.raises(ValueError, match="registered runnable Cachet method"):
+        run_benchmark_suite(
+            BenchmarkSuite(suite_id="planned-method", examples=(example(),)),
+            {arm.arm_id: RecordingEngine()},
+            arms=(arm,),
+        )
 
 
 def example(
@@ -200,6 +360,991 @@ def test_run_benchmark_suite_attaches_kv_transfer_params_to_cache_arm_only():
         "v1-smoke:biography:biography-1:document_kv_cache:repeat-1:cachet-bio-1"
     )
     assert cache.requests[0].kv_transfer_params == kv_transfer_params
+
+
+def test_n_way_cache_arms_receive_distinct_physical_handoffs_for_same_logical_example():
+    vanilla_method = default_method_registry().get(
+        "vanilla_prefill",
+        require_implemented=True,
+    )
+    baseline_arm = BenchmarkArm(
+        arm_id="baseline",
+        uses_cache=False,
+        description="baseline",
+    )
+    first_arm = BenchmarkArm(
+        arm_id="vanilla",
+        uses_cache=True,
+        description="vanilla",
+        cache_method="vanilla_prefill",
+        connector_mode=vanilla_method.connector_mode,
+        variant_id="default",
+        method_version=vanilla_method.artifact_version,
+        method_config_digest="0" * 64,
+        physical_transform_id="cachet.vanilla",
+    )
+    second_arm = BenchmarkArm(
+        arm_id="upstream",
+        uses_cache=True,
+        description="upstream",
+        cache_method="upstream_method",
+        variant_id="author",
+        implementation_kind="upstream",
+        physical_transform_id="author.upstream",
+        source_revision="author-commit-1",
+        checkpoint_identity="author-checkpoint-1",
+        requires_cachet_handoff=False,
+    )
+    logical_example = BenchmarkExample(
+        example_id="biography-n-way",
+        dataset="biography",
+        documents=example().documents,
+        query="Who wrote notes on the Analytical Engine?",
+        expected_answer="Ada Lovelace",
+        arm_kv_transfer_params={
+            "vanilla": {
+                DOCUMENT_KV_REQUEST_ID_PARAM: "vanilla-handoff",
+                DOCUMENT_KV_HANDOFF_JSON_PARAM: "/tmp/vanilla.json",
+                DOCUMENT_KV_CACHE_METHOD_PARAM: "vanilla_prefill",
+            },
+        },
+    )
+    suite = BenchmarkSuite(
+        suite_id="n-way",
+        examples=(logical_example,),
+        datasets=("biography",),
+    )
+    baseline = RecordingEngine()
+    vanilla = RecordingEngine()
+    upstream = RecordingEngine()
+
+    result = run_benchmark_suite(
+        suite,
+        {"baseline": baseline, "vanilla": vanilla, "upstream": upstream},
+        arms=(baseline_arm, first_arm, second_arm),
+    )
+
+    assert vanilla.requests[0].kv_transfer_params[DOCUMENT_KV_REQUEST_ID_PARAM] == "vanilla-handoff"
+    assert upstream.requests[0].kv_transfer_params == {}
+    assert vanilla.requests[0].logical_prompt_text == upstream.requests[0].logical_prompt_text
+    assert len(result.comparisons) == 2
+    assert result.experiment_manifest is not None
+    transform_digests = {
+        arm.arm_id: arm.physical_transform_config_digest
+        for arm in result.experiment_manifest.arms
+    }
+    assert transform_digests["vanilla"] != transform_digests["upstream"]
+
+
+def test_benchmark_rejects_handoff_method_that_disagrees_with_arm_before_execution():
+    method = default_method_registry().get(
+        "vanilla_prefill",
+        require_implemented=True,
+    )
+    arm = BenchmarkArm(
+        arm_id="vanilla",
+        uses_cache=True,
+        description="vanilla",
+        cache_method=method.method_id,
+        connector_mode=method.connector_mode,
+        variant_id="default",
+        method_version=method.artifact_version,
+        method_config_digest="1" * 64,
+        requires_cachet_handoff=True,
+    )
+    mismatched = example(
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: "mismatched-method",
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: "/tmp/mismatched-method.json",
+            DOCUMENT_KV_CACHE_METHOD_PARAM: "kv_packet",
+        }
+    )
+    engine = RecordingEngine()
+
+    with pytest.raises(ValueError, match="declare cache method 'kv_packet'"):
+        run_benchmark_suite(
+            BenchmarkSuite(suite_id="mismatched-method", examples=(mismatched,)),
+            {arm.arm_id: engine},
+            arms=(arm,),
+        )
+
+    assert engine.requests == []
+
+
+def test_merge_independent_one_arm_records_rebuilds_union_comparison():
+    examples = (
+        example(example_id="biography-1"),
+        example(example_id="biography-2"),
+    )
+    suite = BenchmarkSuite(
+        suite_id="physical-jobs",
+        examples=examples,
+        datasets=("biography",),
+    )
+    baseline = BenchmarkArm(
+        arm_id="baseline",
+        uses_cache=False,
+        description="full prefill",
+    )
+    first = BenchmarkArm(
+        arm_id="author_a",
+        uses_cache=True,
+        description="author method A",
+        cache_method="author_a",
+        variant_id="default",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="a" * 64,
+        physical_transform_id="author.a",
+        source_revision="commit-a",
+        checkpoint_identity="checkpoint-a",
+        requires_cachet_handoff=False,
+    )
+    second = BenchmarkArm(
+        arm_id="author_b",
+        uses_cache=True,
+        description="author method B",
+        cache_method="author_b",
+        variant_id="default",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="b" * 64,
+        physical_transform_id="author.b",
+        source_revision="commit-b",
+        checkpoint_identity="checkpoint-b",
+        requires_cachet_handoff=False,
+    )
+
+    records = []
+    for index, arm in enumerate((baseline, first, second), start=1):
+        context = BenchmarkManifestContext(
+            model_revision="model-revision",
+            tokenizer_id="tokenizer",
+            tokenizer_revision="tokenizer-revision",
+            engine_id="test-engine",
+            engine_version="1",
+            package_revisions=(("cachet", "revision"),),
+            max_output_tokens=16,
+            temperature=0.0,
+            stream=False,
+            hardware_fingerprint="same-hardware",
+            runtime_id=f"ephemeral-cluster-{index}",
+            runtime_version="runtime-1",
+            storage_identity="same-storage",
+            cache_state="warm",
+            measurement_scopes=("latency",),
+        )
+        result = run_benchmark_suite(
+            suite,
+            {arm.arm_id: RecordingEngine(output="TOP_SECRET_OUTPUT")},
+            arms=(arm,),
+            manifest_context=context,
+            evidence_policy="canary",
+        )
+        assert result.reference_arm_id == arm.arm_id
+        records.append(benchmark_run_result_to_evidence_record(result))
+
+    tampered_window = json.loads(json.dumps(records[0]))
+    tampered_window["execution_windows"][0]["successful_requests"] = 999
+    assert any(
+        "successful_requests does not match raw measurements" in issue
+        for issue in benchmark_record_aggregate_issues(tampered_window)
+    )
+    contradictory_diagnostic = json.loads(json.dumps(records[0]))
+    original_exact = contradictory_diagnostic["measurements"][0]["exact_match"]
+    contradictory_diagnostic["measurements"][0]["exact_match"] = not original_exact
+    assert any(
+        "exact_match contradicts quality_scores/output" in issue
+        for issue in benchmark_record_aggregate_issues(contradictory_diagnostic)
+    )
+
+    merged = merge_isolated_benchmark_run_records(
+        records,
+        reference_arm_id="baseline",
+        policy="canary",
+    )
+
+    assert merged["experiment_manifest"]["comparison"]["reference_arm_id"] == "baseline"
+    assert merged["experiment_manifest"]["execution"]["isolation_mode"] == (
+        "separate_process_or_job"
+    )
+    assert merged["experiment_manifest"]["environment"]["runtime_id"].startswith(
+        "separate_jobs:"
+    )
+    assert {item["cache_arm_id"] for item in merged["comparisons"]} == {
+        "author_a",
+        "author_b",
+    }
+    assert len(merged["paired_statistics"]["rows"]) == 2
+    assert merged["evidence_sanitized"] is True
+    serialized = json.dumps(merged)
+    assert "TOP_SECRET_OUTPUT" not in serialized
+    assert "Ada Lovelace" not in serialized
+
+    duplicate_execution = json.loads(json.dumps(records))
+    duplicate_execution[1]["experiment_manifest"]["environment"]["runtime_id"] = (
+        duplicate_execution[0]["experiment_manifest"]["environment"]["runtime_id"]
+    )
+    with pytest.raises(ValueError, match="distinct execution-instance runtime_id"):
+        merge_isolated_benchmark_run_records(
+            duplicate_execution,
+            reference_arm_id="baseline",
+            policy="canary",
+        )
+
+    source_execution_ids = merged["experiment_manifest"]["execution"][
+        "source_execution_ids"
+    ]
+    assert {item["arm_id"] for item in source_execution_ids} == {
+        "baseline",
+        "author_a",
+        "author_b",
+    }
+    assert len({item["execution_id_digest"] for item in source_execution_ids}) == 3
+
+
+def test_sanitized_evidence_drops_untrusted_generation_metadata():
+    class SecretMetadataEngine:
+        def generate(self, request):
+            return BenchmarkGeneration(
+                output_text="TOP_SECRET_OUTPUT",
+                prompt_tokens=8,
+                completion_tokens=1,
+                ttft_seconds=0.1,
+                time_to_completion_seconds=0.2,
+                metadata={
+                    "raw_prompt": "TOP_SECRET_PROMPT",
+                    "raw_response": "TOP_SECRET_RESPONSE",
+                    "prefix_cache_salt": "TOP_SECRET_SALT",
+                    "request_body": "TOP_SECRET_REQUEST_BODY",
+                    "payload_path": "/tmp/TOP_SECRET_PATH",
+                    "authorization": "Bearer TOP_SECRET_TOKEN",
+                },
+            )
+
+    baseline = BenchmarkArm(
+        arm_id="baseline",
+        uses_cache=False,
+        description="baseline",
+    )
+    result = run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="sanitized-metadata",
+            examples=(example(),),
+            datasets=("biography",),
+        ),
+        {baseline.arm_id: SecretMetadataEngine()},
+        arms=(baseline,),
+    )
+    result = replace(
+        result,
+        measurements=(
+            replace(
+                result.measurements[0],
+                completion_tokens=0,
+                expected_answer="TOP_SECRET_EXPECTED_ANSWER",
+                references=("TOP_SECRET_EXPECTED_ANSWER",),
+                error="TOP_SECRET_ENGINE_ERROR",
+                request_id="TOP_SECRET_REQUEST_ID",
+            ),
+        ),
+        execution_windows=tuple(
+            replace(
+                window,
+                completion_tokens=0,
+                successful_requests=0,
+            )
+            for window in result.execution_windows
+        ),
+    )
+
+    record = benchmark_run_result_to_evidence_record(
+        result,
+        cache_state_attestations=(
+            CacheStateAttestation(
+                request_id="TOP_SECRET_ATTESTATION_REQUEST",
+                cache_method="vanilla_prefill",
+                artifact_id="a" * 64,
+                source="local_path",
+                bytes_read=1,
+                payload_cache_hit=False,
+                eviction_requested=True,
+                eviction_succeeded=True,
+            ),
+        ),
+    )
+    serialized = json.dumps(record, sort_keys=True)
+
+    assert "TOP_SECRET" not in serialized
+    assert set(record["measurements"][0]["metadata"]) == {
+        "logical_prompt_sha256",
+        "runtime_prompt_sha256",
+        "prefix_cache_salt_sha256",
+    }
+    measurement = record["measurements"][0]
+    assert measurement["output_text"] == ""
+    assert measurement["expected_answer"] is None
+    assert measurement["references"] == []
+    assert measurement["error"] == "redacted"
+    assert len(measurement["request_id"]) == 64
+    assert len(record["gate_inputs"]["cache_state_attestations"][0]["request_id"]) == 64
+
+
+def test_n_way_cache_arms_reject_ambiguous_legacy_handoff_mapping():
+    suite = BenchmarkSuite(
+        suite_id="ambiguous-n-way",
+        examples=(example(kv_transfer_params={}),),
+        datasets=("biography",),
+    )
+    arms = (
+        BenchmarkArm(arm_id="baseline", uses_cache=False, description="baseline"),
+        BenchmarkArm(arm_id="cache-a", uses_cache=True, description="cache a"),
+        BenchmarkArm(arm_id="cache-b", uses_cache=True, description="cache b"),
+    )
+
+    with pytest.raises(ValueError, match="distinct arm_kv_transfer_params"):
+        run_benchmark_suite(
+            suite,
+            {arm.arm_id: RecordingEngine() for arm in arms},
+            arms=arms,
+        )
+
+
+def test_setting_variation_binds_declared_value_to_actual_arm_environment():
+    fp16 = BenchmarkArm(
+        arm_id="fp16",
+        uses_cache=True,
+        description="author fp16",
+        cache_method="author_method",
+        variant_id="fp16",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        physical_transform_id="author.method",
+        source_revision="author-commit",
+        checkpoint_identity="author-checkpoint",
+        setting_overrides={"model_quantization": "fp16"},
+        runtime_environment_overrides={"model_quantization": "fp16"},
+        requires_cachet_handoff=False,
+    )
+    int8 = BenchmarkArm(
+        arm_id="int8",
+        uses_cache=True,
+        description="author int8",
+        cache_method="author_method",
+        variant_id="int8",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        physical_transform_id="author.method",
+        source_revision="author-commit",
+        checkpoint_identity="author-checkpoint",
+        setting_overrides={"model_quantization": "int8"},
+        runtime_environment_overrides={"model_quantization": "int8"},
+        requires_cachet_handoff=False,
+    )
+    suite = BenchmarkSuite(
+        suite_id="setting-variation",
+        examples=(example(),),
+        datasets=("biography",),
+    )
+    context = BenchmarkManifestContext(
+        comparison_mode="single_method_setting_variation",
+        varied_setting="model_quantization",
+        reference_arm_id="fp16",
+        model_quantization="fp16",
+    )
+
+    result = run_benchmark_suite(
+        suite,
+        {"fp16": RecordingEngine(), "int8": RecordingEngine()},
+        arms=(fp16, int8),
+        manifest_context=context,
+        reference_arm_id="fp16",
+    )
+    record = benchmark_run_result_to_record(result)
+
+    assert result.reference_arm_id == "fp16"
+    assert result.cache_arm_ids == ("int8",)
+    assert result.comparisons[0].baseline_arm_id == "fp16"
+    serialized_setting = record["experiment_manifest"]["arms"][0][
+        "setting_overrides"
+    ]
+    assert serialized_setting == {"model_quantization": "fp16"}
+    assert record["experiment_manifest"]["arms"][1]["runtime_environment"][
+        "model_quantization"
+    ] == "int8"
+    json.dumps(record)
+    with pytest.raises(TypeError):
+        fp16.runtime_environment_overrides["model_quantization"] = "unsafe"
+
+
+def test_legacy_v1_manifest_without_per_arm_environment_remains_readable() -> None:
+    suite = BenchmarkSuite(
+        suite_id="legacy-environment",
+        examples=(example(),),
+        datasets=("biography",),
+    )
+    result = run_benchmark_suite(
+        suite,
+        {BASELINE_PREFILL_ARM: RecordingEngine()},
+        arms=(BenchmarkArm("baseline_prefill", False, "baseline"),),
+        manifest_context=BenchmarkManifestContext(
+            model_revision="model-revision",
+            tokenizer_id="tokenizer",
+            tokenizer_revision="tokenizer-revision",
+            engine_id="engine",
+            engine_version="1",
+            hardware_fingerprint="hardware",
+            runtime_id="runtime",
+            runtime_version="1",
+            storage_identity="storage",
+            cache_state="warm",
+        ),
+    )
+    record = benchmark_run_result_to_record(result)
+    manifest = record["experiment_manifest"]
+    manifest["arms"][0].pop("runtime_environment")
+    for field_name in (
+        "canonical_model_id",
+        "lora_id",
+        "prompt_template_version",
+        "serving_platform",
+        "model_dtype",
+        "model_quantization",
+        "runtime_kv_dtype",
+        "layout_version",
+        "payload_axis_order",
+        "block_size",
+        "key_position_encoding",
+        "tensor_parallel_size",
+        "pipeline_parallel_size",
+    ):
+        manifest["model_runtime"].pop(field_name)
+
+    reconstructed = benchmark_run_result_from_record(record)
+
+    assert reconstructed.experiment_manifest is not None
+    environment = reconstructed.experiment_manifest.arms[0].runtime_environment
+    assert environment.served_model_id == suite.model_id
+    assert environment.canonical_model_id == suite.model_id
+    assert environment.serving_platform == "unresolved"
+
+
+@pytest.mark.parametrize(
+    ("varied_setting", "reference_value", "candidate_value"),
+    (
+        ("hardware_target", "g5.8xlarge", "g6.8xlarge"),
+        ("serving_platform", "vllm", "sglang"),
+    ),
+)
+def test_setting_variation_accepts_one_typed_actual_environment_field(
+    varied_setting: str,
+    reference_value: str,
+    candidate_value: str,
+) -> None:
+    def arm(arm_id: str, value: str) -> BenchmarkArm:
+        return BenchmarkArm(
+            arm_id=arm_id,
+            uses_cache=True,
+            description=arm_id,
+            cache_method="author_method",
+            variant_id=arm_id,
+            implementation_kind="upstream",
+            method_version="1",
+            method_config_digest="1" * 64,
+            physical_transform_id="author.method",
+            source_revision="author-commit",
+            checkpoint_identity="author-checkpoint",
+            setting_overrides={varied_setting: value},
+            runtime_environment_overrides={varied_setting: value},
+            requires_cachet_handoff=False,
+        )
+
+    suite = BenchmarkSuite(
+        suite_id=f"variation-{varied_setting}",
+        examples=(example(),),
+        datasets=("biography",),
+    )
+    result = run_benchmark_suite(
+        suite,
+        {"reference": RecordingEngine(), "candidate": RecordingEngine()},
+        arms=(arm("reference", reference_value), arm("candidate", candidate_value)),
+        manifest_context=BenchmarkManifestContext(
+            comparison_mode="single_method_setting_variation",
+            varied_setting=varied_setting,
+            reference_arm_id="reference",
+        ),
+        reference_arm_id="reference",
+    )
+
+    assert result.experiment_manifest is not None
+    environments = {
+        candidate.arm_id: candidate.runtime_environment
+        for candidate in result.experiment_manifest.arms
+    }
+    assert getattr(environments["reference"], varied_setting) == reference_value
+    assert getattr(environments["candidate"], varied_setting) == candidate_value
+
+
+def test_setting_variation_rejects_a_second_actual_environment_drift() -> None:
+    reference = BenchmarkArm(
+        arm_id="reference",
+        uses_cache=True,
+        description="reference",
+        cache_method="author_method",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        source_revision="author-commit",
+        checkpoint_identity="author-checkpoint",
+        setting_overrides={"model_quantization": "fp16"},
+        runtime_environment_overrides={"model_quantization": "fp16"},
+        requires_cachet_handoff=False,
+    )
+    candidate = replace(
+        reference,
+        arm_id="candidate",
+        description="candidate",
+        setting_overrides={"model_quantization": "int8"},
+        runtime_environment_overrides={
+            "model_quantization": "int8",
+            "serving_platform": "sglang",
+        },
+    )
+
+    with pytest.raises(ValueError, match="typed dependent fields"):
+        run_benchmark_suite(
+            BenchmarkSuite(
+                suite_id="second-drift",
+                examples=(example(),),
+                datasets=("biography",),
+            ),
+            {"reference": RecordingEngine(), "candidate": RecordingEngine()},
+            arms=(reference, candidate),
+            manifest_context=BenchmarkManifestContext(
+                comparison_mode="single_method_setting_variation",
+                varied_setting="model_quantization",
+                reference_arm_id="reference",
+            ),
+            reference_arm_id="reference",
+        )
+
+
+def test_hardware_setting_dimension_allows_honest_dependent_provenance() -> None:
+    reference = BenchmarkArm(
+        arm_id="g5",
+        uses_cache=True,
+        description="g5",
+        cache_method="author_method",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        source_revision="author-commit",
+        checkpoint_identity="author-checkpoint",
+        setting_overrides={"hardware_target": "g5.8xlarge"},
+        runtime_environment_overrides={
+            "hardware_target": "g5.8xlarge",
+            "hardware_fingerprint": "a10g-24gb",
+            "storage_identity": "g5-local-nvme",
+        },
+        requires_cachet_handoff=False,
+    )
+    candidate = replace(
+        reference,
+        arm_id="g6",
+        description="g6",
+        setting_overrides={"hardware_target": "g6.8xlarge"},
+        runtime_environment_overrides={
+            "hardware_target": "g6.8xlarge",
+            "hardware_fingerprint": "l4-24gb",
+            "storage_identity": "g6-local-nvme",
+        },
+    )
+    suite = BenchmarkSuite(
+        suite_id="honest-hardware-variation",
+        examples=(example(),),
+        hardware_target="g5.8xlarge",
+        datasets=("biography",),
+    )
+    context = BenchmarkManifestContext(
+        comparison_mode="single_method_setting_variation",
+        varied_setting="hardware_target",
+        reference_arm_id="g5",
+        hardware_fingerprint="a10g-24gb",
+        storage_identity="g5-local-nvme",
+    )
+
+    result = run_benchmark_suite(
+        suite,
+        {"g5": RecordingEngine(), "g6": RecordingEngine()},
+        arms=(reference, candidate),
+        manifest_context=context,
+        reference_arm_id="g5",
+    )
+
+    assert result.reference_arm_id == "g5"
+
+    with pytest.raises(ValueError, match="typed dependent fields"):
+        run_benchmark_suite(
+            suite,
+            {"g5": RecordingEngine(), "g6": RecordingEngine()},
+            arms=(
+                reference,
+                replace(
+                    candidate,
+                    runtime_environment_overrides={
+                        **dict(candidate.runtime_environment_overrides),
+                        "model_revision": "different-model-revision",
+                    },
+                ),
+            ),
+            manifest_context=context,
+            reference_arm_id="g5",
+        )
+
+
+def test_serving_platform_dimension_allows_engine_identity_dependencies() -> None:
+    reference = BenchmarkArm(
+        arm_id="vllm",
+        uses_cache=True,
+        description="vLLM",
+        cache_method="author_method",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        source_revision="author-commit",
+        checkpoint_identity="author-checkpoint",
+        setting_overrides={"serving_platform": "vllm"},
+        runtime_environment_overrides={
+            "serving_platform": "vllm",
+            "engine_id": "vllm",
+            "engine_version": "0.23.0",
+            "runtime_version": "vllm-runtime",
+        },
+        requires_cachet_handoff=False,
+    )
+    candidate = replace(
+        reference,
+        arm_id="sglang",
+        description="SGLang",
+        setting_overrides={"serving_platform": "sglang"},
+        runtime_environment_overrides={
+            "serving_platform": "sglang",
+            "engine_id": "sglang",
+            "engine_version": "0.5.10.post1",
+            "runtime_version": "sglang-runtime",
+        },
+    )
+
+    result = run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="serving-platform-variation",
+            examples=(example(),),
+            datasets=("biography",),
+        ),
+        {"vllm": RecordingEngine(), "sglang": RecordingEngine()},
+        arms=(reference, candidate),
+        manifest_context=BenchmarkManifestContext(
+            comparison_mode="single_method_setting_variation",
+            varied_setting="serving_platform",
+            reference_arm_id="vllm",
+            serving_platform="vllm",
+            engine_id="vllm",
+            engine_version="0.23.0",
+            runtime_version="vllm-runtime",
+        ),
+        reference_arm_id="vllm",
+    )
+
+    assert result.reference_arm_id == "vllm"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "different_value"),
+    (
+        ("implementation_kind", "external"),
+        ("method_version", "999"),
+        ("method_config_digest", "2" * 64),
+        ("connector_mode", "other-connector"),
+        ("requires_cachet_handoff", True),
+        ("physical_transform_id", "other.transform"),
+        ("physical_transform_version", "2"),
+        ("physical_transform_config_digest", "2" * 64),
+        ("scorer_plugin_path", "other.module:score"),
+        ("source_revision", "other-commit"),
+        ("checkpoint_identity", "other-checkpoint"),
+    ),
+)
+def test_setting_variation_rejects_non_setting_method_contract_drift(
+    field_name: str,
+    different_value: object,
+) -> None:
+    reference = BenchmarkArm(
+        arm_id="reference",
+        uses_cache=True,
+        description="reference",
+        cache_method="author_method",
+        connector_mode="author-connector",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        physical_transform_id="author.method",
+        physical_transform_version="1",
+        scorer_plugin_path="author.module:score",
+        source_revision="author-commit",
+        checkpoint_identity="author-checkpoint",
+        setting_overrides={"hardware_target": "g5.8xlarge"},
+        runtime_environment_overrides={"hardware_target": "g5.8xlarge"},
+        requires_cachet_handoff=False,
+    )
+    candidate = replace(
+        reference,
+        arm_id="candidate",
+        description="candidate",
+        setting_overrides={"hardware_target": "g6.8xlarge"},
+        runtime_environment_overrides={"hardware_target": "g6.8xlarge"},
+        **{field_name: different_value},
+    )
+
+    with pytest.raises(ValueError, match="invariant method and implementation"):
+        run_benchmark_suite(
+            BenchmarkSuite(
+                suite_id="contract-drift",
+                examples=(example(),),
+                datasets=("biography",),
+            ),
+            {"reference": RecordingEngine(), "candidate": RecordingEngine()},
+            arms=(reference, candidate),
+            manifest_context=BenchmarkManifestContext(
+                comparison_mode="single_method_setting_variation",
+                varied_setting="hardware_target",
+                reference_arm_id="reference",
+            ),
+            reference_arm_id="reference",
+        )
+
+
+def test_quantization_variation_allows_explicit_checkpoint_identity_change() -> None:
+    reference = BenchmarkArm(
+        arm_id="fp16",
+        uses_cache=True,
+        description="fp16",
+        cache_method="author_method",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        source_revision="author-commit",
+        checkpoint_identity="fp16-checkpoint",
+        setting_overrides={"model_quantization": "fp16"},
+        runtime_environment_overrides={"model_quantization": "fp16"},
+        requires_cachet_handoff=False,
+    )
+    candidate = replace(
+        reference,
+        arm_id="int8",
+        description="int8",
+        checkpoint_identity="int8-checkpoint",
+        setting_overrides={"model_quantization": "int8"},
+        runtime_environment_overrides={"model_quantization": "int8"},
+    )
+
+    result = run_benchmark_suite(
+        BenchmarkSuite(
+            suite_id="quantization-checkpoint",
+            examples=(example(),),
+            datasets=("biography",),
+        ),
+        {"fp16": RecordingEngine(), "int8": RecordingEngine()},
+        arms=(reference, candidate),
+        manifest_context=BenchmarkManifestContext(
+            comparison_mode="single_method_setting_variation",
+            varied_setting="model_quantization",
+            reference_arm_id="fp16",
+        ),
+        reference_arm_id="fp16",
+    )
+
+    assert result.reference_arm_id == "fp16"
+
+
+def test_methods_same_setting_rejects_actual_environment_drift() -> None:
+    first = BenchmarkArm(
+        arm_id="first",
+        uses_cache=True,
+        description="first method",
+        cache_method="author_a",
+        implementation_kind="upstream",
+        source_revision="author-a",
+        checkpoint_identity="checkpoint-a",
+        runtime_environment_overrides={"serving_platform": "vllm"},
+        requires_cachet_handoff=False,
+    )
+    second = BenchmarkArm(
+        arm_id="second",
+        uses_cache=True,
+        description="second method",
+        cache_method="author_b",
+        implementation_kind="upstream",
+        source_revision="author-b",
+        checkpoint_identity="checkpoint-b",
+        runtime_environment_overrides={"serving_platform": "sglang"},
+        requires_cachet_handoff=False,
+    )
+
+    with pytest.raises(ValueError, match="identical actual runtime environments"):
+        run_benchmark_suite(
+            BenchmarkSuite(
+                suite_id="method-environment-drift",
+                examples=(example(),),
+                datasets=("biography",),
+            ),
+            {"first": RecordingEngine(), "second": RecordingEngine()},
+            arms=(first, second),
+            manifest_context=BenchmarkManifestContext(reference_arm_id="first"),
+            reference_arm_id="first",
+        )
+
+
+def test_isolated_setting_merge_preserves_each_actual_hardware_environment() -> None:
+    records = []
+    values = (("g5", "g5.8xlarge"), ("g6", "g6.8xlarge"))
+    for index, (arm_id, hardware_target) in enumerate(values, start=1):
+        arm = BenchmarkArm(
+            arm_id=arm_id,
+            uses_cache=True,
+            description=arm_id,
+            cache_method="author_method",
+            implementation_kind="upstream",
+            method_version="1",
+            method_config_digest="1" * 64,
+            source_revision="author-commit",
+            checkpoint_identity="author-checkpoint",
+            setting_overrides={"hardware_target": hardware_target},
+            requires_cachet_handoff=False,
+        )
+        result = run_benchmark_suite(
+            BenchmarkSuite(
+                suite_id="isolated-hardware",
+                examples=(example(),),
+                hardware_target=hardware_target,
+                datasets=("biography",),
+            ),
+            {arm_id: RecordingEngine()},
+            arms=(arm,),
+            manifest_context=BenchmarkManifestContext(
+                comparison_mode="single_method_setting_variation",
+                varied_setting="hardware_target",
+                reference_arm_id=arm_id,
+                runtime_id=f"runtime-{index}",
+            ),
+            reference_arm_id=arm_id,
+            evidence_policy="canary",
+        )
+        records.append(benchmark_run_result_to_evidence_record(result))
+
+    merged = merge_isolated_benchmark_run_records(
+        records,
+        reference_arm_id="g5",
+        comparison_mode="single_method_setting_variation",
+        varied_setting="hardware_target",
+        policy="canary",
+    )
+
+    arm_environments = {
+        arm["arm_id"]: arm["runtime_environment"]
+        for arm in merged["experiment_manifest"]["arms"]
+    }
+    assert arm_environments["g5"]["hardware_target"] == "g5.8xlarge"
+    assert arm_environments["g6"]["hardware_target"] == "g6.8xlarge"
+    assert merged["experiment_manifest"]["environment"]["hardware_target"] == (
+        "varies_by_arm"
+    )
+    assert merged["suite"]["hardware_target"] == "varies_by_arm"
+
+
+def test_isolated_setting_merge_rejects_method_contract_drift() -> None:
+    records = []
+    values = (
+        ("g5", "g5.8xlarge", "1"),
+        ("g6", "g6.8xlarge", "999"),
+    )
+    for index, (arm_id, hardware_target, method_version) in enumerate(
+        values,
+        start=1,
+    ):
+        arm = BenchmarkArm(
+            arm_id=arm_id,
+            uses_cache=True,
+            description=arm_id,
+            cache_method="author_method",
+            implementation_kind="upstream",
+            method_version=method_version,
+            method_config_digest="1" * 64,
+            source_revision="author-commit",
+            checkpoint_identity="author-checkpoint",
+            setting_overrides={"hardware_target": hardware_target},
+            requires_cachet_handoff=False,
+        )
+        result = run_benchmark_suite(
+            BenchmarkSuite(
+                suite_id="isolated-contract-drift",
+                examples=(example(),),
+                hardware_target=hardware_target,
+                datasets=("biography",),
+            ),
+            {arm_id: RecordingEngine()},
+            arms=(arm,),
+            manifest_context=BenchmarkManifestContext(
+                comparison_mode="single_method_setting_variation",
+                varied_setting="hardware_target",
+                reference_arm_id=arm_id,
+                runtime_id=f"runtime-{index}",
+            ),
+            reference_arm_id=arm_id,
+            evidence_policy="canary",
+        )
+        records.append(benchmark_run_result_to_evidence_record(result))
+
+    with pytest.raises(ValueError, match="invariant method and implementation"):
+        merge_isolated_benchmark_run_records(
+            records,
+            reference_arm_id="g5",
+            comparison_mode="single_method_setting_variation",
+            varied_setting="hardware_target",
+            policy="canary",
+        )
+
+
+def test_isolated_arm_environment_override_must_equal_source_context() -> None:
+    arm = BenchmarkArm(
+        arm_id="g6",
+        uses_cache=True,
+        description="g6",
+        cache_method="author_method",
+        implementation_kind="upstream",
+        setting_overrides={"hardware_target": "g6.8xlarge"},
+        runtime_environment_overrides={"hardware_target": "g6.8xlarge"},
+        requires_cachet_handoff=False,
+    )
+
+    with pytest.raises(ValueError, match="must equal its source manifest context"):
+        run_benchmark_suite(
+            BenchmarkSuite(
+                suite_id="isolated-context-mismatch",
+                examples=(example(),),
+                hardware_target="g5.8xlarge",
+                datasets=("biography",),
+            ),
+            {"g6": RecordingEngine()},
+            arms=(arm,),
+            manifest_context=BenchmarkManifestContext(
+                comparison_mode="single_method_setting_variation",
+                varied_setting="hardware_target",
+                reference_arm_id="g6",
+            ),
+            reference_arm_id="g6",
+        )
 
 
 def test_run_benchmark_suite_prepends_runtime_prefix_text_for_cache_prompt():
@@ -573,6 +1718,46 @@ def test_benchmark_run_result_to_record_serializes_latency_quality_and_compariso
     assert record["v1_evidence"]["unexpected_arms"] == []
 
 
+def test_manifest_records_decode_settings_preimage_and_rejects_digest_tampering():
+    result = run_benchmark_suite(
+        BenchmarkSuite(suite_id="decode-settings", examples=(example(),)),
+        {
+            BASELINE_PREFILL_ARM: RecordingEngine(),
+            CACHE_REUSE_ARM: RecordingEngine(),
+        },
+        manifest_context=BenchmarkManifestContext(
+            max_output_tokens=8,
+            temperature=0.0,
+            stream=True,
+            generation_seed=7,
+            decode_settings={
+                "ignore_eos": True,
+                "top_p": 0.9,
+                "stop": ["END"],
+            },
+        ),
+    )
+
+    record = benchmark_run_result_to_record(result)
+
+    assert record["experiment_manifest"]["decoding"]["settings"] == {
+        "ignore_eos": True,
+        "stop": ["END"],
+        "top_p": 0.9,
+    }
+    benchmark_run_result_from_record(record)
+    record["experiment_manifest"]["decoding"]["settings"]["top_p"] = 0.8
+    with pytest.raises(ValueError, match="decoding_config_digest"):
+        benchmark_run_result_from_record(record)
+
+
+def test_manifest_context_rejects_unknown_or_invalid_decode_settings():
+    with pytest.raises(ValueError, match="unsupported settings"):
+        BenchmarkManifestContext(decode_settings={"raw_request_body": "secret"})
+    with pytest.raises(ValueError, match="ignore_eos must be a boolean"):
+        BenchmarkManifestContext(decode_settings={"ignore_eos": 1})
+
+
 def test_benchmark_run_result_to_record_uses_result_arm_ids_for_v1_evidence():
     suite = BenchmarkSuite(suite_id="v1-custom", examples=(example(),))
     arms = (
@@ -638,6 +1823,180 @@ def test_run_openai_compatible_v1_benchmark_uses_factory_for_baseline_and_cache(
         measurement for measurement in result.measurements if measurement.arm_id == BASELINE_PREFILL_ARM
     )
     assert cache_measurement.prompt_tokens < baseline_measurement.prompt_tokens
+
+
+def test_openai_request_customization_identity_is_digest_only_and_authenticated(
+    tmp_path,
+):
+    path = tmp_path / "biography.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "query": "Who wrote notes?",
+                "documents": ["Ada wrote notes."],
+                "answer": "Ada Lovelace",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def run(extra_body, *, salt_mode="static"):
+        return run_openai_compatible_v1_benchmark(
+            OpenAICompatibleBenchmarkConfig(
+                suite_id="request-customization",
+                dataset_paths={"biography": path},
+                base_url="http://unused",
+                arm_ids=(BASELINE_PREFILL_ARM,),
+                baseline_extra_body=extra_body,
+                cache_extra_body=extra_body,
+                prefix_cache_salt_mode=salt_mode,
+            ),
+            engine_factory=lambda _arm, _config: RecordingEngine(),
+        )
+
+    first = run({"custom_params": {"vendor_profile": "TOP_SECRET_A"}})
+    second = run({"custom_params": {"vendor_profile": "TOP_SECRET_B"}})
+    assert first.experiment_manifest is not None
+    assert second.experiment_manifest is not None
+    first_arm = first.experiment_manifest.arms[0]
+    second_arm = second.experiment_manifest.arms[0]
+    assert first_arm.request_customization_digest != (
+        second_arm.request_customization_digest
+    )
+    assert first_arm.physical_transform_config_digest != (
+        second_arm.physical_transform_config_digest
+    )
+
+    record = benchmark_run_result_to_evidence_record(first)
+    serialized = json.dumps(record, sort_keys=True)
+    assert "TOP_SECRET_A" not in serialized
+    assert record["experiment_manifest"]["arms"][0][
+        "request_customization"
+    ] == {"config_digest": first_arm.request_customization_digest}
+    reconstructed = benchmark_run_result_from_record(record)
+    assert reconstructed.experiment_manifest is not None
+    assert (
+        reconstructed.experiment_manifest.arms[0].request_customization_digest
+        == first_arm.request_customization_digest
+    )
+
+    dynamic_a = run(
+        {"top_p": 0.2, "cache_salt": "dynamic-prefix-a"},
+        salt_mode="per_request",
+    )
+    dynamic_b = run(
+        {"top_p": 0.8, "cache_salt": "dynamic-prefix-b"},
+        salt_mode="per_request",
+    )
+    empty_dynamic_salt = run({"cache_salt": ""}, salt_mode="per_request")
+    static_salt = run({"cache_salt": "static-prefix"})
+    assert dynamic_a.experiment_manifest is not None
+    assert dynamic_b.experiment_manifest is not None
+    assert empty_dynamic_salt.experiment_manifest is not None
+    assert static_salt.experiment_manifest is not None
+    dynamic_digest = (
+        dynamic_a.experiment_manifest.arms[0].request_customization_digest
+    )
+    assert (
+        dynamic_b.experiment_manifest.arms[0].request_customization_digest
+        == dynamic_digest
+    )
+    assert (
+        static_salt.experiment_manifest.arms[0].request_customization_digest
+        != dynamic_digest
+    )
+    assert (
+        empty_dynamic_salt.experiment_manifest.arms[0].request_customization_digest
+        != dynamic_digest
+    )
+
+
+def test_programmatic_request_customization_identity_requires_exact_arm_coverage():
+    arms = default_benchmark_arms()
+    with pytest.raises(ValueError, match="cover every benchmark arm exactly"):
+        run_benchmark_suite(
+            BenchmarkSuite(suite_id="request-customization", examples=(example(),)),
+            {arm.arm_id: RecordingEngine() for arm in arms},
+            arms=arms,
+            request_customization_digests={BASELINE_PREFILL_ARM: "1" * 64},
+        )
+
+
+def test_setting_variation_request_customization_identity_is_invariant_except_platform():
+    reference = BenchmarkArm(
+        arm_id="reference",
+        uses_cache=True,
+        description="reference",
+        cache_method="author_method",
+        implementation_kind="upstream",
+        method_version="1",
+        method_config_digest="1" * 64,
+        source_revision="author-commit",
+        checkpoint_identity="author-checkpoint",
+        setting_overrides={"hardware_target": "g5.8xlarge"},
+        runtime_environment_overrides={"hardware_target": "g5.8xlarge"},
+        requires_cachet_handoff=False,
+    )
+    candidate = replace(
+        reference,
+        arm_id="candidate",
+        description="candidate",
+        setting_overrides={"hardware_target": "g6.8xlarge"},
+        runtime_environment_overrides={"hardware_target": "g6.8xlarge"},
+    )
+    suite = BenchmarkSuite(
+        suite_id="request-customization-setting",
+        examples=(example(),),
+        hardware_target="g5.8xlarge",
+    )
+    with pytest.raises(ValueError, match="invariant static request customizations"):
+        run_benchmark_suite(
+            suite,
+            {"reference": RecordingEngine(), "candidate": RecordingEngine()},
+            arms=(reference, candidate),
+            manifest_context=BenchmarkManifestContext(
+                comparison_mode="single_method_setting_variation",
+                varied_setting="hardware_target",
+                reference_arm_id="reference",
+            ),
+            reference_arm_id="reference",
+            request_customization_digests={
+                "reference": "1" * 64,
+                "candidate": "2" * 64,
+            },
+        )
+
+    platform_reference = replace(
+        reference,
+        setting_overrides={"serving_platform": "vllm"},
+        runtime_environment_overrides={"serving_platform": "vllm"},
+    )
+    platform_candidate = replace(
+        candidate,
+        setting_overrides={"serving_platform": "sglang"},
+        runtime_environment_overrides={"serving_platform": "sglang"},
+    )
+    result = run_benchmark_suite(
+        suite,
+        {"reference": RecordingEngine(), "candidate": RecordingEngine()},
+        arms=(platform_reference, platform_candidate),
+        manifest_context=BenchmarkManifestContext(
+            serving_platform="vllm",
+            comparison_mode="single_method_setting_variation",
+            varied_setting="serving_platform",
+            reference_arm_id="reference",
+        ),
+        reference_arm_id="reference",
+        request_customization_digests={
+            "reference": "1" * 64,
+            "candidate": "2" * 64,
+        },
+    )
+    assert result.experiment_manifest is not None
+    assert {
+        arm.request_customization_digest for arm in result.experiment_manifest.arms
+    } == {"1" * 64, "2" * 64}
 
 
 def test_run_openai_compatible_v1_benchmark_can_select_single_arm(tmp_path):
@@ -1133,8 +2492,167 @@ def test_load_benchmark_jsonl_validates_records(tmp_path):
     path = tmp_path / "bad.jsonl"
     path.write_text("\n" + json.dumps({"dataset": "unknown", "query": "Bad?", "documents": ["x"]}) + "\n", encoding="utf-8")
 
-    with pytest.raises(ValueError, match="Benchmark JSONL line 2: Unsupported V1 dataset"):
-        load_benchmark_jsonl(path)
+    loaded = load_benchmark_jsonl(path)
+    assert loaded[0].dataset == "unknown"
+
+    with pytest.raises(ValueError, match="Unsupported V1 dataset"):
+        load_v1_jsonl_suite(
+            suite_id="v1",
+            paths={"unknown": path},
+        )
+
+
+def test_generalized_openai_path_uses_explicit_versioned_scorer_and_prompt(tmp_path):
+    path = tmp_path / "custom.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "custom-1",
+                "query": "Evaluate without a reference.",
+                "documents": ["Custom source text."],
+                "metadata": {"judge": "pass"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def custom_prompt(example):
+        return BenchmarkPromptParts(
+            system_prompt="CUSTOM SYSTEM",
+            document_context=example.documents[0].chunks[0].text,
+            user_prompt=example.query,
+        )
+
+    scorer = DatasetScorer(
+        scorer_id="tests.custom",
+        version="2026.1",
+        metric_names=("judge_score",),
+        score_function=lambda context: {
+            "judge_score": 1.0 if context.metadata["judge"] == "pass" else 0.0
+        },
+        plugin_path="tests.test_benchmark_runner:custom_score",
+        prompt_function=custom_prompt,
+        prompt_plugin_path="tests.test_benchmark_runner:custom_prompt",
+        prompt_template_version="custom-prompt-v1",
+    )
+    registry = DatasetScorerRegistry().register("custom-dataset", scorer)
+    arm = BenchmarkArm(
+        arm_id="baseline",
+        uses_cache=False,
+        description="baseline",
+    )
+    config = OpenAICompatibleBenchmarkConfig(
+        suite_id="custom-suite",
+        dataset_paths={"custom-dataset": path},
+        base_url="http://unused",
+        hardware_target="custom-gpu",
+        arms=(arm,),
+        stream=False,
+        suite_contract="generalized",
+        prompt_template_version="custom-prompt-v1",
+    )
+    engine = RecordingEngine(output="reference-free output")
+
+    result = run_openai_compatible_benchmark(
+        config,
+        scorer_registry=registry,
+        engine_factory=lambda _arm, _config: engine,
+    )
+
+    assert result.suite.datasets == ("custom-dataset",)
+    assert result.suite.hardware_target == "custom-gpu"
+    assert result.measurements[0].references == ()
+    assert result.measurements[0].quality_scores == {"judge_score": 1.0}
+    assert engine.requests[0].logical_prompt_text.startswith("CUSTOM SYSTEM")
+    assert result.experiment_manifest is not None
+    assert result.experiment_manifest.scorer_identities[0].prompt_plugin_path == (
+        "tests.test_benchmark_runner:custom_prompt"
+    )
+    scorer_manifest = result.experiment_manifest.scorer_identities[0]
+    bad_prompt_manifest = replace(
+        result.experiment_manifest,
+        scorer_identities=(
+            replace(
+                scorer_manifest,
+                prompt_plugin_path="",
+                prompt_template_version="",
+            ),
+        ),
+    )
+    gate = evaluate_benchmark_evidence_gate(
+        replace(result, experiment_manifest=bad_prompt_manifest),
+        policy="publication",
+    )
+    assert any(
+        "custom dataset 'custom-dataset' requires a versioned prompt" in issue
+        for issue in gate.issues
+    )
+
+
+def test_runner_rejects_mismatched_or_mixed_scorer_prompt_template_versions():
+    def scorer(template_version):
+        return DatasetScorer(
+            scorer_id=f"tests.custom.{template_version}",
+            version="1",
+            metric_names=("score",),
+            score_function=lambda _context: {"score": 1.0},
+            prompt_function=lambda item: BenchmarkPromptParts(
+                system_prompt="CUSTOM",
+                document_context=item.documents[0].chunks[0].text,
+                user_prompt=item.query,
+            ),
+            prompt_plugin_path="tests.test_benchmark_runner:custom_prompt",
+            prompt_template_version=template_version,
+        )
+
+    arm = BenchmarkArm(
+        arm_id="baseline",
+        uses_cache=False,
+        description="baseline",
+    )
+    single_suite = BenchmarkSuite(
+        suite_id="custom-prompt-version",
+        examples=(example(dataset="custom-a"),),
+        datasets=("custom-a",),
+    )
+    single_registry = DatasetScorerRegistry().register(
+        "custom-a",
+        scorer("custom-v1"),
+    )
+    with pytest.raises(ValueError, match="must match manifest_context"):
+        run_benchmark_suite(
+            single_suite,
+            {"baseline": RecordingEngine()},
+            arms=(arm,),
+            scorer_registry=single_registry,
+            manifest_context=BenchmarkManifestContext(
+                prompt_template_version="custom-v2"
+            ),
+        )
+
+    mixed_suite = BenchmarkSuite(
+        suite_id="mixed-prompt-versions",
+        examples=(
+            example(dataset="custom-a"),
+            example(dataset="custom-b"),
+        ),
+        datasets=("custom-a", "custom-b"),
+    )
+    mixed_registry = single_registry.register(
+        "custom-b",
+        scorer("custom-v2"),
+    )
+    with pytest.raises(ValueError, match="one shared prompt_template_version"):
+        run_benchmark_suite(
+            mixed_suite,
+            {"baseline": RecordingEngine()},
+            arms=(arm,),
+            scorer_registry=mixed_registry,
+            manifest_context=BenchmarkManifestContext(
+                prompt_template_version="custom-v1"
+            ),
+        )
 
 
 def test_load_benchmark_jsonl_rejects_invalid_kv_transfer_params(tmp_path):

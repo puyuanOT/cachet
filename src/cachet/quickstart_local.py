@@ -14,6 +14,7 @@ from cachet import (
     KVCacheKey,
     SourceChunk,
     SourceDocument,
+    TokenContract,
     TrainingArtifacts,
 )
 from cachet.engine_protocol import KVLayout, KVStorageLayout
@@ -29,6 +30,11 @@ PROMPT_TEMPLATE_VERSION = "v1"
 class ToyKVGenerator:
     """Generate deterministic fake KV payloads for local plumbing tests."""
 
+    pre_rope = False
+
+    def __init__(self, layout: KVLayout) -> None:
+        self.layout = layout
+
     def generate(
         self,
         *,
@@ -43,6 +49,7 @@ class ToyKVGenerator:
             f"toy-kv|model={config.model_id}|document={document.document_id}|"
             f"chunk={chunk.chunk_id}|text={chunk.text}"
         ).encode("utf-8")
+        token_ids = tuple(payload)
         content_hash = hashlib.sha256(payload).hexdigest()
         key = KVCacheKey.for_document(
             model_id=config.model_id,
@@ -52,11 +59,19 @@ class ToyKVGenerator:
             chunk_type=chunk.chunk_type,
             chunk_id=chunk.chunk_id,
             content_hash=content_hash,
+            artifact_identity=config.artifact_identity_for(self.layout),
+            token_contract=TokenContract.from_token_ids(
+                token_ids,
+                tokenizer_id=config.tokenizer_id,
+                tokenizer_revision=config.tokenizer_revision,
+                add_special_tokens=False,
+                prompt_template_version=config.prompt_template_version,
+            ),
         )
         return PackChunk(
             key=key,
             payload=payload,
-            token_count=len(payload),
+            token_count=len(token_ids),
             dtype=config.dtype,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
@@ -101,7 +116,7 @@ def main() -> None:
         chunk_ids=("vacation", "security"),
     )
 
-    generator = ToyKVGenerator()
+    generator = ToyKVGenerator(layout)
     with tempfile.TemporaryDirectory(prefix="cachet-quickstart-") as tmp:
         workspace = Path(tmp)
         workflow = DocumentKVWorkflow.with_storage(

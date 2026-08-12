@@ -10,6 +10,7 @@ import urllib.request as _urlrequest
 import math
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from document_kv_cache.benchmark_runner import (
@@ -43,6 +44,41 @@ OpenAICompatibleRequestMode = Literal["completion", "chat"]
 
 _COMPLETIONS_ENDPOINT = "/v1/completions"
 _CHAT_COMPLETIONS_ENDPOINT = "/v1/chat/completions"
+
+
+class _FrozenList(list[Any]):
+    def _immutable(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("evaluation JSON values are immutable")
+
+    __setitem__ = _immutable
+    __delitem__ = _immutable
+    __iadd__ = _immutable  # type: ignore[assignment]
+    __imul__ = _immutable  # type: ignore[assignment]
+    append = _immutable
+    clear = _immutable
+    extend = _immutable
+    insert = _immutable
+    pop = _immutable
+    remove = _immutable
+    reverse = _immutable
+    sort = _immutable
+_RESERVED_REQUEST_BODY_FIELDS = frozenset(
+    {
+        # These fields are owned by the benchmark's canonical request contract.
+        # Allowing an arm-specific body to replace any of them would make the
+        # recorded manifest disagree with the request that the server received.
+        "model",
+        "prompt",
+        "messages",
+        "max_tokens",
+        "max_completion_tokens",
+        "temperature",
+        "stream",
+        "stream_options",
+        "request_id",
+        "kv_transfer_params",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,11 +137,13 @@ class OpenAICompatibleEngineConfig:
                 "kv_transfer_params_transport must be 'top_level' or 'custom_params'"
             )
         object.__setattr__(self, "endpoint", endpoint)
+        extra_body = _json_object_mapping(self.extra_body, "extra_body")
+        _validate_extra_body_contract(extra_body, "extra_body")
+        object.__setattr__(self, "extra_body", _deep_freeze_mapping(extra_body))
         object.__setattr__(
-            self, "extra_body", _json_object_mapping(self.extra_body, "extra_body")
-        )
-        object.__setattr__(
-            self, "extra_headers", _string_mapping(self.extra_headers, "extra_headers")
+            self,
+            "extra_headers",
+            MappingProxyType(_string_mapping(self.extra_headers, "extra_headers")),
         )
 
 
@@ -188,6 +226,52 @@ def _json_compatible_value(value: Any, field_name: str) -> Any:
             for index, item in enumerate(value)
         ]
     raise ValueError(f"{field_name} must be JSON-compatible")
+
+
+def _validate_extra_body_contract(
+    extra_body: Mapping[str, Any],
+    field_name: str,
+) -> None:
+    reserved = sorted(_RESERVED_REQUEST_BODY_FIELDS.intersection(extra_body))
+    if reserved:
+        raise ValueError(
+            f"{field_name} must not override reserved request fields: "
+            f"{', '.join(reserved)}"
+        )
+    custom_params = extra_body.get("custom_params")
+    if isinstance(custom_params, Mapping) and "kv_transfer_params" in custom_params:
+        raise ValueError(
+            f"{field_name}.custom_params must not override reserved "
+            "kv_transfer_params"
+        )
+
+
+def _deep_freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(
+        {key: _deep_freeze_value(item) for key, item in value.items()}
+    )
+
+
+def _deep_freeze_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _deep_freeze_mapping(value)
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return _FrozenList(_deep_freeze_value(item) for item in value)
+    return value
+
+
+def _json_materialize(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _json_materialize(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray, memoryview),
+    ):
+        return [_json_materialize(item) for item in value]
+    return value
 
 
 def _chat_message_mapping(value: Any, field_name: str) -> dict[str, Any]:
@@ -289,6 +373,7 @@ class OpenAICompatibleCompletionEngine:
                     self.extra_body_factory(request), "extra_body_factory"
                 )
             )
+        _validate_extra_body_contract(extra_body, "extra_body_factory result")
         return extra_body
 
     def _prompt_text(self, request: BenchmarkEngineRequest) -> str:
@@ -325,7 +410,7 @@ class OpenAICompatibleCompletionEngine:
             _urlparse.urljoin(
                 self.config.base_url.rstrip("/") + "/", endpoint.lstrip("/")
             ),
-            data=json.dumps(payload).encode("utf-8"),
+            data=json.dumps(_json_materialize(payload)).encode("utf-8"),
             headers=self._headers(),
             method="POST",
         )

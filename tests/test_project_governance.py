@@ -408,6 +408,25 @@ def test_document_package_readme_lists_public_modules_and_console_scripts():
     assert "real wrapper modules" not in text
 
 
+def test_method_docs_keep_custom_scorers_programmatic_and_remote_plans_v1_closed():
+    text = (REPO_ROOT / "docs" / "adding-a-kv-method.md").read_text(
+        encoding="utf-8"
+    )
+    compact_text = " ".join(text.split())
+
+    for required in (
+        "versioned `DatasetScorer`",
+        "metric function and `prompt_function`",
+        "same immutable `DatasetScorerRegistry`",
+        "`run_openai_compatible_benchmark`",
+        "`generate_benchmark_handoff_bundles`",
+        "must share a prompt-template version",
+        "remote benchmark-plan CLI remains deliberately V1-closed",
+        "explicit programmatic integration rather than a dynamically imported command-line plugin",
+    ):
+        assert required in compact_text
+
+
 def test_legacy_source_package_directory_is_removed():
     legacy_source_dir = REPO_ROOT / "src" / ("restaurant" "_kv_serving")
 

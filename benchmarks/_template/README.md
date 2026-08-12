@@ -8,6 +8,13 @@ Do not infer or estimate missing values. Leave numeric cells blank when a
 metric has not been measured under the stated configuration. Use `N/A` only
 when a metric cannot apply. Blank cells and `N/A` are not zeros.
 
+Label the report as **smoke**, **canary**, or **publication** according to
+[`docs/evidence-policy.md`](../../docs/evidence-policy.md). Private DBFS paths
+and run IDs may supplement provenance but never substitute for sanitized
+committed measurements and a publication-gate result. If those records are
+missing, label every populated comparison **provisional /
+non-publication-qualified**.
+
 ## Shared Table Configuration
 
 Use this block for every main table in the report unless a specific table
@@ -38,6 +45,13 @@ lengths.
 | Quality metric | Full-dataset task score, answer-found containment, strict exact match, or `N/A` |
 | Evidence file | Link to sanitized committed JSON |
 | Publication gate | Passing `document_kv.benchmark_publication_gate.v1` record |
+
+For method comparisons, fix the complete setting and vary only the method. For
+ablations, fix the method and vary exactly one declared factor. Record the
+common logical input plus every method-specific physical transformation and
+physical token accounting. Report offline training/artifact-generation costs
+and artifact footprint separately from online TTFT/TTC, and state whether
+storage-to-CPU and CPU-to-GPU hydration are inside the measured boundary.
 
 ## Latency And Resource Table
 

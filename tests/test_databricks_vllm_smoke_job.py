@@ -1,20 +1,31 @@
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
+import document_kv_cache.databricks_vllm_smoke_job as public_databricks_vllm_smoke_job
 from document_kv_cache.artifact_identity import RuntimeIdentity
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_VLLM_RUNNER_SHA256,
+    representative_canary_matrix,
+)
 from document_kv_cache.databricks_vllm_smoke_job import (
     DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
     DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME,
     DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY,
+    VLLM_SMOKE_RUNNER_SCRIPT,
     DatabricksVLLMSmokeJobConfig,
     build_databricks_vllm_smoke_run_submit_payload,
     main,
     write_databricks_vllm_smoke_run_submit_json,
     write_databricks_vllm_smoke_runner_script,
 )
+from document_kv_cache.serving_env import VLLM_VERSION
+from document_kv_cache.vllm_smoke import vllm_representative_workload_profile
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl"
@@ -25,6 +36,63 @@ DATASET_SPECS = tuple(
     for dataset in ("biography", "hotpotqa", "musique", "niah")
 )
 MODEL_REVISION = "a" * 40
+REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
+REPRESENTATIVE_WHEEL_URI = (
+    "dbfs:/cachet/wheels/"
+    f"{REPRESENTATIVE_WHEEL_SHA256}/cachet_kv-0.2.0-py3-none-any.whl"
+)
+
+
+def representative_job_kwargs(
+    *,
+    profile_id="vllm-8k-64-v1",
+    arm_index=0,
+    arm_specs=None,
+    provenance=None,
+):
+    profile = vllm_representative_workload_profile(profile_id)
+    resolved_provenance = {"input_tokens_target": profile.input_tokens_target}
+    if provenance is not None:
+        resolved_provenance.update(provenance)
+    if arm_specs is None:
+        arm_specs = (representative_canary_matrix().runs[arm_index].arm_spec,)
+    return {
+        "wheel_uri": REPRESENTATIVE_WHEEL_URI,
+        "wheel_sha256": REPRESENTATIVE_WHEEL_SHA256,
+        "model_revision": MODEL_REVISION,
+        "tokenizer_revision": MODEL_REVISION,
+        "representative_canary": True,
+        "representative_workload_profile": profile.profile_id,
+        "benchmark_arm_specs": arm_specs,
+        "benchmark_evidence_policy": "canary",
+        "benchmark_manifest_provenance": resolved_provenance,
+        "max_tokens": profile.max_output_tokens,
+        "max_model_len": profile.max_model_len,
+        "max_num_seqs": profile.max_num_seqs,
+        "gpu_memory_utilization": profile.gpu_memory_utilization,
+        "benchmark_repeats": profile.benchmark_repeats,
+        "request_parallelism": profile.request_parallelism,
+        "benchmark_force_max_tokens": True,
+        "dataset_specs": DATASET_SPECS,
+    }
+
+
+def test_databricks_vllm_representative_requires_content_addressed_wheel():
+    kwargs = representative_job_kwargs()
+    kwargs.pop("wheel_sha256")
+
+    with pytest.raises(ValueError, match="wheel_sha256"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="representative-vllm-missing-wheel-digest",
+            output_dir=(
+                "/Volumes/catalog/schema/volume/"
+                "representative-vllm-missing-wheel-digest"
+            ),
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **kwargs,
+        )
 
 
 def stored_post_rope_runtime_identity() -> RuntimeIdentity:
@@ -71,7 +139,10 @@ def test_build_databricks_vllm_smoke_payload_uses_single_node_g5_cluster():
     cluster = task["new_cluster"]
 
     assert payload["run_name"] == DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME
+    assert payload["timeout_seconds"] == 14400
     assert task["task_key"] == DEFAULT_DATABRICKS_VLLM_SMOKE_TASK_KEY
+    assert task["timeout_seconds"] == 14400
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert cluster["node_type_id"] == "g6.8xlarge"
     assert cluster["driver_node_type_id"] == "g6.8xlarge"
@@ -187,6 +258,449 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
     assert parameters.index("--payload-cache-max-bytes") < parameters.index("--dataset")
 
 
+def test_databricks_payload_forwards_arbitrary_arms_evidence_and_provenance():
+    matrix = representative_canary_matrix()
+    isolated_run = matrix.runs[2]
+    provenance = {
+        "engine_id": "vllm",
+        "engine_version": VLLM_VERSION,
+        "model_revision": MODEL_REVISION,
+        "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
+        "tokenizer_revision": MODEL_REVISION,
+        "input_tokens_target": 16384,
+        "hardware_fingerprint": "g6.8xlarge-l4-128g",
+        "measurement_scopes": ["latency", "resource"],
+    }
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="representative-canary-16k-256",
+        output_dir="/Volumes/catalog/schema/volume/canary-16k-256",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        **representative_job_kwargs(
+            profile_id="vllm-16k-256-v1",
+            arm_index=2,
+            provenance=provenance,
+        ),
+    )
+
+    payload = build_databricks_vllm_smoke_run_submit_payload(config)
+    task = payload["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
+
+    arm_specs = [
+        json.loads(parameters[index + 1])
+        for index, value in enumerate(parameters)
+        if value == "--benchmark-arm-spec-json"
+    ]
+    assert [arm["arm_id"] for arm in arm_specs] == [isolated_run.arm_id]
+    assert parameters[parameters.index("--benchmark-evidence-policy") + 1] == "canary"
+    forwarded_provenance = json.loads(
+        parameters[parameters.index("--benchmark-manifest-provenance-json") + 1]
+    )
+    assert all(
+        forwarded_provenance[key] == value for key, value in provenance.items()
+    )
+    assert forwarded_provenance["canonical_model_id"] == (
+        "Qwen/Qwen3-4B-Instruct-2507"
+    )
+    assert forwarded_provenance["serving_platform"] == "vllm"
+    assert forwarded_provenance["model_dtype"] == "bfloat16"
+    assert forwarded_provenance["model_quantization"] == "none"
+    assert forwarded_provenance["runtime_kv_dtype"] == "bfloat16"
+    assert forwarded_provenance["lora_id"] == "base"
+    assert "--benchmark-force-max-tokens" in parameters
+    assert "--representative-canary" in parameters
+    assert parameters[
+        parameters.index("--representative-workload-profile") + 1
+    ] == "vllm-16k-256-v1"
+    assert payload["timeout_seconds"] == 14400
+    assert task["timeout_seconds"] == 14400
+    assert task["max_retries"] == 0
+    assert task["new_cluster"]["spark_env_vars"][
+        "DOCUMENT_KV_EVICT_PAGE_CACHE"
+    ] == "1"
+
+
+def test_databricks_representative_provenance_binds_resolved_rope_geometry(
+    monkeypatch,
+):
+    class PreRopeLayout:
+        lora_id = "base"
+        layout_version = "qwen3-prerope-v1"
+        payload_axis_order = "token_major"
+        block_size = 16
+        key_position_encoding = "pre_rope"
+        rope_theta = 1_000_000.0
+        rope_rotary_dim = 128
+
+    monkeypatch.setattr(
+        public_databricks_vllm_smoke_job,
+        "layout_for_model",
+        lambda *_args, **_kwargs: PreRopeLayout(),
+    )
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="representative-prerope-binding",
+        output_dir="/Volumes/catalog/schema/volume/representative-prerope-binding",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        **representative_job_kwargs(arm_index=1),
+    )
+
+    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    provenance = json.loads(
+        parameters[parameters.index("--benchmark-manifest-provenance-json") + 1]
+    )
+    assert provenance["rope_theta"] == 1_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_databricks_representative_rejects_unresolved_rope_pair():
+    with pytest.raises(ValueError, match="rope_rotary_dim, rope_theta"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="representative-conflicting-rope",
+            output_dir="/Volumes/catalog/schema/volume/representative-conflicting-rope",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **representative_job_kwargs(
+                arm_index=1,
+                provenance={
+                    "rope_theta": 1_000_000.0,
+                    "rope_rotary_dim": 128,
+                },
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"run_timeout_seconds": 0}, "run_timeout_seconds"),
+        ({"run_timeout_seconds": 14401}, "run_timeout_seconds"),
+        ({"task_max_retries": 1}, "task_max_retries"),
+    ],
+)
+def test_databricks_vllm_submission_bounds_cluster_runtime(overrides, message):
+    with pytest.raises(ValueError, match=message):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="bounded-canary",
+            output_dir="/Volumes/catalog/schema/volume/bounded-canary",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **overrides,
+        )
+
+
+def test_databricks_vllm_representative_canary_requires_exact_timeout():
+    with pytest.raises(ValueError, match="exactly 14400"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="short-representative-canary",
+            output_dir="/Volumes/catalog/schema/volume/short-representative-canary",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            run_timeout_seconds=3600,
+            **representative_job_kwargs(),
+        )
+
+
+def test_databricks_vllm_representative_canary_requires_pins_and_local_handoffs():
+    unpinned_kwargs = representative_job_kwargs(arm_index=2)
+    unpinned_kwargs.pop("model_revision")
+    unpinned_kwargs.pop("tokenizer_revision")
+    with pytest.raises(ValueError, match="model_revision"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="unpinned-canary",
+            output_dir="/Volumes/catalog/schema/volume/unpinned-canary",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **unpinned_kwargs,
+        )
+    with pytest.raises(ValueError, match="under /local_disk0"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="remote-handoff-canary",
+            output_dir="/Volumes/catalog/schema/volume/remote-handoff-canary",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            benchmark_handoff_generator_factory="module:factory",
+            benchmark_handoff_output_dir="/Volumes/catalog/schema/volume/handoffs",
+            **representative_job_kwargs(arm_index=2),
+        )
+    with pytest.raises(ValueError, match="under /local_disk0"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="traversal-handoff-canary",
+            output_dir="/Volumes/catalog/schema/volume/traversal-handoff-canary",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            benchmark_handoff_generator_factory="module:factory",
+            benchmark_handoff_output_dir="/local_disk0/../tmp/handoffs",
+            **representative_job_kwargs(arm_index=2),
+        )
+
+
+@pytest.mark.parametrize(
+    ("hardware_target", "node_type_id"),
+    [
+        ("aws-g6-l4", "g6.4xlarge"),
+        ("aws-g5-a10g", "g5.12xlarge"),
+    ],
+)
+def test_databricks_vllm_representative_canary_requires_exact_node_size(
+    hardware_target,
+    node_type_id,
+):
+    with pytest.raises(ValueError, match="exact V1 node type"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="wrong-size-canary",
+            output_dir="/Volumes/catalog/schema/volume/wrong-size-canary",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            hardware_target=hardware_target,
+            node_type_id=node_type_id,
+            single_user_name=SINGLE_USER_NAME,
+            **representative_job_kwargs(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("hardware_target", "node_type_id"),
+    [
+        ("aws-g6-l4", "g6.4xlarge"),
+        ("aws-g5-a10g", "g5.12xlarge"),
+    ],
+)
+def test_databricks_vllm_debug_job_preserves_family_node_overrides(
+    hardware_target,
+    node_type_id,
+):
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="debug-node-override",
+        output_dir="/Volumes/catalog/schema/volume/debug-node-override",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        hardware_target=hardware_target,
+        node_type_id=node_type_id,
+        single_user_name=SINGLE_USER_NAME,
+    )
+
+    assert config.node_type_id == node_type_id
+
+
+def test_databricks_vllm_nonrepresentative_canary_evidence_preserves_node_override():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="nonrepresentative-canary-evidence",
+        output_dir="/Volumes/catalog/schema/volume/nonrepresentative-canary-evidence",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        hardware_target="aws-g6-l4",
+        node_type_id="g6.4xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        benchmark_evidence_policy="canary",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+    )
+
+    assert config.node_type_id == "g6.4xlarge"
+    assert config.is_representative_submission is False
+
+
+@pytest.mark.parametrize("arm_order", [(0, 1, 2), (2, 0, 1)])
+def test_databricks_vllm_generic_matrix_remains_an_unlabelled_experiment(arm_order):
+    matrix = representative_canary_matrix()
+
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="generic-three-arm-matrix",
+        output_dir="/Volumes/catalog/schema/volume/generic-three-arm-matrix",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        hardware_target="aws-g6-l4",
+        node_type_id="g6.4xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        benchmark_arm_specs=tuple(matrix.runs[index].arm_spec for index in arm_order),
+    )
+
+    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    assert config.is_representative_submission is False
+    assert "--representative-canary" not in parameters
+
+
+@pytest.mark.parametrize("arm_order", [(0, 1, 2), (2, 0, 1)])
+def test_databricks_vllm_labelled_matrix_requires_isolated_jobs(arm_order):
+    matrix = representative_canary_matrix()
+    arm_specs = tuple(matrix.runs[index].arm_spec for index in arm_order)
+
+    with pytest.raises(ValueError, match="exactly one fixed matrix arm"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="labelled-three-arm-matrix",
+            output_dir="/Volumes/catalog/schema/volume/labelled-three-arm-matrix",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **representative_job_kwargs(arm_specs=arm_specs),
+        )
+
+
+@pytest.mark.parametrize("arm_index", [0, 1, 2])
+def test_databricks_vllm_representative_accepts_one_fixed_arm_per_task(arm_index):
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id=f"isolated-representative-arm-{arm_index}",
+        output_dir=f"/Volumes/catalog/schema/volume/isolated-arm-{arm_index}",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        **representative_job_kwargs(arm_index=arm_index),
+    )
+
+    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    assert parameters.count("--benchmark-arm-spec-json") == 1
+    assert "--representative-canary" in parameters
+    assert "--representative-workload-profile" in parameters
+
+
+@pytest.mark.parametrize(
+    ("representative_canary", "profile_id"),
+    [(True, None), (False, "vllm-8k-64-v1")],
+)
+def test_databricks_vllm_representative_flag_and_profile_are_atomic(
+    representative_canary,
+    profile_id,
+):
+    with pytest.raises(ValueError, match="must be provided together"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="partial-representative-label",
+            output_dir="/Volumes/catalog/schema/volume/partial-label",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            representative_canary=representative_canary,
+            representative_workload_profile=profile_id,
+        )
+
+
+@pytest.mark.parametrize("profile_id", ["vllm-8k-64-v1", "vllm-16k-256-v1"])
+def test_databricks_vllm_accepts_registered_representative_workloads(profile_id):
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id=profile_id,
+        output_dir=f"/Volumes/catalog/schema/volume/{profile_id}",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        **representative_job_kwargs(profile_id=profile_id),
+    )
+
+    assert config.is_representative_submission is True
+    assert config.representative_workload_profile is not None
+    assert config.representative_workload_profile.profile_id == profile_id
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"max_tokens": 32}, "max_tokens"),
+        ({"max_model_len": 4096}, "max_model_len"),
+        ({"benchmark_repeats": 2}, "benchmark_repeats"),
+        ({"request_parallelism": 2}, "request_parallelism"),
+        ({"benchmark_force_max_tokens": False}, "benchmark_force_max_tokens"),
+        (
+            {"benchmark_prefix_cache_salt_mode": "static"},
+            "benchmark_prefix_cache_salt_mode",
+        ),
+        ({"benchmark_cache_runtime_prompt": True}, "benchmark_cache_runtime_prompt"),
+        ({"payload_cache_max_bytes": 1}, "payload_cache_max_bytes"),
+        (
+            {"benchmark_manifest_provenance": {"input_tokens_target": 8193}},
+            "input_tokens_target",
+        ),
+    ],
+)
+def test_databricks_vllm_representative_profile_rejects_workload_drift(
+    override,
+    message,
+):
+    kwargs = representative_job_kwargs()
+    kwargs.update(override)
+
+    with pytest.raises(ValueError, match=message):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="drifted-representative-workload",
+            output_dir="/Volumes/catalog/schema/volume/drifted-workload",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **kwargs,
+        )
+
+
+def test_databricks_vllm_fixed_single_arm_without_profile_stays_generic():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="generic-fixed-arm",
+        output_dir="/Volumes/catalog/schema/volume/generic-fixed-arm",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        hardware_target="aws-g6-l4",
+        node_type_id="g6.4xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        local_root="/tmp/generic-fixed-arm",
+        benchmark_arm_specs=(representative_canary_matrix().runs[0].arm_spec,),
+    )
+
+    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    assert config.is_representative_submission is False
+    assert "--representative-canary" not in parameters
+    assert "--representative-workload-profile" not in parameters
+
+
+def test_databricks_vllm_representative_rejects_non_matrix_arm():
+    non_matrix_arm = {
+        "arm_id": "baseline_prefill",
+        "uses_cache": False,
+        "description": "modified semantics",
+        "implementation_kind": "baseline",
+        "physical_transform_id": "identity",
+        "physical_transform_version": "1",
+    }
+    with pytest.raises(ValueError, match="exactly one fixed matrix arm"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="non-matrix-representative-arm",
+            output_dir="/Volumes/catalog/schema/volume/non-matrix-arm",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **representative_job_kwargs(arm_specs=(non_matrix_arm,)),
+        )
+
+
+def test_databricks_vllm_generic_canary_only_requires_pinned_identity():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="generic-canary-on-other-g6-shape",
+        output_dir="/Volumes/catalog/schema/volume/generic-canary",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.12xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        local_root="/tmp/cachet-generic-canary",
+        model_revision=MODEL_REVISION,
+        tokenizer_revision=MODEL_REVISION,
+        benchmark_evidence_policy="canary",
+    )
+
+    payload = build_databricks_vllm_smoke_run_submit_payload(config)
+    task = payload["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
+    assert "--representative-canary" not in parameters
+    assert "DOCUMENT_KV_EVICT_PAGE_CACHE" not in task["new_cluster"].get(
+        "spark_env_vars", {}
+    )
+
+
 def test_databricks_vllm_smoke_config_requires_single_user_name():
     try:
         DatabricksVLLMSmokeJobConfig(
@@ -262,6 +776,14 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
             {"benchmark_handoff_segment_per_document": True},
             "benchmark handoff options require",
         ),
+        (
+            {
+                "benchmark_handoff_generator_factory": "module:factory",
+                "benchmark_handoff_cache_method": "vanilla_prefill",
+                "dataset_specs": DATASET_SPECS,
+            },
+            "vanilla_prefill handoff generation requires one segment per document",
+        ),
         ({"spark_env_vars": {"BAD-NAME": "value"}}, "valid environment variable name"),
         ({"spark_env_vars": {"DATABRICKS_TOKEN": "redacted"}}, "looks secret-bearing"),
     ]
@@ -324,7 +846,6 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
         benchmark_handoff_limit=2,
         benchmark_handoff_segment_per_document=True,
         benchmark_handoff_cache_method="vanilla_prefill",
-        benchmark_handoff_require_artifact_contract=True,
         model_id="Qwen/Qwen3-4B-Instruct-2507",
         model_revision=MODEL_REVISION,
         tokenizer_revision=MODEL_REVISION,
@@ -357,7 +878,7 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
         parameters[parameters.index("--benchmark-handoff-cache-method") + 1]
         == "vanilla_prefill"
     )
-    assert "--benchmark-handoff-require-artifact-contract" in parameters
+    assert "--benchmark-handoff-allow-legacy-artifact-contract" not in parameters
     assert parameters[parameters.index("--model-revision") + 1] == MODEL_REVISION
     assert (
         parameters[parameters.index("--tokenizer-revision") + 1]
@@ -374,6 +895,48 @@ def test_databricks_vllm_smoke_payload_passes_prepared_handoff_generation_flags(
     }
 
 
+def test_databricks_handoff_contract_defaults_strict_and_legacy_opt_out_is_explicit():
+    strict = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="strict-handoff",
+        output_dir="/Volumes/catalog/schema/volume/strict-handoff",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        benchmark_handoff_generator_factory="module:factory",
+        dataset_specs=DATASET_SPECS,
+    )
+    strict_parameters = build_databricks_vllm_smoke_run_submit_payload(strict)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    assert strict.benchmark_handoff_require_artifact_contract is True
+    assert "--benchmark-handoff-allow-legacy-artifact-contract" not in strict_parameters
+
+    legacy = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="legacy-handoff",
+        output_dir="/Volumes/catalog/schema/volume/legacy-handoff",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        single_user_name=SINGLE_USER_NAME,
+        benchmark_handoff_generator_factory="module:factory",
+        benchmark_handoff_require_artifact_contract=False,
+        dataset_specs=DATASET_SPECS,
+    )
+    legacy_parameters = build_databricks_vllm_smoke_run_submit_payload(legacy)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    assert "--benchmark-handoff-allow-legacy-artifact-contract" in legacy_parameters
+
+    with pytest.raises(ValueError, match="canary and publication"):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="legacy-canary",
+            output_dir="/Volumes/catalog/schema/volume/legacy-canary",
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            single_user_name=SINGLE_USER_NAME,
+            benchmark_handoff_generator_factory="module:factory",
+            benchmark_handoff_require_artifact_contract=False,
+            benchmark_evidence_policy="canary",
+            dataset_specs=DATASET_SPECS,
+        )
+
+
 def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
     path = tmp_path / "run_vllm_smoke.py"
 
@@ -386,6 +949,13 @@ def test_write_databricks_vllm_smoke_runner_script_imports_smoke_main(tmp_path):
     assert "dbfs:/" in runner_text
     assert "document_kv_cache.vllm_smoke" in runner_text
     assert "if exit_code:" in runner_text
+
+
+def test_representative_vllm_runner_digest_matches_embedded_script():
+    assert (
+        hashlib.sha256(VLLM_SMOKE_RUNNER_SCRIPT.encode("utf-8")).hexdigest()
+        == REPRESENTATIVE_VLLM_RUNNER_SHA256
+    )
 
 
 def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_path):
@@ -521,6 +1091,10 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
             SINGLE_USER_NAME,
             "--wheel-uri",
             WHEEL_URI,
+            "--run-timeout-seconds",
+            "3600",
+            "--task-max-retries",
+            "0",
             "--spark-env-var",
             "CACHET_TRANSFORMERS_DEVICE=cuda",
             "--output-json",
@@ -531,11 +1105,72 @@ def test_main_writes_vllm_smoke_payload_and_runner_script(tmp_path):
     )
 
     assert exit_code == 0
-    task = json.loads(payload_path.read_text(encoding="utf-8"))["tasks"][0]
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    task = payload["tasks"][0]
+    assert payload["timeout_seconds"] == 3600
+    assert task["timeout_seconds"] == 3600
+    assert task["max_retries"] == 0
     assert "libraries" not in task
     assert task["spark_python_task"]["parameters"][-2:] == ["--package-wheel-uri", WHEEL_URI]
     assert task["new_cluster"]["spark_env_vars"] == {"CACHET_TRANSFORMERS_DEVICE": "cuda"}
     assert "vllm_smoke" in runner_path.read_text(encoding="utf-8")
+
+
+def test_main_forwards_registered_vllm_representative_profile(tmp_path):
+    payload_path = tmp_path / "representative-payload.json"
+    arm_spec = representative_canary_matrix().runs[0].arm_spec
+    argv = [
+        "--benchmark-id",
+        "vllm-8k-64-v1",
+        "--output-dir",
+        "/Volumes/catalog/schema/volume/vllm-8k-64-v1",
+        "--runner-python-file",
+        "dbfs:/benchmarks/run_vllm_smoke.py",
+        "--run-timeout-seconds",
+        "14400",
+        "--single-user-name",
+        SINGLE_USER_NAME,
+        "--node-type-id",
+        "g6.8xlarge",
+        "--model-revision",
+        MODEL_REVISION,
+        "--wheel-uri",
+        REPRESENTATIVE_WHEEL_URI,
+        "--wheel-sha256",
+        REPRESENTATIVE_WHEEL_SHA256,
+        "--tokenizer-revision",
+        MODEL_REVISION,
+        "--max-tokens",
+        "64",
+        "--max-model-len",
+        "8512",
+        "--benchmark-repeats",
+        "3",
+        "--benchmark-arm-spec-json",
+        json.dumps(dict(arm_spec)),
+        "--benchmark-evidence-policy",
+        "canary",
+        "--representative-canary",
+        "--representative-workload-profile",
+        "vllm-8k-64-v1",
+        "--benchmark-manifest-provenance-json",
+        json.dumps({"input_tokens_target": 8192}),
+        "--benchmark-force-max-tokens",
+    ]
+    for dataset_spec in DATASET_SPECS:
+        argv.extend(["--dataset", dataset_spec])
+    argv.extend(["--output-json", str(payload_path)])
+
+    assert main(argv) == 0
+
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    task = payload["tasks"][0]
+    parameters = task["spark_python_task"]["parameters"]
+    assert payload["timeout_seconds"] == 14400
+    assert task["timeout_seconds"] == 14400
+    assert parameters[
+        parameters.index("--representative-workload-profile") + 1
+    ] == "vllm-8k-64-v1"
 
 
 def test_main_derives_vllm_smoke_node_type_from_g5_hardware_target(tmp_path):

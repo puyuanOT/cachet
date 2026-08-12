@@ -15,10 +15,12 @@ from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_DEVICE_ENV,
     CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
     CACHET_TRANSFORMERS_MODEL_ID_ENV,
+    CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
     CACHET_TRANSFORMERS_MODEL_KWARGS_JSON_ENV,
     CACHET_TRANSFORMERS_QUANTIZATION_CONFIG_JSON_ENV,
     CACHET_TRANSFORMERS_QUANTIZATION_ENV,
     CACHET_TRANSFORMERS_TOKENIZER_ID_ENV,
+    CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
     CACHET_TRANSFORMERS_TOKENIZER_KWARGS_JSON_ENV,
     CACHET_TRANSFORMERS_TORCH_DTYPE_ENV,
     CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV,
@@ -166,7 +168,10 @@ def layer(key_values, value_values):
 
 
 def tensor_bytes(tensor) -> bytes:
-    return tensor.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
+    byte_values = (
+        tensor.detach().cpu().contiguous().view(torch.uint8).flatten().tolist()
+    )
+    return bytes(byte_values)
 
 
 def test_transformers_generator_emits_token_major_layer_major_payload():
@@ -503,6 +508,7 @@ def test_transformers_generator_from_pretrained_configures_bitsandbytes_quantiza
             return fake_model
 
     fake_transformers = SimpleNamespace(
+        __version__="5.12.1",
         AutoTokenizer=FakeAutoTokenizer,
         AutoModelForCausalLM=FakeAutoModelForCausalLM,
         BitsAndBytesConfig=FakeBitsAndBytesConfig,
@@ -512,7 +518,9 @@ def test_transformers_generator_from_pretrained_configures_bitsandbytes_quantiza
     generator = TransformersKVChunkGenerator.from_pretrained(
         TransformersKVGeneratorConfig(
             model_id="model-a",
+            model_revision="model-revision-a",
             tokenizer_id="tokenizer-a",
+            tokenizer_revision="tokenizer-revision-a",
             device="cuda",
             torch_dtype="bfloat16",
             quantization="bitsandbytes-4bit",
@@ -521,18 +529,63 @@ def test_transformers_generator_from_pretrained_configures_bitsandbytes_quantiza
     )
 
     assert isinstance(generator, TransformersKVChunkGenerator)
-    assert calls["tokenizer"] == ("tokenizer-a", {"trust_remote_code": False})
+    assert calls["tokenizer"] == (
+        "tokenizer-a",
+        {"revision": "tokenizer-revision-a", "trust_remote_code": False},
+    )
     model_id, model_kwargs = calls["model"]
     assert model_id == "model-a"
     assert model_kwargs["torch_dtype"] is torch.bfloat16
     assert model_kwargs["device_map"] == "cuda"
     assert model_kwargs["trust_remote_code"] is False
+    assert model_kwargs["revision"] == "model-revision-a"
     assert model_kwargs["quantization_config"].kwargs == {
         "load_in_4bit": True,
         "bnb_4bit_compute_dtype": torch.bfloat16,
     }
     assert fake_model.to_calls == []
     assert fake_model.eval_called is True
+    assert generator.model_id == "model-a"
+    assert generator.model_revision == "model-revision-a"
+    assert generator.tokenizer_id == "tokenizer-a"
+    assert generator.tokenizer_revision == "tokenizer-revision-a"
+    assert generator.generator_version == "5.12.1"
+
+
+@pytest.mark.parametrize(
+    ("config_kwargs", "message"),
+    [
+        (
+            {
+                "model_revision": "pinned-model",
+                "model_kwargs": {"revision": "other-model"},
+            },
+            "model_kwargs.revision conflicts",
+        ),
+        (
+            {
+                "tokenizer_revision": "pinned-tokenizer",
+                "tokenizer_kwargs": {"revision": "other-tokenizer"},
+            },
+            "tokenizer_kwargs.revision conflicts",
+        ),
+    ],
+)
+def test_transformers_generator_rejects_conflicting_pinned_revision(
+    monkeypatch,
+    config_kwargs,
+    message,
+):
+    monkeypatch.setattr(
+        public_transformers_generator,
+        "_transformers",
+        lambda: SimpleNamespace(__version__="5.12.1"),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        TransformersKVChunkGenerator.from_pretrained(
+            TransformersKVGeneratorConfig(**config_kwargs)
+        )
 
 
 def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch):
@@ -549,7 +602,12 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
         classmethod(fake_from_pretrained),
     )
     monkeypatch.setenv(CACHET_TRANSFORMERS_MODEL_ID_ENV, "model-a")
+    monkeypatch.setenv(CACHET_TRANSFORMERS_MODEL_REVISION_ENV, "model-revision-a")
     monkeypatch.setenv(CACHET_TRANSFORMERS_TOKENIZER_ID_ENV, "tokenizer-a")
+    monkeypatch.setenv(
+        CACHET_TRANSFORMERS_TOKENIZER_REVISION_ENV,
+        "tokenizer-revision-a",
+    )
     monkeypatch.setenv(CACHET_TRANSFORMERS_DEVICE_ENV, "cuda")
     monkeypatch.setenv(CACHET_TRANSFORMERS_TORCH_DTYPE_ENV, "bfloat16")
     monkeypatch.setenv(CACHET_TRANSFORMERS_TRUST_REMOTE_CODE_ENV, "false")
@@ -576,7 +634,9 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     assert layout is None
     assert isinstance(config, TransformersKVGeneratorConfig)
     assert config.model_id == "model-a"
+    assert config.model_revision == "model-revision-a"
     assert config.tokenizer_id == "tokenizer-a"
+    assert config.tokenizer_revision == "tokenizer-revision-a"
     assert config.device == "cuda"
     assert config.torch_dtype == "bfloat16"
     assert config.trust_remote_code is False

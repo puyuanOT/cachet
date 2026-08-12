@@ -29,7 +29,12 @@ return as a production dependency.
   compatibility identities.
 - `benchmark_plan.py` emits reproducible V1 dataset, benchmark, storage,
   native engine-probe, release-readiness sidecar, and release-evidence command
-  plans.
+  plans. Its local and Databricks command-plan path is deliberately closed to
+  the built-in V1 datasets and scorers; it does not import scorer plugins from
+  user-provided module paths. Custom datasets and scorers use the programmatic
+  `DatasetScorerRegistry` path through `run_openai_compatible_benchmark` and,
+  when creating handoffs, the `scorer_registry` argument to
+  `generate_benchmark_handoff_bundles`.
 - `benchmark_handoffs.py` generates per-row Cachet handoff bundles from
   prepared benchmark JSONL, builds fail-closed `(dataset, example_id)` handoff
   manifests, carries optional SGLang HiCache page-key proof, and attaches those
@@ -52,6 +57,10 @@ return as a production dependency.
 - `benchmarks.py` owns V1 dataset specs, prompt partitioning, cache-prefix
   request helpers, measurements, summaries, and baseline comparisons.
 - `cache.py` exposes CPU and local-disk cache tiers.
+- `canary_orchestration.py` prepares the fixed baseline/full-prefix/vanilla
+  representative matrix, verifies tokenizer-sized multi-document inputs and
+  handoff identities, and merges genuinely isolated arm results into canonical
+  sanitized benchmark evidence.
 - `databricks_engine_probe_job.py` emits a Databricks run payload for native
   vLLM/SGLang engine-probe evidence, including backend-specific delegate
   factory environment variables when generated target JSON asks built-in
@@ -62,6 +71,9 @@ return as a production dependency.
   including optional non-secret generator runtime environment variables and
   native-probe delegate environment variables for benchmark plans that use
   Cachet's built-in vLLM/SGLang probe factories.
+- `databricks_resource_ledger.py` maintains the closed, credential-free
+  120-cluster-hour reservation ledger used before representative Databricks
+  canary submissions and reconciles terminal actual duration afterward.
 - `databricks_runs.py` stages small DBFS artifacts, dry-runs or performs
   stage-and-submit for a generated payload with one provenance sidecar, and
   checks/summarizes Databricks runs using environment variables, static
@@ -70,7 +82,9 @@ return as a production dependency.
   when Databricks CLI/OAuth profiles carry transient static tokens. It also
   provides a non-mutating auth-check command for launch readiness without
   recording tokens or user details, plus a stage-and-submit preflight flag that
-  runs that check before DBFS uploads or run submission.
+  runs that check before DBFS uploads or run submission. Representative
+  canaries use its coupled reserve-and-submit path so the ledger digest and
+  exact Jobs API request bytes cannot diverge.
 - `databricks_storage_benchmark_job.py` owns standalone storage-reader
   benchmark run payloads.
 - `databricks_sglang_smoke_job.py` owns standalone Qwen3/SGLang live smoke run
@@ -81,7 +95,10 @@ return as a production dependency.
   and any non-latest runtime or resolver-held transitive dependency has an
   explicit compatibility reason.
 - `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and NIAH
-  normalization into canonical benchmark JSONL.
+  normalization into canonical benchmark JSONL. Its representative HotpotQA
+  command uses only the pinned Qwen tokenizer to select deterministic examples,
+  pad their logical prefill prompts to exactly 8,192 or 16,384 tokens, and emit
+  prompt-free digest provenance.
 - `engine.py` builds engine-ready payload handles from materialized KV.
 - `engine_adapters.py` defines the external vLLM/SGLang adapter handoff and
   native-probe descriptor contracts.
@@ -193,12 +210,14 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-benchmark-handoffs`
 - `document-kv-benchmark-handoff-manifest`
 - `document-kv-benchmark-handoff-bundles`
+- `document-kv-prepare-representative-hotpotqa`
 - `document-kv-native-probe-scaffold`
 - `document-kv-method-scaffold`
 - `document-kv-method-conformance`
 - `document-kv-run-benchmark-plan`
 - `document-kv-databricks-job`
 - `document-kv-databricks-runs`
+- `document-kv-databricks-resource-ledger`
 - `document-kv-storage-benchmark`
 - `document-kv-storage-benchmark-databricks-job`
 - `document-kv-templates`
@@ -228,12 +247,14 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-benchmark-handoffs`
 - `cachet-benchmark-handoff-manifest`
 - `cachet-benchmark-handoff-bundles`
+- `cachet-prepare-representative-hotpotqa`
 - `cachet-native-probe-scaffold`
 - `cachet-method-scaffold`
 - `cachet-method-conformance`
 - `cachet-run-benchmark-plan`
 - `cachet-databricks-job`
 - `cachet-databricks-runs`
+- `cachet-databricks-resource-ledger`
 - `cachet-storage-benchmark`
 - `cachet-storage-benchmark-databricks-job`
 - `cachet-templates`

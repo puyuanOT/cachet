@@ -51,15 +51,27 @@ jobs:
       - name: Install CPU PyTorch contract dependency
         run: poetry run python -m pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
 
-      - name: Lint method framework
+      - name: Lint framework contracts
         run: >-
           poetry run ruff check
           src/document_kv_cache/artifact_identity.py
           src/document_kv_cache/reuse_contract.py
           src/document_kv_cache/methods.py
+          src/document_kv_cache/_benchmark_models.py
+          src/document_kv_cache/_benchmark_manifest.py
+          src/document_kv_cache/_benchmark_records.py
+          src/document_kv_cache/benchmark_runner.py
           src/document_kv_cache/benchmark_metrics.py
           src/document_kv_cache/benchmark_statistics.py
           src/document_kv_cache/benchmark_gates.py
+          src/document_kv_cache/openai_compatible.py
+          src/document_kv_cache/_representative_hotpotqa.py
+          src/document_kv_cache/dataset_prep.py
+          src/document_kv_cache/canary_orchestration.py
+          src/document_kv_cache/databricks_resource_ledger.py
+          src/document_kv_cache/databricks_job.py
+          src/document_kv_cache/databricks_storage_benchmark_job.py
+          src/document_kv_cache/benchmark_plan_executor.py
           src/document_kv_cache/method_scaffold.py
           src/document_kv_cache/method_conformance.py
           src/document_kv_cache/reference_method.py
@@ -70,9 +82,21 @@ jobs:
           src/document_kv_cache/artifact_identity.py
           src/document_kv_cache/reuse_contract.py
           src/document_kv_cache/methods.py
+          src/document_kv_cache/_benchmark_models.py
+          src/document_kv_cache/_benchmark_manifest.py
+          src/document_kv_cache/_benchmark_records.py
+          src/document_kv_cache/benchmark_runner.py
           src/document_kv_cache/benchmark_metrics.py
           src/document_kv_cache/benchmark_statistics.py
           src/document_kv_cache/benchmark_gates.py
+          src/document_kv_cache/openai_compatible.py
+          src/document_kv_cache/_representative_hotpotqa.py
+          src/document_kv_cache/dataset_prep.py
+          src/document_kv_cache/canary_orchestration.py
+          src/document_kv_cache/databricks_resource_ledger.py
+          src/document_kv_cache/databricks_job.py
+          src/document_kv_cache/databricks_storage_benchmark_job.py
+          src/document_kv_cache/benchmark_plan_executor.py
           src/document_kv_cache/method_scaffold.py
           src/document_kv_cache/method_conformance.py
           src/document_kv_cache/reference_method.py

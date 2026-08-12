@@ -6,6 +6,12 @@ Qwen3-4B-Instruct, 4-bit-weight, Q8-document-KV configuration on vLLM and
 the Cachet document KV pages were prewarmed into vLLM prefix-cache state before
 the measured request loop.
 
+> **Evidence status: historical canary; provisional and
+> non-publication-qualified.** The compact summary is committed, but the
+> detailed measurements remain at private DBFS paths and there is no committed
+> passing publication-gate record. These values are retained for engineering
+> provenance, not as a released performance claim.
+
 ## Configuration
 
 | Field | Value |

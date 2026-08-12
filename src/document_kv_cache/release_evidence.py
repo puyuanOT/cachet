@@ -20,7 +20,22 @@ from document_kv_cache.benchmarks import (
     answer_found as _benchmark_answer_found,
     exact_match as _benchmark_exact_match,
 )
-from document_kv_cache.benchmark_runner import BENCHMARK_RUN_RECORD_TYPE
+from document_kv_cache.benchmark_runner import (
+    BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE,
+    BENCHMARK_RUN_RECORD_TYPE,
+    benchmark_record_payload_digest,
+    benchmark_record_aggregate_issues,
+    benchmark_run_result_from_record,
+)
+from document_kv_cache._benchmark_records import sanitized_measurement_metadata_issues
+from document_kv_cache.benchmark_gates import (
+    BENCHMARK_EVIDENCE_GATE_RECORD_TYPE,
+    CACHE_STATE_ATTESTATION_RECORD_TYPE,
+    CacheStateAttestation,
+    benchmark_evidence_gate_to_record,
+    evaluate_benchmark_evidence_gate,
+)
+from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmark_metrics import aggregate_decode_tokens_per_second
 from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
@@ -41,6 +56,7 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
 from document_kv_cache.model_profiles import get_model_profile
+from document_kv_cache.methods import MethodRegistry
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage import is_real_uc_volume_root, local_path
@@ -77,6 +93,7 @@ SGLANG_LIVE_V1_BENCHMARK_SCOPE = "live_v1_release"
 REQUIRED_ENGINE_PROBE_BACKENDS = tuple(backend.value for backend in ServingBackend)
 RELEASE_EVIDENCE_ARTIFACT_ROLES = (
     "v1_benchmark",
+    "benchmark_evidence_gate",
     "storage_benchmark",
     "engine_probe",
     "engine_connector_actions",
@@ -237,14 +254,26 @@ def evaluate_release_evidence(
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     artifact_sources: Sequence[ReleaseEvidenceArtifactSource] = (),
+    benchmark_evidence_gate_record: Mapping[str, Any] | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> ReleaseEvidence:
     required_backends = _validated_required_backends(required_engine_probe_backends)
     required_action_backends = _validated_required_backends(required_engine_action_backends)
     artifact_source_tuple = _validated_artifact_sources(artifact_sources)
     issues: list[str] = []
-    v1_issues = _v1_benchmark_issues(v1_benchmark_record)
+    if method_registry is not None and not isinstance(method_registry, MethodRegistry):
+        raise TypeError("method_registry must be a MethodRegistry or None")
+    v1_issues = _v1_benchmark_issues(
+        v1_benchmark_record,
+        method_registry=method_registry,
+    )
+    gate_issues = _standalone_benchmark_gate_issues(
+        v1_benchmark_record,
+        benchmark_evidence_gate_record,
+    )
     storage_issues = _storage_benchmark_issues(storage_benchmark_record)
     issues.extend(v1_issues)
+    issues.extend(gate_issues)
     issues.extend(storage_issues)
 
     probe_backends, invalid_probe_records, duplicate_probe_backends, valid_probe_records = _engine_probe_evidence(
@@ -272,7 +301,7 @@ def evaluate_release_evidence(
     issues.extend(f"invalid engine action record: {issue}" for issue in invalid_action_records)
 
     return ReleaseEvidence(
-        v1_benchmark_ok=not v1_issues,
+        v1_benchmark_ok=not v1_issues and not gate_issues,
         storage_benchmark_ok=not storage_issues,
         engine_probe_backends=probe_backends,
         missing_engine_probe_backends=missing_probe_backends,
@@ -293,16 +322,25 @@ def evaluate_release_evidence_files(
     storage_benchmark_json: str | Path,
     engine_probe_jsons: Sequence[str | Path] = (),
     engine_actions_jsons: Sequence[str | Path] = (),
+    benchmark_evidence_gate_json: str | Path | None = None,
+    method_registry: MethodRegistry | None = None,
 ) -> ReleaseEvidence:
     v1_record = _read_json_record(v1_benchmark_json)
     storage_record = _read_json_record(storage_benchmark_json)
     engine_probe_records = tuple(_read_json_record(path) for path in engine_probe_jsons)
     engine_action_records = tuple(_read_json_record(path) for path in engine_actions_jsons)
+    gate_record = (
+        _read_json_record(benchmark_evidence_gate_json)
+        if benchmark_evidence_gate_json is not None
+        else None
+    )
     return evaluate_release_evidence(
         v1_record,
         storage_record,
         engine_probe_records=engine_probe_records,
         engine_action_records=engine_action_records,
+        benchmark_evidence_gate_record=gate_record,
+        method_registry=method_registry,
         artifact_sources=_artifact_sources_for_records(
             v1_benchmark_json=v1_benchmark_json,
             v1_record=v1_record,
@@ -312,6 +350,8 @@ def evaluate_release_evidence_files(
             engine_probe_records=engine_probe_records,
             engine_actions_jsons=engine_actions_jsons,
             engine_action_records=engine_action_records,
+            benchmark_evidence_gate_json=benchmark_evidence_gate_json,
+            benchmark_evidence_gate_record=gate_record,
         ),
     )
 
@@ -324,6 +364,7 @@ def inspect_release_evidence_input_files(
     engine_actions_jsons: Sequence[str | Path] = (),
     required_engine_probe_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
     required_engine_action_backends: Sequence[str] = REQUIRED_ENGINE_PROBE_BACKENDS,
+    benchmark_evidence_gate_json: str | Path | None = None,
 ) -> ReleaseEvidenceInputStatus:
     required_backends = _validated_required_backends(required_engine_probe_backends)
     required_action_backends = _validated_required_backends(required_engine_action_backends)
@@ -331,6 +372,13 @@ def inspect_release_evidence_input_files(
         _inspect_release_evidence_input_file("v1_benchmark", v1_benchmark_json),
         _inspect_release_evidence_input_file("storage_benchmark", storage_benchmark_json),
     ]
+    if benchmark_evidence_gate_json is not None:
+        input_files.append(
+            _inspect_release_evidence_input_file(
+                "benchmark_evidence_gate",
+                benchmark_evidence_gate_json,
+            )
+        )
     input_files.extend(_inspect_release_evidence_input_file("engine_probe", path) for path in engine_probe_jsons)
     input_files.extend(
         _inspect_release_evidence_input_file("engine_connector_actions", path)
@@ -443,6 +491,8 @@ def _artifact_sources_for_records(
     engine_probe_records: Sequence[Mapping[str, Any]],
     engine_actions_jsons: Sequence[str | Path],
     engine_action_records: Sequence[Mapping[str, Any]],
+    benchmark_evidence_gate_json: str | Path | None,
+    benchmark_evidence_gate_record: Mapping[str, Any] | None,
 ) -> tuple[ReleaseEvidenceArtifactSource, ...]:
     sources = [
         ReleaseEvidenceArtifactSource(
@@ -458,6 +508,20 @@ def _artifact_sources_for_records(
             **_artifact_source_fingerprint(storage_benchmark_json),
         ),
     ]
+    if (
+        benchmark_evidence_gate_json is not None
+        and benchmark_evidence_gate_record is not None
+    ):
+        sources.append(
+            ReleaseEvidenceArtifactSource(
+                role="benchmark_evidence_gate",
+                path=str(benchmark_evidence_gate_json),
+                record_type=_optional_str(
+                    benchmark_evidence_gate_record.get("record_type")
+                ),
+                **_artifact_source_fingerprint(benchmark_evidence_gate_json),
+            )
+        )
     for path, record in zip(engine_probe_jsons, engine_probe_records, strict=True):
         sources.append(
             ReleaseEvidenceArtifactSource(
@@ -568,6 +632,8 @@ def _expected_record_type_for_role(role: str) -> str:
         return BENCHMARK_RUN_RECORD_TYPE
     if role == "storage_benchmark":
         return STORAGE_BENCHMARK_RECORD_TYPE
+    if role == "benchmark_evidence_gate":
+        return BENCHMARK_EVIDENCE_GATE_RECORD_TYPE
     if role == "engine_probe":
         return ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE
     if role == "engine_connector_actions":
@@ -592,7 +658,528 @@ def _is_sha256_hex_digest(value: Any) -> bool:
     )
 
 
-def _v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
+def _reject_unknown_fields(
+    record: Mapping[str, Any],
+    allowed: set[str],
+    label: str,
+    issues: list[str],
+) -> None:
+    unknown = sorted(set(record).difference(allowed))
+    if unknown:
+        issues.append(f"{label} has unknown fields: {unknown}")
+
+
+def _validate_manifest_comparison_contract(
+    comparison: Mapping[str, Any],
+    arms: Sequence[Mapping[str, Any]],
+    issues: list[str],
+) -> None:
+    mode = comparison.get("mode")
+    varied_setting = comparison.get("varied_setting")
+    if mode == "methods_same_setting":
+        if varied_setting not in (None, ""):
+            issues.append(
+                "methods_same_setting comparison must not declare varied_setting"
+            )
+        if any(arm.get("setting_overrides") not in ({}, None) for arm in arms):
+            issues.append(
+                "methods_same_setting arms must not declare setting_overrides"
+            )
+        return
+    if mode != "single_method_setting_variation":
+        issues.append("experiment_manifest comparison mode is unsupported")
+        return
+    if not isinstance(varied_setting, str) or not varied_setting:
+        issues.append("setting-variation comparison requires varied_setting")
+        return
+    methods = {arm.get("method_id") for arm in arms}
+    if None in methods or "" in methods or len(methods) != 1:
+        issues.append("setting-variation arms must share one non-empty method_id")
+    reference_arm_id = comparison.get(
+        "reference_arm_id",
+        comparison.get("baseline_arm_id"),
+    )
+    reference = next(
+        (arm for arm in arms if arm.get("arm_id") == reference_arm_id),
+        None,
+    )
+    invariant_fields = (
+        "implementation_kind",
+        "uses_cache",
+        "method_id",
+        "method_version",
+        "method_config_digest",
+        "connector_mode",
+        "requires_cachet_handoff",
+        "scorer_plugin_path",
+        "source_revision",
+    )
+    if reference is not None:
+        for arm in arms:
+            if arm is reference:
+                continue
+            differences = [
+                field_name
+                for field_name in invariant_fields
+                if arm.get(field_name) != reference.get(field_name)
+            ]
+            reference_transform = reference.get("physical_transform")
+            arm_transform = arm.get("physical_transform")
+            for field_name in (
+                "transform_id",
+                "version",
+                "declared_config_digest",
+            ):
+                reference_value = (
+                    reference_transform.get(field_name)
+                    if isinstance(reference_transform, Mapping)
+                    else None
+                )
+                arm_value = (
+                    arm_transform.get(field_name)
+                    if isinstance(arm_transform, Mapping)
+                    else None
+                )
+                if arm_value != reference_value:
+                    differences.append(f"physical_transform.{field_name}")
+            if (
+                varied_setting != "model_quantization"
+                and arm.get("checkpoint_identity")
+                != reference.get("checkpoint_identity")
+            ):
+                differences.append("checkpoint_identity")
+            if varied_setting != "serving_platform":
+                reference_customization = reference.get("request_customization")
+                arm_customization = arm.get("request_customization")
+                reference_digest = (
+                    reference_customization.get("config_digest")
+                    if isinstance(reference_customization, Mapping)
+                    else None
+                )
+                arm_digest = (
+                    arm_customization.get("config_digest")
+                    if isinstance(arm_customization, Mapping)
+                    else None
+                )
+                if arm_digest != reference_digest:
+                    differences.append("request_customization.config_digest")
+            if differences:
+                issues.append(
+                    "setting-variation arm "
+                    f"{arm.get('arm_id')!r} changes invariant method or "
+                    f"implementation fields: {sorted(differences)}"
+                )
+    varied_values: list[str] = []
+    for arm in arms:
+        overrides = arm.get("setting_overrides")
+        if not isinstance(overrides, Mapping) or set(overrides) != {varied_setting}:
+            issues.append(
+                f"setting-variation arm {arm.get('arm_id')!r} must declare exactly "
+                f"setting_overrides.{varied_setting}"
+            )
+            continue
+        varied_values.append(
+            json.dumps(
+                overrides[varied_setting],
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+    if len(varied_values) == len(arms) and len(set(varied_values)) != len(arms):
+        issues.append("setting-variation arms must declare distinct setting values")
+
+
+def _manifest_benchmark_issues(
+    record: Mapping[str, Any],
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> tuple[str, ...]:
+    """Validate the generalized N-way record without applying legacy V1 arm rules."""
+
+    issues: list[str] = []
+    if record.get("record_type") != BENCHMARK_RUN_RECORD_TYPE:
+        issues.append(f"benchmark record_type must be {BENCHMARK_RUN_RECORD_TYPE!r}")
+    manifest = _mapping_or_issue(record, "experiment_manifest", issues)
+    suite = _mapping_or_issue(record, "suite", issues)
+    gate = _mapping_or_issue(record, "evidence_gate", issues)
+    measurements = _sequence_or_issue(record, "measurements", issues)
+    report_rows = _sequence_or_issue(record, "report_rows", issues)
+    comparisons = _sequence_or_issue(record, "comparisons", issues)
+    if manifest is None:
+        return tuple(issues)
+    if record.get("evidence_sanitized") is not True:
+        issues.append("publication benchmark record must use sanitized evidence serialization")
+    _reject_unknown_fields(
+        manifest,
+        {
+            "record_type",
+            "manifest_version",
+            "experiment_id",
+            "comparison",
+            "logical_workload",
+            "decoding",
+            "model_runtime",
+            "environment",
+            "execution",
+            "arms",
+            "has_unresolved_provenance",
+        },
+        "experiment_manifest",
+        issues,
+    )
+    if manifest.get("record_type") != BENCHMARK_EXPERIMENT_MANIFEST_RECORD_TYPE:
+        issues.append("experiment_manifest has an unsupported record_type")
+    if manifest.get("manifest_version") != 1:
+        issues.append("experiment_manifest manifest_version must be 1")
+    workload = _mapping_or_issue(manifest, "logical_workload", issues)
+    comparison = _mapping_or_issue(manifest, "comparison", issues)
+    arms = _sequence_or_issue(manifest, "arms", issues)
+    if workload is not None:
+        _reject_unknown_fields(
+            workload,
+            {
+                "sample_selection_digest",
+                "dataset_sample_digests",
+                "datasets",
+                "example_count",
+                "complete_dataset_split",
+                "measurement_scopes",
+                "prompt_template_version",
+                "input_tokens_target",
+                "output_tokens_target",
+                "scorers",
+            },
+            "experiment_manifest.logical_workload",
+            issues,
+        )
+        if not _is_sha256_hex_digest(workload.get("sample_selection_digest")):
+            issues.append("experiment_manifest sample_selection_digest must be SHA-256")
+        scopes = workload.get("measurement_scopes")
+        if (
+            not isinstance(scopes, Sequence)
+            or isinstance(scopes, (str, bytes, bytearray))
+            or not scopes
+            or any(scope not in {"latency", "quality", "resource"} for scope in scopes)
+            or len(set(scopes)) != len(scopes)
+        ):
+            issues.append("experiment_manifest measurement_scopes are invalid")
+        dataset_digests = workload.get("dataset_sample_digests")
+        if not isinstance(dataset_digests, Mapping) or any(
+            not isinstance(dataset, str)
+            or not dataset
+            or not _is_sha256_hex_digest(digest)
+            for dataset, digest in (
+                dataset_digests.items() if isinstance(dataset_digests, Mapping) else ()
+            )
+        ):
+            issues.append("experiment_manifest dataset_sample_digests are invalid")
+    baseline_arm_id = comparison.get("baseline_arm_id") if comparison is not None else None
+    if comparison is not None:
+        _reject_unknown_fields(
+            comparison,
+            {"mode", "varied_setting", "baseline_arm_id", "reference_arm_id"},
+            "experiment_manifest.comparison",
+            issues,
+        )
+        if comparison.get("reference_arm_id", baseline_arm_id) != baseline_arm_id:
+            issues.append(
+                "experiment_manifest comparison reference_arm_id must match baseline_arm_id"
+            )
+    if not isinstance(baseline_arm_id, str) or not baseline_arm_id:
+        issues.append("experiment_manifest comparison.baseline_arm_id must be non-empty")
+    arm_ids: list[str] = []
+    comparison_arm_ids: set[str] = set()
+    if arms is not None:
+        for index, item in enumerate(arms):
+            if not isinstance(item, Mapping):
+                issues.append(f"experiment_manifest arms[{index}] must be an object")
+                continue
+            arm_id = item.get("arm_id")
+            if not isinstance(arm_id, str) or not arm_id:
+                issues.append(f"experiment_manifest arms[{index}].arm_id is invalid")
+                continue
+            arm_ids.append(arm_id)
+            _reject_unknown_fields(
+                item,
+                {
+                    "arm_id",
+                    "implementation_kind",
+                    "uses_cache",
+                    "requires_cachet_handoff",
+                    "method_id",
+                    "method_version",
+                    "method_config_digest",
+                    "artifact_ids",
+                    "variant_id",
+                    "connector_mode",
+                    "physical_transform",
+                    "request_customization",
+                    "scorer_plugin_path",
+                    "source_revision",
+                    "checkpoint_identity",
+                    "setting_overrides",
+                    "runtime_environment",
+                    "offline_costs",
+                },
+                f"experiment_manifest.arms[{index}]",
+                issues,
+            )
+            physical = item.get("physical_transform")
+            if (
+                not isinstance(physical, Mapping)
+                or not _is_sha256_hex_digest(physical.get("config_digest"))
+            ):
+                issues.append(f"experiment_manifest arm {arm_id!r} has invalid physical transform")
+            request_customization = item.get("request_customization")
+            if not isinstance(request_customization, Mapping):
+                issues.append(
+                    f"experiment_manifest arm {arm_id!r} is missing request customization identity"
+                )
+            else:
+                _reject_unknown_fields(
+                    request_customization,
+                    {"config_digest"},
+                    f"experiment_manifest.arms[{index}].request_customization",
+                    issues,
+                )
+                if not _is_sha256_hex_digest(
+                    request_customization.get("config_digest")
+                ):
+                    issues.append(
+                        f"experiment_manifest arm {arm_id!r} has invalid request customization identity"
+                    )
+        if len(set(arm_ids)) != len(arm_ids):
+            issues.append("experiment_manifest arm ids must be distinct")
+        if baseline_arm_id not in arm_ids:
+            issues.append("experiment_manifest baseline arm is not declared")
+        comparison_arm_ids = set(arm_ids).difference({baseline_arm_id})
+        if comparison is not None:
+            _validate_manifest_comparison_contract(
+                comparison,
+                tuple(item for item in arms if isinstance(item, Mapping)),
+                issues,
+            )
+    if suite is not None:
+        suite_arms = suite.get("arms")
+        suite_arm_ids = {
+            item.get("arm_id")
+            for item in suite_arms
+            if isinstance(suite_arms, Sequence) and isinstance(item, Mapping)
+        } if isinstance(suite_arms, Sequence) else set()
+        if suite_arm_ids != set(arm_ids):
+            issues.append("suite arms do not match experiment_manifest arms")
+        if workload is not None and suite.get("examples") != workload.get("example_count"):
+            issues.append("suite example count does not match experiment_manifest")
+    if gate is not None:
+        if gate.get("record_type") != BENCHMARK_EVIDENCE_GATE_RECORD_TYPE:
+            issues.append("evidence_gate has an unsupported record_type")
+        if gate.get("policy") != "publication":
+            issues.append("release evidence requires a publication gate")
+        if gate.get("ok") is not True:
+            gate_issues = gate.get("issues")
+            if isinstance(gate_issues, Sequence) and not isinstance(
+                gate_issues, (str, bytes, bytearray)
+            ):
+                issues.extend(f"publication gate: {issue}" for issue in gate_issues)
+            else:
+                issues.append("publication gate did not pass")
+        expected_payload_digest = benchmark_record_payload_digest(record)
+        if gate.get("benchmark_payload_digest") != expected_payload_digest:
+            issues.append(
+                "evidence_gate benchmark_payload_digest does not match the benchmark payload"
+            )
+    if measurements is not None:
+        observed_keys: dict[tuple[str, str, int], set[str]] = {}
+        logical_digests: dict[tuple[str, str, int], set[str]] = {}
+        for index, measurement in enumerate(measurements):
+            if not isinstance(measurement, Mapping):
+                issues.append(f"measurements[{index}] must be an object")
+                continue
+            arm_id = measurement.get("arm_id")
+            if arm_id not in set(arm_ids):
+                issues.append(f"measurements[{index}] references an unknown arm")
+                continue
+            dataset = measurement.get("dataset")
+            example_id = measurement.get("example_id")
+            repeat_index = measurement.get("repeat_index")
+            if not isinstance(dataset, str) or not isinstance(example_id, str) or not _is_positive_int(repeat_index):
+                issues.append(f"measurements[{index}] has an invalid logical pair key")
+                continue
+            key = (dataset, example_id, repeat_index)
+            observed_keys.setdefault(key, set()).add(arm_id)
+            metadata = measurement.get("metadata")
+            for metadata_issue in sanitized_measurement_metadata_issues(metadata):
+                issues.append(f"measurements[{index}] {metadata_issue}")
+            if measurement.get("output_text") != "":
+                issues.append(
+                    f"measurements[{index}] sanitized output_text must be empty"
+                )
+            if measurement.get("expected_answer") is not None:
+                issues.append(
+                    f"measurements[{index}] sanitized expected_answer must be null"
+                )
+            references = measurement.get("references")
+            if not isinstance(references, Sequence) or isinstance(
+                references,
+                (str, bytes, bytearray),
+            ) or references:
+                issues.append(
+                    f"measurements[{index}] sanitized references must be empty"
+                )
+            if measurement.get("error") not in {None, "redacted"}:
+                issues.append(
+                    f"measurements[{index}] sanitized error must be null or redacted"
+                )
+            request_id = measurement.get("request_id")
+            if request_id not in {None, ""} and not _is_sha256_hex_digest(request_id):
+                issues.append(
+                    f"measurements[{index}] sanitized request_id must be SHA-256"
+                )
+            digest = metadata.get("logical_prompt_sha256") if isinstance(metadata, Mapping) else None
+            if not _is_sha256_hex_digest(digest):
+                issues.append(f"measurements[{index}] is missing logical prompt identity")
+            else:
+                logical_digests.setdefault(key, set()).add(digest)
+        expected_arms = set(arm_ids)
+        for key, observed_arms in observed_keys.items():
+            if observed_arms != expected_arms:
+                issues.append(f"logical pair {key} does not contain every declared arm")
+            if len(logical_digests.get(key, ())) != 1:
+                issues.append(f"logical pair {key} changes across physical arms")
+    if report_rows is not None:
+        report_keys = [
+            (row.get("dataset"), row.get("arm_id"))
+            for row in report_rows
+            if isinstance(row, Mapping)
+        ]
+        if len(set(report_keys)) != len(report_keys):
+            issues.append("report_rows contain duplicate dataset/arm rows")
+        if any(arm_id not in set(arm_ids) for _dataset, arm_id in report_keys):
+            issues.append("report_rows reference unknown arms")
+    if comparisons is not None:
+        for index, comparison_row in enumerate(comparisons):
+            if not isinstance(comparison_row, Mapping):
+                issues.append(f"comparisons[{index}] must be an object")
+                continue
+            if comparison_row.get("baseline_arm_id") != baseline_arm_id:
+                issues.append(f"comparisons[{index}] uses a different baseline")
+            if comparison_row.get("cache_arm_id") not in comparison_arm_ids:
+                issues.append(f"comparisons[{index}] references an unknown comparison arm")
+    issues.extend(benchmark_record_aggregate_issues(record))
+    if gate is not None:
+        try:
+            identities, attestations = _benchmark_gate_inputs(record)
+            reconstructed = benchmark_run_result_from_record(
+                record,
+                evidence_policy="publication",
+            )
+            expected_gate = benchmark_evidence_gate_to_record(
+                evaluate_benchmark_evidence_gate(
+                    reconstructed,
+                    policy="publication",
+                    artifact_identities=identities,
+                    cache_state_attestations=attestations,
+                    method_registry=method_registry,
+                    benchmark_payload_digest=benchmark_record_payload_digest(record),
+                )
+            )
+            if gate != expected_gate:
+                issues.append(
+                    "evidence_gate does not match recomputed publication evidence"
+                )
+        except (TypeError, ValueError) as exc:
+            issues.append(f"publication evidence gate cannot be recomputed: {exc}")
+    return tuple(issues)
+
+
+def _benchmark_gate_inputs(
+    record: Mapping[str, Any],
+) -> tuple[dict[str, ArtifactIdentity], tuple[CacheStateAttestation, ...]]:
+    raw_inputs = record.get("gate_inputs")
+    if raw_inputs is None:
+        raw_inputs = {
+            "artifact_identities": (),
+            "cache_state_attestations": (),
+        }
+    if not isinstance(raw_inputs, Mapping):
+        raise ValueError("gate_inputs must be an object")
+    raw_identities = raw_inputs.get("artifact_identities", ())
+    raw_attestations = raw_inputs.get("cache_state_attestations", ())
+    if not isinstance(raw_identities, Sequence) or isinstance(
+        raw_identities,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("gate_inputs.artifact_identities must be an array")
+    if not isinstance(raw_attestations, Sequence) or isinstance(
+        raw_attestations,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("gate_inputs.cache_state_attestations must be an array")
+    identities: dict[str, ArtifactIdentity] = {}
+    for raw_identity in raw_identities:
+        if not isinstance(raw_identity, Mapping):
+            raise ValueError("artifact identity descriptor must be an object")
+        identity = ArtifactIdentity.from_record(raw_identity)
+        if identity.artifact_id in identities:
+            raise ValueError("gate_inputs contains a duplicate artifact identity")
+        identities[identity.artifact_id] = identity
+    attestations: list[CacheStateAttestation] = []
+    for raw_attestation in raw_attestations:
+        if not isinstance(raw_attestation, Mapping):
+            raise ValueError("cache-state attestation must be an object")
+        if raw_attestation.get("record_type") != CACHE_STATE_ATTESTATION_RECORD_TYPE:
+            raise ValueError("cache-state attestation has an unsupported record_type")
+        if not _is_sha256_hex_digest(raw_attestation.get("request_id")):
+            raise ValueError(
+                "sanitized cache-state attestation request_id must be SHA-256"
+            )
+        if raw_attestation.get("source") not in {"disk", "file", "local_path", "uri"}:
+            raise ValueError("cache-state attestation source must be a safe source kind")
+        values = {
+            key: value
+            for key, value in raw_attestation.items()
+            if key not in {"record_type", "cold_read_attested"}
+        }
+        attestations.append(CacheStateAttestation(**values))
+    return identities, tuple(attestations)
+
+
+def _standalone_benchmark_gate_issues(
+    benchmark_record: Mapping[str, Any],
+    gate_record: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    if not isinstance(benchmark_record.get("experiment_manifest"), Mapping):
+        return ()
+    if gate_record is None:
+        return ("manifest benchmark release requires a standalone evidence gate",)
+    issues: list[str] = []
+    if gate_record.get("record_type") != BENCHMARK_EVIDENCE_GATE_RECORD_TYPE:
+        issues.append("standalone evidence gate has an unsupported record_type")
+    if gate_record.get("policy") != "publication":
+        issues.append("standalone release evidence gate must use publication policy")
+    if gate_record.get("ok") is not True:
+        issues.append("standalone release evidence gate did not pass")
+    expected_payload_digest = benchmark_record_payload_digest(benchmark_record)
+    if gate_record.get("benchmark_payload_digest") != expected_payload_digest:
+        issues.append(
+            "standalone evidence gate benchmark_payload_digest does not match the benchmark payload"
+        )
+    embedded = benchmark_record.get("evidence_gate")
+    if gate_record != embedded:
+        issues.append("standalone evidence gate does not match the benchmark record")
+    return tuple(issues)
+
+
+def _v1_benchmark_issues(
+    record: Mapping[str, Any],
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> tuple[str, ...]:
+    if isinstance(record.get("experiment_manifest"), Mapping):
+        return _manifest_benchmark_issues(
+            record,
+            method_registry=method_registry,
+        )
     issues: list[str] = []
     if record.get("record_type") != BENCHMARK_RUN_RECORD_TYPE:
         issues.append(f"v1 benchmark record_type must be {BENCHMARK_RUN_RECORD_TYPE!r}")
@@ -2299,6 +2886,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate Document KV Cache release evidence JSON artifacts.")
     parser.add_argument("--v1-benchmark-json", required=True)
     parser.add_argument("--storage-benchmark-json", required=True)
+    parser.add_argument("--benchmark-evidence-gate-json")
     parser.add_argument("--engine-probe-json", action="append", default=[])
     parser.add_argument("--engine-actions-json", action="append", default=[])
     parser.add_argument("--output-json", help="Write the release evidence JSON to this path instead of stdout.")
@@ -2313,6 +2901,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 storage_benchmark_json=args.storage_benchmark_json,
                 engine_probe_jsons=tuple(args.engine_probe_json),
                 engine_actions_jsons=tuple(args.engine_actions_json),
+                benchmark_evidence_gate_json=args.benchmark_evidence_gate_json,
             )
             if args.preflight_output_json:
                 write_release_evidence_input_status_json(input_status, args.preflight_output_json)
@@ -2325,6 +2914,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             storage_benchmark_json=args.storage_benchmark_json,
             engine_probe_jsons=tuple(args.engine_probe_json),
             engine_actions_jsons=tuple(args.engine_actions_json),
+            benchmark_evidence_gate_json=args.benchmark_evidence_gate_json,
         )
         if args.output_json:
             write_release_evidence_json(evidence, args.output_json)

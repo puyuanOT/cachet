@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pickle
@@ -7,8 +8,11 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 from document_kv_cache.benchmark_handoffs import generate_benchmark_handoff_bundles
+from document_kv_cache.artifact_identity import TokenContract
+from document_kv_cache.cache import ChunkCache
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
+    RuntimeOperationSupport,
     build_engine_adapter_request,
     build_engine_kv_connector_actions,
     build_engine_kv_injection_plan,
@@ -17,9 +21,29 @@ from document_kv_cache.engine_adapters import (
     vllm_adapter_spec,
     view_engine_adapter_payload,
 )
+from document_kv_cache.reuse_contract import (
+    ArtifactEncoding,
+    PACKED_Q4_ARTIFACT_FORMAT,
+    PayloadDecodeStage,
+    PositionHandling,
+    RuntimeOperationDescriptor,
+    RuntimeOperationHandlerRegistry,
+    RuntimeOperationPhase,
+    RuntimeOperationResult,
+    runtime_operation_config_digest,
+)
 from document_kv_cache.engine_probe import write_engine_adapter_handoff_bundle
 from document_kv_cache.kvpack import PackChunk
-from document_kv_cache.models import KVCacheKey
+from document_kv_cache.manifest import InMemoryManifestStore
+from document_kv_cache.materializer import KVMaterializer
+from document_kv_cache.methods import MethodRegistry, MethodSpec
+from document_kv_cache.models import DocumentKVRequest, KVCacheKey
+from document_kv_cache.storage import DiskRangeReader
+from document_kv_cache.workflow import (
+    CacheBuildConfig,
+    DocumentKVWorkflow,
+    SourceDocument,
+)
 from vllm_kv_injection.protocol import KVCacheHandle, KVLayout, KVSegment
 from vllm_kv_injection.vllm_dynamic_connector import (
     DOCUMENT_KV_PROVIDER_FACTORY_CONFIG_KEY,
@@ -30,9 +54,11 @@ import vllm_kv_injection.vllm_native_provider as vllm_native_provider
 import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
+    DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
     DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+    DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
@@ -208,6 +234,92 @@ def _handoff_load_from_ready_request(request: EngineReadyRequest) -> DocumentKVH
     return DocumentKVHandoffLoad(actions=actions, payload=request.payload)
 
 
+def _packed_handoff_load(
+    *,
+    encoded: bytes,
+    descriptor: RuntimeOperationDescriptor,
+):
+    if len(encoded) < 2:
+        raise ValueError("packed provider fixture requires at least two bytes")
+    base = handoff_load()
+    first_length = len(encoded) // 2
+    second_length = len(encoded) - first_length
+    method = MethodSpec(
+        method="cpu_packed_provider_fixture",
+        display_name="CPU packed provider fixture",
+        arm_id="document_kv_cache",
+        connector_mode="cachet",
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        description="CPU-only provider boundary fixture.",
+        generator_factory="fixture:generator",
+        artifact_format=PACKED_Q4_ARTIFACT_FORMAT,
+        payload_decode_stage=PayloadDecodeStage.PROVIDER,
+        payload_decoder=descriptor,
+    )
+    method_registry = MethodRegistry().with_spec(method)
+    reuse_plan = method.reuse_plan()
+    first_copy, second_copy = base.actions.copies
+    actions = replace(
+        base.actions,
+        copies=(
+            replace(
+                first_copy,
+                source_byte_start=0,
+                source_byte_length=first_length,
+                global_byte_start=0,
+                global_byte_end=first_length,
+            ),
+            replace(
+                second_copy,
+                source_byte_start=first_length,
+                source_byte_length=second_length,
+                global_byte_start=first_length,
+                global_byte_end=len(encoded),
+            ),
+        ),
+        bind=replace(
+            base.actions.bind,
+            cache_method=method.method_id,
+            metadata={
+                **base.actions.bind.metadata,
+                "document_kv.total_bytes": str(len(encoded)),
+                "document_kv.cache_method": method.method_id,
+                "document_kv.reuse_capability_id": reuse_plan.capability_id,
+            },
+        ),
+        reuse_plan=reuse_plan,
+    )
+    spec = replace(
+        vllm_adapter_spec(),
+        supported_artifact_encodings=(
+            ArtifactEncoding.RAW_KV,
+            ArtifactEncoding.PACKED_Q4,
+        ),
+        supported_payload_decode_stages=(
+            PayloadDecodeStage.NONE,
+            PayloadDecodeStage.PROVIDER,
+        ),
+        supported_runtime_operations=(
+            RuntimeOperationSupport(
+                RuntimeOperationPhase.PAYLOAD_DECODE,
+                descriptor.strategy_id,
+                descriptor.version,
+            ),
+        ),
+    )
+    return (
+        DocumentKVHandoffLoad(
+            actions=actions,
+            payload=encoded,
+            method_registry=method_registry,
+        ),
+        spec,
+        method_registry,
+    )
+
+
 class StaticHandoffSource:
     def __init__(self, load: DocumentKVHandoffLoad | None) -> None:
         self.load = load
@@ -247,9 +359,58 @@ class TwoTokenBenchmarkGenerator:
                 document_id=document.document_id,
                 chunk_type=chunk.chunk_type,
                 chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(self.payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout()),
+                token_contract=TokenContract.from_token_ids(
+                    (1, 2),
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
             ),
             payload=self.payload,
             token_count=2,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class PackedPipelineGenerator:
+    """CPU-only encoded-artifact fixture with an authenticated identity."""
+
+    pre_rope = False
+    position_handling = PositionHandling.STORED_POST_ROPE
+
+    _PAYLOADS = {
+        "static": (b"pack", (1, 2)),
+        "chunk-a": (b"d", (3,)),
+    }
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        encoded, token_ids = self._PAYLOADS[chunk.chunk_id]
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(encoded).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout()),
+                token_contract=TokenContract.from_token_ids(
+                    token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
+            ),
+            payload=encoded,
+            token_count=len(token_ids),
             dtype=config.dtype,
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
@@ -320,6 +481,44 @@ def test_native_provider_records_matched_token_allocation_metadata():
         (5, 0, 2, 0),
     ]
     pickle.loads(pickle.dumps(meta))
+
+
+def test_native_provider_rejects_planned_method_before_payload_io(monkeypatch):
+    ready = ready_request()
+    adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
+    record = engine_adapter_request_to_record(adapter_request)
+    assert adapter_request.reuse_plan is not None
+    forged_plan = replace(adapter_request.reuse_plan, method_id="kv_packet")
+    record["reuse_plan"] = forged_plan.to_record()
+    record["handle"]["cache_method"] = "kv_packet"
+    record["metadata"]["document_kv.cache_method"] = "kv_packet"
+    record["metadata"][
+        "document_kv.reuse_capability_id"
+    ] = forged_plan.capability_id
+    payload_reads = []
+
+    def unexpected_payload_read(*args, **kwargs):
+        payload_reads.append((args, kwargs))
+        raise AssertionError("payload must not be read for a planned method")
+
+    monkeypatch.setattr(
+        vllm_native_provider,
+        "read_engine_adapter_payload",
+        unexpected_payload_read,
+    )
+    provider = DocumentKVNativeProvider()
+    request = SimpleNamespace(
+        request_id="req-1",
+        num_tokens=5,
+        kv_transfer_params={
+            DOCUMENT_KV_HANDOFF_RECORD_PARAM: record,
+            DOCUMENT_KV_PAYLOAD_URI_PARAM: "disk:/not-read/planned.kv",
+        },
+    )
+
+    with pytest.raises(ValueError, match="not a runnable registered Cachet method"):
+        provider.get_num_new_matched_tokens(request, 0)
+    assert payload_reads == []
 
 
 def test_native_provider_does_not_rematch_request_with_pending_allocation():
@@ -512,7 +711,368 @@ def test_native_provider_copies_materialized_payload_into_registered_paged_kv_la
     assert connector.take_events() == [{"event": "document_kv_loaded", "request_id": "req-1"}]
 
 
-def test_native_provider_loads_uri_payload_via_mmap_matches_inline(tmp_path):
+def test_native_provider_decodes_packed_payload_before_tensor_view_and_copy():
+    encoded = b"pkd-byts"
+    decoded = payload()
+    descriptor = RuntimeOperationDescriptor(
+        strategy_id="cpu-toy.vllm-decoder",
+        version="1",
+        config_digest=runtime_operation_config_digest({"codec": "fixture"}),
+    )
+    load, spec, method_registry = _packed_handoff_load(
+        encoded=encoded,
+        descriptor=descriptor,
+    )
+    calls = []
+
+    def decode(request):
+        calls.append(request)
+        assert request.payload == encoded
+        return RuntimeOperationResult(payload=decoded)
+
+    handlers = RuntimeOperationHandlerRegistry().with_handler(
+        RuntimeOperationPhase.PAYLOAD_DECODE,
+        descriptor,
+        decode,
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(load),
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    meta = connector.build_connector_meta(scheduler_output([5, 7]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert len(calls) == 1
+    assert torch.equal(
+        layer_0[5, :, 0],
+        torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8),
+    )
+    assert torch.equal(
+        layer_1[5, :, 1],
+        torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8),
+    )
+
+
+def test_strict_packed_artifact_pipeline_decodes_stored_bytes_before_cpu_copy(
+    tmp_path,
+):
+    descriptor = RuntimeOperationDescriptor(
+        strategy_id="cpu-toy.pipeline-decoder",
+        version="1",
+        config_digest=runtime_operation_config_digest({"codec": "fixture"}),
+    )
+    method = MethodSpec(
+        method="cpu_packed_fixture",
+        display_name="CPU packed fixture",
+        arm_id="document_kv_cache",
+        connector_mode="cachet",
+        pre_rope=False,
+        selective_recompute=False,
+        implemented=True,
+        description="CPU-only encoded artifact regression fixture.",
+        generator_factory="fixture:generator",
+        artifact_format=PACKED_Q4_ARTIFACT_FORMAT,
+        payload_decode_stage=PayloadDecodeStage.PROVIDER,
+        payload_decoder=descriptor,
+    )
+    method_registry = MethodRegistry().with_spec(method)
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(
+            cache=ChunkCache(cpu_max_bytes=4096),
+            reader=DiskRangeReader(),
+        ),
+        method_registry=method_registry,
+    )
+    config = CacheBuildConfig(
+        model_id=layout().model_id,
+        lora_id=layout().lora_id,
+        prompt_template_version="v1",
+        dtype="uint8",
+        runtime_kv_dtype=layout().dtype,
+        layout_version=layout().layout_version,
+        cache_method=method.method_id,
+        artifact_format_id=method.artifact_format.format_id,
+        artifact_format_version=method.artifact_format.version,
+    )
+    document = SourceDocument.from_texts(
+        document_id="doc-a",
+        static_text="two tokens",
+        chunks={"chunk-a": "one"},
+    )
+    generated = workflow.generate_cache(
+        documents=(document,),
+        generator=PackedPipelineGenerator(),
+        config=config,
+        shard_uri=tmp_path / "packed.kvpack",
+        align_bytes=1,
+    )
+    assert generated.artifact_identity is not None
+    request = DocumentKVRequest(
+        request_id="req-1",
+        task_id="cpu-packed",
+        model_id=layout().model_id,
+        lora_id=layout().lora_id,
+        prompt_template_version="v1",
+        document_chunks={"doc-a": ("chunk-a",)},
+        artifact_identity=generated.artifact_identity,
+    )
+    ready = workflow.prepare_for_engine(request, layout=layout())
+    assert ready.payload == b"packd"
+    assert ready.handle.total_bytes == 5
+    assert ready.handle.total_tokens == 3
+    assert ready.estimated_gpu_bytes == len(payload())
+    assert ready.handle.artifact_identity is not None
+    assert ready.handle.artifact_identity.kv_dtype == "uint8"
+    assert ready.handle.artifact_identity.runtime_kv_dtype == "int8"
+
+    spec = replace(
+        vllm_adapter_spec(),
+        supported_artifact_encodings=(
+            ArtifactEncoding.RAW_KV,
+            ArtifactEncoding.PACKED_Q4,
+        ),
+        supported_payload_decode_stages=(
+            PayloadDecodeStage.NONE,
+            PayloadDecodeStage.PROVIDER,
+        ),
+        supported_runtime_operations=(
+            RuntimeOperationSupport(
+                RuntimeOperationPhase.PAYLOAD_DECODE,
+                descriptor.strategy_id,
+                descriptor.version,
+            ),
+        ),
+    )
+    decode_calls = []
+
+    def decode(operation_request):
+        decode_calls.append(operation_request)
+        assert operation_request.payload == b"packd"
+        return RuntimeOperationResult(payload=payload())
+
+    handlers = RuntimeOperationHandlerRegistry().with_handler(
+        RuntimeOperationPhase.PAYLOAD_DECODE,
+        descriptor,
+        decode,
+    )
+    adapter_request = build_engine_adapter_request(
+        ready,
+        spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    record = engine_adapter_request_to_record(
+        adapter_request,
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    plan = build_engine_kv_injection_plan(
+        record,
+        require_external_payload_uri=False,
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    stored_payload = view_engine_adapter_payload(
+        record,
+        ready.payload,
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    actions = build_engine_kv_connector_actions(
+        plan,
+        stored_payload,
+        method_registry=method_registry,
+    )
+    load = DocumentKVHandoffLoad(
+        actions=actions,
+        payload=ready.payload,
+        method_registry=method_registry,
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(load),
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    connector = DocumentKVConnector(provider=provider)
+    runtime_request = SimpleNamespace(
+        request_id="req-1",
+        num_tokens=5,
+        prompt_token_ids=(1, 2, 3, 9, 9),
+        kv_transfer_params={},
+    )
+
+    assert connector.get_num_new_matched_tokens(runtime_request, 0) == (2, False)
+    connector.update_state_after_alloc(
+        runtime_request,
+        AllocatedBlocks([5, 7]),
+        2,
+    )
+    metadata = connector.build_connector_meta(scheduler_output([5, 7]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    connector.register_kv_caches({"layer.0": layer_0, "layer.1": layer_1})
+    connector.bind_connector_metadata(metadata)
+    connector.start_load_kv(SimpleNamespace())
+
+    assert len(decode_calls) == 1
+    assert torch.equal(
+        layer_0[5, :, 0],
+        torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8),
+    )
+    assert torch.equal(
+        layer_1[5, :, 1],
+        torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8),
+    )
+
+
+def test_strict_raw_generation_rejects_distinct_persisted_and_runtime_dtypes(
+    tmp_path,
+):
+    workflow = DocumentKVWorkflow(
+        manifest=InMemoryManifestStore(),
+        materializer=KVMaterializer(
+            cache=ChunkCache(cpu_max_bytes=4096),
+            reader=DiskRangeReader(),
+        ),
+    )
+    shard_path = tmp_path / "invalid-raw.kvpack"
+
+    with pytest.raises(
+        ValueError,
+        match="raw-KV generation requires persisted dtype",
+    ):
+        workflow.generate_cache(
+            documents=(
+                SourceDocument.from_texts(
+                    document_id="doc-a",
+                    static_text="two tokens",
+                    chunks={"chunk-a": "one"},
+                ),
+            ),
+            generator=PackedPipelineGenerator(),
+            config=CacheBuildConfig(
+                model_id=layout().model_id,
+                lora_id=layout().lora_id,
+                prompt_template_version="v1",
+                dtype="uint8",
+                runtime_kv_dtype="int8",
+                layout_version=layout().layout_version,
+            ),
+            shard_uri=shard_path,
+            align_bytes=1,
+        )
+
+    assert not shard_path.exists()
+
+
+def test_packed_cache_state_attestation_compares_physical_stored_bytes():
+    descriptor = RuntimeOperationDescriptor(
+        strategy_id="cpu-toy.telemetry-decoder",
+        version="1",
+        config_digest=runtime_operation_config_digest({"codec": "fixture"}),
+    )
+    handoff, spec, method_registry = _packed_handoff_load(
+        encoded=b"pkd-byts",
+        descriptor=descriptor,
+    )
+    handlers = RuntimeOperationHandlerRegistry().with_handler(
+        RuntimeOperationPhase.PAYLOAD_DECODE,
+        descriptor,
+        lambda request: RuntimeOperationResult(payload=payload()),
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(handoff),
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    assert provider.get_num_new_matched_tokens(request, 0) == (2, False)
+    provider.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 2)
+    load = provider.build_connector_meta(scheduler_output([5, 7])).loads[0]
+    observation = {
+        "source": "local_path",
+        "bytes_read": len(b"pkd-byts"),
+        "payload_cache_hit": False,
+        "eviction_requested": True,
+        "eviction_succeeded": True,
+        "direct_io": False,
+    }
+
+    attestation = vllm_native_provider._cache_state_attestation_record(
+        load,
+        cache_state_observation=observation,
+        successful=True,
+        decoded_runtime_bytes=len(payload()),
+    )
+
+    assert attestation["expected_bytes"] == len(b"pkd-byts")
+    assert attestation["expected_stored_bytes"] == len(b"pkd-byts")
+    assert attestation["expected_runtime_bytes"] == len(payload())
+    assert attestation["decoded_runtime_bytes"] == len(payload())
+    assert attestation["cold_read_attested"] is True
+    assert vllm_native_provider._cache_state_attestation_record(
+        load,
+        cache_state_observation={
+            **observation,
+            "bytes_read": len(payload()),
+        },
+        successful=True,
+        decoded_runtime_bytes=len(payload()),
+    )["cold_read_attested"] is False
+
+
+def test_native_provider_rejects_decoder_config_digest_mismatch_before_load():
+    descriptor = RuntimeOperationDescriptor(
+        strategy_id="cpu-toy.vllm-decoder",
+        version="1",
+        config_digest=runtime_operation_config_digest({"codec": "expected"}),
+    )
+    load, spec, method_registry = _packed_handoff_load(
+        encoded=b"pkd-byts",
+        descriptor=descriptor,
+    )
+    wrong_descriptor = replace(
+        descriptor,
+        config_digest=runtime_operation_config_digest({"codec": "wrong"}),
+    )
+    handlers = RuntimeOperationHandlerRegistry().with_handler(
+        RuntimeOperationPhase.PAYLOAD_DECODE,
+        wrong_descriptor,
+        lambda request: RuntimeOperationResult(payload=request.payload),
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(load),
+        adapter_spec=spec,
+        operation_handlers=handlers,
+        method_registry=method_registry,
+    )
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+
+    with pytest.raises(ValueError, match="configuration digest does not match"):
+        provider.get_num_new_matched_tokens(request, 0)
+
+
+def test_native_provider_loads_uri_payload_via_mmap_matches_inline(
+    tmp_path,
+    monkeypatch,
+):
     # The no-cache cold-hydrate path memory-maps the payload file (lazily) instead of
     # reading it into a bytes object. Loading from a file URI must inject exactly the
     # same KV values as the inline-bytes path.
@@ -521,6 +1081,18 @@ def test_native_provider_loads_uri_payload_via_mmap_matches_inline(tmp_path):
     inline = handoff_load()
     uri_load = DocumentKVHandoffLoad(actions=inline.actions, payload_uri=str(payload_path))
     telemetry_path = tmp_path / "telemetry.jsonl"
+    observed_memoryview: list[bool] = []
+    original_payload_tensor_view = vllm_native_provider._payload_tensor_view
+
+    def inspect_payload_tensor_view(raw_payload, load):
+        observed_memoryview.append(isinstance(raw_payload, memoryview))
+        return original_payload_tensor_view(raw_payload, load)
+
+    monkeypatch.setattr(
+        vllm_native_provider,
+        "_payload_tensor_view",
+        inspect_payload_tensor_view,
+    )
 
     provider = DocumentKVNativeProvider(
         source=StaticHandoffSource(uri_load),
@@ -544,6 +1116,7 @@ def test_native_provider_loads_uri_payload_via_mmap_matches_inline(tmp_path):
     assert torch.equal(layer_1[5, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
     assert torch.equal(layer_1[5, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+    assert observed_memoryview == [True]
 
 
 def test_native_provider_evicts_page_cache_before_mmap_when_enabled(tmp_path, monkeypatch):
@@ -852,6 +1425,9 @@ def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
         "eviction_succeeded": False,
         "direct_io": False,
         "expected_bytes": len(payload()),
+        "expected_stored_bytes": len(payload()),
+        "expected_runtime_bytes": len(payload()),
+        "decoded_runtime_bytes": len(payload()),
         "expected_tokens": 2,
         "loaded_tokens": 2,
         "successful_loads": 1,
@@ -1615,6 +2191,7 @@ def test_benchmark_handoff_bundle_feeds_vllm_native_provider_load_path(tmp_path)
     request = SimpleNamespace(
         request_id=runtime_request_id,
         num_tokens=3,
+        prompt_token_ids=(1, 2, 3),
         kv_transfer_params=entry.kv_transfer_params(),
     )
     layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
