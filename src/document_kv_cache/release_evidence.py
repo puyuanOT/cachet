@@ -35,7 +35,7 @@ from document_kv_cache.benchmark_gates import (
     benchmark_evidence_gate_to_record,
     evaluate_benchmark_evidence_gate,
 )
-from document_kv_cache.artifact_identity import ArtifactIdentity
+from document_kv_cache.artifact_identity import ArtifactIdentity, canonical_json_sha256
 from document_kv_cache.benchmark_metrics import aggregate_decode_tokens_per_second
 from document_kv_cache.canary_orchestration import (
     REPRESENTATIVE_CANARY_MODEL_ID,
@@ -72,6 +72,7 @@ __all__ = [
     "RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE",
     "SGLANG_LIVE_BENCHMARK_RECORD_TYPE",
     "SGLANG_LIVE_V1_BENCHMARK_SCOPE",
+    "SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE",
     "RELEASE_EVIDENCE_ARTIFACT_ROLES",
     "REQUIRED_ENGINE_PROBE_BACKENDS",
     "ReleaseEvidenceArtifactSource",
@@ -83,6 +84,8 @@ __all__ = [
     "inspect_release_evidence_input_files",
     "release_evidence_input_status_to_record",
     "release_evidence_to_record",
+    "sanitize_sglang_representative_canary_evidence",
+    "sglang_representative_canary_evidence_issues",
     "sglang_live_v1_benchmark_issues",
     "write_release_evidence_input_status_json",
     "write_release_evidence_json",
@@ -94,6 +97,9 @@ RELEASE_EVIDENCE_RECORD_TYPE = "document_kv.release_evidence.v1"
 RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE = "document_kv.release_evidence_inputs.v1"
 SGLANG_LIVE_BENCHMARK_RECORD_TYPE = "cachet.sglang_live_benchmark.v1"
 SGLANG_LIVE_V1_BENCHMARK_SCOPE = "live_v1_release"
+SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE = (
+    "cachet.sglang_representative_canary_evidence.v1"
+)
 _REPRESENTATIVE_SGLANG_PROFILE_ID = "sglang-4k-32-v1"
 _REPRESENTATIVE_SGLANG_HARDWARE_TARGET = "aws-g6-l4"
 _REPRESENTATIVE_SGLANG_SUITE_ID = "sglang-live-synthetic-niah"
@@ -1370,6 +1376,617 @@ def sglang_live_v1_benchmark_issues(
             require_exact_count=representative_canary,
         )
     return tuple(issues)
+
+
+def sanitize_sglang_representative_canary_evidence(
+    record: Mapping[str, Any],
+    *,
+    expected_cachet_wheel_sha256: str,
+) -> dict[str, Any]:
+    """Project a validated representative SGLang canary into a closed safe schema."""
+
+    raw_issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+    )
+    if raw_issues:
+        raise ValueError(
+            "cannot sanitize invalid representative SGLang canary evidence: "
+            + "; ".join(raw_issues)
+        )
+
+    suite = _required_mapping(record, "suite")
+    provenance = _required_mapping(record, "benchmark_manifest_provenance")
+    model_provenance = {key: provenance[key] for key in sorted(provenance)}
+    package_revisions = _required_mapping(provenance, "package_revisions")
+    model_provenance["package_revisions"] = {
+        key: package_revisions[key] for key in sorted(package_revisions)
+    }
+    measurements = sorted(
+        (
+            _sanitize_sglang_representative_measurement(row)
+            for row in _required_mapping_sequence(record, "measurements")
+        ),
+        key=_sanitized_sglang_measurement_key,
+    )
+    report_rows = sorted(
+        (
+            _sanitize_sglang_representative_report_row(row)
+            for row in _required_mapping_sequence(record, "report_rows")
+        ),
+        key=lambda row: (row["dataset"], _sanitized_sglang_arm_order(row["arm_id"])),
+    )
+    comparisons = sorted(
+        (
+            _copy_fields(row, _SGLANG_SAFE_COMPARISON_FIELDS)
+            for row in _required_mapping_sequence(record, "comparisons")
+        ),
+        key=lambda row: row["dataset"],
+    )
+    cache_hits = sorted(
+        (
+            _sanitize_sglang_representative_cache_hit(row)
+            for row in _required_mapping_sequence(record, "cache_hit_validations")
+        ),
+        key=lambda row: (
+            row["dataset"],
+            row["example_identity_sha256"],
+            row["repeat_index"],
+        ),
+    )
+    sanitized_suite = _copy_fields(suite, _SGLANG_SAFE_SUITE_FIELDS)
+    sanitized_suite["datasets"] = list(suite["datasets"])
+    evidence = {
+        "record_type": SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE,
+        "evidence_sanitized": True,
+        "publication_qualified": False,
+        "raw_record_sha256": canonical_json_sha256(record),
+        "engine": "sglang",
+        "hardware_target": record["hardware_target"],
+        "workload_profile": record["representative_workload_profile"],
+        "model_provenance": model_provenance,
+        "suite": sanitized_suite,
+        "measurements": measurements,
+        "report_rows": report_rows,
+        "comparisons": comparisons,
+        "cache_hit_validations": cache_hits,
+    }
+    projection_issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+    )
+    if projection_issues:
+        raise RuntimeError(
+            "representative SGLang evidence projection violated its schema: "
+            + "; ".join(projection_issues)
+        )
+    return evidence
+
+
+_SGLANG_SAFE_SUITE_FIELDS = (
+    "suite_id",
+    "scope",
+    "datasets",
+    "examples",
+    "repeats",
+    "release_v1_suite",
+)
+_SGLANG_SAFE_MEASUREMENT_FIELDS = (
+    "dataset",
+    "example_identity_sha256",
+    "arm_id",
+    "repeat_index",
+    "prompt_tokens",
+    "completion_tokens",
+    "prompt_text_mode",
+    "logical_prompt_tokens",
+    "runtime_prompt_tokens",
+    "ttft_seconds",
+    "time_to_completion_seconds",
+    "exact_match",
+    "answer_found",
+)
+_SGLANG_SAFE_REPORT_FIELDS = (
+    "dataset",
+    "arm_id",
+    "requests",
+    "errors",
+    "prompt_tokens_mean",
+    "completion_tokens_mean",
+    "ttft",
+    "time_to_completion",
+    "exact_match_rate",
+    "answer_found_rate",
+    "output_tokens_per_second",
+)
+_SGLANG_SAFE_COMPARISON_FIELDS = (
+    "dataset",
+    "baseline_arm_id",
+    "cache_arm_id",
+    "ttft_speedup",
+    "time_to_completion_speedup",
+    "exact_match_delta",
+    "answer_found_delta",
+)
+_SGLANG_SAFE_CACHE_HIT_FIELDS = (
+    "dataset",
+    "example_identity_sha256",
+    "arm_id",
+    "repeat_index",
+    "cache_hit",
+    "minimum_cached_tokens",
+    "cache_request_cached_tokens",
+    "cache_request_prompt_tokens",
+    "observed_prefill",
+)
+_SGLANG_SAFE_LATENCY_FIELDS = ("count", "mean", "p50", "p95")
+_SGLANG_SAFE_PREFILL_FIELDS = ("cached_tokens", "total_prompt_tokens")
+
+
+def sglang_representative_canary_evidence_issues(
+    evidence: Mapping[str, Any],
+    *,
+    expected_cachet_wheel_sha256: str,
+) -> tuple[str, ...]:
+    """Return closed-schema and recomputed-aggregate issues for safe canary evidence."""
+
+    if not _is_sha256_hex_digest(expected_cachet_wheel_sha256):
+        raise ValueError(
+            "expected_cachet_wheel_sha256 must be a lowercase SHA-256 digest"
+        )
+    if not isinstance(evidence, Mapping):
+        return ("representative SGLang canary evidence must be a mapping",)
+
+    issues: list[str] = []
+    _reject_unknown_fields(
+        evidence,
+        {
+            "record_type",
+            "evidence_sanitized",
+            "publication_qualified",
+            "raw_record_sha256",
+            "engine",
+            "hardware_target",
+            "workload_profile",
+            "model_provenance",
+            "suite",
+            "measurements",
+            "report_rows",
+            "comparisons",
+            "cache_hit_validations",
+        },
+        "representative SGLang canary evidence",
+        issues,
+    )
+    expected_scalars = {
+        "record_type": SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE,
+        "evidence_sanitized": True,
+        "publication_qualified": False,
+        "engine": "sglang",
+        "hardware_target": _REPRESENTATIVE_SGLANG_HARDWARE_TARGET,
+        "workload_profile": _REPRESENTATIVE_SGLANG_PROFILE_ID,
+    }
+    for field_name, expected in expected_scalars.items():
+        if evidence.get(field_name) != expected:
+            issues.append(
+                f"representative SGLang canary {field_name} must be {expected!r}"
+            )
+    if not _is_sha256_hex_digest(evidence.get("raw_record_sha256")):
+        issues.append("representative SGLang canary raw_record_sha256 must be SHA-256")
+
+    provenance = _mapping_or_issue(evidence, "model_provenance", issues)
+    if provenance is not None:
+        _validate_representative_sglang_provenance(
+            {
+                "representative_canary": True,
+                "representative_workload_profile": evidence.get("workload_profile"),
+                "hardware_target": evidence.get("hardware_target"),
+                "benchmark_manifest_provenance": provenance,
+            },
+            issues,
+            expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+        )
+
+    suite = _mapping_or_issue(evidence, "suite", issues)
+    if suite is not None:
+        _reject_unknown_fields(
+            suite,
+            set(_SGLANG_SAFE_SUITE_FIELDS),
+            "representative SGLang canary suite",
+            issues,
+        )
+        _validate_sglang_live_v1_suite_metadata(
+            suite,
+            issues,
+            representative_canary=True,
+        )
+
+    measurements = _sequence_or_issue(evidence, "measurements", issues)
+    report_rows = _sequence_or_issue(evidence, "report_rows", issues)
+    comparisons = _sequence_or_issue(evidence, "comparisons", issues)
+    cache_hits = _sequence_or_issue(evidence, "cache_hit_validations", issues)
+    example_digests: set[str] = set()
+    if measurements is not None:
+        example_digests = _sanitized_sglang_measurement_issues(
+            measurements,
+            issues,
+        )
+    if report_rows is not None:
+        _sanitized_sglang_report_row_issues(report_rows, issues)
+        _validate_v1_report_rows(
+            report_rows,
+            issues,
+            required_datasets=_REPRESENTATIVE_SGLANG_DATASETS,
+        )
+    if measurements is not None and report_rows is not None:
+        _validate_v1_report_aggregates_match_measurements(
+            report_rows,
+            measurements,
+            issues,
+        )
+    if comparisons is not None:
+        _sanitized_sglang_comparison_issues(comparisons, issues)
+        _validate_v1_comparisons(
+            comparisons,
+            issues,
+            required_datasets=_REPRESENTATIVE_SGLANG_DATASETS,
+        )
+    if report_rows is not None and comparisons is not None:
+        _validate_v1_comparisons_match_report_rows(
+            report_rows,
+            comparisons,
+            issues,
+        )
+    if cache_hits is not None:
+        _sanitized_sglang_cache_hit_issues(
+            cache_hits,
+            example_digests=example_digests,
+            issues=issues,
+        )
+    return tuple(issues)
+
+
+def _sanitize_sglang_representative_measurement(
+    measurement: Mapping[str, Any],
+) -> dict[str, Any]:
+    metadata = _required_mapping(measurement, "metadata")
+    dataset = measurement["dataset"]
+    return {
+        "dataset": dataset,
+        "example_identity_sha256": _sglang_example_identity_sha256(
+            dataset,
+            measurement["example_id"],
+        ),
+        "arm_id": measurement["arm_id"],
+        "repeat_index": _required_positive_metadata_int(
+            metadata.get("repeat_index"),
+            "measurement.metadata.repeat_index",
+        ),
+        "prompt_tokens": measurement["prompt_tokens"],
+        "completion_tokens": measurement["completion_tokens"],
+        "prompt_text_mode": metadata["prompt_text_mode"],
+        "logical_prompt_tokens": _required_positive_metadata_int(
+            metadata.get("logical_prompt_tokens"),
+            "measurement.metadata.logical_prompt_tokens",
+        ),
+        "runtime_prompt_tokens": _required_positive_metadata_int(
+            metadata.get("runtime_prompt_tokens"),
+            "measurement.metadata.runtime_prompt_tokens",
+        ),
+        "ttft_seconds": measurement["ttft_seconds"],
+        "time_to_completion_seconds": measurement["time_to_completion_seconds"],
+        "exact_match": measurement["exact_match"],
+        "answer_found": measurement["answer_found"],
+    }
+
+
+def _sanitize_sglang_representative_report_row(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    sanitized = _copy_fields(row, _SGLANG_SAFE_REPORT_FIELDS)
+    for field_name in ("ttft", "time_to_completion"):
+        sanitized[field_name] = _copy_fields(
+            _required_mapping(row, field_name),
+            _SGLANG_SAFE_LATENCY_FIELDS,
+        )
+    return sanitized
+
+
+def _sanitize_sglang_representative_cache_hit(
+    validation: Mapping[str, Any],
+) -> dict[str, Any]:
+    prefill = _sglang_live_v1_cache_hit_prefill_row(validation)
+    if prefill is None:
+        raise RuntimeError("validated cache hit is missing its observed prefill row")
+    dataset = validation["dataset"]
+    return {
+        "dataset": dataset,
+        "example_identity_sha256": _sglang_example_identity_sha256(
+            dataset,
+            validation["example_id"],
+        ),
+        "arm_id": validation["arm_id"],
+        "repeat_index": validation["repeat_index"],
+        "cache_hit": validation["ok"],
+        "minimum_cached_tokens": validation["minimum_cached_tokens"],
+        "cache_request_cached_tokens": validation["cache_request_cached_tokens"],
+        "cache_request_prompt_tokens": validation["cache_request_prompt_tokens"],
+        "observed_prefill": _copy_fields(prefill, _SGLANG_SAFE_PREFILL_FIELDS),
+    }
+
+
+def _copy_fields(
+    record: Mapping[str, Any],
+    field_names: Sequence[str],
+) -> dict[str, Any]:
+    return {field_name: record[field_name] for field_name in field_names}
+
+
+def _required_mapping_sequence(
+    record: Mapping[str, Any],
+    field_name: str,
+) -> Sequence[Mapping[str, Any]]:
+    value = record.get(field_name)
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise TypeError(f"{field_name} must be a sequence")
+    if any(not isinstance(item, Mapping) for item in value):
+        raise TypeError(f"{field_name} entries must be mappings")
+    return value
+
+
+def _sglang_example_identity_sha256(dataset: Any, example_id: Any) -> str:
+    if not isinstance(dataset, str) or not isinstance(example_id, str):
+        raise TypeError("dataset and example_id must be strings")
+    return canonical_json_sha256({"dataset": dataset, "example_id": example_id})
+
+
+def _required_positive_metadata_int(value: Any, field_name: str) -> int:
+    parsed = _positive_int_metadata(value)
+    if parsed is None:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return parsed
+
+
+def _sanitized_sglang_arm_order(arm_id: Any) -> int:
+    return 0 if arm_id == BASELINE_PREFILL_ARM else 1
+
+
+def _sanitized_sglang_measurement_key(
+    measurement: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    return (
+        measurement["dataset"],
+        measurement["example_identity_sha256"],
+        measurement["repeat_index"],
+        _sanitized_sglang_arm_order(measurement["arm_id"]),
+    )
+
+
+def _sanitized_sglang_measurement_issues(
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> set[str]:
+    observed: set[tuple[str, str, int]] = set()
+    example_digests: set[str] = set()
+    for index, measurement in enumerate(measurements):
+        label = f"representative SGLang canary measurements[{index}]"
+        if not isinstance(measurement, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(
+            measurement,
+            set(_SGLANG_SAFE_MEASUREMENT_FIELDS),
+            label,
+            issues,
+        )
+        dataset = measurement.get("dataset")
+        digest = measurement.get("example_identity_sha256")
+        arm_id = measurement.get("arm_id")
+        repeat_index = measurement.get("repeat_index")
+        digest_value = digest if isinstance(digest, str) else None
+        arm_value = arm_id if isinstance(arm_id, str) else None
+        repeat_value = repeat_index if type(repeat_index) is int else None
+        if dataset != _REPRESENTATIVE_SGLANG_DATASETS[0]:
+            issues.append(f"{label}.dataset must be 'niah'")
+        if not _is_sha256_hex_digest(digest):
+            issues.append(f"{label}.example_identity_sha256 must be SHA-256")
+        else:
+            example_digests.add(digest_value or "")
+        if arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
+            issues.append(f"{label}.arm_id is unsupported")
+        if not _is_positive_int(repeat_index):
+            issues.append(f"{label}.repeat_index must be a positive integer")
+        elif repeat_value is not None and repeat_value > _REPRESENTATIVE_SGLANG_REPEATS:
+            issues.append(f"{label}.repeat_index exceeds suite repeats")
+        if (
+            dataset == _REPRESENTATIVE_SGLANG_DATASETS[0]
+            and _is_sha256_hex_digest(digest)
+            and arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+            and _is_positive_int(repeat_index)
+        ):
+            key = (digest_value or "", arm_value or "", repeat_value or 0)
+            if key in observed:
+                issues.append(f"{label} duplicates an arm/repeat measurement")
+            observed.add(key)
+
+        for field_name in (
+            "prompt_tokens",
+            "completion_tokens",
+            "logical_prompt_tokens",
+            "runtime_prompt_tokens",
+        ):
+            if not _is_positive_int(measurement.get(field_name)):
+                issues.append(f"{label}.{field_name} must be a positive integer")
+        for field_name in ("ttft_seconds", "time_to_completion_seconds"):
+            if not _is_non_negative_number(measurement.get(field_name)):
+                issues.append(f"{label}.{field_name} must be non-negative and finite")
+        ttft = measurement.get("ttft_seconds")
+        completion = measurement.get("time_to_completion_seconds")
+        if (
+            _is_non_negative_number(ttft)
+            and _is_non_negative_number(completion)
+            and float(completion or 0.0) < float(ttft or 0.0)
+        ):
+            issues.append(f"{label}.time_to_completion_seconds must cover TTFT")
+        for field_name in ("exact_match", "answer_found"):
+            if type(measurement.get(field_name)) is not bool:
+                issues.append(f"{label}.{field_name} must be boolean")
+
+        prompt_mode = measurement.get("prompt_text_mode")
+        logical_tokens = measurement.get("logical_prompt_tokens")
+        runtime_tokens = measurement.get("runtime_prompt_tokens")
+        if prompt_mode not in {"logical", "runtime"}:
+            issues.append(f"{label}.prompt_text_mode must be 'logical' or 'runtime'")
+        elif arm_id == BASELINE_PREFILL_ARM and prompt_mode != "logical":
+            issues.append(f"{label} baseline prompt_text_mode must be 'logical'")
+        expected_prompt_tokens = (
+            runtime_tokens if prompt_mode == "runtime" else logical_tokens
+        )
+        if (
+            _is_positive_int(expected_prompt_tokens)
+            and measurement.get("prompt_tokens") != expected_prompt_tokens
+        ):
+            issues.append(f"{label}.prompt_tokens does not match prompt_text_mode")
+
+    expected_count = _REPRESENTATIVE_SGLANG_EXAMPLES * _REPRESENTATIVE_SGLANG_REPEATS * 2
+    if len(measurements) != expected_count:
+        issues.append(f"representative SGLang canary must contain {expected_count} measurements")
+    if len(example_digests) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        issues.append("representative SGLang canary must contain one example identity")
+    if len(example_digests) == 1:
+        digest = next(iter(example_digests))
+        expected = {
+            (digest, arm_id, repeat_index)
+            for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+            for repeat_index in range(1, _REPRESENTATIVE_SGLANG_REPEATS + 1)
+        }
+        if observed != expected:
+            issues.append(
+                "representative SGLang canary measurements do not contain the "
+                "exact arm/repeat matrix"
+            )
+    return example_digests
+
+
+def _sanitized_sglang_report_row_issues(
+    report_rows: Sequence[Any],
+    issues: list[str],
+) -> None:
+    keys: list[tuple[Any, Any]] = []
+    for index, row in enumerate(report_rows):
+        label = f"representative SGLang canary report_rows[{index}]"
+        if not isinstance(row, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(row, set(_SGLANG_SAFE_REPORT_FIELDS), label, issues)
+        keys.append((row.get("dataset"), row.get("arm_id")))
+        for field_name in ("ttft", "time_to_completion"):
+            summary = row.get(field_name)
+            if isinstance(summary, Mapping):
+                _reject_unknown_fields(
+                    summary,
+                    set(_SGLANG_SAFE_LATENCY_FIELDS),
+                    f"{label}.{field_name}",
+                    issues,
+                )
+    expected = {
+        (_REPRESENTATIVE_SGLANG_DATASETS[0], BASELINE_PREFILL_ARM),
+        (_REPRESENTATIVE_SGLANG_DATASETS[0], CACHE_REUSE_ARM),
+    }
+    if len(keys) != len(expected) or set(keys) != expected:
+        issues.append(
+            "representative SGLang canary report_rows must contain the "
+            "baseline/cache pair"
+        )
+
+
+def _sanitized_sglang_comparison_issues(
+    comparisons: Sequence[Any],
+    issues: list[str],
+) -> None:
+    valid = len(comparisons) == 1 and isinstance(comparisons[0], Mapping)
+    for index, comparison in enumerate(comparisons):
+        label = f"representative SGLang canary comparisons[{index}]"
+        if not isinstance(comparison, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(
+            comparison,
+            set(_SGLANG_SAFE_COMPARISON_FIELDS),
+            label,
+            issues,
+        )
+    if not valid or comparisons[0].get("dataset") != _REPRESENTATIVE_SGLANG_DATASETS[0]:
+        issues.append(
+            "representative SGLang canary comparisons must contain only the niah row"
+        )
+
+
+def _sanitized_sglang_cache_hit_issues(
+    validations: Sequence[Any],
+    *,
+    example_digests: set[str],
+    issues: list[str],
+) -> None:
+    reconstructed: list[dict[str, Any]] = []
+    for index, validation in enumerate(validations):
+        label = f"representative SGLang canary cache_hit_validations[{index}]"
+        if not isinstance(validation, Mapping):
+            issues.append(f"{label} must be a mapping")
+            continue
+        _reject_unknown_fields(
+            validation,
+            set(_SGLANG_SAFE_CACHE_HIT_FIELDS),
+            label,
+            issues,
+        )
+        digest = validation.get("example_identity_sha256")
+        if not _is_sha256_hex_digest(digest):
+            issues.append(f"{label}.example_identity_sha256 must be SHA-256")
+        prefill = validation.get("observed_prefill")
+        if isinstance(prefill, Mapping):
+            _reject_unknown_fields(
+                prefill,
+                set(_SGLANG_SAFE_PREFILL_FIELDS),
+                f"{label}.observed_prefill",
+                issues,
+            )
+        reconstructed.append(
+            {
+                "dataset": validation.get("dataset"),
+                "example_id": digest,
+                "arm_id": validation.get("arm_id"),
+                "repeat_index": validation.get("repeat_index"),
+                "ok": validation.get("cache_hit"),
+                "issue": None,
+                "minimum_cached_tokens": validation.get("minimum_cached_tokens"),
+                "cache_request_cached_tokens": validation.get(
+                    "cache_request_cached_tokens"
+                ),
+                "cache_request_prompt_tokens": validation.get(
+                    "cache_request_prompt_tokens"
+                ),
+                "observed_prefill_row": prefill,
+            }
+        )
+    cache_measurements = [
+        {
+            "dataset": _REPRESENTATIVE_SGLANG_DATASETS[0],
+            "example_id": digest,
+            "arm_id": CACHE_REUSE_ARM,
+            "metadata": {"repeat_index": repeat_index},
+        }
+        for digest in example_digests
+        for repeat_index in range(1, _REPRESENTATIVE_SGLANG_REPEATS + 1)
+    ]
+    _validate_sglang_live_v1_cache_hit_validations(
+        {"repeats": _REPRESENTATIVE_SGLANG_REPEATS},
+        reconstructed,
+        measurements=cache_measurements,
+        issues=issues,
+        required_datasets=_REPRESENTATIVE_SGLANG_DATASETS,
+        require_exact_count=True,
+    )
 
 
 def _validate_sglang_live_v1_runtime_metadata(

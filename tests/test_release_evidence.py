@@ -45,6 +45,7 @@ from document_kv_cache.release_evidence import (
     RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE,
     REQUIRED_ENGINE_PROBE_BACKENDS,
     SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
+    SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE,
     SGLANG_LIVE_V1_BENCHMARK_SCOPE,
     ReleaseEvidence,
     ReleaseEvidenceArtifactSource,
@@ -55,7 +56,9 @@ from document_kv_cache.release_evidence import (
     inspect_release_evidence_input_files,
     release_evidence_input_status_to_record,
     release_evidence_to_record,
+    sanitize_sglang_representative_canary_evidence,
     sglang_live_v1_benchmark_issues,
+    sglang_representative_canary_evidence_issues,
 )
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.methods import default_method_registry, method_spec
@@ -496,6 +499,257 @@ def test_sglang_live_v1_benchmark_issues_accept_real_representative_profile_reco
             expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
         )
         == ()
+    )
+
+
+def test_sanitize_sglang_representative_canary_evidence_is_closed_and_valid(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert evidence["record_type"] == SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE
+    assert evidence["evidence_sanitized"] is True
+    assert evidence["publication_qualified"] is False
+    assert evidence["raw_record_sha256"] == _canonical_record_sha256(raw)
+    assert {row["example_identity_sha256"] for row in evidence["measurements"]} == {
+        _canonical_record_sha256(
+            {
+                "dataset": "niah",
+                "example_id": "niah-1",
+            }
+        )
+    }
+    assert evidence["model_provenance"]["package_revisions"]["cachet-kv"] == (
+        f"wheel-sha256:{REPRESENTATIVE_SGLANG_WHEEL_SHA256}"
+    )
+    assert (
+        sglang_representative_canary_evidence_issues(
+            evidence,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+        == ()
+    )
+
+
+def test_sanitize_sglang_representative_canary_evidence_omits_raw_leak_surfaces(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    sentinels = {
+        "answer": "RAW_ANSWER_OUTPUT_SENTINEL",
+        "prompt": "RAW_PROMPT_SENTINEL",
+        "error": "RAW_ERROR_SENTINEL",
+        "log": "RAW_LOG_SENTINEL",
+        "local_path": "/local_disk0/RAW_LOCAL_PATH_SENTINEL",
+        "dbfs_path": "dbfs:/RAW_DBFS_PATH_SENTINEL",
+        "request_id": "RAW_REQUEST_ID_SENTINEL",
+        "handoff": "RAW_HANDOFF_SENTINEL",
+        "payload": "RAW_PAYLOAD_SENTINEL",
+        "page_key": "RAW_PAGE_KEY_SENTINEL",
+        "example_id": "RAW_EXAMPLE_ID_SENTINEL",
+    }
+    raw.update(
+        {
+            "raw_prompt": sentinels["prompt"],
+            "debug_error": sentinels["error"],
+            "server_log": sentinels["log"],
+            "local_output_path": sentinels["local_path"],
+            "dbfs_output_path": sentinels["dbfs_path"],
+            "handoff_uri": sentinels["handoff"],
+            "raw_payload": sentinels["payload"],
+            "page_keys": [sentinels["page_key"]],
+        }
+    )
+    for measurement in raw["measurements"]:
+        measurement["example_id"] = sentinels["example_id"]
+        measurement["output_text"] = sentinels["answer"]
+        measurement["expected_answer"] = sentinels["answer"]
+        measurement["metadata"].update(
+            {
+                "request_id": sentinels["request_id"],
+                "prompt_text": sentinels["prompt"],
+                "handoff": sentinels["handoff"],
+                "payload": sentinels["payload"],
+                "page_key": sentinels["page_key"],
+            }
+        )
+    for validation in raw["cache_hit_validations"]:
+        validation["example_id"] = sentinels["example_id"]
+        validation["request_id"] = sentinels["request_id"]
+        validation["error_detail"] = sentinels["error"]
+
+    assert (
+        sglang_live_v1_benchmark_issues(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+        == ()
+    )
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    serialized = json.dumps(evidence, sort_keys=True)
+    for sentinel in sentinels.values():
+        assert sentinel not in serialized
+    assert all(
+        "example_id" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all(
+        "request_id" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all(
+        "output_text" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all(
+        "expected_answer" not in measurement for measurement in evidence["measurements"]
+    )
+    assert all("error" not in measurement for measurement in evidence["measurements"])
+
+
+def test_sanitize_sglang_representative_canary_evidence_rejects_invalid_raw(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    raw["ok"] = False
+    raw["issues"] = ["raw canary failed"]
+
+    with pytest.raises(ValueError, match="cannot sanitize invalid"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+
+
+def test_sanitize_sglang_representative_canary_evidence_rejects_wheel_mismatch(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="does not match the verified submit payload"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256="e" * 64,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    [
+        (
+            lambda evidence: evidence.__setitem__("raw_log", "forged"),
+            "unknown fields",
+        ),
+        (
+            lambda evidence: evidence["measurements"][0].__setitem__(
+                "output_text",
+                "forged",
+            ),
+            "unknown fields",
+        ),
+        (
+            lambda evidence: evidence["measurements"][0].__setitem__(
+                "ttft_seconds",
+                0.5,
+            ),
+            "ttft mean must match measurements",
+        ),
+        (
+            lambda evidence: evidence["report_rows"][0]["ttft"].__setitem__(
+                "mean",
+                0.5,
+            ),
+            "ttft mean must match measurements",
+        ),
+        (
+            lambda evidence: evidence["comparisons"][0].__setitem__(
+                "ttft_speedup",
+                2.0,
+            ),
+            "ttft_speedup must match report rows",
+        ),
+        (
+            lambda evidence: evidence["cache_hit_validations"][0].__setitem__(
+                "cache_request_cached_tokens",
+                1,
+            ),
+            "at least minimum_cached_tokens",
+        ),
+        (
+            lambda evidence: evidence["model_provenance"][
+                "package_revisions"
+            ].__setitem__("cachet-kv", f"wheel-sha256:{'e' * 64}"),
+            "does not match the verified submit payload",
+        ),
+    ],
+)
+def test_sglang_representative_canary_evidence_detects_closed_schema_tampering(
+    mutate,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+    mutate(evidence)
+
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+def test_sglang_representative_canary_evidence_rejects_invalid_raw_digest(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+    evidence["raw_record_sha256"] = "not-a-digest"
+
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any("raw_record_sha256 must be SHA-256" in issue for issue in issues)
+
+
+def test_sglang_representative_canary_evidence_binds_exact_expected_wheel(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256="e" * 64,
+    )
+
+    assert any(
+        "does not match the verified submit payload" in issue for issue in issues
     )
 
 
@@ -3278,6 +3532,17 @@ def _sglang_live_v1_benchmark_record(
         "issues": [] if ok else ["cache hit validation failed"],
     }
     return record
+
+
+def _canonical_record_sha256(value):
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _representative_sglang_live_v1_benchmark_record(

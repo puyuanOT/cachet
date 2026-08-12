@@ -567,12 +567,16 @@ class OpenAICompatibleCompletionEngine:
         }
         if self.config.prompt_token_accounting == "server_usage":
             value = usage.get("prompt_tokens")
-            if isinstance(value, int) and value >= 0:
+            if type(value) is int and value >= 0:
+                runtime_count = value
+                if self.config.prompt_text_mode == "logical":
+                    logical_count = value
+                metadata["logical_prompt_tokens"] = str(logical_count)
+                metadata["runtime_prompt_tokens"] = str(runtime_count)
                 metadata["server_usage_prompt_tokens"] = str(value)
                 metadata["server_usage_prompt_tokens_present"] = "true"
-            else:
-                metadata["server_usage_prompt_tokens_present"] = "false"
-            return context_count, context_source, metadata
+                return value, "server_usage", metadata
+            metadata["server_usage_prompt_tokens_present"] = "false"
         return context_count, context_source, metadata
 
 
