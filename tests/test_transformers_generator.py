@@ -174,6 +174,83 @@ def tensor_bytes(tensor) -> bytes:
     return bytes(byte_values)
 
 
+def test_tensor_bytes_preserves_small_noncontiguous_tensor() -> None:
+    tensor = torch.tensor(
+        [[1, -2, 300], [-400, 500, -600]],
+        dtype=torch.int16,
+    ).transpose(0, 1)
+
+    assert public_transformers_generator._tensor_bytes(tensor) == tensor_bytes(tensor)
+
+
+def test_tensor_bytes_uses_py_ssize_t_above_signed_ctypes_size(
+    monkeypatch,
+) -> None:
+    byte_count = (1 << 31) + 17
+    data_ptr = 0x1_0000_0000
+
+    class FakeLargeTensor:
+        def detach(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def contiguous(self):
+            return self
+
+        def view(self, dtype):
+            assert dtype is torch.uint8
+            return self
+
+        def numel(self):
+            return byte_count
+
+        def data_ptr(self):
+            return data_ptr
+
+    class FakeBytesFromPointer:
+        def __init__(self) -> None:
+            self.argtypes = None
+            self.restype = None
+            self.calls = []
+
+        def __call__(self, pointer, size):
+            self.calls.append((pointer, size))
+            return b"large-payload"
+
+    bytes_from_pointer = FakeBytesFromPointer()
+    pythonapi = SimpleNamespace(PyBytes_FromStringAndSize=bytes_from_pointer)
+    monkeypatch.setattr(public_transformers_generator.ctypes, "pythonapi", pythonapi)
+
+    assert (
+        public_transformers_generator._tensor_bytes(FakeLargeTensor())
+        == b"large-payload"
+    )
+    assert bytes_from_pointer.argtypes == (
+        public_transformers_generator.ctypes.c_void_p,
+        public_transformers_generator.ctypes.c_ssize_t,
+    )
+    assert bytes_from_pointer.restype is public_transformers_generator.ctypes.py_object
+    assert len(bytes_from_pointer.calls) == 1
+    pointer, size = bytes_from_pointer.calls[0]
+    assert isinstance(pointer, public_transformers_generator.ctypes.c_void_p)
+    assert pointer.value == data_ptr
+    assert isinstance(size, public_transformers_generator.ctypes.c_ssize_t)
+    assert size.value == byte_count
+
+
+def test_tensor_bytes_fails_closed_without_cpython(monkeypatch) -> None:
+    fake_sys = SimpleNamespace(
+        implementation=SimpleNamespace(name="pypy"),
+        maxsize=public_transformers_generator.sys.maxsize,
+    )
+    monkeypatch.setattr(public_transformers_generator, "sys", fake_sys)
+
+    with pytest.raises(RuntimeError, match="requires the CPython C API"):
+        public_transformers_generator._tensor_bytes(torch.tensor([1], dtype=torch.uint8))
+
+
 def test_transformers_generator_emits_token_major_layer_major_payload():
     layout = tiny_layout()
     first_layer = layer([[1, 2], [3, 4]], [[11, 12], [13, 14]])

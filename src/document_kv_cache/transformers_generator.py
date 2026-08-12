@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import math
 import os
-from ctypes import string_at
+import sys
 from contextlib import contextmanager
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -668,9 +669,32 @@ def _pad_kv_stride(tensor: object, *, layout: KVLayout) -> object:
 def _tensor_bytes(tensor: object) -> bytes:
     torch = _torch()
     byte_tensor = tensor.detach().cpu().contiguous().view(torch.uint8)
-    if byte_tensor.numel() == 0:
+    byte_count = int(byte_tensor.numel())
+    if byte_count == 0:
         return b""
-    return string_at(byte_tensor.data_ptr(), byte_tensor.numel())
+    if byte_count < 0:
+        raise ValueError("tensor byte count must not be negative")
+    data_ptr = int(byte_tensor.data_ptr())
+    if data_ptr <= 0:
+        raise ValueError("non-empty tensor must expose a non-null data pointer")
+    if byte_count > sys.maxsize:
+        raise OverflowError("tensor byte count exceeds CPython Py_ssize_t capacity")
+    if sys.implementation.name != "cpython":
+        raise RuntimeError("tensor byte serialization requires the CPython C API")
+    try:
+        bytes_from_pointer = ctypes.pythonapi.PyBytes_FromStringAndSize
+    except AttributeError as exc:
+        raise RuntimeError("CPython PyBytes_FromStringAndSize is unavailable") from exc
+    bytes_from_pointer.argtypes = (ctypes.c_void_p, ctypes.c_ssize_t)
+    bytes_from_pointer.restype = ctypes.py_object
+    # Keep ``byte_tensor`` alive while CPython copies directly into the final bytes object.
+    payload = bytes_from_pointer(
+        ctypes.c_void_p(data_ptr),
+        ctypes.c_ssize_t(byte_count),
+    )
+    if not isinstance(payload, bytes):
+        raise RuntimeError("CPython PyBytes_FromStringAndSize returned a non-bytes value")
+    return payload
 
 
 def _input_ids(inputs: Mapping[str, object]) -> object:
