@@ -360,6 +360,8 @@ def test_prompt_parts_split_prefill_context_from_cache_suffix():
     assert build_cache_prefix_text(example) == parts.cache_prefix_text
     assert build_cache_suffix_text(example) == parts.cache_suffix_text
     assert parts.cache_prefix_text + parts.cache_suffix_text == parts.prefill_prompt
+    assert parts.cache_prefix_text.endswith("\n\n")
+    assert not parts.cache_suffix_text.startswith("\n")
     assert "Ada Lovelace biography" in parts.prefill_prompt
     assert "Ada Lovelace biography" in parts.cache_prefix_text
     assert "Ada Lovelace biography" not in parts.cache_suffix_text
@@ -386,6 +388,8 @@ def test_prompt_parts_system_prompt_position_end_moves_guidance_out_of_cache(mon
     assert "Ada Lovelace biography" in parts.cache_prefix_text
     assert parts.system_prompt not in parts.cache_prefix_text
     assert parts.system_prompt in parts.cache_suffix_text
+    assert parts.cache_prefix_text.endswith("\n\n")
+    assert parts.cache_suffix_text.startswith(parts.system_prompt)
     # Invariant preserved: cached prefix + online suffix reconstructs the logical prompt.
     assert parts.cache_prefix_text + parts.cache_suffix_text == parts.prefill_prompt
     assert build_cache_prefix_text(example) == parts.cache_prefix_text

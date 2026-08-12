@@ -40,6 +40,7 @@ from document_kv_cache.benchmarks import (
     DatasetScorer,
     DatasetScorerRegistry,
     benchmark_cache_source_document,
+    build_prompt_parts,
 )
 from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
@@ -176,6 +177,41 @@ class RuntimeTailTokenizer(PageKeyTokenizer):
 
 class RuntimeTailGenerator(PageKeyGenerator):
     tokenizer = RuntimeTailTokenizer()
+
+
+class CachedBoundaryMergingTokenizer:
+    """Model the pinned tokenizer's closing-delimiter/newline merge."""
+
+    merged_text = '"]\n\n'
+    merged_token_id = 1_000_000
+
+    def __call__(self, text, *, return_tensors, add_special_tokens):
+        assert return_tensors == "pt"
+        assert add_special_tokens is False
+        token_ids = []
+        cursor = 0
+        while cursor < len(text):
+            if text.startswith(self.merged_text, cursor):
+                token_ids.append(self.merged_token_id)
+                cursor += len(self.merged_text)
+            else:
+                token_ids.append(ord(text[cursor]))
+                cursor += 1
+        return {"input_ids": [token_ids]}
+
+
+class CachedBoundaryMergingGenerator(PageKeyGenerator):
+    tokenizer = CachedBoundaryMergingTokenizer()
+
+
+class CrossBoundaryMergingTokenizer(CachedBoundaryMergingTokenizer):
+    """Remain non-compositional by merging cached and online text together."""
+
+    merged_text = "\n\nQuestion:"
+
+
+class CrossBoundaryMergingGenerator(PageKeyGenerator):
+    tokenizer = CrossBoundaryMergingTokenizer()
 
 
 GENERATOR_MODULE_SOURCE = """
@@ -882,6 +918,108 @@ def test_generate_benchmark_handoffs_accepts_declared_method_topology(
     handoff_path = output_dir / "hotpotqa" / f"{entry.request_id}.handoff.json"
     handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     assert len(handoff["handle"]["segments"]) == expected_segments
+
+
+@pytest.mark.parametrize(
+    ("cache_method", "segment_per_document", "expected_segments"),
+    [
+        (CacheGenerationMethod.FULL_PREFIX_PREFILL, False, 1),
+        (CacheGenerationMethod.VANILLA_PREFILL, True, 3),
+    ],
+)
+def test_generate_benchmark_handoffs_owns_token_merge_boundary_on_cached_prefix(
+    tmp_path,
+    cache_method,
+    segment_per_document,
+    expected_segments,
+):
+    input_path = tmp_path / f"{cache_method.value}.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=3)) + "\n",
+        encoding="utf-8",
+    )
+    generator = CachedBoundaryMergingGenerator()
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / cache_method.value,
+        generator=generator,
+        layout=tiny_layout(),
+        cache_method=cache_method,
+        segment_per_document=segment_per_document,
+        align_bytes=1,
+        require_artifact_contract=False,
+    )
+
+    example = load_benchmark_jsonl(input_path)[0]
+    source_document = benchmark_cache_source_document(
+        example,
+        segment_per_document=segment_per_document,
+    )
+    cached_token_ids = tuple(
+        token_id
+        for chunk in source_document.chunks
+        for token_id in generator.tokenizer(
+            chunk.text,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"][0]
+    )
+    logical_token_ids = tuple(
+        generator.tokenizer(
+            build_prompt_parts(example).prefill_prompt,
+            return_tensors="pt",
+            add_special_tokens=False,
+        )["input_ids"][0]
+    )
+    assert cached_token_ids == logical_token_ids[: len(cached_token_ids)]
+    assert source_document.chunks[-1].text.endswith("\n\n")
+
+    entry = result.manifest.entries[0]
+    handoff_path = (
+        tmp_path
+        / cache_method.value
+        / "hotpotqa"
+        / f"{entry.request_id}.handoff.json"
+    )
+    handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+    assert len(handoff["handle"]["segments"]) == expected_segments
+
+
+@pytest.mark.parametrize(
+    ("cache_method", "segment_per_document"),
+    [
+        (CacheGenerationMethod.FULL_PREFIX_PREFILL, False),
+        (CacheGenerationMethod.VANILLA_PREFILL, True),
+    ],
+)
+def test_generate_benchmark_handoffs_rejects_noncompositional_token_boundary(
+    tmp_path,
+    cache_method,
+    segment_per_document,
+):
+    input_path = tmp_path / f"{cache_method.value}.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=3)) + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / cache_method.value
+
+    with pytest.raises(
+        ValueError,
+        match="source tokens must compose to an exact leading prefix",
+    ):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=output_dir,
+            generator=CrossBoundaryMergingGenerator(),
+            layout=tiny_layout(),
+            cache_method=cache_method,
+            segment_per_document=segment_per_document,
+            align_bytes=1,
+            require_artifact_contract=False,
+        )
+    assert not output_dir.exists()
 
 
 def test_generate_benchmark_handoffs_supports_custom_unconstrained_topology(tmp_path):

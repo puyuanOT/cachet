@@ -36,6 +36,7 @@ from document_kv_cache.benchmarks import (
     benchmark_cache_artifact_stem,
     benchmark_cache_request,
     benchmark_cache_source_document,
+    build_prompt_parts,
     validate_v1_dataset,
 )
 from document_kv_cache.engine_protocol import (
@@ -639,6 +640,20 @@ def generate_benchmark_handoff_bundles(
         )
         for example, scorer in zip(examples, example_scorers, strict=True)
     )
+    if backend == ServingBackend.VLLM:
+        for example, scorer, source_document in zip(
+            examples,
+            example_scorers,
+            source_documents,
+            strict=True,
+        ):
+            _validate_handoff_source_token_composition(
+                generator,
+                source_document=source_document,
+                logical_prompt=build_prompt_parts(example, scorer=scorer).prefill_prompt,
+                dataset=example.dataset,
+                example_id=example.example_id,
+            )
     bundle_targets = _benchmark_handoff_bundle_targets(
         examples,
         output_base=output_base,
@@ -1445,6 +1460,45 @@ def _runtime_prefix_text_for_handoff(
     return _decode_token_ids_for_generator(generator, token_ids[-tail_token_count:])
 
 
+def _validate_handoff_source_token_composition(
+    generator: object,
+    *,
+    source_document: SourceDocument,
+    logical_prompt: str,
+    dataset: str,
+    example_id: str,
+) -> None:
+    """Fail before vLLM generation when chunk tokens are not a prompt prefix."""
+
+    if getattr(generator, "tokenizer", None) is None:
+        return
+    cached_token_ids = tuple(
+        token_id
+        for chunk in source_document.chunks
+        for token_id in _token_ids_for_generator(generator, chunk.text)
+    )
+    logical_token_ids = _token_ids_for_generator(generator, logical_prompt)
+    if (
+        len(cached_token_ids) >= len(logical_token_ids)
+        or logical_token_ids[: len(cached_token_ids)] != cached_token_ids
+    ):
+        mismatch_index = next(
+            (
+                index
+                for index, (cached, logical) in enumerate(
+                    zip(cached_token_ids, logical_token_ids, strict=False)
+                )
+                if cached != logical
+            ),
+            min(len(cached_token_ids), len(logical_token_ids)),
+        )
+        raise ValueError(
+            "benchmark handoff source tokens must compose to an exact leading "
+            f"prefix of the logical prompt for {dataset}/{example_id}; "
+            f"first mismatch at token {mismatch_index}"
+        )
+
+
 def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
     tokenizer = getattr(generator, "tokenizer", None)
     if tokenizer is None:
@@ -1461,7 +1515,7 @@ def _token_ids_for_generator(generator: object, text: str) -> tuple[int, ...]:
     else:
         input_ids = getattr(encoded, "input_ids", None)
     if input_ids is None:
-        raise ValueError("SGLang HiCache page-key tokenizer output must include input_ids")
+        raise ValueError("benchmark tokenizer output must include input_ids")
     return _flatten_token_ids(input_ids)
 
 

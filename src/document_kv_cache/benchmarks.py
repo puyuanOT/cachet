@@ -473,8 +473,16 @@ class BenchmarkPromptParts:
     @property
     def cache_prefix_text(self) -> str:
         if self.system_prompt_position == "end":
-            return self.document_context
-        return _join_sections(self.system_prompt, self.document_context)
+            prefix = self.document_context
+            has_suffix = bool(self.system_prompt or self.user_prompt)
+        else:
+            prefix = _join_sections(self.system_prompt, self.document_context)
+            has_suffix = bool(self.user_prompt)
+        # Own the existing section separator on the cached side of the split.
+        # Keeping ``\n\n`` with the preceding section makes tokenizers that merge
+        # a closing delimiter with the following newlines produce the same leading
+        # token sequence for the standalone cached prefix and the full prompt.
+        return f"{prefix}\n\n" if prefix and has_suffix else prefix
 
     @property
     def cache_suffix_text(self) -> str:
@@ -1230,9 +1238,9 @@ def benchmark_cache_prefix_segments(
     """Tile the exact cache-prefix text into one contiguous ``(chunk_id, text)`` per document.
 
     The concatenation of the returned texts equals ``build_cache_prefix_text(example)``
-    byte-for-byte, so an assembled multi-segment KV lines up with the logical prompt the
-    client sends (the connector matches ``min(handoff_tokens, prompt-1)`` block-aligned, so
-    per-chunk tokenization-boundary drift is absorbed). The leading system prompt +
+    byte-for-byte. Tokenizer-backed vLLM handoff generation additionally requires the
+    independently tokenized segments to compose to an exact leading token prefix of the
+    logical prompt before an artifact can be written. The leading system prompt +
     "Documents:" header rides on the first document's segment. Falls back to a single
     segment when there is one document or the per-document offsets cannot be located.
     """
