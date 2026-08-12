@@ -34,7 +34,7 @@ script at any other path is rejected. A complete SGLang representative
 payload-generation example is:
 
 ```bash
-RUNNER_SHA256=0e289f0ac7379f87917feb772b35ea75f58a419a6d5aa9c1881c75aec15a4500
+RUNNER_SHA256=6e3b5cd79181828bcb515e210fea46e6aa75b7636c2a3bf8e19775f5026bc1de
 RUNNER_URI="dbfs:/cachet/runners/${RUNNER_SHA256}/run_sglang_smoke.py"
 cachet-sglang-smoke-databricks-job \
   --benchmark-id g6-sglang-4k-32-paired-smoke \
@@ -93,6 +93,14 @@ All ten bind Qwen3-4B-Instruct revision
 prepared HotpotQA input, BF16 model/KV, `max_num_seqs=2`, and GPU utilization
 `0.85`; cache arms also bind their method-owned handoff topology under
 `/local_disk0`. Serving dependency pins are part of the manifest contract.
+
+Each isolated vLLM job keeps its unique workload ID, while the three arms for
+one hardware/profile group share a comparison suite ID. The payload passes
+Databricks' `{{task.run_id}}` dynamic value as the physical runtime ID, so
+retries remain distinct without rewriting evidence. Representative provenance
+also binds the exact node CPU/RAM/GPU/local-disk geometry, DBR runtime, cold
+cache protocol, and the SHA-256 of the wheel that the bootstrap verified before
+installation.
 
 Initialize one ledger for the canary sequence:
 

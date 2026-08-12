@@ -10,7 +10,10 @@ import pytest
 
 import document_kv_cache.vllm_smoke as public_vllm_smoke
 from document_kv_cache.artifact_identity import RuntimeIdentity
-from document_kv_cache.canary_orchestration import representative_canary_matrix
+from document_kv_cache.canary_orchestration import (
+    representative_canary_matrix,
+    representative_vllm_comparison_suite_id,
+)
 from document_kv_cache.serving_env import VLLM_SERVING_ENVIRONMENT_PROFILE
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_DEVICE_MAP_ENV,
@@ -27,6 +30,7 @@ from document_kv_cache.vllm_smoke import (
     BASELINE_PREFIX_CACHE_SALT,
     CACHE_PREFIX_CACHE_SALT,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
+    DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
     FASTAPI_CONSTRAINT,
     HUGGINGFACE_HUB_CONSTRAINT,
     HF_MODEL_ID,
@@ -94,6 +98,15 @@ from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_REVISION = "a" * 40
+REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
+
+
+@pytest.fixture(autouse=True)
+def _verified_representative_wheel_sha256(monkeypatch):
+    monkeypatch.setenv(
+        DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+        REPRESENTATIVE_WHEEL_SHA256,
+    )
 
 
 def representative_vllm_kwargs(
@@ -105,6 +118,11 @@ def representative_vllm_kwargs(
     profile = vllm_representative_workload_profile(profile_id)
     matrix = representative_canary_matrix()
     return {
+        "benchmark_suite_id": representative_vllm_comparison_suite_id(
+            hardware_target="aws-g6-l4",
+            profile_id=profile.profile_id,
+        ),
+        "benchmark_runtime_id": "test-physical-run-1",
         "model_revision": MODEL_REVISION,
         "tokenizer_revision": MODEL_REVISION,
         "representative_canary": True,
@@ -645,6 +663,10 @@ def test_parse_args_wires_registered_representative_workload_profile(tmp_path):
     argv = [
         "--benchmark-id",
         "vllm-8k-64-v1",
+        "--benchmark-suite-id",
+        "g6-vllm-8k-64",
+        "--runtime-id",
+        "test-physical-run-1",
         "--output-dir",
         str(tmp_path / "out"),
         "--local-root",
@@ -1038,11 +1060,49 @@ def test_vllm_representative_profiles_accept_only_the_registered_workloads(
     assert config.representative_workload_profile is not None
     assert config.representative_workload_profile.profile_id == profile_id
     assert build_metadata(config)["representative_workload_profile"] == profile_id
+    assert config.benchmark_manifest_provenance["package_revisions"]["cachet-kv"] == (
+        f"wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}"
+    )
+
+
+def test_vllm_representative_provenance_requires_verified_wheel_sha256(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV)
+
+    with pytest.raises(ValueError, match="verified Cachet wheel SHA-256"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="representative-missing-wheel-digest",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            **representative_vllm_kwargs(tmp_path),
+        )
+
+
+def test_vllm_representative_provenance_rejects_wheel_identity_tampering(tmp_path):
+    kwargs = representative_vllm_kwargs(tmp_path)
+    kwargs["benchmark_manifest_provenance"] = {
+        "input_tokens_target": 8192,
+        "package_revisions": {
+            "cachet-kv": f"wheel-sha256:{'e' * 64}",
+        },
+    }
+
+    with pytest.raises(ValueError, match="package_revisions"):
+        VLLMSmokeBenchmarkConfig(
+            benchmark_id="representative-tampered-wheel-digest",
+            output_dir=tmp_path / "out",
+            local_root=tmp_path / "local",
+            **kwargs,
+        )
 
 
 @pytest.mark.parametrize(
     ("override", "message"),
     [
+        ({"benchmark_suite_id": "forged-suite"}, "comparison group"),
+        ({"benchmark_runtime_id": "unresolved"}, "must be resolved"),
         ({"max_tokens": 32}, "max_tokens"),
         ({"max_model_len": 4096}, "max_model_len"),
         ({"benchmark_repeats": 2}, "benchmark_repeats"),

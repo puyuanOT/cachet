@@ -104,15 +104,43 @@ REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY = (
     "build_transformers_kv_chunk_generator"
 )
 REPRESENTATIVE_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
+REPRESENTATIVE_CACHE_STATE = "cold"
 REPRESENTATIVE_VLLM_RUNNER_BASENAME = "run_vllm_smoke.py"
 REPRESENTATIVE_SGLANG_RUNNER_BASENAME = "run_sglang_smoke.py"
 REPRESENTATIVE_VLLM_RUNNER_SHA256 = (
-    "e5339a43b7b339ec3793881aba7f9a7a7f3b51e540bf82b57dcd32d30f696398"
+    "8ac187dbe342d30d9cc7cea20c7775754200888bc0eecb3412e2bd028fe6de16"
 )
 REPRESENTATIVE_SGLANG_RUNNER_SHA256 = (
-    "0e289f0ac7379f87917feb772b35ea75f58a419a6d5aa9c1881c75aec15a4500"
+    "6e3b5cd79181828bcb515e210fea46e6aa75b7636c2a3bf8e19775f5026bc1de"
 )
 REPRESENTATIVE_HOTPOT_DATASET_BASENAME = "hotpotqa.jsonl"
+REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE = "{{task.run_id}}"
+
+_REPRESENTATIVE_VLLM_COMPARISON_SUITE_IDS = {
+    ("aws-g6-l4", "vllm-8k-64-v1"): "g6-vllm-8k-64",
+    ("aws-g6-l4", "vllm-16k-256-v1"): "g6-vllm-16k-256",
+    ("aws-g5-a10g", "vllm-8k-64-v1"): "g5-vllm-8k-64",
+}
+_REPRESENTATIVE_VLLM_ENVIRONMENT_PROVENANCE = {
+    "aws-g6-l4": {
+        "hardware_fingerprint": (
+            "aws:g6.8xlarge:gpu=l4x1:cpu=32:ram_mib=131072:"
+            "local_disks=2x450gb"
+        ),
+        "runtime_version": REPRESENTATIVE_DATABRICKS_SPARK_VERSION,
+        "storage_identity": "local_nvme:/local_disk0:2x450gb",
+        "cache_state": REPRESENTATIVE_CACHE_STATE,
+    },
+    "aws-g5-a10g": {
+        "hardware_fingerprint": (
+            "aws:g5.8xlarge:gpu=a10gx1:cpu=32:ram_mib=131072:"
+            "local_disks=1x900gb"
+        ),
+        "runtime_version": REPRESENTATIVE_DATABRICKS_SPARK_VERSION,
+        "storage_identity": "local_nvme:/local_disk0:1x900gb",
+        "cache_state": REPRESENTATIVE_CACHE_STATE,
+    },
+}
 
 _REPRESENTATIVE_COMMON_PARAMETER_FLAGS = frozenset(
     {
@@ -137,6 +165,8 @@ _REPRESENTATIVE_COMMON_PARAMETER_FLAGS = frozenset(
 )
 _REPRESENTATIVE_VLLM_PARAMETER_FLAGS = frozenset(
     {
+        "--benchmark-suite-id",
+        "--runtime-id",
         "--max-model-len",
         "--max-num-seqs",
         "--gpu-memory-utilization",
@@ -403,11 +433,13 @@ __all__ = [
     "REPRESENTATIVE_SGLANG_PACKAGE_PINS",
     "REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY",
     "REPRESENTATIVE_DATABRICKS_SPARK_VERSION",
+    "REPRESENTATIVE_CACHE_STATE",
     "REPRESENTATIVE_VLLM_RUNNER_BASENAME",
     "REPRESENTATIVE_SGLANG_RUNNER_BASENAME",
     "REPRESENTATIVE_VLLM_RUNNER_SHA256",
     "REPRESENTATIVE_SGLANG_RUNNER_SHA256",
     "REPRESENTATIVE_HOTPOT_DATASET_BASENAME",
+    "REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE",
     "RepresentativeCanaryRun",
     "RepresentativeCanaryMatrix",
     "RepresentativeCanaryPreparedInputs",
@@ -415,6 +447,8 @@ __all__ = [
     "RepresentativeCanaryWorkloadManifest",
     "representative_canary_matrix",
     "representative_canary_workload_manifest",
+    "representative_vllm_comparison_suite_id",
+    "representative_vllm_environment_provenance",
     "create_representative_canary_cluster_hour_ledger",
     "validate_representative_canary_workload_payload",
     "validate_representative_canary_workload_payloads",
@@ -613,6 +647,15 @@ class RepresentativeCanaryWorkload:
             else REPRESENTATIVE_SGLANG_RUNNER_SHA256
         )
 
+    @property
+    def comparison_suite_id(self) -> str:
+        if self.serving_platform != "vllm":
+            return self.workload_id
+        return representative_vllm_comparison_suite_id(
+            hardware_target=self.hardware_target,
+            profile_id=self.profile_id,
+        )
+
     def to_record(self) -> dict[str, Any]:
         return {
             "order": self.order,
@@ -623,6 +666,7 @@ class RepresentativeCanaryWorkload:
             "hardware_target": self.hardware_target,
             "node_type_id": self.node_type_id,
             "arm_id": self.arm_id,
+            "comparison_suite_id": self.comparison_suite_id,
             "model_id": REPRESENTATIVE_CANARY_MODEL_ID,
             "model_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
             "package_pins": list(self.package_pins),
@@ -680,6 +724,39 @@ def representative_canary_workload_manifest() -> RepresentativeCanaryWorkloadMan
             for spec in _REPRESENTATIVE_CANARY_WORKLOAD_SPECS
         )
     )
+
+
+def representative_vllm_comparison_suite_id(
+    *,
+    hardware_target: str,
+    profile_id: str,
+) -> str:
+    """Return the one shared experiment ID for a physical three-arm group."""
+
+    try:
+        return _REPRESENTATIVE_VLLM_COMPARISON_SUITE_IDS[
+            (hardware_target, profile_id)
+        ]
+    except KeyError as exc:
+        raise ValueError(
+            "unsupported representative vLLM hardware/profile comparison group: "
+            f"{hardware_target!r}, {profile_id!r}"
+        ) from exc
+
+
+def representative_vllm_environment_provenance(
+    hardware_target: str,
+) -> Mapping[str, str]:
+    """Return canonical physical runtime provenance for a representative node."""
+
+    try:
+        record = _REPRESENTATIVE_VLLM_ENVIRONMENT_PROVENANCE[hardware_target]
+    except KeyError as exc:
+        raise ValueError(
+            "unsupported representative vLLM hardware target: "
+            f"{hardware_target!r}"
+        ) from exc
+    return MappingProxyType(dict(record))
 
 
 def _representative_canary_workload_from_spec(
@@ -1042,7 +1119,7 @@ def _validate_representative_canary_payload_contract(
         "representative result output directory",
         expected_basename=workload.workload_id,
     )
-    validated_representative_wheel_binding(
+    _, wheel_sha256 = validated_representative_wheel_binding(
         _single_parameter_value(parameters, "--package-wheel-uri"),
         _single_parameter_value(parameters, "--package-wheel-sha256"),
     )
@@ -1079,7 +1156,11 @@ def _validate_representative_canary_payload_contract(
             )
 
     if workload.serving_platform == "vllm":
-        _validate_representative_vllm_payload_parameters(workload, parameters)
+        _validate_representative_vllm_payload_parameters(
+            workload,
+            parameters,
+            wheel_sha256=wheel_sha256,
+        )
     else:
         _validate_representative_sglang_payload_parameters(workload, parameters)
 
@@ -1087,7 +1168,26 @@ def _validate_representative_canary_payload_contract(
 def _validate_representative_vllm_payload_parameters(
     workload: RepresentativeCanaryWorkload,
     parameters: Sequence[str],
+    *,
+    wheel_sha256: str,
 ) -> None:
+    expected_suite_id = workload.comparison_suite_id
+    if (
+        _single_parameter_value(parameters, "--benchmark-suite-id")
+        != expected_suite_id
+    ):
+        raise ValueError(
+            "representative vLLM --benchmark-suite-id must match its "
+            "hardware/profile comparison group"
+        )
+    if (
+        _single_parameter_value(parameters, "--runtime-id")
+        != REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE
+    ):
+        raise ValueError(
+            "representative vLLM --runtime-id must use the retry-unique "
+            "Databricks task run reference"
+        )
     profile_values = {
         "vllm-8k-64-v1": (8_192, 64, 8_512),
         "vllm-16k-256-v1": (16_384, 256, 16_896),
@@ -1181,6 +1281,7 @@ def _validate_representative_vllm_payload_parameters(
             pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
         )
     }
+    expected_package_revisions["cachet-kv"] = f"wheel-sha256:{wheel_sha256}"
     expected_provenance: dict[str, object] = {
         "input_tokens_target": input_tokens,
         "canonical_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
@@ -1195,6 +1296,11 @@ def _validate_representative_vllm_payload_parameters(
         "runtime_kv_dtype": "bfloat16",
         "package_revisions": expected_package_revisions,
     }
+    expected_provenance.update(
+        representative_vllm_environment_provenance(
+            workload.hardware_target
+        )
+    )
     for field_name, expected_value in expected_provenance.items():
         if provenance.get(field_name) != expected_value:
             raise ValueError(

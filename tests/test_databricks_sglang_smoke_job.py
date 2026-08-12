@@ -960,11 +960,18 @@ def test_representative_sglang_runner_digest_matches_embedded_script():
     )
 
 
-def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp_path):
+@pytest.mark.parametrize("verify_sha256", [True, False])
+def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(
+    tmp_path,
+    verify_sha256,
+):
     runner_path = tmp_path / "run_sglang_smoke.py"
     pip_call_path = tmp_path / "pip-call.json"
     main_args_path = tmp_path / "main-args.json"
     events_path = tmp_path / "events.jsonl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
+    wheel_path.write_bytes(b"verified Cachet wheel bytes")
+    wheel_sha256 = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
     package_dir = tmp_path / "document_kv_cache"
     package_dir.mkdir()
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -984,6 +991,7 @@ def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp
                 "        json.dump({",
                 "            'argv': argv,",
                 "            'package_install_spec': os.environ.get('DOCUMENT_KV_PACKAGE_INSTALL_SPEC'),",
+                "            'package_wheel_sha256': os.environ.get('DOCUMENT_KV_PACKAGE_WHEEL_SHA256'),",
                 "        }, handle)",
                 "    return 0",
                 "",
@@ -1019,14 +1027,17 @@ def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp
         "PIP_CALL_JSON": str(pip_call_path),
         "MAIN_ARGS_JSON": str(main_args_path),
         "RUNNER_EVENTS_JSONL": str(events_path),
+        "DOCUMENT_KV_PACKAGE_WHEEL_SHA256": "a" * 64,
     }
 
+    wheel_arguments = ["--package-wheel-uri", str(wheel_path)]
+    if verify_sha256:
+        wheel_arguments.extend(["--package-wheel-sha256", wheel_sha256])
     subprocess.run(
         [
             sys.executable,
             str(runner_path),
-            "--package-wheel-uri",
-            "dbfs:/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+            *wheel_arguments,
             "--benchmark-id",
             "v1-sglang-smoke-001",
             "--output-dir",
@@ -1044,7 +1055,7 @@ def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp
         "-m",
         "pip",
         "install",
-        "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+        str(wheel_path),
     ]
     main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
     assert main_payload == {
@@ -1054,13 +1065,38 @@ def test_generated_sglang_smoke_runner_installs_wheel_before_forwarding_args(tmp
             "--output-dir",
             "/dbfs/tmp/cachet/output",
         ],
-        "package_install_spec": "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+        "package_install_spec": str(wheel_path),
+        "package_wheel_sha256": wheel_sha256 if verify_sha256 else None,
     }
     events = [
         json.loads(line)["event"]
         for line in events_path.read_text(encoding="utf-8").splitlines()
     ]
     assert events == ["pip_install", "sglang_smoke_import", "main"]
+
+
+def test_generated_sglang_smoke_runner_rejects_tampered_wheel(tmp_path):
+    runner_path = tmp_path / "run_sglang_smoke.py"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
+    wheel_path.write_bytes(b"tampered Cachet wheel bytes")
+    write_databricks_sglang_smoke_runner_script(runner_path)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--package-wheel-uri",
+            str(wheel_path),
+            "--package-wheel-sha256",
+            "0" * 64,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "Cachet package wheel SHA-256 does not match" in completed.stderr
 
 
 def test_write_databricks_sglang_smoke_run_submit_json_writes_payload(tmp_path):

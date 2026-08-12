@@ -46,6 +46,7 @@ from document_kv_cache.sglang_smoke import (
     DEFAULT_SGLANG_FLUSH_CACHE_TIMEOUT_SECONDS,
     DEFAULT_SGLANG_LIVE_BENCHMARK_REPEATS,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
+    DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
     HF_MODEL_ID,
     SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE,
     SGLANG_GENERATED_HANDOFF_EXPLICIT_FIELDS_UNSUPPORTED_MESSAGE,
@@ -102,6 +103,7 @@ from sglang_kv_injection.sglang_dynamic_backend import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPRESENTATIVE_WORKLOAD_PROFILE_ID = "sglang-4k-32-v1"
+REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
 REPRESENTATIVE_WORKLOAD_KWARGS = {
     "representative_canary": True,
     "representative_workload_profile": REPRESENTATIVE_WORKLOAD_PROFILE_ID,
@@ -112,6 +114,15 @@ REPRESENTATIVE_WORKLOAD_KWARGS = {
     "sglang_sampling_backend": "pytorch",
     "sglang_enable_deterministic_inference": True,
 }
+
+
+@pytest.fixture
+def representative_wheel_sha256_env(monkeypatch):
+    monkeypatch.setenv(
+        DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+        REPRESENTATIVE_WHEEL_SHA256,
+    )
+    return REPRESENTATIVE_WHEEL_SHA256
 
 
 def handoff_record(
@@ -714,7 +725,10 @@ def test_sglang_representative_profile_rejects_arbitrary_runtime_values(
         SGLangSmokeBenchmarkConfig(**kwargs)
 
 
-def test_sglang_representative_profile_is_recorded_in_metadata(tmp_path):
+def test_sglang_representative_profile_is_recorded_in_metadata(
+    tmp_path,
+    representative_wheel_sha256_env,
+):
     revision = "a" * 40
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-representative-profile-metadata",
@@ -735,11 +749,71 @@ def test_sglang_representative_profile_is_recorded_in_metadata(tmp_path):
         build_metadata(config)["representative_workload_profile"]
         == REPRESENTATIVE_WORKLOAD_PROFILE_ID
     )
+    assert build_metadata(config)["benchmark_manifest_provenance"][
+        "package_revisions"
+    ] == {
+        "sglang": SGLANG_VERSION,
+        "cachet-kv": f"wheel-sha256:{representative_wheel_sha256_env}",
+    }
+
+
+@pytest.mark.parametrize("environment_value", [None, "F" * 64, "f" * 63])
+def test_sglang_representative_requires_verified_wheel_digest_environment(
+    tmp_path,
+    monkeypatch,
+    environment_value,
+):
+    if environment_value is None:
+        monkeypatch.delenv(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV, raising=False)
+    else:
+        monkeypatch.setenv(
+            DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+            environment_value,
+        )
+
+    with pytest.raises(
+        ValueError,
+        match=DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+    ):
+        SGLangSmokeBenchmarkConfig(
+            benchmark_id="sglang-missing-verified-wheel",
+            output_dir=tmp_path / "out",
+            model_revision="a" * 40,
+            tokenizer_revision="a" * 40,
+            handoff_generation=SGLangLiveHandoffGenerationConfig(
+                output_dir=tmp_path / "handoff",
+            ),
+            **REPRESENTATIVE_WORKLOAD_KWARGS,
+        )
+
+
+def test_sglang_representative_provenance_snapshots_verified_wheel_digest(
+    tmp_path,
+    monkeypatch,
+    representative_wheel_sha256_env,
+):
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-verified-wheel-snapshot",
+        output_dir=tmp_path / "out",
+        model_revision="a" * 40,
+        tokenizer_revision="a" * 40,
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
+    )
+    monkeypatch.setenv(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV, "e" * 64)
+
+    assert config.package_wheel_sha256 == representative_wheel_sha256_env
+    assert public_sglang_smoke._resolved_sglang_provenance(config)[
+        "package_revisions"
+    ]["cachet-kv"] == f"wheel-sha256:{representative_wheel_sha256_env}"
 
 
 def test_sglang_representative_provenance_binds_resolved_rope_geometry(
     tmp_path,
     monkeypatch,
+    representative_wheel_sha256_env,
 ):
     class PreRopeLayout:
         lora_id = "base"
@@ -774,6 +848,10 @@ def test_sglang_representative_provenance_binds_resolved_rope_geometry(
     assert provenance["model_dtype"] == "bfloat16"
     assert provenance["model_quantization"] == "none"
     assert provenance["runtime_kv_dtype"] == "bfloat16"
+    assert provenance["package_revisions"] == {
+        "sglang": SGLANG_VERSION,
+        "cachet-kv": f"wheel-sha256:{representative_wheel_sha256_env}",
+    }
     assert provenance["rope_theta"] == 1_000_000.0
     assert provenance["rope_rotary_dim"] == 128
 
@@ -781,6 +859,7 @@ def test_sglang_representative_provenance_binds_resolved_rope_geometry(
 def test_sglang_representative_server_env_pins_generator_and_page_cache(
     tmp_path,
     monkeypatch,
+    representative_wheel_sha256_env,
 ):
     for name in (
         CACHET_TRANSFORMERS_MODEL_REVISION_ENV,
@@ -1322,7 +1401,7 @@ def test_prepare_generated_sglang_benchmark_handoffs_writes_enriched_inputs(
 
 
 def test_prepare_generated_sglang_benchmark_handoffs_uses_sglang_venv(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, representative_wheel_sha256_env
 ):
     generation = SGLangPreparedHandoffGenerationConfig(
         output_dir=tmp_path / "generated-handoffs",
@@ -1896,7 +1975,7 @@ def test_token_stable_handoff_rejects_non_page_aligned_decode_fallback():
 
 
 def test_prepare_generated_live_handoff_uses_sglang_venv_when_available(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, representative_wheel_sha256_env
 ):
     generation = SGLangLiveHandoffGenerationConfig(
         output_dir=tmp_path / "generated-live",
@@ -2351,7 +2430,8 @@ def test_sglang_smoke_cli_rejects_zero_prepared_handoff_page_size(tmp_path):
         )
 
 
-def test_build_metadata_records_custom_params_transport(tmp_path):
+def test_build_metadata_records_custom_params_transport(tmp_path, monkeypatch):
+    monkeypatch.setenv(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV, "e" * 64)
     config = SGLangSmokeBenchmarkConfig(
         benchmark_id="sglang-1",
         output_dir=tmp_path / "out",
@@ -2369,6 +2449,8 @@ def test_build_metadata_records_custom_params_transport(tmp_path):
     assert metadata["sglang_sampling_backend"] is None
     assert metadata["sglang_enable_deterministic_inference"] is False
     assert metadata["representative_workload_profile"] is None
+    assert config.package_wheel_sha256 is None
+    assert "package_revisions" not in metadata["benchmark_manifest_provenance"]
     assert metadata["sglang_server_backend_options"] == {
         "attention_backend": None,
         "sampling_backend": None,
@@ -2861,7 +2943,7 @@ def test_run_live_checks_can_skip_cache_arm_cache_flush(monkeypatch, tmp_path):
 
 
 def test_run_sglang_live_benchmark_writes_repeat_measurements(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, representative_wheel_sha256_env
 ):
     handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
     payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
@@ -2872,11 +2954,13 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
         benchmark_id="sglang-benchmark-1",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
+        model_revision="a" * 40,
+        tokenizer_revision="a" * 40,
         handoff_json=str(handoff_path),
         payload_uri=payload_uri,
         request_id="cachet-live-sglang-1",
         sglang_hicache_page_keys=("page-a", "page-b"),
-        live_benchmark_repeats=2,
+        **REPRESENTATIVE_WORKLOAD_KWARGS,
     )
     config.server_log_path.parent.mkdir(parents=True, exist_ok=True)
     events = []
@@ -2944,6 +3028,15 @@ def test_run_sglang_live_benchmark_writes_repeat_measurements(
 
     assert record["ok"] is True
     assert record["record_type"] == SGLANG_LIVE_BENCHMARK_RECORD_TYPE
+    assert record["representative_canary"] is True
+    assert (
+        record["representative_workload_profile"]
+        == REPRESENTATIVE_WORKLOAD_PROFILE_ID
+    )
+    assert record["benchmark_manifest_provenance"]["package_revisions"] == {
+        "sglang": SGLANG_VERSION,
+        "cachet-kv": f"wheel-sha256:{representative_wheel_sha256_env}",
+    }
     assert record["suite"] == {
         "suite_id": "sglang-live-synthetic-niah",
         "scope": "live_synthetic_niah",
@@ -3951,7 +4044,10 @@ def test_parse_args_builds_baseline_only_config(tmp_path):
     assert str(exc.value) == SGLANG_BASELINE_HANDOFF_FIELDS_UNSUPPORTED_MESSAGE
 
 
-def test_parse_args_builds_explicit_representative_workload_profile(tmp_path):
+def test_parse_args_builds_explicit_representative_workload_profile(
+    tmp_path,
+    representative_wheel_sha256_env,
+):
     revision = "a" * 40
     package_pin_args = [
         argument

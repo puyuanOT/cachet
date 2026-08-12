@@ -10,8 +10,10 @@ import pytest
 import document_kv_cache.databricks_vllm_smoke_job as public_databricks_vllm_smoke_job
 from document_kv_cache.artifact_identity import RuntimeIdentity
 from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE,
     REPRESENTATIVE_VLLM_RUNNER_SHA256,
     representative_canary_matrix,
+    representative_vllm_environment_provenance,
 )
 from document_kv_cache.databricks_vllm_smoke_job import (
     DEFAULT_DATABRICKS_VLLM_SMOKE_PURPOSE,
@@ -26,6 +28,7 @@ from document_kv_cache.databricks_vllm_smoke_job import (
 )
 from document_kv_cache.serving_env import VLLM_VERSION
 from document_kv_cache.vllm_smoke import (
+    DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
     build_benchmark_runner_args,
     parse_args as parse_vllm_smoke_args,
     parse_dataset_specs,
@@ -273,7 +276,9 @@ def test_databricks_payload_forwards_arbitrary_arms_evidence_and_provenance():
         "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
         "tokenizer_revision": MODEL_REVISION,
         "input_tokens_target": 16384,
-        "hardware_fingerprint": "g6.8xlarge-l4-128g",
+        "hardware_fingerprint": representative_vllm_environment_provenance(
+            "aws-g6-l4"
+        )["hardware_fingerprint"],
         "measurement_scopes": ["latency", "resource"],
     }
     config = DatabricksVLLMSmokeJobConfig(
@@ -327,7 +332,7 @@ def test_databricks_payload_forwards_arbitrary_arms_evidence_and_provenance():
     ] == "1"
 
 
-def test_databricks_representative_provenance_builds_benchmark_runner_args():
+def test_databricks_representative_provenance_builds_benchmark_runner_args(monkeypatch):
     config = DatabricksVLLMSmokeJobConfig(
         benchmark_id="representative-canary-runner-args",
         output_dir="/Volumes/catalog/schema/volume/representative-canary-runner-args",
@@ -341,6 +346,10 @@ def test_databricks_representative_provenance_builds_benchmark_runner_args():
     ]["parameters"]
     assert parameters[-4::2] == ["--package-wheel-uri", "--package-wheel-sha256"]
 
+    monkeypatch.setenv(
+        DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+        REPRESENTATIVE_WHEEL_SHA256,
+    )
     smoke_config = parse_vllm_smoke_args(parameters[:-4])
     dataset_paths = parse_dataset_specs(
         smoke_config.dataset_specs,
@@ -354,6 +363,10 @@ def test_databricks_representative_provenance_builds_benchmark_runner_args():
         if value == "--package-revision"
     ]
     assert f"vllm={VLLM_VERSION}" in package_revisions
+    assert (
+        f"cachet-kv=wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}"
+        in package_revisions
+    )
 
 
 def test_databricks_representative_provenance_binds_resolved_rope_geometry(
@@ -595,8 +608,39 @@ def test_databricks_vllm_representative_accepts_one_fixed_arm_per_task(arm_index
         "spark_python_task"
     ]["parameters"]
     assert parameters.count("--benchmark-arm-spec-json") == 1
+    assert parameters[parameters.index("--benchmark-suite-id") + 1] == (
+        "g6-vllm-8k-64"
+    )
+    assert parameters[parameters.index("--runtime-id") + 1] == (
+        REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE
+    )
     assert "--representative-canary" in parameters
     assert "--representative-workload-profile" in parameters
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ({"benchmark_suite_id": "forged-suite"}, "comparison group"),
+        ({"benchmark_runtime_id": "static-run"}, "retry-unique"),
+    ],
+)
+def test_databricks_vllm_representative_rejects_mismatched_execution_identity(
+    override,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        DatabricksVLLMSmokeJobConfig(
+            benchmark_id="g6-vllm-8k-64-baseline",
+            output_dir=(
+                "/Volumes/catalog/schema/volume/g6-vllm-8k-64-baseline"
+            ),
+            runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+            node_type_id="g6.8xlarge",
+            single_user_name=SINGLE_USER_NAME,
+            **representative_job_kwargs(),
+            **override,
+        )
 
 
 @pytest.mark.parametrize(
@@ -997,6 +1041,9 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
     pip_call_path = tmp_path / "pip-call.json"
     main_args_path = tmp_path / "main-args.json"
     events_path = tmp_path / "events.jsonl"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
+    wheel_path.write_bytes(b"verified Cachet wheel bytes")
+    wheel_sha256 = hashlib.sha256(wheel_path.read_bytes()).hexdigest()
     package_dir = tmp_path / "document_kv_cache"
     package_dir.mkdir()
     (package_dir / "__init__.py").write_text("", encoding="utf-8")
@@ -1016,6 +1063,7 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
                 "        json.dump({",
                 "            'argv': argv,",
                 "            'package_install_spec': os.environ.get('DOCUMENT_KV_PACKAGE_INSTALL_SPEC'),",
+                "            'package_wheel_sha256': os.environ.get('DOCUMENT_KV_PACKAGE_WHEEL_SHA256'),",
                 "        }, handle)",
                 "    return 0",
                 "",
@@ -1051,6 +1099,7 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
         "PIP_CALL_JSON": str(pip_call_path),
         "MAIN_ARGS_JSON": str(main_args_path),
         "RUNNER_EVENTS_JSONL": str(events_path),
+        "DOCUMENT_KV_PACKAGE_WHEEL_SHA256": "a" * 64,
     }
 
     subprocess.run(
@@ -1058,7 +1107,9 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
             sys.executable,
             str(runner_path),
             "--package-wheel-uri",
-            "dbfs:/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+            str(wheel_path),
+            "--package-wheel-sha256",
+            wheel_sha256,
             "--benchmark-id",
             "v1-vllm-smoke-001",
             "--output-dir",
@@ -1076,7 +1127,7 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
         "-m",
         "pip",
         "install",
-        "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+        str(wheel_path),
     ]
     main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
     assert main_payload == {
@@ -1086,10 +1137,54 @@ def test_generated_vllm_smoke_runner_installs_wheel_before_forwarding_args(tmp_p
             "--output-dir",
             "/dbfs/tmp/cachet/output",
         ],
-        "package_install_spec": "/dbfs/tmp/cachet/cachet_kv-0.2.0-py3-none-any.whl",
+        "package_install_spec": str(wheel_path),
+        "package_wheel_sha256": wheel_sha256,
     }
     events = [json.loads(line)["event"] for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert events == ["pip_install", "vllm_smoke_import", "main"]
+
+    subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--package-wheel-uri",
+            str(wheel_path),
+            "--benchmark-id",
+            "generic-vllm-smoke",
+            "--output-dir",
+            "/dbfs/tmp/cachet/generic-output",
+        ],
+        check=True,
+        capture_output=True,
+        env=env,
+        text=True,
+    )
+    generic_main_payload = json.loads(main_args_path.read_text(encoding="utf-8"))
+    assert generic_main_payload["package_wheel_sha256"] is None
+
+
+def test_generated_vllm_smoke_runner_rejects_tampered_wheel(tmp_path):
+    runner_path = tmp_path / "run_vllm_smoke.py"
+    wheel_path = tmp_path / "cachet_kv-0.2.0-py3-none-any.whl"
+    wheel_path.write_bytes(b"tampered Cachet wheel bytes")
+    write_databricks_vllm_smoke_runner_script(runner_path)
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(runner_path),
+            "--package-wheel-uri",
+            str(wheel_path),
+            "--package-wheel-sha256",
+            "0" * 64,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode != 0
+    assert "Cachet package wheel SHA-256 does not match" in completed.stderr
 
 
 def test_write_databricks_vllm_smoke_run_submit_json_writes_payload(tmp_path):

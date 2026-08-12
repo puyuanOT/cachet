@@ -48,9 +48,12 @@ from document_kv_cache.vllm_smoke import (
 )
 from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES
 from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE,
     REPRESENTATIVE_VLLM_PACKAGE_PINS,
     benchmark_json_mapping_to_record,
     representative_canary_matrix,
+    representative_vllm_comparison_suite_id,
+    representative_vllm_environment_provenance,
     require_pinned_revision,
     resolved_layout_rope_provenance,
     validated_representative_wheel_binding,
@@ -80,6 +83,7 @@ def _cluster_file_path(uri: str) -> str:
 
 
 def _install_package_wheel(argv: list[str]) -> list[str]:
+    os.environ.pop("DOCUMENT_KV_PACKAGE_WHEEL_SHA256", None)
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--package-wheel-uri")
     parser.add_argument("--package-wheel-sha256")
@@ -88,17 +92,21 @@ def _install_package_wheel(argv: list[str]) -> list[str]:
         raise ValueError("--package-wheel-sha256 requires --package-wheel-uri")
     if args.package_wheel_uri:
         package_wheel_path = _cluster_file_path(args.package_wheel_uri)
+        verified_digest = None
         if args.package_wheel_sha256:
             digest = hashlib.sha256()
             with open(package_wheel_path, "rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     digest.update(chunk)
-            if not hmac.compare_digest(digest.hexdigest(), args.package_wheel_sha256):
+            verified_digest = digest.hexdigest()
+            if not hmac.compare_digest(verified_digest, args.package_wheel_sha256):
                 raise ValueError("Cachet package wheel SHA-256 does not match")
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", package_wheel_path]
         )
         os.environ["DOCUMENT_KV_PACKAGE_INSTALL_SPEC"] = package_wheel_path
+        if verified_digest is not None:
+            os.environ["DOCUMENT_KV_PACKAGE_WHEEL_SHA256"] = verified_digest
     return remaining
 
 
@@ -188,6 +196,8 @@ class DatabricksVLLMSmokeJobConfig:
     zone_id: str = "auto"
     custom_tags: Mapping[str, str] = field(default_factory=dict)
     spark_env_vars: Mapping[str, str] = field(default_factory=dict)
+    benchmark_suite_id: str | None = None
+    benchmark_runtime_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
@@ -196,6 +206,12 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError("output_dir must be non-empty")
         if not self.runner_python_file:
             raise ValueError("runner_python_file must be non-empty")
+        for field_name in ("benchmark_suite_id", "benchmark_runtime_id"):
+            value = getattr(self, field_name)
+            if value is not None and (
+                not isinstance(value, str) or not value.strip()
+            ):
+                raise ValueError(f"{field_name} must be non-empty when provided")
         if not self.run_name:
             raise ValueError("run_name must be non-empty")
         if not self.task_key:
@@ -297,6 +313,36 @@ class DatabricksVLLMSmokeJobConfig:
             "representative_workload_profile",
             representative_profile,
         )
+        if representative_profile is not None:
+            expected_suite_id = representative_vllm_comparison_suite_id(
+                hardware_target=resolved_hardware_target,
+                profile_id=representative_profile.profile_id,
+            )
+            if self.benchmark_suite_id is None:
+                object.__setattr__(
+                    self,
+                    "benchmark_suite_id",
+                    expected_suite_id,
+                )
+            elif self.benchmark_suite_id != expected_suite_id:
+                raise ValueError(
+                    "representative benchmark_suite_id must match the "
+                    "hardware/profile comparison group"
+                )
+            if self.benchmark_runtime_id is None:
+                object.__setattr__(
+                    self,
+                    "benchmark_runtime_id",
+                    REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE,
+                )
+            elif (
+                self.benchmark_runtime_id
+                != REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE
+            ):
+                raise ValueError(
+                    "representative benchmark_runtime_id must use the "
+                    "retry-unique Databricks task run reference"
+                )
         if (
             self.representative_canary
             and self.run_timeout_seconds != DEFAULT_DATABRICKS_RUN_TIMEOUT_SECONDS
@@ -346,6 +392,14 @@ class DatabricksVLLMSmokeJobConfig:
             require_pinned_revision(self.tokenizer_revision, "tokenizer_revision")
         if self.is_representative_submission:
             provenance = _representative_vllm_provenance(self, provenance)
+        if (
+            self.benchmark_runtime_id is not None
+            and "runtime_id" in provenance
+        ):
+            raise ValueError(
+                "benchmark_runtime_id and "
+                "benchmark_manifest_provenance.runtime_id are mutually exclusive"
+            )
         if (
             self.model_revision is not None
             and "model_revision" in provenance
@@ -615,6 +669,17 @@ def _representative_vllm_provenance(
         )
     runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
     layout = layout_for_model(HF_MODEL_ID, dtype=runtime_kv_dtype)
+    _, wheel_sha256 = validated_representative_wheel_binding(
+        config.wheel_uri,
+        config.wheel_sha256,
+    )
+    package_revisions = {
+        package: version
+        for package, version in (
+            pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
+        )
+    }
+    package_revisions["cachet-kv"] = f"wheel-sha256:{wheel_sha256}"
     expected: dict[str, Any] = {
         "canonical_model_id": HF_MODEL_ID,
         "model_revision": config.model_revision,
@@ -641,13 +706,13 @@ def _representative_vllm_provenance(
         ),
         "tensor_parallel_size": 1,
         "pipeline_parallel_size": 1,
-        "package_revisions": {
-            package: version
-            for package, version in (
-                pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
-            )
-        },
+        "package_revisions": package_revisions,
     }
+    expected.update(
+        representative_vllm_environment_provenance(
+            str(config.hardware_target)
+        )
+    )
     resolved_rope = resolved_layout_rope_provenance(layout)
     expected.update(resolved_rope)
     record = dict(provenance)
@@ -815,6 +880,12 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         "--runtime-telemetry-interval-seconds",
         str(config.runtime_telemetry_interval_seconds),
     ]
+    if config.benchmark_suite_id is not None:
+        parameters.extend(
+            ["--benchmark-suite-id", config.benchmark_suite_id]
+        )
+    if config.benchmark_runtime_id is not None:
+        parameters.extend(["--runtime-id", config.benchmark_runtime_id])
     resolved_model_id = (
         config.model_id
         if config.model_id is not None
@@ -964,6 +1035,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Emit a Databricks runs/submit payload for a V1 AWS single-node GPU vLLM smoke."
     )
     parser.add_argument("--benchmark-id", required=True)
+    parser.add_argument(
+        "--benchmark-suite-id",
+        help=(
+            "Shared benchmark suite/experiment ID. Representative isolated arms "
+            "derive the canonical hardware/profile group when omitted."
+        ),
+    )
+    parser.add_argument(
+        "--runtime-id",
+        dest="benchmark_runtime_id",
+        help=(
+            "Physical benchmark execution ID. Representative jobs derive the "
+            "retry-unique Databricks task run reference when omitted."
+        ),
+    )
     parser.add_argument("--output-dir", required=True, help="Cluster-visible output directory for smoke artifacts.")
     parser.add_argument("--runner-python-file", required=True, help="Cluster-visible runner script path or URI.")
     parser.add_argument("--run-name", default=DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME)
@@ -1184,6 +1270,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             benchmark_id=args.benchmark_id,
             output_dir=args.output_dir,
             runner_python_file=args.runner_python_file,
+            benchmark_suite_id=args.benchmark_suite_id,
+            benchmark_runtime_id=args.benchmark_runtime_id,
             run_name=args.run_name,
             task_key=args.task_key,
             run_timeout_seconds=args.run_timeout_seconds,

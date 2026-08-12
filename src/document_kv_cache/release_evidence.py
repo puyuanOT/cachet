@@ -37,6 +37,10 @@ from document_kv_cache.benchmark_gates import (
 )
 from document_kv_cache.artifact_identity import ArtifactIdentity
 from document_kv_cache.benchmark_metrics import aggregate_decode_tokens_per_second
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_CANARY_MODEL_ID,
+    REPRESENTATIVE_CANARY_MODEL_REVISION,
+)
 from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
     ENGINE_KV_CONNECTOR_PROBE_RECORD_TYPE,
@@ -55,7 +59,7 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
-from document_kv_cache.model_profiles import get_model_profile
+from document_kv_cache.model_profiles import get_model_profile, layout_for_model
 from document_kv_cache.methods import MethodRegistry
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
 from document_kv_cache.serving_env import serving_environment_profile
@@ -90,6 +94,13 @@ RELEASE_EVIDENCE_RECORD_TYPE = "document_kv.release_evidence.v1"
 RELEASE_EVIDENCE_INPUT_STATUS_RECORD_TYPE = "document_kv.release_evidence_inputs.v1"
 SGLANG_LIVE_BENCHMARK_RECORD_TYPE = "cachet.sglang_live_benchmark.v1"
 SGLANG_LIVE_V1_BENCHMARK_SCOPE = "live_v1_release"
+_REPRESENTATIVE_SGLANG_PROFILE_ID = "sglang-4k-32-v1"
+_REPRESENTATIVE_SGLANG_HARDWARE_TARGET = "aws-g6-l4"
+_REPRESENTATIVE_SGLANG_SUITE_ID = "sglang-live-synthetic-niah"
+_REPRESENTATIVE_SGLANG_SUITE_SCOPE = "live_synthetic_niah"
+_REPRESENTATIVE_SGLANG_DATASETS = ("niah",)
+_REPRESENTATIVE_SGLANG_EXAMPLES = 1
+_REPRESENTATIVE_SGLANG_REPEATS = 2
 REQUIRED_ENGINE_PROBE_BACKENDS = tuple(backend.value for backend in ServingBackend)
 RELEASE_EVIDENCE_ARTIFACT_ROLES = (
     "v1_benchmark",
@@ -1237,10 +1248,43 @@ def _v1_benchmark_issues(
     return tuple(issues)
 
 
-def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...]:
-    """Return release-readiness issues for a live SGLang prepared V1 benchmark."""
+def sglang_live_v1_benchmark_issues(
+    record: Mapping[str, Any],
+    *,
+    expected_cachet_wheel_sha256: str | None = None,
+) -> tuple[str, ...]:
+    """Return release-readiness issues for a live SGLang benchmark.
+
+    Representative evidence requires ``expected_cachet_wheel_sha256`` to bind
+    its self-reported provenance to the already-verified submit payload.  The
+    generic full V1 release contract has no Cachet wheel field and therefore
+    rejects this context instead of silently ignoring it.
+    """
+
+    if (
+        expected_cachet_wheel_sha256 is not None
+        and not _is_sha256_hex_digest(expected_cachet_wheel_sha256)
+    ):
+        raise ValueError(
+            "expected_cachet_wheel_sha256 must be a lowercase SHA-256 digest"
+        )
 
     issues: list[str] = []
+    representative_canary = record.get("representative_canary") is True
+    required_datasets = (
+        _REPRESENTATIVE_SGLANG_DATASETS
+        if representative_canary
+        else SUPPORTED_V1_DATASETS
+    )
+    if expected_cachet_wheel_sha256 is not None and not representative_canary:
+        issues.append(
+            "expected_cachet_wheel_sha256 requires representative_canary=true"
+        )
+    if representative_canary and expected_cachet_wheel_sha256 is None:
+        issues.append(
+            "representative SGLang evidence requires an independently verified "
+            "expected_cachet_wheel_sha256"
+        )
     if record.get("record_type") != SGLANG_LIVE_BENCHMARK_RECORD_TYPE:
         issues.append(
             "SGLang live V1 benchmark record_type must be "
@@ -1266,7 +1310,11 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
             "SGLang live V1 benchmark hardware_target must be one of "
             f"{SUPPORTED_V1_HARDWARE_TARGETS!r}"
         )
-    _validate_sglang_live_v1_runtime_metadata(record, issues)
+    _validate_sglang_live_v1_runtime_metadata(
+        record,
+        issues,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+    )
 
     suite = _mapping_or_issue(record, "suite", issues)
     measurements = _sequence_or_issue(record, "measurements", issues)
@@ -1274,7 +1322,11 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
     comparisons = _sequence_or_issue(record, "comparisons", issues)
     cache_hit_validations = _sequence_or_issue(record, "cache_hit_validations", issues)
     if suite is not None:
-        _validate_sglang_live_v1_suite_metadata(suite, issues)
+        _validate_sglang_live_v1_suite_metadata(
+            suite,
+            issues,
+            representative_canary=representative_canary,
+        )
     if suite is not None and measurements is not None:
         _validate_sglang_live_v1_measurement_count(suite, measurements, issues)
         _validate_v1_suite_examples_match_measurements(suite, measurements, issues)
@@ -1282,21 +1334,40 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
         _validate_v1_measurement_examples_have_required_arms(measurements, issues)
         _validate_v1_measurement_examples_have_consistent_expected_answers(measurements, issues)
         _validate_v1_measurement_examples_have_consistent_logical_prompt_tokens(measurements, issues)
-        _validate_v1_measurements(measurements, issues)
+        if representative_canary:
+            _validate_representative_sglang_measurement_matrix(
+                measurements,
+                issues,
+            )
+        _validate_v1_measurements(
+            measurements,
+            issues,
+            required_datasets=required_datasets,
+        )
     if measurements is not None and report_rows is not None:
         _validate_v1_report_aggregates_match_measurements(report_rows, measurements, issues)
     if report_rows is not None and comparisons is not None:
         _validate_v1_comparisons_match_report_rows(report_rows, comparisons, issues)
     if report_rows is not None:
-        _validate_v1_report_rows(report_rows, issues)
+        _validate_v1_report_rows(
+            report_rows,
+            issues,
+            required_datasets=required_datasets,
+        )
     if comparisons is not None:
-        _validate_v1_comparisons(comparisons, issues)
+        _validate_v1_comparisons(
+            comparisons,
+            issues,
+            required_datasets=required_datasets,
+        )
     if suite is not None and cache_hit_validations is not None:
         _validate_sglang_live_v1_cache_hit_validations(
             suite,
             cache_hit_validations,
             measurements=measurements,
             issues=issues,
+            required_datasets=required_datasets,
+            require_exact_count=representative_canary,
         )
     return tuple(issues)
 
@@ -1304,6 +1375,8 @@ def sglang_live_v1_benchmark_issues(record: Mapping[str, Any]) -> tuple[str, ...
 def _validate_sglang_live_v1_runtime_metadata(
     record: Mapping[str, Any],
     issues: list[str],
+    *,
+    expected_cachet_wheel_sha256: str | None,
 ) -> None:
     if not isinstance(record.get("benchmark_id"), str) or not record.get("benchmark_id"):
         issues.append("SGLang live V1 benchmark benchmark_id must be non-empty")
@@ -1311,21 +1384,231 @@ def _validate_sglang_live_v1_runtime_metadata(
         issues.append("SGLang live V1 benchmark served_model_name must be non-empty")
     if record.get("cache_prompt_text_mode") != "logical":
         issues.append("SGLang live V1 benchmark cache_prompt_text_mode must be 'logical'")
-    if record.get("live_check_prompt_format") != "plain":
-        issues.append("SGLang live V1 benchmark live_check_prompt_format must be 'plain'")
-    if record.get("live_check_request_mode") != "completion":
-        issues.append("SGLang live V1 benchmark live_check_request_mode must be 'completion'")
+    representative_canary = record.get("representative_canary") is True
+    expected_prompt_format = "qwen3_chat" if representative_canary else "plain"
+    expected_request_mode = "chat" if representative_canary else "completion"
+    if record.get("live_check_prompt_format") != expected_prompt_format:
+        issues.append(
+            "SGLang live V1 benchmark live_check_prompt_format must be "
+            f"{expected_prompt_format!r}"
+        )
+    if record.get("live_check_request_mode") != expected_request_mode:
+        issues.append(
+            "SGLang live V1 benchmark live_check_request_mode must be "
+            f"{expected_request_mode!r}"
+        )
     temperature = record.get("live_check_temperature")
     if not _is_finite_number(temperature) or temperature != 0.0:
         issues.append("SGLang live V1 benchmark live_check_temperature must be 0.0")
     if record.get("kv_transfer_params_transport") != "custom_params":
         issues.append("SGLang live V1 benchmark kv_transfer_params_transport must be 'custom_params'")
+    _validate_representative_sglang_provenance(
+        record,
+        issues,
+        expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+    )
+
+
+def _validate_representative_sglang_provenance(
+    record: Mapping[str, Any],
+    issues: list[str],
+    *,
+    expected_cachet_wheel_sha256: str | None,
+) -> None:
+    representative = record.get("representative_canary")
+    if representative is None:
+        return
+    if type(representative) is not bool:
+        issues.append(
+            "SGLang live V1 benchmark representative_canary must be boolean"
+        )
+        return
+    if not representative:
+        return
+
+    profile_id = record.get("representative_workload_profile")
+    if profile_id != _REPRESENTATIVE_SGLANG_PROFILE_ID:
+        issues.append(
+            "representative SGLang live V1 benchmark workload profile must be "
+            f"{_REPRESENTATIVE_SGLANG_PROFILE_ID!r}"
+        )
+    if record.get("hardware_target") != _REPRESENTATIVE_SGLANG_HARDWARE_TARGET:
+        issues.append(
+            "representative SGLang live V1 benchmark hardware_target must be "
+            f"{_REPRESENTATIVE_SGLANG_HARDWARE_TARGET!r}"
+        )
+    provenance = record.get("benchmark_manifest_provenance")
+    if not isinstance(provenance, Mapping):
+        issues.append(
+            "representative SGLang live V1 benchmark must include "
+            "benchmark_manifest_provenance"
+        )
+        return
+
+    _reject_unknown_fields(
+        provenance,
+        {
+            "canonical_model_id",
+            "model_revision",
+            "tokenizer_id",
+            "tokenizer_revision",
+            "lora_id",
+            "engine_id",
+            "engine_version",
+            "serving_platform",
+            "model_dtype",
+            "model_quantization",
+            "runtime_kv_dtype",
+            "layout_version",
+            "payload_axis_order",
+            "block_size",
+            "key_position_encoding",
+            "tensor_parallel_size",
+            "pipeline_parallel_size",
+            "rope_theta",
+            "rope_rotary_dim",
+            "package_revisions",
+        },
+        "representative SGLang benchmark_manifest_provenance",
+        issues,
+    )
+    model_profile = get_model_profile(DEFAULT_V1_MODEL_ID)
+    if model_profile.metadata.get("hf_model_id") != REPRESENTATIVE_CANARY_MODEL_ID:
+        raise RuntimeError(
+            "representative SGLang model profile drifted from its canonical model"
+        )
+    layout = layout_for_model(
+        REPRESENTATIVE_CANARY_MODEL_ID,
+        dtype="bfloat16",
+        block_size=1,
+    )
+    expected_identity: dict[str, Any] = {
+        "canonical_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "model_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "tokenizer_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "lora_id": layout.lora_id,
+        "engine_id": "sglang",
+        "engine_version": serving_environment_profile(
+            ServingBackend.SGLANG
+        ).engine_version,
+        "serving_platform": "sglang",
+        "model_dtype": "bfloat16",
+        "model_quantization": "none",
+        "runtime_kv_dtype": "bfloat16",
+        "layout_version": layout.layout_version,
+        "payload_axis_order": getattr(
+            layout.payload_axis_order,
+            "value",
+            layout.payload_axis_order,
+        ),
+        "block_size": layout.block_size,
+        "key_position_encoding": getattr(
+            layout.key_position_encoding,
+            "value",
+            layout.key_position_encoding,
+        ),
+        "tensor_parallel_size": 1,
+        "pipeline_parallel_size": 1,
+    }
+    for field_name, expected in expected_identity.items():
+        if provenance.get(field_name) != expected:
+            issues.append(
+                "representative SGLang benchmark_manifest_provenance."
+                f"{field_name} must be {expected!r}"
+            )
+    expected_rope = {
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
+    }
+    if all(value is None for value in expected_rope.values()):
+        unexpected_rope = sorted(set(expected_rope).intersection(provenance))
+        if unexpected_rope:
+            issues.append(
+                "representative SGLang benchmark_manifest_provenance must omit "
+                "post-RoPE-only fields: "
+                + ", ".join(unexpected_rope)
+            )
+    else:
+        for field_name, expected in expected_rope.items():
+            if provenance.get(field_name) != expected:
+                issues.append(
+                    "representative SGLang benchmark_manifest_provenance."
+                    f"{field_name} must be {expected!r}"
+                )
+
+    package_revisions = provenance.get("package_revisions")
+    if not isinstance(package_revisions, Mapping):
+        issues.append(
+            "representative SGLang benchmark_manifest_provenance.package_revisions "
+            "must be an object"
+        )
+        return
+    serving_profile = serving_environment_profile(ServingBackend.SGLANG)
+    expected_serving_revision = serving_profile.engine_version
+    if package_revisions.get(serving_profile.engine_package) != expected_serving_revision:
+        issues.append(
+            "representative SGLang package_revisions must include the exact "
+            f"{serving_profile.engine_package} pin {expected_serving_revision!r}"
+        )
+    wheel_revision = package_revisions.get("cachet-kv")
+    wheel_prefix = "wheel-sha256:"
+    wheel_digest = (
+        wheel_revision.removeprefix(wheel_prefix)
+        if isinstance(wheel_revision, str)
+        and wheel_revision.startswith(wheel_prefix)
+        else None
+    )
+    if not _is_sha256_hex_digest(wheel_digest):
+        issues.append(
+            "representative SGLang package_revisions['cachet-kv'] must use "
+            "wheel-sha256:<lowercase SHA-256>"
+        )
+    elif (
+        expected_cachet_wheel_sha256 is not None
+        and wheel_digest != expected_cachet_wheel_sha256
+    ):
+        issues.append(
+            "representative SGLang cachet-kv wheel SHA-256 does not match "
+            "the verified submit payload"
+        )
+    expected_packages = {serving_profile.engine_package, "cachet-kv"}
+    if set(package_revisions) != expected_packages:
+        issues.append(
+            "representative SGLang package_revisions must contain exactly the "
+            "serving package and cachet-kv wheel identity"
+        )
 
 
 def _validate_sglang_live_v1_suite_metadata(
     suite: Mapping[str, Any],
     issues: list[str],
+    *,
+    representative_canary: bool,
 ) -> None:
+    if representative_canary:
+        expected = {
+            "suite_id": _REPRESENTATIVE_SGLANG_SUITE_ID,
+            "scope": _REPRESENTATIVE_SGLANG_SUITE_SCOPE,
+            "datasets": list(_REPRESENTATIVE_SGLANG_DATASETS),
+            "examples": _REPRESENTATIVE_SGLANG_EXAMPLES,
+            "repeats": _REPRESENTATIVE_SGLANG_REPEATS,
+            "release_v1_suite": False,
+        }
+        for field_name, expected_value in expected.items():
+            observed_value = suite.get(field_name)
+            if field_name == "datasets" and isinstance(
+                observed_value,
+                Sequence,
+            ) and not isinstance(observed_value, (str, bytes, bytearray)):
+                observed_value = list(observed_value)
+            if observed_value != expected_value:
+                issues.append(
+                    "representative SGLang live benchmark suite."
+                    f"{field_name} must be {expected_value!r}"
+                )
+        return
+
     suite_id = suite.get("suite_id")
     if not isinstance(suite_id, str) or not suite_id:
         issues.append("SGLang live V1 benchmark suite_id must be non-empty")
@@ -1366,12 +1649,85 @@ def _validate_sglang_live_v1_measurement_count(
         )
 
 
+def _validate_representative_sglang_measurement_matrix(
+    measurements: Sequence[Any],
+    issues: list[str],
+) -> None:
+    observed_examples: set[str] = set()
+    observed: set[tuple[str, str, int]] = set()
+    duplicates: set[tuple[str, str, int]] = set()
+    for index, measurement in enumerate(measurements):
+        if not isinstance(measurement, Mapping):
+            continue
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        arm_id = measurement.get("arm_id")
+        metadata = measurement.get("metadata")
+        repeat_index = (
+            _positive_int_metadata(metadata.get("repeat_index"))
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        if dataset != _REPRESENTATIVE_SGLANG_DATASETS[0]:
+            issues.append(
+                "representative SGLang live benchmark measurement "
+                f"{index} dataset must be {_REPRESENTATIVE_SGLANG_DATASETS[0]!r}"
+            )
+        if not isinstance(example_id, str) or not example_id:
+            continue
+        observed_examples.add(example_id)
+        if arm_id not in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM):
+            continue
+        if repeat_index is None:
+            issues.append(
+                "representative SGLang live benchmark measurement "
+                f"{index} must include a positive metadata.repeat_index"
+            )
+            continue
+        key = (example_id, arm_id, repeat_index)
+        if key in observed:
+            duplicates.add(key)
+        observed.add(key)
+
+    if len(observed_examples) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        issues.append(
+            "representative SGLang live benchmark measurements must contain "
+            f"exactly {_REPRESENTATIVE_SGLANG_EXAMPLES} sample"
+        )
+        return
+    example_id = next(iter(observed_examples))
+    expected = {
+        (example_id, arm_id, repeat_index)
+        for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
+        for repeat_index in range(1, _REPRESENTATIVE_SGLANG_REPEATS + 1)
+    }
+    missing = sorted(expected.difference(observed))
+    unexpected = sorted(observed.difference(expected))
+    if missing:
+        issues.append(
+            "representative SGLang live benchmark measurements missing required "
+            f"arm/repeat records: {missing!r}"
+        )
+    if unexpected:
+        issues.append(
+            "representative SGLang live benchmark measurements contain unexpected "
+            f"arm/repeat records: {unexpected!r}"
+        )
+    if duplicates:
+        issues.append(
+            "representative SGLang live benchmark measurements contain duplicate "
+            f"arm/repeat records: {sorted(duplicates)!r}"
+        )
+
+
 def _validate_sglang_live_v1_cache_hit_validations(
     suite: Mapping[str, Any],
     validations: Sequence[Any],
     *,
     measurements: Sequence[Any] | None,
     issues: list[str],
+    required_datasets: Sequence[str],
+    require_exact_count: bool,
 ) -> None:
     if not validations:
         issues.append("SGLang live V1 benchmark cache_hit_validations must be non-empty")
@@ -1384,6 +1740,7 @@ def _validate_sglang_live_v1_cache_hit_validations(
         else set()
     )
     observed_dataset_repeats: set[tuple[str, int]] = set()
+    duplicate_dataset_repeats: set[tuple[str, int]] = set()
     for index, validation in enumerate(validations):
         label = f"SGLang live V1 benchmark cache_hit_validations[{index}]"
         if not isinstance(validation, Mapping):
@@ -1405,7 +1762,10 @@ def _validate_sglang_live_v1_cache_hit_validations(
         elif repeat_count and repeat_index > repeat_count:
             issues.append(f"{label}.repeat_index must not exceed suite repeats")
         elif dataset is not None:
-            observed_dataset_repeats.add((dataset, repeat_index))
+            dataset_repeat = (dataset, repeat_index)
+            if dataset_repeat in observed_dataset_repeats:
+                duplicate_dataset_repeats.add(dataset_repeat)
+            observed_dataset_repeats.add(dataset_repeat)
             if isinstance(example_id, str) and example_id and measurements is not None:
                 binding = (dataset, example_id, repeat_index)
                 if binding not in cache_measurement_bindings:
@@ -1432,7 +1792,7 @@ def _validate_sglang_live_v1_cache_hit_validations(
     if repeat_count:
         expected = {
             (dataset, repeat)
-            for dataset in SUPPORTED_V1_DATASETS
+            for dataset in required_datasets
             for repeat in range(1, repeat_count + 1)
         }
         missing = sorted(
@@ -1444,6 +1804,32 @@ def _validate_sglang_live_v1_cache_hit_validations(
                 "SGLang live V1 benchmark cache_hit_validations missing required "
                 f"dataset repeats: {', '.join(missing)}"
             )
+        if require_exact_count:
+            unexpected = sorted(
+                f"{dataset}:repeat_{repeat}"
+                for dataset, repeat in observed_dataset_repeats.difference(expected)
+            )
+            if unexpected:
+                issues.append(
+                    "representative SGLang live benchmark cache_hit_validations "
+                    "contain unexpected dataset repeats: "
+                    + ", ".join(unexpected)
+                )
+            duplicates = sorted(
+                f"{dataset}:repeat_{repeat}"
+                for dataset, repeat in duplicate_dataset_repeats
+            )
+            if duplicates:
+                issues.append(
+                    "representative SGLang live benchmark cache_hit_validations "
+                    "contain duplicate dataset repeats: "
+                    + ", ".join(duplicates)
+                )
+            if len(validations) != len(expected):
+                issues.append(
+                    "representative SGLang live benchmark cache_hit_validations "
+                    f"must contain exactly {len(expected)} records"
+                )
 
 
 def _sglang_live_v1_cache_measurement_bindings(
@@ -2195,7 +2581,12 @@ def _sequence_or_issue(record: Mapping[str, Any], key: str, issues: list[str]) -
     return None
 
 
-def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> None:
+def _validate_v1_report_rows(
+    report_rows: Sequence[Any],
+    issues: list[str],
+    *,
+    required_datasets: Sequence[str] = SUPPORTED_V1_DATASETS,
+) -> None:
     if not report_rows:
         issues.append("v1 benchmark report_rows must be non-empty")
         return
@@ -2265,7 +2656,7 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
                 )
     expected = {
         (dataset, arm_id)
-        for dataset in SUPPORTED_V1_DATASETS
+        for dataset in required_datasets
         for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
     }
     missing = sorted(f"{dataset}:{arm_id}" for dataset, arm_id in expected.difference(row_keys))
@@ -2273,7 +2664,12 @@ def _validate_v1_report_rows(report_rows: Sequence[Any], issues: list[str]) -> N
         issues.append(f"v1 benchmark report_rows missing required rows: {', '.join(missing)}")
 
 
-def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) -> None:
+def _validate_v1_measurements(
+    measurements: Sequence[Any],
+    issues: list[str],
+    *,
+    required_datasets: Sequence[str] = SUPPORTED_V1_DATASETS,
+) -> None:
     if not measurements:
         issues.append("v1 benchmark measurements must be non-empty")
         return
@@ -2346,7 +2742,7 @@ def _validate_v1_measurements(measurements: Sequence[Any], issues: list[str]) ->
         )
     expected = {
         (dataset, arm_id)
-        for dataset in SUPPORTED_V1_DATASETS
+        for dataset in required_datasets
         for arm_id in (BASELINE_PREFILL_ARM, CACHE_REUSE_ARM)
     }
     missing = sorted(f"{dataset}:{arm_id}" for dataset, arm_id in expected.difference(measurement_keys))
@@ -2431,7 +2827,12 @@ def _validate_v1_measurement_token_context(
                 issues.append(f"{label} cache prompt_tokens must match metadata.{prompt_text_mode}_prompt_tokens")
 
 
-def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> None:
+def _validate_v1_comparisons(
+    comparisons: Sequence[Any],
+    issues: list[str],
+    *,
+    required_datasets: Sequence[str] = SUPPORTED_V1_DATASETS,
+) -> None:
     if not comparisons:
         issues.append("v1 benchmark comparisons must be non-empty")
         return
@@ -2468,7 +2869,7 @@ def _validate_v1_comparisons(comparisons: Sequence[Any], issues: list[str]) -> N
                 f"v1 benchmark comparison {dataset_value} {metric_name}",
                 issues,
             )
-    missing = sorted(set(SUPPORTED_V1_DATASETS).difference(comparison_datasets))
+    missing = sorted(set(required_datasets).difference(comparison_datasets))
     if missing:
         issues.append(f"v1 benchmark comparisons missing required datasets: {', '.join(missing)}")
 

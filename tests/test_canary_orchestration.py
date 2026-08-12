@@ -1,6 +1,8 @@
 import hashlib
 import json
+import os
 from copy import deepcopy
+from unittest.mock import patch
 
 import pytest
 
@@ -37,6 +39,7 @@ from document_kv_cache.canary_orchestration import (
     REPRESENTATIVE_CANARY_MODEL_ID,
     REPRESENTATIVE_CANARY_MODEL_REVISION,
     REPRESENTATIVE_CANARY_WORKLOAD_MANIFEST_RECORD_TYPE,
+    REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE,
     REPRESENTATIVE_SGLANG_PACKAGE_PINS,
     REPRESENTATIVE_VLLM_PACKAGE_PINS,
     SGLANG_PAIRED_SMOKE_ARM,
@@ -49,6 +52,8 @@ from document_kv_cache.canary_orchestration import (
     prepare_representative_canary_inputs,
     representative_canary_matrix,
     representative_canary_workload_manifest,
+    representative_vllm_comparison_suite_id,
+    representative_vllm_environment_provenance,
     reserve_and_submit_representative_canary_workload,
     require_pinned_revision,
     validated_benchmark_arm_specs,
@@ -72,7 +77,13 @@ from document_kv_cache.databricks_vllm_smoke_job import (
     DatabricksVLLMSmokeJobConfig,
     build_databricks_vllm_smoke_run_submit_payload,
 )
-from document_kv_cache.vllm_smoke import vllm_representative_workload_profile
+from document_kv_cache.vllm_smoke import (
+    DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+    build_benchmark_runner_args,
+    parse_args as parse_vllm_smoke_args,
+    parse_dataset_specs,
+    vllm_representative_workload_profile,
+)
 from document_kv_cache.workflow import SourceDocument
 
 REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
@@ -237,6 +248,21 @@ def test_representative_workload_manifest_is_exact_ordered_and_versioned():
     assert {row["model_revision"] for row in record["workloads"]} == {
         REPRESENTATIVE_CANARY_MODEL_REVISION
     }
+    assert [row["comparison_suite_id"] for row in record["workloads"][:3]] == [
+        "g6-vllm-8k-64",
+        "g6-vllm-8k-64",
+        "g6-vllm-8k-64",
+    ]
+    assert [row["comparison_suite_id"] for row in record["workloads"][3:6]] == [
+        "g6-vllm-16k-256",
+        "g6-vllm-16k-256",
+        "g6-vllm-16k-256",
+    ]
+    assert [row["comparison_suite_id"] for row in record["workloads"][7:]] == [
+        "g5-vllm-8k-64",
+        "g5-vllm-8k-64",
+        "g5-vllm-8k-64",
+    ]
 
     with pytest.raises(ValueError, match="exact ordered ten-job sequence"):
         RepresentativeCanaryWorkloadManifest(workloads=manifest.workloads[:-1])
@@ -244,6 +270,27 @@ def test_representative_workload_manifest_is_exact_ordered_and_versioned():
         RepresentativeCanaryWorkloadManifest(
             workloads=tuple(reversed(manifest.workloads))
         )
+
+
+def test_representative_vllm_environment_provenance_binds_exact_node_geometry():
+    assert dict(representative_vllm_environment_provenance("aws-g6-l4")) == {
+        "hardware_fingerprint": (
+            "aws:g6.8xlarge:gpu=l4x1:cpu=32:ram_mib=131072:"
+            "local_disks=2x450gb"
+        ),
+        "runtime_version": "15.4.x-gpu-ml-scala2.12",
+        "storage_identity": "local_nvme:/local_disk0:2x450gb",
+        "cache_state": "cold",
+    }
+    assert dict(representative_vllm_environment_provenance("aws-g5-a10g")) == {
+        "hardware_fingerprint": (
+            "aws:g5.8xlarge:gpu=a10gx1:cpu=32:ram_mib=131072:"
+            "local_disks=1x900gb"
+        ),
+        "runtime_version": "15.4.x-gpu-ml-scala2.12",
+        "storage_identity": "local_nvme:/local_disk0:1x900gb",
+        "cache_state": "cold",
+    }
 
 
 def test_real_representative_job_payloads_match_manifest_and_reserve_40_hours():
@@ -260,6 +307,138 @@ def test_real_representative_job_payloads_match_manifest_and_reserve_40_hours():
         workload.workload_id
         for workload in representative_canary_workload_manifest().workloads
     ]
+
+
+def test_representative_vllm_payload_binds_provenance_to_wheel_digest():
+    payloads = _representative_submit_payloads()
+    workload_id, payload = payloads[0]
+    package_revisions = {
+        package: version
+        for package, version in (
+            pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
+        )
+    }
+    package_revisions["cachet-kv"] = f"wheel-sha256:{'e' * 64}"
+    _replace_provenance_value(payload, "package_revisions", package_revisions)
+
+    with pytest.raises(ValueError, match="package_revisions"):
+        validate_representative_canary_workload_payloads(
+            [(workload_id, payload), *payloads[1:]]
+        )
+
+
+def _synthetic_records_from_first_representative_trio(
+    *,
+    runtime_ids: tuple[str, str, str],
+    suite_ids: tuple[str, str, str] | None = None,
+):
+    payloads = [
+        deepcopy(payload)
+        for _workload_id, payload in _representative_submit_payloads()[:3]
+    ]
+    records = {}
+    for index, (payload, runtime_id) in enumerate(
+        zip(payloads, runtime_ids, strict=True)
+    ):
+        _replace_parameter_value(payload, "--runtime-id", runtime_id)
+        if suite_ids is not None:
+            _replace_parameter_value(
+                payload,
+                "--benchmark-suite-id",
+                suite_ids[index],
+            )
+        parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+        with patch.dict(
+            os.environ,
+            {
+                DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV: REPRESENTATIVE_WHEEL_SHA256,
+            },
+        ):
+            smoke_config = parse_vllm_smoke_args(parameters[:-4])
+        runner_args = build_benchmark_runner_args(
+            smoke_config,
+            parse_dataset_specs(
+                smoke_config.dataset_specs,
+                allow_subset=smoke_config.allow_dataset_subset,
+            ),
+        )
+        suite_id = runner_args[runner_args.index("--suite-id") + 1]
+        resolved_runtime_id = runner_args[runner_args.index("--runtime-id") + 1]
+        package_revisions = tuple(
+            (
+                runner_args[argument_index + 1].partition("=")[0],
+                runner_args[argument_index + 1].partition("=")[2],
+            )
+            for argument_index, argument in enumerate(runner_args)
+            if argument == "--package-revision"
+        )
+        arm_id = str(smoke_config.benchmark_arm_specs[0]["arm_id"])
+        records[arm_id] = json.loads(
+            json.dumps(
+                _result_record(
+                    arm_id,
+                    suite_id=suite_id,
+                    runtime_id=resolved_runtime_id,
+                    package_revisions=package_revisions,
+                )
+            )
+        )
+    return records
+
+
+def test_representative_payload_identity_round_trips_into_isolated_aggregate():
+    payloads = _representative_submit_payloads()[:3]
+    expected_suite_id = representative_vllm_comparison_suite_id(
+        hardware_target="aws-g6-l4",
+        profile_id="vllm-8k-64-v1",
+    )
+    for workload_id, payload in payloads:
+        parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
+        assert _single_parameter(parameters, "--benchmark-id") == workload_id
+        assert (
+            _single_parameter(parameters, "--benchmark-suite-id")
+            == expected_suite_id
+        )
+        assert (
+            _single_parameter(parameters, "--runtime-id")
+            == REPRESENTATIVE_TASK_RUNTIME_ID_REFERENCE
+        )
+
+    records = _synthetic_records_from_first_representative_trio(
+        runtime_ids=("task-run-101", "task-run-102", "task-run-103"),
+    )
+    aggregate = aggregate_isolated_canary_results(records)
+
+    assert aggregate["suite"]["suite_id"] == expected_suite_id
+    assert aggregate["experiment_manifest"]["experiment_id"] == expected_suite_id
+    assert aggregate["experiment_manifest"]["environment"][
+        "runtime_id"
+    ].startswith("separate_jobs:")
+    assert aggregate["evidence_sanitized"] is True
+    assert aggregate["experiment_manifest"]["model_runtime"]["package_revisions"][
+        "cachet-kv"
+    ] == f"wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}"
+
+
+def test_representative_payload_identity_rejects_duplicate_runtime_ids():
+    records = _synthetic_records_from_first_representative_trio(
+        runtime_ids=("task-run-101", "task-run-101", "task-run-103"),
+    )
+
+    with pytest.raises(ValueError, match="distinct execution-instance runtime_id"):
+        aggregate_isolated_canary_results(records)
+
+
+def test_representative_payload_identity_rejects_mismatched_suites():
+    with pytest.raises(ValueError, match="comparison group"):
+        _synthetic_records_from_first_representative_trio(
+            runtime_ids=("task-run-101", "task-run-102", "task-run-103"),
+            suite_ids=(
+                "g6-vllm-8k-64",
+                "forged-suite",
+                "g6-vllm-8k-64",
+            ),
+        )
 
 
 def test_representative_payload_batch_rejects_missing_or_reordered_workloads():
@@ -291,6 +470,18 @@ def test_representative_payload_batch_rejects_missing_or_reordered_workloads():
                 payload, "--model-revision", "b" * 40
             ),
             "approved revision",
+        ),
+        (
+            lambda payload: _replace_parameter_value(
+                payload, "--benchmark-suite-id", "forged-suite"
+            ),
+            "benchmark-suite-id",
+        ),
+        (
+            lambda payload: _replace_parameter_value(
+                payload, "--runtime-id", "static-reused-runtime"
+            ),
+            "retry-unique Databricks task run reference",
         ),
         (
             lambda payload: _replace_parameter_value(
@@ -335,6 +526,38 @@ def test_representative_payload_batch_rejects_missing_or_reordered_workloads():
                 {"vllm": "999.0"},
             ),
             "package_revisions",
+        ),
+        (
+            lambda payload: _replace_provenance_value(
+                payload,
+                "hardware_fingerprint",
+                "forged-hardware",
+            ),
+            "hardware_fingerprint",
+        ),
+        (
+            lambda payload: _replace_provenance_value(
+                payload,
+                "runtime_version",
+                "forged-runtime",
+            ),
+            "runtime_version",
+        ),
+        (
+            lambda payload: _replace_provenance_value(
+                payload,
+                "storage_identity",
+                "forged-storage",
+            ),
+            "storage_identity",
+        ),
+        (
+            lambda payload: _replace_provenance_value(
+                payload,
+                "cache_state",
+                "warm",
+            ),
+            "cache_state",
         ),
         (
             lambda payload: _replace_parameter_value(
@@ -943,6 +1166,11 @@ def _replace_parameter_value(payload, flag, replacement):
     parameters[parameters.index(flag) + 1] = replacement
 
 
+def _single_parameter(parameters, flag):
+    assert parameters.count(flag) == 1
+    return parameters[parameters.index(flag) + 1]
+
+
 def _remove_parameter(payload, flag, *, has_value=True):
     parameters = payload["tasks"][0]["spark_python_task"]["parameters"]
     index = parameters.index(flag)
@@ -1383,6 +1611,8 @@ def _result_record(
     *,
     generation_seed: int = 11,
     runtime_id: str = "physical-canary-runtime",
+    suite_id: str = "canary-8k-64",
+    package_revisions: tuple[tuple[str, str], ...] = (("cachet-kv", "commit-1"),),
 ):
     method_id = {
         BASELINE_PREFILL_ARM: "",
@@ -1435,30 +1665,31 @@ def _result_record(
             )
         )
     suite = BenchmarkSuite(
-        suite_id="canary-8k-64",
+        suite_id=suite_id,
         examples=tuple(examples),
         model_id="qwen3:4b-instruct",
         hardware_target="aws-g6-l4",
         datasets=("hotpotqa",),
     )
+    environment = representative_vllm_environment_provenance("aws-g6-l4")
     context = BenchmarkManifestContext(
         model_revision="a" * 40,
         tokenizer_id="Qwen/Qwen3-4B-Instruct-2507",
         tokenizer_revision="a" * 40,
         engine_id="vllm",
         engine_version="0.10.2",
-        package_revisions=(("cachet-kv", "commit-1"),),
+        package_revisions=package_revisions,
         input_tokens_target=8192,
         max_output_tokens=64,
         temperature=0.0,
         stream=True,
         generation_seed=generation_seed,
         decode_settings={"ignore_eos": True},
-        hardware_fingerprint="g6.8xlarge-l4-128g",
+        hardware_fingerprint=environment["hardware_fingerprint"],
         runtime_id=runtime_id,
-        runtime_version="15.4.x-gpu-ml",
-        storage_identity="local-nvme",
-        cache_state="cold",
+        runtime_version=environment["runtime_version"],
+        storage_identity=environment["storage_identity"],
+        cache_state=environment["cache_state"],
         comparison_mode="methods_same_setting",
     )
     result = run_benchmark_suite(

@@ -85,6 +85,7 @@ def _cluster_file_path(uri: str) -> str:
 
 
 def _install_package_wheel(argv: list[str]) -> list[str]:
+    os.environ.pop("DOCUMENT_KV_PACKAGE_WHEEL_SHA256", None)
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--package-wheel-uri")
     parser.add_argument("--package-wheel-sha256")
@@ -93,17 +94,21 @@ def _install_package_wheel(argv: list[str]) -> list[str]:
         raise ValueError("--package-wheel-sha256 requires --package-wheel-uri")
     if args.package_wheel_uri:
         package_wheel_path = _cluster_file_path(args.package_wheel_uri)
+        verified_digest = None
         if args.package_wheel_sha256:
             digest = hashlib.sha256()
             with open(package_wheel_path, "rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     digest.update(chunk)
-            if not hmac.compare_digest(digest.hexdigest(), args.package_wheel_sha256):
+            verified_digest = digest.hexdigest()
+            if not hmac.compare_digest(verified_digest, args.package_wheel_sha256):
                 raise ValueError("Cachet package wheel SHA-256 does not match")
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", package_wheel_path]
         )
         os.environ["DOCUMENT_KV_PACKAGE_INSTALL_SPEC"] = package_wheel_path
+        if verified_digest is not None:
+            os.environ["DOCUMENT_KV_PACKAGE_WHEEL_SHA256"] = verified_digest
     return remaining
 
 

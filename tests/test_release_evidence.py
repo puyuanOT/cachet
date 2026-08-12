@@ -8,6 +8,10 @@ from pathlib import Path
 
 import pytest
 
+import document_kv_cache.sglang_smoke as public_sglang_smoke
+from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_CANARY_MODEL_REVISION,
+)
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
     EngineKVConnectorActions,
@@ -56,11 +60,17 @@ from document_kv_cache.release_evidence import (
 from document_kv_cache.model_profiles import layout_for_model
 from document_kv_cache.methods import default_method_registry, method_spec
 from document_kv_cache.serving_env import serving_environment_profile
+from document_kv_cache.sglang_smoke import (
+    DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+    SGLangLiveHandoffGenerationConfig,
+    SGLangSmokeBenchmarkConfig,
+)
 from document_kv_cache.storage_benchmark import STORAGE_BENCHMARK_RECORD_TYPE
 from document_kv_cache.workflow import SourceDocument
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+REPRESENTATIVE_SGLANG_WHEEL_SHA256 = "f" * 64
 
 
 def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_records():
@@ -462,6 +472,360 @@ def test_sglang_live_v1_benchmark_issues_accept_release_suite_record():
     record = _sglang_live_v1_benchmark_record()
 
     assert sglang_live_v1_benchmark_issues(record) == ()
+
+    record["representative_canary"] = False
+    assert sglang_live_v1_benchmark_issues(record) == ()
+
+
+def test_sglang_live_v1_benchmark_issues_accept_real_representative_profile_record(
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+
+    assert any(
+        "requires an independently verified expected_cachet_wheel_sha256" in issue
+        for issue in sglang_live_v1_benchmark_issues(record)
+    )
+    assert (
+        sglang_live_v1_benchmark_issues(
+            record,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+        == ()
+    )
+
+
+def test_sglang_live_v1_benchmark_issues_require_representative_wheel_provenance(
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    record.pop("benchmark_manifest_provenance")
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any("must include benchmark_manifest_provenance" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("tamper", "expected_issue"),
+    [
+        (
+            lambda revisions: revisions.pop("cachet-kv"),
+            "cachet-kv",
+        ),
+        (
+            lambda revisions: revisions.__setitem__(
+                "cachet-kv", f"git:{'f' * 40}"
+            ),
+            "wheel-sha256",
+        ),
+        (
+            lambda revisions: revisions.__setitem__("sglang", "0.0.0"),
+            "exact sglang pin",
+        ),
+        (
+            lambda revisions: revisions.__setitem__("extra-package", "1.0"),
+            "contain exactly",
+        ),
+    ],
+)
+def test_sglang_live_v1_benchmark_issues_reject_tampered_package_provenance(
+    tamper,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    revisions = record["benchmark_manifest_provenance"]["package_revisions"]
+    tamper(revisions)
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    [
+        (
+            lambda record: record.__setitem__(
+                "representative_workload_profile",
+                "forged-profile",
+            ),
+            "workload profile",
+        ),
+        (
+            lambda record: record.__setitem__(
+                "hardware_target",
+                "aws-g5-a10g",
+            ),
+            "hardware_target",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "canonical_model_id",
+                "forged-model",
+            ),
+            "canonical_model_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].update(
+                {
+                    "model_revision": "b" * 40,
+                    "tokenizer_revision": "b" * 40,
+                }
+            ),
+            "model_revision",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "tokenizer_id",
+                "forged-tokenizer",
+            ),
+            "tokenizer_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "lora_id",
+                "forged-lora",
+            ),
+            "lora_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "engine_id",
+                "forged-engine",
+            ),
+            "engine_id",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "engine_version",
+                "0.0.0",
+            ),
+            "engine_version",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "serving_platform",
+                "forged-platform",
+            ),
+            "serving_platform",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "model_dtype",
+                "float16",
+            ),
+            "model_dtype",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "model_quantization",
+                "int8",
+            ),
+            "model_quantization",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "runtime_kv_dtype",
+                "float16",
+            ),
+            "runtime_kv_dtype",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "layout_version",
+                "forged-layout",
+            ),
+            "layout_version",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "payload_axis_order",
+                "layer_major",
+            ),
+            "payload_axis_order",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "block_size",
+                16,
+            ),
+            "block_size",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "key_position_encoding",
+                "pre_rope",
+            ),
+            "key_position_encoding",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "tensor_parallel_size",
+                2,
+            ),
+            "tensor_parallel_size",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                "pipeline_parallel_size",
+                2,
+            ),
+            "pipeline_parallel_size",
+        ),
+        (
+            lambda record: record["benchmark_manifest_provenance"].update(
+                {"rope_theta": 1_000_000.0, "rope_rotary_dim": 128}
+            ),
+            "must omit post-RoPE-only fields",
+        ),
+    ],
+)
+def test_sglang_live_v1_benchmark_issues_reject_representative_identity_drift(
+    mutate,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    mutate(record)
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_issue"),
+    [
+        (
+            lambda record: record.__setitem__("live_check_prompt_format", "plain"),
+            "live_check_prompt_format",
+        ),
+        (
+            lambda record: record.__setitem__(
+                "live_check_request_mode",
+                "completion",
+            ),
+            "live_check_request_mode",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "suite_id",
+                "forged-suite",
+            ),
+            "suite.suite_id",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "scope",
+                SGLANG_LIVE_V1_BENCHMARK_SCOPE,
+            ),
+            "suite.scope",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "datasets",
+                ["hotpotqa"],
+            ),
+            "suite.datasets",
+        ),
+        (
+            lambda record: record["suite"].__setitem__("examples", 2),
+            "suite.examples",
+        ),
+        (
+            lambda record: record["suite"].__setitem__("repeats", 1),
+            "suite.repeats",
+        ),
+        (
+            lambda record: record["suite"].__setitem__(
+                "release_v1_suite",
+                True,
+            ),
+            "suite.release_v1_suite",
+        ),
+        (
+            lambda record: record["cache_hit_validations"].pop(),
+            "missing required dataset repeats",
+        ),
+        (
+            lambda record: record["measurements"][2]["metadata"].__setitem__(
+                "repeat_index",
+                "1",
+            ),
+            "measurements missing required arm/repeat records",
+        ),
+    ],
+)
+def test_sglang_live_v1_benchmark_issues_reject_representative_suite_drift(
+    mutate,
+    expected_issue,
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+    mutate(record)
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+def test_sglang_live_v1_benchmark_issues_bind_expected_representative_wheel(
+    tmp_path,
+    monkeypatch,
+):
+    record = _representative_sglang_live_v1_benchmark_record(
+        tmp_path,
+        monkeypatch,
+    )
+
+    issues = sglang_live_v1_benchmark_issues(
+        record,
+        expected_cachet_wheel_sha256="e" * 64,
+    )
+
+    assert any("does not match the verified submit payload" in issue for issue in issues)
+
+
+def test_sglang_live_v1_benchmark_issues_reject_invalid_expected_wheel_context():
+    with pytest.raises(ValueError, match="expected_cachet_wheel_sha256"):
+        sglang_live_v1_benchmark_issues(
+            _sglang_live_v1_benchmark_record(),
+            expected_cachet_wheel_sha256="not-a-digest",
+        )
 
 
 def test_sglang_live_v1_benchmark_issues_reject_synthetic_or_unvalidated_records():
@@ -2851,11 +3215,14 @@ def _manifest_benchmark_record():
     )
 
 
-def _sglang_live_v1_benchmark_record(*, ok: bool = True):
+def _sglang_live_v1_benchmark_record(
+    *,
+    ok: bool = True,
+):
     datasets = ("biography", "hotpotqa", "musique", "niah")
     arms = ("baseline_prefill", "document_kv_cache")
     repeats = 2
-    return {
+    record = {
         "record_type": SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
         "ok": ok,
         "benchmark_id": "sglang-prepared-v1-g6-test",
@@ -2910,6 +3277,91 @@ def _sglang_live_v1_benchmark_record(*, ok: bool = True):
         ],
         "issues": [] if ok else ["cache hit validation failed"],
     }
+    return record
+
+
+def _representative_sglang_live_v1_benchmark_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(
+        DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
+        REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+    )
+    profile = public_sglang_smoke.sglang_representative_workload_profile(
+        "sglang-4k-32-v1"
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="g6-sglang-4k-32-paired-smoke",
+        output_dir=tmp_path / "out",
+        model_revision=REPRESENTATIVE_CANARY_MODEL_REVISION,
+        tokenizer_revision=REPRESENTATIVE_CANARY_MODEL_REVISION,
+        representative_canary=True,
+        representative_workload_profile=profile,
+        context_length=profile.context_length,
+        max_tokens=profile.max_tokens,
+        live_benchmark_repeats=profile.live_benchmark_repeats,
+        sglang_attention_backend=profile.attention_backend,
+        sglang_sampling_backend=profile.sampling_backend,
+        sglang_enable_deterministic_inference=(
+            profile.enable_deterministic_inference
+        ),
+        cache_prompt_text_mode=profile.cache_prompt_text_mode,
+        live_check_prompt_format=profile.live_check_prompt_format,
+        live_check_request_mode=profile.live_check_request_mode,
+        live_check_temperature=profile.live_check_temperature,
+        flush_cache_before_cache_arm=profile.flush_cache_before_cache_arm,
+        flush_cache_before_canary=profile.flush_cache_before_canary,
+        flush_cache_timeout_seconds=profile.flush_cache_timeout_seconds,
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "handoff",
+        ),
+    )
+    record = _sglang_live_v1_benchmark_record()
+    dataset = "niah"
+    record.update(
+        {
+            "benchmark_id": config.benchmark_id,
+            "representative_canary": config.representative_canary,
+            "representative_workload_profile": (
+                config.representative_workload_profile_id
+            ),
+            "benchmark_manifest_provenance": (
+                public_sglang_smoke._resolved_sglang_provenance(config)
+            ),
+            "hardware_target": config.hardware_target,
+            "live_check_prompt_format": config.live_check_prompt_format,
+            "live_check_request_mode": config.live_check_request_mode,
+            "live_check_temperature": config.live_check_temperature,
+            "suite": {
+                "suite_id": public_sglang_smoke.SGLANG_LIVE_BENCHMARK_SUITE_ID,
+                "scope": "live_synthetic_niah",
+                "datasets": [dataset],
+                "examples": 1,
+                "repeats": profile.live_benchmark_repeats,
+                "release_v1_suite": False,
+            },
+            "measurements": [
+                measurement
+                for measurement in record["measurements"]
+                if measurement["dataset"] == dataset
+            ],
+            "report_rows": [
+                row for row in record["report_rows"] if row["dataset"] == dataset
+            ],
+            "comparisons": [
+                comparison
+                for comparison in record["comparisons"]
+                if comparison["dataset"] == dataset
+            ],
+            "cache_hit_validations": [
+                validation
+                for validation in record["cache_hit_validations"]
+                if validation["dataset"] == dataset
+            ],
+        }
+    )
+    return record
 
 
 def _sglang_live_v1_report_row_record(dataset: str, arm: str):

@@ -41,6 +41,8 @@ from document_kv_cache.canary_orchestration import (
     generator_token_counter,
     merge_handoff_topology_attestations,
     representative_canary_matrix,
+    representative_vllm_comparison_suite_id,
+    representative_vllm_environment_provenance,
     require_pinned_revision,
     resolved_layout_rope_provenance,
     validate_handoff_topology_attestation,
@@ -129,6 +131,7 @@ KV_CONNECTOR_MODES = (
 LMCACHE_CONNECTOR_CLASS = "LMCacheConnectorV1"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
+DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV = "DOCUMENT_KV_PACKAGE_WHEEL_SHA256"
 VLLM_FIPS_OPENCV_OVERRIDE_CONSTRAINT = "opencv-python-headless==4.12.0.88"
 VLLM_USE_FLASHINFER_SAMPLER_ENV = "VLLM_USE_FLASHINFER_SAMPLER"
 PROMPT_TOKEN_PROBE_ADD_SPECIAL_TOKENS = False
@@ -146,6 +149,7 @@ __all__ = [
     "SERVER_BASE_URL",
     "SMOKE_DATASETS",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
+    "DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV",
     "VLLMRepresentativeWorkloadProfile",
     "VLLM_REPRESENTATIVE_WORKLOAD_PROFILES",
     "vllm_representative_workload_profile",
@@ -419,12 +423,22 @@ class VLLMSmokeBenchmarkConfig:
     runtime_identity: RuntimeIdentity | None = None
     payload_cache_max_bytes: int = 0
     system_prompt_position: str = DEFAULT_SYSTEM_PROMPT_POSITION
+    benchmark_suite_id: str | None = None
+    benchmark_runtime_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
             raise ValueError("benchmark_id must be non-empty")
         if self.output_dir is None:
             raise ValueError("output_dir must be provided")
+        for field_name in ("benchmark_suite_id", "benchmark_runtime_id"):
+            value = getattr(self, field_name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    field_name,
+                    _non_empty_string(value, field_name),
+                )
         object.__setattr__(self, "model_id", _non_empty_string(self.model_id, "model_id"))
         for field_name in ("model_revision", "tokenizer_revision"):
             value = getattr(self, field_name)
@@ -526,9 +540,35 @@ class VLLMSmokeBenchmarkConfig:
             "representative_workload_profile",
             representative_profile,
         )
+        if representative_profile is not None:
+            expected_suite_id = representative_vllm_comparison_suite_id(
+                hardware_target=self.hardware_target,
+                profile_id=representative_profile.profile_id,
+            )
+            if self.benchmark_suite_id is None:
+                raise ValueError(
+                    "representative benchmark_suite_id must be resolved"
+                )
+            if self.benchmark_suite_id != expected_suite_id:
+                raise ValueError(
+                    "representative benchmark_suite_id must match the "
+                    "hardware/profile comparison group"
+                )
+            if self.benchmark_runtime_id in {None, UNRESOLVED_IDENTITY}:
+                raise ValueError(
+                    "representative benchmark_runtime_id must be resolved"
+                )
         provenance = validated_benchmark_manifest_provenance(
             self.benchmark_manifest_provenance
         )
+        if (
+            self.benchmark_runtime_id is not None
+            and "runtime_id" in provenance
+        ):
+            raise ValueError(
+                "benchmark_runtime_id and "
+                "benchmark_manifest_provenance.runtime_id are mutually exclusive"
+            )
         if (
             self.model_revision is not None
             and "model_revision" in provenance
@@ -784,6 +824,10 @@ class VLLMSmokeBenchmarkConfig:
         }
 
     @property
+    def resolved_benchmark_suite_id(self) -> str:
+        return self.benchmark_suite_id or self.benchmark_id
+
+    @property
     def prepared_handoff_generation_path(self) -> Path:
         return self.output_dir / "prepared-handoff-generation.json"
 
@@ -817,6 +861,14 @@ def _resolved_representative_vllm_provenance(
 ) -> Mapping[str, Any]:
     runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
     layout = layout_for_model(config.model_id, dtype=runtime_kv_dtype)
+    wheel_sha256 = _verified_document_kv_package_wheel_sha256()
+    package_revisions = {
+        package: version
+        for package, version in (
+            pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
+        )
+    }
+    package_revisions["cachet-kv"] = f"wheel-sha256:{wheel_sha256}"
     expected: dict[str, Any] = {
         "canonical_model_id": config.model_id,
         "model_revision": config.model_revision,
@@ -843,13 +895,11 @@ def _resolved_representative_vllm_provenance(
         ),
         "tensor_parallel_size": 1,
         "pipeline_parallel_size": 1,
-        "package_revisions": {
-            package: version
-            for package, version in (
-                pin.split("==", 1) for pin in REPRESENTATIVE_VLLM_PACKAGE_PINS
-            )
-        },
+        "package_revisions": package_revisions,
     }
+    expected.update(
+        representative_vllm_environment_provenance(config.hardware_target)
+    )
     resolved_rope = resolved_layout_rope_provenance(layout)
     expected.update(resolved_rope)
     record = dict(provenance)
@@ -871,6 +921,23 @@ def _resolved_representative_vllm_provenance(
         )
     record.update(expected)
     return validated_benchmark_manifest_provenance(record)
+
+
+def _verified_document_kv_package_wheel_sha256() -> str:
+    digest = os.environ.get(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV)
+    if digest is None:
+        raise ValueError(
+            "representative canary requires the verified Cachet wheel SHA-256 in "
+            f"{DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV}"
+        )
+    if (
+        len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError(
+            f"{DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV} must be a lowercase SHA-256 digest"
+        )
+    return digest
 
 
 def _validate_vllm_representative_workload(
@@ -1063,6 +1130,8 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
 def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
     return {
         "benchmark_id": config.benchmark_id,
+        "benchmark_suite_id": config.resolved_benchmark_suite_id,
+        "benchmark_runtime_id": config.benchmark_runtime_id,
         "hf_model_id": config.model_id,
         "model_revision": config.model_revision,
         "tokenizer_revision": config.tokenizer_revision,
@@ -1651,6 +1720,8 @@ def _generate_prepared_benchmark_handoff_inputs_in_subprocess(
     output_path = config.local_dir / "prepared-handoff-generation-worker-output.json"
     payload: dict[str, object] = {
         "benchmark_id": config.benchmark_id,
+        "benchmark_suite_id": config.benchmark_suite_id,
+        "benchmark_runtime_id": config.benchmark_runtime_id,
         "output_dir": str(config.output_dir),
         "local_root": str(config.local_root),
         "model_id": config.model_id,
@@ -1718,6 +1789,8 @@ generation = VLLMPreparedHandoffGenerationConfig(
 )
 config = VLLMSmokeBenchmarkConfig(
     benchmark_id=payload["benchmark_id"],
+    benchmark_suite_id=payload.get("benchmark_suite_id"),
+    benchmark_runtime_id=payload.get("benchmark_runtime_id"),
     output_dir=Path(payload["output_dir"]),
     local_root=Path(payload["local_root"]),
     model_id=payload["model_id"],
@@ -3427,7 +3500,7 @@ def build_benchmark_runner_args(
         "-m",
         "document_kv_cache.benchmark_runner",
         "--suite-id",
-        config.benchmark_id,
+        config.resolved_benchmark_suite_id,
         "--base-url",
         config.server_base_url,
         "--model-id",
@@ -3483,6 +3556,8 @@ def build_benchmark_runner_args(
             config.benchmark_manifest_provenance
         )
     )
+    if config.benchmark_runtime_id is not None:
+        args.extend(["--runtime-id", config.benchmark_runtime_id])
     args.extend(dataset_args(dataset_paths))
     return args
 
@@ -3661,6 +3736,17 @@ def tail(path: Path, *, lines: int = 120) -> str:
 def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     parser = argparse.ArgumentParser(description="Run a Qwen3/vLLM V1 benchmark smoke on Databricks g5/g6.")
     parser.add_argument("--benchmark-id", required=True)
+    parser.add_argument(
+        "--benchmark-suite-id",
+        help=(
+            "Shared benchmark suite/experiment ID for independently executed arms."
+        ),
+    )
+    parser.add_argument(
+        "--runtime-id",
+        dest="benchmark_runtime_id",
+        help="Unique physical execution ID recorded in benchmark provenance.",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--model-id", default=HF_MODEL_ID, help="HF model path/id passed to vLLM --model.")
     parser.add_argument(
@@ -3949,6 +4035,8 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
     )
     return VLLMSmokeBenchmarkConfig(
         benchmark_id=args.benchmark_id,
+        benchmark_suite_id=args.benchmark_suite_id,
+        benchmark_runtime_id=args.benchmark_runtime_id,
         output_dir=output_dir,
         model_id=args.model_id,
         model_revision=args.model_revision,

@@ -142,6 +142,7 @@ SERVER_PORT = 8000
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
+DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV = "DOCUMENT_KV_PACKAGE_WHEEL_SHA256"
 DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
 )
@@ -227,6 +228,7 @@ __all__ = [
     "SERVED_MODEL_NAME",
     "SERVER_BASE_URL",
     "DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV",
+    "DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV",
     "DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY",
     "DEFAULT_SGLANG_HICACHE_PAGE_SIZE",
     "DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE",
@@ -590,6 +592,7 @@ class SGLangSmokeBenchmarkConfig:
     hardware_target: str = DEFAULT_HARDWARE_TARGET
     stream: bool = True
     package_install_spec: str | None = None
+    package_wheel_sha256: str | None = field(default=None, init=False)
     dataset_specs: tuple[str, ...] = ()
     baseline_only: bool = False
     cache_prompt_text_mode: PromptTextMode = "logical"
@@ -909,6 +912,13 @@ class SGLangSmokeBenchmarkConfig:
                     raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
                 if not page_keys:
                     raise ValueError(SGLANG_HANDOFF_BINDING_UNSUPPORTED_MESSAGE)
+        object.__setattr__(
+            self,
+            "package_wheel_sha256",
+            _validated_package_wheel_sha256_from_environment(
+                required=self.representative_canary
+            ),
+        )
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         object.__setattr__(self, "local_root", Path(self.local_root))
         object.__setattr__(self, "dataset_specs", dataset_specs)
@@ -1245,6 +1255,18 @@ def _resolved_sglang_provenance(
         dtype=runtime_kv_dtype,
         **({} if block_size is None else {"block_size": block_size}),
     )
+    package_revisions: dict[str, str] | None = None
+    if config.representative_canary:
+        if config.package_wheel_sha256 is None:
+            raise AssertionError(
+                "representative SGLang config is missing its verified wheel digest"
+            )
+        package_revisions = _exact_package_revisions(
+            SGLANG_DEPENDENCY_CONSTRAINTS
+        )
+        package_revisions["cachet-kv"] = (
+            f"wheel-sha256:{config.package_wheel_sha256}"
+        )
     provenance = {
         "canonical_model_id": HF_MODEL_ID,
         "model_revision": config.model_revision or UNRESOLVED_IDENTITY,
@@ -1272,6 +1294,8 @@ def _resolved_sglang_provenance(
         "tensor_parallel_size": 1,
         "pipeline_parallel_size": 1,
     }
+    if package_revisions is not None:
+        provenance["package_revisions"] = package_revisions
     provenance.update(resolved_layout_rope_provenance(layout))
     return provenance
 
@@ -2569,6 +2593,40 @@ def _validated_optional_choice(
     return normalized
 
 
+def _validated_package_wheel_sha256_from_environment(
+    *, required: bool
+) -> str | None:
+    if not required:
+        return None
+    value = os.environ.get(DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV)
+    if value is None:
+        raise ValueError(
+            f"{DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV} must be set by the "
+            "verified wheel bootstrap for a representative SGLang canary"
+        )
+    if (
+        len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(
+            f"{DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV} must be a lowercase "
+            "SHA-256 digest"
+        )
+    return value
+
+
+def _exact_package_revisions(constraints: Sequence[str]) -> dict[str, str]:
+    revisions: dict[str, str] = {}
+    for constraint in constraints:
+        package, separator, revision = constraint.partition("==")
+        if not separator or not package or not revision:
+            raise ValueError("dependency constraints must use exact package pins")
+        if package in revisions:
+            raise ValueError("dependency constraints must not repeat package names")
+        revisions[package] = revision
+    return revisions
+
+
 def _source_document_with_text(
     source_document: SourceDocument,
     text: str,
@@ -3058,6 +3116,11 @@ def run_sglang_live_benchmark(
         "record_type": SGLANG_LIVE_BENCHMARK_RECORD_TYPE,
         "ok": not issues,
         "benchmark_id": config.benchmark_id,
+        "representative_canary": config.representative_canary,
+        "representative_workload_profile": (
+            config.representative_workload_profile_id
+        ),
+        "benchmark_manifest_provenance": _resolved_sglang_provenance(config),
         "engine": "sglang",
         "model_id": CACHET_MODEL_ID,
         "served_model_name": SERVED_MODEL_NAME,
