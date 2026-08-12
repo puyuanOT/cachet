@@ -395,6 +395,52 @@ class TinySGLangLiveKVGenerator:
         )
 
 
+class LayoutAwareSGLangLiveKVGenerator:
+    """CPU fake matching the default Transformers generator's layout contract."""
+
+    tokenizer = TinyTokenizer()
+    add_special_tokens = False
+
+    def __init__(self):
+        self.layout = None
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = self.layout or layout_for_model(
+            config.model_id,
+            dtype=config.dtype,
+            lora_id=config.lora_id,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+        token_count = len(self.tokenizer.token_ids)
+        payload = b"\0" * (token_count * layout.bytes_per_token)
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+                content_hash=hashlib.sha256(payload).hexdigest(),
+                artifact_identity=config.artifact_identity_for(layout),
+                token_contract=TokenContract.from_token_ids(
+                    self.tokenizer.token_ids,
+                    tokenizer_id=config.tokenizer_id,
+                    tokenizer_revision=config.tokenizer_revision,
+                    add_special_tokens=False,
+                    prompt_template_version=config.prompt_template_version,
+                ),
+            ),
+            payload=payload,
+            token_count=token_count,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
 class PromptFormatTokenizer:
     source_token_ids = (21, 22, 23, 24)
     runtime_token_ids = (21, 22, 23, 24, 25, 26)
@@ -1643,6 +1689,45 @@ def test_prepare_generated_live_handoff_writes_runtime_handoff_inputs(
     }
     assert generation["cache_prefix_tokens"] == len(TinyTokenizer.token_ids)
     assert generation["sglang_hicache_page_size"] == 2
+
+
+def test_prepare_generated_live_handoff_binds_layout_to_hicache_page_size(
+    tmp_path, monkeypatch
+):
+    module = ModuleType("cachet_test_sglang_layout_aware_live_handoff_generator")
+    module.build_generator = LayoutAwareSGLangLiveKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-generated-page-one",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        handoff_generation=SGLangLiveHandoffGenerationConfig(
+            output_dir=tmp_path / "generated-live",
+            generator_factory=f"{module.__name__}:build_generator",
+            dtype="bfloat16",
+            align_bytes=1,
+            page_size=1,
+        ),
+    )
+
+    runtime_config = prepare_generated_live_handoff(config)
+
+    handoff = read_engine_adapter_request_json(
+        runtime_config.handoff_json,
+        require_external_payload_uri=False,
+    )
+    handle = handoff["handle"]
+    assert handle["layout"]["block_size"] == 1
+    assert handle["artifact_identity"]["block_size"] == 1
+    assert runtime_config.sglang_hicache_page_keys == sglang_hicache_page_keys(
+        TinyTokenizer.token_ids,
+        page_size=1,
+    )
+    generation = json.loads(
+        config.live_handoff_generation_path.read_text(encoding="utf-8")
+    )
+    assert generation["sglang_hicache_page_size"] == 1
+    assert generation["cache_prefix_full_pages"] == len(TinyTokenizer.token_ids)
 
 
 def test_prepare_generated_live_handoff_uses_live_prompt_format_cache_prefix(

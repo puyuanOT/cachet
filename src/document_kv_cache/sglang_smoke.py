@@ -2225,6 +2225,7 @@ def _generate_live_handoff_inputs(
     )
     layout = replace(layout, model_id=model_id)
     layout.validate()
+    _bind_live_handoff_generator_layout(generator, layout)
     live_request = build_live_server_check_request(
         model_id=CACHET_MODEL_ID,
         hardware_target=config.hardware_target,
@@ -2306,6 +2307,18 @@ def _generate_live_handoff_inputs(
         shard_uri=source_shard_uri,
         align_bytes=generation.align_bytes,
     )
+    artifact_identity = cache_generation.artifact_identity
+    if artifact_identity is None:
+        raise RuntimeError(
+            "generated SGLang live handoff cache is missing ArtifactIdentity"
+        )
+    if artifact_identity.block_size != generation.page_size:
+        raise ValueError(
+            "generated SGLang live handoff ArtifactIdentity block_size "
+            f"{artifact_identity.block_size} must match HiCache page_size "
+            f"{generation.page_size}"
+        )
+    layout = replace(layout, block_size=artifact_identity.block_size)
     ready = workflow.prepare_for_engine(
         document_request,
         layout=layout,
@@ -2403,6 +2416,24 @@ def _generate_live_handoff_inputs(
         "generator_version": generator_version,
         "handoff_topology_attestation": topology_attestation,
     }
+
+
+def _bind_live_handoff_generator_layout(generator: object, layout: object) -> None:
+    """Give layout-aware generators the exact SGLang live-page geometry."""
+
+    try:
+        generator_layout = getattr(generator, "layout")
+    except AttributeError:
+        return
+    if generator_layout is not None:
+        return
+    try:
+        setattr(generator, "layout", layout)
+    except (AttributeError, TypeError) as exc:
+        raise TypeError(
+            "SGLang live handoff generator exposes an unset layout that cannot "
+            "be bound to the runtime KV layout"
+        ) from exc
 
 
 def _live_handoff_cache_source_document(

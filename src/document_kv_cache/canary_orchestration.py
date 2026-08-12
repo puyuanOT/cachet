@@ -1819,7 +1819,7 @@ def validated_benchmark_manifest_provenance(
         raise ValueError(
             f"benchmark_manifest_provenance has unknown fields: {sorted(unknown)}"
         )
-    record = json.loads(json.dumps(dict(value), sort_keys=True))
+    record = json.loads(json.dumps(_deep_thaw_json_value(value), sort_keys=True))
     for field_name, _flag in _PROVENANCE_STRING_FLAGS:
         if field_name in record:
             string = record[field_name]

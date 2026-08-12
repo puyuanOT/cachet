@@ -25,7 +25,12 @@ from document_kv_cache.databricks_vllm_smoke_job import (
     write_databricks_vllm_smoke_runner_script,
 )
 from document_kv_cache.serving_env import VLLM_VERSION
-from document_kv_cache.vllm_smoke import vllm_representative_workload_profile
+from document_kv_cache.vllm_smoke import (
+    build_benchmark_runner_args,
+    parse_args as parse_vllm_smoke_args,
+    parse_dataset_specs,
+    vllm_representative_workload_profile,
+)
 
 
 WHEEL_URI = "/Volumes/catalog/schema/volume/wheels/cachet_kv-0.2.0-py3-none-any.whl"
@@ -320,6 +325,35 @@ def test_databricks_payload_forwards_arbitrary_arms_evidence_and_provenance():
     assert task["new_cluster"]["spark_env_vars"][
         "DOCUMENT_KV_EVICT_PAGE_CACHE"
     ] == "1"
+
+
+def test_databricks_representative_provenance_builds_benchmark_runner_args():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="representative-canary-runner-args",
+        output_dir="/Volumes/catalog/schema/volume/representative-canary-runner-args",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        **representative_job_kwargs(),
+    )
+    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+    assert parameters[-4::2] == ["--package-wheel-uri", "--package-wheel-sha256"]
+
+    smoke_config = parse_vllm_smoke_args(parameters[:-4])
+    dataset_paths = parse_dataset_specs(
+        smoke_config.dataset_specs,
+        allow_subset=smoke_config.allow_dataset_subset,
+    )
+    runner_args = build_benchmark_runner_args(smoke_config, dataset_paths)
+
+    package_revisions = [
+        runner_args[index + 1]
+        for index, value in enumerate(runner_args)
+        if value == "--package-revision"
+    ]
+    assert f"vllm={VLLM_VERSION}" in package_revisions
 
 
 def test_databricks_representative_provenance_binds_resolved_rope_geometry(
