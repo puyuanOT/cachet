@@ -804,7 +804,7 @@ def evaluate_benchmark_publication_gate(
 def cache_state_attestation_from_vllm_telemetry(
     record: Mapping[str, Any],
 ) -> CacheStateAttestation:
-    """Parse the provider's explicit cache-state attestation section."""
+    """Parse provider state, preferring its explicit benchmark correlation id."""
 
     if not isinstance(record, Mapping):
         raise TypeError("vLLM telemetry record must be a mapping")
@@ -813,8 +813,13 @@ def cache_state_attestation_from_vllm_telemetry(
     state = record.get("cache_state_attestation")
     if not isinstance(state, Mapping):
         raise ValueError("vLLM telemetry is missing cache_state_attestation")
+    request_id = (
+        _required_string(record, "request_id")
+        if record.get("benchmark_request_id") is None
+        else _required_string(record, "benchmark_request_id")
+    )
     return CacheStateAttestation(
-        request_id=_required_string(record, "request_id"),
+        request_id=request_id,
         cache_method=_required_string(state, "cache_method"),
         artifact_id=_required_string(state, "artifact_id"),
         source=_required_string(state, "source"),

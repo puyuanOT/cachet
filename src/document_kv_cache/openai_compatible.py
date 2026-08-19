@@ -17,7 +17,10 @@ from document_kv_cache.benchmark_runner import (
     BenchmarkEngineRequest,
     BenchmarkGeneration,
 )
-from document_kv_cache.benchmarks import DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM
+from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+    DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
+)
 
 __all__ = [
     "TokenCounter",
@@ -360,8 +363,23 @@ class OpenAICompatibleCompletionEngine:
                 custom_params["kv_transfer_params"] = kv_transfer_params
                 payload["custom_params"] = custom_params
             else:
+                declared_benchmark_request_id = kv_transfer_params.get(
+                    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+                )
+                if declared_benchmark_request_id is not None and (
+                    not request.request_id
+                    or declared_benchmark_request_id != request.request_id
+                ):
+                    raise ValueError(
+                        "kv_transfer_params."
+                        f"{DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM} must equal the "
+                        "benchmark engine request_id"
+                    )
                 if request.request_id:
                     payload["request_id"] = request.request_id
+                    kv_transfer_params[
+                        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+                    ] = request.request_id
                 payload["kv_transfer_params"] = kv_transfer_params
         return payload
 

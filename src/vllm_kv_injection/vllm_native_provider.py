@@ -52,6 +52,7 @@ from document_kv_cache.engine_probe import read_engine_adapter_payload
 from vllm_kv_injection.block_mapping import BlockSpan, plan_token_blocks
 from vllm_kv_injection.paged_kv_copy import inject_kv_cache_layer, slot_mapping_from_blocks
 from vllm_kv_injection.vllm_native_provider_constants import (
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY,
@@ -78,6 +79,7 @@ from vllm_kv_injection.vllm_layer_mapping import (
 from vllm_kv_injection.vllm_dynamic_connector import DocumentKVConnectorStats, VLLMSupportsHMA
 
 __all__ = [
+    "DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM",
     "DOCUMENT_KV_HANDOFF_JSON_PARAM",
     "DOCUMENT_KV_HANDOFF_RECORD_PARAM",
     "DOCUMENT_KV_HANDOFF_SOURCE_FACTORY_CONFIG_KEY",
@@ -303,6 +305,7 @@ class KVTransferParamsDocumentKVSource:
     """Load Cachet handoff records referenced by vLLM ``kv_transfer_params``.
 
     Supported request parameters:
+    - ``document_kv.benchmark_request_id``: exact benchmark correlation identity.
     - ``document_kv.handoff_json``: path to a Cachet engine adapter handoff JSON.
     - ``document_kv.handoff_record``: already-decoded handoff record mapping.
     - ``document_kv.payload_uri``: optional payload URI override.
@@ -385,6 +388,11 @@ class KVTransferParamsDocumentKVSource:
             raise ValueError("document KV handoff requires an external payload URI")
         actions = _connector_actions_from_plan(
             plan,
+            method_registry=self.method_registry,
+        )
+        actions = _actions_with_benchmark_request_id(
+            actions,
+            _benchmark_request_id(params),
             method_registry=self.method_registry,
         )
         return DocumentKVHandoffLoad(
@@ -1627,6 +1635,48 @@ def _handoff_request_id(params: Mapping[str, Any], record: Mapping[str, Any]) ->
     return expected_request_id
 
 
+def _benchmark_request_id(params: Mapping[str, Any]) -> str | None:
+    value = params.get(DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM)
+    if value is None:
+        return None
+    return _required_string(
+        value,
+        field_name=DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
+    )
+
+
+def _actions_with_benchmark_request_id(
+    actions: EngineKVConnectorActions,
+    benchmark_request_id: str | None,
+    *,
+    method_registry: MethodRegistry | None = None,
+) -> EngineKVConnectorActions:
+    metadata = dict(actions.bind.metadata)
+    existing = metadata.get(DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM)
+    if benchmark_request_id is None:
+        if existing is not None:
+            raise ValueError(
+                "reserved connector action metadata benchmark request id "
+                "requires explicit kv_transfer_params binding"
+            )
+        return actions
+    if existing is not None and existing != benchmark_request_id:
+        raise ValueError(
+            "connector action metadata benchmark request id conflicts with "
+            "kv_transfer_params"
+        )
+    metadata[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = benchmark_request_id
+    bound = replace(
+        actions,
+        bind=replace(actions.bind, metadata=metadata),
+    )
+    validate_engine_kv_connector_actions(
+        bound,
+        method_registry=method_registry,
+    )
+    return bound
+
+
 def _connector_actions_for_runtime_request(
     actions: EngineKVConnectorActions,
     runtime_request_id: str,
@@ -1899,6 +1949,11 @@ def _load_telemetry_record(
             decoded_runtime_bytes=decoded_runtime_bytes,
         ),
     }
+    benchmark_request_id = actions.bind.metadata.get(
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM
+    )
+    if benchmark_request_id is not None:
+        record["benchmark_request_id"] = benchmark_request_id
     if error_type is not None:
         record["error"] = {"type": error_type, "message": error_message or error_type}
     return record

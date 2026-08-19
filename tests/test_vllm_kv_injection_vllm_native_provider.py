@@ -53,6 +53,7 @@ from vllm_kv_injection.block_mapping import BlockSpan
 import vllm_kv_injection.vllm_native_provider as vllm_native_provider
 import vllm_kv_injection.vllm_runtime_preflight as vllm_runtime_preflight
 from vllm_kv_injection.vllm_native_provider import (
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
@@ -1384,8 +1385,22 @@ def test_native_provider_reports_phase_timing_metrics(monkeypatch):
 
 def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
     telemetry_path = tmp_path / "connector-telemetry.jsonl"
+    original_load = handoff_load()
+    linked_load = DocumentKVHandoffLoad(
+        actions=replace(
+            original_load.actions,
+            bind=replace(
+                original_load.actions.bind,
+                metadata={
+                    **original_load.actions.bind.metadata,
+                    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM: "benchmark-request-1",
+                },
+            ),
+        ),
+        payload=original_load.payload,
+    )
     provider = DocumentKVNativeProvider(
-        source=StaticHandoffSource(handoff_load()),
+        source=StaticHandoffSource(linked_load),
         telemetry_jsonl=str(telemetry_path),
     )
     connector = DocumentKVConnector(provider=provider)
@@ -1409,6 +1424,7 @@ def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
     assert row["record_type"] == "document_kv.vllm_native_provider_load.v1"
     assert row["success"] is True
     assert row["request_id"] == "req-1"
+    assert row["benchmark_request_id"] == "benchmark-request-1"
     assert row["counts"]["token_count"] == 2
     assert row["counts"]["handoff_total_tokens"] == 3
     assert row["counts"]["layers_loaded"] == 2
@@ -2143,6 +2159,7 @@ def test_kv_transfer_params_source_uses_cachet_request_id_for_wrapped_vllm_reque
     request = SimpleNamespace(
         request_id="cmpl-req-1-0",
         kv_transfer_params={
+            DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM: "benchmark-request-1",
             DOCUMENT_KV_REQUEST_ID_PARAM: "req-1",
             DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
         },
@@ -2152,6 +2169,10 @@ def test_kv_transfer_params_source_uses_cachet_request_id_for_wrapped_vllm_reque
 
     assert load is not None
     assert load.request_id == "req-1"
+    assert (
+        load.actions.bind.metadata[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM]
+        == "benchmark-request-1"
+    )
     assert load.payload is None
     assert load.payload_uri == payload_uri
 
@@ -2172,6 +2193,41 @@ def test_kv_transfer_params_source_rejects_cachet_request_id_mismatch(tmp_path):
     )
 
     with pytest.raises(ValueError, match="document_kv.request_id must match handoff request_id"):
+        KVTransferParamsDocumentKVSource().get_load(request)
+
+
+def test_kv_transfer_params_source_rejects_unbound_benchmark_request_metadata(
+    tmp_path,
+):
+    adapter_request = build_engine_adapter_request(
+        ready_request(),
+        spec=vllm_adapter_spec(),
+    )
+    handoff_path, _payload_path = write_engine_adapter_handoff_bundle(
+        adapter_request,
+        tmp_path / "handoff.json",
+        payload_uri=f"disk:{tmp_path / 'req-1.kv'}",
+    )
+    handoff_record = json.loads(handoff_path.read_text(encoding="utf-8"))
+    handoff_record["metadata"][DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = (
+        "forged-request-id"
+    )
+    handoff_path.write_text(
+        json.dumps(handoff_record),
+        encoding="utf-8",
+    )
+    request = SimpleNamespace(
+        request_id="cmpl-req-1-0",
+        kv_transfer_params={
+            DOCUMENT_KV_REQUEST_ID_PARAM: "req-1",
+            DOCUMENT_KV_HANDOFF_JSON_PARAM: str(handoff_path),
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="reserved connector action metadata.*requires explicit",
+    ):
         KVTransferParamsDocumentKVSource().get_load(request)
 
 

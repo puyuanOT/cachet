@@ -7,6 +7,7 @@ import pytest
 import document_kv_cache.openai_compatible as openai_module
 from document_kv_cache.benchmark_runner import BenchmarkEngineRequest
 from document_kv_cache.benchmarks import (
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     BenchmarkExample,
@@ -102,7 +103,10 @@ class FakeErrorBody:
 
 
 def benchmark_request(
-    kv_transfer_params=None, *, repeat_index: int = 1
+    kv_transfer_params=None,
+    *,
+    repeat_index: int = 1,
+    request_id: str | None = None,
 ) -> BenchmarkEngineRequest:
     example = BenchmarkExample(
         example_id="bio-1",
@@ -125,7 +129,11 @@ def benchmark_request(
         example=example,
         arm=document_kv_cache_arm(),
         prompt_parts=build_prompt_parts(example),
-        request_id=example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM),
+        request_id=(
+            request_id
+            if request_id is not None
+            else example.kv_transfer_params.get(DOCUMENT_KV_REQUEST_ID_PARAM)
+        ),
         kv_transfer_params=example.kv_transfer_params,
         repeat_index=repeat_index,
     )
@@ -243,24 +251,47 @@ def test_runtime_prompt_mode_sends_request_kv_transfer_params():
     )
 
     generation = engine.generate(
-        benchmark_request(kv_transfer_params=kv_transfer_params)
+        benchmark_request(
+            kv_transfer_params=kv_transfer_params,
+            request_id="benchmark-request-1",
+        )
     )
 
     assert engine.payloads[0]["prompt"] == benchmark_request().cache_suffix_text
-    assert engine.payloads[0]["request_id"] == "cachet-bio-1"
+    assert engine.payloads[0]["request_id"] == "benchmark-request-1"
     assert engine.payloads[0]["kv_transfer_params"] == {
         **kv_transfer_params,
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM: "benchmark-request-1",
         DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM: "runtime",
     }
     assert engine.payloads[0]["cache_salt"] == "cachet-kv-cache"
     assert generation.metadata["kv_transfer_params_attached"] == "true"
-    assert generation.metadata["request_id"] == "cachet-bio-1"
+    assert generation.metadata["request_id"] == "benchmark-request-1"
     assert generation.metadata["request_payload_kv_transfer_param_keys"] == (
-        "document_kv.handoff_json,document_kv.payload_uri,"
+        "document_kv.benchmark_request_id,document_kv.handoff_json,document_kv.payload_uri,"
         "document_kv.prompt_text_mode,document_kv.request_id"
     )
     assert generation.metadata["prefix_cache_salt_attached"] == "true"
     assert generation.metadata["prefix_cache_salt"] == "cachet-kv-cache"
+
+
+def test_top_level_transport_rejects_conflicting_benchmark_request_id():
+    kv_transfer_params = {
+        DOCUMENT_KV_REQUEST_ID_PARAM: "cachet-bio-1",
+        DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM: "forged-request-id",
+        "document_kv.handoff_json": "/Volumes/catalog/schema/volume/cachet/bio-1.handoff.json",
+    }
+    engine = CapturingEngine(
+        OpenAICompatibleEngineConfig(
+            base_url="http://localhost:8000",
+            stream=False,
+        ),
+        response=FakeJSONResponse(),
+        clock=FakeClock([1.0, 2.0]),
+    )
+
+    with pytest.raises(ValueError, match="must equal the benchmark engine request_id"):
+        engine.generate(benchmark_request(kv_transfer_params=kv_transfer_params))
 
 
 def test_custom_params_transport_sends_sglang_compatible_kv_transfer_params():

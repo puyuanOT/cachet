@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +19,7 @@ from document_kv_cache.benchmark_runner import (
     BenchmarkGeneration,
     BenchmarkManifestContext,
     BenchmarkRunResult,
+    benchmark_run_result_to_evidence_record,
     run_benchmark_suite,
 )
 from document_kv_cache.benchmark_statistics import (
@@ -890,6 +892,91 @@ def test_vllm_telemetry_parser_requires_explicit_successful_eviction() -> None:
     assert attestation.cold_read_attested
     warm = replace(attestation, payload_cache_hit=True)
     assert not warm.cold_read_attested
+
+
+def test_vllm_telemetry_parser_joins_explicit_benchmark_request_id_without_runtime_id_heuristics() -> None:
+    identity = artifact_identity()
+    telemetry = {
+        "record_type": "document_kv.vllm_native_provider_load.v1",
+        "request_id": "cmpl-cache-request-1-0-deadbeef",
+        "benchmark_request_id": "cache-request-1",
+        "cache_state_attestation": {
+            "cache_method": identity.method_id,
+            "artifact_id": identity.artifact_id,
+            "source": "local_path",
+            "bytes_read": 4096,
+            "payload_cache_hit": False,
+            "eviction_requested": True,
+            "eviction_succeeded": True,
+            "direct_io": False,
+            "expected_bytes": 4096,
+            "expected_tokens": 1,
+            "loaded_tokens": 1,
+            "successful_loads": 1,
+        },
+    }
+
+    attestation = cache_state_attestation_from_vllm_telemetry(telemetry)
+    gate = evaluate_benchmark_publication_gate(
+        benchmark_result(identity),
+        cache_state_attestations=(attestation,),
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    assert attestation.request_id == "cache-request-1"
+    assert gate.cold_attested_requests == 1
+    assert not any("has no cache-state attestation" in issue for issue in gate.issues)
+
+    legacy = dict(telemetry)
+    legacy.pop("benchmark_request_id")
+    legacy_attestation = cache_state_attestation_from_vllm_telemetry(legacy)
+    assert legacy_attestation.request_id == "cmpl-cache-request-1-0-deadbeef"
+
+
+def test_vllm_telemetry_correlation_survives_sanitized_publication_serialization() -> None:
+    identity = artifact_identity()
+    telemetry = {
+        "record_type": "document_kv.vllm_native_provider_load.v1",
+        "request_id": "cmpl-cache-request-1-0-deadbeef",
+        "benchmark_request_id": "cache-request-1",
+        "cache_state_attestation": {
+            "cache_method": identity.method_id,
+            "artifact_id": identity.artifact_id,
+            "source": "local_path",
+            "bytes_read": 4096,
+            "payload_cache_hit": False,
+            "eviction_requested": True,
+            "eviction_succeeded": True,
+            "direct_io": False,
+            "expected_bytes": 4096,
+            "expected_tokens": 1,
+            "loaded_tokens": 1,
+            "successful_loads": 1,
+        },
+    }
+    attestation = cache_state_attestation_from_vllm_telemetry(telemetry)
+    result = replace(benchmark_result(identity), evidence_policy="publication")
+
+    record = benchmark_run_result_to_evidence_record(
+        result,
+        cache_state_attestations=(attestation,),
+        artifact_identities={identity.artifact_id: identity},
+    )
+
+    expected_request_id = sha256(b"cache-request-1").hexdigest()
+    cache_measurement = next(
+        measurement
+        for measurement in record["measurements"]
+        if measurement["arm_id"] != result.baseline_arm_id
+    )
+    gate_attestation = record["gate_inputs"]["cache_state_attestations"][0]
+    assert cache_measurement["request_id"] == expected_request_id
+    assert gate_attestation["request_id"] == expected_request_id
+    assert record["evidence_gate"]["cold_attested_requests"] == 1
+    assert not any(
+        "has no cache-state attestation" in issue
+        for issue in record["evidence_gate"]["issues"]
+    )
 
 
 def test_paired_statistics_are_deterministic_and_method_aware() -> None:
