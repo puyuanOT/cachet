@@ -324,6 +324,7 @@ Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV,
 
 | Folder | Purpose |
 | --- | --- |
+| [`appendix/representative-bf16-qwen3-4b-canaries/`](appendix/representative-bf16-qwen3-4b-canaries/) | Sanitized BF16 vLLM method canaries and SGLang native-handoff smoke; non-publication-qualified and not comparable to the main Q4/Q8 tables |
 | [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) | Historical A10G warm-prefix canary evidence and Databricks provenance (predates the current g6/L4 protocol; folder name retained because it is referenced by committed release-evidence records) |
 | [`databricks/`](databricks/) | Notes for Databricks provenance; historical committed mirrors have been removed |
 | [`_template/`](_template/) | Required table shape for future public benchmark result folders |

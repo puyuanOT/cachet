@@ -1,0 +1,193 @@
+{
+  "cache_hit_validations": [
+    {
+      "arm_id": "document_kv_cache",
+      "cache_hit": true,
+      "cache_request_cached_tokens": 176,
+      "cache_request_prompt_tokens": 205,
+      "dataset": "niah",
+      "example_identity_sha256": "8eba062d7d2006e6e79e9cf20884a51aa21755162f25af156e2c84fbd38d78c5",
+      "minimum_cached_tokens": 176,
+      "observed_prefill": {
+        "cached_tokens": 176,
+        "total_prompt_tokens": 205
+      },
+      "repeat_index": 1
+    },
+    {
+      "arm_id": "document_kv_cache",
+      "cache_hit": true,
+      "cache_request_cached_tokens": 176,
+      "cache_request_prompt_tokens": 205,
+      "dataset": "niah",
+      "example_identity_sha256": "8eba062d7d2006e6e79e9cf20884a51aa21755162f25af156e2c84fbd38d78c5",
+      "minimum_cached_tokens": 176,
+      "observed_prefill": {
+        "cached_tokens": 176,
+        "total_prompt_tokens": 205
+      },
+      "repeat_index": 2
+    }
+  ],
+  "comparisons": [
+    {
+      "answer_found_delta": 0.0,
+      "baseline_arm_id": "baseline_prefill",
+      "cache_arm_id": "document_kv_cache",
+      "dataset": "niah",
+      "exact_match_delta": 0.0,
+      "time_to_completion_speedup": 1.0556266841093624,
+      "ttft_speedup": 1.0593558844297997
+    }
+  ],
+  "engine": "sglang",
+  "evidence_sanitized": true,
+  "hardware_target": "aws-g6-l4",
+  "measurements": [
+    {
+      "answer_found": true,
+      "arm_id": "baseline_prefill",
+      "completion_tokens": 7,
+      "dataset": "niah",
+      "exact_match": true,
+      "example_identity_sha256": "8eba062d7d2006e6e79e9cf20884a51aa21755162f25af156e2c84fbd38d78c5",
+      "logical_prompt_tokens": 205,
+      "prompt_text_mode": "logical",
+      "prompt_tokens": 205,
+      "repeat_index": 1,
+      "runtime_prompt_tokens": 205,
+      "time_to_completion_seconds": 3.838751084000023,
+      "ttft_seconds": 3.5869439240000247
+    },
+    {
+      "answer_found": true,
+      "arm_id": "document_kv_cache",
+      "completion_tokens": 7,
+      "dataset": "niah",
+      "exact_match": true,
+      "example_identity_sha256": "8eba062d7d2006e6e79e9cf20884a51aa21755162f25af156e2c84fbd38d78c5",
+      "logical_prompt_tokens": 205,
+      "prompt_text_mode": "logical",
+      "prompt_tokens": 205,
+      "repeat_index": 1,
+      "runtime_prompt_tokens": 205,
+      "time_to_completion_seconds": 5.12501235600007,
+      "ttft_seconds": 4.871695474000035
+    },
+    {
+      "answer_found": true,
+      "arm_id": "baseline_prefill",
+      "completion_tokens": 7,
+      "dataset": "niah",
+      "exact_match": true,
+      "example_identity_sha256": "8eba062d7d2006e6e79e9cf20884a51aa21755162f25af156e2c84fbd38d78c5",
+      "logical_prompt_tokens": 205,
+      "prompt_text_mode": "logical",
+      "prompt_tokens": 205,
+      "repeat_index": 2,
+      "runtime_prompt_tokens": 205,
+      "time_to_completion_seconds": 5.3047701530000495,
+      "ttft_seconds": 5.051604198000064
+    },
+    {
+      "answer_found": true,
+      "arm_id": "document_kv_cache",
+      "completion_tokens": 7,
+      "dataset": "niah",
+      "exact_match": true,
+      "example_identity_sha256": "8eba062d7d2006e6e79e9cf20884a51aa21755162f25af156e2c84fbd38d78c5",
+      "logical_prompt_tokens": 205,
+      "prompt_text_mode": "logical",
+      "prompt_tokens": 205,
+      "repeat_index": 2,
+      "runtime_prompt_tokens": 205,
+      "time_to_completion_seconds": 3.5366872529999682,
+      "ttft_seconds": 3.282833375999985
+    }
+  ],
+  "model_provenance": {
+    "block_size": 1,
+    "canonical_model_id": "Qwen/Qwen3-4B-Instruct-2507",
+    "engine_id": "sglang",
+    "engine_version": "0.5.10.post1",
+    "key_position_encoding": "stored_post_rope",
+    "layout_version": "qwen3-v1",
+    "lora_id": "base",
+    "model_dtype": "bfloat16",
+    "model_quantization": "none",
+    "model_revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+    "package_revisions": {
+      "cachet-kv": "wheel-sha256:d820c01c5bee4d3bcb1e4338e4081c1ea9b4b59c8cb725588d7b973c07fe6f47",
+      "sglang": "0.5.10.post1"
+    },
+    "payload_axis_order": "token_major",
+    "pipeline_parallel_size": 1,
+    "runtime_kv_dtype": "bfloat16",
+    "serving_platform": "sglang",
+    "tensor_parallel_size": 1,
+    "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
+    "tokenizer_revision": "cdbee75f17c01a7cc42f958dc650907174af0554"
+  },
+  "publication_qualified": false,
+  "raw_record_sha256": "5a59644df4d1050072d732a9c28a37fdaf147382bcfaf9622fa7f5c703eb6e49",
+  "record_type": "cachet.sglang_representative_canary_evidence.v1",
+  "report_rows": [
+    {
+      "answer_found_rate": 1.0,
+      "arm_id": "baseline_prefill",
+      "completion_tokens_mean": 7.0,
+      "dataset": "niah",
+      "errors": 0,
+      "exact_match_rate": 1.0,
+      "output_tokens_per_second": 27.724248250326028,
+      "prompt_tokens_mean": 205.0,
+      "requests": 2,
+      "time_to_completion": {
+        "count": 2,
+        "mean": 4.571760618500036,
+        "p50": 4.571760618500036,
+        "p95": 5.231469199550048
+      },
+      "ttft": {
+        "count": 2,
+        "mean": 4.319274061000044,
+        "p50": 4.319274061000044,
+        "p95": 4.9783711843000615
+      }
+    },
+    {
+      "answer_found_rate": 1.0,
+      "arm_id": "document_kv_cache",
+      "completion_tokens_mean": 7.0,
+      "dataset": "niah",
+      "errors": 0,
+      "exact_match_rate": 1.0,
+      "output_tokens_per_second": 27.604115086610275,
+      "prompt_tokens_mean": 205.0,
+      "requests": 2,
+      "time_to_completion": {
+        "count": 2,
+        "mean": 4.330849804500019,
+        "p50": 4.330849804500019,
+        "p95": 5.045596100850065
+      },
+      "ttft": {
+        "count": 2,
+        "mean": 4.07726442500001,
+        "p50": 4.07726442500001,
+        "p95": 4.792252369100032
+      }
+    }
+  ],
+  "suite": {
+    "datasets": [
+      "niah"
+    ],
+    "examples": 1,
+    "release_v1_suite": false,
+    "repeats": 2,
+    "scope": "live_synthetic_niah",
+    "suite_id": "sglang-live-synthetic-niah"
+  },
+  "workload_profile": "sglang-4k-32-v1"
+}
