@@ -25,6 +25,7 @@ from document_kv_cache.engine_protocol import (
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID, layout_for_model
 from document_kv_cache.models import KVCacheKey
+from document_kv_cache.reuse_contract import PositionHandling
 from document_kv_cache.workflow import (
     CacheBuildConfig,
     SourceChunk,
@@ -87,6 +88,8 @@ __all__ = [
     "CACHET_TRANSFORMERS_PRE_ROPE_ENV",
     "TransformersKVGeneratorConfig",
     "TransformersKVChunkGenerator",
+    "build_post_rope_transformers_kv_chunk_generator",
+    "build_pre_rope_transformers_kv_chunk_generator",
     "build_transformers_kv_chunk_generator",
 ]
 
@@ -229,10 +232,36 @@ class TransformersKVChunkGenerator:
         self.add_special_tokens = add_special_tokens
         self.cache_axis_order = _cache_axis_order_from_value(cache_axis_order)
         self.pre_rope = bool(pre_rope)
+        self.position_handling = (
+            PositionHandling.REROPE_AT_INJECTION
+            if self.pre_rope
+            else PositionHandling.STORED_POST_ROPE
+        )
         self.rope_theta: float | None = None
         self.rope_rotary_dim: int | None = None
         if self.pre_rope:
             self.rope_theta, self.rope_rotary_dim = _model_rope_params(model)
+
+    def bind_layout(self, layout: KVLayout) -> None:
+        """Bind the exact caller-resolved layout without masking conflicts."""
+
+        if not isinstance(layout, KVLayout):
+            raise TypeError("layout must be a KVLayout")
+        layout.validate()
+        if layout.pre_rope != self.pre_rope:
+            raise ValueError(
+                "generator pre_rope capability conflicts with the resolved handoff layout"
+            )
+        if self.pre_rope and (
+            layout.rope_theta != self.rope_theta
+            or layout.rope_rotary_dim != self.rope_rotary_dim
+        ):
+            raise ValueError(
+                "generator RoPE geometry conflicts with the resolved handoff layout"
+            )
+        if self.layout is not None and self.layout != layout:
+            raise ValueError("generator layout conflicts with the resolved handoff layout")
+        self.layout = layout
 
     @classmethod
     def from_pretrained(
@@ -323,7 +352,13 @@ class TransformersKVChunkGenerator:
             raise ValueError(
                 "TransformersKVChunkGenerator does not apply training adapter artifacts"
             )
-        layout = _layout_for_config(config, self.layout)
+        layout = _layout_for_config(
+            config,
+            self.layout,
+            pre_rope=self.pre_rope,
+            rope_theta=self.rope_theta,
+            rope_rotary_dim=self.rope_rotary_dim,
+        )
         torch = _torch()
         inputs = self._tokenize(chunk.text)
         input_ids = _input_ids(inputs)
@@ -401,6 +436,27 @@ class TransformersKVChunkGenerator:
 def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
     """Build a Transformers generator from Cachet environment variables."""
 
+    return _build_transformers_kv_chunk_generator(
+        pre_rope=_env_bool(CACHET_TRANSFORMERS_PRE_ROPE_ENV, default=False),
+    )
+
+
+def build_post_rope_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
+    """Build the canonical full-prefix generator with stored post-RoPE keys."""
+
+    return _build_transformers_kv_chunk_generator(pre_rope=False)
+
+
+def build_pre_rope_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
+    """Build the canonical Vanilla generator with position-independent keys."""
+
+    return _build_transformers_kv_chunk_generator(pre_rope=True)
+
+
+def _build_transformers_kv_chunk_generator(
+    *,
+    pre_rope: bool,
+) -> TransformersKVChunkGenerator:
     config = TransformersKVGeneratorConfig(
         model_id=_env_string(CACHET_TRANSFORMERS_MODEL_ID_ENV, default=QWEN3_4B_INSTRUCT_HF_MODEL_ID),
         model_revision=_env_string(CACHET_TRANSFORMERS_MODEL_REVISION_ENV),
@@ -422,7 +478,7 @@ def build_transformers_kv_chunk_generator() -> TransformersKVChunkGenerator:
     )
     return TransformersKVChunkGenerator.from_pretrained(
         config,
-        pre_rope=_env_bool(CACHET_TRANSFORMERS_PRE_ROPE_ENV, default=False),
+        pre_rope=pre_rope,
     )
 
 
@@ -434,7 +490,14 @@ def _tokenizer_kwargs_from_env() -> dict[str, Any]:
     return kwargs
 
 
-def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | None) -> KVLayout:
+def _layout_for_config(
+    config: CacheBuildConfig,
+    explicit_layout: KVLayout | None,
+    *,
+    pre_rope: bool,
+    rope_theta: float | None,
+    rope_rotary_dim: int | None,
+) -> KVLayout:
     if explicit_layout is None:
         layout = layout_for_model(
             config.model_id,
@@ -443,6 +506,10 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
             payload_axis_order=config.payload_axis_order,
+            pre_rope=pre_rope,
+            rope_theta=rope_theta if pre_rope else None,
+            rope_rotary_dim=rope_rotary_dim if pre_rope else None,
+            shares_kv_storage=False if pre_rope else None,
         )
     else:
         layout = explicit_layout
@@ -454,6 +521,9 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         "layout_version": config.layout_version,
         "storage_layout": config.storage_layout,
         "payload_axis_order": kv_payload_axis_order_from_value(config.payload_axis_order),
+        "pre_rope": pre_rope,
+        "rope_theta": rope_theta if pre_rope else None,
+        "rope_rotary_dim": rope_rotary_dim if pre_rope else None,
     }
     actual = {
         "model_id": layout.model_id,
@@ -462,6 +532,9 @@ def _layout_for_config(config: CacheBuildConfig, explicit_layout: KVLayout | Non
         "layout_version": layout.layout_version,
         "storage_layout": layout.storage_layout,
         "payload_axis_order": layout.payload_axis_order,
+        "pre_rope": layout.pre_rope,
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
     }
     mismatches = tuple(name for name, value in expected.items() if actual[name] != value)
     if mismatches:

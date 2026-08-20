@@ -1203,7 +1203,11 @@ def _reposition_hicache_payload(
                 rope_theta=layout.rope_theta,
                 rotary_dim=rotary_dim,
             )
-    return bytes(values.contiguous().view(torch.uint8).numpy().tobytes())
+    output = values.contiguous().view(torch.uint8)
+    storage = output.untyped_storage()
+    if output.storage_offset() != 0 or output.numel() != storage.nbytes():
+        raise RuntimeError("repositioned SGLang payload does not own contiguous storage")
+    return bytes(storage)
 
 
 def _sglang_rope_torch_dtype(torch: Any, dtype: str) -> Any:

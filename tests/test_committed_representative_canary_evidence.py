@@ -1,7 +1,7 @@
 import json
 from collections import Counter
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -29,10 +29,12 @@ from document_kv_cache.canary_orchestration import (
     REPRESENTATIVE_CANARY_MODEL_REVISION,
     VANILLA_CANARY_ARM,
 )
+from document_kv_cache.methods import default_method_registry
 from document_kv_cache.release_evidence import (
     SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE,
     sglang_representative_canary_evidence_issues,
 )
+from document_kv_cache.reuse_contract import PositionHandling
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +43,21 @@ APPENDIX_ROOT = (
 )
 FINAL_SOURCE_COMMIT = "6e0f501a52c6b19f66d36e53a3fe6035b4b36ea2"
 FINAL_WHEEL_SHA256 = "d820c01c5bee4d3bcb1e4338e4081c1ea9b4b59c8cb725588d7b973c07fe6f47"
+_CURRENT_METHOD_REGISTRY = default_method_registry()
+_LEGACY_POST_ROPE_VANILLA = replace(
+    _CURRENT_METHOD_REGISTRY.get("vanilla_prefill"),
+    artifact_version="1",
+    pre_rope=False,
+    position_handling=PositionHandling.STORED_POST_ROPE,
+    generator_factory=(
+        "document_kv_cache.transformers_generator:"
+        "build_post_rope_transformers_kv_chunk_generator"
+    ),
+)
+LEGACY_POST_ROPE_METHOD_REGISTRY = _CURRENT_METHOD_REGISTRY.with_spec(
+    _LEGACY_POST_ROPE_VANILLA,
+    replace=True,
+)
 EXPECTED_APPENDIX_FILES = {
     "README.md",
     "g5-vllm-8k-64-three-arm-canary.json",
@@ -222,7 +239,7 @@ def test_representative_canary_appendix_has_only_reviewed_files_and_provenance()
 
 
 @pytest.mark.parametrize("case", VLLM_EVIDENCE_CASES, ids=lambda case: case.suite_id)
-def test_committed_vllm_canary_is_canonical_and_replays_cold_joins(
+def test_historical_post_rope_vllm_canary_is_canonical_and_replays_cold_joins(
     case: VLLMEvidenceCase,
 ) -> None:
     record = _load_canonical_json(APPENDIX_ROOT / case.filename)
@@ -236,6 +253,15 @@ def test_committed_vllm_canary_is_canonical_and_replays_cold_joins(
     result = benchmark_run_result_from_record(record)
     manifest = result.experiment_manifest
     assert manifest is not None
+    vanilla_arm = next(
+        arm for arm in manifest.arms if arm.arm_id == VANILLA_CANARY_ARM
+    )
+    assert vanilla_arm.method_version == "1"
+    assert vanilla_arm.runtime_environment.key_position_encoding == (
+        "stored_post_rope"
+    )
+    assert vanilla_arm.runtime_environment.rope_theta is None
+    assert vanilla_arm.runtime_environment.rope_rotary_dim is None
     assert result.suite.suite_id == case.suite_id
     assert result.suite.hardware_target == case.hardware_target
     assert result.suite.datasets == ("hotpotqa",)
@@ -333,6 +359,7 @@ def test_committed_vllm_canary_is_canonical_and_replays_cold_joins(
         result,
         policy="canary",
         cache_state_attestations=attestations,
+        method_registry=LEGACY_POST_ROPE_METHOD_REGISTRY,
         benchmark_payload_digest=payload_digest,
     )
     assert benchmark_evidence_gate_to_record(canary_gate) == stored_gate
@@ -340,6 +367,7 @@ def test_committed_vllm_canary_is_canonical_and_replays_cold_joins(
     publication_gate = evaluate_benchmark_publication_gate(
         result,
         cache_state_attestations=attestations,
+        method_registry=LEGACY_POST_ROPE_METHOD_REGISTRY,
         benchmark_payload_digest=payload_digest,
     )
     assert publication_gate.checked_cache_requests == 12
@@ -352,19 +380,25 @@ def test_committed_vllm_canary_is_canonical_and_replays_cold_joins(
     _assert_no_secret_path_or_raw_text_leaks(record)
 
 
-def test_committed_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
+def test_historical_post_rope_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
     record = _load_canonical_json(
         APPENDIX_ROOT / "g6-sglang-4k-32-paired-smoke-evidence.json"
     )
     assert (
         record.get("record_type") == SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE
     )
-    assert (
-        sglang_representative_canary_evidence_issues(
-            record,
-            expected_cachet_wheel_sha256=FINAL_WHEEL_SHA256,
-        )
-        == ()
+    # This record predates Vanilla-v2. The current validator must reject its
+    # post-RoPE provenance rather than silently treating it as fresh evidence.
+    assert sglang_representative_canary_evidence_issues(
+        record,
+        expected_cachet_wheel_sha256=FINAL_WHEEL_SHA256,
+    ) == (
+        "representative SGLang benchmark_manifest_provenance."
+        "key_position_encoding must be 'pre_rope'",
+        "representative SGLang benchmark_manifest_provenance."
+        "rope_theta must be 5000000.0",
+        "representative SGLang benchmark_manifest_provenance."
+        "rope_rotary_dim must be 128",
     )
     assert record.get("evidence_sanitized") is True
     assert record.get("publication_qualified") is False
@@ -388,6 +422,9 @@ def test_committed_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
     assert provenance["model_dtype"] == "bfloat16"
     assert provenance["runtime_kv_dtype"] == "bfloat16"
     assert provenance["model_quantization"] == "none"
+    assert provenance["key_position_encoding"] == "stored_post_rope"
+    assert provenance.get("rope_theta") is None
+    assert provenance.get("rope_rotary_dim") is None
     assert (
         provenance["package_revisions"]["cachet-kv"]
         == f"wheel-sha256:{FINAL_WHEEL_SHA256}"

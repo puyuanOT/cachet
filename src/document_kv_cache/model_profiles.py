@@ -12,6 +12,7 @@ from typing import Any
 from document_kv_cache.engine_protocol import (
     DTYPE_BYTE_WIDTHS,
     AttentionMechanism,
+    KVKeyPositionEncoding,
     KVLayout,
     KVPayloadAxisOrder,
     KVStorageLayout,
@@ -34,6 +35,8 @@ __all__ = [
     "QWEN3_4B_BASE_HF_MODEL_ID",
     "QWEN3_4B_INSTRUCT_HF_MODEL_ID",
     "QWEN3_4B_INSTRUCT_PROFILE",
+    "QWEN3_4B_ROPE_ROTARY_DIM",
+    "QWEN3_4B_ROPE_THETA",
     "builtin_model_profiles",
     "default_model_profile_registry",
     "get_model_profile",
@@ -150,6 +153,10 @@ class KVModelProfile:
         shares_kv_storage: bool | None = None,
         storage_layout: KVStorageLayout | str | None = None,
         payload_axis_order: KVPayloadAxisOrder | str | None = None,
+        pre_rope: bool = False,
+        rope_theta: float | None = None,
+        rope_rotary_dim: int | None = None,
+        key_position_encoding: KVKeyPositionEncoding | str | None = None,
     ) -> KVLayout:
         layout_dtype = self.default_dtype if dtype is None else dtype
         byte_width = dtype_byte_width(layout_dtype)
@@ -198,6 +205,10 @@ class KVModelProfile:
             kv_stride_bytes=resolved_kv_stride_bytes,
             shares_kv_storage=resolved_shares_kv_storage,
             storage_layout=resolved_storage_layout,
+            pre_rope=pre_rope,
+            rope_theta=rope_theta,
+            rope_rotary_dim=rope_rotary_dim,
+            key_position_encoding=key_position_encoding,
             **payload_axis_order_kwargs,
         )
         layout.validate()
@@ -309,6 +320,10 @@ class ModelProfileRegistry:
         shares_kv_storage: bool | None = None,
         storage_layout: KVStorageLayout | str | None = None,
         payload_axis_order: KVPayloadAxisOrder | str | None = None,
+        pre_rope: bool = False,
+        rope_theta: float | None = None,
+        rope_rotary_dim: int | None = None,
+        key_position_encoding: KVKeyPositionEncoding | str | None = None,
     ) -> KVLayout:
         return self.get(model_id).to_layout(
             model_id=model_id,
@@ -320,6 +335,10 @@ class ModelProfileRegistry:
             shares_kv_storage=shares_kv_storage,
             storage_layout=storage_layout,
             payload_axis_order=payload_axis_order,
+            pre_rope=pre_rope,
+            rope_theta=rope_theta,
+            rope_rotary_dim=rope_rotary_dim,
+            key_position_encoding=key_position_encoding,
         )
 
 
@@ -477,6 +496,8 @@ def _validate_positive_int(value: Any, name: str) -> None:
 
 QWEN3_4B_BASE_HF_MODEL_ID = "Qwen/Qwen3-4B"
 QWEN3_4B_INSTRUCT_HF_MODEL_ID = "Qwen/Qwen3-4B-Instruct-2507"
+QWEN3_4B_ROPE_THETA = 5_000_000.0
+QWEN3_4B_ROPE_ROTARY_DIM = 128
 
 
 QWEN3_4B_INSTRUCT_PROFILE = KVModelProfile(
@@ -524,6 +545,10 @@ def layout_for_model(
     shares_kv_storage: bool | None = None,
     storage_layout: KVStorageLayout | str | None = None,
     payload_axis_order: KVPayloadAxisOrder | str | None = None,
+    pre_rope: bool = False,
+    rope_theta: float | None = None,
+    rope_rotary_dim: int | None = None,
+    key_position_encoding: KVKeyPositionEncoding | str | None = None,
 ) -> KVLayout:
     return _BUILTIN_MODEL_PROFILE_REGISTRY.layout_for_model(
         model_id,
@@ -535,4 +560,8 @@ def layout_for_model(
         shares_kv_storage=shares_kv_storage,
         storage_layout=storage_layout,
         payload_axis_order=payload_axis_order,
+        pre_rope=pre_rope,
+        rope_theta=rope_theta,
+        rope_rotary_dim=rope_rotary_dim,
+        key_position_encoding=key_position_encoding,
     )

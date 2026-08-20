@@ -34,7 +34,9 @@ from document_kv_cache.engine_protocol import (
     KVPayloadAxisOrder,
     KVSegment,
 )
-from document_kv_cache.methods import MethodRegistry, MethodSpec
+from document_kv_cache.methods import MethodRegistry, MethodSpec, method_spec
+from document_kv_cache.models import CacheGenerationMethod
+from document_kv_cache.rope import apply_rope_to_keys
 from document_kv_cache.reuse_contract import (
     ArtifactEncoding,
     PACKED_Q4_ARTIFACT_FORMAT,
@@ -152,6 +154,96 @@ def write_sglang_handoff(tmp_path, ready: EngineReadyRequest) -> tuple[Path, Pat
         payload_uri=f"disk:{payload_path}",
     )
     return handoff_path, payload_path
+
+
+def test_sglang_two_segment_reposition_uses_global_positions_and_preserves_values():
+    torch = pytest.importorskip("torch")
+    rope_theta = 5_000_000.0
+    layout = KVLayout(
+        model_id="tiny-pre-rope-sglang-model",
+        lora_id="base",
+        layout_version="pre-rope-v2",
+        dtype="float32",
+        num_layers=1,
+        block_size=2,
+        bytes_per_token=32,
+        num_query_heads=1,
+        num_kv_heads=1,
+        head_size=4,
+        kv_stride_bytes=16,
+        shares_kv_storage=False,
+        storage_layout="separate_key_value",
+        pre_rope=True,
+        rope_theta=rope_theta,
+        rope_rotary_dim=4,
+        key_position_encoding="pre_rope",
+    )
+    pre_rope_keys = torch.tensor(
+        [
+            [[1.0, 0.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0, 0.0]],
+            [[1.0, 0.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0, 0.0]],
+        ],
+        dtype=torch.float32,
+    )
+    values = torch.tensor(
+        [
+            [[11.0, 12.0, 13.0, 14.0]],
+            [[21.0, 22.0, 23.0, 24.0]],
+            [[31.0, 32.0, 33.0, 34.0]],
+            [[41.0, 42.0, 43.0, 44.0]],
+        ],
+        dtype=torch.float32,
+    )
+    token_major = torch.stack((pre_rope_keys, values), dim=1).unsqueeze(1)
+    payload = bytes(token_major.contiguous().view(torch.uint8).flatten().tolist())
+    handle = KVCacheHandle(
+        request_id="req-sglang-vanilla-v2",
+        handle_uri="document-kv://req-sglang-vanilla-v2",
+        layout=layout,
+        segments=(
+            KVSegment("doc-a", "document_chunk", "doc-a", 0, 2, 0, 64),
+            KVSegment("doc-b", "document_chunk", "doc-b", 2, 2, 64, 64),
+        ),
+        total_tokens=4,
+        total_bytes=len(payload),
+        cache_method="vanilla_prefill",
+    )
+    ready = EngineReadyRequest(
+        handle=handle,
+        payload=payload,
+        estimated_gpu_bytes=len(payload),
+        reuse_plan=method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
+    )
+    record = engine_adapter_request_to_record(
+        build_engine_adapter_request(ready, spec=sglang_adapter_spec())
+    )
+    plan = build_engine_kv_injection_plan(
+        record,
+        expected_backend="sglang",
+        require_external_payload_uri=False,
+    )
+
+    repositioned = sglang_dynamic_backend._reposition_hicache_payload(plan, payload)
+    decoded = torch.frombuffer(bytearray(repositioned), dtype=torch.float32).reshape(
+        4, 1, 2, 1, 4
+    )
+    expected_keys = apply_rope_to_keys(
+        pre_rope_keys,
+        torch.arange(4),
+        rope_theta=rope_theta,
+        rotary_dim=4,
+    )
+    local_document_two_keys = apply_rope_to_keys(
+        pre_rope_keys[2:],
+        torch.arange(2),
+        rope_theta=rope_theta,
+        rotary_dim=4,
+    )
+    assert torch.allclose(decoded[:, 0, 0], expected_keys)
+    assert not torch.allclose(decoded[2:, 0, 0], local_document_two_keys)
+    assert torch.equal(decoded[:, 0, 1], values)
 
 
 def test_sglang_provider_payload_decoder_runs_before_page_slicing(monkeypatch) -> None:

@@ -74,10 +74,11 @@ def test_builtin_executable_methods_are_registered_as_implemented():
     }
 
 
-def test_vanilla_kv_is_post_rope_without_recompute():
+def test_vanilla_kv_v2_is_pre_rope_without_recompute():
     spec = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
-    assert spec.pre_rope is False
+    assert spec.pre_rope is True
     assert spec.selective_recompute is False
+    assert spec.artifact_version == "2"
 
 
 def test_full_prefix_control_has_a_distinct_method_identity():
@@ -183,26 +184,26 @@ def test_unimplemented_method_fails_before_execution():
 
 
 def test_method_validates_generator_capabilities():
-    class PostRopeGenerator:
-        pre_rope = False
+    class PreRopeGenerator:
+        pre_rope = True
 
         def generate(self):
             raise AssertionError
 
-    method_spec(CacheGenerationMethod.VANILLA_PREFILL).validate_generator(PostRopeGenerator())
+    method_spec(CacheGenerationMethod.VANILLA_PREFILL).validate_generator(PreRopeGenerator())
 
-    class PreRopeGenerator(PostRopeGenerator):
-        pre_rope = True
+    class PostRopeGenerator(PreRopeGenerator):
+        pre_rope = False
 
-    with pytest.raises(ValueError, match="requires pre_rope=False"):
-        method_spec(CacheGenerationMethod.VANILLA_PREFILL).validate_generator(PreRopeGenerator())
+    with pytest.raises(ValueError, match="requires pre_rope=True"):
+        method_spec(CacheGenerationMethod.VANILLA_PREFILL).validate_generator(PostRopeGenerator())
 
 
 def test_method_loads_declared_generator_factory() -> None:
     factory = method_spec(CacheGenerationMethod.VANILLA_PREFILL).load_generator_factory()
 
     assert callable(factory)
-    assert factory.__name__ == "build_transformers_kv_chunk_generator"
+    assert factory.__name__ == "build_pre_rope_transformers_kv_chunk_generator"
 
 
 def test_engine_native_method_has_no_generator_factory() -> None:

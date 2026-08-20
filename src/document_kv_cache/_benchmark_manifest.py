@@ -385,11 +385,18 @@ def _validate_arm_runtime_environments(
         )
     reference = by_id[reference_arm_id]
     if comparison_mode == "methods_same_setting":
+        method_owned_position_fields = {
+            "key_position_encoding",
+            "rope_theta",
+            "rope_rotary_dim",
+        }
         for arm in arms:
             differences = _runtime_environment_differences(
                 reference.runtime_environment,
                 arm.runtime_environment,
             )
+            if arm.method_id != reference.method_id:
+                differences.difference_update(method_owned_position_fields)
             if differences:
                 raise ValueError(
                     "methods_same_setting requires identical actual runtime "

@@ -460,7 +460,7 @@ def test_publication_gate_rejects_measurement_method_or_variant_identity_forgery
 @pytest.mark.parametrize(
     ("changes", "expected_field"),
     (
-        ({"method_version": "2"}, "method_version"),
+            ({"method_version": "1"}, "method_version"),
         ({"method_config_digest": "2" * 64}, "method_config_digest"),
         ({"model_id": "other/model"}, "model_id"),
         ({"model_revision": "other-revision"}, "model_revision"),
@@ -473,13 +473,13 @@ def test_publication_gate_rejects_measurement_method_or_variant_identity_forgery
         ({"block_size": 32}, "block_size"),
         ({"payload_axis_order": "layer_major"}, "payload_axis_order"),
         ({"rope_theta": 500_000.0}, "rope_theta"),
-        ({"rope_rotary_dim": 128}, "rope_rotary_dim"),
-        (
-            {
-                "key_position_encoding": "pre_rope",
-                "rope_theta": 1_000_000.0,
-                "rope_rotary_dim": 64,
-            },
+            ({"rope_rotary_dim": 64}, "rope_rotary_dim"),
+            (
+                {
+                    "key_position_encoding": "stored_post_rope",
+                    "rope_theta": None,
+                    "rope_rotary_dim": None,
+                },
             "key_position_encoding",
         ),
         ({"tensor_parallel_size": 2}, "tensor_parallel_size"),
@@ -1199,7 +1199,7 @@ def scoped_benchmark_result(
 def artifact_identity() -> ArtifactIdentity:
     return ArtifactIdentity(
         method_id="vanilla_prefill",
-        method_version="1",
+        method_version="2",
         method_config_digest="1" * 64,
         model_id="qwen3:4b-instruct",
         model_revision="model-revision",
@@ -1211,8 +1211,9 @@ def artifact_identity() -> ArtifactIdentity:
         kv_dtype="float16",
         block_size=16,
         payload_axis_order="layer,kv,token,head,dim",
-        rope_theta=1_000_000.0,
-        rope_rotary_dim=64,
+        key_position_encoding="pre_rope",
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=128,
         generator_family="transformers",
         generator_version="4.53.0",
     )

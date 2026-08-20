@@ -303,6 +303,7 @@ def inline_handoff_record(*, request_id: str = "cachet-bio-1", payload_uri: str 
         segments=(KVSegment("doc-1", "document_static", "static", 0, 1, 0, 4),),
         total_tokens=1,
         total_bytes=4,
+        cache_method="full_prefix_prefill",
     )
     ready = EngineReadyRequest(handle=handle, payload=b"data", estimated_gpu_bytes=4)
     adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())

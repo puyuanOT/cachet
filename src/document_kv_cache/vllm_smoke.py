@@ -72,8 +72,12 @@ from document_kv_cache.engine_adapters import (
 )
 from document_kv_cache.engine_probe import _validate_local_payload_uri
 from document_kv_cache.dataset_prep import write_v1_jsonl
-from document_kv_cache.model_profiles import layout_for_model
-from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_INSTRUCT_HF_MODEL_ID,
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
+    layout_for_model,
+)
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.runtime_telemetry import RuntimeTelemetrySampler
 from document_kv_cache.storage import local_path
@@ -860,7 +864,26 @@ def _resolved_representative_vllm_provenance(
     provenance: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
-    layout = layout_for_model(config.model_id, dtype=runtime_kv_dtype)
+    pre_rope = (
+        config.handoff_generation is not None
+        and config.handoff_generation.cache_method
+        == CacheGenerationMethod.VANILLA_PREFILL.value
+    )
+    layout = layout_for_model(
+        config.model_id,
+        dtype=runtime_kv_dtype,
+        **(
+            {
+                "pre_rope": True,
+                "rope_theta": QWEN3_4B_ROPE_THETA,
+                "rope_rotary_dim": QWEN3_4B_ROPE_ROTARY_DIM,
+                "shares_kv_storage": False,
+                "storage_layout": "separate_key_value",
+            }
+            if pre_rope
+            else {}
+        ),
+    )
     wheel_sha256 = _verified_document_kv_package_wheel_sha256()
     package_revisions = {
         package: version
@@ -1992,20 +2015,42 @@ def _generate_prepared_benchmark_handoff_inputs(
                 "handoff generator identity differs from the serving identity: "
                 + ", ".join(mismatches)
             )
-    position_handling = getattr(generator, "position_handling", None)
+        if generation.cache_method == CacheGenerationMethod.VANILLA_PREFILL.value:
+            observed_rope = (
+                getattr(generator, "rope_theta", None),
+                getattr(generator, "rope_rotary_dim", None),
+            )
+            expected_rope = (
+                QWEN3_4B_ROPE_THETA,
+                QWEN3_4B_ROPE_ROTARY_DIM,
+            )
+            if observed_rope != expected_rope:
+                raise ValueError(
+                    "representative Vanilla generator RoPE geometry differs from "
+                    "the pinned Qwen3 model"
+                )
+    generator_pre_rope = getattr(generator, "pre_rope", False)
+    if type(generator_pre_rope) is not bool:
+        raise TypeError("generator.pre_rope must be a boolean when provided")
     layout = replace(
         layout,
         model_id=model_id,
-        shares_kv_storage=(
-            False
-            if getattr(position_handling, "value", position_handling)
-            == "rerotate_at_injection"
-            else layout.shares_kv_storage
+        pre_rope=generator_pre_rope,
+        rope_theta=(
+            getattr(generator, "rope_theta", None) if generator_pre_rope else None
         ),
+        rope_rotary_dim=(
+            getattr(generator, "rope_rotary_dim", None)
+            if generator_pre_rope
+            else None
+        ),
+        key_position_encoding=(
+            "pre_rope" if generator_pre_rope else "stored_post_rope"
+        ),
+        shares_kv_storage=False if generator_pre_rope else layout.shares_kv_storage,
         storage_layout=(
             "separate_key_value"
-            if getattr(position_handling, "value", position_handling)
-            == "rerotate_at_injection"
+            if generator_pre_rope
             else layout.storage_layout
         ),
     )

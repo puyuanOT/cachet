@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import hashlib
-from types import SimpleNamespace
+import sys
+from dataclasses import replace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 import cachet.transformers_generator as cachet_transformers_generator
 import document_kv_cache.transformers_generator as public_transformers_generator
 from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout, dtype_byte_width
+from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.model_profiles import QWEN3_4B_INSTRUCT_HF_MODEL_ID
+from document_kv_cache.methods import method_spec
+from document_kv_cache.models import CacheGenerationMethod, KVCacheKey
+from document_kv_cache.rope import apply_rope_to_keys
 from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_ADD_SPECIAL_TOKENS_ENV,
     CACHET_TRANSFORMERS_CACHE_AXIS_ORDER_ENV,
@@ -27,9 +33,15 @@ from document_kv_cache.transformers_generator import (
     CACHET_TRANSFORMERS_USE_FAST_TOKENIZER_ENV,
     TransformersKVChunkGenerator,
     TransformersKVGeneratorConfig,
+    build_post_rope_transformers_kv_chunk_generator,
+    build_pre_rope_transformers_kv_chunk_generator,
     build_transformers_kv_chunk_generator,
 )
-from document_kv_cache.workflow import CacheBuildConfig, SourceDocument
+from document_kv_cache.workflow import (
+    CacheBuildConfig,
+    DocumentKVWorkflow,
+    SourceDocument,
+)
 
 torch = pytest.importorskip("torch")
 
@@ -141,7 +153,11 @@ def tiny_layout(
     )
 
 
-def build_config(layout: KVLayout) -> CacheBuildConfig:
+def build_config(
+    layout: KVLayout,
+    *,
+    cache_method: CacheGenerationMethod = CacheGenerationMethod.FULL_PREFIX_PREFILL,
+) -> CacheBuildConfig:
     return CacheBuildConfig(
         model_id=layout.model_id,
         lora_id=layout.lora_id,
@@ -150,6 +166,7 @@ def build_config(layout: KVLayout) -> CacheBuildConfig:
         layout_version=layout.layout_version,
         storage_layout=layout.storage_layout,
         payload_axis_order=layout.payload_axis_order,
+        cache_method=cache_method,
     )
 
 
@@ -172,6 +189,75 @@ def tensor_bytes(tensor) -> bytes:
         tensor.detach().cpu().contiguous().view(torch.uint8).flatten().tolist()
     )
     return bytes(byte_values)
+
+
+def qwen_like_pre_rope_model(
+    monkeypatch,
+    *,
+    capture_mode: str = "valid",
+):
+    module = ModuleType(f"cachet_test_qwen_model_{capture_mode}")
+    rotary_calls: list[int] = []
+    rope_theta = 5_000_000.0
+    head_dim = 4
+
+    def roped_key(key):
+        positions = torch.arange(key.shape[2], dtype=torch.long)
+        normalized = key[0].transpose(0, 1)
+        return apply_rope_to_keys(
+            normalized,
+            positions,
+            rope_theta=rope_theta,
+            rotary_dim=head_dim,
+        ).transpose(0, 1).unsqueeze(0)
+
+    def apply_rotary_pos_emb(query, key, *_args, **_kwargs):
+        rotary_calls.append(len(rotary_calls))
+        if capture_mode == "bad":
+            return query, key + 100.0
+        return query, roped_key(key)
+
+    module.apply_rotary_pos_emb = apply_rotary_pos_emb
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+
+    class QwenLikeModel:
+        config = SimpleNamespace(rope_theta=rope_theta, head_dim=head_dim)
+
+        def __init__(self) -> None:
+            self.pre_keys = tuple(
+                torch.arange(8, dtype=torch.float32).reshape(1, 1, 2, 4)
+                + layer_index * 20
+                for layer_index in range(2)
+            )
+            self.values = tuple(
+                torch.arange(8, dtype=torch.float32).reshape(1, 1, 2, 4)
+                + 200
+                + layer_index * 20
+                for layer_index in range(2)
+            )
+            self.post_keys: tuple[object, ...] = ()
+
+        def __call__(self, *, input_ids, attention_mask=None, use_cache: bool):
+            del input_ids, attention_mask
+            assert use_cache is True
+            post_keys = []
+            for pre_key in self.pre_keys:
+                if capture_mode == "missing":
+                    post_key = roped_key(pre_key)
+                else:
+                    _, post_key = module.apply_rotary_pos_emb(
+                        torch.zeros_like(pre_key),
+                        pre_key,
+                    )
+                post_keys.append(post_key)
+            self.post_keys = tuple(post_keys)
+            return SimpleNamespace(
+                past_key_values=tuple(zip(self.post_keys, self.values, strict=True))
+            )
+
+    QwenLikeModel.__module__ = module.__name__
+    model = QwenLikeModel()
+    return model, module, apply_rotary_pos_emb, rotary_calls
 
 
 def test_tensor_bytes_preserves_small_noncontiguous_tensor() -> None:
@@ -296,6 +382,277 @@ def test_transformers_generator_emits_token_major_layer_major_payload():
         }
     ]
     assert model.calls[0]["use_cache"] is True
+
+
+def test_pre_rope_generator_captures_keys_preserves_values_and_restores_hook(
+    monkeypatch,
+):
+    model, module, original_hook, rotary_calls = qwen_like_pre_rope_model(
+        monkeypatch
+    )
+    layout = replace(
+        tiny_layout(num_layers=2, head_size=4),
+        pre_rope=True,
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=4,
+        key_position_encoding="pre_rope",
+    )
+    generator = TransformersKVChunkGenerator(
+        model=model,
+        tokenizer=TinyTokenizer(token_count=2),
+        layout=layout,
+        pre_rope=True,
+    )
+    source = document()
+
+    pack_chunk = generator.generate(
+        document=source,
+        chunk=source.chunks[0],
+        config=build_config(
+            layout,
+            cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+        ),
+    )
+
+    expected_pre_rope = public_transformers_generator._payload_from_past_key_values(
+        tuple(zip(model.pre_keys, model.values, strict=True)),
+        token_count=2,
+        layout=layout,
+        cache_axis_order="head_major",
+    )
+    post_rope = public_transformers_generator._payload_from_past_key_values(
+        tuple(zip(model.post_keys, model.values, strict=True)),
+        token_count=2,
+        layout=layout,
+        cache_axis_order="head_major",
+    )
+    assert pack_chunk.payload == expected_pre_rope
+    assert pack_chunk.payload != post_rope
+    assert rotary_calls == [0, 1]
+    assert module.apply_rotary_pos_emb is original_hook
+    assert pack_chunk.key.artifact_identity is not None
+    assert pack_chunk.key.artifact_identity.method_version == "2"
+    assert pack_chunk.key.artifact_identity.key_position_encoding == "pre_rope"
+    assert pack_chunk.key.artifact_identity.rope_theta == 5_000_000.0
+    assert pack_chunk.key.artifact_identity.rope_rotary_dim == 4
+
+
+@pytest.mark.parametrize(
+    ("capture_mode", "message"),
+    (
+        ("missing", "captured pre-RoPE key count 0 != layer count 2"),
+        ("bad", "pre-RoPE self-check failed"),
+    ),
+)
+def test_pre_rope_generator_rejects_missing_or_bad_capture_and_restores_hook(
+    monkeypatch,
+    capture_mode,
+    message,
+):
+    model, module, original_hook, _rotary_calls = qwen_like_pre_rope_model(
+        monkeypatch,
+        capture_mode=capture_mode,
+    )
+    layout = replace(
+        tiny_layout(num_layers=2, head_size=4),
+        pre_rope=True,
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=4,
+        key_position_encoding="pre_rope",
+    )
+    generator = TransformersKVChunkGenerator(
+        model=model,
+        tokenizer=TinyTokenizer(token_count=2),
+        layout=layout,
+        pre_rope=True,
+    )
+    source = document()
+
+    with pytest.raises(ValueError, match=message):
+        generator.generate(
+            document=source,
+            chunk=source.chunks[0],
+            config=build_config(
+                layout,
+                cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+            ),
+        )
+
+    assert module.apply_rotary_pos_emb is original_hook
+
+
+def test_registered_vanilla_generator_derives_pre_rope_layout_in_workflow(
+    tmp_path,
+    monkeypatch,
+):
+    model, _module, _original_hook, _rotary_calls = qwen_like_pre_rope_model(
+        monkeypatch
+    )
+    resolved_layout = replace(
+        tiny_layout(num_layers=2, head_size=4),
+        pre_rope=True,
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=4,
+        key_position_encoding="pre_rope",
+    )
+    generator = TransformersKVChunkGenerator(
+        model=model,
+        tokenizer=TinyTokenizer(token_count=2),
+        layout=None,
+        pre_rope=True,
+    )
+    layout_calls = []
+
+    def fake_layout_for_model(model_id, **kwargs):
+        layout_calls.append((model_id, kwargs))
+        return resolved_layout
+
+    monkeypatch.setattr(
+        public_transformers_generator,
+        "build_pre_rope_transformers_kv_chunk_generator",
+        lambda: generator,
+    )
+    monkeypatch.setattr(
+        public_transformers_generator,
+        "layout_for_model",
+        fake_layout_for_model,
+    )
+    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
+    created = vanilla.create_generator()
+    config = build_config(
+        resolved_layout,
+        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+    )
+    workflow = DocumentKVWorkflow.with_storage(manifest=InMemoryManifestStore())
+
+    result = workflow.generate_cache(
+        documents=(document(),),
+        generator=created,
+        config=config,
+        shard_uri=tmp_path / "vanilla-v2.kvpack",
+        align_bytes=1,
+    )
+
+    assert result.artifact_identity is not None
+    assert result.artifact_identity.method_id == "vanilla_prefill"
+    assert result.artifact_identity.method_version == "2"
+    assert result.artifact_identity.key_position_encoding == "pre_rope"
+    assert result.artifact_identity.rope_theta == 5_000_000.0
+    assert result.artifact_identity.rope_rotary_dim == 4
+    assert layout_calls == [
+        (
+            resolved_layout.model_id,
+            {
+                "dtype": resolved_layout.dtype,
+                "lora_id": resolved_layout.lora_id,
+                "layout_version": resolved_layout.layout_version,
+                "storage_layout": resolved_layout.storage_layout,
+                "payload_axis_order": resolved_layout.payload_axis_order,
+                "pre_rope": True,
+                "rope_theta": 5_000_000.0,
+                "rope_rotary_dim": 4,
+                "shares_kv_storage": False,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "cache_method",
+    (
+        CacheGenerationMethod.VANILLA_PREFILL,
+        CacheGenerationMethod.FULL_PREFIX_PREFILL,
+    ),
+)
+def test_strict_workflow_rejects_method_position_mislabelling_before_write(
+    tmp_path,
+    monkeypatch,
+    cache_method,
+):
+    if cache_method == CacheGenerationMethod.VANILLA_PREFILL:
+        model, _module, _original_hook, _rotary_calls = qwen_like_pre_rope_model(
+            monkeypatch
+        )
+        layout = replace(
+            tiny_layout(num_layers=2, head_size=4),
+            pre_rope=True,
+            rope_theta=5_000_000.0,
+            rope_rotary_dim=4,
+            key_position_encoding="pre_rope",
+        )
+        delegate = TransformersKVChunkGenerator(
+            model=model,
+            tokenizer=TinyTokenizer(token_count=2),
+            layout=layout,
+            pre_rope=True,
+        )
+        claimed_encoding = "stored_post_rope"
+    else:
+        layout = tiny_layout(num_layers=2)
+        delegate = TransformersKVChunkGenerator(
+            model=TinyModel(
+                (
+                    layer([[1, 2], [3, 4]], [[11, 12], [13, 14]]),
+                    layer([[21, 22], [23, 24]], [[31, 32], [33, 34]]),
+                )
+            ),
+            tokenizer=TinyTokenizer(token_count=2),
+            layout=layout,
+        )
+        claimed_encoding = "pre_rope"
+
+    class MislabelledGenerator:
+        pre_rope = delegate.pre_rope
+        position_handling = delegate.position_handling
+
+        def generate(self, **kwargs):
+            pack_chunk = delegate.generate(**kwargs)
+            identity = pack_chunk.key.artifact_identity
+            assert identity is not None
+            if claimed_encoding == "pre_rope":
+                identity = replace(
+                    identity,
+                    key_position_encoding=claimed_encoding,
+                    rope_theta=5_000_000.0,
+                    rope_rotary_dim=layout.head_size,
+                )
+            else:
+                identity = replace(
+                    identity,
+                    key_position_encoding=claimed_encoding,
+                    rope_theta=None,
+                    rope_rotary_dim=None,
+                )
+            return replace(
+                pack_chunk,
+                key=KVCacheKey.for_document(
+                    model_id=pack_chunk.key.model_id,
+                    lora_id=pack_chunk.key.lora_id,
+                    prompt_template_version=pack_chunk.key.prompt_template_version,
+                    document_id=pack_chunk.key.document_id,
+                    chunk_type=pack_chunk.key.chunk_type,
+                    chunk_id=pack_chunk.key.chunk_id,
+                    content_hash=pack_chunk.key.content_hash,
+                    artifact_identity=identity,
+                    token_contract=pack_chunk.key.token_contract,
+                ),
+            )
+
+    manifest = InMemoryManifestStore()
+    workflow = DocumentKVWorkflow.with_storage(manifest=manifest)
+    shard_path = tmp_path / f"mislabelled-{cache_method.value}.kvpack"
+
+    with pytest.raises(ValueError, match="position encoding does not match"):
+        workflow.generate_cache(
+            documents=(document(),),
+            generator=MislabelledGenerator(),
+            config=build_config(layout, cache_method=cache_method),
+            shard_uri=shard_path,
+            align_bytes=1,
+        )
+
+    assert not shard_path.exists()
+    assert manifest.keys_for_document("doc-a") == []
 
 
 def test_transformers_generator_emits_layer_major_payload():
@@ -724,6 +1081,39 @@ def test_transformers_generator_env_factory_builds_pretrained_config(monkeypatch
     assert config.device_map == "auto"
     assert config.model_kwargs == {"attn_implementation": "eager"}
     assert config.tokenizer_kwargs == {"padding_side": "left", "use_fast": False}
+
+
+@pytest.mark.parametrize(
+    ("factory", "expected_pre_rope"),
+    (
+        (build_post_rope_transformers_kv_chunk_generator, False),
+        (build_pre_rope_transformers_kv_chunk_generator, True),
+    ),
+)
+def test_contract_factories_force_position_encoding(
+    monkeypatch,
+    factory,
+    expected_pre_rope,
+):
+    observed = []
+    sentinel = object()
+
+    def fake_from_pretrained(cls, config, *, layout=None, pre_rope=False):
+        observed.append(pre_rope)
+        return sentinel
+
+    monkeypatch.setattr(
+        TransformersKVChunkGenerator,
+        "from_pretrained",
+        classmethod(fake_from_pretrained),
+    )
+    monkeypatch.setenv(
+        public_transformers_generator.CACHET_TRANSFORMERS_PRE_ROPE_ENV,
+        str(not expected_pre_rope),
+    )
+
+    assert factory() is sentinel
+    assert observed == [expected_pre_rope]
 
 
 def test_transformers_generator_env_factory_accepts_databricks_escaped_json(monkeypatch):

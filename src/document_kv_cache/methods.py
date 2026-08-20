@@ -766,7 +766,7 @@ _BUILTIN_METHOD_SPECS: tuple[MethodSpec, ...] = (
         ),
         generator_factory=(
             "document_kv_cache.transformers_generator:"
-            "build_transformers_kv_chunk_generator"
+            "build_post_rope_transformers_kv_chunk_generator"
         ),
         handoff_topology=FULL_PREFIX_HANDOFF_TOPOLOGY,
         description=(
@@ -780,23 +780,24 @@ _BUILTIN_METHOD_SPECS: tuple[MethodSpec, ...] = (
         display_name="vanilla KV",
         arm_id=DOCUMENT_KV_CACHE_ARM,
         connector_mode=CACHET_CONNECTOR_MODE,
-        pre_rope=False,
+        pre_rope=True,
         selective_recompute=False,
         implemented=True,
+        artifact_version="2",
         lifecycle=MethodLifecycle(
             code_status=MethodCodeStatus.RUNNABLE,
             upstream_reproduction=UpstreamReproductionStatus.NOT_APPLICABLE,
         ),
         generator_factory=(
             "document_kv_cache.transformers_generator:"
-            "build_transformers_kv_chunk_generator"
+            "build_pre_rope_transformers_kv_chunk_generator"
         ),
         handoff_topology=PER_DOCUMENT_HANDOFF_TOPOLOGY,
         description=(
-            "Reuse per-document KV computed independently and stored post-RoPE; the "
-            "connector reports the document/system prefix as already computed and "
-            "hydrates it into GPU KV. Correct for single-document (true-prefix) reuse; "
-            "multi-document quality is limited by missing cross-document attention."
+            "Reuse position-independent pre-RoPE KV computed independently for each "
+            "document, assemble the documents in logical order, and apply each token's "
+            "true absolute position during injection. Multi-document quality can still "
+            "be limited by missing cross-document attention."
         ),
     ),
     MethodSpec(

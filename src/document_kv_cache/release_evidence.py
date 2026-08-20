@@ -59,7 +59,12 @@ from document_kv_cache.engine_probe import (
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_PACKAGE,
     ENGINE_KV_PROBE_METADATA_SERVING_ENGINE_VERSION,
 )
-from document_kv_cache.model_profiles import get_model_profile, layout_for_model
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
+    get_model_profile,
+    layout_for_model,
+)
 from document_kv_cache.methods import MethodRegistry
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
 from document_kv_cache.serving_env import serving_environment_profile
@@ -2098,6 +2103,11 @@ def _validate_representative_sglang_provenance(
         REPRESENTATIVE_CANARY_MODEL_ID,
         dtype="bfloat16",
         block_size=1,
+        pre_rope=True,
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+        shares_kv_storage=False,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
     )
     expected_identity: dict[str, Any] = {
         "canonical_model_id": REPRESENTATIVE_CANARY_MODEL_ID,

@@ -84,6 +84,15 @@ STATIC_PAYLOAD = b"s" * (STATIC_TOKEN_COUNT * TEST_BYTES_PER_TOKEN)
 CHUNK_PAYLOAD = b"c" * (CHUNK_TOKEN_COUNT * TEST_BYTES_PER_TOKEN)
 
 
+class FullPrefixTestService(DocumentKVService):
+    def prepare_for_engine(self, request, **kwargs):
+        kwargs.setdefault(
+            "cache_method",
+            CacheGenerationMethod.FULL_PREFIX_PREFILL,
+        )
+        return super().prepare_for_engine(request, **kwargs)
+
+
 def key(chunk_type: DocumentChunkType, chunk_id: str) -> KVCacheKey:
     return KVCacheKey.for_document(
         model_id="qwen3:4b-instruct",
@@ -184,7 +193,7 @@ def injection_plan_kwargs(**overrides):
         "payload_mode": PayloadMode.MERGED,
         "payload_source_uri": None,
         "layout": layout(),
-        "cache_method": "vanilla_prefill",
+        "cache_method": "full_prefix_prefill",
         "adapter_ids": (),
         "total_tokens": 1,
         "total_bytes": TEST_BYTES_PER_TOKEN,
@@ -192,7 +201,9 @@ def injection_plan_kwargs(**overrides):
         "estimated_gpu_bytes": TEST_BYTES_PER_TOKEN,
         "segments": (segment_binding(),),
         "metadata": {},
-        "reuse_plan": method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
+        "reuse_plan": method_spec(
+            CacheGenerationMethod.FULL_PREFIX_PREFILL
+        ).reuse_plan(),
     }
     values.update(overrides)
     return values
@@ -232,7 +243,7 @@ def service(tmp_path) -> DocumentKVService:
         ],
         align_bytes=1,
     )
-    return DocumentKVService(
+    return FullPrefixTestService(
         planner=CachePlanner(InMemoryManifestStore(refs)),
         materializer=KVMaterializer(cache=ChunkCache(cpu_max_bytes=1024), reader=DiskRangeReader()),
         admission_queue=AdmissionQueue(max_pending_gpu_bytes=4096),
@@ -245,7 +256,7 @@ def test_vllm_adapter_request_carries_engine_handoff_metadata(tmp_path):
         request(),
         layout=layout(),
         metadata={"tenant": "qa"},
-        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
         adapter_ids=("selection-lora",),
         segmented=True,
     )
@@ -259,7 +270,7 @@ def test_vllm_adapter_request_carries_engine_handoff_metadata(tmp_path):
     assert adapter_request.connector_package == "vllm"
     assert adapter_request.metadata["tenant"] == "qa"
     assert adapter_request.metadata["engine.backend"] == "vllm"
-    assert adapter_request.metadata["document_kv.cache_method"] == "vanilla_prefill"
+    assert adapter_request.metadata["document_kv.cache_method"] == "full_prefix_prefill"
     assert adapter_request.metadata["document_kv.reuse_capability_id"]
     assert adapter_request.metadata["document_kv.payload_mode"] == "segmented"
     assert adapter_request.metadata["document_kv.total_tokens"] == "5"
@@ -299,7 +310,7 @@ def test_adapter_request_record_serializes_engine_handoff_without_payload(tmp_pa
         "checksum": ready.handle.payload_checksum,
     }
     assert record["handle"]["adapter_ids"] == ["selection-lora"]
-    assert record["handle"]["cache_method"] == "vanilla_prefill"
+    assert record["handle"]["cache_method"] == "full_prefix_prefill"
     assert record["handle"]["metadata"] == {"tenant": "qa"}
     assert record["handle"]["layout"] == {
         "model_id": "qwen3:4b-instruct",
@@ -382,7 +393,7 @@ def test_schema_v2_raw_handoff_fixture_requires_explicit_legacy_opt_in():
         allow_legacy_reuse_plan=True,
     )
     assert injection_plan.reuse_plan == method_spec(
-        CacheGenerationMethod.VANILLA_PREFILL
+        CacheGenerationMethod.FULL_PREFIX_PREFILL
     ).reuse_plan()
     mismatched = {
         **legacy,
@@ -453,8 +464,10 @@ def test_schema_v4_handoff_rejects_non_runnable_method_before_execution(
 def test_connector_action_builder_rejects_non_runnable_method(
     method_id,
 ):
-    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
-    forged_plan = replace(vanilla, method_id=method_id)
+    full_prefix = method_spec(
+        CacheGenerationMethod.FULL_PREFIX_PREFILL
+    ).reuse_plan()
+    forged_plan = replace(full_prefix, method_id=method_id)
     plan = EngineKVInjectionPlan(
         **injection_plan_kwargs(
             cache_method=method_id,
@@ -471,7 +484,7 @@ def test_connector_action_builder_rejects_non_runnable_method(
 
 def test_adapter_rejects_method_specific_recompute_before_handoff(tmp_path):
     ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
-    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    vanilla = method_spec(CacheGenerationMethod.FULL_PREFIX_PREFILL).reuse_plan()
     selective = ReusePlan(
         method_id=vanilla.method_id,
         connector_mode=vanilla.connector_mode,
@@ -502,7 +515,7 @@ def test_adapter_fails_closed_when_advertised_operation_handler_is_unresolved(
     tmp_path,
 ):
     ready = service(tmp_path).prepare_for_engine(request(), layout=layout())
-    vanilla = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    vanilla = method_spec(CacheGenerationMethod.FULL_PREFIX_PREFILL).reuse_plan()
     selector = RuntimeOperationDescriptor(
         strategy_id="toy.selector",
         version="1",
@@ -617,7 +630,11 @@ def test_adapter_rejects_unsupported_rerope_dtype_before_handoff(tmp_path):
         build_engine_adapter_request(
             replace(
                 ready,
-                handle=replace(ready.handle, layout=pre_rope_layout),
+                handle=replace(
+                    ready.handle,
+                    layout=pre_rope_layout,
+                    cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+                ),
                 reuse_plan=pre_rope_plan,
             ),
             spec=vllm_adapter_spec(),
@@ -648,7 +665,11 @@ def test_adapter_rejects_missing_rerope_geometry_before_handoff(tmp_path):
         build_engine_adapter_request(
             replace(
                 ready,
-                handle=replace(ready.handle, layout=incomplete_layout),
+                handle=replace(
+                    ready.handle,
+                    layout=incomplete_layout,
+                    cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+                ),
                 reuse_plan=pre_rope_plan,
             ),
             spec=vllm_adapter_spec(),
@@ -666,11 +687,12 @@ def test_deserialized_reuse_plan_must_match_artifact_format_identity(tmp_path):
         prompt_template_version="v1",
         dtype=ready.handle.layout.dtype,
         layout_version=ready.handle.layout.layout_version,
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
         storage_layout=ready.handle.layout.storage_layout,
     ).artifact_identity_for(ready.handle.layout)
     record["handle"]["artifact_identity"] = identity.to_record()
     record["metadata"]["document_kv.artifact_id"] = identity.artifact_id
-    plan = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
+    plan = method_spec(CacheGenerationMethod.FULL_PREFIX_PREFILL).reuse_plan()
     incompatible_plan = replace(
         plan,
         artifact_format=replace(plan.artifact_format, version="2"),
@@ -698,6 +720,7 @@ def test_schema_v4_metadata_binds_artifact_method_version_and_config(tmp_path):
         prompt_template_version="v1",
         dtype=ready.handle.layout.dtype,
         layout_version=ready.handle.layout.layout_version,
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
         storage_layout=ready.handle.layout.storage_layout,
     ).artifact_identity_for(ready.handle.layout)
     record["handle"]["artifact_identity"] = identity.to_record()
@@ -1709,7 +1732,7 @@ def test_build_engine_kv_connector_actions_describe_merged_payload_slices(tmp_pa
 
     assert actions.reservation.backend == ServingBackend.SGLANG
     assert actions.reservation.total_blocks == 1
-    assert actions.bind.cache_method == "vanilla_prefill"
+    assert actions.bind.cache_method == "full_prefix_prefill"
     assert actions.bind.metadata["engine.backend"] == "sglang"
     assert [
         (
@@ -1902,6 +1925,7 @@ def test_engine_adapter_request_to_record_rejects_zero_length_segments():
         ),
         total_tokens=0,
         total_bytes=0,
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
     )
     ready = EngineReadyRequest(handle=zero_handle, payload=b"", estimated_gpu_bytes=0)
     adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
@@ -1930,7 +1954,7 @@ def test_sglang_adapter_request_accepts_merged_payload(tmp_path):
     assert payload_mode_for(ready) == PayloadMode.MERGED
     assert adapter_request.backend == ServingBackend.SGLANG
     assert adapter_request.metadata["engine.backend"] == "sglang"
-    assert adapter_request.metadata["document_kv.cache_method"] == "vanilla_prefill"
+    assert adapter_request.metadata["document_kv.cache_method"] == "full_prefix_prefill"
     assert adapter_request.metadata["document_kv.payload_mode"] == "merged"
 
 
@@ -1969,7 +1993,7 @@ def test_engine_adapter_dataclasses_normalize_known_backend_strings(tmp_path):
         payload_mode="MERGED",  # type: ignore[arg-type]
         payload_source_uri=None,
         layout=layout(),
-        cache_method="vanilla_prefill",
+        cache_method="full_prefix_prefill",
         adapter_ids=(),
         total_tokens=0,
         total_bytes=0,
@@ -1977,7 +2001,9 @@ def test_engine_adapter_dataclasses_normalize_known_backend_strings(tmp_path):
         estimated_gpu_bytes=0,
         segments=(),
         metadata={},
-        reuse_plan=method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
+        reuse_plan=method_spec(
+            CacheGenerationMethod.FULL_PREFIX_PREFILL
+        ).reuse_plan(),
     )
     probe_result = EngineKVConnectorProbeResult(
         backend="SGLang",  # type: ignore[arg-type]
@@ -2017,7 +2043,7 @@ def test_engine_kv_injection_plan_rejects_invalid_estimated_gpu_bytes(estimated_
             payload_mode=PayloadMode.MERGED,
             payload_source_uri=None,
             layout=layout(),
-            cache_method="vanilla_prefill",
+            cache_method="full_prefix_prefill",
             adapter_ids=(),
             total_tokens=0,
             total_bytes=0,
@@ -2025,7 +2051,9 @@ def test_engine_kv_injection_plan_rejects_invalid_estimated_gpu_bytes(estimated_
                 estimated_gpu_bytes=estimated_gpu_bytes,
                 segments=(),
                 metadata={},
-                reuse_plan=method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
+                reuse_plan=method_spec(
+                    CacheGenerationMethod.FULL_PREFIX_PREFILL
+                ).reuse_plan(),
             )
 
 

@@ -159,6 +159,7 @@ def handoff_record(
         ),
         total_tokens=total_tokens,
         total_bytes=total_bytes,
+        cache_method="full_prefix_prefill",
     )
     ready = EngineReadyRequest(
         handle=handle,
@@ -345,7 +346,15 @@ class TinyTokenizer:
         assert text
         assert return_tensors == "pt"
         assert add_special_tokens is False
-        return {"input_ids": [list(self.token_ids)]}
+        # Cached benchmark prefixes own their trailing blank-line boundary. The
+        # complete logical prompt appends at least one online-query token, so the
+        # independently generated prefix remains a strict leading token prefix.
+        token_ids = (
+            self.token_ids
+            if text.endswith("\n\n")
+            else (*self.token_ids, 99)
+        )
+        return {"input_ids": [list(token_ids)]}
 
     def apply_chat_template(
         self, messages, *, tokenize, add_generation_prompt, **template_kwargs
@@ -367,10 +376,14 @@ class TinyTokenizer:
 class TinySGLangLiveKVGenerator:
     tokenizer = TinyTokenizer()
     add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
+        layout = self.layout or layout_for_model(
             config.model_id,
             dtype=config.dtype,
             lora_id=config.lora_id,
@@ -411,6 +424,9 @@ class LayoutAwareSGLangLiveKVGenerator:
 
     tokenizer = TinyTokenizer()
     add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
 
     def __init__(self):
         self.layout = None
@@ -492,10 +508,14 @@ class PromptFormatTokenizer:
 class PromptFormatSGLangLiveKVGenerator:
     tokenizer = PromptFormatTokenizer()
     add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
+        layout = self.layout or layout_for_model(
             config.model_id,
             dtype=config.dtype,
             lora_id=config.lora_id,
@@ -561,10 +581,14 @@ class BoundaryDriftTokenizer:
 class BoundaryDriftSGLangLiveKVGenerator:
     tokenizer = BoundaryDriftTokenizer()
     add_special_tokens = False
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+    layout = None
 
     def generate(self, *, document, chunk, config, training_artifacts=None):
         del training_artifacts
-        layout = layout_for_model(
+        layout = self.layout or layout_for_model(
             config.model_id,
             dtype=config.dtype,
             lora_id=config.lora_id,
@@ -821,7 +845,7 @@ def test_sglang_representative_provenance_binds_resolved_rope_geometry(
         payload_axis_order = "token_major"
         block_size = 16
         key_position_encoding = "pre_rope"
-        rope_theta = 1_000_000.0
+        rope_theta = 5_000_000.0
         rope_rotary_dim = 128
 
     monkeypatch.setattr(
@@ -852,7 +876,69 @@ def test_sglang_representative_provenance_binds_resolved_rope_geometry(
         "sglang": SGLANG_VERSION,
         "cachet-kv": f"wheel-sha256:{representative_wheel_sha256_env}",
     }
-    assert provenance["rope_theta"] == 1_000_000.0
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_sglang_prepared_handoff_provenance_is_pre_rope(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=False,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-prepared-prerope-provenance",
+        output_dir=tmp_path / "out",
+        live_benchmark_repeats=1,
+        dataset_specs=dataset_specs,
+        prepared_handoff_generation=SGLangPreparedHandoffGenerationConfig(
+            output_dir=tmp_path / "handoffs",
+        ),
+    )
+
+    provenance = public_sglang_smoke._resolved_sglang_provenance(config)
+    assert provenance["key_position_encoding"] == "pre_rope"
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_sglang_existing_prepared_handoff_provenance_is_pre_rope(tmp_path):
+    dataset_specs = write_prepared_sglang_v1_datasets(
+        tmp_path / "prepared",
+        include_handoffs=True,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-existing-prepared-prerope-provenance",
+        output_dir=tmp_path / "out",
+        live_benchmark_repeats=1,
+        dataset_specs=dataset_specs,
+    )
+
+    provenance = public_sglang_smoke._resolved_sglang_provenance(config)
+    assert provenance["key_position_encoding"] == "pre_rope"
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
+
+
+def test_sglang_explicit_handoff_provenance_is_pre_rope(tmp_path):
+    handoff_path = tmp_path / "handoffs" / "sglang-live.handoff.json"
+    payload_uri = f"disk:{tmp_path / 'payloads' / 'sglang-live.kv'}"
+    write_handoff_json(
+        handoff_path,
+        request_id="cachet-live-sglang-provenance",
+        payload_uri=payload_uri,
+    )
+    config = SGLangSmokeBenchmarkConfig(
+        benchmark_id="sglang-explicit-prerope-provenance",
+        output_dir=tmp_path / "out",
+        handoff_json=str(handoff_path),
+        payload_uri=payload_uri,
+        request_id="cachet-live-sglang-provenance",
+        sglang_hicache_page_keys=("page-a", "page-b"),
+    )
+
+    provenance = public_sglang_smoke._resolved_sglang_provenance(config)
+    assert provenance["key_position_encoding"] == "pre_rope"
+    assert provenance["rope_theta"] == 5_000_000.0
     assert provenance["rope_rotary_dim"] == 128
 
 
@@ -1384,6 +1470,11 @@ def test_prepare_generated_sglang_benchmark_handoffs_writes_enriched_inputs(
     assert generation_record["ok"] is True
     assert generation_record["backend"] == "sglang"
     assert generation_record["sglang_hicache_page_size"] == 2
+    assert generation_record["cache_method"] == "vanilla_prefill"
+    assert generation_record["method_version"] == "2"
+    assert generation_record["key_position_encoding"] == "pre_rope"
+    assert generation_record["rope_theta"] == 5_000_000.0
+    assert generation_record["rope_rotary_dim"] == 128
     assert generation_record["datasets"]["niah"]["enriched_rows"] == 1
     row = json.loads(generated_paths["niah"].read_text(encoding="utf-8"))
     params = row["kv_transfer_params"]
@@ -1397,6 +1488,12 @@ def test_prepare_generated_sglang_benchmark_handoffs_writes_enriched_inputs(
     )
     assert handoff["backend"] == "sglang"
     assert handoff["handle"]["layout"]["block_size"] == 2
+    assert handoff["handle"]["layout"]["key_position_encoding"] == "pre_rope"
+    assert handoff["handle"]["layout"]["rope_theta"] == 5_000_000.0
+    assert handoff["handle"]["layout"]["rope_rotary_dim"] == 128
+    assert handoff["handle"]["layout"]["storage_layout"] == "separate_key_value"
+    assert handoff["handle"]["artifact_identity"]["method_id"] == "vanilla_prefill"
+    assert handoff["handle"]["artifact_identity"]["method_version"] == "2"
     assert local_path(params[DOCUMENT_KV_PAYLOAD_URI_PARAM]).exists()
 
 

@@ -86,6 +86,7 @@ from document_kv_cache.engine import EngineReadyRequest
 from document_kv_cache.engine_adapters import (
     build_engine_adapter_request,
     engine_adapter_request_to_record,
+    read_engine_adapter_request_json,
     sglang_adapter_spec,
     vllm_adapter_spec,
 )
@@ -205,6 +206,7 @@ def handoff_record(*, request_id: str, payload_uri: str, backend: str = "vllm") 
         segments=(KVSegment("doc-1", "document_static", "static", 0, 1, 0, 4),),
         total_tokens=1,
         total_bytes=4,
+        cache_method="full_prefix_prefill",
     )
     ready = EngineReadyRequest(handle=handle, payload=b"data", estimated_gpu_bytes=4)
     spec = vllm_adapter_spec() if backend == "vllm" else sglang_adapter_spec()
@@ -230,6 +232,39 @@ class OneTokenBenchmarkKVGenerator:
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
+        return PackChunk(
+            key=KVCacheKey.for_document(
+                model_id=config.model_id,
+                lora_id=config.lora_id,
+                prompt_template_version=config.prompt_template_version,
+                document_id=document.document_id,
+                chunk_type=chunk.chunk_type,
+                chunk_id=chunk.chunk_id,
+            ),
+            payload=b"\0" * layout.bytes_per_token,
+            token_count=1,
+            dtype=config.dtype,
+            layout_version=config.layout_version,
+            storage_layout=config.storage_layout,
+        )
+
+
+class PreRopeOneTokenBenchmarkKVGenerator(OneTokenBenchmarkKVGenerator):
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 128
+    bound_layout = None
+
+    def bind_layout(self, layout):
+        assert layout.pre_rope is True
+        assert layout.rope_theta == self.rope_theta
+        assert layout.rope_rotary_dim == self.rope_rotary_dim
+        self.layout = layout
+        type(self).bound_layout = layout
+
+    def generate(self, *, document, chunk, config, training_artifacts=None):
+        del training_artifacts
+        layout = self.layout
         return PackChunk(
             key=KVCacheKey.for_document(
                 model_id=config.model_id,
@@ -1006,7 +1041,7 @@ def test_vllm_representative_provenance_binds_resolved_rope_geometry(
         payload_axis_order = "token_major"
         block_size = 16
         key_position_encoding = "pre_rope"
-        rope_theta = 1_000_000.0
+        rope_theta = 5_000_000.0
         rope_rotary_dim = 128
 
     monkeypatch.setattr(
@@ -1021,7 +1056,7 @@ def test_vllm_representative_provenance_binds_resolved_rope_geometry(
         **representative_vllm_kwargs(tmp_path),
     )
 
-    assert config.benchmark_manifest_provenance["rope_theta"] == 1_000_000.0
+    assert config.benchmark_manifest_provenance["rope_theta"] == 5_000_000.0
     assert config.benchmark_manifest_provenance["rope_rotary_dim"] == 128
 
 
@@ -1808,6 +1843,55 @@ def test_prepare_generated_benchmark_handoffs_writes_enriched_prepared_inputs(tm
     payload_uri = enriched["kv_transfer_params"][DOCUMENT_KV_PAYLOAD_URI_PARAM]
     assert handoff_json.exists()
     assert payload_uri.startswith(str(tmp_path / "generated-handoffs" / "biography"))
+
+
+def test_prepare_generated_vanilla_handoffs_binds_pre_rope_layout(
+    tmp_path,
+    monkeypatch,
+):
+    module = ModuleType("cachet_test_vllm_pre_rope_handoff_generator")
+    module.build_generator = PreRopeOneTokenBenchmarkKVGenerator
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    PreRopeOneTokenBenchmarkKVGenerator.bound_layout = None
+    dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="prepared-vanilla-v2",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        handoff_generation=VLLMPreparedHandoffGenerationConfig(
+            generator_factory=f"{module.__name__}:build_generator",
+            output_dir=tmp_path / "generated-handoffs",
+            dtype="bfloat16",
+            align_bytes=1,
+            benchmark_handoff_segment_per_document=True,
+            cache_method="vanilla_prefill",
+            require_artifact_contract=False,
+        ),
+    )
+
+    generated_paths = prepare_generated_benchmark_handoffs(config, dataset_paths)
+
+    bound_layout = PreRopeOneTokenBenchmarkKVGenerator.bound_layout
+    assert bound_layout is not None
+    assert bound_layout.pre_rope is True
+    assert bound_layout.rope_theta == 5_000_000.0
+    assert bound_layout.rope_rotary_dim == 128
+    assert bound_layout.shares_kv_storage is False
+    assert bound_layout.storage_layout.value == "separate_key_value"
+    enriched = json.loads(
+        generated_paths["biography"].read_text(encoding="utf-8")
+    )
+    handoff = read_engine_adapter_request_json(
+        enriched["kv_transfer_params"][DOCUMENT_KV_HANDOFF_JSON_PARAM],
+        expected_backend="vllm",
+    )
+    assert handoff["handle"]["cache_method"] == "vanilla_prefill"
+    assert handoff["reuse_plan"]["position_handling"] == "rerope_at_injection"
+    assert handoff["handle"]["layout"]["key_position_encoding"] == "pre_rope"
+    assert handoff["handle"]["layout"]["rope_theta"] == 5_000_000.0
+    assert handoff["handle"]["layout"]["rope_rotary_dim"] == 128
 
 
 def test_prepare_generated_benchmark_handoffs_limits_enriched_inputs(tmp_path, monkeypatch):

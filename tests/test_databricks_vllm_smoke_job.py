@@ -378,7 +378,7 @@ def test_databricks_representative_provenance_binds_resolved_rope_geometry(
         payload_axis_order = "token_major"
         block_size = 16
         key_position_encoding = "pre_rope"
-        rope_theta = 1_000_000.0
+        rope_theta = 5_000_000.0
         rope_rotary_dim = 128
 
     monkeypatch.setattr(
@@ -401,7 +401,7 @@ def test_databricks_representative_provenance_binds_resolved_rope_geometry(
     provenance = json.loads(
         parameters[parameters.index("--benchmark-manifest-provenance-json") + 1]
     )
-    assert provenance["rope_theta"] == 1_000_000.0
+    assert provenance["rope_theta"] == 5_000_000.0
     assert provenance["rope_rotary_dim"] == 128
 
 

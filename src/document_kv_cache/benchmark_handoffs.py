@@ -573,8 +573,13 @@ def generate_benchmark_handoff_bundles(
             rope_theta=getattr(generator, "rope_theta", None),
             rope_rotary_dim=getattr(generator, "rope_rotary_dim", None),
             key_position_encoding=KVKeyPositionEncoding.PRE_ROPE,
+            shares_kv_storage=False,
+            storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
         )
         layout.validate()
+    bind_layout = getattr(generator, "bind_layout", None)
+    if callable(bind_layout):
+        bind_layout(layout)
     resolved_adapter_spec = (
         _adapter_spec(backend) if adapter_spec is None else adapter_spec
     )
@@ -640,20 +645,19 @@ def generate_benchmark_handoff_bundles(
         )
         for example, scorer in zip(examples, example_scorers, strict=True)
     )
-    if backend == ServingBackend.VLLM:
-        for example, scorer, source_document in zip(
-            examples,
-            example_scorers,
-            source_documents,
-            strict=True,
-        ):
-            _validate_handoff_source_token_composition(
-                generator,
-                source_document=source_document,
-                logical_prompt=build_prompt_parts(example, scorer=scorer).prefill_prompt,
-                dataset=example.dataset,
-                example_id=example.example_id,
-            )
+    for example, scorer, source_document in zip(
+        examples,
+        example_scorers,
+        source_documents,
+        strict=True,
+    ):
+        _validate_handoff_source_token_composition(
+            generator,
+            source_document=source_document,
+            logical_prompt=build_prompt_parts(example, scorer=scorer).prefill_prompt,
+            dataset=example.dataset,
+            example_id=example.example_id,
+        )
     bundle_targets = _benchmark_handoff_bundle_targets(
         examples,
         output_base=output_base,
@@ -1468,7 +1472,7 @@ def _validate_handoff_source_token_composition(
     dataset: str,
     example_id: str,
 ) -> None:
-    """Fail before vLLM generation when chunk tokens are not a prompt prefix."""
+    """Fail before generation when chunk tokens are not a prompt prefix."""
 
     if getattr(generator, "tokenizer", None) is None:
         return

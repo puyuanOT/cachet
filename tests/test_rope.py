@@ -13,7 +13,7 @@ from document_kv_cache.rope import apply_rope_to_keys, rope_cos_sin
 torch = pytest.importorskip("torch")
 
 
-THETA = 1_000_000.0  # Qwen3 rope_theta
+THETA = 5_000_000.0  # Pinned Qwen3-4B-Instruct-2507 rope_theta
 
 
 def test_position_zero_is_identity():
@@ -62,6 +62,35 @@ def test_rope_shifting_both_positions_preserves_scores():
     shift_q = apply_rope_to_keys(q, torch.tensor([2 + 4096]), rope_theta=THETA)
     shift_k = apply_rope_to_keys(k, torch.tensor([0 + 4096]), rope_theta=THETA)
     assert torch.allclose((base_q * base_k).sum(-1), (shift_q * shift_k).sum(-1), atol=1e-2)
+
+
+def test_independent_pre_rope_documents_use_assembled_absolute_offsets():
+    first_document = torch.randn(3, 8, 128, dtype=torch.float32)
+    second_document = torch.randn(2, 8, 128, dtype=torch.float32)
+    assembled = torch.cat((first_document, second_document), dim=0)
+
+    expected = apply_rope_to_keys(
+        assembled,
+        torch.arange(5, dtype=torch.long),
+        rope_theta=THETA,
+    )
+    independently_positioned = torch.cat(
+        (
+            apply_rope_to_keys(
+                first_document,
+                torch.arange(3, dtype=torch.long),
+                rope_theta=THETA,
+            ),
+            apply_rope_to_keys(
+                second_document,
+                torch.arange(3, 5, dtype=torch.long),
+                rope_theta=THETA,
+            ),
+        ),
+        dim=0,
+    )
+
+    assert torch.allclose(independently_positioned, expected, atol=1e-6)
 
 
 def test_cos_sin_reuse_matches_inline():

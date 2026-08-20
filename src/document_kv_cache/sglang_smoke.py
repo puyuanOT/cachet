@@ -93,8 +93,12 @@ from document_kv_cache.live_server import (
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.model_profiles import (
     QWEN3_4B_INSTRUCT_HF_MODEL_ID,
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
     layout_for_model,
 )
+from document_kv_cache.methods import method_spec
+from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.openai_compatible import (
     OpenAICompatibleCompletionEngine,
     OpenAICompatibleEngineConfig,
@@ -144,7 +148,8 @@ DEFAULT_LOCAL_ROOT = Path("/local_disk0")
 DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV = "DOCUMENT_KV_PACKAGE_INSTALL_SPEC"
 DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV = "DOCUMENT_KV_PACKAGE_WHEEL_SHA256"
 DEFAULT_SGLANG_LIVE_HANDOFF_GENERATOR_FACTORY = (
-    "document_kv_cache.transformers_generator:build_transformers_kv_chunk_generator"
+    "document_kv_cache.transformers_generator:"
+    "build_pre_rope_transformers_kv_chunk_generator"
 )
 DEFAULT_SGLANG_HICACHE_PAGE_SIZE = 1
 DEFAULT_SGLANG_PREPARED_HICACHE_PAGE_SIZE = layout_for_model(
@@ -1250,10 +1255,27 @@ def _resolved_sglang_provenance(
         else "bfloat16"
     )
     block_size = config.hicache_page_size
+    # Every SGLang cache arm implements the registered Vanilla-v2 contract,
+    # including runs that consume already-generated dataset or explicit
+    # handoffs. Generation config presence is therefore not a reliable signal:
+    # after generation those fields are intentionally cleared from the runtime
+    # config. Baseline-only runs remain the sole post-RoPE case.
+    pre_rope = not config.baseline_only
     layout = layout_for_model(
         HF_MODEL_ID,
         dtype=runtime_kv_dtype,
         **({} if block_size is None else {"block_size": block_size}),
+        **(
+            {
+                "pre_rope": True,
+                "rope_theta": QWEN3_4B_ROPE_THETA,
+                "rope_rotary_dim": QWEN3_4B_ROPE_ROTARY_DIM,
+                "shares_kv_storage": False,
+                "storage_layout": "separate_key_value",
+            }
+            if pre_rope
+            else {}
+        ),
     )
     package_revisions: dict[str, str] | None = None
     if config.representative_canary:
@@ -1894,6 +1916,8 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
     generation: SGLangPreparedHandoffGenerationConfig,
 ) -> tuple[dict[str, Path], dict[str, object]]:
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
+    vanilla_method = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
+    vanilla_method.validate_generator(generator)
     generator_config = getattr(generator, "config", None)
     model_id = (
         getattr(generator, "model_id", None)
@@ -1940,13 +1964,29 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
             raise ValueError(
                 "handoff generator identity differs from the SGLang serving identity"
             )
+    generator_rope_theta = getattr(generator, "rope_theta", None)
+    generator_rope_rotary_dim = getattr(generator, "rope_rotary_dim", None)
+    if config.representative_canary and (
+        generator_rope_theta != QWEN3_4B_ROPE_THETA
+        or generator_rope_rotary_dim != QWEN3_4B_ROPE_ROTARY_DIM
+    ):
+        raise ValueError(
+            "representative SGLang generator RoPE geometry differs from the "
+            "pinned Qwen3 model"
+        )
     layout = layout_for_model(
         CACHET_MODEL_ID,
         dtype=generation.dtype,
         block_size=generation.page_size,
+        shares_kv_storage=False,
+        storage_layout="separate_key_value",
+        pre_rope=True,
+        rope_theta=generator_rope_theta,
+        rope_rotary_dim=generator_rope_rotary_dim,
     )
     layout = replace(layout, model_id=model_id)
     layout.validate()
+    _bind_live_handoff_generator_layout(generator, layout)
     generated_paths: dict[str, Path] = {}
     dataset_records: dict[str, dict[str, object]] = {}
     topology_attestations: list[dict[str, Any]] = []
@@ -1977,6 +2017,8 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
             tokenizer_revision=tokenizer_revision,
             generator_family=generator_family,
             generator_version=generator_version,
+            cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+            segment_per_document=True,
         )
         enriched_rows = enrich_benchmark_jsonl_with_handoffs(
             input_jsonl,
@@ -2025,6 +2067,11 @@ def _generate_prepared_sglang_benchmark_handoff_inputs(
         "artifact_tokenizer_revision": tokenizer_revision,
         "generator_family": generator_family,
         "generator_version": generator_version,
+        "cache_method": vanilla_method.method_id,
+        "method_version": vanilla_method.artifact_version,
+        "key_position_encoding": layout.key_position_encoding.value,
+        "rope_theta": layout.rope_theta,
+        "rope_rotary_dim": layout.rope_rotary_dim,
         "handoff_topology_attestation": (
             merge_handoff_topology_attestations(topology_attestations)
             if topology_attestations
@@ -2199,6 +2246,8 @@ def _generate_live_handoff_inputs(
 ) -> dict[str, object]:
     generation.output_dir.mkdir(parents=True, exist_ok=True)
     generator = load_benchmark_kv_chunk_generator(generation.generator_factory)
+    vanilla_method = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
+    vanilla_method.validate_generator(generator)
     generator_config = getattr(generator, "config", None)
     model_id = (
         getattr(generator, "model_id", None)
@@ -2242,10 +2291,25 @@ def _generate_live_handoff_inputs(
             raise ValueError(
                 "handoff generator identity differs from the SGLang serving identity"
             )
+    generator_rope_theta = getattr(generator, "rope_theta", None)
+    generator_rope_rotary_dim = getattr(generator, "rope_rotary_dim", None)
+    if config.representative_canary and (
+        generator_rope_theta != QWEN3_4B_ROPE_THETA
+        or generator_rope_rotary_dim != QWEN3_4B_ROPE_ROTARY_DIM
+    ):
+        raise ValueError(
+            "representative SGLang generator RoPE geometry differs from the "
+            "pinned Qwen3 model"
+        )
     layout = layout_for_model(
         CACHET_MODEL_ID,
         dtype=generation.dtype,
         block_size=generation.page_size,
+        shares_kv_storage=False,
+        storage_layout="separate_key_value",
+        pre_rope=True,
+        rope_theta=generator_rope_theta,
+        rope_rotary_dim=generator_rope_rotary_dim,
     )
     layout = replace(layout, model_id=model_id)
     layout.validate()
@@ -2314,12 +2378,17 @@ def _generate_live_handoff_inputs(
         prompt_template_version=DEFAULT_V1_PROMPT_TEMPLATE_VERSION,
         dtype=layout.dtype,
         layout_version=layout.layout_version,
+        cache_method=vanilla_method.method_id,
         storage_layout=layout.storage_layout,
+        payload_axis_order=layout.payload_axis_order,
+        method_version=vanilla_method.artifact_version,
         model_revision=model_revision,
         tokenizer_id=tokenizer_id,
         tokenizer_revision=tokenizer_revision,
         generator_family=generator_family,
         generator_version=generator_version,
+        artifact_format_id=vanilla_method.artifact_format.format_id,
+        artifact_format_version=vanilla_method.artifact_format.version,
         runtime_kv_dtype=layout.dtype,
     )
     workflow = DocumentKVWorkflow.with_storage(manifest=InMemoryManifestStore())

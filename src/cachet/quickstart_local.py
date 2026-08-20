@@ -95,6 +95,7 @@ def main() -> None:
         prompt_template_version=PROMPT_TEMPLATE_VERSION,
         dtype=layout.dtype,
         layout_version=layout.layout_version,
+        cache_method="toy_local",
         storage_layout=layout.storage_layout,
     )
 
@@ -133,6 +134,7 @@ def main() -> None:
             config=config,
             shard_uri="policy-handbook.kvpack",
             align_bytes=1,
+            require_registered_method=False,
         )
         memory_result = workflow.generate_cache(
             documents=(
@@ -148,6 +150,7 @@ def main() -> None:
             config=config,
             shard_uri="memory:quickstart-note.kvpack",
             align_bytes=1,
+            require_registered_method=False,
         )
 
         materialized = workflow.prepare(request)
@@ -156,6 +159,7 @@ def main() -> None:
             layout=layout,
             cache_method=disk_result.cache_method,
             metadata={"example": "quickstart_local"},
+            require_registered_method=False,
         )
 
         print(f"generated chunks: {disk_result.chunk_count + memory_result.chunk_count}")

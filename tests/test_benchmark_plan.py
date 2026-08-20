@@ -252,7 +252,7 @@ def test_plan_propagates_n_way_arms_manifest_and_standalone_gate(tmp_path):
             "cache_method": "vanilla_prefill",
             "connector_mode": "cachet",
             "implementation_kind": "cachet",
-            "method_version": "1",
+            "method_version": "2",
             "method_config_digest": "0" * 64,
             "physical_transform_id": "cachet.vanilla",
             "requires_cachet_handoff": True,

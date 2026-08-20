@@ -9,6 +9,8 @@ from document_kv_cache.model_profiles import (
     QWEN3_4B_BASE_HF_MODEL_ID,
     QWEN3_4B_INSTRUCT_HF_MODEL_ID,
     QWEN3_4B_INSTRUCT_PROFILE,
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
     builtin_model_profiles,
     default_model_profile_registry,
     dtype_byte_width,
@@ -73,6 +75,25 @@ def test_builtin_profile_aliases_and_layout_helper():
     assert alias_layout.model_id == QWEN3_4B_INSTRUCT_HF_MODEL_ID
     assert alias_layout.bytes_per_token == 147456
     assert alias_layout.storage_layout == KVStorageLayout.SHARED_KEY_VALUE
+
+
+def test_qwen3_pinned_pre_rope_layout_has_exact_geometry():
+    layout = layout_for_model(
+        QWEN3_4B_INSTRUCT_HF_MODEL_ID,
+        dtype="bf16",
+        shares_kv_storage=False,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+        pre_rope=True,
+        rope_theta=QWEN3_4B_ROPE_THETA,
+        rope_rotary_dim=QWEN3_4B_ROPE_ROTARY_DIM,
+    )
+
+    assert QWEN3_4B_ROPE_THETA == 5_000_000.0
+    assert QWEN3_4B_ROPE_ROTARY_DIM == 128
+    assert layout.pre_rope is True
+    assert layout.key_position_encoding.value == "pre_rope"
+    assert layout.rope_theta == 5_000_000.0
+    assert layout.rope_rotary_dim == 128
 
 
 def test_custom_model_profile_registry_extends_aliases_without_mutating_builtins():

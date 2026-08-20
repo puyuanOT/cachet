@@ -5,7 +5,7 @@
   "handle": {
     "adapter_ids": [],
     "artifact_identity": null,
-    "cache_method": "vanilla_prefill",
+    "cache_method": "full_prefix_prefill",
     "handle_uri": "document-kv://req-1",
     "layout": {
       "attention_mechanism": "gqa",
@@ -69,7 +69,7 @@
   "kv_injection_method": "engine-native-kv-block-import",
   "metadata": {
     "document_kv.artifact_id": "",
-    "document_kv.cache_method": "vanilla_prefill",
+    "document_kv.cache_method": "full_prefix_prefill",
     "document_kv.handle_uri": "document-kv://req-1",
     "document_kv.payload_checksum": "21682fba92ba9555d82a55578d2c05699ef35bde62b3555c22e17767d03b9303",
     "document_kv.payload_mode": "merged",

@@ -129,7 +129,7 @@ class WrongStorageLayoutGenerator(EchoGenerator):
         )
 
 
-def config(*, cache_method: CacheGenerationMethod = CacheGenerationMethod.VANILLA_PREFILL) -> CacheBuildConfig:
+def config(*, cache_method: CacheGenerationMethod = CacheGenerationMethod.FULL_PREFIX_PREFILL) -> CacheBuildConfig:
     return CacheBuildConfig(
         model_id="qwen3:4b-instruct",
         lora_id="base",
@@ -208,6 +208,28 @@ def test_cache_build_config_normalizes_known_cache_method_strings():
     assert cfg.cache_method is CacheGenerationMethod.KV_PACKET
 
 
+def test_cache_build_config_resolves_registered_method_artifact_versions():
+    vanilla = CacheBuildConfig(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        dtype="int8",
+        layout_version="toy-one-byte-v1",
+        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+    )
+    full_prefix = CacheBuildConfig(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        prompt_template_version="v1",
+        dtype="int8",
+        layout_version="toy-one-byte-v1",
+    )
+
+    assert vanilla.method_version == "2"
+    assert full_prefix.cache_method is CacheGenerationMethod.FULL_PREFIX_PREFILL
+    assert full_prefix.method_version == "1"
+
+
 def test_cache_build_config_preserves_non_empty_custom_cache_method_strings():
     cfg = CacheBuildConfig(
         model_id="qwen3:4b-instruct",
@@ -279,6 +301,7 @@ def test_cache_generation_result_derives_document_id_order_from_refs(tmp_path):
     )
 
     assert result.document_ids == ("doc-a", "doc-b")
+    assert result.cache_method is CacheGenerationMethod.FULL_PREFIX_PREFILL
 
 
 @pytest.mark.parametrize(
@@ -564,7 +587,7 @@ def test_workflow_generates_registers_and_prepares_cache(tmp_path):
     assert result.document_ids == ("doc-a",)
     assert result.chunk_count == 2
     assert result.total_bytes == len(materialized.payload)
-    assert result.cache_method == CacheGenerationMethod.VANILLA_PREFILL
+    assert result.cache_method == CacheGenerationMethod.FULL_PREFIX_PREFILL
     assert b"doc-a:static:static context" in materialized.payload
     assert b"doc-a:section-1:hello world" in materialized.payload
     assert manifest.keys_for_document("doc-a")
@@ -1102,7 +1125,7 @@ def test_workflow_invokes_optional_training_adapter(tmp_path):
         adapter_ids=("qwen3:4b-instruct-adapter",),
         metadata={"trained": "true"},
     )
-    assert result.cache_method == CacheGenerationMethod.VANILLA_PREFILL
+    assert result.cache_method == CacheGenerationMethod.FULL_PREFIX_PREFILL
     assert b"|qwen3:4b-instruct-adapter" in materialized.payload
 
 
@@ -1115,7 +1138,7 @@ def test_workflow_records_training_adapter_artifacts_and_derives_engine_adapters
     result = _generate_legacy_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
-        config=config(cache_method=CacheGenerationMethod.VANILLA_PREFILL),
+        config=config(cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL),
         shard_uri=tmp_path / "artifact-cache.kvpack",
         trainer=ArtifactTrainer(),
         align_bytes=1,
@@ -1132,10 +1155,10 @@ def test_workflow_records_training_adapter_artifacts_and_derives_engine_adapters
     assert result.training_artifacts.adapter_ids == result.adapter_ids
     assert (
         result.training_artifacts.adapter_artifacts[0].cache_method
-        == "vanilla_prefill"
+        == "full_prefix_prefill"
     )
     assert result.training_artifacts.adapter_artifacts[0].metadata == {"rank": "8"}
-    assert ready.handle.cache_method == "vanilla_prefill"
+    assert ready.handle.cache_method == "full_prefix_prefill"
     assert ready.handle.adapter_ids == result.adapter_ids
 
 
@@ -1149,7 +1172,7 @@ def test_workflow_prepares_and_submits_engine_ready_request(tmp_path):
     result = _generate_legacy_cache(workflow,
         documents=(document,),
         generator=ByteAlignedGenerator(),
-        config=config(cache_method=CacheGenerationMethod.VANILLA_PREFILL),
+        config=config(cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL),
         shard_uri=tmp_path / "submit-cache.kvpack",
         trainer=ArtifactTrainer(),
         align_bytes=1,
@@ -1168,7 +1191,7 @@ def test_workflow_prepares_and_submits_engine_ready_request(tmp_path):
         b"doc-a:static:static|qwen3:4b-instruct-kv-packet",
         b"doc-a:section-1:body|qwen3:4b-instruct-kv-packet",
     )
-    assert ready.handle.cache_method == "vanilla_prefill"
+    assert ready.handle.cache_method == "full_prefix_prefill"
     assert ready.handle.adapter_ids == ("qwen3:4b-instruct-kv-packet",)
     assert connector.released == []
 
@@ -1432,12 +1455,12 @@ def test_workflow_prepares_engine_ready_request(tmp_path):
         request_for("doc-a"),
         layout=one_byte_layout(),
         metadata={"engine": "vllm"},
-        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
         adapter_ids=("qa-lora",),
         segmented=True,
     )
 
-    assert ready.handle.cache_method == "vanilla_prefill"
+    assert ready.handle.cache_method == "full_prefix_prefill"
     assert ready.handle.metadata == {"engine": "vllm"}
     assert ready.handle.adapter_ids == ("qa-lora",)
     assert isinstance(ready.payload, tuple)
@@ -1488,6 +1511,7 @@ def test_workflow_engine_handoff_uses_injected_service_dependencies(tmp_path):
         ),
         layout=one_byte_layout(),
         segmented=True,
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
     )
 
     assert ready.payload == (b"service-bytes",)
@@ -1517,9 +1541,13 @@ def test_workflow_prepares_engine_ready_request_without_service(tmp_path):
         align_bytes=1,
     )
 
-    ready = workflow.prepare_for_engine(request_for("doc-a"), layout=one_byte_layout())
+    ready = workflow.prepare_for_engine(
+        request_for("doc-a"),
+        layout=one_byte_layout(),
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
+    )
 
-    assert ready.handle.cache_method == "vanilla_prefill"
+    assert ready.handle.cache_method == "full_prefix_prefill"
     assert ready.estimated_gpu_bytes == ready.handle.total_bytes
 
 
@@ -1539,6 +1567,7 @@ def test_workflow_engine_handoff_accepts_explicit_gpu_multiplier(tmp_path):
     ready = workflow.prepare_for_engine(
         request_for("doc-a"),
         layout=one_byte_layout(),
+        cache_method=CacheGenerationMethod.FULL_PREFIX_PREFILL,
         kv_gpu_bytes_per_payload_byte=3.0,
     )
 

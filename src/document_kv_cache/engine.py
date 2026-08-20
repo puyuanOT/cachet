@@ -103,7 +103,11 @@ def build_handle_from_materialized(
     )
     segments = tuple(_segment_from_plan(index, materialized) for index in range(len(materialized.plan.segments)))
     artifact_identity = _artifact_identity_from_materialized(materialized)
-    resolved_cache_method = _resolved_cache_method(cache_method, artifact_identity)
+    resolved_cache_method = _resolved_cache_method(
+        cache_method,
+        artifact_identity,
+        layout=layout,
+    )
     payload = _payload(materialized)
     handle = KVCacheHandle(
         request_id=request_id,
@@ -142,6 +146,7 @@ def build_engine_ready_request(
     resolved_cache_method = _resolved_cache_method(
         cache_method,
         artifact_identity,
+        layout=layout,
     )
     resolved_reuse_plan = _resolve_reuse_plan(
         resolved_cache_method,
@@ -308,10 +313,18 @@ def _artifact_identity_from_materialized(
 def _resolved_cache_method(
     cache_method: CacheGenerationMethod | str | None,
     artifact_identity: ArtifactIdentity | None,
+    *,
+    layout: KVLayout,
 ) -> str:
     artifact_method = None if artifact_identity is None else artifact_identity.method_id
     if cache_method is None:
-        return artifact_method or CacheGenerationMethod.VANILLA_PREFILL.value
+        if artifact_method is not None:
+            return artifact_method
+        return (
+            CacheGenerationMethod.VANILLA_PREFILL.value
+            if layout.pre_rope
+            else CacheGenerationMethod.FULL_PREFIX_PREFILL.value
+        )
     explicit = _cache_method_value(cache_method)
     if artifact_method is not None and explicit != artifact_method:
         raise ValueError(

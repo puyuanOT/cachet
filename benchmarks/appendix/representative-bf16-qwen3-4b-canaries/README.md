@@ -1,11 +1,17 @@
 # Representative BF16 Qwen3-4B Canaries
 
-This folder contains sanitized, reproducible engineering canaries for the
-generalized Cachet benchmark and native serving paths. They are deliberately
-**non-publication-qualified** and do not populate or revise any value in the
-[main Q4-weight/Q8-document-KV tables](../../README.md). These runs used BF16
-model weights and BF16 runtime/document KV with no quantization, so their
-latencies are not comparable to the main-table protocol.
+This folder currently preserves sanitized engineering canaries from the
+superseded **Vanilla-v1 post-RoPE** implementation. The registered Vanilla
+method is now v2: it stores independently computed pre-RoPE KV and applies true
+assembled absolute positions during injection. These v1 records are retained
+only as historical audit evidence until fresh v2 canaries replace them; they
+must not be used as measurements of the current implementation.
+
+The records are deliberately **non-publication-qualified** and do not populate
+or revise any value in the [main Q4-weight/Q8-document-KV
+tables](../../README.md). These runs used BF16 model weights and BF16
+runtime/document KV with no quantization, so their latencies are also not
+comparable to the main-table protocol.
 
 ## Bound Identity
 

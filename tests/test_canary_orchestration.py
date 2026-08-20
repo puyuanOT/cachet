@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 from copy import deepcopy
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -36,6 +37,8 @@ from document_kv_cache.canary_orchestration import (
     REPRESENTATIVE_CANARY_ARM_IDS,
     REPRESENTATIVE_CANARY_FIRST_WAVE_CLUSTER_HOURS,
     REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY,
+    REPRESENTATIVE_POST_ROPE_HANDOFF_GENERATOR_FACTORY,
+    REPRESENTATIVE_PRE_ROPE_HANDOFF_GENERATOR_FACTORY,
     REPRESENTATIVE_CANARY_MODEL_ID,
     REPRESENTATIVE_CANARY_MODEL_REVISION,
     REPRESENTATIVE_CANARY_WORKLOAD_MANIFEST_RECORD_TYPE,
@@ -67,6 +70,16 @@ from document_kv_cache.databricks_resource_ledger import (
     read_databricks_cluster_hour_ledger_json,
 )
 from document_kv_cache.databricks_runs import DatabricksWorkspaceConfig
+from document_kv_cache.engine import EngineReadyRequest
+from document_kv_cache.engine_adapters import (
+    build_engine_adapter_request,
+    engine_adapter_request_to_record,
+    vllm_adapter_spec,
+)
+from document_kv_cache.engine_protocol import KVCacheHandle, KVSegment
+from document_kv_cache.methods import method_spec
+from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.databricks_sglang_smoke_job import (
     SGLANG_SMOKE_RUNNER_SCRIPT,
     DatabricksSGLangSmokeJobConfig,
@@ -139,7 +152,9 @@ def _representative_submit_payloads():
                     if workload.arm_id == BASELINE_PREFILL_ARM
                     else {
                         "benchmark_handoff_generator_factory": (
-                            REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY
+                            REPRESENTATIVE_POST_ROPE_HANDOFF_GENERATOR_FACTORY
+                            if workload.arm_id == FULL_PREFIX_CANARY_ARM
+                            else REPRESENTATIVE_PRE_ROPE_HANDOFF_GENERATOR_FACTORY
                         ),
                         "benchmark_handoff_output_dir": (
                             f"/local_disk0/{workload.workload_id}/handoffs"
@@ -407,6 +422,21 @@ def test_representative_payload_identity_round_trips_into_isolated_aggregate():
     records = _synthetic_records_from_first_representative_trio(
         runtime_ids=("task-run-101", "task-run-102", "task-run-103"),
     )
+    source_runtime_by_arm = {
+        arm_id: record["experiment_manifest"]["model_runtime"]
+        for arm_id, record in records.items()
+    }
+    assert source_runtime_by_arm[BASELINE_PREFILL_ARM][
+        "key_position_encoding"
+    ] == "stored_post_rope"
+    assert source_runtime_by_arm[FULL_PREFIX_CANARY_ARM][
+        "key_position_encoding"
+    ] == "stored_post_rope"
+    assert source_runtime_by_arm[VANILLA_CANARY_ARM][
+        "key_position_encoding"
+    ] == "pre_rope"
+    assert source_runtime_by_arm[VANILLA_CANARY_ARM]["rope_theta"] == 5_000_000.0
+    assert source_runtime_by_arm[VANILLA_CANARY_ARM]["rope_rotary_dim"] == 128
     aggregate = aggregate_isolated_canary_results(records)
 
     assert aggregate["suite"]["suite_id"] == expected_suite_id
@@ -418,6 +448,25 @@ def test_representative_payload_identity_round_trips_into_isolated_aggregate():
     assert aggregate["experiment_manifest"]["model_runtime"]["package_revisions"][
         "cachet-kv"
     ] == f"wheel-sha256:{REPRESENTATIVE_WHEEL_SHA256}"
+    aggregate_runtime_by_arm = {
+        arm["arm_id"]: arm["runtime_environment"]
+        for arm in aggregate["experiment_manifest"]["arms"]
+    }
+    assert aggregate_runtime_by_arm[BASELINE_PREFILL_ARM][
+        "key_position_encoding"
+    ] == "stored_post_rope"
+    assert aggregate_runtime_by_arm[FULL_PREFIX_CANARY_ARM][
+        "key_position_encoding"
+    ] == "stored_post_rope"
+    assert aggregate_runtime_by_arm[VANILLA_CANARY_ARM][
+        "key_position_encoding"
+    ] == "pre_rope"
+    assert aggregate_runtime_by_arm[VANILLA_CANARY_ARM]["rope_theta"] == 5_000_000.0
+    assert aggregate_runtime_by_arm[VANILLA_CANARY_ARM]["rope_rotary_dim"] == 128
+    assert (
+        aggregate["experiment_manifest"]["model_runtime"]["key_position_encoding"]
+        == "varies_by_arm"
+    )
 
 
 def test_representative_payload_identity_rejects_duplicate_runtime_ids():
@@ -1188,7 +1237,7 @@ def _replace_provenance_value(payload, field_name, replacement):
 def _identity(method_id: str) -> ArtifactIdentity:
     return ArtifactIdentity(
         method_id=method_id,
-        method_version="1",
+        method_version="2" if method_id == "vanilla_prefill" else "1",
         method_config_digest="0" * 64,
         model_id="Qwen/Qwen3-4B-Instruct-2507",
         model_revision="a" * 40,
@@ -1201,6 +1250,11 @@ def _identity(method_id: str) -> ArtifactIdentity:
         block_size=16,
         payload_axis_order="token_major",
         generator_version="test-generator-v1",
+        key_position_encoding=(
+            "pre_rope" if method_id == "vanilla_prefill" else "stored_post_rope"
+        ),
+        rope_theta=5_000_000.0 if method_id == "vanilla_prefill" else None,
+        rope_rotary_dim=128 if method_id == "vanilla_prefill" else None,
     )
 
 
@@ -1218,7 +1272,7 @@ def test_topology_attestation_enforces_method_owned_segment_counts(
     row = {
         "example_key_sha256": "1" * 64,
         "method_id": method_id,
-        "method_version": "1",
+        "method_version": "2" if method_id == "vanilla_prefill" else "1",
         "method_config_digest": "2" * 64,
         "artifact_id": "3" * 64,
         "document_count": 2,
@@ -1236,24 +1290,61 @@ def _handoff_manifest(tmp_path, *, method_id: str, segments: int, examples: int 
     entries = []
     for example_index in range(1, examples + 1):
         handoff_path = tmp_path / f"{method_id}.example-{example_index}.handoff.json"
+        payload_path = tmp_path / f"{method_id}.example-{example_index}.kvpack"
+        base_layout = layout_for_model(identity.model_id, dtype=identity.runtime_kv_dtype)
+        layout = (
+            replace(
+                base_layout,
+                pre_rope=True,
+                rope_theta=5_000_000.0,
+                rope_rotary_dim=128,
+                key_position_encoding="pre_rope",
+                shares_kv_storage=False,
+                storage_layout="separate_key_value",
+            )
+            if method_id == CacheGenerationMethod.VANILLA_PREFILL.value
+            else base_layout
+        )
+        segment_records = tuple(
+            KVSegment(
+                document_id=f"document-{example_index}-{index}",
+                chunk_type="document_chunk",
+                chunk_id=f"segment-{index}",
+                token_start=index,
+                token_count=1,
+                byte_start=index * layout.bytes_per_token,
+                byte_length=layout.bytes_per_token,
+            )
+            for index in range(segments)
+        )
+        payload = b"x" * (segments * layout.bytes_per_token)
+        handle = KVCacheHandle(
+            request_id=f"request-{method_id}-{example_index}",
+            handle_uri=f"document-kv://request-{method_id}-{example_index}",
+            layout=layout,
+            segments=segment_records,
+            total_tokens=segments,
+            total_bytes=len(payload),
+            metadata={
+                "cachet.benchmark.dataset": "hotpotqa",
+                "cachet.benchmark.example_id": f"example-{example_index}",
+            },
+            cache_method=method_id,
+            artifact_identity=identity,
+            payload_checksum=hashlib.sha256(payload).hexdigest(),
+        )
+        ready = EngineReadyRequest(
+            handle=handle,
+            payload=payload,
+            estimated_gpu_bytes=len(payload),
+            reuse_plan=method_spec(method_id).reuse_plan(),
+        )
+        handoff = engine_adapter_request_to_record(
+            build_engine_adapter_request(ready, spec=vllm_adapter_spec()),
+            payload_uri=str(payload_path),
+        )
         handoff_path.write_text(
-            json.dumps(
-                {
-                    "handle": {
-                        "cache_method": method_id,
-                        "metadata": {
-                            "cachet.benchmark.dataset": "hotpotqa",
-                            "cachet.benchmark.example_id": f"example-{example_index}",
-                        },
-                        "artifact_identity": identity.to_record(),
-                        "segments": [
-                            {"segment_id": f"segment-{index}"}
-                            for index in range(segments)
-                        ],
-                    },
-                    "reuse_plan": {"method_id": method_id},
-                }
-            ),
+            json.dumps(handoff),
             encoding="utf-8",
         )
         entries.append(
@@ -1262,7 +1353,7 @@ def _handoff_manifest(tmp_path, *, method_id: str, segments: int, examples: int 
                 example_id=f"example-{example_index}",
                 request_id=f"request-{method_id}-{example_index}",
                 handoff_json=str(handoff_path),
-                payload_uri=str(tmp_path / f"{method_id}.example-{example_index}.kvpack"),
+                payload_uri=str(payload_path),
                 prompt_text_mode="runtime",
                 cache_method=method_id,
                 artifact_id=identity.artifact_id,
@@ -1500,6 +1591,50 @@ def test_prepare_representative_canary_inputs_writes_combined_and_isolated_proje
     assert str(tmp_path) not in sanitized_topology
 
 
+def test_prepare_representative_canary_inputs_rejects_stale_vanilla_v1_handoff(
+    tmp_path,
+):
+    input_jsonl = _input_jsonl(tmp_path)
+    full_manifest, _ = _handoff_manifest(
+        tmp_path,
+        method_id="full_prefix_prefill",
+        segments=1,
+    )
+    vanilla_manifest, _ = _handoff_manifest(
+        tmp_path,
+        method_id="vanilla_prefill",
+        segments=2,
+    )
+    manifest_record = json.loads(vanilla_manifest.read_text(encoding="utf-8"))
+    for entry in manifest_record["entries"]:
+        handoff_path = tmp_path / f"vanilla_prefill.{entry['example_id']}.handoff.json"
+        handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+        identity_record = handoff["handle"]["artifact_identity"]
+        identity_record["method_version"] = "1"
+        stale_identity = ArtifactIdentity.from_record(identity_record)
+        handoff["metadata"]["document_kv.artifact_id"] = stale_identity.artifact_id
+        handoff["metadata"]["document_kv.method_version"] = "1"
+        handoff_path.write_text(json.dumps(handoff), encoding="utf-8")
+        entry["artifact_id"] = stale_identity.artifact_id
+    vanilla_manifest.write_text(json.dumps(manifest_record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="method_version"):
+        prepare_representative_canary_inputs(
+            input_jsonl,
+            full_prefix_manifest_json=full_manifest,
+            vanilla_manifest_json=vanilla_manifest,
+            output_dir=tmp_path / "prepared",
+            dataset="hotpotqa",
+            input_tokens_target=8192,
+            token_counter=lambda _prompt: 8192,
+            tokenizer_id="Qwen/Qwen3-4B-Instruct-2507",
+            tokenizer_revision="a" * 40,
+            tokenizer_add_special_tokens=False,
+        )
+
+    assert not (tmp_path / "prepared").exists()
+
+
 def test_prepare_representative_canary_inputs_requires_multiple_documents(tmp_path):
     input_jsonl = _input_jsonl(tmp_path, document_count=1)
     full_manifest, _ = _handoff_manifest(
@@ -1628,7 +1763,13 @@ def _result_record(
         connector_mode="cachet" if method_id else "",
         variant_id="default" if method_id else "",
         implementation_kind="cachet" if method_id else "baseline",
-        method_version="1" if method_id else "",
+        method_version=(
+            "2"
+            if method_id == "vanilla_prefill"
+            else "1"
+            if method_id
+            else ""
+        ),
         method_config_digest=method_config_digest({}) if method_id else "",
         physical_transform_id=(f"cachet.{method_id}" if method_id else "identity"),
         requires_cachet_handoff=bool(method_id),
@@ -1690,6 +1831,11 @@ def _result_record(
         runtime_version=environment["runtime_version"],
         storage_identity=environment["storage_identity"],
         cache_state=environment["cache_state"],
+        key_position_encoding=(
+            "pre_rope" if method_id == "vanilla_prefill" else "stored_post_rope"
+        ),
+        rope_theta=5_000_000.0 if method_id == "vanilla_prefill" else None,
+        rope_rotary_dim=128 if method_id == "vanilla_prefill" else None,
         comparison_mode="methods_same_setting",
     )
     result = run_benchmark_suite(

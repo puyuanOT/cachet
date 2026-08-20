@@ -53,7 +53,12 @@ from document_kv_cache.databricks_runs import (
     DatabricksWorkspaceConfig,
     reserve_and_submit_databricks_run,
 )
+from document_kv_cache.engine_adapters import validate_engine_adapter_request_record
 from document_kv_cache.methods import MethodRegistry, default_method_registry
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
+)
 from document_kv_cache.models import CacheGenerationMethod
 from document_kv_cache.storage import local_path
 
@@ -99,9 +104,17 @@ REPRESENTATIVE_VLLM_PACKAGE_PINS = (
     "accelerate==1.14.0",
 )
 REPRESENTATIVE_SGLANG_PACKAGE_PINS = ("sglang==0.5.10.post1",)
-REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY = (
+REPRESENTATIVE_POST_ROPE_HANDOFF_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:"
-    "build_transformers_kv_chunk_generator"
+    "build_post_rope_transformers_kv_chunk_generator"
+)
+REPRESENTATIVE_PRE_ROPE_HANDOFF_GENERATOR_FACTORY = (
+    "document_kv_cache.transformers_generator:"
+    "build_pre_rope_transformers_kv_chunk_generator"
+)
+# Backward-compatible name for the representative Vanilla/SGLang generator.
+REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY = (
+    REPRESENTATIVE_PRE_ROPE_HANDOFF_GENERATOR_FACTORY
 )
 REPRESENTATIVE_DATABRICKS_SPARK_VERSION = "15.4.x-gpu-ml-scala2.12"
 REPRESENTATIVE_CACHE_STATE = "cold"
@@ -432,6 +445,8 @@ __all__ = [
     "REPRESENTATIVE_VLLM_PACKAGE_PINS",
     "REPRESENTATIVE_SGLANG_PACKAGE_PINS",
     "REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY",
+    "REPRESENTATIVE_POST_ROPE_HANDOFF_GENERATOR_FACTORY",
+    "REPRESENTATIVE_PRE_ROPE_HANDOFF_GENERATOR_FACTORY",
     "REPRESENTATIVE_DATABRICKS_SPARK_VERSION",
     "REPRESENTATIVE_CACHE_STATE",
     "REPRESENTATIVE_VLLM_RUNNER_BASENAME",
@@ -1354,7 +1369,7 @@ def _validate_representative_sglang_payload_parameters(
     if _single_parameter_value(
         parameters,
         "--live-handoff-generator-factory",
-    ) != REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY:
+    ) != REPRESENTATIVE_PRE_ROPE_HANDOFF_GENERATOR_FACTORY:
         raise ValueError(
             "representative SGLang payload must use the approved handoff generator"
         )
@@ -1401,10 +1416,14 @@ def _validate_representative_vllm_handoff_parameters(
                 "representative baseline payload must not generate cache handoffs"
             )
         return
+    expected_generator_factory = {
+        FULL_PREFIX_CANARY_ARM: REPRESENTATIVE_POST_ROPE_HANDOFF_GENERATOR_FACTORY,
+        VANILLA_CANARY_ARM: REPRESENTATIVE_PRE_ROPE_HANDOFF_GENERATOR_FACTORY,
+    }[workload.arm_id]
     if _single_parameter_value(
         parameters,
         "--benchmark-handoff-generator-factory",
-    ) != REPRESENTATIVE_HANDOFF_GENERATOR_FACTORY:
+    ) != expected_generator_factory:
         raise ValueError(
             "representative cache arm must use the approved handoff generator"
         )
@@ -2385,6 +2404,15 @@ def _validate_handoff_entry(
     if not entry.artifact_id:
         raise ValueError(f"handoff {entry.key!r} must declare artifact_id")
     record = _handoff_record(entry)
+    # Authenticate the entire executable handoff at preparation time. This
+    # verifies the serialized reuse plan against the live registry, ties the
+    # layout to the artifact identity, and prevents a stale Vanilla-v1 record
+    # from reaching an expensive isolated cluster run.
+    validate_engine_adapter_request_record(
+        record,
+        expected_backend="vllm",
+        method_registry=default_method_registry(),
+    )
     handle = _required_mapping(record.get("handle"), "handoff.handle")
     if handle.get("cache_method") != method_id:
         raise ValueError(f"handoff {entry.key!r} handle.cache_method must be {method_id!r}")
@@ -2413,6 +2441,30 @@ def _validate_handoff_entry(
         raise ValueError(f"handoff {entry.key!r} artifact method must be {method_id!r}")
     if identity.artifact_id != entry.artifact_id:
         raise ValueError(f"handoff {entry.key!r} artifact_id does not match its handle")
+    if method_id == CacheGenerationMethod.VANILLA_PREFILL.value:
+        expected_position = {
+            "method_version": "2",
+            "key_position_encoding": "pre_rope",
+            "rope_theta": QWEN3_4B_ROPE_THETA,
+            "rope_rotary_dim": QWEN3_4B_ROPE_ROTARY_DIM,
+        }
+    else:
+        expected_position = {
+            "method_version": "1",
+            "key_position_encoding": "stored_post_rope",
+            "rope_theta": None,
+            "rope_rotary_dim": None,
+        }
+    position_mismatches = [
+        field_name
+        for field_name, expected_value in expected_position.items()
+        if getattr(identity, field_name) != expected_value
+    ]
+    if position_mismatches:
+        raise ValueError(
+            f"handoff {entry.key!r} artifact position contract does not match "
+            f"{method_id!r}: {', '.join(position_mismatches)}"
+        )
     return record
 
 
@@ -2601,11 +2653,31 @@ def _validate_shared_result_identity(records: Mapping[str, Mapping[str, Any]]) -
         if candidate_suite != baseline_suite:
             raise ValueError(f"result {arm_id!r} suite identity differs from baseline")
         candidate = _required_mapping(records[arm_id]["experiment_manifest"], "experiment_manifest")
-        for section in ("logical_workload", "decoding", "model_runtime", "execution"):
+        for section in ("logical_workload", "decoding", "execution"):
             if candidate.get(section) != baseline_manifest.get(section):
                 raise ValueError(
                     f"result {arm_id!r} manifest {section} differs from baseline"
                 )
+        candidate_runtime = dict(
+            _required_mapping(candidate.get("model_runtime"), "model_runtime")
+        )
+        baseline_runtime = dict(
+            _required_mapping(
+                baseline_manifest.get("model_runtime"),
+                "model_runtime",
+            )
+        )
+        for field_name in (
+            "key_position_encoding",
+            "rope_theta",
+            "rope_rotary_dim",
+        ):
+            candidate_runtime.pop(field_name, None)
+            baseline_runtime.pop(field_name, None)
+        if candidate_runtime != baseline_runtime:
+            raise ValueError(
+                f"result {arm_id!r} manifest model_runtime differs from baseline"
+            )
         if candidate.get("experiment_id") != baseline_manifest.get("experiment_id"):
             raise ValueError(f"result {arm_id!r} experiment_id differs from baseline")
         baseline_environment = dict(

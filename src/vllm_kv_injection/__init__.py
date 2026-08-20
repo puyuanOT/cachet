@@ -79,6 +79,7 @@ if TYPE_CHECKING:
         DOCUMENT_KV_NATIVE_PROVIDER_FACTORY,
         DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY,
         DOCUMENT_KV_PAYLOAD_URI_PARAM,
+        DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV,
         DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
     )
     from vllm_kv_injection.vllm_runtime_contract import (
@@ -169,6 +170,7 @@ _EXPORT_MODULES = {
     "DOCUMENT_KV_NATIVE_PROVIDER_FACTORY": "vllm_kv_injection.vllm_native_provider_constants",
     "DOCUMENT_KV_PAYLOAD_CACHE_MAX_BYTES_CONFIG_KEY": "vllm_kv_injection.vllm_transfer_config",
     "DOCUMENT_KV_PAYLOAD_URI_PARAM": "vllm_kv_injection.vllm_native_provider_constants",
+    "DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV": "vllm_kv_injection.vllm_native_provider_constants",
     "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY": "vllm_kv_injection.vllm_transfer_config",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE": "vllm_kv_injection.vllm_layer_mapping",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION": "vllm_kv_injection.vllm_layer_mapping",

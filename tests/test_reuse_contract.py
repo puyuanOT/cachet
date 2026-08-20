@@ -57,14 +57,14 @@ def layout(
     )
 
 
-def test_vanilla_method_emits_raw_post_rope_reuse_plan() -> None:
+def test_vanilla_method_emits_raw_pre_rope_reuse_plan() -> None:
     plan = method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan()
 
     assert plan.artifact_format.encoding == ArtifactEncoding.RAW_KV
-    assert plan.position_handling == PositionHandling.STORED_POST_ROPE
+    assert plan.position_handling == PositionHandling.REROPE_AT_INJECTION
     assert plan.payload_decode_stage == PayloadDecodeStage.NONE
     assert plan.token_recompute_policy == TokenRecomputePolicy.NONE
-    plan.validate_runtime_layout(layout())
+    plan.validate_runtime_layout(layout(pre_rope=True))
 
 
 def test_cacheblend_plan_requires_pre_rope_and_selective_recompute() -> None:

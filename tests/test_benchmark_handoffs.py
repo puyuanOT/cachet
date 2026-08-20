@@ -86,6 +86,23 @@ class AlignedGenerator:
         )
 
 
+class PreRopeAlignedGenerator(AlignedGenerator):
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 4
+
+    def generate(self, **kwargs):
+        chunk = super().generate(**kwargs)
+        return PackChunk(
+            key=chunk.key,
+            payload=b"p" * (chunk.token_count * 16),
+            token_count=chunk.token_count,
+            dtype=chunk.dtype,
+            layout_version=chunk.layout_version,
+            storage_layout=chunk.storage_layout,
+        )
+
+
 class StrictAlignedGenerator:
     pre_rope = False
 
@@ -120,6 +137,12 @@ class StrictAlignedGenerator:
             layout_version=config.layout_version,
             storage_layout=config.storage_layout,
         )
+
+
+class StrictPreRopeGenerator(StrictAlignedGenerator):
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 4
 
 
 def custom_dataset_score(_context):
@@ -168,6 +191,23 @@ class PageKeyGenerator:
         )
 
 
+class PreRopePageKeyGenerator(PageKeyGenerator):
+    pre_rope = True
+    rope_theta = 5_000_000.0
+    rope_rotary_dim = 4
+
+    def generate(self, **kwargs):
+        chunk = super().generate(**kwargs)
+        return PackChunk(
+            key=chunk.key,
+            payload=b"p" * (chunk.token_count * 16),
+            token_count=chunk.token_count,
+            dtype=chunk.dtype,
+            layout_version=chunk.layout_version,
+            storage_layout=chunk.storage_layout,
+        )
+
+
 class RuntimeTailTokenizer(PageKeyTokenizer):
     def decode(self, token_ids, *, skip_special_tokens=False, clean_up_tokenization_spaces=False):
         assert skip_special_tokens is False
@@ -204,6 +244,10 @@ class CachedBoundaryMergingGenerator(PageKeyGenerator):
     tokenizer = CachedBoundaryMergingTokenizer()
 
 
+class PreRopeCachedBoundaryMergingGenerator(PreRopePageKeyGenerator):
+    tokenizer = CachedBoundaryMergingTokenizer()
+
+
 class CrossBoundaryMergingTokenizer(CachedBoundaryMergingTokenizer):
     """Remain non-compositional by merging cached and online text together."""
 
@@ -211,6 +255,10 @@ class CrossBoundaryMergingTokenizer(CachedBoundaryMergingTokenizer):
 
 
 class CrossBoundaryMergingGenerator(PageKeyGenerator):
+    tokenizer = CrossBoundaryMergingTokenizer()
+
+
+class PreRopeCrossBoundaryMergingGenerator(PreRopePageKeyGenerator):
     tokenizer = CrossBoundaryMergingTokenizer()
 
 
@@ -346,6 +394,26 @@ def tiny_layout():
     )
 
 
+def tiny_pre_rope_layout():
+    return KVLayout(
+        model_id="qwen3:4b-instruct",
+        lora_id="base",
+        layout_version="toy-pre-rope-v1",
+        dtype="float16",
+        num_layers=1,
+        block_size=8,
+        bytes_per_token=16,
+        num_query_heads=1,
+        num_kv_heads=1,
+        head_size=4,
+        kv_stride_bytes=8,
+        storage_layout="separate_key_value",
+        pre_rope=True,
+        rope_theta=5_000_000.0,
+        rope_rotary_dim=4,
+    )
+
+
 def record(example_id="bio-1", *, dataset="biography", kv_transfer_params=None):
     row = {
         "dataset": dataset,
@@ -414,6 +482,7 @@ def inline_handoff_record(*, request_id="cachet-bio-1", payload_uri=None):
         segments=(KVSegment("doc-1", "document_static", "static", 0, 1, 0, 4),),
         total_tokens=1,
         total_bytes=4,
+        cache_method="full_prefix_prefill",
     )
     ready = EngineReadyRequest(handle=handle, payload=b"data", estimated_gpu_bytes=4)
     adapter_request = build_engine_adapter_request(ready, spec=vllm_adapter_spec())
@@ -500,7 +569,7 @@ def test_build_manifest_from_jsonl_reads_handoff_records(tmp_path):
             "request_id": "cachet-bio-1",
             "handoff_json": str(first_handoff),
             "payload_uri": "disk:/tmp/cachet-bio-1.kv",
-                "cache_method": "vanilla_prefill",
+            "cache_method": "full_prefix_prefill",
         },
         {
             "dataset": "biography",
@@ -508,7 +577,7 @@ def test_build_manifest_from_jsonl_reads_handoff_records(tmp_path):
             "request_id": "cachet-bio-2",
             "handoff_json": str(second_handoff),
             "payload_uri": "disk:/tmp/cachet-bio-2.kv",
-                "cache_method": "vanilla_prefill",
+            "cache_method": "full_prefix_prefill",
         },
     ]
 
@@ -831,8 +900,8 @@ def test_generate_benchmark_handoff_bundles_segments_multi_document_handle(tmp_p
     result = generate_benchmark_handoff_bundles(
         input_path,
         output_dir=tmp_path / "bundles",
-        generator=AlignedGenerator(),
-        layout=tiny_layout(),
+        generator=PreRopeAlignedGenerator(),
+        layout=tiny_pre_rope_layout(),
         manifest_json=manifest_path,
         segment_per_document=True,
         align_bytes=1,
@@ -903,11 +972,12 @@ def test_generate_benchmark_handoffs_accepts_declared_method_topology(
     )
 
     output_dir = tmp_path / cache_method.value
+    vanilla = cache_method is CacheGenerationMethod.VANILLA_PREFILL
     result = generate_benchmark_handoff_bundles(
         input_path,
         output_dir=output_dir,
-        generator=AlignedGenerator(),
-        layout=tiny_layout(),
+        generator=PreRopeAlignedGenerator() if vanilla else AlignedGenerator(),
+        layout=tiny_pre_rope_layout() if vanilla else tiny_layout(),
         cache_method=cache_method,
         segment_per_document=segment_per_document,
         align_bytes=1,
@@ -918,6 +988,73 @@ def test_generate_benchmark_handoffs_accepts_declared_method_topology(
     handoff_path = output_dir / "hotpotqa" / f"{entry.request_id}.handoff.json"
     handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
     assert len(handoff["handle"]["segments"]) == expected_segments
+
+
+def test_strict_vanilla_v2_stamps_pre_rope_identity_and_absolute_layout(
+    tmp_path,
+):
+    input_path = tmp_path / "hotpot.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=3)) + "\n",
+        encoding="utf-8",
+    )
+    layout = tiny_pre_rope_layout()
+
+    result = generate_benchmark_handoff_bundles(
+        input_path,
+        output_dir=tmp_path / "vanilla-v2",
+        generator=StrictPreRopeGenerator(layout),
+        layout=layout,
+        cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+        segment_per_document=True,
+        align_bytes=1,
+    )
+
+    identity = result.cache_generation.artifact_identity
+    assert identity is not None
+    assert identity.method_id == "vanilla_prefill"
+    assert identity.method_version == "2"
+    assert identity.key_position_encoding == "pre_rope"
+    assert identity.rope_theta == 5_000_000.0
+    assert identity.rope_rotary_dim == 4
+    entry = result.manifest.entries[0]
+    handoff = json.loads(
+        (
+            tmp_path
+            / "vanilla-v2"
+            / "hotpotqa"
+            / f"{entry.request_id}.handoff.json"
+        ).read_text(encoding="utf-8")
+    )
+    handoff_layout = handoff["handle"]["layout"]
+    assert handoff_layout["key_position_encoding"] == "pre_rope"
+    assert handoff_layout["rope_theta"] == 5_000_000.0
+    assert handoff_layout["rope_rotary_dim"] == 4
+    assert len(handoff["handle"]["segments"]) == 3
+
+
+def test_strict_vanilla_rejects_v1_artifact_version_before_writes(tmp_path):
+    input_path = tmp_path / "hotpot.jsonl"
+    input_path.write_text(
+        json.dumps(multi_document_record(document_count=2)) + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "stale-v1"
+    layout = tiny_pre_rope_layout()
+
+    with pytest.raises(ValueError, match="method_version '1'.*artifact_version '2'"):
+        generate_benchmark_handoff_bundles(
+            input_path,
+            output_dir=output_dir,
+            generator=StrictPreRopeGenerator(layout),
+            layout=layout,
+            cache_method=CacheGenerationMethod.VANILLA_PREFILL,
+            method_version="1",
+            segment_per_document=True,
+            align_bytes=1,
+        )
+
+    assert not output_dir.exists()
 
 
 @pytest.mark.parametrize(
@@ -938,13 +1075,18 @@ def test_generate_benchmark_handoffs_owns_token_merge_boundary_on_cached_prefix(
         json.dumps(multi_document_record(document_count=3)) + "\n",
         encoding="utf-8",
     )
-    generator = CachedBoundaryMergingGenerator()
+    vanilla = cache_method is CacheGenerationMethod.VANILLA_PREFILL
+    generator = (
+        PreRopeCachedBoundaryMergingGenerator()
+        if vanilla
+        else CachedBoundaryMergingGenerator()
+    )
 
     result = generate_benchmark_handoff_bundles(
         input_path,
         output_dir=tmp_path / cache_method.value,
         generator=generator,
-        layout=tiny_layout(),
+        layout=tiny_pre_rope_layout() if vanilla else tiny_layout(),
         cache_method=cache_method,
         segment_per_document=segment_per_document,
         align_bytes=1,
@@ -993,10 +1135,12 @@ def test_generate_benchmark_handoffs_owns_token_merge_boundary_on_cached_prefix(
         (CacheGenerationMethod.VANILLA_PREFILL, True),
     ],
 )
+@pytest.mark.parametrize("backend", ("vllm", "sglang"))
 def test_generate_benchmark_handoffs_rejects_noncompositional_token_boundary(
     tmp_path,
     cache_method,
     segment_per_document,
+    backend,
 ):
     input_path = tmp_path / f"{cache_method.value}.jsonl"
     input_path.write_text(
@@ -1004,6 +1148,7 @@ def test_generate_benchmark_handoffs_rejects_noncompositional_token_boundary(
         encoding="utf-8",
     )
     output_dir = tmp_path / cache_method.value
+    vanilla = cache_method is CacheGenerationMethod.VANILLA_PREFILL
 
     with pytest.raises(
         ValueError,
@@ -1012,8 +1157,15 @@ def test_generate_benchmark_handoffs_rejects_noncompositional_token_boundary(
         generate_benchmark_handoff_bundles(
             input_path,
             output_dir=output_dir,
-            generator=CrossBoundaryMergingGenerator(),
-            layout=tiny_layout(),
+            generator=(
+                PreRopeCrossBoundaryMergingGenerator()
+                if vanilla
+                else CrossBoundaryMergingGenerator()
+            ),
+            layout=(
+                tiny_pre_rope_layout() if vanilla else tiny_layout()
+            ),
+            backend=backend,
             cache_method=cache_method,
             segment_per_document=segment_per_document,
             align_bytes=1,

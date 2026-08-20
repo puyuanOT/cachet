@@ -249,8 +249,20 @@ class KVLayout:
         if self.storage_layout == KVStorageLayout.SHARED_KEY_VALUE and not self.shares_kv_storage:
             raise ValueError("storage_layout='shared_key_value' requires shares_kv_storage=True")
         if self.model_id == "qwen3:4b-instruct" and self.layout_version == "qwen3-v1":
-            if self.shares_kv_storage is not True or self.storage_layout != KVStorageLayout.SHARED_KEY_VALUE:
-                raise ValueError("qwen3-v1 layout requires shared K/V storage")
+            if self.requires_rope_repositioning:
+                if (
+                    self.shares_kv_storage is not False
+                    or self.storage_layout
+                    != KVStorageLayout.SEPARATE_KEY_VALUE
+                ):
+                    raise ValueError(
+                        "pre-RoPE qwen3-v1 layout requires separate K/V storage"
+                    )
+            elif (
+                self.shares_kv_storage is not True
+                or self.storage_layout != KVStorageLayout.SHARED_KEY_VALUE
+            ):
+                raise ValueError("post-RoPE qwen3-v1 layout requires shared K/V storage")
         if self.num_query_heads is not None and self.num_kv_heads is not None:
             if self.num_kv_heads > self.num_query_heads:
                 raise ValueError("num_kv_heads cannot exceed num_query_heads")
@@ -365,7 +377,7 @@ class KVCacheHandle:
     total_tokens: int
     total_bytes: int
     metadata: Mapping[str, str] = field(default_factory=dict)
-    cache_method: str = "vanilla_prefill"
+    cache_method: str = "full_prefix_prefill"
     adapter_ids: tuple[str, ...] = field(default_factory=tuple)
     artifact_identity: ArtifactIdentity | None = None
     payload_checksum: str = ""

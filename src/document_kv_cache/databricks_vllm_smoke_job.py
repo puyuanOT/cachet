@@ -60,7 +60,11 @@ from document_kv_cache.canary_orchestration import (
     validated_benchmark_arm_specs,
     validated_benchmark_manifest_provenance,
 )
-from document_kv_cache.model_profiles import layout_for_model
+from document_kv_cache.model_profiles import (
+    QWEN3_4B_ROPE_ROTARY_DIM,
+    QWEN3_4B_ROPE_THETA,
+    layout_for_model,
+)
 
 
 DEFAULT_DATABRICKS_VLLM_SMOKE_RUN_NAME = "document-kv-vllm-smoke"
@@ -668,7 +672,22 @@ def _representative_vllm_provenance(
             f"representative canary model_id must be the canonical {HF_MODEL_ID!r}"
         )
     runtime_kv_dtype = config.kv_cache_dtype or config.model_dtype
-    layout = layout_for_model(HF_MODEL_ID, dtype=runtime_kv_dtype)
+    pre_rope = config.benchmark_handoff_cache_method == "vanilla_prefill"
+    layout = layout_for_model(
+        HF_MODEL_ID,
+        dtype=runtime_kv_dtype,
+        **(
+            {
+                "pre_rope": True,
+                "rope_theta": QWEN3_4B_ROPE_THETA,
+                "rope_rotary_dim": QWEN3_4B_ROPE_ROTARY_DIM,
+                "shares_kv_storage": False,
+                "storage_layout": "separate_key_value",
+            }
+            if pre_rope
+            else {}
+        ),
+    )
     _, wheel_sha256 = validated_representative_wheel_binding(
         config.wheel_uri,
         config.wheel_sha256,

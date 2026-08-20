@@ -926,10 +926,10 @@ def test_sglang_live_v1_benchmark_issues_reject_tampered_package_provenance(
             "block_size",
         ),
         (
-            lambda record: record["benchmark_manifest_provenance"].__setitem__(
-                "key_position_encoding",
-                "pre_rope",
-            ),
+                lambda record: record["benchmark_manifest_provenance"].__setitem__(
+                    "key_position_encoding",
+                    "stored_post_rope",
+                ),
             "key_position_encoding",
         ),
         (
@@ -947,10 +947,10 @@ def test_sglang_live_v1_benchmark_issues_reject_tampered_package_provenance(
             "pipeline_parallel_size",
         ),
         (
-            lambda record: record["benchmark_manifest_provenance"].update(
-                {"rope_theta": 1_000_000.0, "rope_rotary_dim": 128}
-            ),
-            "must omit post-RoPE-only fields",
+                lambda record: record["benchmark_manifest_provenance"].update(
+                    {"rope_theta": 1_000_000.0, "rope_rotary_dim": 128}
+                ),
+                "rope_theta",
         ),
     ],
 )
@@ -3843,7 +3843,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
             bind=EngineKVBindAction(
                 request_id=request_id,
                 handle_uri=f"engine://{backend.value}/{request_id}",
-                cache_method="vanilla_prefill",
+                cache_method="full_prefix_prefill",
                 adapter_ids=("base",),
                 metadata={
                     "engine.backend": backend.value,
@@ -3851,7 +3851,7 @@ def _actions_record(backend: ServingBackend, *, layout=None, request_id=None, to
                 },
             ),
             release=EngineKVReleaseAction(request_id=request_id),
-            reuse_plan=method_spec("vanilla_prefill").reuse_plan(),
+            reuse_plan=method_spec("full_prefix_prefill").reuse_plan(),
         )
     )
 

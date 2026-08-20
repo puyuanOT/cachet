@@ -38,7 +38,7 @@ from document_kv_cache.models import (
 )
 from document_kv_cache.methods import MethodRegistry, MethodSpec, default_method_registry
 from document_kv_cache.planner import CachePlanner
-from document_kv_cache.reuse_contract import ArtifactEncoding, ReusePlan
+from document_kv_cache.reuse_contract import ArtifactEncoding, PositionHandling, ReusePlan
 from document_kv_cache.service import DocumentKVService
 from document_kv_cache.storage import (
     DiskRangeReader,
@@ -175,10 +175,14 @@ class CacheBuildConfig:
     prompt_template_version: str
     dtype: str
     layout_version: str
-    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
+    # A build config has no runtime layout from which to infer positional
+    # semantics.  Keep the omission-safe default aligned with the default
+    # (post-RoPE) generator; Vanilla/pre-RoPE generation must opt in through
+    # its registered method path.
+    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.FULL_PREFIX_PREFILL
     storage_layout: KVStorageLayout | str = KVStorageLayout.SEPARATE_KEY_VALUE
     payload_axis_order: str = "token_major"
-    method_version: str = "1"
+    method_version: str | None = None
     method_config_digest: str = field(default_factory=lambda: method_config_digest({}))
     model_revision: str = UNRESOLVED_IDENTITY
     tokenizer_id: str | None = None
@@ -192,6 +196,20 @@ class CacheBuildConfig:
     runtime_kv_dtype: str | None = None
 
     def __post_init__(self) -> None:
+        cache_method = _cache_generation_method(self.cache_method)
+        object.__setattr__(self, "cache_method", cache_method)
+        method_version = self.method_version
+        if method_version is None:
+            try:
+                method_version = default_method_registry().get(
+                    cache_method,
+                ).artifact_version
+            except KeyError:
+                # Application-defined methods remain usable without registering a
+                # process-global MethodSpec. Their historical default is v1, while
+                # callers can always stamp an explicit custom version.
+                method_version = "1"
+        object.__setattr__(self, "method_version", method_version)
         for field_name in (
             "model_id",
             "lora_id",
@@ -215,7 +233,6 @@ class CacheBuildConfig:
             "runtime_kv_dtype",
             _non_empty_string("runtime_kv_dtype", runtime_kv_dtype),
         )
-        object.__setattr__(self, "cache_method", _cache_generation_method(self.cache_method))
         _sha256_digest("method_config_digest", self.method_config_digest)
         for field_name in ("tensor_parallel_size", "pipeline_parallel_size"):
             value = getattr(self, field_name)
@@ -356,7 +373,10 @@ class CacheGenerationResult:
     chunk_count: int
     total_bytes: int
     training_artifacts: TrainingArtifacts | None = None
-    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.VANILLA_PREFILL
+    # Results constructed without refs/identity cannot infer a pre-RoPE
+    # contract.  Default to the post-RoPE full-prefix method and require
+    # Vanilla callers to name it (normal workflow generation always does).
+    cache_method: CacheGenerationMethod | str = CacheGenerationMethod.FULL_PREFIX_PREFILL
     artifact_identity: ArtifactIdentity | None = None
     reuse_plan: ReusePlan | None = None
 
@@ -533,6 +553,7 @@ class DocumentKVWorkflow:
             config,
             training_artifacts,
             require_artifact_contract=require_registered_method,
+            registered_method=method if require_registered_method else None,
         )
         refs = self._write_pack_chunks(shard_uri, pack_chunks, align_bytes=align_bytes)
         self.manifest.put_many(refs)
@@ -643,7 +664,11 @@ class DocumentKVWorkflow:
         resolved_cache_method: CacheGenerationMethod | str = (
             next(iter(artifact_method_ids))
             if cache_method is None and artifact_method_ids
-            else CacheGenerationMethod.VANILLA_PREFILL
+            else (
+                CacheGenerationMethod.VANILLA_PREFILL
+                if layout.pre_rope
+                else CacheGenerationMethod.FULL_PREFIX_PREFILL
+            )
             if cache_method is None
             else cache_method
         )
@@ -653,7 +678,7 @@ class DocumentKVWorkflow:
                 require_implemented=require_registered_method,
             )
         except KeyError:
-            if require_registered_method or artifact_method_ids:
+            if require_registered_method:
                 raise
             method = None
         reuse_plan = None
@@ -750,6 +775,7 @@ class DocumentKVWorkflow:
         training_artifacts: TrainingArtifacts | None,
         *,
         require_artifact_contract: bool,
+        registered_method: MethodSpec | None,
     ) -> Iterable[PackChunk]:
         for document in documents:
             for chunk in document.chunks:
@@ -765,6 +791,7 @@ class DocumentKVWorkflow:
                     config,
                     pack_chunk,
                     require_artifact_contract=require_artifact_contract,
+                    registered_method=registered_method,
                 )
                 yield pack_chunk
 
@@ -802,6 +829,7 @@ class DocumentKVWorkflow:
         pack_chunk: PackChunk,
         *,
         require_artifact_contract: bool,
+        registered_method: MethodSpec | None,
     ) -> None:
         key = pack_chunk.key
         expected = {
@@ -880,6 +908,24 @@ class DocumentKVWorkflow:
                     "Generated chunk artifact identity does not match config: "
                     + ", ".join(identity_mismatches)
                 )
+            if registered_method is not None:
+                position_handling = registered_method.position_handling
+                if position_handling == PositionHandling.REROPE_AT_INJECTION:
+                    expected_key_position_encoding = "pre_rope"
+                elif position_handling == PositionHandling.STORED_POST_ROPE:
+                    expected_key_position_encoding = "stored_post_rope"
+                else:
+                    raise ValueError(
+                        "Registered Cachet artifact generation cannot use "
+                        f"position handling {position_handling!r}"
+                    )
+                if identity.key_position_encoding != expected_key_position_encoding:
+                    raise ValueError(
+                        "Generated chunk artifact identity position encoding does "
+                        f"not match registered method {registered_method.method_id!r}: "
+                        f"expected {expected_key_position_encoding!r}, got "
+                        f"{identity.key_position_encoding!r}"
+                    )
 
 
 def _engine_adapter_ids(

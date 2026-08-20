@@ -63,6 +63,7 @@ from vllm_kv_injection.vllm_native_provider_constants import (
     DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY,
+    DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV,
     DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
 )
 from vllm_kv_injection.vllm_layer_mapping import (
@@ -90,6 +91,7 @@ __all__ = [
     "DOCUMENT_KV_REQUEST_ID_PARAM",
     "DOCUMENT_KV_REQUIRE_RUNTIME_HANDSHAKE_CONFIG_KEY",
     "DOCUMENT_KV_RUNTIME_IDENTITY_CONFIG_KEY",
+    "DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV",
     "DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE",
     "DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION",
@@ -240,7 +242,45 @@ class _PayloadTensorView:
 
     token_major: object
     scalars_per_layer: int
-    buffer: bytes | bytearray
+    buffer: bytes | bytearray | memoryview
+
+
+@dataclass(frozen=True, slots=True)
+class _MaterializedPayload:
+    """Payload buffer plus the host-side resolution strategy used for it.
+
+    A segmented Cachet handoff still retains its copy descriptors in ``actions``.
+    For canonical disk bundles, those descriptors prove that the flat payload file
+    is already in global token order. One process-owned global snapshot can then be
+    consumed without first recreating segment buffers and merging them back
+    together. The owned snapshot also binds checksum validation to the exact bytes
+    later copied to the device even if the backing file is concurrently replaced or
+    modified.
+    """
+
+    payload: bytes | bytearray | memoryview | tuple[bytes, ...]
+    configured_segmented_strategy: str
+    selected_strategy: str
+    payload_mode: PayloadMode
+    canonical_segmented_global_view: bool
+    legacy_fallback_reason: str | None = None
+    checksum_validation_count: int = 0
+    snapshot_copy_bytes: int = 0
+    reassembly_copy_bytes: int = 0
+
+    def telemetry(self, *, copy_count: int) -> dict[str, object]:
+        return {
+            "configured_segmented_strategy": self.configured_segmented_strategy,
+            "selected_strategy": self.selected_strategy,
+            "payload_mode": self.payload_mode.value,
+            "canonical_segmented_global_view": self.canonical_segmented_global_view,
+            "legacy_fallback_reason": self.legacy_fallback_reason,
+            "checksum_validation_count": self.checksum_validation_count,
+            "snapshot_copy_bytes": self.snapshot_copy_bytes,
+            "reassembly_copy_bytes": self.reassembly_copy_bytes,
+            "copy_metadata_retained": True,
+            "copy_count": copy_count,
+        }
 
 
 _LoadIdentity = tuple[str, int, int, tuple[tuple[int, int, int, int], ...]]
@@ -259,7 +299,7 @@ class _PayloadReader(Protocol):
         *,
         expected_bytes: int,
         actions: EngineKVConnectorActions,
-    ) -> bytes: ...
+    ) -> bytes | memoryview: ...
 
 
 class _PayloadCache:
@@ -471,9 +511,18 @@ class DocumentKVNativeProvider:
         # adds synchronization overhead, so it is off by default and only used for
         # dedicated profiling runs.
         self._profile_stages = _env_truthy("DOCUMENT_KV_PROFILE_STAGES")
+        # Canonical Cachet segmented bundles are serialized as one flat file in
+        # global token order. ``auto`` (the default) takes one owned global
+        # snapshot and falls back to the historical segment/remerge path for
+        # third-party action layouts. ``direct`` is the fail-closed experiment
+        # mode: it rejects any action layout that cannot prove the global-order
+        # invariant. ``legacy`` always exercises the old reconstruction path for
+        # apples-to-apples profiling.
+        self._segmented_load_strategy = _segmented_load_strategy_from_env()
         # Cold-read enforcement (opt-in): drop the payload file from the OS page cache
         # (posix_fadvise POSIX_FADV_DONTNEED) immediately before memory-mapping it, so
-        # the host->device copy faults every page straight from NVMe instead of RAM.
+        # the owned-snapshot read (or a retained merged mmap's device copy) faults
+        # pages from NVMe instead of RAM.
         # Handoff generation writes the payload files on the same box right before
         # serving, which leaves them warm in the page cache; without eviction the
         # "cold_disk_to_gpu_hydrate" protocol actually measures warm page-cache reads.
@@ -790,6 +839,18 @@ class DocumentKVNativeProvider:
         profile_stages = self._profile_stages
         cache_hits_before = self._stats_payload_cache_hits
         cache_misses_before = self._stats_payload_cache_misses
+        payload_loading: Mapping[str, object] = {
+            "configured_segmented_strategy": self._segmented_load_strategy,
+            "selected_strategy": "unresolved",
+            "payload_mode": "unknown",
+            "canonical_segmented_global_view": False,
+            "legacy_fallback_reason": None,
+            "checksum_validation_count": 0,
+            "snapshot_copy_bytes": 0,
+            "reassembly_copy_bytes": 0,
+            "copy_metadata_retained": True,
+            "copy_count": 0,
+        }
         error_type: str | None = None
         error_message: str | None = None
         try:
@@ -797,21 +858,31 @@ class DocumentKVNativeProvider:
             block_size = layout.block_size
             started_ns = time.perf_counter_ns()
             try:
-                payload = _materialized_payload(load, payload_reader=self._read_payload)
+                payload = _materialized_payload(
+                    load,
+                    payload_reader=self._read_payload,
+                    segmented_load_strategy=self._segmented_load_strategy,
+                )
             finally:
                 payload_materialize_ns = time.perf_counter_ns() - started_ns
                 self._stats_payload_materialize_ns += payload_materialize_ns
 
             started_ns = time.perf_counter_ns()
             try:
-                merged_payload = _merged_payload(load.actions, payload)
+                resolved_payload = _merged_payload(load.actions, payload)
+                payload_loading = resolved_payload.telemetry(
+                    copy_count=len(load.actions.copies),
+                )
+                merged_payload = resolved_payload.payload
+                if isinstance(merged_payload, tuple):
+                    raise TypeError("resolved document KV payload must be one flat buffer")
                 assert load.actions.reuse_plan is not None
                 reuse_plan = load.actions.reuse_plan
                 if reuse_plan.runtime_operations:
                     # Method-owned transforms operate on immutable bytes. Only
                     # materialize here when a declared decoder/selector/recomputer
-                    # actually needs them; raw KV must preserve the lazy mmap view
-                    # so page faults occur during the measured H2D copy.
+                    # actually needs them; raw KV preserves the resolved global
+                    # buffer so there is no additional method-transform copy.
                     operation_result = apply_runtime_operation_handlers(
                         reuse_plan,
                         bytes(merged_payload),
@@ -961,6 +1032,7 @@ class DocumentKVNativeProvider:
                 decoded_runtime_bytes=decoded_runtime_bytes,
                 payload_cache_hits=self._stats_payload_cache_hits - cache_hits_before,
                 payload_cache_misses=self._stats_payload_cache_misses - cache_misses_before,
+                payload_loading=payload_loading,
                 error_type=error_type,
                 error_message=error_message,
             )
@@ -973,13 +1045,14 @@ class DocumentKVNativeProvider:
         actions: EngineKVConnectorActions,
     ) -> bytes | memoryview:
         if self._payload_cache is None:
-            # No in-process payload cache (the cold-hydrate measurement path): memory-map
-            # the merged payload rather than eagerly reading it. This must stay LAZY so
-            # setting up the mapping costs ~nothing; the host->device copy faults the
-            # pages, which a concurrent prefetch (``_prefetch_payload_uri``) may already
-            # have re-warmed. When concurrent prefetch is active the on-critical-path map
-            # must not re-evict those warm pages; otherwise apply per-read eviction here
-            # for the honest cold-hydrate measurement.
+            # No in-process payload cache (the cold-hydrate measurement path):
+            # memory-map the payload first. Merged loads may retain the lazy view;
+            # canonical segmented loads immediately take one owned global snapshot
+            # so their checksum binds the bytes later copied to the device. A
+            # concurrent prefetch (``_prefetch_payload_uri``) may already have
+            # re-warmed the pages. When concurrent prefetch is active the
+            # on-critical-path map must not re-evict those warm pages; otherwise
+            # apply per-read eviction here for the honest cold-hydrate measurement.
             evict_here = self._evict_page_cache and self._prefetch_workers <= 0
             if evict_here and not self._page_cache_synced:
                 # Flush dirty (freshly written) payload pages to disk once so the
@@ -1171,6 +1244,7 @@ class DocumentKVNativeProvider:
         decoded_runtime_bytes: int,
         payload_cache_hits: int,
         payload_cache_misses: int,
+        payload_loading: Mapping[str, object],
         error_type: str | None,
         error_message: str | None,
         h2d_ns: int | None = None,
@@ -1204,6 +1278,7 @@ class DocumentKVNativeProvider:
                 decoded_runtime_bytes=decoded_runtime_bytes,
                 payload_cache_hits=payload_cache_hits,
                 payload_cache_misses=payload_cache_misses,
+                payload_loading=payload_loading,
                 error_type=error_type,
                 error_message=error_message,
             )
@@ -1556,7 +1631,10 @@ def _validate_payload_reference(
     _required_string(payload_uri, field_name="payload_uri")
 
 
-def _validate_payload_matches_actions(actions: EngineKVConnectorActions, payload: bytes | tuple[bytes, ...]) -> None:
+def _validate_payload_matches_actions(
+    actions: EngineKVConnectorActions,
+    payload: bytes | bytearray | memoryview | tuple[bytes, ...],
+) -> None:
     expected_mode = _payload_mode(actions)
     if isinstance(payload, tuple):
         if expected_mode != PayloadMode.SEGMENTED:
@@ -1580,19 +1658,25 @@ def _validate_payload_matches_actions(actions: EngineKVConnectorActions, payload
 
 def _verify_payload_checksum(
     actions: EngineKVConnectorActions,
-    payload: bytes | memoryview | tuple[bytes | memoryview, ...],
+    payload: bytes | bytearray | memoryview | tuple[bytes | memoryview, ...],
 ) -> None:
     expected = actions.reservation.payload_checksum
     if not expected:
         return
     digest = hashlib.sha256()
-    if isinstance(payload, (bytes, memoryview)):
+    if isinstance(payload, (bytes, bytearray, memoryview)):
         digest.update(payload)
     else:
         for segment in payload:
             digest.update(segment)
     if digest.hexdigest() != expected:
         raise ValueError("document KV payload checksum does not match handoff")
+
+
+def _payload_checksum_scan_count(actions: EngineKVConnectorActions) -> int:
+    """Return one only when checksum validation actually scans the payload."""
+
+    return 1 if actions.reservation.payload_checksum else 0
 
 
 def _payload_mode(actions: EngineKVConnectorActions) -> PayloadMode:
@@ -1764,19 +1848,97 @@ def _materialized_payload(
     load: DocumentKVLoadRequest,
     *,
     payload_reader: _PayloadReader,
-) -> bytes | memoryview | tuple[bytes, ...]:
+    segmented_load_strategy: str,
+) -> _MaterializedPayload:
+    payload_mode = _payload_mode(load.actions)
     if load.payload is not None:
-        return load.payload
+        if isinstance(load.payload, tuple) and segmented_load_strategy == "direct":
+            raise ValueError(
+                "direct segmented payload loading requires one flat external "
+                "payload buffer, not an inline segmented tuple"
+            )
+        selected_strategy = (
+            "inline_segment_merge"
+            if isinstance(load.payload, tuple)
+            else "inline_merged_payload"
+        )
+        return _MaterializedPayload(
+            payload=load.payload,
+            configured_segmented_strategy=segmented_load_strategy,
+            selected_strategy=selected_strategy,
+            payload_mode=payload_mode,
+            canonical_segmented_global_view=False,
+        )
+    canonical_issue = (
+        _canonical_segmented_global_view_issue(load.actions)
+        if payload_mode == PayloadMode.SEGMENTED
+        else None
+    )
+    canonical = payload_mode == PayloadMode.SEGMENTED and canonical_issue is None
+    if segmented_load_strategy == "direct" and payload_mode == PayloadMode.SEGMENTED and not canonical:
+        raise ValueError(
+            "direct segmented payload loading requires canonical Cachet copy "
+            f"metadata: {canonical_issue}"
+        )
     payload_uri = _required_string(load.payload_uri, field_name="payload_uri")
+    expected_bytes = _expected_payload_bytes(load.actions)
     payload = payload_reader(
         payload_uri,
-        expected_bytes=_expected_payload_bytes(load.actions),
+        expected_bytes=expected_bytes,
         actions=load.actions,
     )
+    if len(payload) != expected_bytes:
+        raise ValueError(
+            f"payload length {len(payload)} != expected {expected_bytes}"
+        )
+    direct_segmented_snapshot = (
+        payload_mode == PayloadMode.SEGMENTED
+        and segmented_load_strategy != "legacy"
+        and canonical
+    )
+    snapshot_copy_bytes = 0
+    if direct_segmented_snapshot and not isinstance(payload, bytes):
+        # A read-only mmap is still a live view of a mutable backing inode. Keep a
+        # single process-owned snapshot so checksum validation binds the exact
+        # bytes later copied to the device. Payload-cache hits already return an
+        # owned immutable ``bytes`` value and therefore need no additional copy.
+        payload = bytes(payload)
+        snapshot_copy_bytes = expected_bytes
     _verify_payload_checksum(load.actions, payload)
-    if _payload_mode(load.actions) == PayloadMode.MERGED:
-        return payload
-    return _segmented_payload_from_materialized_payload(load.actions, payload)
+    if payload_mode == PayloadMode.MERGED:
+        return _MaterializedPayload(
+            payload=payload,
+            configured_segmented_strategy=segmented_load_strategy,
+            selected_strategy="merged_global_view",
+            payload_mode=payload_mode,
+            canonical_segmented_global_view=False,
+            checksum_validation_count=_payload_checksum_scan_count(load.actions),
+        )
+
+    if direct_segmented_snapshot:
+        return _MaterializedPayload(
+            payload=payload,
+            configured_segmented_strategy=segmented_load_strategy,
+            selected_strategy="direct_global_snapshot",
+            payload_mode=payload_mode,
+            canonical_segmented_global_view=True,
+            checksum_validation_count=_payload_checksum_scan_count(load.actions),
+            snapshot_copy_bytes=snapshot_copy_bytes,
+        )
+
+    segmented = _segmented_payload_from_materialized_payload(load.actions, payload)
+    return _MaterializedPayload(
+        payload=segmented,
+        configured_segmented_strategy=segmented_load_strategy,
+        selected_strategy="legacy_segment_remerge",
+        payload_mode=payload_mode,
+        canonical_segmented_global_view=canonical,
+        legacy_fallback_reason=(
+            "configured_legacy" if segmented_load_strategy == "legacy" else canonical_issue
+        ),
+        checksum_validation_count=_payload_checksum_scan_count(load.actions),
+        reassembly_copy_bytes=_expected_payload_bytes(load.actions),
+    )
 
 
 def _payload_cache_identity(actions: EngineKVConnectorActions) -> str:
@@ -1851,6 +2013,7 @@ def _load_telemetry_record(
     layers_loaded: int,
     payload_cache_hits: int,
     payload_cache_misses: int,
+    payload_loading: Mapping[str, object] | None = None,
     error_type: str | None,
     error_message: str | None,
     decoded_runtime_bytes: int | None = None,
@@ -1942,6 +2105,7 @@ def _load_telemetry_record(
             payload_cache_enabled=payload_cache_enabled,
             page_cache_evicted=page_cache_evicted,
         ),
+        "payload_loading": dict(payload_loading or {}),
         "cache_state_attestation": _cache_state_attestation_record(
             load,
             cache_state_observation=cache_state_observation,
@@ -2228,7 +2392,7 @@ def _advise_sequential_readahead(mapped: "mmap.mmap") -> None:
 
 def _segmented_payload_from_materialized_payload(
     actions: EngineKVConnectorActions,
-    payload: bytes,
+    payload: bytes | memoryview,
 ) -> tuple[bytes, ...]:
     max_payload_index = max(copy.payload_index or 0 for copy in actions.copies)
     segments = [bytearray() for _ in range(max_payload_index + 1)]
@@ -2244,13 +2408,67 @@ def _segmented_payload_from_materialized_payload(
     return tuple(bytes(segment) for segment in segments)
 
 
+def _canonical_segmented_global_view_issue(
+    actions: EngineKVConnectorActions,
+) -> str | None:
+    """Return why segmented copy metadata cannot prove flat-file global order.
+
+    Cachet's own adapter builder emits exactly one payload entry per copy, in copy
+    order, and every entry starts at byte zero. Since connector validation already
+    proves that global byte spans are contiguous, those invariants prove that
+    concatenating the entries produces the global payload byte-for-byte. More
+    general third-party layouts keep using the strict legacy reconstruction path.
+    """
+
+    if _payload_mode(actions) != PayloadMode.SEGMENTED:
+        return "payload_mode_is_not_segmented"
+    global_byte_cursor = 0
+    for copy_index, copy in enumerate(actions.copies):
+        if copy.payload_index != copy_index:
+            return "payload_index_not_in_copy_order"
+        if copy.source_byte_start != 0:
+            return "source_byte_start_is_not_zero"
+        if copy.source_byte_end != copy.source_byte_length:
+            return "source_range_is_not_whole_segment"
+        if copy.global_byte_start != global_byte_cursor:
+            return "global_byte_start_is_not_cumulative"
+        expected_global_byte_end = global_byte_cursor + copy.source_byte_length
+        if copy.global_byte_end != expected_global_byte_end:
+            return "global_byte_end_is_not_cumulative"
+        global_byte_cursor = copy.global_byte_end
+    if global_byte_cursor != _expected_payload_bytes(actions):
+        return "global_byte_coverage_does_not_match_payload"
+    return None
+
+
 def _merged_payload(
     actions: EngineKVConnectorActions,
-    payload: bytes | bytearray | memoryview | tuple[bytes, ...],
-) -> bytes | bytearray | memoryview:
+    materialized: _MaterializedPayload,
+) -> _MaterializedPayload:
+    payload = materialized.payload
+    if materialized.selected_strategy in {
+        "direct_global_snapshot",
+        "merged_global_view",
+    }:
+        if not isinstance(payload, (bytes, bytearray, memoryview)):
+            raise TypeError("global payload view strategy requires one flat payload buffer")
+        # The URI read checked the exact expected length and materialization hashed
+        # the flat buffer once. Canonical segmented metadata proves that this flat
+        # order is also the connector's logical merged order, so validating here
+        # would only rescan the owned snapshot and defeat the single-hash
+        # optimization.
+        return materialized
+
     _validate_payload_matches_actions(actions, payload)
+    checksum_validation_count = (
+        materialized.checksum_validation_count
+        + _payload_checksum_scan_count(actions)
+    )
     if isinstance(payload, (bytes, bytearray, memoryview)):
-        return payload
+        return replace(
+            materialized,
+            checksum_validation_count=checksum_validation_count,
+        )
     buffer = bytearray(_expected_payload_bytes(actions))
     for copy in actions.copies:
         assert copy.payload_index is not None
@@ -2258,7 +2476,14 @@ def _merged_payload(
         buffer[copy.global_byte_start : copy.global_byte_end] = source[
             copy.source_byte_start : copy.source_byte_end
         ]
-    return buffer
+    return replace(
+        materialized,
+        payload=buffer,
+        checksum_validation_count=checksum_validation_count,
+        reassembly_copy_bytes=(
+            materialized.reassembly_copy_bytes + _expected_payload_bytes(actions)
+        ),
+    )
 
 
 def _block_spans_for_token_range(
@@ -2856,6 +3081,17 @@ def _env_int(name: str, default: int) -> int:
         return int(value.strip())
     except ValueError:
         return default
+
+
+def _segmented_load_strategy_from_env() -> str:
+    value = os.environ.get(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "auto")
+    strategy = value.strip().lower()
+    if strategy not in {"auto", "direct", "legacy"}:
+        raise ValueError(
+            f"{DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV} must be one of "
+            "'auto', 'direct', or 'legacy'"
+        )
+    return strategy
 
 
 # Concurrent-prefetch tuning. The chunk size balances syscall overhead against

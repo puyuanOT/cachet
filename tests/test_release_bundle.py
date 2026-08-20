@@ -4064,7 +4064,7 @@ def _actions_record(backend: ServingBackend, *, layout=None):
             bind=EngineKVBindAction(
                 request_id=request_id,
                 handle_uri=f"engine://{backend.value}/{request_id}",
-                cache_method="vanilla_prefill",
+                cache_method="full_prefix_prefill",
                 adapter_ids=("base",),
                 metadata={
                     "engine.backend": backend.value,
@@ -4072,7 +4072,7 @@ def _actions_record(backend: ServingBackend, *, layout=None):
                 },
             ),
             release=EngineKVReleaseAction(request_id=request_id),
-            reuse_plan=method_spec("vanilla_prefill").reuse_plan(),
+            reuse_plan=method_spec("full_prefix_prefill").reuse_plan(),
         )
     )
 

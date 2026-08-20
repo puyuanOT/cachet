@@ -36,8 +36,9 @@ from document_kv_cache.engine_probe import write_engine_adapter_handoff_bundle
 from document_kv_cache.kvpack import PackChunk
 from document_kv_cache.manifest import InMemoryManifestStore
 from document_kv_cache.materializer import KVMaterializer
-from document_kv_cache.methods import MethodRegistry, MethodSpec
-from document_kv_cache.models import DocumentKVRequest, KVCacheKey
+from document_kv_cache.methods import MethodRegistry, MethodSpec, method_spec
+from document_kv_cache.models import CacheGenerationMethod, DocumentKVRequest, KVCacheKey
+from document_kv_cache.rope import apply_rope_to_keys
 from document_kv_cache.storage import DiskRangeReader
 from document_kv_cache.workflow import (
     CacheBuildConfig,
@@ -61,6 +62,7 @@ from vllm_kv_injection.vllm_native_provider import (
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
+    DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV,
     DOCUMENT_KV_TELEMETRY_JSONL_CONFIG_KEY,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_RECORD_TYPE,
     DOCUMENT_KV_VLLM_LAYER_MAPPING_SCHEMA_VERSION,
@@ -120,6 +122,7 @@ def handle() -> KVCacheHandle:
         ),
         total_tokens=3,
         total_bytes=24,
+        cache_method="full_prefix_prefill",
     )
 
 
@@ -174,6 +177,7 @@ def extended_ready_request() -> EngineReadyRequest:
         ),
         total_tokens=5,
         total_bytes=40,
+        cache_method="full_prefix_prefill",
     )
     return EngineReadyRequest(
         handle=extended_handle,
@@ -224,6 +228,18 @@ def handoff_load_with_content_hashes(
 
 def extended_handoff_load() -> DocumentKVHandoffLoad:
     return _handoff_load_from_ready_request(extended_ready_request())
+
+
+def segmented_handoff_load() -> DocumentKVHandoffLoad:
+    request = segmented_ready_request()
+    adapter_request = build_engine_adapter_request(request, spec=vllm_adapter_spec())
+    record = engine_adapter_request_to_record(
+        adapter_request,
+        payload_uri="disk:/tmp/cachet-req-1.kv",
+    )
+    plan = build_engine_kv_injection_plan(record, expected_backend="vllm")
+    actions = build_engine_kv_connector_actions(plan, request.payload)
+    return DocumentKVHandoffLoad(actions=actions, payload=request.payload)
 
 
 def _handoff_load_from_ready_request(request: EngineReadyRequest) -> DocumentKVHandoffLoad:
@@ -439,6 +455,27 @@ def scheduler_output(block_ids: list[int], *, request_id: str = "req-1"):
         scheduled_new_reqs=[SimpleNamespace(req_id=request_id, block_ids=(block_ids,))],
         scheduled_cached_reqs=SimpleNamespace(req_ids=[], new_block_ids=[]),
     )
+
+
+def hydrate_two_token_load(
+    provider: DocumentKVNativeProvider,
+) -> tuple[DocumentKVConnector, object, object]:
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(request_id="req-1", num_tokens=5, kv_transfer_params={})
+    assert connector.get_num_new_matched_tokens(request, 0) == (2, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([4, 6]), 2)
+    meta = connector.build_connector_meta(scheduler_output([4, 6]))
+    layer_0 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    layer_1 = torch.zeros((8, 2, 2, 1, 2), dtype=torch.int8)
+    connector.register_kv_caches(
+        {
+            "model.layers.0.self_attn.attn": layer_0,
+            "model.layers.1.self_attn.attn": layer_1,
+        }
+    )
+    connector.bind_connector_metadata(meta)
+    connector.start_load_kv(SimpleNamespace())
+    return connector, layer_0, layer_1
 
 
 def cached_scheduler_output(block_ids: list[int]):
@@ -765,6 +802,122 @@ def test_native_provider_decodes_packed_payload_before_tensor_view_and_copy():
     )
 
 
+def test_vanilla_two_segment_handoff_applies_global_positions_and_preserves_values():
+    rope_theta = 5_000_000.0
+    pre_rope_layout = KVLayout(
+        model_id="tiny-pre-rope-model",
+        lora_id="base",
+        layout_version="pre-rope-v2",
+        dtype="float32",
+        num_layers=1,
+        block_size=2,
+        bytes_per_token=32,
+        num_query_heads=1,
+        num_kv_heads=1,
+        head_size=4,
+        kv_stride_bytes=16,
+        shares_kv_storage=False,
+        storage_layout="separate_key_value",
+        pre_rope=True,
+        rope_theta=rope_theta,
+        rope_rotary_dim=4,
+        key_position_encoding="pre_rope",
+    )
+    pre_rope_keys = torch.tensor(
+        [
+            [[1.0, 0.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0, 0.0]],
+            [[1.0, 0.0, 0.0, 0.0]],
+            [[0.0, 1.0, 0.0, 0.0]],
+        ],
+        dtype=torch.float32,
+    )
+    values = torch.tensor(
+        [
+            [[11.0, 12.0, 13.0, 14.0]],
+            [[21.0, 22.0, 23.0, 24.0]],
+            [[31.0, 32.0, 33.0, 34.0]],
+            [[41.0, 42.0, 43.0, 44.0]],
+        ],
+        dtype=torch.float32,
+    )
+    token_major = torch.stack((pre_rope_keys, values), dim=1).unsqueeze(1)
+    payload_bytes = bytes(
+        token_major.contiguous().view(torch.uint8).flatten().tolist()
+    )
+    pre_rope_handle = KVCacheHandle(
+        request_id="req-vanilla-v2",
+        handle_uri="document-kv://req-vanilla-v2",
+        layout=pre_rope_layout,
+        segments=(
+            KVSegment("doc-a", "document_chunk", "doc-a", 0, 2, 0, 64),
+            KVSegment("doc-b", "document_chunk", "doc-b", 2, 2, 64, 64),
+        ),
+        total_tokens=4,
+        total_bytes=len(payload_bytes),
+        cache_method="vanilla_prefill",
+        payload_checksum=hashlib.sha256(payload_bytes).hexdigest(),
+    )
+    ready = EngineReadyRequest(
+        handle=pre_rope_handle,
+        payload=payload_bytes,
+        estimated_gpu_bytes=len(payload_bytes),
+        reuse_plan=method_spec(CacheGenerationMethod.VANILLA_PREFILL).reuse_plan(),
+    )
+    load = _handoff_load_from_ready_request(ready)
+    assert len(load.actions.copies) == 2
+    assert [copy.token_start for copy in load.actions.copies] == [0, 2]
+    provider = DocumentKVNativeProvider(source=StaticHandoffSource(load))
+    connector = DocumentKVConnector(provider=provider)
+    request = SimpleNamespace(
+        request_id="req-vanilla-v2",
+        num_tokens=6,
+        kv_transfer_params={},
+    )
+
+    assert connector.get_num_new_matched_tokens(request, 0) == (4, False)
+    connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 4)
+    metadata = connector.build_connector_meta(
+        scheduler_output([5, 7], request_id="req-vanilla-v2")
+    )
+    destination = torch.zeros((8, 2, 2, 1, 4), dtype=torch.float32)
+    connector.register_kv_caches({"layer.0": destination})
+    connector.bind_connector_metadata(metadata)
+    connector.start_load_kv(SimpleNamespace())
+
+    loaded_keys = torch.stack(
+        (
+            destination[5, 0, 0],
+            destination[5, 0, 1],
+            destination[7, 0, 0],
+            destination[7, 0, 1],
+        )
+    )
+    loaded_values = torch.stack(
+        (
+            destination[5, 1, 0],
+            destination[5, 1, 1],
+            destination[7, 1, 0],
+            destination[7, 1, 1],
+        )
+    )
+    expected_keys = apply_rope_to_keys(
+        pre_rope_keys,
+        torch.arange(4),
+        rope_theta=rope_theta,
+        rotary_dim=4,
+    )
+    local_document_two_keys = apply_rope_to_keys(
+        pre_rope_keys[2:],
+        torch.arange(2),
+        rope_theta=rope_theta,
+        rotary_dim=4,
+    )
+    assert torch.allclose(loaded_keys, expected_keys)
+    assert not torch.allclose(loaded_keys[2:], local_document_two_keys)
+    assert torch.equal(loaded_values, values)
+
+
 def test_strict_packed_artifact_pipeline_decodes_stored_bytes_before_cpu_copy(
     tmp_path,
 ):
@@ -967,14 +1120,15 @@ def test_strict_raw_generation_rejects_distinct_persisted_and_runtime_dtypes(
                 ),
             ),
             generator=PackedPipelineGenerator(),
-            config=CacheBuildConfig(
-                model_id=layout().model_id,
-                lora_id=layout().lora_id,
-                prompt_template_version="v1",
-                dtype="uint8",
-                runtime_kv_dtype="int8",
-                layout_version=layout().layout_version,
-            ),
+                config=CacheBuildConfig(
+                    model_id=layout().model_id,
+                    lora_id=layout().lora_id,
+                    prompt_template_version="v1",
+                    dtype="uint8",
+                    runtime_kv_dtype="int8",
+                    layout_version=layout().layout_version,
+                    cache_method="full_prefix_prefill",
+                ),
             shard_uri=shard_path,
             align_bytes=1,
         )
@@ -1432,7 +1586,7 @@ def test_native_provider_writes_per_load_telemetry_jsonl(tmp_path):
     assert row["layout"]["dtype"] == "int8"
     assert row["payload"]["source"] == "inline"
     assert row["cache_state_attestation"] == {
-        "cache_method": "vanilla_prefill",
+        "cache_method": "full_prefix_prefill",
         "artifact_id": "",
         "source": "inline",
         "bytes_read": 0,
@@ -2313,6 +2467,328 @@ def test_segmented_handoff_bundle_feeds_lazy_vllm_native_provider_load_path(tmp_
     assert torch.equal(layer_1[4, :, 0], torch.tensor([[[11, 12]], [[13, 14]]], dtype=torch.int8))
     assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
     assert connector.get_kv_connector_stats()["document_kv_layers_loaded"] == 2
+
+
+@pytest.mark.parametrize("strategy", ("auto", "direct"))
+def test_canonical_segmented_uri_uses_direct_global_snapshot_and_hashes_once(
+    tmp_path,
+    monkeypatch,
+    strategy,
+):
+    monkeypatch.setenv(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, strategy)
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = segmented_handoff_load()
+    actions = replace(
+        inline.actions,
+        reservation=replace(
+            inline.actions.reservation,
+            payload_checksum=hashlib.sha256(payload()).hexdigest(),
+        ),
+    )
+    telemetry_path = tmp_path / "direct-telemetry.jsonl"
+    checksum_calls: list[int] = []
+    tensor_view_payload_types: list[type[object]] = []
+    original_verify = vllm_native_provider._verify_payload_checksum
+    original_payload_tensor_view = vllm_native_provider._payload_tensor_view
+
+    def count_checksum(action_record, raw_payload):
+        checksum_calls.append(len(raw_payload))
+        return original_verify(action_record, raw_payload)
+
+    def inspect_payload_tensor_view(raw_payload, load):
+        tensor_view_payload_types.append(type(raw_payload))
+        return original_payload_tensor_view(raw_payload, load)
+
+    monkeypatch.setattr(
+        vllm_native_provider,
+        "_verify_payload_checksum",
+        count_checksum,
+    )
+    monkeypatch.setattr(
+        vllm_native_provider,
+        "_payload_tensor_view",
+        inspect_payload_tensor_view,
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(
+            DocumentKVHandoffLoad(actions=actions, payload_uri=str(payload_path))
+        ),
+        telemetry_jsonl=str(telemetry_path),
+    )
+
+    _connector, layer_0, layer_1 = hydrate_two_token_load(provider)
+
+    assert checksum_calls == [len(payload())]
+    assert tensor_view_payload_types == [bytes]
+    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    row = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    assert row["payload_loading"] == {
+        "configured_segmented_strategy": strategy,
+        "selected_strategy": "direct_global_snapshot",
+        "payload_mode": "segmented",
+        "canonical_segmented_global_view": True,
+        "legacy_fallback_reason": None,
+        "checksum_validation_count": 1,
+        "snapshot_copy_bytes": len(payload()),
+        "reassembly_copy_bytes": 0,
+        "copy_metadata_retained": True,
+        "copy_count": 2,
+    }
+
+
+def test_direct_global_snapshot_reuses_owned_payload_cache_bytes():
+    cached_payload = payload()
+    inline = segmented_handoff_load()
+    actions = replace(
+        inline.actions,
+        reservation=replace(
+            inline.actions.reservation,
+            payload_checksum=hashlib.sha256(cached_payload).hexdigest(),
+        ),
+    )
+    load = SimpleNamespace(
+        actions=actions,
+        payload=None,
+        payload_uri="disk:/cache/req-1.kv",
+    )
+
+    def cached_reader(_payload_uri, *, expected_bytes, actions):
+        assert expected_bytes == len(cached_payload)
+        assert actions is load.actions
+        return cached_payload
+
+    materialized = vllm_native_provider._materialized_payload(
+        load,
+        payload_reader=cached_reader,
+        segmented_load_strategy="auto",
+    )
+
+    assert materialized.selected_strategy == "direct_global_snapshot"
+    assert materialized.payload is cached_payload
+    assert materialized.snapshot_copy_bytes == 0
+    assert materialized.checksum_validation_count == 1
+
+
+def test_segmented_uri_legacy_switch_preserves_two_copy_path(tmp_path, monkeypatch):
+    monkeypatch.setenv(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "legacy")
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = segmented_handoff_load()
+    actions = replace(
+        inline.actions,
+        reservation=replace(
+            inline.actions.reservation,
+            payload_checksum=hashlib.sha256(payload()).hexdigest(),
+        ),
+    )
+    telemetry_path = tmp_path / "legacy-telemetry.jsonl"
+    checksum_calls: list[int] = []
+    original_verify = vllm_native_provider._verify_payload_checksum
+
+    def count_checksum(action_record, raw_payload):
+        checksum_calls.append(sum(map(len, raw_payload)) if isinstance(raw_payload, tuple) else len(raw_payload))
+        return original_verify(action_record, raw_payload)
+
+    monkeypatch.setattr(
+        vllm_native_provider,
+        "_verify_payload_checksum",
+        count_checksum,
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(
+            DocumentKVHandoffLoad(actions=actions, payload_uri=str(payload_path))
+        ),
+        telemetry_jsonl=str(telemetry_path),
+    )
+
+    _connector, layer_0, layer_1 = hydrate_two_token_load(provider)
+
+    assert checksum_calls == [len(payload()), len(payload())]
+    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    row = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    assert row["payload_loading"] == {
+        "configured_segmented_strategy": "legacy",
+        "selected_strategy": "legacy_segment_remerge",
+        "payload_mode": "segmented",
+        "canonical_segmented_global_view": True,
+        "legacy_fallback_reason": "configured_legacy",
+        "checksum_validation_count": 2,
+        "snapshot_copy_bytes": 0,
+        "reassembly_copy_bytes": 2 * len(payload()),
+        "copy_metadata_retained": True,
+        "copy_count": 2,
+    }
+
+
+def test_noncanonical_segmented_uri_auto_uses_strict_legacy_fallback(
+    tmp_path,
+):
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = segmented_handoff_load()
+    noncanonical_actions = replace(
+        inline.actions,
+        copies=tuple(
+            replace(copy, source_byte_start=4)
+            for copy in inline.actions.copies
+        ),
+    )
+    telemetry_path = tmp_path / "fallback-telemetry.jsonl"
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(
+            DocumentKVHandoffLoad(
+                actions=noncanonical_actions,
+                payload_uri=str(payload_path),
+            )
+        ),
+        telemetry_jsonl=str(telemetry_path),
+    )
+
+    _connector, layer_0, layer_1 = hydrate_two_token_load(provider)
+
+    assert torch.equal(layer_0[4, :, 0], torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8))
+    assert torch.equal(layer_1[4, :, 1], torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8))
+    row = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    assert row["payload_loading"]["configured_segmented_strategy"] == "auto"
+    assert row["payload_loading"]["selected_strategy"] == "legacy_segment_remerge"
+    assert row["payload_loading"]["canonical_segmented_global_view"] is False
+    assert row["payload_loading"]["legacy_fallback_reason"] == "source_byte_start_is_not_zero"
+    assert row["payload_loading"]["reassembly_copy_bytes"] == 2 * len(payload())
+
+
+def test_direct_global_snapshot_is_stable_after_checksum_when_file_mutates(
+    tmp_path,
+    monkeypatch,
+):
+    payload_path = tmp_path / "req-1.kv"
+    original_payload = payload()
+    mutated_payload = bytes(reversed(original_payload))
+    payload_path.write_bytes(original_payload)
+    inline = segmented_handoff_load()
+    actions = replace(
+        inline.actions,
+        reservation=replace(
+            inline.actions.reservation,
+            payload_checksum=hashlib.sha256(original_payload).hexdigest(),
+        ),
+    )
+    telemetry_path = tmp_path / "snapshot-race-telemetry.jsonl"
+    checksum_calls = 0
+    original_verify = vllm_native_provider._verify_payload_checksum
+
+    def mutate_backing_file_after_checksum(action_record, raw_payload):
+        nonlocal checksum_calls
+        checksum_calls += 1
+        original_verify(action_record, raw_payload)
+        with payload_path.open("r+b") as payload_file:
+            assert payload_file.write(mutated_payload) == len(mutated_payload)
+            payload_file.flush()
+
+    monkeypatch.setattr(
+        vllm_native_provider,
+        "_verify_payload_checksum",
+        mutate_backing_file_after_checksum,
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(
+            DocumentKVHandoffLoad(actions=actions, payload_uri=str(payload_path))
+        ),
+        telemetry_jsonl=str(telemetry_path),
+    )
+
+    _connector, layer_0, layer_1 = hydrate_two_token_load(provider)
+
+    assert checksum_calls == 1
+    assert payload_path.read_bytes() == mutated_payload
+    assert torch.equal(
+        layer_0[4, :, 0],
+        torch.tensor([[[1, 2]], [[3, 4]]], dtype=torch.int8),
+    )
+    assert torch.equal(
+        layer_1[4, :, 1],
+        torch.tensor([[[15, 16]], [[17, 18]]], dtype=torch.int8),
+    )
+    row = json.loads(telemetry_path.read_text(encoding="utf-8"))
+    assert row["payload_loading"]["selected_strategy"] == (
+        "direct_global_snapshot"
+    )
+    assert row["payload_loading"]["checksum_validation_count"] == 1
+    assert row["payload_loading"]["snapshot_copy_bytes"] == len(original_payload)
+    assert row["payload_loading"]["reassembly_copy_bytes"] == 0
+
+
+def test_noncanonical_segmented_uri_direct_mode_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setenv(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "direct")
+    payload_path = tmp_path / "req-1.kv"
+    payload_path.write_bytes(payload())
+    inline = segmented_handoff_load()
+    noncanonical_actions = replace(
+        inline.actions,
+        copies=tuple(
+            replace(copy, payload_index=len(inline.actions.copies) - index - 1)
+            for index, copy in enumerate(inline.actions.copies)
+        ),
+    )
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(
+            DocumentKVHandoffLoad(
+                actions=noncanonical_actions,
+                payload_uri=str(payload_path),
+            )
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="direct segmented payload loading requires canonical Cachet copy metadata",
+    ):
+        hydrate_two_token_load(provider)
+
+
+def test_direct_mode_rejects_inline_segmented_tuple(monkeypatch):
+    monkeypatch.setenv(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "direct")
+    provider = DocumentKVNativeProvider(
+        source=StaticHandoffSource(segmented_handoff_load())
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="requires one flat external payload buffer",
+    ):
+        hydrate_two_token_load(provider)
+
+
+def test_direct_eligibility_explicitly_requires_cumulative_global_ranges():
+    actions = segmented_handoff_load().actions
+    first_copy = actions.copies[0]
+    noncumulative_actions = replace(
+        actions,
+        copies=(
+            replace(
+                first_copy,
+                global_byte_start=8,
+                global_byte_end=8 + first_copy.source_byte_length,
+            ),
+            actions.copies[1],
+        ),
+    )
+
+    assert (
+        vllm_native_provider._canonical_segmented_global_view_issue(
+            noncumulative_actions
+        )
+        == "global_byte_start_is_not_cumulative"
+    )
+
+
+def test_native_provider_rejects_unknown_segmented_load_strategy(monkeypatch):
+    monkeypatch.setenv(DOCUMENT_KV_SEGMENTED_LOAD_STRATEGY_ENV, "fast-ish")
+
+    with pytest.raises(ValueError, match="must be one of 'auto', 'direct', or 'legacy'"):
+        DocumentKVNativeProvider(source=StaticHandoffSource(handoff_load()))
 
 
 def test_lazy_segmented_payload_uri_respects_copy_payload_index(tmp_path):
