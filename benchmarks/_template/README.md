@@ -4,9 +4,10 @@ Use this template for new public benchmark result folders under
 `benchmarks/appendix/`. Folder names should be stable and descriptive, not date
 or run-id based.
 
-Do not infer or estimate missing values. Leave numeric cells blank when a
-metric has not been measured under the stated configuration. Use `N/A` only
-when a metric cannot apply. Blank cells and `N/A` are not zeros.
+Do not infer or estimate missing values. Use `N/A (reason)` when a metric is
+unsupported, deliberately unrun, or cannot apply. Reserve blank numeric cells
+for an active run that is expected to be filled before the report is finalized.
+Neither blank cells nor `N/A` are zeros.
 
 Label the report as **smoke**, **canary**, or **publication** according to
 [`docs/evidence-policy.md`](../../docs/evidence-policy.md). Private DBFS paths
@@ -31,9 +32,9 @@ lengths.
 | Hardware | e.g. AWS g6/L4, `g6.8xlarge` |
 | Request parallelism | e.g. 4 requests in flight, or `N/A` |
 | Output length for TTC | e.g. forced 256-token decode, or `N/A` |
-| Repeats | e.g. 64 repeats per prepared input, or `N/A` |
+| Repeats | e.g. 32 repeats per prepared input, or `N/A` |
 | Input context length | e.g. 8k, 16k, 32k, or measured prompt-token range |
-| Method | Baseline, vanilla KV, KV Packet, etc. |
+| Method | Baseline, Vanilla KV, KV Packet, etc. |
 | Method ID / version | Stable `MethodSpec.method_id` and artifact-semantics version |
 | Artifact ID | SHA-256 `ArtifactIdentity.artifact_id`, or `N/A` for baseline |
 | Document KV precision | bf16, Q8 / `fp8_e5m2`, packed Q4, or `N/A` |
@@ -63,9 +64,9 @@ Place the detailed caption below the table. The caption should define each
 method label, state the request concurrency used during measurement, give the
 successful request count behind percentiles, and explain whether P95 is
 publication-grade. P95 rows intended for publication should use enough repeats
-per prepared input for stable percentiles at the stated concurrency (the current
-main table uses 64), and the caption should state the resulting successful
-request-level measurement count. The caption must
+per prepared input for stable percentiles at the stated concurrency (the
+current main table uses 32 over eight inputs), and the caption should state the
+resulting successful request-level measurement count. The caption must
 also say whether TTFT includes loading external document KV from storage into
 GPU memory, or whether the measured requests used already-warm/prewarmed
 prefix-cache blocks.
@@ -88,8 +89,9 @@ table.
 ## Benchmark Dataset Score Table
 
 Describe the dataset scope before the table. For main benchmark score tables,
-evaluate all selected samples of each dataset and leave score cells blank until
-those full-dataset runs are complete. For prepared smoke suites, use a
+evaluate all selected samples of each dataset and mark score cells
+`N/A (full dataset not run)` until those runs are complete. For prepared smoke
+suites, use a
 separate appendix table, state the number of unique examples per dataset and
 repeats per example, and do not label answer-found containment as official
 dataset accuracy.

@@ -5,6 +5,11 @@ Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, shared GPU prefix
 references, cold disk-to-GPU document-KV hydrate, `g6.8xlarge` (L4), 4 parallel
 requests, N x 2k distinct documents per request, and forced 256-token decode.
 
+The current Q4/Q8 Baseline-versus-Vanilla and ablation measurements are backed
+by [compact sanitized evidence](../appendix/main-vanilla-descriptive-evidence/).
+They are descriptive/nonpublication-qualified: the isolated Baseline raw
+record structurally fails the generic cache-arm/resource-schema canary gate.
+
 Sanitized BF16 Vanilla three-arm canaries for baseline, an exact full-prefix
 control, and independent pre-RoPE document segments live in
 [`../appendix/representative-bf16-qwen3-4b-canaries/`](../appendix/representative-bf16-qwen3-4b-canaries/).

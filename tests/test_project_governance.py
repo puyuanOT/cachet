@@ -1053,8 +1053,10 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
     assert "validated 37 artifacts" in compact_matrix
     assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_matrix
     assert "`dependency_freshness` evidence" in compact_matrix
-    assert "A refreshed final-wheel strict bundle" in compact_matrix
-    assert "complete main-protocol measurements remain pending" in compact_matrix
+    assert "A refreshed complete strict release bundle built from the final wheel" in (
+        compact_matrix
+    )
+    assert "canonical publication-qualified rerun remain pending" in compact_matrix
     assert "Traceability-only PR evidence added after that snapshot" in compact_matrix
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
     assert "`compatibility_databricks_run_status` sidecar" in compact_matrix
@@ -1236,7 +1238,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "[KV&nbsp;Packet](https://arxiv.org/abs/2604.13226)" in root_readme
     assert "not implemented yet" in compact_root_readme
     assert "Q4 packed document KV" in root_readme
-    assert "Implementation pending" in root_readme
+    assert "Not implemented" in root_readme
     assert "Forced 256-token decode" in root_readme
     assert "4 requests in flight" in root_readme
     assert "answer-found rate" in compact_root_readme
@@ -1245,12 +1247,15 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "RULER" in root_readme
     assert "LongBench v2" in benchmark_template_readme
     assert "RULER" in benchmark_template_readme
-    assert "LongBench v2 and RULER" in matrix_text
+    assert "`N/A (reason)`" in benchmark_template_readme
+    assert "`N/A (full dataset not run)`" in benchmark_template_readme
+    assert "LongBench v2" in matrix_text
+    assert "RULER" in matrix_text
     assert "P50 tok/s" in root_readme
     assert "Max Serving Concurrency" in root_readme
     assert "Peak GPU memory" in root_readme
     assert "`request_parallelism=4`" in root_readme
-    assert "64 repeats per prepared input" in compact_root_readme
+    assert "32 repeats per prepared input" in compact_root_readme
     assert "256 successful request-level measurements" in compact_root_readme
     assert "Accounted GPU memory" not in root_readme
     assert "P50 TTFT (s)" not in root_readme
@@ -1308,40 +1313,28 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "[`benchmarks/README.md`](../../benchmarks/)" in maintainer_reference
     assert "`../benchmarks/README.md`" in docs_readme
     assert "current Qwen3-4B 4-bit-weight + Q8-document-KV protocol" in compact_matrix_text
-    assert (
-        "Main-protocol Vanilla performance and quality measurements are pending"
-        in compact_maintainer_reference
+    assert "Current Q4-weight/Q8-KV main latency and ablation tables are populated" in (
+        compact_maintainer_reference
     )
     assert "both 8k gates fail" in compact_maintainer_reference
     assert (
-        "Those results do not populate the Q4-weight/Q8-document-KV main tables"
+        "isolated Baseline raw record structurally fails the generic canary gate"
         in compact_maintainer_reference
     )
     assert (
         "Earlier post-RoPE V1 benchmark records are superseded"
         in compact_maintainer_reference
     )
-    assert (
-        "Current Vanilla evidence is limited to the non-publication-qualified "
-        "BF16 engineering appendix"
-        in compact_matrix_text
-    )
-    assert (
-        "the Q4-weight/Q8-document-KV main protocol remains unmeasured"
-        in compact_matrix_text
-    )
-    assert (
-        "Every numeric cell in its main latency/resource and dataset-score "
-        "tables is pending"
-        in compact_matrix_text
-    )
+    assert "compact sanitized descriptive evidence" in compact_matrix_text
+    assert "two examples per dataset, 32 repeats per example" in compact_matrix_text
+    assert "Full-dataset score cells are explicit `N/A`" in compact_matrix_text
     assert (
         "Historical QA benchmark run `872615985402004`"
         in compact_matrix_text
     )
     assert (
-        "A refreshed final-wheel strict bundle and complete main-protocol "
-        "measurements remain pending"
+        "A refreshed complete strict release bundle built from the final "
+        "wheel and a canonical publication-qualified rerun remain pending"
         in compact_matrix_text
     )
     assert (
@@ -1364,7 +1357,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "does not bind the current source, wheel, or Vanilla main protocol"
         in compact_maintainer_reference
     )
-    assert "main cold-hydrate latency table (`benchmarks/README.md`) is populated" not in matrix_text
+    assert "main cold-hydrate tables are defined but numerically blank" not in matrix_text
     assert "Current QA benchmark run `872615985402004`" not in matrix_text
     assert "strict-bundle snapshot, built after PR #513 with the current wheel" not in maintainer_reference
     assert "strict-bundle snapshot was built after PR #513 with the current wheel" not in matrix_text
@@ -1500,6 +1493,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "appendix/README.md",
         "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/README.md",
         "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/summary.json",
+        "appendix/main-vanilla-descriptive-evidence/README.md",
+        "appendix/main-vanilla-descriptive-evidence/evidence.json",
         "appendix/representative-bf16-qwen3-4b-canaries/README.md",
         "appendix/representative-bf16-qwen3-4b-canaries/g5-vllm-8k-64-three-arm-canary-v2.json",
         "appendix/representative-bf16-qwen3-4b-canaries/g6-sglang-4k-32-paired-smoke-evidence-v2.json",

@@ -1,8 +1,8 @@
 # SGLang Benchmark Index
 
 The current main latency/resource table is fixed to vLLM. SGLang appears only
-in the serving-platform ablation in the [benchmark root](../), with blank cells
-until a matching Q4-weight + Q8-document-KV run exists.
+in the serving-platform ablation in the [benchmark root](../), where it is
+explicitly `N/A` because the Q8 pre-RoPE serving path is not implemented.
 
 A sanitized g6/L4 BF16 native-handoff smoke is committed under
 [`../appendix/representative-bf16-qwen3-4b-canaries/`](../appendix/representative-bf16-qwen3-4b-canaries/).

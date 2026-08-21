@@ -11,8 +11,8 @@ attention that was absent during independent generation.
 These records are deliberately **non-publication-qualified**. They use BF16
 model weights, BF16 runtime KV, BF16 document KV, two examples, three repeats,
 and request parallelism 1. They therefore do not populate or revise any value
-in the [main Q4-weight/Q8-document-KV tables](../../README.md), whose numeric
-cells remain blank until that exact protocol is run.
+in the [main Q4-weight/Q8-document-KV tables](../../README.md). Those tables now
+use a separate current-protocol descriptive evidence record.
 
 ## Bound Identity
 

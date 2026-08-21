@@ -17,19 +17,25 @@ native GPU KV blocks.
 | What is the current target? | Qwen3 4B Instruct on AWS g6/L4 Databricks, `g6.8xlarge` |
 | Where are the latest results? | [`benchmarks/README.md`](../../benchmarks/) |
 
-Main-protocol Vanilla performance and quality measurements are pending. The
-[engineering appendix](../../benchmarks/appendix/representative-bf16-qwen3-4b-canaries/)
-contains non-publication-qualified BF16 canaries: the 16k canary quality gate
-passes, both 8k gates fail, and a matched eight-job cold-load ablation records
-60.22%, 61.70%, and 61.81% lower P50 TTFT for the direct loader at 8k, 16k,
-and 32k. The 32k pair uses `gpu_memory_utilization=0.70`, while 8k and 16k use
-`0.85`; it is matched within size but not an identical-engine-memory cross-size
-scaling point. Those results do not populate the Q4-weight/Q8-document-KV main
-tables. Earlier post-RoPE V1 benchmark records are superseded for current
-performance and quality claims. Memory/Disk/Unity Catalog storage-reader
-evidence, provider-backed vLLM/SGLang probes, and SGLang handoff records remain
-separate integration evidence; the current SGLang BF16 smoke is not a speedup
-result.
+Current Q4-weight/Q8-KV main latency and ablation tables are populated from
+[compact sanitized evidence](../../benchmarks/appendix/main-vanilla-descriptive-evidence/).
+They use two examples per dataset, 32 repeats per example, 256 requests per
+isolated job, and request parallelism 4. The results are descriptive and
+nonpublication-qualified: the isolated Baseline raw record structurally fails
+the generic canary gate because it has no cache arm and run-level resource
+telemetry is outside the per-arm resource schema. Full-dataset scores remain
+explicitly `N/A`; a separate five-example-per-dataset matched score diagnostic
+is reported without a full-dataset or superiority claim.
+
+The [BF16 engineering appendix](../../benchmarks/appendix/representative-bf16-qwen3-4b-canaries/)
+remains separate: its 16k canary quality gate passes, both 8k gates fail, and a
+matched eight-job cold-load ablation records 60.22%, 61.70%, and 61.81% lower
+P50 TTFT for the direct loader at 8k, 16k, and 32k. The 32k pair uses
+`gpu_memory_utilization=0.70`, while 8k and 16k use `0.85`; it is matched within
+size but not an identical-engine-memory cross-size scaling point. Earlier
+post-RoPE V1 benchmark records are superseded for current performance and
+quality claims. Provider-backed probes and SGLang handoff records remain
+separate integration evidence; Q8 pre-RoPE SGLang serving is not implemented.
 
 Most readers should use these entry points first:
 
@@ -2110,7 +2116,8 @@ users keep inline type annotations after installation.
 ## Remaining V1 Work
 
 - Build a refreshed final-wheel strict release bundle from the target AWS
-  g6/L4/UC evidence set after the pending main-protocol Vanilla run. The
+  g6/L4/UC evidence set after reviewing the current descriptive Vanilla run and
+  completing a canonical publication-qualified rerun. The
   native engine block managers remain owned by vLLM and SGLang rather than
   Cachet. The last validated strict-bundle snapshot is historical: it was built
   after PR #513 with its then-current wheel and validated 37 artifacts,

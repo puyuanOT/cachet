@@ -53,6 +53,21 @@ significance, superiority, full-dataset accuracy, or publication claims from
 this canary. Only HotpotQA's scorer is publication-approved; the sample size is
 still far too small for a publication claim.
 
+## Current matched diagnostic
+
+The two isolated jobs completed all 20 requests per arm at request parallelism
+4. The results are descriptive/nonpublication evidence and are not substituted
+into the full-dataset score table.
+
+| Method | Biography answer-found | HotpotQA answer F1 | MusiQue answer-found | NIAH exact match |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 1.000000 | 0.108975 | 0.200000 | 0.000000 |
+| Vanilla&nbsp;KV | 1.000000 | 0.040827 | 0.000000 | 0.000000 |
+
+The [sanitized evidence record](../main-vanilla-descriptive-evidence/evidence.json)
+contains the exact unrounded means, matched suite and manifest identities,
+source revision, frozen scorer wheel identity, and closed validation proof.
+
 ## Isolated jobs
 
 Run exactly two fresh single-node `g6.8xlarge` jobs. Both use the same 20
