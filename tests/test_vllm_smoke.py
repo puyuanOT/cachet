@@ -1,3 +1,4 @@
+from dataclasses import fields
 from pathlib import Path
 import gc
 import hashlib
@@ -105,6 +106,15 @@ from vllm_kv_injection.vllm_transfer_config import document_kv_transfer_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODEL_REVISION = "a" * 40
 REPRESENTATIVE_WHEEL_SHA256 = "f" * 64
+
+
+def test_payload_cache_option_is_appended_to_preserve_positional_config_api():
+    field_names = [field.name for field in fields(VLLMSmokeBenchmarkConfig)]
+
+    assert field_names[-1] == "prewarm_payload_cache"
+    assert field_names.index("cache_runtime_prompt") == (
+        field_names.index("prewarm_cache_prefix") + 1
+    )
 
 
 @pytest.fixture(autouse=True)

@@ -1,10 +1,11 @@
 """Content-addressed inputs for the published main latency protocol.
 
-This module intentionally loads a tokenizer, never a causal model.  It selects one
-canonical example per V1 dataset, losslessly tiles the source document context into
-the protocol's document count, and adds deterministic irrelevant padding.  Prepared
-Vanilla segments are accepted only when their independently tokenized IDs compose to
-the exact leading cache-prefix IDs of the logical prompt.
+This module intentionally loads a tokenizer, never a causal model.  It selects a
+fixed number of canonical examples per V1 dataset, losslessly tiles each source
+document context into the protocol's document count, and adds deterministic
+irrelevant padding.  Prepared Vanilla segments are accepted only when their
+independently tokenized IDs compose to the exact leading cache-prefix IDs of the
+logical prompt.
 """
 
 from __future__ import annotations
@@ -35,10 +36,11 @@ from document_kv_cache.storage import local_path
 
 
 MAIN_LATENCY_INPUT_RECORD_TYPE = "cachet.main_latency_inputs"
-MAIN_LATENCY_INPUT_SCHEMA_VERSION = 1
+MAIN_LATENCY_INPUT_SCHEMA_VERSION = 2
 MAIN_LATENCY_TOKENIZER_ID = "Qwen/Qwen3-4B-Instruct-2507"
 MAIN_LATENCY_TOKENIZER_REVISION = "cdbee75f17c01a7cc42f958dc650907174af0554"
 MAIN_LATENCY_ADD_SPECIAL_TOKENS = False
+MAIN_LATENCY_EXAMPLES_PER_DATASET = 2
 MAIN_LATENCY_TARGET_SEGMENT_COUNTS: Mapping[int, int] = {
     8192: 4,
     16384: 8,
@@ -48,17 +50,16 @@ MAIN_LATENCY_PROVENANCE_FILENAME = "main-latency-inputs.provenance.json"
 
 _CANONICAL_SOURCE_FIELDS = frozenset(
     {
-        "arm_kv_transfer_params",
         "dataset",
         "documents",
         "example_id",
         "expected_answer",
-        "kv_transfer_params",
         "metadata",
         "query",
         "references",
     }
 )
+_TRANSFER_FIELDS = frozenset({"arm_kv_transfer_params", "kv_transfer_params"})
 _PADDING_UNITS = (" padding", " x", "x", "0", ".")
 _SOURCE_CHUNK_ID = "source-context"
 _PADDING_CHUNK_ID = "length-padding"
@@ -80,15 +81,60 @@ _SOURCE_PROVENANCE_FIELDS = frozenset(
     {
         "byte_count",
         "dataset",
+        "jsonl_sha256",
+        "record_count",
+        "selected_records",
+        "selected_records_sha256",
+    }
+)
+_SOURCE_SELECTION_PROVENANCE_FIELDS = frozenset(
+    {
         "example_identity_sha256",
         "expected_answer_sha256",
-        "jsonl_sha256",
         "query_sha256",
-        "record_count",
         "references_sha256",
         "selected_record_sha256",
         "selection_record_index",
         "source_document_context_sha256",
+    }
+)
+_OUTPUT_PROVENANCE_FIELDS = frozenset(
+    {
+        "byte_count",
+        "dataset",
+        "input_tokens_target",
+        "jsonl_sha256",
+        "record_count",
+        "records",
+        "records_sha256",
+        "relative_path",
+        "segment_count",
+    }
+)
+_PREPARED_RECORD_PROVENANCE_FIELDS = frozenset(
+    {
+        "byte_count",
+        "cache_prefix_sha256",
+        "cache_prefix_token_count",
+        "cache_prefix_token_ids_sha256",
+        "cache_suffix_sha256",
+        "dataset",
+        "example_identity_sha256",
+        "expected_answer_sha256",
+        "input_tokens_target",
+        "jsonl_row_sha256",
+        "logical_prompt_sha256",
+        "logical_prompt_token_ids_sha256",
+        "prepared_document_context_sha256",
+        "prepared_record_sha256",
+        "query_sha256",
+        "record_index",
+        "references_sha256",
+        "segment_count",
+        "segments",
+        "segments_sha256",
+        "source_document_context_sha256",
+        "source_record_sha256",
     }
 )
 
@@ -149,18 +195,23 @@ class _SegmentPadding:
 
 
 @dataclass(frozen=True, slots=True)
-class _PreparedOutput:
-    dataset: str
-    target: int
-    segment_count: int
-    relative_path: str
-    output_bytes: bytes
+class _PreparedRecord:
     record: Mapping[str, Any]
     example: BenchmarkExample
     source_row: _SourceRow
     source_context: str
     source_pieces: tuple[str, ...]
     paddings: tuple[_SegmentPadding, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedOutput:
+    dataset: str
+    target: int
+    segment_count: int
+    relative_path: str
+    output_bytes: bytes
+    records: tuple[_PreparedRecord, ...]
 
 
 class _CandidateCannotSatisfyProtocol(ValueError):
@@ -172,27 +223,31 @@ def prepare_main_latency_inputs(
     output_dir: str | Path,
     *,
     tokenizer: MainLatencyTokenizer | None = None,
+    examples_per_dataset: int = MAIN_LATENCY_EXAMPLES_PER_DATASET,
 ) -> PreparedMainLatencyInputs:
-    """Prepare all 12 canonical main-latency inputs and closed provenance.
+    """Prepare all 12 canonical main-latency JSONL files and closed provenance.
 
     ``source_paths`` must contain canonical V1 JSONL for Biography, HotpotQA,
-    MusiQue, and NIAH.  One stable example identity per dataset is reused across
-    all three context targets.  Existing identical artifacts are accepted as a
-    deterministic recheck; conflicting bytes fail rather than being overwritten.
+    MusiQue, and NIAH.  The requested number of stable example identities per
+    dataset is reused across all three context targets.  Existing identical
+    artifacts are accepted as a deterministic recheck; conflicting bytes fail
+    rather than being overwritten.
     """
 
     _require_default_prompt_contract()
+    selected_count = _validated_examples_per_dataset(examples_per_dataset)
     sources = _load_all_sources(source_paths)
     destination = local_path(str(output_dir))
     resolved_tokenizer = tokenizer or load_main_latency_tokenizer()
     prepared_outputs: list[_PreparedOutput] = []
-    selected_rows: dict[str, _SourceRow] = {}
+    selected_rows: dict[str, tuple[_SourceRow, ...]] = {}
     for dataset in SUPPORTED_V1_DATASETS:
-        row, outputs = _select_and_prepare_dataset(
+        rows, outputs = _select_and_prepare_dataset(
             sources[dataset],
             tokenizer=resolved_tokenizer,
+            examples_per_dataset=selected_count,
         )
-        selected_rows[dataset] = row
+        selected_rows[dataset] = rows
         prepared_outputs.extend(outputs)
     ordered_outputs = tuple(
         sorted(
@@ -205,6 +260,7 @@ def prepare_main_latency_inputs(
         selected_rows=selected_rows,
         outputs=ordered_outputs,
         tokenizer=resolved_tokenizer,
+        examples_per_dataset=selected_count,
     )
     provenance_bytes = _canonical_json_bytes(provenance, pretty=True)
 
@@ -233,6 +289,7 @@ def prepare_main_latency_inputs(
         destination,
         source_paths=source_paths,
         tokenizer=resolved_tokenizer,
+        examples_per_dataset=selected_count,
     )
     expected_bundle = cast(str, provenance["bundle_sha256"])
     if verified.bundle_sha256 != expected_bundle:
@@ -245,6 +302,7 @@ def verify_main_latency_inputs(
     *,
     source_paths: Mapping[str, str | Path] | None = None,
     tokenizer: MainLatencyTokenizer | None = None,
+    examples_per_dataset: int = MAIN_LATENCY_EXAMPLES_PER_DATASET,
 ) -> PreparedMainLatencyInputs:
     """Verify canonical bytes, closed provenance, and every token invariant.
 
@@ -254,6 +312,7 @@ def verify_main_latency_inputs(
     """
 
     _require_default_prompt_contract()
+    selected_count = _validated_examples_per_dataset(examples_per_dataset)
     destination = local_path(str(output_dir))
     provenance_path = destination / MAIN_LATENCY_PROVENANCE_FILENAME
     provenance_bytes = provenance_path.read_bytes()
@@ -262,9 +321,15 @@ def verify_main_latency_inputs(
         raise ValueError("provenance JSON is not in canonical encoding")
     _verify_closed_provenance(provenance)
     resolved_tokenizer = tokenizer or load_main_latency_tokenizer()
-    _verify_protocol_record(provenance)
-    source_records = _source_records_from_provenance(provenance)
-    output_records = _output_records_from_provenance(provenance)
+    _verify_protocol_record(provenance, examples_per_dataset=selected_count)
+    source_records = _source_records_from_provenance(
+        provenance,
+        examples_per_dataset=selected_count,
+    )
+    output_records = _output_records_from_provenance(
+        provenance,
+        examples_per_dataset=selected_count,
+    )
 
     verified_files: list[MainLatencyInputFile] = []
     rebuilt_output_records: list[Mapping[str, Any]] = []
@@ -284,18 +349,47 @@ def verify_main_latency_inputs(
             raise ValueError(
                 f"prepared output byte count mismatch for {dataset}/{target}"
             )
-        record = _single_canonical_jsonl_record(output_bytes, label=expected_path)
-        example = _canonical_example(record, dataset=dataset, record_index=1)
-        rebuilt = _describe_prepared_record(
-            record,
-            example=example,
+        records = _canonical_jsonl_records(output_bytes, label=expected_path)
+        if len(records) != selected_count:
+            raise ValueError(
+                f"{expected_path} must contain exactly {selected_count} records"
+            )
+        described_records: list[Mapping[str, Any]] = []
+        for record_index, record in enumerate(records, start=1):
+            example = _canonical_example(
+                record,
+                dataset=dataset,
+                record_index=record_index,
+            )
+            expected_records = _mapping_sequence(
+                expected.get("records"),
+                label=f"outputs[{dataset}/{target}].records",
+            )
+            source_record_sha256 = _required_sha256(
+                expected_records[record_index - 1],
+                "source_record_sha256",
+            )
+            row_bytes = _canonical_json_bytes(record, pretty=False) + b"\n"
+            described_records.append(
+                _describe_prepared_record(
+                    record,
+                    example=example,
+                    dataset=dataset,
+                    target=target,
+                    segment_count=segment_count,
+                    output_bytes=row_bytes,
+                    source_record_sha256=source_record_sha256,
+                    record_index=record_index,
+                    tokenizer=resolved_tokenizer,
+                )
+            )
+        rebuilt = _describe_prepared_output(
             dataset=dataset,
             target=target,
             segment_count=segment_count,
             relative_path=expected_path,
             output_bytes=output_bytes,
-            source_record_sha256=_required_sha256(expected, "source_record_sha256"),
-            tokenizer=resolved_tokenizer,
+            records=described_records,
         )
         if rebuilt != expected:
             raise ValueError(
@@ -339,6 +433,7 @@ def verify_main_latency_inputs(
             sources,
             source_records=source_records,
             output_records=output_records,
+            examples_per_dataset=selected_count,
         )
 
     return PreparedMainLatencyInputs(
@@ -392,6 +487,15 @@ def main_latency_inputs_main(argv: Sequence[str] | None = None) -> int:
         help="Repeat for biography, hotpotqa, musique, and niah canonical JSONL.",
     )
     prepare_parser.add_argument("--output-dir", required=True)
+    prepare_parser.add_argument(
+        "--examples-per-dataset",
+        type=int,
+        default=MAIN_LATENCY_EXAMPLES_PER_DATASET,
+        help=(
+            "Number of deterministic examples in each dataset JSONL "
+            f"(default: {MAIN_LATENCY_EXAMPLES_PER_DATASET})."
+        ),
+    )
     verify_parser = subparsers.add_parser("verify")
     verify_parser.add_argument("--output-dir", required=True)
     verify_parser.add_argument(
@@ -400,18 +504,29 @@ def main_latency_inputs_main(argv: Sequence[str] | None = None) -> int:
         metavar="DATASET=PATH",
         help="Optional; when used, repeat for all four canonical source JSONLs.",
     )
+    verify_parser.add_argument(
+        "--examples-per-dataset",
+        type=int,
+        default=MAIN_LATENCY_EXAMPLES_PER_DATASET,
+        help=(
+            "Expected number of examples in each dataset JSONL "
+            f"(default: {MAIN_LATENCY_EXAMPLES_PER_DATASET})."
+        ),
+    )
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
             result = prepare_main_latency_inputs(
                 _parse_source_specs(args.source),
                 args.output_dir,
+                examples_per_dataset=args.examples_per_dataset,
             )
         else:
             sources = None if not args.source else _parse_source_specs(args.source)
             result = verify_main_latency_inputs(
                 args.output_dir,
                 source_paths=sources,
+                examples_per_dataset=args.examples_per_dataset,
             )
     except Exception as exc:
         print(
@@ -429,6 +544,7 @@ def main_latency_inputs_main(argv: Sequence[str] | None = None) -> int:
         json.dumps(
             {
                 "bundle_sha256": result.bundle_sha256,
+                "examples_per_dataset": args.examples_per_dataset,
                 "files": [
                     {
                         "dataset": item.dataset,
@@ -458,6 +574,12 @@ def _require_default_prompt_contract() -> None:
             "main-latency input preparation requires the default start "
             "system-prompt position"
         )
+
+
+def _validated_examples_per_dataset(value: Any) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("examples_per_dataset must be a positive integer")
+    return value
 
 
 def _load_all_sources(
@@ -505,6 +627,12 @@ def _load_source_file(dataset: str, path: str | Path) -> _SourceFile:
             Mapping[str, Any],
             json.loads(json.dumps(dict(value), ensure_ascii=False)),
         )
+        transfer_fields = set(record).intersection(_TRANSFER_FIELDS)
+        if transfer_fields:
+            raise ValueError(
+                f"{dataset} source JSONL line {line_number} contains KV transfer "
+                f"metadata: {sorted(transfer_fields)}"
+            )
         unknown = set(record).difference(_CANONICAL_SOURCE_FIELDS)
         if unknown:
             raise ValueError(
@@ -569,42 +697,70 @@ def _select_and_prepare_dataset(
     source: _SourceFile,
     *,
     tokenizer: MainLatencyTokenizer,
-) -> tuple[_SourceRow, tuple[_PreparedOutput, ...]]:
+    examples_per_dataset: int,
+) -> tuple[tuple[_SourceRow, ...], tuple[_PreparedOutput, ...]]:
     ordered = sorted(
         source.rows,
         key=lambda row: (row.example.example_id, row.record_sha256),
     )
     failures: list[str] = []
+    selected_rows: list[_SourceRow] = []
+    prepared_by_target: dict[int, list[_PreparedRecord]] = {
+        target: [] for target in MAIN_LATENCY_TARGET_SEGMENT_COUNTS
+    }
     for row in ordered:
-        outputs: list[_PreparedOutput] = []
+        prepared_records: dict[int, _PreparedRecord] = {}
         try:
             for target, segment_count in MAIN_LATENCY_TARGET_SEGMENT_COUNTS.items():
-                outputs.append(
-                    _prepare_output(
-                        row,
-                        target=target,
-                        segment_count=segment_count,
-                        tokenizer=tokenizer,
-                    )
+                prepared_records[target] = _prepare_record(
+                    row,
+                    target=target,
+                    segment_count=segment_count,
+                    tokenizer=tokenizer,
                 )
         except _CandidateCannotSatisfyProtocol as exc:
             failures.append(str(exc))
             continue
-        return row, tuple(outputs)
+        selected_rows.append(row)
+        for target, prepared in prepared_records.items():
+            prepared_by_target[target].append(prepared)
+        if len(selected_rows) == examples_per_dataset:
+            break
+    if len(selected_rows) == examples_per_dataset:
+        outputs: list[_PreparedOutput] = []
+        for target, segment_count in MAIN_LATENCY_TARGET_SEGMENT_COUNTS.items():
+            records = tuple(prepared_by_target[target])
+            relative_path = _relative_output_path(source.dataset, target)
+            output_bytes = b"".join(
+                _canonical_json_bytes(prepared.record, pretty=False) + b"\n"
+                for prepared in records
+            )
+            outputs.append(
+                _PreparedOutput(
+                    dataset=source.dataset,
+                    target=target,
+                    segment_count=segment_count,
+                    relative_path=relative_path,
+                    output_bytes=output_bytes,
+                    records=records,
+                )
+            )
+        return tuple(selected_rows), tuple(outputs)
     detail = failures[0] if failures else "no candidate records"
     raise ValueError(
-        f"{source.dataset} source cannot produce one example for every main "
-        f"latency target: {detail}"
+        f"{source.dataset} source can produce only {len(selected_rows)} of "
+        f"{examples_per_dataset} required examples for every main latency target: "
+        f"{detail}"
     )
 
 
-def _prepare_output(
+def _prepare_record(
     row: _SourceRow,
     *,
     target: int,
     segment_count: int,
     tokenizer: MainLatencyTokenizer,
-) -> _PreparedOutput:
+) -> _PreparedRecord:
     source_context = build_prompt_parts(row.example).document_context
     source_pieces = _split_text_exactly(source_context, segment_count)
     record = _derived_record(row, source_pieces=source_pieces)
@@ -661,14 +817,7 @@ def _prepare_output(
         Mapping[str, Any],
         json.loads(json.dumps(mutable_record, ensure_ascii=False)),
     )
-    output_bytes = _canonical_json_bytes(frozen_record, pretty=False) + b"\n"
-    relative_path = _relative_output_path(row.example.dataset, target)
-    return _PreparedOutput(
-        dataset=row.example.dataset,
-        target=target,
-        segment_count=segment_count,
-        relative_path=relative_path,
-        output_bytes=output_bytes,
+    return _PreparedRecord(
         record=frozen_record,
         example=example,
         source_row=row,
@@ -874,25 +1023,38 @@ def _set_padding_text(record: dict[str, Any], *, index: int, text: str) -> None:
 def _build_provenance(
     *,
     sources: Mapping[str, _SourceFile],
-    selected_rows: Mapping[str, _SourceRow],
+    selected_rows: Mapping[str, Sequence[_SourceRow]],
     outputs: Sequence[_PreparedOutput],
     tokenizer: MainLatencyTokenizer,
+    examples_per_dataset: int,
 ) -> Mapping[str, Any]:
     source_records = [
         _describe_source_file(sources[dataset], selected_rows[dataset])
         for dataset in SUPPORTED_V1_DATASETS
     ]
     output_records = [
-        _describe_prepared_record(
-            output.record,
-            example=output.example,
+        _describe_prepared_output(
             dataset=output.dataset,
             target=output.target,
             segment_count=output.segment_count,
             relative_path=output.relative_path,
             output_bytes=output.output_bytes,
-            source_record_sha256=output.source_row.record_sha256,
-            tokenizer=tokenizer,
+            records=[
+                _describe_prepared_record(
+                    prepared.record,
+                    example=prepared.example,
+                    dataset=output.dataset,
+                    target=output.target,
+                    segment_count=output.segment_count,
+                    output_bytes=(
+                        _canonical_json_bytes(prepared.record, pretty=False) + b"\n"
+                    ),
+                    source_record_sha256=prepared.source_row.record_sha256,
+                    record_index=record_index,
+                    tokenizer=tokenizer,
+                )
+                for record_index, prepared in enumerate(output.records, start=1)
+            ],
         )
         for output in outputs
     ]
@@ -900,7 +1062,7 @@ def _build_provenance(
         "bundle_sha256": _bundle_sha256(output_records),
         "outputs": output_records,
         "outputs_sha256": _canonical_sha256(output_records),
-        "protocol": _protocol_record(),
+        "protocol": _protocol_record(examples_per_dataset=examples_per_dataset),
         "record_type": MAIN_LATENCY_INPUT_RECORD_TYPE,
         "schema_version": MAIN_LATENCY_INPUT_SCHEMA_VERSION,
         "sources": source_records,
@@ -911,22 +1073,54 @@ def _build_provenance(
 
 
 def _describe_source_file(
-    source: _SourceFile, selected: _SourceRow
+    source: _SourceFile,
+    selected: Sequence[_SourceRow],
 ) -> Mapping[str, Any]:
-    example = selected.example
-    parts = build_prompt_parts(example)
+    selected_records = [_describe_source_selection(row) for row in selected]
     return {
         "byte_count": source.byte_count,
         "dataset": source.dataset,
+        "jsonl_sha256": source.raw_sha256,
+        "record_count": len(source.rows),
+        "selected_records": selected_records,
+        "selected_records_sha256": _canonical_sha256(selected_records),
+    }
+
+
+def _describe_source_selection(selected: _SourceRow) -> Mapping[str, Any]:
+    example = selected.example
+    parts = build_prompt_parts(example)
+    return {
         "example_identity_sha256": _example_identity_sha256(example),
         "expected_answer_sha256": _optional_text_sha256(example.expected_answer),
-        "jsonl_sha256": source.raw_sha256,
         "query_sha256": _text_sha256(example.query),
-        "record_count": len(source.rows),
         "references_sha256": _canonical_sha256(list(example.references)),
         "selected_record_sha256": selected.record_sha256,
         "selection_record_index": selected.source_record_index,
         "source_document_context_sha256": _text_sha256(parts.document_context),
+    }
+
+
+def _describe_prepared_output(
+    *,
+    dataset: str,
+    target: int,
+    segment_count: int,
+    relative_path: str,
+    output_bytes: bytes,
+    records: Sequence[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    record_descriptions = list(records)
+    return {
+        "byte_count": len(output_bytes),
+        "dataset": dataset,
+        "input_tokens_target": target,
+        "jsonl_sha256": sha256(output_bytes).hexdigest(),
+        "record_count": len(record_descriptions),
+        "records": record_descriptions,
+        "records_sha256": _canonical_sha256(record_descriptions),
+        "relative_path": relative_path,
+        "segment_count": segment_count,
     }
 
 
@@ -937,9 +1131,9 @@ def _describe_prepared_record(
     dataset: str,
     target: int,
     segment_count: int,
-    relative_path: str,
     output_bytes: bytes,
     source_record_sha256: str,
+    record_index: int,
     tokenizer: MainLatencyTokenizer,
 ) -> Mapping[str, Any]:
     if example.dataset != dataset:
@@ -1002,14 +1196,14 @@ def _describe_prepared_record(
         "example_identity_sha256": _example_identity_sha256(example),
         "expected_answer_sha256": _optional_text_sha256(example.expected_answer),
         "input_tokens_target": target,
-        "jsonl_sha256": sha256(output_bytes).hexdigest(),
+        "jsonl_row_sha256": sha256(output_bytes).hexdigest(),
         "logical_prompt_sha256": _text_sha256(parts.prefill_prompt),
         "logical_prompt_token_ids_sha256": _token_ids_sha256(full_ids),
         "prepared_document_context_sha256": _text_sha256(parts.document_context),
         "prepared_record_sha256": _canonical_sha256(record),
         "query_sha256": _text_sha256(example.query),
+        "record_index": record_index,
         "references_sha256": _canonical_sha256(list(example.references)),
-        "relative_path": relative_path,
         "segment_count": segment_count,
         "segments": segment_records,
         "segments_sha256": _canonical_sha256(segment_records),
@@ -1087,7 +1281,7 @@ def _padding_from_text(text: str) -> _SegmentPadding:
     raise ValueError("prepared padding text does not match a deterministic unit")
 
 
-def _protocol_record() -> Mapping[str, Any]:
+def _protocol_record(*, examples_per_dataset: int) -> Mapping[str, Any]:
     return {
         "datasets": list(SUPPORTED_V1_DATASETS),
         "prompt_contract": {
@@ -1097,7 +1291,7 @@ def _protocol_record() -> Mapping[str, Any]:
         "selection": {
             "identity_reused_across_targets": True,
             "ordering": "example_id_then_canonical_source_record_sha256",
-            "selected_examples_per_dataset": 1,
+            "selected_examples_per_dataset": examples_per_dataset,
         },
         "targets": [
             {
@@ -1122,12 +1316,18 @@ def _protocol_record() -> Mapping[str, Any]:
     }
 
 
-def _verify_protocol_record(provenance: Mapping[str, Any]) -> None:
+def _verify_protocol_record(
+    provenance: Mapping[str, Any],
+    *,
+    examples_per_dataset: int,
+) -> None:
     if provenance.get("record_type") != MAIN_LATENCY_INPUT_RECORD_TYPE:
         raise ValueError("unsupported main-latency provenance record_type")
     if provenance.get("schema_version") != MAIN_LATENCY_INPUT_SCHEMA_VERSION:
         raise ValueError("unsupported main-latency provenance schema_version")
-    if provenance.get("protocol") != _protocol_record():
+    if provenance.get("protocol") != _protocol_record(
+        examples_per_dataset=examples_per_dataset
+    ):
         raise ValueError("main-latency protocol pins do not match this implementation")
 
 
@@ -1143,6 +1343,8 @@ def _verify_closed_provenance(provenance: Mapping[str, Any]) -> None:
 
 def _source_records_from_provenance(
     provenance: Mapping[str, Any],
+    *,
+    examples_per_dataset: int,
 ) -> tuple[Mapping[str, Any], ...]:
     records = _mapping_sequence(provenance.get("sources"), label="sources")
     if [record.get("dataset") for record in records] != list(SUPPORTED_V1_DATASETS):
@@ -1153,19 +1355,51 @@ def _source_records_from_provenance(
                 f"provenance sources[{index}] does not use the closed schema"
             )
         _required_int(record, "byte_count")
-        _required_sha256(record, "example_identity_sha256")
-        expected_answer = record.get("expected_answer_sha256")
-        if expected_answer is not None:
-            _required_sha256(record, "expected_answer_sha256")
         _required_sha256(record, "jsonl_sha256")
-        _required_sha256(record, "query_sha256")
         if _required_int(record, "record_count") == 0:
             raise ValueError("provenance source record_count must be positive")
-        _required_sha256(record, "references_sha256")
-        _required_sha256(record, "selected_record_sha256")
-        if _required_int(record, "selection_record_index") == 0:
-            raise ValueError("provenance selection_record_index must be positive")
-        _required_sha256(record, "source_document_context_sha256")
+        selected = _mapping_sequence(
+            record.get("selected_records"),
+            label=f"sources[{index}].selected_records",
+        )
+        if len(selected) != examples_per_dataset:
+            raise ValueError(
+                f"provenance sources[{index}] must select exactly "
+                f"{examples_per_dataset} records"
+            )
+        selection_digests: set[str] = set()
+        identity_digests: set[str] = set()
+        for selected_index, selection in enumerate(selected):
+            if set(selection) != _SOURCE_SELECTION_PROVENANCE_FIELDS:
+                raise ValueError(
+                    f"provenance sources[{index}].selected_records"
+                    f"[{selected_index}] does not use the closed schema"
+                )
+            identity_digests.add(
+                _required_sha256(selection, "example_identity_sha256")
+            )
+            expected_answer = selection.get("expected_answer_sha256")
+            if expected_answer is not None:
+                _required_sha256(selection, "expected_answer_sha256")
+            _required_sha256(selection, "query_sha256")
+            _required_sha256(selection, "references_sha256")
+            selection_digests.add(
+                _required_sha256(selection, "selected_record_sha256")
+            )
+            if _required_int(selection, "selection_record_index") == 0:
+                raise ValueError(
+                    "provenance selection_record_index must be positive"
+                )
+            _required_sha256(selection, "source_document_context_sha256")
+        if len(selection_digests) != examples_per_dataset:
+            raise ValueError("provenance selected source records must be distinct")
+        if len(identity_digests) != examples_per_dataset:
+            raise ValueError("provenance selected example identities must be distinct")
+        if _canonical_sha256(selected) != _required_sha256(
+            record,
+            "selected_records_sha256",
+        ):
+            raise ValueError("selected_records_sha256 does not match selections")
     if _canonical_sha256(records) != _required_sha256(provenance, "sources_sha256"):
         raise ValueError("sources_sha256 does not match the source records")
     return records
@@ -1173,6 +1407,8 @@ def _source_records_from_provenance(
 
 def _output_records_from_provenance(
     provenance: Mapping[str, Any],
+    *,
+    examples_per_dataset: int,
 ) -> tuple[Mapping[str, Any], ...]:
     records = _mapping_sequence(provenance.get("outputs"), label="outputs")
     expected_order = [
@@ -1185,6 +1421,51 @@ def _output_records_from_provenance(
     ]
     if actual_order != expected_order:
         raise ValueError("provenance outputs are incomplete or out of canonical order")
+    for index, record in enumerate(records):
+        if set(record) != _OUTPUT_PROVENANCE_FIELDS:
+            raise ValueError(
+                f"provenance outputs[{index}] does not use the closed schema"
+            )
+        _required_int(record, "byte_count")
+        _required_str(record, "dataset")
+        _required_int(record, "input_tokens_target")
+        _required_sha256(record, "jsonl_sha256")
+        if _required_int(record, "record_count") != examples_per_dataset:
+            raise ValueError(
+                f"provenance outputs[{index}] must contain exactly "
+                f"{examples_per_dataset} records"
+            )
+        _required_str(record, "relative_path")
+        _required_int(record, "segment_count")
+        prepared_records = _mapping_sequence(
+            record.get("records"),
+            label=f"outputs[{index}].records",
+        )
+        if len(prepared_records) != examples_per_dataset:
+            raise ValueError(
+                f"provenance outputs[{index}].records has invalid coverage"
+            )
+        identity_digests: set[str] = set()
+        for record_index, prepared in enumerate(prepared_records, start=1):
+            if set(prepared) != _PREPARED_RECORD_PROVENANCE_FIELDS:
+                raise ValueError(
+                    f"provenance outputs[{index}].records[{record_index - 1}] "
+                    "does not use the closed schema"
+                )
+            if _required_int(prepared, "record_index") != record_index:
+                raise ValueError("prepared provenance record_index is not canonical")
+            identity_digests.add(
+                _required_sha256(prepared, "example_identity_sha256")
+            )
+            _required_sha256(prepared, "source_record_sha256")
+            _required_sha256(prepared, "jsonl_row_sha256")
+        if len(identity_digests) != examples_per_dataset:
+            raise ValueError("prepared output example identities must be distinct")
+        if _canonical_sha256(prepared_records) != _required_sha256(
+            record,
+            "records_sha256",
+        ):
+            raise ValueError("records_sha256 does not match prepared records")
     return records
 
 
@@ -1193,6 +1474,7 @@ def _verify_sources_against_provenance(
     *,
     source_records: Sequence[Mapping[str, Any]],
     output_records: Sequence[Mapping[str, Any]],
+    examples_per_dataset: int,
 ) -> None:
     source_by_dataset = {
         _required_str(record, "dataset"): record for record in source_records
@@ -1212,39 +1494,68 @@ def _verify_sources_against_provenance(
             raise ValueError(f"source JSONL byte count mismatch for {dataset}")
         if len(source.rows) != _required_int(expected, "record_count"):
             raise ValueError(f"source JSONL record count mismatch for {dataset}")
-        selected_digest = _required_sha256(expected, "selected_record_sha256")
-        matches = [row for row in source.rows if row.record_sha256 == selected_digest]
-        if len(matches) != 1:
-            raise ValueError(
-                f"selected source record is missing or ambiguous for {dataset}"
+        expected_selections = _mapping_sequence(
+            expected.get("selected_records"),
+            label=f"sources[{dataset}].selected_records",
+        )
+        selected_rows: list[_SourceRow] = []
+        for selection in expected_selections:
+            selected_digest = _required_sha256(
+                selection,
+                "selected_record_sha256",
             )
-        selected = matches[0]
-        rebuilt = _describe_source_file(source, selected)
+            matches = [
+                row for row in source.rows if row.record_sha256 == selected_digest
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    f"selected source record is missing or ambiguous for {dataset}"
+                )
+            selected_rows.append(matches[0])
+        rebuilt = _describe_source_file(source, selected_rows)
         if rebuilt != expected:
             raise ValueError(f"selected source provenance mismatch for {dataset}")
         rebuilt_sources.append(rebuilt)
         dataset_outputs = outputs_by_dataset[dataset]
         if len(dataset_outputs) != len(MAIN_LATENCY_TARGET_SEGMENT_COUNTS):
             raise ValueError(f"prepared output coverage mismatch for {dataset}")
+        source_selections = _mapping_sequence(
+            rebuilt.get("selected_records"),
+            label=f"rebuilt sources[{dataset}].selected_records",
+        )
+        if len(source_selections) != examples_per_dataset:
+            raise ValueError(f"selected source coverage mismatch for {dataset}")
         for output in dataset_outputs:
-            for field_name in (
-                "example_identity_sha256",
-                "expected_answer_sha256",
-                "query_sha256",
-                "references_sha256",
-                "source_document_context_sha256",
-            ):
-                source_field = (
-                    field_name
-                    if field_name != "source_document_context_sha256"
-                    else "source_document_context_sha256"
+            prepared_records = _mapping_sequence(
+                output.get("records"),
+                label=f"outputs[{dataset}].records",
+            )
+            if len(prepared_records) != examples_per_dataset:
+                raise ValueError(
+                    f"prepared output record coverage mismatch for {dataset}"
                 )
-                if output.get(field_name) != rebuilt.get(source_field):
+            for prepared, selection in zip(
+                prepared_records,
+                source_selections,
+                strict=True,
+            ):
+                for field_name in (
+                    "example_identity_sha256",
+                    "expected_answer_sha256",
+                    "query_sha256",
+                    "references_sha256",
+                    "source_document_context_sha256",
+                ):
+                    if prepared.get(field_name) != selection.get(field_name):
+                        raise ValueError(
+                            f"prepared output changed source {field_name} for {dataset}"
+                        )
+                if prepared.get("source_record_sha256") != selection.get(
+                    "selected_record_sha256"
+                ):
                     raise ValueError(
-                        f"prepared output changed source {field_name} for {dataset}"
+                        f"prepared output source record changed for {dataset}"
                     )
-            if output.get("source_record_sha256") != selected.record_sha256:
-                raise ValueError(f"prepared output source record changed for {dataset}")
     if _canonical_sha256(rebuilt_sources) != _canonical_sha256(source_records):
         raise ValueError("source provenance changed during verification")
 
@@ -1324,17 +1635,28 @@ def _optional_text_sha256(text: str | None) -> str | None:
     return None if text is None else _text_sha256(text)
 
 
-def _single_canonical_jsonl_record(
+def _canonical_jsonl_records(
     content: bytes,
     *,
     label: str,
-) -> Mapping[str, Any]:
-    if not content.endswith(b"\n") or content.count(b"\n") != 1:
-        raise ValueError(f"{label} must contain exactly one canonical JSONL row")
-    record = _json_object_from_bytes(content[:-1], label=label)
-    if content != _canonical_json_bytes(record, pretty=False) + b"\n":
-        raise ValueError(f"{label} is not in canonical JSONL encoding")
-    return record
+) -> tuple[Mapping[str, Any], ...]:
+    if not content or not content.endswith(b"\n"):
+        raise ValueError(f"{label} must be non-empty newline-terminated JSONL")
+    raw_lines = content[:-1].split(b"\n")
+    if any(not line for line in raw_lines):
+        raise ValueError(f"{label} must not contain empty JSONL rows")
+    records: list[Mapping[str, Any]] = []
+    for record_index, line in enumerate(raw_lines, start=1):
+        record = _json_object_from_bytes(
+            line,
+            label=f"{label} row {record_index}",
+        )
+        if line != _canonical_json_bytes(record, pretty=False):
+            raise ValueError(
+                f"{label} row {record_index} is not in canonical JSONL encoding"
+            )
+        records.append(record)
+    return tuple(records)
 
 
 def _json_object_from_bytes(content: bytes, *, label: str) -> Mapping[str, Any]:
@@ -1438,6 +1760,7 @@ __all__ = [
     "MAIN_LATENCY_TOKENIZER_ID",
     "MAIN_LATENCY_TOKENIZER_REVISION",
     "MAIN_LATENCY_ADD_SPECIAL_TOKENS",
+    "MAIN_LATENCY_EXAMPLES_PER_DATASET",
     "MAIN_LATENCY_TARGET_SEGMENT_COUNTS",
     "MAIN_LATENCY_PROVENANCE_FILENAME",
     "MainLatencyTokenizer",

@@ -1,3 +1,4 @@
+from dataclasses import fields
 import hashlib
 import json
 import os
@@ -49,6 +50,15 @@ REPRESENTATIVE_WHEEL_URI = (
     "dbfs:/cachet/wheels/"
     f"{REPRESENTATIVE_WHEEL_SHA256}/cachet_kv-0.2.0-py3-none-any.whl"
 )
+
+
+def test_payload_cache_option_is_appended_to_preserve_positional_job_config_api():
+    field_names = [field.name for field in fields(DatabricksVLLMSmokeJobConfig)]
+
+    assert field_names[-1] == "benchmark_prewarm_payload_cache"
+    assert field_names.index("benchmark_cache_runtime_prompt") == (
+        field_names.index("benchmark_prewarm_cache_prefix") + 1
+    )
 
 
 def representative_job_kwargs(

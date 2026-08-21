@@ -182,7 +182,6 @@ class DatabricksVLLMSmokeJobConfig:
     representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = None
     benchmark_manifest_provenance: Mapping[str, Any] = field(default_factory=dict)
     benchmark_prewarm_cache_prefix: bool = False
-    benchmark_prewarm_payload_cache: bool = False
     benchmark_cache_runtime_prompt: bool = False
     benchmark_force_max_tokens: bool = False
     benchmark_prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
@@ -205,6 +204,7 @@ class DatabricksVLLMSmokeJobConfig:
     spark_env_vars: Mapping[str, str] = field(default_factory=dict)
     benchmark_suite_id: str | None = None
     benchmark_runtime_id: str | None = None
+    benchmark_prewarm_payload_cache: bool = False
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:

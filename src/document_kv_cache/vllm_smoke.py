@@ -425,7 +425,6 @@ class VLLMSmokeBenchmarkConfig:
     representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = None
     benchmark_manifest_provenance: Mapping[str, Any] = field(default_factory=dict)
     prewarm_cache_prefix: bool = False
-    prewarm_payload_cache: bool = False
     cache_runtime_prompt: bool = False
     prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
     hardware_target: str = DEFAULT_HARDWARE_TARGET
@@ -438,6 +437,7 @@ class VLLMSmokeBenchmarkConfig:
     system_prompt_position: str = DEFAULT_SYSTEM_PROMPT_POSITION
     benchmark_suite_id: str | None = None
     benchmark_runtime_id: str | None = None
+    prewarm_payload_cache: bool = False
 
     def __post_init__(self) -> None:
         if not self.benchmark_id:
