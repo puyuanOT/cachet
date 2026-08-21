@@ -2100,6 +2100,57 @@ def test_prime_payload_cache_populates_then_verifies_every_prepared_artifact(
     }
 
 
+def test_prime_payload_cache_preserves_full_logical_prompt_token_contract(
+    tmp_path,
+    monkeypatch,
+):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="ram-prime-token-contract",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        prewarm_payload_cache=True,
+        payload_cache_max_bytes=4096,
+    )
+    targets = public_vllm_smoke._payload_cache_prime_targets(config, dataset_paths)
+    expected_prompts = [
+        public_vllm_smoke.build_prompt_parts(example).prefill_prompt
+        for example, _arm_id, _params in targets
+    ] * 2
+    calls = []
+
+    def fake_post_json(url, body, *, timeout_seconds):
+        del url, timeout_seconds
+        expected_prompt = expected_prompts[len(calls)]
+        calls.append(body)
+        if body["prompt"] != expected_prompt:
+            # This reproduces the live failure caused by sending the shortened
+            # cache-warmup prompt with contracts generated from the full prompt.
+            raise RuntimeError(
+                "runtime tokens for cache_prefix-7 do not satisfy token contract "
+                "(expected 2045 tokens)"
+            )
+        request_id = body["request_id"]
+        record = _payload_cache_telemetry_record(
+            request_id,
+            hit=":verify:" in request_id,
+        )
+        config.connector_telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+        with config.connector_telemetry_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+        return {"usage": {"prompt_tokens": 12, "completion_tokens": 1}}
+
+    monkeypatch.setattr(public_vllm_smoke, "_post_json", fake_post_json)
+
+    prime_payload_cache(config, dataset_paths)
+
+    assert len(calls) == len(expected_prompts)
+    assert [body["prompt"] for body in calls] == expected_prompts
+    assert all(not body["prompt"].endswith("\n\nCache warmup.") for body in calls)
+
+
 def test_parse_args_wires_payload_cache_priming(tmp_path):
     specs = tuple(
         f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS

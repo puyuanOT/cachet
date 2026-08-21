@@ -2851,7 +2851,13 @@ def prime_payload_cache(
             kv_transfer_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = request_id
             body = {
                 "model": SERVED_MODEL_NAME,
-                "prompt": _prewarm_prompt_text(example),
+                # The handoff's per-segment token contracts were generated from the
+                # exact logical benchmark prompt. A shortened warmup suffix can
+                # change tokenizer boundary merges inside the cached prefix and make
+                # the provider reject an otherwise valid artifact. Preserve the full
+                # logical prompt here; the priming-only request ID and cache salt
+                # still isolate these GPU blocks from every measurement request.
+                "prompt": _payload_cache_prime_prompt_text(example),
                 "max_tokens": 1,
                 "temperature": 0,
                 "stream": False,
@@ -3227,6 +3233,12 @@ def _string_set(value: object, *, field_name: str) -> set[str]:
 
 def _prewarm_prompt_text(example: Any) -> str:
     return build_prompt_parts(example).cache_prefix_text + "\n\nCache warmup."
+
+
+def _payload_cache_prime_prompt_text(example: Any) -> str:
+    """Return the exact prompt from which the handoff token contracts were built."""
+
+    return build_prompt_parts(example).prefill_prompt
 
 
 def _prewarm_request_id(config: VLLMSmokeBenchmarkConfig, example: Any) -> str:
