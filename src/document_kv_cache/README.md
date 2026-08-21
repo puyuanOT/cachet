@@ -97,8 +97,8 @@ return as a production dependency.
 - `dataset_prep.py` owns Biography, HotpotQA, MusiQue, and NIAH
   normalization into canonical benchmark JSONL. Its representative HotpotQA
   command uses only the pinned Qwen tokenizer to select deterministic examples,
-  pad their logical prefill prompts to exactly 8,192 or 16,384 tokens, and emit
-  prompt-free digest provenance.
+  pad their logical prefill prompts to exactly 8,192, 16,384, or 32,768 tokens,
+  and emit prompt-free digest provenance.
 - `engine.py` builds engine-ready payload handles from materialized KV.
 - `engine_adapters.py` defines the external vLLM/SGLang adapter handoff and
   native-probe descriptor contracts.

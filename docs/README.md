@@ -32,7 +32,8 @@ release-operation material.
 - `native-engine-integration.md` shows how Cachet handoff artifacts and
   launch-config sidecars connect to provider-backed vLLM and SGLang runtimes.
 - `representative-hotpotqa-inputs.md` documents tokenizer-only preparation of
-  exact 8k/16k HotpotQA inputs for the representative canary matrix.
+  exact 8k/16k/32k HotpotQA inputs for representative canaries and cold-loader
+  ablations.
 - `../benchmarks/README.md` is the human-facing research-style benchmark page;
   `../benchmarks/appendix/representative-bf16-qwen3-4b-canaries/` contains the
   sanitized, non-publication BF16 vLLM method canaries and SGLang native-handoff

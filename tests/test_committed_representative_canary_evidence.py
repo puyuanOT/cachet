@@ -43,6 +43,9 @@ APPENDIX_ROOT = (
 )
 FINAL_SOURCE_COMMIT = "b4b142c79443fcca62b08044d0937298eab3f71d"
 FINAL_WHEEL_SHA256 = "5d91052aa5e92db64c3ba21924ae1805b7671c8c19bdc600fb477956dca78f90"
+FINAL_COLD_OPTIMIZATION_SHA256 = (
+    "814ea14db71edf1c7e9135fef957c1622e17129eeec0a994302b09308e9b0734"
+)
 FINAL_SGLANG_HANDOFF_GENERATION_SHA256 = (
     "49cf15b2d53f55a9f48594c120dc1cafe9d905c407a51116c8b54d5606eb405a"
 )
@@ -514,8 +517,10 @@ def test_vanilla_v2_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
     _assert_no_secret_path_or_raw_text_leaks(record)
 
 
-def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
-    record = _load_canonical_json(APPENDIX_ROOT / "vanilla-v2-cold-optimization.json")
+def test_vanilla_v2_cold_optimization_is_an_eight_job_matched_ablation() -> None:
+    path = APPENDIX_ROOT / "vanilla-v2-cold-optimization.json"
+    assert sha256(path.read_bytes()).hexdigest() == FINAL_COLD_OPTIMIZATION_SHA256
+    record = _load_canonical_json(path)
     assert record["record_type"] == "cachet.vanilla_v2_cold_optimization_evidence.v2"
     assert record["evidence_level"] == "canary"
     assert record["evidence_sanitized"] is True
@@ -531,6 +536,69 @@ def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
         "position_handling": "rerope_at_injection",
         "rope_rotary_dim": 128,
         "rope_theta": 5_000_000.0,
+    }
+    assert record["engine_memory_configuration"] == {
+        "caveat": (
+            "The 32k direct/legacy loader pair is internally matched at "
+            "gpu_memory_utilization=0.70, but the 8k and 16k pairs use 0.85; "
+            "cross-size latency comparisons are descriptive rather than an "
+            "identical-engine-memory scaling experiment."
+        ),
+        "cross_size_engine_memory_configuration_identical": False,
+        "direct_legacy_matched_within_each_size": True,
+        "gpu_memory_utilization_by_input_tokens": {
+            "8192": 0.85,
+            "16384": 0.85,
+            "32768": 0.70,
+        },
+        "supplemental_32k_attempt": 2,
+        "supplemental_32k_local_results_use_canonical_benchmark_ids": True,
+        "supplemental_32k_remote_attempt_paths_unique": True,
+    }
+    assert record["input_preparation_provenance"] == {
+        "dataset": "hotpotqa",
+        "deterministic_recheck_equal": True,
+        "example_count": 2,
+        "example_key_sha256s": [
+            "49cde39179ee703deddefb5493e63ef55e55ba35eb7b1959c8065a2f9c5f8478",
+            "63c2757f7226201ba88faf49f814f32b014ae3a5a4112f2d5248d365f8159f04",
+        ],
+        "examples_sha256": (
+            "15f02d45264db2a35338cbdf1fb9aa8173d64cc1719a64fb35218ab052062564"
+        ),
+        "input_tokens_target": 32_768,
+        "preparation_source_commit_signature_verified": True,
+        "preparation_source_revision": (
+            "cdaeb6ead638d9a8a9196e9839d5f3d670e7e126"
+        ),
+        "prepared_dataset_bytes": 489_300,
+        "prepared_dataset_sha256": (
+            "f434a7a94cfc44bc61c3731cc73248af5e26f4a7d4b4b0f37d04aa8a5618dbb9"
+        ),
+        "prepared_prompt_sha256s": [
+            "3231e54ac2c14b0fdb28cc9327f825df69e8d9f7ed24184190d104cd2fbb9891",
+            "b3113efb9557d58cb03f9f58f032af6312d0938369049ae10d391a3e4513bc5b",
+        ],
+        "prompt_contract": {
+            "prompt_template_version": "v1-benchmark",
+            "system_prompt_position": "start",
+        },
+        "provenance_sha256": (
+            "635f5306652bc413f7f47cd71e45b009a2239f1091764663baae5f4875557d65"
+        ),
+        "selection": {
+            "ordering": "example_id_then_canonical_source_record_sha256",
+            "requested_example_count": 2,
+        },
+        "source_dataset_sha256": (
+            "3a23b1f05aac4c56eb74bdb5275cb9a7ff44ef0b6112d263e78aab7fbc0fbb41"
+        ),
+        "source_record_count": 7_405,
+        "tokenizer": {
+            "add_special_tokens": False,
+            "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
+            "tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        },
     }
     assert record["submission_validation_flag_attestation"] == {
         "affected_direct_benchmark_ids": [
@@ -605,10 +673,26 @@ def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
             64,
             7.581663182999932,
         ),
+        "g6-vllm-32k-256-vanilla": (
+            "auto",
+            "direct_global_snapshot",
+            False,
+            32_768,
+            256,
+            11.650729769999998,
+        ),
+        "g6-vllm-32k-256-vanilla-legacy": (
+            "legacy",
+            "legacy_segment_remerge",
+            False,
+            32_768,
+            256,
+            30.508128516500165,
+        ),
     }
     jobs = {job["benchmark_id"]: job for job in record["jobs"]}
     assert set(jobs) == set(expected_jobs)
-    assert len(jobs) == 6
+    assert len(jobs) == 8
 
     for benchmark_id, expected in expected_jobs.items():
         configured, selected, profiled, input_tokens, output_tokens, ttft = expected
@@ -661,8 +745,70 @@ def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
             assert snapshot_total == 0
             assert reassembly_total == 2 * payload_total
 
+    assert sum(job["load_contract"]["cold_load_joins"] for job in jobs.values()) == 48
+
+    direct_32k = jobs["g6-vllm-32k-256-vanilla"]
+    legacy_32k = jobs["g6-vllm-32k-256-vanilla-legacy"]
+    assert direct_32k["raw_record_sha256"] == (
+        "19b4ba7e4d960f38f8053eae8f3326e67c466f2d13ba6d401a3e610a3911e0b6"
+    )
+    assert direct_32k["raw_telemetry_sha256"] == (
+        "3b62998307cc2c1ee935b92952eb4f872f20bb6cfc3389ce8edc70709b5c23f5"
+    )
+    assert legacy_32k["raw_record_sha256"] == (
+        "b6367fd9742f0244af6774a70eeb6ae31f8a7a7cc370f4472664488e80211ba8"
+    )
+    assert legacy_32k["raw_telemetry_sha256"] == (
+        "d05c5f10856a8079124eabba2623fbe1fe085b6b10d5553963c4b32e91bfbe63"
+    )
+    assert direct_32k["metrics"]["time_to_completion_seconds"][
+        "p50"
+    ] == pytest.approx(24.92832310950007)
+    assert legacy_32k["metrics"]["time_to_completion_seconds"][
+        "p50"
+    ] == pytest.approx(43.76361161600016)
+    for job, expected_load, expected_materialize, expected_merge, expected_layer in (
+        (direct_32k, 11_064.2817275, 10_323.6190045, 0.053381, 742.694537),
+        (legacy_32k, 29_569.8610235, 20_795.691327, 8_048.8887225, 735.852286),
+    ):
+        assert job["load_metrics"]["total_ms"]["p50"] == pytest.approx(expected_load)
+        assert job["load_metrics"]["payload_materialize_ms"][
+            "p50"
+        ] == pytest.approx(expected_materialize)
+        assert job["load_metrics"]["payload_merge_ms"]["p50"] == pytest.approx(
+            expected_merge
+        )
+        assert job["load_metrics"]["layer_load_ms"]["p50"] == pytest.approx(
+            expected_layer
+        )
+
+    bytes_per_token = 147_456
+    stored_token_counts = (32_726, 32_730)
+    payload_bytes = [count * bytes_per_token for count in stored_token_counts]
+    payload_total = 3 * sum(payload_bytes)
+    for job in (direct_32k, legacy_32k):
+        summary = job["load_metrics"]["payload_bytes_per_request"]
+        assert summary["unique_values"] == payload_bytes
+        assert summary["p50"] == pytest.approx(32_728 * bytes_per_token)
+        assert summary["total"] == payload_total
+    assert direct_32k["load_metrics"]["snapshot_copy_bytes_per_request"][
+        "unique_values"
+    ] == payload_bytes
+    assert direct_32k["load_metrics"]["reassembly_copy_bytes_per_request"][
+        "unique_values"
+    ] == [0]
+    assert legacy_32k["load_metrics"]["snapshot_copy_bytes_per_request"][
+        "unique_values"
+    ] == [0]
+    assert legacy_32k["load_metrics"]["reassembly_copy_bytes_per_request"][
+        "unique_values"
+    ] == [2 * value for value in payload_bytes]
+    assert legacy_32k["load_metrics"]["reassembly_copy_bytes_per_request"][
+        "total"
+    ] == 2 * payload_total
+
     comparisons = record["comparisons"]
-    assert len(comparisons) == 3
+    assert len(comparisons) == 4
     comparison_pairs = {
         (row["direct_benchmark_id"], row["legacy_benchmark_id"]): row
         for row in comparisons
@@ -680,6 +826,10 @@ def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
             "g6-vllm-8k-64-vanilla-direct-profiled",
             "g6-vllm-8k-64-vanilla-legacy-profiled",
         ),
+        (
+            "g6-vllm-32k-256-vanilla",
+            "g6-vllm-32k-256-vanilla-legacy",
+        ),
     }
     assert comparison_pairs[("g6-vllm-8k-64-vanilla", "g6-vllm-8k-64-vanilla-legacy")][
         "ttft_direct_reduction_percent"
@@ -688,8 +838,42 @@ def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
         ("g6-vllm-16k-256-vanilla", "g6-vllm-16k-256-vanilla-legacy")
     ]["ttft_direct_reduction_percent"] == pytest.approx(61.69979005319942)
 
+    comparison_32k = comparison_pairs[
+        ("g6-vllm-32k-256-vanilla", "g6-vllm-32k-256-vanilla-legacy")
+    ]
+    assert comparison_32k["ttft_p50_seconds"] == {
+        "direct": 11.650729769999998,
+        "legacy": 30.508128516500165,
+    }
+    assert comparison_32k["provider_load_p50_ms"] == {
+        "direct": 11_064.2817275,
+        "legacy": 29_569.8610235,
+    }
+    ttft_direct = comparison_32k["ttft_p50_seconds"]["direct"]
+    ttft_legacy = comparison_32k["ttft_p50_seconds"]["legacy"]
+    provider_direct = comparison_32k["provider_load_p50_ms"]["direct"]
+    provider_legacy = comparison_32k["provider_load_p50_ms"]["legacy"]
+    assert comparison_32k["ttft_direct_speedup"] == pytest.approx(
+        ttft_legacy / ttft_direct
+    )
+    assert comparison_32k["ttft_direct_reduction_seconds"] == pytest.approx(
+        ttft_legacy - ttft_direct
+    )
+    assert comparison_32k["ttft_direct_reduction_percent"] == pytest.approx(
+        100.0 * (ttft_legacy - ttft_direct) / ttft_legacy
+    )
+    assert comparison_32k["provider_load_direct_speedup"] == pytest.approx(
+        provider_legacy / provider_direct
+    )
+    assert comparison_32k["provider_load_direct_reduction_ms"] == pytest.approx(
+        provider_legacy - provider_direct
+    )
+    assert comparison_32k[
+        "provider_load_direct_reduction_percent"
+    ] == pytest.approx(100.0 * (provider_legacy - provider_direct) / provider_legacy)
+
     proofs = record["matched_setting_proofs"]
-    assert len(proofs) == 3
+    assert len(proofs) == 4
     assert {
         (proof["direct_benchmark_id"], proof["legacy_benchmark_id"]) for proof in proofs
     } == set(comparison_pairs)
@@ -697,6 +881,7 @@ def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
         "g6-vllm-8k-64-vanilla": "g6-vllm-8k-64",
         "g6-vllm-16k-256-vanilla": "g6-vllm-16k-256",
         "g6-vllm-8k-64-vanilla-direct-profiled": ("g6-vllm-8k-64-cold-load-profiled"),
+        "g6-vllm-32k-256-vanilla": "g6-vllm-32k-256",
     }
     expected_decoding_digests = {
         64: "f6150c4cea70a82be4ef0844e6347db74bbc9e1fd88165245e6c9d7f965b278c",
@@ -780,5 +965,43 @@ def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
             example["document_count"] == 11 and example["segment_count"] == 11
             for example in topology["examples"]
         )
+        if proof["direct_benchmark_id"] == "g6-vllm-32k-256-vanilla":
+            assert proof["matched_setting_sha256"] == (
+                "ad95aa91e310b00cc05e9a55b3d6b6012efd1b48e198954dc78776d67bacd648"
+            )
+            assert setting["artifact_bytes"] == sum(payload_bytes)
+            assert setting["artifact_ids"] == [
+                "c30b0fef65c008be5a8449cf162da058eb8663d4316e6259d77c9697c12a5457"
+            ]
+            assert topology["examples_sha256"] == (
+                "25908bb0665b648d7965a790ee5102e3f26dfa0cdf869e42dbfeb0dc92ed7734"
+            )
+            assert [
+                example["example_key_sha256"] for example in topology["examples"]
+            ] == record["input_preparation_provenance"]["example_key_sha256s"]
+            assert [
+                example["logical_prompt_sha256"]
+                for example in topology["examples"]
+            ] == record["input_preparation_provenance"]["prepared_prompt_sha256s"]
+            assert all(
+                example["logical_token_count"] == 32_768
+                for example in topology["examples"]
+            )
+            logical_workload = setting["logical_workload"]
+            assert logical_workload["input_tokens_target"] == 32_768
+            assert logical_workload["output_tokens_target"] == 256
+            assert logical_workload["dataset_sample_digests"] == {
+                "hotpotqa": (
+                    "1fe3becf83f9d653d0d387636316182ef86d8f4500e1a27c9010b22a6da8bffc"
+                )
+            }
+            assert logical_workload["sample_selection_digest"] == (
+                "d48ee11f30aa283b4bfe65983f14e7b009c2e83f17f00ff7a7024cbcdd8d85e7"
+            )
+            assert all(
+                row["prompt_tokens"] == 32_768
+                and row["completion_tokens"] == 256
+                for row in setting["measurement_inputs"]
+            )
 
     _assert_no_secret_path_or_raw_text_leaks(record)

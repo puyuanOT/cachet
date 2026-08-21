@@ -1,8 +1,9 @@
 # Representative HotpotQA inputs
 
-The representative vLLM canaries use a canonical `hotpotqa.jsonl` whose
-logical Cachet prefill prompts contain exactly 8,192 or 16,384 tokens. Prepare
-that file before generating full-prefix and vanilla handoffs:
+The representative vLLM canaries and cold-loader ablations use a canonical
+`hotpotqa.jsonl` whose logical Cachet prefill prompts contain exactly 8,192,
+16,384, or 32,768 tokens. Prepare that file before generating full-prefix and
+vanilla handoffs:
 
 ```bash
 cachet-prepare-representative-hotpotqa \

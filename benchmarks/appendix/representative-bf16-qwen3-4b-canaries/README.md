@@ -48,7 +48,7 @@ post hoc to manufacture that field.
 | [`g6-vllm-16k-256-three-arm-canary-v2.json`](g6-vllm-16k-256-three-arm-canary-v2.json) | L4, 16k input target, 256 output tokens | `c5b44cf9ab4fd40e2bbf829e1cc033c57e05c88f303e50c3706cda1a3eaeb32c` |
 | [`g5-vllm-8k-64-three-arm-canary-v2.json`](g5-vllm-8k-64-three-arm-canary-v2.json) | A10G compatibility canary, 8k input target, 64 output tokens | `628781b3bbdf716e97c935987105897335c767f1e10f4b877fc9ec83c72bc630` |
 | [`g6-sglang-4k-32-paired-smoke-evidence-v2.json`](g6-sglang-4k-32-paired-smoke-evidence-v2.json) | L4 native-handoff execution smoke | `c226d949e1e9e612ccd4aec34e0e9dc78f6541f111a51540ffacdee709387174` |
-| [`vanilla-v2-cold-optimization.json`](vanilla-v2-cold-optimization.json) | Six-job direct-versus-legacy cold-load ablation | `c96c60dd5c9511a9c458d9ebf0f3903738a00dbeb848f434e9e69a86063ff112` |
+| [`vanilla-v2-cold-optimization.json`](vanilla-v2-cold-optimization.json) | Eight-job direct-versus-legacy cold-load ablation | `814ea14db71edf1c7e9135fef957c1622e17129eeec0a994302b09308e9b0734` |
 
 ## vLLM Three-Arm Canaries
 
@@ -105,10 +105,11 @@ feeds that global view directly to layer loading. The forced
 again, performs two checksum scans, and accounts for reassembly copies equal to
 twice the payload size.
 
-Six isolated L4 jobs compare only the segmented-load strategy: unprofiled 8k
-and 16k pairs plus a stage-profiled 8k pair. Each job contains six cold requests
-over the same two examples and 11 independently generated document segments;
-all 36 telemetry rows join their measurements one-to-one, report successful
+Eight isolated L4 jobs compare only the segmented-load strategy: unprofiled
+8k, 16k, and 32k pairs plus a stage-profiled 8k pair. Each job contains six
+cold requests over the same two examples and 11 independently generated
+document segments; all 48 telemetry rows join their measurements one-to-one,
+report successful
 page-cache eviction, and disable the payload cache. Within each pair, the
 evidence proves that the complete effective suite plus the complete manifest
 decoding and execution settings match. The `--representative-canary` and
@@ -121,6 +122,23 @@ within each pair. The jobs regenerated their payloads separately, however, and
 did not retain a cross-job payload-content checksum. Literal byte-for-byte
 payload equality is therefore not independently verified.
 
+The 32k inputs are a deterministic two-example projection from a canonical
+7,405-record HotpotQA source snapshot. The evidence binds the signed preparation
+revision `cdaeb6ead638d9a8a9196e9839d5f3d670e7e126`, exact 32,768-token prompts,
+source/prepared/provenance hashes, and a byte-identical preparation recheck.
+Both 32k arms use `gpu_memory_utilization=0.70`; all 8k and 16k arms use `0.85`.
+The 32k direct/legacy comparison is therefore internally matched, but the
+cross-size latency trend is descriptive rather than an identical-engine-memory
+scaling experiment.
+
+An initial matched 32k attempt at `0.85` generated the exact artifacts but was
+excluded because both arms failed before a successful measurement: the shared
+provider tried to stage one 4.49 GiB token slice with only 3.72 GiB of GPU
+memory free. At `0.70`, vLLM reported 6.98 GiB available for KV cache and
+50,784 cache tokens, enough for the 33,280-token request. Bounded GPU staging is
+a future provider optimization; it is not part of the direct-versus-legacy
+host-loading result reported here.
+
 | Input / output | Strategy | Profiled | P50 TTFT (s) | P50 provider load (ms) | P50 materialize (ms) | P50 merge (ms) | P50 layer load (ms) | Reassembly / request (MiB) |
 | ---: | --- | :---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 8192 / 64 | direct global snapshot | no | 2.909791 | 2726.820 | 2555.694 | 0.052 | 170.438 | 0.000 |
@@ -129,21 +147,24 @@ payload equality is therefore not independently verified.
 | 16384 / 256 | legacy segment remerge | no | 15.264031 | 14762.074 | 10448.391 | 3909.231 | 369.262 | 4596.750 |
 | 8192 / 64 | direct global snapshot | yes | 2.901357 | 2718.322 | 2544.796 | 0.056 | 173.492 | 0.000 |
 | 8192 / 64 | legacy segment remerge | yes | 7.581663 | 7309.192 | 5281.612 | 1861.763 | 173.468 | 2292.750 |
+| 32768 / 256 | direct global snapshot | no | 11.650730 | 11064.282 | 10323.619 | 0.053 | 742.695 | 0.000 |
+| 32768 / 256 | legacy segment remerge | no | 30.508129 | 29569.861 | 20795.691 | 8048.889 | 735.852 | 9204.750 |
 
 | Matched pair | TTFT speedup | TTFT reduction | Provider-load speedup | Provider-load reduction |
 | --- | ---: | ---: | ---: | ---: |
 | 8k, unprofiled | 2.5140x | 60.22% | 2.5824x | 61.28% |
 | 16k, unprofiled | 2.6110x | 61.70% | 2.6731x | 62.59% |
 | 8k, stage-profiled diagnostic | 2.6131x | 61.73% | 2.6889x | 62.81% |
+| 32k, unprofiled (`gpu_memory_utilization=0.70`) | 2.6186x | 61.81% | 2.6726x | 62.58% |
 
 The unchanged layer-load medians in each pair show that the measured savings
 come from CPU payload materialization and eliminated reassembly, not GPU layer
-copy. At 8k, direct materialization is 93.7% of provider load, so it remains the
-dominant optimization target. That timer combines cold disk first-touch,
-creation of the owned snapshot, and checksum work; it is not a pure
-disk-throughput measurement.
+copy. At 8k, direct materialization is 93.7% of provider load; it remains 93.3%
+at 32k, so it is still the dominant optimization target. That timer combines
+cold disk first-touch, creation of the owned snapshot, and checksum work; it is
+not a pure disk-throughput measurement.
 
-No prefetch event occurred in any of these six jobs. Thus this ablation proves
+No prefetch event occurred in any of these eight jobs. Thus this ablation proves
 the direct-load optimization, not overlap between disk loading and model
 prefill. The provider has an opt-in concurrent-prefetch path, but its behavior
 and benefit require a separately matched ablation before making a performance
@@ -183,6 +204,9 @@ which confirms that request metadata reached the SGLang native cache path.
 - The direct-load ablation varies a provider implementation strategy, not a
   cache method. The optimized canonical segmented loader can serve compatible
   methods through the vLLM provider, but only Vanilla v2 is evidenced here.
+- The 32k pair uses `gpu_memory_utilization=0.70`, while the 8k and 16k pairs
+  use `0.85`. Direct and legacy are matched within each size, but the 32k row is
+  not an identical-engine-memory cross-size scaling point.
 - No publication-grade resource-use or serving-concurrency claim is made.
 - The L4 node has two 450 GB local NVMe disks; the A10G node has one 900 GB
   local NVMe disk. Their comparison is a compatibility observation, not a

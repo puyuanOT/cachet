@@ -59,10 +59,78 @@
         "direct": 2.901357098999938,
         "legacy": 7.581663182999932
       }
+    },
+    {
+      "direct_benchmark_id": "g6-vllm-32k-256-vanilla",
+      "interpretation": "unprofiled end-to-end cold-load comparison",
+      "legacy_benchmark_id": "g6-vllm-32k-256-vanilla-legacy",
+      "profiled": false,
+      "provider_load_direct_reduction_ms": 18505.579296000004,
+      "provider_load_direct_reduction_percent": 62.58257108916778,
+      "provider_load_direct_speedup": 2.672551346013256,
+      "provider_load_p50_ms": {
+        "direct": 11064.2817275,
+        "legacy": 29569.8610235
+      },
+      "ttft_direct_reduction_percent": 61.81106368521176,
+      "ttft_direct_reduction_seconds": 18.857398746500166,
+      "ttft_direct_speedup": 2.6185594481005774,
+      "ttft_p50_seconds": {
+        "direct": 11.650729769999998,
+        "legacy": 30.508128516500165
+      }
     }
   ],
+  "engine_memory_configuration": {
+    "caveat": "The 32k direct/legacy loader pair is internally matched at gpu_memory_utilization=0.70, but the 8k and 16k pairs use 0.85; cross-size latency comparisons are descriptive rather than an identical-engine-memory scaling experiment.",
+    "cross_size_engine_memory_configuration_identical": false,
+    "direct_legacy_matched_within_each_size": true,
+    "gpu_memory_utilization_by_input_tokens": {
+      "16384": 0.85,
+      "32768": 0.7,
+      "8192": 0.85
+    },
+    "supplemental_32k_attempt": 2,
+    "supplemental_32k_local_results_use_canonical_benchmark_ids": true,
+    "supplemental_32k_remote_attempt_paths_unique": true
+  },
   "evidence_level": "canary",
   "evidence_sanitized": true,
+  "input_preparation_provenance": {
+    "dataset": "hotpotqa",
+    "deterministic_recheck_equal": true,
+    "example_count": 2,
+    "example_key_sha256s": [
+      "49cde39179ee703deddefb5493e63ef55e55ba35eb7b1959c8065a2f9c5f8478",
+      "63c2757f7226201ba88faf49f814f32b014ae3a5a4112f2d5248d365f8159f04"
+    ],
+    "examples_sha256": "15f02d45264db2a35338cbdf1fb9aa8173d64cc1719a64fb35218ab052062564",
+    "input_tokens_target": 32768,
+    "preparation_source_commit_signature_verified": true,
+    "preparation_source_revision": "cdaeb6ead638d9a8a9196e9839d5f3d670e7e126",
+    "prepared_dataset_bytes": 489300,
+    "prepared_dataset_sha256": "f434a7a94cfc44bc61c3731cc73248af5e26f4a7d4b4b0f37d04aa8a5618dbb9",
+    "prepared_prompt_sha256s": [
+      "3231e54ac2c14b0fdb28cc9327f825df69e8d9f7ed24184190d104cd2fbb9891",
+      "b3113efb9557d58cb03f9f58f032af6312d0938369049ae10d391a3e4513bc5b"
+    ],
+    "prompt_contract": {
+      "prompt_template_version": "v1-benchmark",
+      "system_prompt_position": "start"
+    },
+    "provenance_sha256": "635f5306652bc413f7f47cd71e45b009a2239f1091764663baae5f4875557d65",
+    "selection": {
+      "ordering": "example_id_then_canonical_source_record_sha256",
+      "requested_example_count": 2
+    },
+    "source_dataset_sha256": "3a23b1f05aac4c56eb74bdb5275cb9a7ff44ef0b6112d263e78aab7fbc0fbb41",
+    "source_record_count": 7405,
+    "tokenizer": {
+      "add_special_tokens": false,
+      "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
+      "tokenizer_revision": "cdbee75f17c01a7cc42f958dc650907174af0554"
+    }
+  },
   "jobs": [
     {
       "benchmark_id": "g6-vllm-8k-64-vanilla",
@@ -880,6 +948,268 @@
       "profiled": true,
       "raw_record_sha256": "8ddf3012dd25de6e59ec412333b06d22725ec2c6b250c532dfb70a629187c442",
       "raw_telemetry_sha256": "31c95327d69b689ba2178272955503fd4575860ccfed34167a8d4f7be3866045",
+      "selected_strategy": "legacy_segment_remerge"
+    },
+    {
+      "benchmark_id": "g6-vllm-32k-256-vanilla",
+      "configured_strategy": "auto",
+      "input_tokens": 32768,
+      "load_contract": {
+        "canonical_segmented_global_view": true,
+        "checksum_validations_per_request": 1,
+        "cold_load_joins": 6,
+        "copy_byte_relation": "snapshot_equals_payload_and_reassembly_is_zero",
+        "copy_byte_relation_verified_requests": 6,
+        "copy_count": 11,
+        "copy_metadata_retained": true,
+        "page_cache_eviction_succeeded_for_all": true,
+        "payload_cache_disabled_for_all": true,
+        "payload_mode": "segmented",
+        "prefetch_event_count": 0,
+        "successful_loads": 6
+      },
+      "load_metrics": {
+        "checksum_validations_per_request": 1,
+        "layer_load_ms": {
+          "count": 6,
+          "max": 781.992972,
+          "mean": 747.8748016666667,
+          "min": 735.941745,
+          "p50": 742.694537,
+          "p95": 773.4102925
+        },
+        "payload_bytes_per_request": {
+          "count": 6,
+          "max": 4826234880,
+          "min": 4825645056,
+          "p50": 4825939968.0,
+          "total": 28955639808,
+          "unique_values": [
+            4825645056,
+            4826234880
+          ]
+        },
+        "payload_materialize_ms": {
+          "count": 6,
+          "max": 10715.870871,
+          "mean": 10402.329978333333,
+          "min": 10182.574093,
+          "p50": 10323.6190045,
+          "p95": 10691.32673825
+        },
+        "payload_merge_ms": {
+          "count": 6,
+          "max": 0.056772,
+          "mean": 0.05406966666666666,
+          "min": 0.052311,
+          "p50": 0.053381,
+          "p95": 0.05661675
+        },
+        "payload_view_ms": {
+          "count": 6,
+          "max": 0.288467,
+          "mean": 0.145265,
+          "min": 0.113772,
+          "p50": 0.117863,
+          "p95": 0.24584099999999998
+        },
+        "reassembly_copy_bytes_per_request": {
+          "count": 6,
+          "max": 0,
+          "min": 0,
+          "p50": 0.0,
+          "total": 0,
+          "unique_values": [
+            0
+          ]
+        },
+        "snapshot_copy_bytes_per_request": {
+          "count": 6,
+          "max": 4826234880,
+          "min": 4825645056,
+          "p50": 4825939968.0,
+          "total": 28955639808,
+          "unique_values": [
+            4825645056,
+            4826234880
+          ]
+        },
+        "total_ms": {
+          "count": 6,
+          "max": 11498.353657,
+          "mean": 11150.512275666668,
+          "min": 10930.51867,
+          "p50": 11064.2817275,
+          "p95": 11463.39105875
+        }
+      },
+      "metrics": {
+        "answer_found_rate": 0.0,
+        "completion_tokens": [
+          256
+        ],
+        "exact_match_rate": 0.0,
+        "prompt_tokens": [
+          32768
+        ],
+        "quality_score_means": {
+          "exact_match": 0.0,
+          "f1": 0.0
+        },
+        "requests": 6,
+        "time_to_completion_seconds": {
+          "count": 6,
+          "max": 25.354892874000143,
+          "mean": 25.003903529833376,
+          "min": 24.764676256000712,
+          "p50": 24.92832310950007,
+          "p95": 25.32075641849997
+        },
+        "ttft_seconds": {
+          "count": 6,
+          "max": 12.098681286000101,
+          "mean": 11.734414318499907,
+          "min": 11.502176598000005,
+          "p50": 11.650729769999998,
+          "p95": 12.05953811974996
+        },
+        "unique_examples": 2
+      },
+      "output_tokens": 256,
+      "profiled": false,
+      "raw_record_sha256": "19b4ba7e4d960f38f8053eae8f3326e67c466f2d13ba6d401a3e610a3911e0b6",
+      "raw_telemetry_sha256": "3b62998307cc2c1ee935b92952eb4f872f20bb6cfc3389ce8edc70709b5c23f5",
+      "selected_strategy": "direct_global_snapshot"
+    },
+    {
+      "benchmark_id": "g6-vllm-32k-256-vanilla-legacy",
+      "configured_strategy": "legacy",
+      "input_tokens": 32768,
+      "load_contract": {
+        "canonical_segmented_global_view": true,
+        "checksum_validations_per_request": 2,
+        "cold_load_joins": 6,
+        "copy_byte_relation": "snapshot_is_zero_and_reassembly_equals_twice_payload",
+        "copy_byte_relation_verified_requests": 6,
+        "copy_count": 11,
+        "copy_metadata_retained": true,
+        "page_cache_eviction_succeeded_for_all": true,
+        "payload_cache_disabled_for_all": true,
+        "payload_mode": "segmented",
+        "prefetch_event_count": 0,
+        "successful_loads": 6
+      },
+      "load_metrics": {
+        "checksum_validations_per_request": 2,
+        "layer_load_ms": {
+          "count": 6,
+          "max": 760.062488,
+          "mean": 739.8340961666667,
+          "min": 735.440783,
+          "p50": 735.852286,
+          "p95": 754.055983
+        },
+        "payload_bytes_per_request": {
+          "count": 6,
+          "max": 4826234880,
+          "min": 4825645056,
+          "p50": 4825939968.0,
+          "total": 28955639808,
+          "unique_values": [
+            4825645056,
+            4826234880
+          ]
+        },
+        "payload_materialize_ms": {
+          "count": 6,
+          "max": 21278.699081,
+          "mean": 20767.583946,
+          "min": 20237.146339,
+          "p50": 20795.691327,
+          "p95": 21203.1898975
+        },
+        "payload_merge_ms": {
+          "count": 6,
+          "max": 8358.617266,
+          "mean": 8090.2341049999995,
+          "min": 7978.848015,
+          "p50": 8048.8887225,
+          "p95": 8296.8908625
+        },
+        "payload_view_ms": {
+          "count": 6,
+          "max": 0.106952,
+          "mean": 0.08658716666666666,
+          "min": 0.078932,
+          "p50": 0.08353250000000001,
+          "p95": 0.1012495
+        },
+        "reassembly_copy_bytes_per_request": {
+          "count": 6,
+          "max": 9652469760,
+          "min": 9651290112,
+          "p50": 9651879936.0,
+          "total": 57911279616,
+          "unique_values": [
+            9651290112,
+            9652469760
+          ]
+        },
+        "snapshot_copy_bytes_per_request": {
+          "count": 6,
+          "max": 0,
+          "min": 0,
+          "p50": 0.0,
+          "total": 0,
+          "unique_values": [
+            0
+          ]
+        },
+        "total_ms": {
+          "count": 6,
+          "max": 30397.619942,
+          "mean": 29597.846306833333,
+          "min": 28967.6545,
+          "p50": 29569.8610235,
+          "p95": 30226.416720250003
+        }
+      },
+      "metrics": {
+        "answer_found_rate": 0.0,
+        "completion_tokens": [
+          256
+        ],
+        "exact_match_rate": 0.0,
+        "prompt_tokens": [
+          32768
+        ],
+        "quality_score_means": {
+          "exact_match": 0.0,
+          "f1": 0.0
+        },
+        "requests": 6,
+        "time_to_completion_seconds": {
+          "count": 6,
+          "max": 44.60093007600017,
+          "mean": 43.79210038600013,
+          "min": 43.16462537700045,
+          "p50": 43.76361161600016,
+          "p95": 44.42862583450017
+        },
+        "ttft_seconds": {
+          "count": 6,
+          "max": 31.356887515999915,
+          "mean": 30.538778274999988,
+          "min": 29.90744639500008,
+          "p50": 30.508128516500165,
+          "p95": 31.18125613574989
+        },
+        "unique_examples": 2
+      },
+      "output_tokens": 256,
+      "profiled": false,
+      "raw_record_sha256": "b6367fd9742f0244af6774a70eeb6ae31f8a7a7cc370f4472664488e80211ba8",
+      "raw_telemetry_sha256": "d05c5f10856a8079124eabba2623fbe1fe085b6b10d5553963c4b32e91bfbe63",
       "selected_strategy": "legacy_segment_remerge"
     }
   ],
@@ -1807,6 +2137,315 @@
       "synthesized_variant_config_digests": {
         "direct": "3977d53830706ac79f5668c2e868bfde9576ff47b7e4e383fb4a5935a40fc640",
         "legacy": "7905037fd2e6c81bc3df775a9f611e51b9b992e08a5c96f75da02a272827de72"
+      },
+      "topology_retained_in_matched_setting": true,
+      "varied_factor": "segmented_load_strategy"
+    },
+    {
+      "all_other_comparison_inputs_identical": true,
+      "artifact_identity_and_geometry_matched": true,
+      "artifact_identity_scope": "generation_identity_and_contract_only",
+      "complete_effective_manifest_settings_identical": true,
+      "complete_effective_suite_settings_identical": true,
+      "direct_benchmark_id": "g6-vllm-32k-256-vanilla",
+      "direct_configured_strategy": "auto",
+      "direct_selected_strategy": "direct_global_snapshot",
+      "ignored_derived_identity_field": "physical_transform.config_digest",
+      "ignored_field_reason": "the synthesized digest incorporates the arm and variant IDs; all declared transform fields remain equality gates",
+      "legacy_benchmark_id": "g6-vllm-32k-256-vanilla-legacy",
+      "legacy_configured_strategy": "legacy",
+      "legacy_selected_strategy": "legacy_segment_remerge",
+      "matched_setting": {
+        "artifact_bytes": 9651879936,
+        "artifact_ids": [
+          "c30b0fef65c008be5a8449cf162da058eb8663d4316e6259d77c9697c12a5457"
+        ],
+        "datasets": [
+          "hotpotqa"
+        ],
+        "effective_arm_settings": {
+          "checkpoint_identity": null,
+          "connector_mode": "cachet",
+          "implementation_kind": "cachet",
+          "method_config_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "method_id": "vanilla_prefill",
+          "method_version": "2",
+          "request_customization": {
+            "config_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+          },
+          "requires_cachet_handoff": true,
+          "runtime_environment": {
+            "block_size": 16,
+            "cache_state": "cold",
+            "canonical_model_id": "Qwen/Qwen3-4B-Instruct-2507",
+            "engine_id": "vllm",
+            "engine_version": "0.23.0",
+            "hardware_fingerprint": "aws:g6.8xlarge:gpu=l4x1:cpu=32:ram_mib=131072:local_disks=2x450gb",
+            "hardware_target": "aws-g6-l4",
+            "key_position_encoding": "pre_rope",
+            "layout_version": "qwen3-v1",
+            "lora_id": "base",
+            "model_dtype": "bfloat16",
+            "model_quantization": "none",
+            "model_revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+            "payload_axis_order": "token_major",
+            "pipeline_parallel_size": 1,
+            "prompt_template_version": "v1-benchmark",
+            "rope_rotary_dim": 128,
+            "rope_theta": 5000000.0,
+            "runtime_kv_dtype": "bfloat16",
+            "runtime_version": "15.4.x-gpu-ml-scala2.12",
+            "served_model_id": "qwen3:4b-instruct",
+            "serving_platform": "vllm",
+            "storage_identity": "local_nvme:/local_disk0:2x450gb",
+            "tensor_parallel_size": 1,
+            "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
+            "tokenizer_revision": "cdbee75f17c01a7cc42f958dc650907174af0554"
+          },
+          "scorer_plugin_path": null,
+          "setting_overrides": {},
+          "source_revision": null,
+          "uses_cache": true
+        },
+        "effective_suite": {
+          "datasets": [
+            "hotpotqa"
+          ],
+          "examples": 2,
+          "hardware_target": "aws-g6-l4",
+          "interleave_examples": false,
+          "isolate_arms": true,
+          "model_id": "qwen3:4b-instruct",
+          "prefix_cache_salt_mode": "per_request",
+          "repeats": 3,
+          "request_parallelism": 1,
+          "seed": null,
+          "shuffle": false,
+          "suite_id": "g6-vllm-32k-256"
+        },
+        "environment": {
+          "cache_state": "cold",
+          "hardware_fingerprint": "aws:g6.8xlarge:gpu=l4x1:cpu=32:ram_mib=131072:local_disks=2x450gb",
+          "hardware_target": "aws-g6-l4",
+          "runtime_version": "15.4.x-gpu-ml-scala2.12",
+          "storage_identity": "local_nvme:/local_disk0:2x450gb"
+        },
+        "examples": 2,
+        "handoff_topology_attestation": {
+          "example_count": 2,
+          "examples": [
+            {
+              "artifact_id": "c30b0fef65c008be5a8449cf162da058eb8663d4316e6259d77c9697c12a5457",
+              "document_count": 11,
+              "example_key_sha256": "49cde39179ee703deddefb5493e63ef55e55ba35eb7b1959c8065a2f9c5f8478",
+              "logical_prompt_sha256": "3231e54ac2c14b0fdb28cc9327f825df69e8d9f7ed24184190d104cd2fbb9891",
+              "logical_token_count": 32768,
+              "method_config_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "method_id": "vanilla_prefill",
+              "method_version": "2",
+              "segment_count": 11
+            },
+            {
+              "artifact_id": "c30b0fef65c008be5a8449cf162da058eb8663d4316e6259d77c9697c12a5457",
+              "document_count": 11,
+              "example_key_sha256": "63c2757f7226201ba88faf49f814f32b014ae3a5a4112f2d5248d365f8159f04",
+              "logical_prompt_sha256": "b3113efb9557d58cb03f9f58f032af6312d0938369049ae10d391a3e4513bc5b",
+              "logical_token_count": 32768,
+              "method_config_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+              "method_id": "vanilla_prefill",
+              "method_version": "2",
+              "segment_count": 11
+            }
+          ],
+          "examples_sha256": "25908bb0665b648d7965a790ee5102e3f26dfa0cdf869e42dbfeb0dc92ed7734",
+          "record_type": "document_kv.handoff_topology_attestation.v1",
+          "schema_version": 1
+        },
+        "logical_workload": {
+          "complete_dataset_split": false,
+          "dataset_sample_digests": {
+            "hotpotqa": "1fe3becf83f9d653d0d387636316182ef86d8f4500e1a27c9010b22a6da8bffc"
+          },
+          "datasets": [
+            "hotpotqa"
+          ],
+          "example_count": 2,
+          "input_tokens_target": 32768,
+          "measurement_scopes": [
+            "latency",
+            "quality"
+          ],
+          "output_tokens_target": 256,
+          "prompt_template_version": "v1-benchmark",
+          "sample_selection_digest": "d48ee11f30aa283b4bfe65983f14e7b009c2e83f17f00ff7a7024cbcdd8d85e7",
+          "scorers": [
+            {
+              "dataset": "hotpotqa",
+              "metrics": [
+                {
+                  "direction": "higher_is_better",
+                  "max_regression": 0.02,
+                  "metric_name": "exact_match"
+                },
+                {
+                  "direction": "higher_is_better",
+                  "max_regression": 0.02,
+                  "metric_name": "f1"
+                }
+              ],
+              "plugin_path": "document_kv_cache.benchmarks:hotpotqa_official_answer_scores",
+              "prompt_plugin_path": null,
+              "prompt_template_version": null,
+              "publication_approved": true,
+              "scorer_id": "hotpotqa.official_answer",
+              "version": "hotpot_evaluate_v1@3635853403a8"
+            }
+          ]
+        },
+        "manifest_comparison": {
+          "baseline_arm_id": "selected_single_arm",
+          "mode": "methods_same_setting",
+          "reference_arm_id": "selected_single_arm",
+          "varied_setting": null
+        },
+        "manifest_decoding": {
+          "config_digest": "be26151b2b12d0b2521c3caaf89d957658dbda158106d1c2ac86ea917be915d9",
+          "generation_seed": null,
+          "max_output_tokens": 256,
+          "settings": {
+            "ignore_eos": true
+          },
+          "stream": true,
+          "temperature": 0.0
+        },
+        "manifest_execution": {
+          "benchmark_seed": null,
+          "isolate_arms": true,
+          "isolation_mode": "shared_process_sequential",
+          "order_mode": "arm_isolated",
+          "repeats": 3,
+          "request_parallelism": 1,
+          "shuffle": false,
+          "source_execution_ids": [],
+          "warmups": 0
+        },
+        "manifest_identity": {
+          "experiment_id": "g6-vllm-32k-256",
+          "has_unresolved_provenance": false,
+          "manifest_version": 1,
+          "record_type": "document_kv.benchmark_experiment_manifest.v1"
+        },
+        "measurement_inputs": [
+          {
+            "completion_tokens": 256,
+            "example_identity_sha256": "bcaa2b099eb1b214f66ec11c6e5989f7fc36b388a83fb5f9319b22d59b0a63c6",
+            "logical_prompt_sha256": "3231e54ac2c14b0fdb28cc9327f825df69e8d9f7ed24184190d104cd2fbb9891",
+            "prompt_tokens": 32768,
+            "repeat_index": 1,
+            "scorer_id": "hotpotqa.official_answer",
+            "scorer_version": "hotpot_evaluate_v1@3635853403a8"
+          },
+          {
+            "completion_tokens": 256,
+            "example_identity_sha256": "bcaa2b099eb1b214f66ec11c6e5989f7fc36b388a83fb5f9319b22d59b0a63c6",
+            "logical_prompt_sha256": "3231e54ac2c14b0fdb28cc9327f825df69e8d9f7ed24184190d104cd2fbb9891",
+            "prompt_tokens": 32768,
+            "repeat_index": 2,
+            "scorer_id": "hotpotqa.official_answer",
+            "scorer_version": "hotpot_evaluate_v1@3635853403a8"
+          },
+          {
+            "completion_tokens": 256,
+            "example_identity_sha256": "bcaa2b099eb1b214f66ec11c6e5989f7fc36b388a83fb5f9319b22d59b0a63c6",
+            "logical_prompt_sha256": "3231e54ac2c14b0fdb28cc9327f825df69e8d9f7ed24184190d104cd2fbb9891",
+            "prompt_tokens": 32768,
+            "repeat_index": 3,
+            "scorer_id": "hotpotqa.official_answer",
+            "scorer_version": "hotpot_evaluate_v1@3635853403a8"
+          },
+          {
+            "completion_tokens": 256,
+            "example_identity_sha256": "905fe61c9aaf11fcde42bbf7fdf1ad4c06970988864fdd18f26b9e6f399f390e",
+            "logical_prompt_sha256": "b3113efb9557d58cb03f9f58f032af6312d0938369049ae10d391a3e4513bc5b",
+            "prompt_tokens": 32768,
+            "repeat_index": 1,
+            "scorer_id": "hotpotqa.official_answer",
+            "scorer_version": "hotpot_evaluate_v1@3635853403a8"
+          },
+          {
+            "completion_tokens": 256,
+            "example_identity_sha256": "905fe61c9aaf11fcde42bbf7fdf1ad4c06970988864fdd18f26b9e6f399f390e",
+            "logical_prompt_sha256": "b3113efb9557d58cb03f9f58f032af6312d0938369049ae10d391a3e4513bc5b",
+            "prompt_tokens": 32768,
+            "repeat_index": 2,
+            "scorer_id": "hotpotqa.official_answer",
+            "scorer_version": "hotpot_evaluate_v1@3635853403a8"
+          },
+          {
+            "completion_tokens": 256,
+            "example_identity_sha256": "905fe61c9aaf11fcde42bbf7fdf1ad4c06970988864fdd18f26b9e6f399f390e",
+            "logical_prompt_sha256": "b3113efb9557d58cb03f9f58f032af6312d0938369049ae10d391a3e4513bc5b",
+            "prompt_tokens": 32768,
+            "repeat_index": 3,
+            "scorer_id": "hotpotqa.official_answer",
+            "scorer_version": "hotpot_evaluate_v1@3635853403a8"
+          }
+        ],
+        "method_config_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "method_id": "vanilla_prefill",
+        "method_version": "2",
+        "model_runtime": {
+          "block_size": 16,
+          "canonical_model_id": "Qwen/Qwen3-4B-Instruct-2507",
+          "engine_id": "vllm",
+          "engine_version": "0.23.0",
+          "key_position_encoding": "pre_rope",
+          "layout_version": "qwen3-v1",
+          "lora_id": "base",
+          "model_dtype": "bfloat16",
+          "model_id": "qwen3:4b-instruct",
+          "model_quantization": "none",
+          "model_revision": "cdbee75f17c01a7cc42f958dc650907174af0554",
+          "package_revisions": {
+            "accelerate": "1.14.0",
+            "bitsandbytes": "0.49.2",
+            "cachet-kv": "wheel-sha256:5d91052aa5e92db64c3ba21924ae1805b7671c8c19bdc600fb477956dca78f90",
+            "fastapi[standard]": "0.136.0",
+            "huggingface-hub": "1.20.1",
+            "numpy": "2.3.5",
+            "prometheus-fastapi-instrumentator": "8.0.0",
+            "tokenizers": "0.22.2",
+            "transformers": "5.12.1",
+            "vllm": "0.23.0"
+          },
+          "payload_axis_order": "token_major",
+          "pipeline_parallel_size": 1,
+          "prompt_template_version": "v1-benchmark",
+          "rope_rotary_dim": 128,
+          "rope_theta": 5000000.0,
+          "runtime_kv_dtype": "bfloat16",
+          "serving_platform": "vllm",
+          "tensor_parallel_size": 1,
+          "tokenizer_id": "Qwen/Qwen3-4B-Instruct-2507",
+          "tokenizer_revision": "cdbee75f17c01a7cc42f958dc650907174af0554"
+        },
+        "physical_transform": {
+          "declared_config_digest": null,
+          "transform_id": "cachet.vanilla.per_document_segments",
+          "version": "1"
+        },
+        "repeats": 3,
+        "request_parallelism": 1,
+        "suite_id": "g6-vllm-32k-256"
+      },
+      "matched_setting_sha256": "ad95aa91e310b00cc05e9a55b3d6b6012efd1b48e198954dc78776d67bacd648",
+      "payload_content_equality_limitation": "The jobs separately regenerated equal-sized payloads. Their artifact IDs retain generation identity and contract, but no cross-job payload-content checksum was retained; byte-for-byte payload equality is not independently verified.",
+      "payload_content_equality_verified": false,
+      "private_quality_inputs_identical": true,
+      "profiled": false,
+      "synthesized_variant_config_digests": {
+        "direct": "ee10f8c6263193c9716740d1c26f837c9dd4146452ccf08e1bc4bacf1805d298",
+        "legacy": "37e73b38a9c0d1ed8f9225ea51a879c26155f052fc4ab4141e9b2e88b1af5506"
       },
       "topology_retained_in_matched_setting": true,
       "varied_factor": "segmented_load_strategy"

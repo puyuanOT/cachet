@@ -20,13 +20,16 @@ native GPU KV blocks.
 Main-protocol Vanilla-v2 performance and quality measurements are pending. The
 [engineering appendix](../../benchmarks/appendix/representative-bf16-qwen3-4b-canaries/)
 contains non-publication-qualified BF16 canaries: the 16k canary quality gate
-passes, both 8k gates fail, and a matched six-job cold-load ablation records
-60.22% and 61.70% lower P50 TTFT for the direct loader at 8k and 16k. Those
-results do not populate the Q4-weight/Q8-document-KV main tables. Earlier
-post-RoPE V1 benchmark records are superseded for current performance and
-quality claims. Memory/Disk/Unity Catalog storage-reader evidence,
-provider-backed vLLM/SGLang probes, and SGLang handoff records remain separate
-integration evidence; the current SGLang BF16 smoke is not a speedup result.
+passes, both 8k gates fail, and a matched eight-job cold-load ablation records
+60.22%, 61.70%, and 61.81% lower P50 TTFT for the direct loader at 8k, 16k,
+and 32k. The 32k pair uses `gpu_memory_utilization=0.70`, while 8k and 16k use
+`0.85`; it is matched within size but not an identical-engine-memory cross-size
+scaling point. Those results do not populate the Q4-weight/Q8-document-KV main
+tables. Earlier post-RoPE V1 benchmark records are superseded for current
+performance and quality claims. Memory/Disk/Unity Catalog storage-reader
+evidence, provider-backed vLLM/SGLang probes, and SGLang handoff records remain
+separate integration evidence; the current SGLang BF16 smoke is not a speedup
+result.
 
 Most readers should use these entry points first:
 
