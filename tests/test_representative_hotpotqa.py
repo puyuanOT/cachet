@@ -58,7 +58,7 @@ def _write_official_source(path: Path, *, records=None):
     path.write_text(json.dumps(values, ensure_ascii=False), encoding="utf-8")
 
 
-@pytest.mark.parametrize("target", [8192, 16384])
+@pytest.mark.parametrize("target", [8192, 16384, 32768])
 def test_prepare_representative_hotpotqa_is_exact_deterministic_and_sanitized(
     tmp_path,
     target,
