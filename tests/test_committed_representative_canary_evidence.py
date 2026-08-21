@@ -86,7 +86,7 @@ EXPECTED_APPENDIX_FILES = {
     "g6-sglang-4k-32-paired-smoke-evidence-v2.json",
     "g6-vllm-16k-256-three-arm-canary-v2.json",
     "g6-vllm-8k-64-three-arm-canary-v2.json",
-    "vanilla-v2-cold-optimization.json",
+    "vanilla-cold-optimization.json",
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SANITIZED_EXAMPLE_ID_RE = re.compile(r"^[0-9a-f]{24}$")
@@ -266,7 +266,7 @@ def test_representative_canary_appendix_has_only_reviewed_files_and_provenance()
 
 
 @pytest.mark.parametrize("case", VLLM_EVIDENCE_CASES, ids=lambda case: case.suite_id)
-def test_vanilla_v2_vllm_canary_is_canonical_and_replays_cold_joins(
+def test_vanilla_vllm_canary_is_canonical_and_replays_cold_joins(
     case: VLLMEvidenceCase,
 ) -> None:
     record = _load_canonical_json(APPENDIX_ROOT / case.filename)
@@ -423,7 +423,7 @@ def test_vanilla_v2_vllm_canary_is_canonical_and_replays_cold_joins(
     _assert_no_secret_path_or_raw_text_leaks(record)
 
 
-def test_vanilla_v2_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
+def test_vanilla_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
     record = _load_canonical_json(
         APPENDIX_ROOT / "g6-sglang-4k-32-paired-smoke-evidence-v2.json"
     )
@@ -517,8 +517,8 @@ def test_vanilla_v2_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
     _assert_no_secret_path_or_raw_text_leaks(record)
 
 
-def test_vanilla_v2_cold_optimization_is_an_eight_job_matched_ablation() -> None:
-    path = APPENDIX_ROOT / "vanilla-v2-cold-optimization.json"
+def test_vanilla_cold_optimization_is_an_eight_job_matched_ablation() -> None:
+    path = APPENDIX_ROOT / "vanilla-cold-optimization.json"
     assert sha256(path.read_bytes()).hexdigest() == FINAL_COLD_OPTIMIZATION_SHA256
     record = _load_canonical_json(path)
     assert record["record_type"] == "cachet.vanilla_v2_cold_optimization_evidence.v2"

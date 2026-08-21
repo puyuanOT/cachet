@@ -199,8 +199,8 @@ def test_sglang_two_segment_reposition_uses_global_positions_and_preserves_value
     token_major = torch.stack((pre_rope_keys, values), dim=1).unsqueeze(1)
     payload = bytes(token_major.contiguous().view(torch.uint8).flatten().tolist())
     handle = KVCacheHandle(
-        request_id="req-sglang-vanilla-v2",
-        handle_uri="document-kv://req-sglang-vanilla-v2",
+        request_id="req-sglang-vanilla",
+        handle_uri="document-kv://req-sglang-vanilla",
         layout=layout,
         segments=(
             KVSegment("doc-a", "document_chunk", "doc-a", 0, 2, 0, 64),

@@ -1,7 +1,7 @@
-# Representative BF16 Qwen3-4B Vanilla-v2 Canaries
+# Representative BF16 Qwen3-4B Vanilla Canaries
 
 This folder preserves sanitized engineering evidence for the registered
-**Vanilla-v2** method. Vanilla v2 computes every document independently,
+**Vanilla** method. Vanilla computes every document independently,
 captures keys after QK normalization but before RoPE, assembles the documents
 in logical order, and applies each key's true absolute assembled position at
 injection. Values are unchanged. This fixes the positional inconsistency in the
@@ -23,7 +23,7 @@ cells remain blank until that exact protocol is run.
 | Model and tokenizer | `Qwen/Qwen3-4B-Instruct-2507` |
 | Model and tokenizer revision | `cdbee75f17c01a7cc42f958dc650907174af0554` |
 | Model weights / runtime KV / document KV | BF16 / BF16 / BF16; no quantization |
-| Vanilla contract | method v2; `pre_rope`; `rerope_at_injection`; theta `5000000.0`; rotary dimension `128` |
+| Vanilla contract | `pre_rope`; `rerope_at_injection`; theta `5000000.0`; rotary dimension `128` |
 | vLLM | `0.23.0` |
 | SGLang | `0.5.10.post1` |
 
@@ -48,7 +48,7 @@ post hoc to manufacture that field.
 | [`g6-vllm-16k-256-three-arm-canary-v2.json`](g6-vllm-16k-256-three-arm-canary-v2.json) | L4, 16k input target, 256 output tokens | `c5b44cf9ab4fd40e2bbf829e1cc033c57e05c88f303e50c3706cda1a3eaeb32c` |
 | [`g5-vllm-8k-64-three-arm-canary-v2.json`](g5-vllm-8k-64-three-arm-canary-v2.json) | A10G compatibility canary, 8k input target, 64 output tokens | `628781b3bbdf716e97c935987105897335c767f1e10f4b877fc9ec83c72bc630` |
 | [`g6-sglang-4k-32-paired-smoke-evidence-v2.json`](g6-sglang-4k-32-paired-smoke-evidence-v2.json) | L4 native-handoff execution smoke | `c226d949e1e9e612ccd4aec34e0e9dc78f6541f111a51540ffacdee709387174` |
-| [`vanilla-v2-cold-optimization.json`](vanilla-v2-cold-optimization.json) | Eight-job direct-versus-legacy cold-load ablation | `814ea14db71edf1c7e9135fef957c1622e17129eeec0a994302b09308e9b0734` |
+| [`vanilla-cold-optimization.json`](vanilla-cold-optimization.json) | Eight-job direct-versus-legacy cold-load ablation | `814ea14db71edf1c7e9135fef957c1622e17129eeec0a994302b09308e9b0734` |
 
 ## vLLM Three-Arm Canaries
 
@@ -58,7 +58,7 @@ of two HotpotQA examples, not six independent samples. The three arms are:
 
 - `baseline_prefill`: standard no-cache full-prompt recomputation.
 - `full_prefix_prefill`: an exact full-prefix, one-segment post-RoPE control.
-- `vanilla_prefill`: Vanilla-v2 independent pre-RoPE document segments with
+- `vanilla_prefill`: Vanilla independent pre-RoPE document segments with
   true-position re-RoPE at injection.
 
 Latency values below are seconds. Ratios are baseline P50 divided by arm P50;
@@ -69,13 +69,13 @@ measurement, P95, paired statistic, and full-precision value.
 | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `g6.8xlarge` / L4 | 8192 / 64 | baseline | 6 | 1.565836 | 3.934683 | 0.05625 | 1.0000 | 1.0000 |
 | `g6.8xlarge` / L4 | 8192 / 64 | full-prefix control | 6 | 1.850524 | 4.211797 | 0.05625 | 0.8462 | 0.9342 |
-| `g6.8xlarge` / L4 | 8192 / 64 | Vanilla v2 | 6 | 2.909791 | 5.274294 | 0.02381 | 0.5381 | 0.7460 |
+| `g6.8xlarge` / L4 | 8192 / 64 | Vanilla | 6 | 2.909791 | 5.274294 | 0.02381 | 0.5381 | 0.7460 |
 | `g6.8xlarge` / L4 | 16384 / 256 | baseline | 6 | 3.859666 | 14.706137 | 0.01474 | 1.0000 | 1.0000 |
 | `g6.8xlarge` / L4 | 16384 / 256 | full-prefix control | 6 | 3.245188 | 14.078988 | 0.01392 | 1.1894 | 1.0445 |
-| `g6.8xlarge` / L4 | 16384 / 256 | Vanilla v2 | 6 | 5.846156 | 16.687317 | 0.00000 | 0.6602 | 0.8813 |
+| `g6.8xlarge` / L4 | 16384 / 256 | Vanilla | 6 | 5.846156 | 16.687317 | 0.00000 | 0.6602 | 0.8813 |
 | `g5.8xlarge` / A10G | 8192 / 64 | baseline | 6 | 1.409549 | 2.760885 | 0.05625 | 1.0000 | 1.0000 |
 | `g5.8xlarge` / A10G | 8192 / 64 | full-prefix control | 6 | 1.737752 | 3.089778 | 0.05530 | 0.8111 | 0.8936 |
-| `g5.8xlarge` / A10G | 8192 / 64 | Vanilla v2 | 6 | 2.569946 | 3.921416 | 0.02381 | 0.5485 | 0.7041 |
+| `g5.8xlarge` / A10G | 8192 / 64 | Vanilla | 6 | 2.569946 | 3.921416 | 0.02381 | 0.5485 | 0.7041 |
 
 All 54 requests completed without request errors and with exact server token
 accounting. In each trio, the 12 cache measurements join one-to-one with 12
@@ -174,9 +174,9 @@ subcomponents of `layer_load`, not additional latency.
 
 ## SGLang Native-Handoff Smoke
 
-The SGLang record validates the same Vanilla-v2 pre-RoPE position contract on
+The SGLang record validates the same Vanilla pre-RoPE position contract on
 the native hierarchical-cache handoff. Its closed handoff-generation projection
-binds `vanilla_prefill` v2 to the forced pre-RoPE generator factory (version
+binds `vanilla_prefill` to the forced pre-RoPE generator factory (version
 `5.3.0`), per-document topology, safe content/topology digests, and canonical
 raw-sidecar SHA-256
 `49cf15b2d53f55a9f48594c120dc1cafe9d905c407a51116c8b54d5606eb405a`.
@@ -203,7 +203,7 @@ which confirms that request metadata reached the SGLang native cache path.
   They do not match the main Q4-weight/Q8-document-KV, parallelism-4 protocol.
 - The direct-load ablation varies a provider implementation strategy, not a
   cache method. The optimized canonical segmented loader can serve compatible
-  methods through the vLLM provider, but only Vanilla v2 is evidenced here.
+  methods through the vLLM provider, but only Vanilla is evidenced here.
 - The 32k pair uses `gpu_memory_utilization=0.70`, while the 8k and 16k pairs
   use `0.85`. Direct and legacy are matched within each size, but the 32k row is
   not an identical-engine-memory cross-size scaling point.

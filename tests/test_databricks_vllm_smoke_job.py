@@ -266,6 +266,31 @@ def test_build_databricks_vllm_smoke_payload_includes_payload_cache_budget():
     assert parameters.index("--payload-cache-max-bytes") < parameters.index("--dataset")
 
 
+def test_build_databricks_vllm_smoke_payload_enables_fail_closed_ram_priming():
+    config = DatabricksVLLMSmokeJobConfig(
+        benchmark_id="v1-vllm-ram-cache-001",
+        output_dir="/Volumes/catalog/schema/volume/v1-vllm-ram-cache",
+        runner_python_file="dbfs:/benchmarks/run_vllm_smoke.py",
+        node_type_id="g6.8xlarge",
+        single_user_name=SINGLE_USER_NAME,
+        benchmark_prewarm_payload_cache=True,
+        payload_cache_max_bytes=8 * 1024 * 1024 * 1024,
+        dataset_specs=DATASET_SPECS,
+    )
+
+    parameters = build_databricks_vllm_smoke_run_submit_payload(config)["tasks"][0][
+        "spark_python_task"
+    ]["parameters"]
+
+    assert "--benchmark-prewarm-payload-cache" in parameters
+    assert parameters[parameters.index("--payload-cache-max-bytes") + 1] == str(
+        8 * 1024 * 1024 * 1024
+    )
+    assert parameters.index("--benchmark-prewarm-payload-cache") < parameters.index(
+        "--dataset"
+    )
+
+
 def test_databricks_payload_forwards_arbitrary_arms_evidence_and_provenance():
     matrix = representative_canary_matrix()
     isolated_run = matrix.runs[2]
@@ -815,6 +840,17 @@ def test_databricks_vllm_smoke_config_validates_benchmark_sizing_and_datasets():
         (
             {"benchmark_prewarm_cache_prefix": True},
             "benchmark_prewarm_cache_prefix requires prepared dataset specs",
+        ),
+        (
+            {"benchmark_prewarm_payload_cache": True},
+            "benchmark_prewarm_payload_cache requires prepared dataset specs",
+        ),
+        (
+            {
+                "benchmark_prewarm_payload_cache": True,
+                "dataset_specs": DATASET_SPECS,
+            },
+            "requires a positive payload_cache_max_bytes",
         ),
         (
             {

@@ -990,7 +990,7 @@ def test_generate_benchmark_handoffs_accepts_declared_method_topology(
     assert len(handoff["handle"]["segments"]) == expected_segments
 
 
-def test_strict_vanilla_v2_stamps_pre_rope_identity_and_absolute_layout(
+def test_strict_vanilla_stamps_pre_rope_identity_and_absolute_layout(
     tmp_path,
 ):
     input_path = tmp_path / "hotpot.jsonl"
@@ -1002,7 +1002,7 @@ def test_strict_vanilla_v2_stamps_pre_rope_identity_and_absolute_layout(
 
     result = generate_benchmark_handoff_bundles(
         input_path,
-        output_dir=tmp_path / "vanilla-v2",
+        output_dir=tmp_path / "vanilla",
         generator=StrictPreRopeGenerator(layout),
         layout=layout,
         cache_method=CacheGenerationMethod.VANILLA_PREFILL,
@@ -1021,7 +1021,7 @@ def test_strict_vanilla_v2_stamps_pre_rope_identity_and_absolute_layout(
     handoff = json.loads(
         (
             tmp_path
-            / "vanilla-v2"
+            / "vanilla"
             / "hotpotqa"
             / f"{entry.request_id}.handoff.json"
         ).read_text(encoding="utf-8")

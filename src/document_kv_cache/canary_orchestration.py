@@ -2406,7 +2406,8 @@ def _validate_handoff_entry(
     record = _handoff_record(entry)
     # Authenticate the entire executable handoff at preparation time. This
     # verifies the serialized reuse plan against the live registry, ties the
-    # layout to the artifact identity, and prevents a stale Vanilla-v1 record
+    # layout to the artifact identity, and prevents a stale Vanilla
+    # artifact-version-1 record
     # from reaching an expensive isolated cluster run.
     validate_engine_adapter_request_record(
         record,
@@ -2442,8 +2443,12 @@ def _validate_handoff_entry(
     if identity.artifact_id != entry.artifact_id:
         raise ValueError(f"handoff {entry.key!r} artifact_id does not match its handle")
     if method_id == CacheGenerationMethod.VANILLA_PREFILL.value:
+        vanilla = default_method_registry().get(
+            CacheGenerationMethod.VANILLA_PREFILL,
+            require_implemented=True,
+        )
         expected_position = {
-            "method_version": "2",
+            "method_version": vanilla.artifact_version,
             "key_position_encoding": "pre_rope",
             "rope_theta": QWEN3_4B_ROPE_THETA,
             "rope_rotary_dim": QWEN3_4B_ROPE_ROTARY_DIM,

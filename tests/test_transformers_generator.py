@@ -529,7 +529,7 @@ def test_registered_vanilla_generator_derives_pre_rope_layout_in_workflow(
         documents=(document(),),
         generator=created,
         config=config,
-        shard_uri=tmp_path / "vanilla-v2.kvpack",
+        shard_uri=tmp_path / "vanilla.kvpack",
         align_bytes=1,
     )
 

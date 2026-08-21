@@ -5,7 +5,7 @@ Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, shared GPU prefix
 references, cold disk-to-GPU document-KV hydrate, `g6.8xlarge` (L4), 4 parallel
 requests, N x 2k distinct documents per request, and forced 256-token decode.
 
-Sanitized BF16 Vanilla-v2 three-arm canaries for baseline, an exact full-prefix
+Sanitized BF16 Vanilla three-arm canaries for baseline, an exact full-prefix
 control, and independent pre-RoPE document segments live in
 [`../appendix/representative-bf16-qwen3-4b-canaries/`](../appendix/representative-bf16-qwen3-4b-canaries/).
 They use two HotpotQA examples with three repeats, isolated jobs, and request

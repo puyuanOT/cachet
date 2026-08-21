@@ -160,7 +160,7 @@ def test_build_handle_from_materialized_kv_segments(tmp_path):
     assert method_spec(ready.handle.cache_method).artifact_version == "1"
 
 
-def test_build_engine_ready_request_resolves_pre_rope_default_to_vanilla_v2(
+def test_build_engine_ready_request_resolves_pre_rope_default_to_vanilla(
     tmp_path,
 ):
     document_service = service(

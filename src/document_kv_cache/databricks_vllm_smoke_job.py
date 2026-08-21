@@ -19,6 +19,7 @@ from document_kv_cache._hardware_targets import (
     validate_v1_vllm_kv_cache_dtype_for_hardware_target,
 )
 from document_kv_cache.artifact_identity import RuntimeIdentity
+from document_kv_cache.benchmarks import CACHE_REUSE_ARM
 from document_kv_cache.databricks_job import (
     DEFAULT_AWS_SINGLE_NODE_GPU_NODE_TYPE,
     DEFAULT_DATABRICKS_DATA_SECURITY_MODE,
@@ -42,6 +43,7 @@ from document_kv_cache.vllm_smoke import (
     VLLM_REPRESENTATIVE_WORKLOAD_PROFILES,
     VLLM_VERSION,
     VLLMRepresentativeWorkloadProfile,
+    _arm_spec_requires_cachet_handoff,
     _runtime_identity_from_json,
     parse_dataset_specs,
     vllm_representative_workload_profile,
@@ -180,6 +182,7 @@ class DatabricksVLLMSmokeJobConfig:
     representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = None
     benchmark_manifest_provenance: Mapping[str, Any] = field(default_factory=dict)
     benchmark_prewarm_cache_prefix: bool = False
+    benchmark_prewarm_payload_cache: bool = False
     benchmark_cache_runtime_prompt: bool = False
     benchmark_force_max_tokens: bool = False
     benchmark_prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
@@ -439,6 +442,8 @@ class DatabricksVLLMSmokeJobConfig:
             parse_dataset_specs(self.dataset_specs, allow_subset=self.allow_dataset_subset)
         if type(self.benchmark_prewarm_cache_prefix) is not bool:
             raise TypeError("benchmark_prewarm_cache_prefix must be a boolean")
+        if type(self.benchmark_prewarm_payload_cache) is not bool:
+            raise TypeError("benchmark_prewarm_payload_cache must be a boolean")
         if type(self.benchmark_cache_runtime_prompt) is not bool:
             raise TypeError("benchmark_cache_runtime_prompt must be a boolean")
         if type(self.benchmark_force_max_tokens) is not bool:
@@ -450,6 +455,31 @@ class DatabricksVLLMSmokeJobConfig:
                 raise ValueError("benchmark_handoff_generator_factory requires prepared dataset specs")
         if self.benchmark_prewarm_cache_prefix and not self.dataset_specs:
             raise ValueError("benchmark_prewarm_cache_prefix requires prepared dataset specs")
+        if self.benchmark_prewarm_payload_cache and not self.dataset_specs:
+            raise ValueError("benchmark_prewarm_payload_cache requires prepared dataset specs")
+        if self.benchmark_prewarm_payload_cache and self.payload_cache_max_bytes <= 0:
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires a positive payload_cache_max_bytes"
+            )
+        if self.benchmark_prewarm_payload_cache and self.benchmark_prewarm_cache_prefix:
+            raise ValueError(
+                "benchmark_prewarm_payload_cache and benchmark_prewarm_cache_prefix "
+                "are mutually exclusive"
+            )
+        if self.benchmark_prewarm_payload_cache:
+            runs_cache_arm = (
+                any(
+                    _arm_spec_requires_cachet_handoff(spec)
+                    for spec in self.benchmark_arm_specs
+                )
+                if self.benchmark_arm_specs
+                else not self.benchmark_arms
+                or CACHE_REUSE_ARM in self.benchmark_arms
+            )
+            if not runs_cache_arm:
+                raise ValueError(
+                    "benchmark_prewarm_payload_cache requires a Cachet handoff benchmark arm"
+                )
         if self.benchmark_cache_runtime_prompt and not self.dataset_specs:
             raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
         if self.benchmark_prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
@@ -458,6 +488,14 @@ class DatabricksVLLMSmokeJobConfig:
             raise ValueError(
                 "benchmark_prewarm_cache_prefix requires benchmark_prefix_cache_salt_mode='static' "
                 "so prewarmed prefix-cache blocks can be reused"
+            )
+        if (
+            self.benchmark_prewarm_payload_cache
+            and self.benchmark_prefix_cache_salt_mode != "per_request"
+        ):
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires "
+                "benchmark_prefix_cache_salt_mode='per_request'"
             )
         if self.benchmark_handoff_output_dir is not None and not self.benchmark_handoff_output_dir:
             raise ValueError("benchmark_handoff_output_dir must be non-empty when provided")
@@ -991,6 +1029,8 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
         )
     if config.benchmark_prewarm_cache_prefix:
         parameters.append("--benchmark-prewarm-cache-prefix")
+    if config.benchmark_prewarm_payload_cache:
+        parameters.append("--benchmark-prewarm-payload-cache")
     if config.benchmark_cache_runtime_prompt:
         parameters.append("--benchmark-cache-runtime-prompt")
     if config.benchmark_force_max_tokens:
@@ -998,6 +1038,7 @@ def _runner_parameters(config: DatabricksVLLMSmokeJobConfig) -> list[str]:
     if (
         config.is_representative_submission
         or config.benchmark_prewarm_cache_prefix
+        or config.benchmark_prewarm_payload_cache
         or config.benchmark_prefix_cache_salt_mode
         != PREPARED_PREFIX_CACHE_SALT_MODE
     ):
@@ -1189,6 +1230,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--benchmark-prewarm-payload-cache",
+        action="store_true",
+        help=(
+            "Prime every prepared Cachet payload into the provider's host-RAM cache "
+            "under an isolated GPU prefix-cache namespace and require hit attestations."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-force-max-tokens",
         action="store_true",
         help="Force benchmark requests to emit exactly --max-tokens tokens with ignore_eos=true.",
@@ -1340,6 +1389,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             ),
             benchmark_prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
+            benchmark_prewarm_payload_cache=args.benchmark_prewarm_payload_cache,
             benchmark_cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
             benchmark_force_max_tokens=args.benchmark_force_max_tokens,
             benchmark_prefix_cache_salt_mode=args.benchmark_prefix_cache_salt_mode,

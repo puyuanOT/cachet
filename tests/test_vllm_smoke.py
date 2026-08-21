@@ -1,5 +1,6 @@
 from pathlib import Path
 import gc
+import hashlib
 import json
 import subprocess
 import sys
@@ -29,6 +30,7 @@ from document_kv_cache.transformers_generator import (
 from document_kv_cache.vllm_smoke import (
     BASELINE_PREFIX_CACHE_SALT,
     CACHE_PREFIX_CACHE_SALT,
+    PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT,
     DOCUMENT_KV_PACKAGE_INSTALL_SPEC_ENV,
     DOCUMENT_KV_PACKAGE_WHEEL_SHA256_ENV,
     FASTAPI_CONSTRAINT,
@@ -64,11 +66,13 @@ from document_kv_cache.vllm_smoke import (
     kv_transfer_config_json,
     parse_args,
     parse_dataset_specs,
+    prime_payload_cache,
     prepare_generated_benchmark_handoffs,
     prewarm_cache_prefixes,
     prepared_benchmark_handoff_coverage_record,
     run_prompt_token_budget_probe,
     run_vllm_smoke_benchmark,
+    attest_payload_cache_measurements,
     server_env,
     smoke_dataset_records,
     validate_prepared_benchmark_handoffs,
@@ -76,6 +80,7 @@ from document_kv_cache.vllm_smoke import (
 )
 from document_kv_cache.benchmarks import (
     CACHE_REUSE_ARM,
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
@@ -1856,7 +1861,7 @@ def test_prepare_generated_vanilla_handoffs_binds_pre_rope_layout(
     dataset_paths = prepared_dataset_paths(tmp_path, include_handoffs=False)
     specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
     config = VLLMSmokeBenchmarkConfig(
-        benchmark_id="prepared-vanilla-v2",
+        benchmark_id="prepared-vanilla",
         output_dir=tmp_path / "out",
         local_root=tmp_path / "local",
         dataset_specs=specs,
@@ -2015,6 +2020,306 @@ def test_prewarm_cache_prefixes_posts_kv_aware_prefix_prompts(tmp_path, monkeypa
     assert record["ok"] is True
     assert record["row_count"] == len(SMOKE_DATASETS)
     assert record["rows"][0]["prompt_tokens"] == 12
+
+
+def _payload_cache_telemetry_record(request_id, *, hit):
+    return {
+        "record_type": "document_kv.vllm_native_provider_load.v1",
+        "success": True,
+        "benchmark_request_id": request_id,
+        "payload": {"payload_cache_enabled": True},
+        "counts": {
+            "payload_cache_hits": 1 if hit else 0,
+            "payload_cache_misses": 0 if hit else 1,
+        },
+        "cache_state_attestation": {
+            "payload_cache_hit": hit,
+            "bytes_read": 0 if hit else 4,
+        },
+    }
+
+
+def test_prime_payload_cache_populates_then_verifies_every_prepared_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="ram-prime-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        prewarm_payload_cache=True,
+        payload_cache_max_bytes=4096,
+        timeout_seconds=12.5,
+    )
+    calls = []
+
+    def fake_post_json(url, body, *, timeout_seconds):
+        calls.append((url, body, timeout_seconds))
+        request_id = body["request_id"]
+        record = _payload_cache_telemetry_record(
+            request_id,
+            hit=":verify:" in request_id,
+        )
+        config.connector_telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+        with config.connector_telemetry_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record) + "\n")
+        return {"usage": {"prompt_tokens": 12, "completion_tokens": 1}}
+
+    monkeypatch.setattr(public_vllm_smoke, "_post_json", fake_post_json)
+
+    prime_payload_cache(config, dataset_paths)
+
+    assert len(calls) == 2 * len(SMOKE_DATASETS)
+    assert all(call[0] == f"{config.server_base_url}/v1/completions" for call in calls)
+    assert all(call[2] == 12.5 for call in calls)
+    request_ids = {call[1]["request_id"] for call in calls}
+    cache_salts = {call[1]["cache_salt"] for call in calls}
+    assert len(request_ids) == len(calls)
+    assert len(cache_salts) == len(calls)
+    assert all(value.startswith("cachet-payload-prime:") for value in request_ids)
+    assert all(value.startswith(PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT) for value in cache_salts)
+    assert CACHE_PREFIX_CACHE_SALT not in cache_salts
+    assert all(
+        call[1]["kv_transfer_params"][DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM]
+        == call[1]["request_id"]
+        for call in calls
+    )
+    record = json.loads(config.prewarm_payload_cache_path.read_text(encoding="utf-8"))
+    assert record["ok"] is True
+    assert record["verification_all_hits"] is True
+    assert record["target_count"] == len(SMOKE_DATASETS)
+    assert record["request_count"] == 2 * len(SMOKE_DATASETS)
+    assert record["prefix_cache_isolation"] == {
+        "measurement_prefix_cache_salt_mode": "per_request",
+        "measurement_prefix_prewarmed": False,
+        "priming_namespace": PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT,
+        "priming_requests_load_isolated_gpu_blocks": True,
+    }
+
+
+def test_parse_args_wires_payload_cache_priming(tmp_path):
+    specs = tuple(
+        f"{dataset}={tmp_path / f'{dataset}.jsonl'}" for dataset in SMOKE_DATASETS
+    )
+
+    config = parse_args(
+        [
+            "--benchmark-id",
+            "ram-prime-cli",
+            "--output-dir",
+            str(tmp_path / "out"),
+            "--benchmark-prewarm-payload-cache",
+            "--payload-cache-max-bytes",
+            "4096",
+            *sum((["--dataset", spec] for spec in specs), []),
+        ]
+    )
+
+    assert config.prewarm_payload_cache is True
+    assert config.payload_cache_max_bytes == 4096
+    assert config.prefix_cache_salt_mode == "per_request"
+
+
+def test_attest_payload_cache_measurements_requires_ram_hits_and_disjoint_gpu_keys(
+    tmp_path,
+):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="ram-attest-1",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        prewarm_payload_cache=True,
+        payload_cache_max_bytes=4096,
+    )
+    priming_request_id = "cachet-payload-prime:verify:abc"
+    priming_cache_salt = f"{PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT}:verify:abc"
+    measurement_request_id = "suite:biography:example:vanilla:repeat-1:handoff"
+    measurement_cache_salt = "cachet-kv-cache:suite:biography:example:vanilla:repeat-1"
+    config.prewarm_payload_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    config.prewarm_payload_cache_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "verification_all_hits": True,
+                "target_count": 4,
+                "request_id_sha256s": [
+                    hashlib.sha256(priming_request_id.encode()).hexdigest()
+                ],
+                "cache_salt_sha256s": [
+                    hashlib.sha256(priming_cache_salt.encode()).hexdigest()
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.benchmark_output_path.write_text(
+        json.dumps(
+            {
+                "measurements": [
+                    {
+                        "request_id": "",
+                        "metadata": {},
+                    },
+                    {
+                        "request_id": measurement_request_id,
+                        "metadata": {
+                            "request_id": measurement_request_id,
+                            "prefix_cache_salt": measurement_cache_salt,
+                            "prefix_cache_salt_attached": "true",
+                        },
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.connector_telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+    config.connector_telemetry_path.write_text(
+        json.dumps(
+            _payload_cache_telemetry_record(measurement_request_id, hit=True)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    attest_payload_cache_measurements(config)
+
+    attestation_text = config.payload_cache_attestation_path.read_text(encoding="utf-8")
+    record = json.loads(attestation_text)
+    assert record["ok"] is True
+    assert record["payload_cache"]["measurement_all_hits"] is True
+    assert record["payload_cache"]["measurement_storage_bytes_read"] == 0
+    assert record["payload_cache"]["measurement_storage_materializations"] == 0
+    assert record["gpu_prefix_cache"]["measurement_prefix_prewarmed"] is False
+    assert record["gpu_prefix_cache"]["reuse_prevented_by_salt_namespace"] is True
+    assert measurement_cache_salt not in attestation_text
+    assert hashlib.sha256(measurement_cache_salt.encode()).hexdigest() in (
+        record["measurement_cache_salt_sha256s"]
+    )
+
+
+def test_attest_payload_cache_measurements_fails_closed_on_measured_miss(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="ram-attest-miss",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        prewarm_payload_cache=True,
+        payload_cache_max_bytes=4096,
+    )
+    request_id = "measurement-request"
+    config.prewarm_payload_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    config.prewarm_payload_cache_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "verification_all_hits": True,
+                "target_count": 1,
+                "request_id_sha256s": [],
+                "cache_salt_sha256s": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.benchmark_output_path.write_text(
+        json.dumps(
+            {
+                "measurements": [
+                    {
+                        "request_id": request_id,
+                        "metadata": {
+                            "request_id": request_id,
+                            "prefix_cache_salt": "cachet-kv-cache:measurement-request",
+                            "prefix_cache_salt_attached": "true",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.connector_telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+    config.connector_telemetry_path.write_text(
+        json.dumps(_payload_cache_telemetry_record(request_id, hit=False)) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="RAM payload-cache measurement attestation failed"):
+        attest_payload_cache_measurements(config)
+
+    record = json.loads(config.payload_cache_attestation_path.read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["payload_cache"]["measurement_cache_misses"] == 1
+    assert record["payload_cache"]["measurement_storage_bytes_read"] == 4
+
+
+def test_attest_payload_cache_measurements_rejects_priming_salt_namespace(tmp_path):
+    dataset_paths = prepared_dataset_paths(tmp_path)
+    specs = tuple(f"{dataset}={path}" for dataset, path in dataset_paths.items())
+    config = VLLMSmokeBenchmarkConfig(
+        benchmark_id="ram-attest-salt-overlap",
+        output_dir=tmp_path / "out",
+        local_root=tmp_path / "local",
+        dataset_specs=specs,
+        prewarm_payload_cache=True,
+        payload_cache_max_bytes=4096,
+    )
+    request_id = "measurement-request"
+    cache_salt = f"{PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT}:verify:abc"
+    config.prewarm_payload_cache_path.parent.mkdir(parents=True, exist_ok=True)
+    config.prewarm_payload_cache_path.write_text(
+        json.dumps(
+            {
+                "ok": True,
+                "verification_all_hits": True,
+                "target_count": 1,
+                "request_id_sha256s": [],
+                "cache_salt_sha256s": [
+                    hashlib.sha256(cache_salt.encode()).hexdigest()
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.benchmark_output_path.write_text(
+        json.dumps(
+            {
+                "measurements": [
+                    {
+                        "request_id": request_id,
+                        "metadata": {
+                            "request_id": request_id,
+                            "prefix_cache_salt": cache_salt,
+                            "prefix_cache_salt_attached": "true",
+                        },
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    config.connector_telemetry_path.parent.mkdir(parents=True, exist_ok=True)
+    config.connector_telemetry_path.write_text(
+        json.dumps(_payload_cache_telemetry_record(request_id, hit=True)) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="RAM payload-cache measurement attestation failed"):
+        attest_payload_cache_measurements(config)
+
+    record = json.loads(config.payload_cache_attestation_path.read_text(encoding="utf-8"))
+    assert record["ok"] is False
+    assert record["gpu_prefix_cache"][
+        "priming_and_measurement_cache_salts_disjoint"
+    ] is False
+    assert any("reserved payload-cache priming salt namespace" in issue for issue in record["issues"])
 
 
 def test_prepare_generated_benchmark_handoffs_uses_vllm_venv_when_available(tmp_path, monkeypatch):
@@ -2944,6 +3249,17 @@ def test_vllm_smoke_config_validates_before_runtime_setup(tmp_path):
         (
             {"prewarm_cache_prefix": True},
             "benchmark_prewarm_cache_prefix requires prepared dataset specs",
+        ),
+        (
+            {"prewarm_payload_cache": True},
+            "benchmark_prewarm_payload_cache requires prepared dataset specs",
+        ),
+        (
+            {
+                "prewarm_payload_cache": True,
+                "dataset_specs": dataset_specs,
+            },
+            "requires a positive payload_cache_max_bytes",
         ),
         (
                 {

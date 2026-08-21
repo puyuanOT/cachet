@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+from hashlib import sha256
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -32,7 +33,10 @@ from document_kv_cache.benchmark_handoffs import (
     generate_benchmark_handoff_bundles,
     load_benchmark_kv_chunk_generator,
 )
-from document_kv_cache.benchmark_runner import PREFIX_CACHE_SALT_MODES, load_v1_jsonl_suite
+from document_kv_cache.benchmark_runner import (
+    PREFIX_CACHE_SALT_MODES,
+    load_v1_jsonl_suite,
+)
 from document_kv_cache.canary_orchestration import (
     REPRESENTATIVE_VLLM_PACKAGE_PINS,
     benchmark_json_mapping_to_record,
@@ -58,6 +62,7 @@ from document_kv_cache.benchmarks import (
     DOCUMENT_KV_HANDOFF_JSON_PARAM,
     DOCUMENT_KV_HANDOFF_RECORD_PARAM,
     DOCUMENT_KV_PAYLOAD_URI_PARAM,
+    DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM,
     DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM,
     DOCUMENT_KV_REQUEST_ID_PARAM,
     SUPPORTED_V1_HARDWARE_TARGETS,
@@ -118,6 +123,7 @@ SERVER_HOST = "127.0.0.1"
 SERVER_PORT = 8000
 BASELINE_PREFIX_CACHE_SALT = "cachet-baseline-prefill"
 CACHE_PREFIX_CACHE_SALT = "cachet-kv-cache"
+PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT = "cachet-payload-cache-prime"
 PREPARED_PREFIX_CACHE_SALT_MODE = "per_request"
 SERVER_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 SMOKE_DATASETS = ("biography", "hotpotqa", "musique", "niah")
@@ -182,6 +188,8 @@ __all__ = [
     "write_smoke_datasets",
     "prepare_generated_benchmark_handoffs",
     "release_handoff_generation_resources",
+    "prime_payload_cache",
+    "attest_payload_cache_measurements",
     "smoke_dataset_records",
     "parse_dataset_specs",
     "dataset_args",
@@ -417,6 +425,7 @@ class VLLMSmokeBenchmarkConfig:
     representative_workload_profile: VLLMRepresentativeWorkloadProfile | str | None = None
     benchmark_manifest_provenance: Mapping[str, Any] = field(default_factory=dict)
     prewarm_cache_prefix: bool = False
+    prewarm_payload_cache: bool = False
     cache_runtime_prompt: bool = False
     prefix_cache_salt_mode: str = PREPARED_PREFIX_CACHE_SALT_MODE
     hardware_target: str = DEFAULT_HARDWARE_TARGET
@@ -652,6 +661,8 @@ class VLLMSmokeBenchmarkConfig:
             )
         if type(self.prewarm_cache_prefix) is not bool:
             raise TypeError("prewarm_cache_prefix must be a boolean")
+        if type(self.prewarm_payload_cache) is not bool:
+            raise TypeError("prewarm_payload_cache must be a boolean")
         if type(self.cache_runtime_prompt) is not bool:
             raise TypeError("cache_runtime_prompt must be a boolean")
         if not isinstance(self.hardware_target, str) or not self.hardware_target.strip():
@@ -715,6 +726,30 @@ class VLLMSmokeBenchmarkConfig:
                 )
         if self.prewarm_cache_prefix and not self.dataset_specs:
             raise ValueError("benchmark_prewarm_cache_prefix requires prepared dataset specs")
+        if self.prewarm_payload_cache and not self.dataset_specs:
+            raise ValueError("benchmark_prewarm_payload_cache requires prepared dataset specs")
+        if self.prewarm_payload_cache and self.payload_cache_max_bytes <= 0:
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires a positive payload_cache_max_bytes"
+            )
+        if self.prewarm_payload_cache and self.prewarm_cache_prefix:
+            raise ValueError(
+                "benchmark_prewarm_payload_cache and benchmark_prewarm_cache_prefix "
+                "are mutually exclusive"
+            )
+        if self.prewarm_payload_cache and self.kv_connector_mode != CACHET_KV_CONNECTOR_MODE:
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires kv_connector_mode='cachet'"
+            )
+        if self.prewarm_payload_cache and self.data_parallel_size != 1:
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires data_parallel_size=1 because "
+                "the provider payload cache is process-local"
+            )
+        if self.prewarm_payload_cache and not self.runs_document_kv_cache_arm:
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires a Cachet handoff benchmark arm"
+            )
         if self.cache_runtime_prompt and not self.dataset_specs:
             raise ValueError("benchmark_cache_runtime_prompt requires prepared dataset specs")
         if self.prefix_cache_salt_mode not in PREFIX_CACHE_SALT_MODES:
@@ -723,6 +758,11 @@ class VLLMSmokeBenchmarkConfig:
             raise ValueError(
                 "benchmark_prewarm_cache_prefix requires prefix_cache_salt_mode='static' "
                 "so prewarmed prefix-cache blocks can be reused"
+            )
+        if self.prewarm_payload_cache and self.prefix_cache_salt_mode != "per_request":
+            raise ValueError(
+                "benchmark_prewarm_payload_cache requires prefix_cache_salt_mode='per_request' "
+                "so every measured GPU prefix-cache key is isolated from priming"
             )
         if self.is_representative_submission:
             if (
@@ -790,6 +830,14 @@ class VLLMSmokeBenchmarkConfig:
     @property
     def prewarm_cache_prefix_path(self) -> Path:
         return self.output_dir / "prewarm-cache-prefix.json"
+
+    @property
+    def prewarm_payload_cache_path(self) -> Path:
+        return self.output_dir / "prewarm-payload-cache.json"
+
+    @property
+    def payload_cache_attestation_path(self) -> Path:
+        return self.output_dir / "payload-cache-attestation.json"
 
     @property
     def prompt_token_budget_input_path(self) -> Path:
@@ -1144,6 +1192,11 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         metadata["prepared_handoff_generation_path"] = str(config.prepared_handoff_generation_path)
     if config.prewarm_cache_prefix:
         metadata["prewarm_cache_prefix_path"] = str(config.prewarm_cache_prefix_path)
+    if config.prewarm_payload_cache:
+        metadata["prewarm_payload_cache_path"] = str(config.prewarm_payload_cache_path)
+        metadata["payload_cache_attestation_path"] = str(
+            config.payload_cache_attestation_path
+        )
     write_json(config.metadata_path, metadata)
 
     server = start_vllm_server(config, config.venv_python, config.server_log_path)
@@ -1156,7 +1209,9 @@ def run_vllm_smoke_benchmark(config: VLLMSmokeBenchmarkConfig) -> None:
         wait_for_server(server, config.server_log_path, config, timeout_seconds=config.server_start_timeout_seconds)
         copy_file_if_exists(config.server_log_path, config.server_log_copy_path)
         prewarm_cache_prefixes(config, dataset_paths)
+        prime_payload_cache(config, dataset_paths)
         run_benchmark_runner(config, dataset_paths)
+        attest_payload_cache_measurements(config)
         if is_multi:
             # Hybrid handoff: measure per-turn TTFT (turn-1 docs->Cachet, follow-ups->LMCache).
             run_multi_turn_hybrid_latency(config, dataset_paths)
@@ -1197,6 +1252,7 @@ def build_metadata(config: VLLMSmokeBenchmarkConfig) -> dict[str, object]:
         "dataset_specs": list(config.dataset_specs),
         "allow_dataset_subset": config.allow_dataset_subset,
         "prewarm_cache_prefix": config.prewarm_cache_prefix,
+        "prewarm_payload_cache": config.prewarm_payload_cache,
         "cache_runtime_prompt": config.cache_runtime_prompt,
         "cache_measurement_protocol": cache_measurement_protocol(config),
         "cache_prompt_text_mode": "runtime" if config.cache_runtime_prompt else "logical",
@@ -1270,6 +1326,8 @@ def cache_measurement_protocol(config: VLLMSmokeBenchmarkConfig) -> str:
         return "stock_smoke"
     if config.prewarm_cache_prefix:
         return "warm_prefix_cache"
+    if config.prewarm_payload_cache:
+        return "ram_payload_cache_to_gpu_hydrate"
     if config.prefix_cache_salt_mode == "per_request":
         return "cold_disk_to_gpu_hydrate"
     return "static_prefix_cache_mixed_first_cold_then_warm"
@@ -1790,6 +1848,7 @@ def _generate_prepared_benchmark_handoff_inputs_in_subprocess(
             config.benchmark_manifest_provenance
         ),
         "prewarm_cache_prefix": config.prewarm_cache_prefix,
+        "prewarm_payload_cache": config.prewarm_payload_cache,
         "cache_runtime_prompt": config.cache_runtime_prompt,
         "prefix_cache_salt_mode": config.prefix_cache_salt_mode,
         "payload_cache_max_bytes": config.payload_cache_max_bytes,
@@ -1854,6 +1913,7 @@ config = VLLMSmokeBenchmarkConfig(
     representative_workload_profile=payload.get("representative_workload_profile"),
     benchmark_manifest_provenance=payload.get("benchmark_manifest_provenance", {}),
     prewarm_cache_prefix=bool(payload.get("prewarm_cache_prefix", False)),
+    prewarm_payload_cache=bool(payload.get("prewarm_payload_cache", False)),
     cache_runtime_prompt=bool(payload.get("cache_runtime_prompt", False)),
     prefix_cache_salt_mode=payload.get("prefix_cache_salt_mode", "per_request"),
     payload_cache_max_bytes=int(payload.get("payload_cache_max_bytes", 0)),
@@ -2752,6 +2812,417 @@ def prewarm_cache_prefixes(config: VLLMSmokeBenchmarkConfig, dataset_paths: dict
             "vLLM cache-prefix prewarm failed; "
             f"last_error={last.get('error')!r}. See {config.prewarm_cache_prefix_path}."
         )
+
+
+def prime_payload_cache(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: dict[str, Path],
+) -> None:
+    """Populate and verify the provider's host-RAM payload cache before timing.
+
+    vLLM does not expose a worker-side payload-cache RPC, so priming uses ordinary
+    KV-aware completion requests. Every request uses a priming-only ``cache_salt``
+    namespace and request identity. The requests therefore allocate isolated GPU
+    blocks, but cannot populate or match the salted prefix keys used by measurement.
+    A second full pass must hit RAM for every target before the benchmark starts.
+    """
+
+    if not config.prewarm_payload_cache:
+        return
+    targets = _payload_cache_prime_targets(config, dataset_paths)
+    completions_url = f"{config.server_base_url}/v1/completions"
+    rows: list[dict[str, object]] = []
+    expected_request_ids: dict[str, tuple[str, str, str]] = {}
+    issues: list[str] = []
+    for phase in ("populate", "verify"):
+        for target_index, (example, arm_id, params) in enumerate(targets):
+            identity = (
+                f"{config.benchmark_id}:{phase}:{target_index}:"
+                f"{example.dataset}:{example.example_id}:{arm_id}"
+            )
+            identity_digest = sha256(identity.encode("utf-8")).hexdigest()
+            request_id = f"cachet-payload-prime:{phase}:{identity_digest}"
+            cache_salt = (
+                f"{PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT}:{phase}:{identity_digest}"
+            )
+            expected_request_ids[request_id] = (phase, example.dataset, arm_id)
+            kv_transfer_params = dict(params)
+            kv_transfer_params[DOCUMENT_KV_PROMPT_TEXT_MODE_PARAM] = "logical"
+            kv_transfer_params[DOCUMENT_KV_BENCHMARK_REQUEST_ID_PARAM] = request_id
+            body = {
+                "model": SERVED_MODEL_NAME,
+                "prompt": _prewarm_prompt_text(example),
+                "max_tokens": 1,
+                "temperature": 0,
+                "stream": False,
+                "cache_salt": cache_salt,
+                "request_id": request_id,
+                "kv_transfer_params": kv_transfer_params,
+            }
+            started = time.monotonic()
+            row: dict[str, object] = {
+                "phase": phase,
+                "dataset": example.dataset,
+                "arm_id": arm_id,
+                "target_sha256": identity_digest,
+                "request_id_sha256": sha256(request_id.encode("utf-8")).hexdigest(),
+                "cache_salt_sha256": sha256(cache_salt.encode("utf-8")).hexdigest(),
+            }
+            try:
+                response = _post_json(
+                    completions_url,
+                    body,
+                    timeout_seconds=config.timeout_seconds,
+                )
+                usage = response.get("usage")
+                row.update(
+                    {
+                        "ok": True,
+                        "elapsed_seconds": time.monotonic() - started,
+                        "prompt_tokens": (
+                            usage.get("prompt_tokens")
+                            if isinstance(usage, Mapping)
+                            else None
+                        ),
+                        "completion_tokens": (
+                            usage.get("completion_tokens")
+                            if isinstance(usage, Mapping)
+                            else None
+                        ),
+                    }
+                )
+            except Exception as exc:
+                row.update(
+                    {
+                        "ok": False,
+                        "elapsed_seconds": time.monotonic() - started,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc) or type(exc).__name__,
+                    }
+                )
+                issues.append(
+                    f"{phase} request failed for {example.dataset}:{arm_id}: "
+                    f"{type(exc).__name__}"
+                )
+            rows.append(row)
+
+    try:
+        telemetry = _read_jsonl_records(config.connector_telemetry_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        telemetry = []
+        issues.append(
+            "payload-cache priming telemetry could not be read: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    telemetry_by_request_id: dict[str, list[Mapping[str, Any]]] = {}
+    for record in telemetry:
+        request_id = record.get("benchmark_request_id")
+        if isinstance(request_id, str) and request_id in expected_request_ids:
+            telemetry_by_request_id.setdefault(request_id, []).append(record)
+    for request_id, (phase, dataset, arm_id) in expected_request_ids.items():
+        records = telemetry_by_request_id.get(request_id, [])
+        if len(records) != 1:
+            issues.append(
+                f"{phase} telemetry for {dataset}:{arm_id} expected exactly one load, "
+                f"observed {len(records)}"
+            )
+            continue
+        issues.extend(
+            _payload_cache_load_issues(
+                records[0],
+                label=f"{phase} telemetry for {dataset}:{arm_id}",
+                require_hit=phase == "verify",
+            )
+        )
+
+    record = {
+        "record_type": "document_kv.vllm_payload_cache_prime.v1",
+        "schema_version": 1,
+        "ok": not issues,
+        "benchmark_id": config.benchmark_id,
+        "payload_cache_max_bytes": config.payload_cache_max_bytes,
+        "target_count": len(targets),
+        "request_count": len(rows),
+        "verification_all_hits": not issues,
+        "prefix_cache_isolation": {
+            "measurement_prefix_cache_salt_mode": config.prefix_cache_salt_mode,
+            "measurement_prefix_prewarmed": False,
+            "priming_requests_load_isolated_gpu_blocks": True,
+            "priming_namespace": PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT,
+        },
+        "request_id_sha256s": sorted(
+            str(row["request_id_sha256"]) for row in rows
+        ),
+        "cache_salt_sha256s": sorted(
+            str(row["cache_salt_sha256"]) for row in rows
+        ),
+        "rows": rows,
+        "issues": issues,
+    }
+    write_json(config.prewarm_payload_cache_path, record)
+    if issues:
+        raise RuntimeError(
+            "vLLM payload-cache priming did not prove full RAM residency: "
+            f"{'; '.join(issues[:3])}. See {config.prewarm_payload_cache_path}."
+        )
+
+
+def attest_payload_cache_measurements(config: VLLMSmokeBenchmarkConfig) -> None:
+    """Fail unless every measured Cachet load was served from the host-RAM cache."""
+
+    if not config.prewarm_payload_cache:
+        return
+    issues: list[str] = []
+    prime_record = _read_json_object(config.prewarm_payload_cache_path)
+    if prime_record.get("ok") is not True or prime_record.get("verification_all_hits") is not True:
+        issues.append("payload-cache priming verification did not pass")
+    benchmark_record = _read_json_object(config.benchmark_output_path)
+    measurements = benchmark_record.get("measurements")
+    if not isinstance(measurements, list):
+        raise ValueError("vLLM benchmark output measurements must be a list")
+    measured_request_ids: list[str] = []
+    measured_cache_salt_sha256s: list[str] = []
+    for index, measurement in enumerate(measurements):
+        if not isinstance(measurement, Mapping):
+            raise ValueError(f"vLLM benchmark measurements[{index}] must be an object")
+        request_id = measurement.get("request_id")
+        if not isinstance(request_id, str) or not request_id:
+            continue
+        measured_request_ids.append(request_id)
+        metadata = measurement.get("metadata")
+        if not isinstance(metadata, Mapping):
+            issues.append(f"measurement {index} is missing metadata")
+            continue
+        metadata_request_id = metadata.get("request_id")
+        if metadata_request_id != request_id:
+            issues.append(
+                f"measurement {index} metadata.request_id does not match the canonical "
+                "measurement.request_id"
+            )
+        cache_salt = metadata.get("prefix_cache_salt")
+        if not isinstance(cache_salt, str) or not cache_salt:
+            issues.append(f"measurement {index} is missing a raw prefix_cache_salt")
+            continue
+        if metadata.get("prefix_cache_salt_attached") != "true":
+            issues.append(
+                f"measurement {index} does not attest that its prefix-cache salt was attached"
+            )
+        if cache_salt.startswith(PAYLOAD_CACHE_PRIME_PREFIX_CACHE_SALT):
+            issues.append(
+                f"measurement {index} uses the reserved payload-cache priming salt namespace"
+            )
+        measured_cache_salt_sha256s.append(
+            sha256(cache_salt.encode("utf-8")).hexdigest()
+        )
+    if not measured_request_ids:
+        issues.append("benchmark output contains no measured Cachet request identities")
+    if len(set(measured_request_ids)) != len(measured_request_ids):
+        issues.append("measured Cachet request identities are not unique")
+
+    measured_request_id_set = set(measured_request_ids)
+    telemetry_by_request_id: dict[str, list[Mapping[str, Any]]] = {}
+    for record in _read_jsonl_records(config.connector_telemetry_path):
+        request_id = record.get("benchmark_request_id")
+        if isinstance(request_id, str) and request_id in measured_request_id_set:
+            telemetry_by_request_id.setdefault(request_id, []).append(record)
+    measurement_load_count = 0
+    total_bytes_read = 0
+    total_cache_hits = 0
+    total_cache_misses = 0
+    for request_id in measured_request_ids:
+        records = telemetry_by_request_id.get(request_id, [])
+        request_id_digest = sha256(request_id.encode("utf-8")).hexdigest()
+        if not records:
+            issues.append(
+                f"measurement request {request_id_digest} has no connector load telemetry"
+            )
+            continue
+        measurement_load_count += len(records)
+        for record in records:
+            issues.extend(
+                _payload_cache_load_issues(
+                    record,
+                    label=f"measurement telemetry for {request_id_digest}",
+                    require_hit=True,
+                )
+            )
+            state = record.get("cache_state_attestation")
+            counts = record.get("counts")
+            if isinstance(state, Mapping) and type(state.get("bytes_read")) is int:
+                total_bytes_read += state["bytes_read"]
+            if isinstance(counts, Mapping):
+                if type(counts.get("payload_cache_hits")) is int:
+                    total_cache_hits += counts["payload_cache_hits"]
+                if type(counts.get("payload_cache_misses")) is int:
+                    total_cache_misses += counts["payload_cache_misses"]
+
+    priming_request_digests = _string_set(
+        prime_record.get("request_id_sha256s"),
+        field_name="prewarm-payload-cache.request_id_sha256s",
+    )
+    priming_salt_digests = _string_set(
+        prime_record.get("cache_salt_sha256s"),
+        field_name="prewarm-payload-cache.cache_salt_sha256s",
+    )
+    measurement_request_digests = {
+        sha256(request_id.encode("utf-8")).hexdigest()
+        for request_id in measured_request_ids
+    }
+    measurement_salt_digests = set(measured_cache_salt_sha256s)
+    request_ids_disjoint = priming_request_digests.isdisjoint(
+        measurement_request_digests
+    )
+    cache_salts_disjoint = priming_salt_digests.isdisjoint(
+        measurement_salt_digests
+    )
+    if not request_ids_disjoint:
+        issues.append("priming and measurement request identities overlap")
+    if not cache_salts_disjoint:
+        issues.append("priming and measurement prefix-cache salts overlap")
+
+    attestation = {
+        "record_type": "document_kv.vllm_ram_payload_cache_attestation.v1",
+        "schema_version": 1,
+        "ok": not issues,
+        "benchmark_id": config.benchmark_id,
+        "measurement_protocol": "ram_payload_cache_to_gpu_hydrate",
+        "payload_cache": {
+            "enabled": True,
+            "max_bytes": config.payload_cache_max_bytes,
+            "priming_target_count": prime_record.get("target_count"),
+            "priming_verification_all_hits": prime_record.get(
+                "verification_all_hits"
+            ),
+            "measurement_request_count": len(measured_request_ids),
+            "measurement_load_count": measurement_load_count,
+            "measurement_all_hits": (
+                measurement_load_count >= len(measured_request_ids)
+                and total_cache_hits == measurement_load_count
+                and total_cache_misses == 0
+                and total_bytes_read == 0
+            ),
+            "measurement_cache_hits": total_cache_hits,
+            "measurement_cache_misses": total_cache_misses,
+            "measurement_storage_bytes_read": total_bytes_read,
+            "measurement_storage_materializations": total_cache_misses,
+        },
+        "gpu_prefix_cache": {
+            "prewarm_cache_prefix_enabled": config.prewarm_cache_prefix,
+            "measurement_cache_salt_mode": config.prefix_cache_salt_mode,
+            "measurement_prefix_prewarmed": False,
+            "priming_requests_load_isolated_gpu_blocks": True,
+            "priming_and_measurement_request_ids_disjoint": request_ids_disjoint,
+            "priming_and_measurement_cache_salts_disjoint": cache_salts_disjoint,
+            "reuse_prevented_by_salt_namespace": (
+                request_ids_disjoint and cache_salts_disjoint
+            ),
+        },
+        "measurement_request_id_sha256s": sorted(measurement_request_digests),
+        "measurement_cache_salt_sha256s": sorted(measurement_salt_digests),
+        "issues": issues,
+    }
+    write_json(config.payload_cache_attestation_path, attestation)
+    if issues:
+        raise RuntimeError(
+            "vLLM RAM payload-cache measurement attestation failed: "
+            f"{'; '.join(issues[:3])}. See {config.payload_cache_attestation_path}."
+        )
+
+
+def _payload_cache_prime_targets(
+    config: VLLMSmokeBenchmarkConfig,
+    dataset_paths: Mapping[str, Path],
+) -> list[tuple[Any, str, Mapping[str, Any]]]:
+    suite = load_v1_jsonl_suite(
+        suite_id=f"{config.benchmark_id}-payload-cache-prime",
+        paths=dataset_paths,
+        model_id=SERVED_MODEL_NAME,
+        hardware_target=config.hardware_target,
+    )
+    cache_arm_ids = _prepared_cache_arm_ids(config)
+    if not cache_arm_ids:
+        raise ValueError("payload-cache priming requires at least one Cachet handoff arm")
+    targets: list[tuple[Any, str, Mapping[str, Any]]] = []
+    for example in suite.examples:
+        params_by_arm = _prepared_params_by_arm(
+            example,
+            cache_arm_ids=cache_arm_ids,
+        )
+        for arm_id, params in params_by_arm.items():
+            if not params:
+                raise ValueError(
+                    f"prepared example {example.dataset}:{example.example_id} has no "
+                    f"Cachet handoff params for {arm_id!r}"
+                )
+            targets.append((example, arm_id, params))
+    if not targets:
+        raise ValueError("payload-cache priming resolved no prepared artifacts")
+    return targets
+
+
+def _payload_cache_load_issues(
+    record: Mapping[str, Any],
+    *,
+    label: str,
+    require_hit: bool,
+) -> list[str]:
+    issues: list[str] = []
+    if record.get("success") is not True:
+        issues.append(f"{label} was not successful")
+    state = record.get("cache_state_attestation")
+    counts = record.get("counts")
+    payload = record.get("payload")
+    if not isinstance(state, Mapping):
+        return [*issues, f"{label} is missing cache_state_attestation"]
+    if not isinstance(counts, Mapping):
+        return [*issues, f"{label} is missing counts"]
+    if not isinstance(payload, Mapping) or payload.get("payload_cache_enabled") is not True:
+        issues.append(f"{label} does not attest an enabled payload cache")
+    if require_hit:
+        if state.get("payload_cache_hit") is not True:
+            issues.append(f"{label} did not attest a payload-cache hit")
+        bytes_read = state.get("bytes_read")
+        if type(bytes_read) is not int or bytes_read != 0:
+            issues.append(f"{label} read payload bytes from storage")
+        payload_cache_hits = counts.get("payload_cache_hits")
+        if type(payload_cache_hits) is not int or payload_cache_hits != 1:
+            issues.append(f"{label} did not report exactly one payload-cache hit")
+        payload_cache_misses = counts.get("payload_cache_misses")
+        if type(payload_cache_misses) is not int or payload_cache_misses != 0:
+            issues.append(f"{label} reported a payload-cache miss")
+    return issues
+
+
+def _read_jsonl_records(path: Path) -> list[Mapping[str, Any]]:
+    if not path.is_file():
+        raise ValueError(f"required JSONL artifact does not exist: {path}")
+    records: list[Mapping[str, Any]] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            value = json.loads(line)
+            if not isinstance(value, Mapping):
+                raise ValueError(f"{path}:{line_number} must contain a JSON object")
+            records.append(value)
+    return records
+
+
+def _read_json_object(path: Path) -> Mapping[str, Any]:
+    if not path.is_file():
+        raise ValueError(f"required JSON artifact does not exist: {path}")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, Mapping):
+        raise ValueError(f"required JSON artifact must contain an object: {path}")
+    return value
+
+
+def _string_set(value: object, *, field_name: str) -> set[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise ValueError(f"{field_name} must be a list of non-empty strings")
+    return set(value)
 
 
 def _prewarm_prompt_text(example: Any) -> str:
@@ -3974,6 +4445,15 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         ),
     )
     parser.add_argument(
+        "--benchmark-prewarm-payload-cache",
+        action="store_true",
+        help=(
+            "Before measurement, populate every prepared handoff payload in the "
+            "provider's host-RAM cache under an isolated GPU prefix-cache namespace; "
+            "fail unless a verification pass and every measured load are RAM hits."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-prefix-cache-salt-mode",
         choices=PREFIX_CACHE_SALT_MODES,
         default=PREPARED_PREFIX_CACHE_SALT_MODE,
@@ -4140,6 +4620,7 @@ def parse_args(argv: list[str] | None = None) -> VLLMSmokeBenchmarkConfig:
         representative_workload_profile=args.representative_workload_profile,
         benchmark_manifest_provenance=benchmark_manifest_provenance,
         prewarm_cache_prefix=args.benchmark_prewarm_cache_prefix,
+        prewarm_payload_cache=args.benchmark_prewarm_payload_cache,
         cache_runtime_prompt=args.benchmark_cache_runtime_prompt,
         prefix_cache_salt_mode=args.benchmark_prefix_cache_salt_mode,
         hardware_target=args.hardware_target,

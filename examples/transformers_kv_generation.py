@@ -37,13 +37,13 @@ from document_kv_cache.workflow import (  # noqa: E402
 )
 
 
-def _build_vanilla_v2_generator_and_layout(
+def _build_vanilla_generator_and_layout(
     config: TransformersKVGeneratorConfig,
     *,
     model_id: str,
     dtype: str,
 ) -> tuple[MethodSpec, TransformersKVChunkGenerator, KVLayout]:
-    """Build the registered Vanilla-v2 pre-RoPE generator and matching layout."""
+    """Build the registered Vanilla pre-RoPE generator and matching layout."""
 
     method = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
     generator = TransformersKVChunkGenerator.from_pretrained(
@@ -75,7 +75,7 @@ def main() -> int:
     parser.add_argument("--output", default="databricks-runs/transformers-example.kvpack")
     args = parser.parse_args()
 
-    method, generator, layout = _build_vanilla_v2_generator_and_layout(
+    method, generator, layout = _build_vanilla_generator_and_layout(
         TransformersKVGeneratorConfig(
             model_id=args.model_id,
             tokenizer_id=args.model_id,

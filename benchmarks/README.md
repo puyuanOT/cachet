@@ -15,8 +15,8 @@ audit work.
 Blank numeric cells mean the row has not been measured, or the run has not
 completed, under the current protocol yet. A blank cell is not a zero.
 
-> **Evidence status: main-protocol Vanilla-v2 measurements pending.** Sanitized
-> BF16 Vanilla-v2 canaries and a matched cold-load optimization ablation are
+> **Evidence status: main-protocol Vanilla measurements pending.** Sanitized
+> BF16 Vanilla canaries and a matched cold-load optimization ablation are
 > available in the [engineering appendix](appendix/representative-bf16-qwen3-4b-canaries/),
 > but they use two examples, BF16 weights/KV, and request parallelism 1. The
 > previous main-table rows measured a superseded post-RoPE implementation against
@@ -67,7 +67,7 @@ dataset scores are evaluated over the selected dataset samples.
 | Latency input context lengths | 8k, 16k, and 32k prepared prompts, each assembled from distinct 2k-token documents (8k = 4 docs, 16k = 8 docs, 32k = 16 docs) |
 | Latency document distinctness | Documents are distinct within a request and across the 4 concurrent requests in each wave (round-robin example interleaving); the small document pool repeats across the 64 repeats, with per-request `cache_salt` isolation and OS page-cache eviction keeping every hydrate cold |
 | Latency job isolation | Each (method × context) row runs as its own single-node `g6.8xlarge` job (separate cluster + vLLM server) so no configuration contaminates another |
-| Default Cachet method | Vanilla-v2 external KV (independent pre-RoPE documents; absolute-position injection) |
+| Default Cachet method | Vanilla external KV (independent pre-RoPE documents; absolute-position injection) |
 | Default document KV precision | Q8, represented as `fp8_e5m2` payloads |
 | vLLM runtime KV dtype | `fp8_e5m2` |
 | Cache residency | Local disk handoff bundles; Cachet rows hydrate document KV from disk during measured requests |
@@ -90,9 +90,9 @@ Latency values are seconds.
 | Baseline | 8k |  |  |  |  |  |  |  |
 | Baseline | 16k |  |  |  |  |  |  |  |
 | Baseline | 32k |  |  |  |  |  |  |  |
-| vanilla&nbsp;KV v2 | 8k |  |  |  |  |  |  |  |
-| vanilla&nbsp;KV v2 | 16k |  |  |  |  |  |  |  |
-| vanilla&nbsp;KV v2 | 32k |  |  |  |  |  |  |  |
+| vanilla&nbsp;KV | 8k |  |  |  |  |  |  |  |
+| vanilla&nbsp;KV | 16k |  |  |  |  |  |  |  |
+| vanilla&nbsp;KV | 32k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 8k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 16k |  |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) | 32k |  |  |  |  |  |  |  |
@@ -156,7 +156,7 @@ pressure-probe batch sizes.
 The cleared rows came from a private, superseded post-RoPE run whose prepared
 inputs and exact package identity are not reconstructable from this repository.
 They remain recoverable from git history for audit, but cannot be mixed with
-Vanilla v2. The replacement protocol must bind content-addressed inputs, source
+Vanilla. The replacement protocol must bind content-addressed inputs, source
 and wheel identity, exact method version, and sanitized request-level evidence.
 
 ## Methods and pre-computation
@@ -170,7 +170,7 @@ in code as the source of truth in
 `METHOD_SPECS`); new methods declare their contract there.
 
 - **Baseline** - no cache; vLLM recomputes all KV at request time (full prefill). Arm `baseline_prefill`.
-- **vanilla KV v2** (implemented) - each document's K/V is computed
+- **vanilla KV** (implemented) - each document's K/V is computed
   independently; keys are stored **pre-RoPE** (after QK normalization), documents
   are assembled in logical order, and the connector applies every key's true
   absolute position during injection. Values are unchanged and there is no
@@ -185,7 +185,7 @@ in code as the source of truth in
   full context. The selective-recompute step is not implemented.
 - **InfoFlow KV** (planned) - recovers cross-document information flow over reused KV; expected to build on the same position-independent pre-RoPE foundation. Routine not yet defined.
 
-In short: Vanilla v2 owns the reusable pre-RoPE generation and absolute-position
+In short: Vanilla owns the reusable pre-RoPE generation and absolute-position
 assembly path. CacheBlend and InfoFlow KV may share that foundation, but their
 method-specific selection/recomputation logic is still absent. KV Packet's
 Cachet pre-computation contract remains intentionally unspecified pending
@@ -195,13 +195,13 @@ upstream reproduction.
 
 The previous score rows used unmatched sample counts and the superseded
 post-RoPE Vanilla implementation. They are cleared pending a full-dataset,
-paired Vanilla-v2 rerun over content-addressed inputs; the two-example BF16
+paired Vanilla rerun over content-addressed inputs; the two-example BF16
 canary in the appendix is not substituted for those scores.
 
 | Method | Biography score | HotpotQA score | MusiQue score | NIAH score | LongBench v2 score | RULER score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Baseline |  |  |  |  |  |  |
-| vanilla&nbsp;KV v2 |  |  |  |  |  |  |
+| vanilla&nbsp;KV |  |  |  |  |  |  |
 | [KV&nbsp;Packet](https://arxiv.org/abs/2604.13226) |  |  |  |  |  |  |
 | CacheBlend |  |  |  |  |  |  |
 | InfoFlow&nbsp;KV |  |  |  |  |  |  |
@@ -263,8 +263,8 @@ Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, vLLM
 
 | Hardware | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  | 14.50x |  |  | Current target; main-protocol Vanilla-v2 latency pending |
-| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |  | Main protocol not measured; a non-comparable BF16 Vanilla-v2 compatibility canary is in the appendix |
+| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  | 14.50x |  |  | Current target; main-protocol Vanilla latency pending |
+| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |  | Main protocol not measured; a non-comparable BF16 Vanilla compatibility canary is in the appendix |
 
 ## Serving Platform Ablation
 
@@ -274,14 +274,14 @@ Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV,
 
 | Serving platform | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| vLLM |  |  |  |  |  |  | 14.50x |  |  | Current target; main-protocol Vanilla-v2 latency pending |
+| vLLM |  |  |  |  |  |  | 14.50x |  |  | Current target; main-protocol Vanilla latency pending |
 | SGLang |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 
 ## Directory Layout
 
 | Folder | Purpose |
 | --- | --- |
-| [`appendix/representative-bf16-qwen3-4b-canaries/`](appendix/representative-bf16-qwen3-4b-canaries/) | Current sanitized Vanilla-v2 BF16 canaries and matched direct-versus-legacy cold-load ablation; non-publication-qualified and not copied into the main tables |
+| [`appendix/representative-bf16-qwen3-4b-canaries/`](appendix/representative-bf16-qwen3-4b-canaries/) | Current sanitized Vanilla BF16 canaries and matched direct-versus-legacy cold-load ablation; non-publication-qualified and not copied into the main tables |
 | [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) | Historical A10G warm-prefix canary evidence and Databricks provenance (predates the current g6/L4 protocol; folder name retained because it is referenced by committed release-evidence records) |
 | [`databricks/`](databricks/) | Notes for Databricks provenance; historical committed mirrors have been removed |
 | [`_template/`](_template/) | Required table shape for future public benchmark result folders |

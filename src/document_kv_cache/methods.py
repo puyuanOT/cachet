@@ -783,6 +783,8 @@ _BUILTIN_METHOD_SPECS: tuple[MethodSpec, ...] = (
         pre_rope=True,
         selective_recompute=False,
         implemented=True,
+        # Persisted compatibility metadata: version 1 denoted the retired
+        # post-RoPE artifact contract. This is not a user-visible method flag.
         artifact_version="2",
         lifecycle=MethodLifecycle(
             code_status=MethodCodeStatus.RUNNABLE,

@@ -17,7 +17,7 @@ native GPU KV blocks.
 | What is the current target? | Qwen3 4B Instruct on AWS g6/L4 Databricks, `g6.8xlarge` |
 | Where are the latest results? | [`benchmarks/README.md`](../../benchmarks/) |
 
-Main-protocol Vanilla-v2 performance and quality measurements are pending. The
+Main-protocol Vanilla performance and quality measurements are pending. The
 [engineering appendix](../../benchmarks/appendix/representative-bf16-qwen3-4b-canaries/)
 contains non-publication-qualified BF16 canaries: the 16k canary quality gate
 passes, both 8k gates fail, and a matched eight-job cold-load ablation records
@@ -154,7 +154,7 @@ The current implementation and release gaps are tracked in
 `docs/v1-requirements-matrix.md`. Treat that matrix as the audit map for the V1
 open-source package goal: it distinguishes repository-implemented requirements,
 current standalone engineering evidence, and historical bundled snapshots. A
-refreshed final-wheel strict bundle with the main Vanilla-v2 protocol remains
+refreshed final-wheel strict bundle with the main Vanilla protocol remains
 pending.
 
 ## Logical Model
@@ -948,12 +948,12 @@ stays reserved for machine-readable PR validation and release-audit sidecars.
 The current public SGLang result is the BF16 native-handoff smoke in the
 representative engineering appendix: one synthetic NIAH example, repeated
 twice per arm, actually used 205 prompt tokens and 7 completion tokens. It
-validates Vanilla-v2 native cache-path execution but is not a 4k-to-32 latency
+validates Vanilla native cache-path execution but is not a 4k-to-32 latency
 row or a speedup claim. Provider-backed native HiCache probe and
 connector-action records remain integration evidence. Earlier synthetic and
 prepared four-dataset SGLang V1 live records belong to the historical bundle
 snapshot; their post-RoPE cache-hit/quality result does not support the current
-Vanilla-v2 main protocol. The release-bundle schema accepts raw
+Vanilla main protocol. The release-bundle schema accepts raw
 `cachet.sglang_live_benchmark.v1` sidecars through the dedicated
 `sglang_live_v1_benchmark` role, while the public appendix retains only a
 sanitized compact projection.
@@ -1009,7 +1009,7 @@ By default this engine posts the full logical prompt, which is the correct behav
 Generate per-example handoff JSON and payload files from prepared benchmark rows
 by supplying the runtime KV generator factory. Cachet does not ship a fake
 benchmark generator; the factory must return a `KVChunkGenerator` whose payload
-geometry matches the supplied model layout. For Vanilla-v2 generation in a
+geometry matches the supplied model layout. For Vanilla generation in a
 Transformers environment, use the forced pre-RoPE factory
 `document_kv_cache.transformers_generator:build_pre_rope_transformers_kv_chunk_generator`
 with the explicit `vanilla_prefill` and per-document options. For the
@@ -1104,7 +1104,7 @@ cachet-benchmark-handoff-manifest \
 To run the V1 benchmark contract against existing OpenAI-compatible vLLM or
 SGLang servers, generate a reproducible command plan for all four datasets. The
 plan-level generation example below is the monolithic full-prefix control;
-use the per-document Vanilla-v2 bundle commands above when benchmarking
+use the per-document Vanilla bundle commands above when benchmarking
 Vanilla:
 
 ```bash
@@ -2110,7 +2110,7 @@ users keep inline type annotations after installation.
 ## Remaining V1 Work
 
 - Build a refreshed final-wheel strict release bundle from the target AWS
-  g6/L4/UC evidence set after the pending main-protocol Vanilla-v2 run. The
+  g6/L4/UC evidence set after the pending main-protocol Vanilla run. The
   native engine block managers remain owned by vLLM and SGLang rather than
   Cachet. The last validated strict-bundle snapshot is historical: it was built
   after PR #513 with its then-current wheel and validated 37 artifacts,
@@ -2122,7 +2122,7 @@ users keep inline type annotations after installation.
   `dependency_freshness` evidence for the current package/runtime dependency
   policy.
   That snapshot remains useful for audit but does not bind the current source,
-  wheel, or Vanilla-v2 main protocol. Traceability-only PR evidence added after
+  wheel, or Vanilla main protocol. Traceability-only PR evidence added after
   it must be included in the refreshed final-wheel publication bundle. The
   required artifact set remains:
   release evidence
@@ -2144,7 +2144,7 @@ users keep inline type annotations after installation.
   Databricks run `566743786103032` on `g5.8xlarge` completed Biography,
   HotpotQA, MusiQue, and NIAH with no benchmark errors. Carry it with
   `--compatibility-benchmark-json` for release-ops provenance, but do not use it
-  for a current Vanilla-v2 performance or quality claim. Its historical release
+  for a current Vanilla performance or quality claim. Its historical release
   evidence `ok=true` result remains provenance only. This compatibility record
   does not change the strict V1 publication target from AWS g6/L4 and does not
   populate the current main tables.

@@ -846,8 +846,8 @@ def test_vanilla_two_segment_handoff_applies_global_positions_and_preserves_valu
         token_major.contiguous().view(torch.uint8).flatten().tolist()
     )
     pre_rope_handle = KVCacheHandle(
-        request_id="req-vanilla-v2",
-        handle_uri="document-kv://req-vanilla-v2",
+        request_id="req-vanilla",
+        handle_uri="document-kv://req-vanilla",
         layout=pre_rope_layout,
         segments=(
             KVSegment("doc-a", "document_chunk", "doc-a", 0, 2, 0, 64),
@@ -870,7 +870,7 @@ def test_vanilla_two_segment_handoff_applies_global_positions_and_preserves_valu
     provider = DocumentKVNativeProvider(source=StaticHandoffSource(load))
     connector = DocumentKVConnector(provider=provider)
     request = SimpleNamespace(
-        request_id="req-vanilla-v2",
+        request_id="req-vanilla",
         num_tokens=6,
         kv_transfer_params={},
     )
@@ -878,7 +878,7 @@ def test_vanilla_two_segment_handoff_applies_global_positions_and_preserves_valu
     assert connector.get_num_new_matched_tokens(request, 0) == (4, False)
     connector.update_state_after_alloc(request, AllocatedBlocks([5, 7]), 4)
     metadata = connector.build_connector_meta(
-        scheduler_output([5, 7], request_id="req-vanilla-v2")
+        scheduler_output([5, 7], request_id="req-vanilla")
     )
     destination = torch.zeros((8, 2, 2, 1, 4), dtype=torch.float32)
     connector.register_kv_caches({"layer.0": destination})

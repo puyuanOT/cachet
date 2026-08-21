@@ -1255,7 +1255,7 @@ def _resolved_sglang_provenance(
         else "bfloat16"
     )
     block_size = config.hicache_page_size
-    # Every SGLang cache arm implements the registered Vanilla-v2 contract,
+    # Every SGLang cache arm implements the registered Vanilla contract,
     # including runs that consume already-generated dataset or explicit
     # handoffs. Generation config presence is therefore not a reliable signal:
     # after generation those fields are intentionally cleared from the runtime

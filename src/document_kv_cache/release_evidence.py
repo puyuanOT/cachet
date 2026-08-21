@@ -68,7 +68,7 @@ from document_kv_cache.model_profiles import (
     get_model_profile,
     layout_for_model,
 )
-from document_kv_cache.methods import MethodRegistry
+from document_kv_cache.methods import MethodRegistry, default_method_registry
 from document_kv_cache.native_probe_factories import native_probe_adapter_contract_to_record
 from document_kv_cache.serving_env import serving_environment_profile
 from document_kv_cache.storage import is_real_uc_volume_root, local_path
@@ -117,7 +117,10 @@ _REPRESENTATIVE_SGLANG_EXAMPLES = 1
 _REPRESENTATIVE_SGLANG_REPEATS = 2
 _REPRESENTATIVE_SGLANG_BENCHMARK_ID = "g6-sglang-4k-32-paired-smoke"
 _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID = "vanilla_prefill"
-_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION = "2"
+_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION = default_method_registry().get(
+    _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID,
+    require_implemented=True,
+).artifact_version
 _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY = (
     "document_kv_cache.transformers_generator:"
     "build_pre_rope_transformers_kv_chunk_generator"
@@ -1623,7 +1626,7 @@ def _sanitize_sglang_handoff_generation_provenance(
             or example["method_version"] != _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION
         ):
             raise ValueError(
-                f"representative SGLang handoff generation examples[{index}] must use Vanilla v2"
+                f"representative SGLang handoff generation examples[{index}] must use Vanilla"
             )
         if example["segment_count"] != example["document_count"]:
             raise ValueError(

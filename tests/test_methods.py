@@ -74,7 +74,7 @@ def test_builtin_executable_methods_are_registered_as_implemented():
     }
 
 
-def test_vanilla_kv_v2_is_pre_rope_without_recompute():
+def test_vanilla_kv_is_pre_rope_without_recompute():
     spec = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
     assert spec.pre_rope is True
     assert spec.selective_recompute is False

@@ -33,7 +33,7 @@ Maintainer and serving-operator commands:
 
 | Group | Commands |
 | --- | --- |
-| Benchmark planning and execution | `cachet-benchmark-plan`, `cachet-benchmark-handoffs`, `cachet-benchmark-handoff-manifest`, `cachet-benchmark-handoff-bundles`, `cachet-prepare-representative-hotpotqa`, `cachet-run-benchmark-plan`, `cachet-storage-benchmark` |
+| Benchmark planning and execution | `cachet-benchmark-plan`, `cachet-benchmark-handoffs`, `cachet-benchmark-handoff-manifest`, `cachet-benchmark-handoff-bundles`, `cachet-prepare-main-latency-inputs`, `cachet-prepare-representative-hotpotqa`, `cachet-run-benchmark-plan`, `cachet-storage-benchmark` |
 | Method development | `cachet-method-scaffold`, `cachet-method-conformance` |
 | Databricks job generation and run inspection | `cachet-databricks-job`, `cachet-databricks-runs`, `cachet-databricks-resource-ledger`, `cachet-storage-benchmark-databricks-job`, `cachet-engine-probe-databricks-job`, `cachet-vllm-smoke-databricks-job`, `cachet-sglang-smoke-databricks-job` |
 | Native probes and serving smoke checks | `cachet-native-probe-scaffold`, `cachet-serving-env`, `cachet-native-probe-factories`, `cachet-engine-probe`, `cachet-engine-probe-fixture`, `cachet-runtime-kv-offload-probe`, `cachet-vllm-runtime-preflight`, `cachet-sglang-runtime-preflight`, `cachet-vllm-smoke`, `cachet-sglang-smoke` |

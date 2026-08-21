@@ -19,7 +19,7 @@ transformers_kv_generation = importlib.util.module_from_spec(_EXAMPLE_SPEC)
 _EXAMPLE_SPEC.loader.exec_module(transformers_kv_generation)
 
 
-def test_transformers_example_builds_vanilla_v2_pre_rope_contract(
+def test_transformers_example_builds_vanilla_pre_rope_contract(
     monkeypatch,
 ) -> None:
     observed_pre_rope: list[bool] = []
@@ -51,7 +51,7 @@ def test_transformers_example_builds_vanilla_v2_pre_rope_contract(
     )
 
     method, built_generator, layout = (
-        transformers_kv_generation._build_vanilla_v2_generator_and_layout(
+        transformers_kv_generation._build_vanilla_generator_and_layout(
             transformers_kv_generation.TransformersKVGeneratorConfig(
                 model_id="Qwen/Qwen3-4B-Instruct-2507",
                 torch_dtype="bfloat16",

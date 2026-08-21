@@ -1284,7 +1284,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "Do not infer or estimate missing values" in benchmark_template_readme
 
     assert "historical benchmark evidence" in compact_appendix_readme
-    assert "Vanilla-v2 pre-RoPE canaries" in appendix_readme
+    assert "Vanilla pre-RoPE canaries" in appendix_readme
     assert "A10G warm-prefix folder is historical evidence" in compact_appendix_readme
     assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in appendix_readme
     assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in vllm_readme
@@ -1309,7 +1309,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "`../benchmarks/README.md`" in docs_readme
     assert "current Qwen3-4B 4-bit-weight + Q8-document-KV protocol" in compact_matrix_text
     assert (
-        "Main-protocol Vanilla-v2 performance and quality measurements are pending"
+        "Main-protocol Vanilla performance and quality measurements are pending"
         in compact_maintainer_reference
     )
     assert "both 8k gates fail" in compact_maintainer_reference
@@ -1322,7 +1322,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         in compact_maintainer_reference
     )
     assert (
-        "Current Vanilla-v2 evidence is limited to the non-publication-qualified "
+        "Current Vanilla evidence is limited to the non-publication-qualified "
         "BF16 engineering appendix"
         in compact_matrix_text
     )
@@ -1361,7 +1361,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         in compact_maintainer_reference
     )
     assert (
-        "does not bind the current source, wheel, or Vanilla-v2 main protocol"
+        "does not bind the current source, wheel, or Vanilla main protocol"
         in compact_maintainer_reference
     )
     assert "main cold-hydrate latency table (`benchmarks/README.md`) is populated" not in matrix_text
@@ -1505,7 +1505,8 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "appendix/representative-bf16-qwen3-4b-canaries/g6-sglang-4k-32-paired-smoke-evidence-v2.json",
         "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-16k-256-three-arm-canary-v2.json",
         "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-8k-64-three-arm-canary-v2.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/vanilla-v2-cold-optimization.json",
+        "appendix/representative-bf16-qwen3-4b-canaries/vanilla-cold-optimization.json",
+        "appendix/vanilla-score-canary/README.md",
         "databricks/README.md",
         "native-engine/README.md",
         "README.md",
@@ -1599,7 +1600,7 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "`dependency_freshness` evidence" in compact_remaining_v1_work
     assert "Traceability-only PR evidence added after it must be included" in compact_remaining_v1_work
     assert (
-        "does not bind the current source, wheel, or Vanilla-v2 main protocol"
+        "does not bind the current source, wheel, or Vanilla main protocol"
         in compact_remaining_v1_work
     )
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_remaining_v1_work

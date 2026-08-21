@@ -119,6 +119,11 @@ return as a production dependency.
 - `live_server.py` owns the one-request live smoke check against an existing
   OpenAI-compatible serving endpoint, including validated Cachet handoff params
   for native vLLM/SGLang cache-arm requests.
+- `main_latency_inputs.py` prepares and independently verifies the
+  content-addressed 8k/16k/32k main-latency suite with the pinned tokenizer,
+  exact 4/8/16-document segmentation, and closed digest provenance.
+- `score_canary.py` prepares and validates the small, matched, descriptive
+  Baseline-versus-Vanilla score canary.
 - `manifest.py` defines manifest lookup and in-memory manifest storage.
 - `materializer.py` loads planned chunks into merged or segmented payloads.
 - `method_conformance.py` checks application method plugins and emits a
@@ -210,6 +215,7 @@ The implementation package owns these document-branded CLI entry points:
 - `document-kv-benchmark-handoffs`
 - `document-kv-benchmark-handoff-manifest`
 - `document-kv-benchmark-handoff-bundles`
+- `document-kv-prepare-main-latency-inputs`
 - `document-kv-prepare-representative-hotpotqa`
 - `document-kv-native-probe-scaffold`
 - `document-kv-method-scaffold`
@@ -247,6 +253,7 @@ Cachet-branded aliases point to the same document-owned entry points:
 - `cachet-benchmark-handoffs`
 - `cachet-benchmark-handoff-manifest`
 - `cachet-benchmark-handoff-bundles`
+- `cachet-prepare-main-latency-inputs`
 - `cachet-prepare-representative-hotpotqa`
 - `cachet-native-probe-scaffold`
 - `cachet-method-scaffold`
