@@ -38,8 +38,11 @@ from document_kv_cache.benchmark_gates import (
 from document_kv_cache.artifact_identity import ArtifactIdentity, canonical_json_sha256
 from document_kv_cache.benchmark_metrics import aggregate_decode_tokens_per_second
 from document_kv_cache.canary_orchestration import (
+    HANDOFF_TOPOLOGY_ATTESTATION_RECORD_TYPE,
+    HANDOFF_TOPOLOGY_ATTESTATION_SCHEMA_VERSION,
     REPRESENTATIVE_CANARY_MODEL_ID,
     REPRESENTATIVE_CANARY_MODEL_REVISION,
+    validate_handoff_topology_attestation,
 )
 from document_kv_cache.engine_adapters import (
     ENGINE_KV_CONNECTOR_ACTIONS_RECORD_TYPE,
@@ -112,6 +115,15 @@ _REPRESENTATIVE_SGLANG_SUITE_SCOPE = "live_synthetic_niah"
 _REPRESENTATIVE_SGLANG_DATASETS = ("niah",)
 _REPRESENTATIVE_SGLANG_EXAMPLES = 1
 _REPRESENTATIVE_SGLANG_REPEATS = 2
+_REPRESENTATIVE_SGLANG_BENCHMARK_ID = "g6-sglang-4k-32-paired-smoke"
+_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID = "vanilla_prefill"
+_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION = "2"
+_REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY = (
+    "document_kv_cache.transformers_generator:"
+    "build_pre_rope_transformers_kv_chunk_generator"
+)
+_REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION = "5.3.0"
+_REPRESENTATIVE_SGLANG_HANDOFF_TOPOLOGY_ID = "per_document"
 REQUIRED_ENGINE_PROBE_BACKENDS = tuple(backend.value for backend in ServingBackend)
 RELEASE_EVIDENCE_ARTIFACT_ROLES = (
     "v1_benchmark",
@@ -1387,8 +1399,9 @@ def sanitize_sglang_representative_canary_evidence(
     record: Mapping[str, Any],
     *,
     expected_cachet_wheel_sha256: str,
+    handoff_generation_record: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Project a validated representative SGLang canary into a closed safe schema."""
+    """Project a validated canary and its handoff sidecar into a safe schema."""
 
     raw_issues = sglang_live_v1_benchmark_issues(
         record,
@@ -1399,6 +1412,10 @@ def sanitize_sglang_representative_canary_evidence(
             "cannot sanitize invalid representative SGLang canary evidence: "
             + "; ".join(raw_issues)
         )
+    handoff_generation_provenance = _sanitize_sglang_handoff_generation_provenance(
+        handoff_generation_record,
+        benchmark_record=record,
+    )
 
     suite = _required_mapping(record, "suite")
     provenance = _required_mapping(record, "benchmark_manifest_provenance")
@@ -1450,6 +1467,7 @@ def sanitize_sglang_representative_canary_evidence(
         "hardware_target": record["hardware_target"],
         "workload_profile": record["representative_workload_profile"],
         "model_provenance": model_provenance,
+        "handoff_generation_provenance": handoff_generation_provenance,
         "suite": sanitized_suite,
         "measurements": measurements,
         "report_rows": report_rows,
@@ -1459,6 +1477,7 @@ def sanitize_sglang_representative_canary_evidence(
     projection_issues = sglang_representative_canary_evidence_issues(
         evidence,
         expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
+        expected_handoff_generation_provenance=handoff_generation_provenance,
     )
     if projection_issues:
         raise RuntimeError(
@@ -1526,18 +1545,311 @@ _SGLANG_SAFE_CACHE_HIT_FIELDS = (
 )
 _SGLANG_SAFE_LATENCY_FIELDS = ("count", "mean", "p50", "p95")
 _SGLANG_SAFE_PREFILL_FIELDS = ("cached_tokens", "total_prompt_tokens")
+_SGLANG_HANDOFF_PROVENANCE_FIELDS = {
+    "raw_sidecar_sha256",
+    "method_id",
+    "method_version",
+    "generator_factory",
+    "generator_version",
+    "topology",
+    "content_digests",
+}
+_SGLANG_HANDOFF_TOPOLOGY_FIELDS = {
+    "topology_id",
+    "record_type",
+    "schema_version",
+    "example_count",
+    "document_count",
+    "segment_count",
+    "attestation_sha256",
+    "examples_sha256",
+}
+_SGLANG_HANDOFF_CONTENT_DIGEST_FIELDS = {
+    "artifact_sha256",
+    "logical_prompt_sha256",
+    "method_config_sha256",
+}
+
+
+def _sanitize_sglang_handoff_generation_provenance(
+    record: Mapping[str, Any],
+    *,
+    benchmark_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(record, Mapping):
+        raise TypeError("handoff_generation_record must be a mapping")
+    expected_raw = {
+        "ok": True,
+        "backend": "sglang",
+        "benchmark_id": _REPRESENTATIVE_SGLANG_BENCHMARK_ID,
+        "artifact_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_model_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "artifact_tokenizer_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "dtype": "bfloat16",
+        "generator_factory": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY,
+        "generator_version": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION,
+    }
+    for field_name, expected in expected_raw.items():
+        if record.get(field_name) != expected:
+            raise ValueError(
+                "representative SGLang handoff generation "
+                f"{field_name} must be {expected!r}"
+            )
+    benchmark_id = benchmark_record.get("benchmark_id")
+    if (
+        benchmark_id != _REPRESENTATIVE_SGLANG_BENCHMARK_ID
+        or benchmark_id != record.get("benchmark_id")
+    ):
+        raise ValueError(
+            "representative SGLang benchmark and handoff generation benchmark_id "
+            f"must both be {_REPRESENTATIVE_SGLANG_BENCHMARK_ID!r}"
+        )
+    raw_topology = record.get("handoff_topology_attestation")
+    if not isinstance(raw_topology, Mapping):
+        raise ValueError("representative SGLang handoff generation topology is invalid")
+    try:
+        topology = validate_handoff_topology_attestation(raw_topology)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"representative SGLang handoff generation topology is invalid: {exc}"
+        ) from exc
+    examples = topology["examples"]
+    if len(examples) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        raise ValueError("representative SGLang handoff generation must attest one example")
+    for index, example in enumerate(examples):
+        if (
+            example["method_id"] != _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID
+            or example["method_version"] != _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION
+        ):
+            raise ValueError(
+                f"representative SGLang handoff generation examples[{index}] must use Vanilla v2"
+            )
+        if example["segment_count"] != example["document_count"]:
+            raise ValueError(
+                f"representative SGLang handoff generation examples[{index}] "
+                "must use per-document topology"
+            )
+    _validate_sglang_handoff_generation_cross_bindings(
+        benchmark_record,
+        record,
+        examples,
+    )
+    # The pinned live-sidecar producer omitted this redundant top-level field;
+    # its closed topology attestation is the authoritative historical binding.
+    cache_method = record.get("cache_method", examples[0]["method_id"])
+    if cache_method != _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID:
+        raise ValueError(
+            "representative SGLang handoff generation cache_method must be "
+            f"{_REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID!r}"
+        )
+    return {
+        "raw_sidecar_sha256": canonical_json_sha256(record),
+        "method_id": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID,
+        "method_version": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION,
+        "generator_factory": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY,
+        "generator_version": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION,
+        "topology": {
+            "topology_id": _REPRESENTATIVE_SGLANG_HANDOFF_TOPOLOGY_ID,
+            "record_type": topology["record_type"],
+            "schema_version": topology["schema_version"],
+            "example_count": topology["example_count"],
+            "document_count": sum(row["document_count"] for row in examples),
+            "segment_count": sum(row["segment_count"] for row in examples),
+            "attestation_sha256": canonical_json_sha256(topology),
+            "examples_sha256": topology["examples_sha256"],
+        },
+        "content_digests": [
+            {
+                "artifact_sha256": row["artifact_id"],
+                "logical_prompt_sha256": row["logical_prompt_sha256"],
+                "method_config_sha256": row["method_config_digest"],
+            }
+            for row in examples
+        ],
+    }
+
+
+def _validate_sglang_handoff_generation_cross_bindings(
+    benchmark_record: Mapping[str, Any],
+    generation_record: Mapping[str, Any],
+    topology_examples: Sequence[Mapping[str, Any]],
+) -> None:
+    measurements = _required_mapping_sequence(benchmark_record, "measurements")
+    identities: set[tuple[str, str]] = set()
+    prompt_tokens: set[int] = set()
+    for index, measurement in enumerate(measurements):
+        dataset = measurement.get("dataset")
+        example_id = measurement.get("example_id")
+        tokens = measurement.get("prompt_tokens")
+        if not isinstance(dataset, str) or not isinstance(example_id, str):
+            raise ValueError(
+                f"representative SGLang measurements[{index}] identity must be strings"
+            )
+        if type(tokens) is not int or tokens <= 0:
+            raise ValueError(
+                f"representative SGLang measurements[{index}].prompt_tokens must be positive"
+            )
+        identities.add((dataset, example_id))
+        prompt_tokens.add(tokens)
+    if len(identities) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        raise ValueError(
+            "representative SGLang measurements must contain exactly one unique "
+            "dataset/example identity"
+        )
+    expected_example_keys = {
+        canonical_json_sha256({"dataset": dataset, "example_id": example_id})
+        for dataset, example_id in identities
+    }
+    topology_example_keys = {
+        str(example["example_key_sha256"]) for example in topology_examples
+    }
+    if (
+        len(topology_example_keys) != len(topology_examples)
+        or topology_example_keys != expected_example_keys
+    ):
+        raise ValueError(
+            "representative SGLang handoff topology example keys must exactly "
+            "match the unique benchmark dataset/example identities"
+        )
+
+    runtime_prompt_tokens = generation_record.get("runtime_prompt_tokens")
+    if not _is_positive_int(runtime_prompt_tokens) or prompt_tokens != {
+        runtime_prompt_tokens
+    }:
+        raise ValueError(
+            "representative SGLang handoff runtime_prompt_tokens must match every "
+            "benchmark measurement"
+        )
+
+    validations = _required_mapping_sequence(
+        benchmark_record, "cache_hit_validations"
+    )
+    cached_tokens: set[int] = set()
+    validation_prompt_tokens: set[int] = set()
+    validation_identities: set[tuple[str, str]] = set()
+    for index, validation in enumerate(validations):
+        cached = validation.get("cache_request_cached_tokens")
+        prompt = validation.get("cache_request_prompt_tokens")
+        dataset = validation.get("dataset")
+        example_id = validation.get("example_id")
+        if (
+            type(cached) is not int
+            or cached <= 0
+            or type(prompt) is not int
+            or prompt <= 0
+        ):
+            raise ValueError(
+                f"representative SGLang cache_hit_validations[{index}] token "
+                "counts must be positive"
+            )
+        if not isinstance(dataset, str) or not isinstance(example_id, str):
+            raise ValueError(
+                f"representative SGLang cache_hit_validations[{index}] identity "
+                "must be strings"
+            )
+        cached_tokens.add(cached)
+        validation_prompt_tokens.add(prompt)
+        validation_identities.add((dataset, example_id))
+    cache_prefix_tokens = generation_record.get("cache_prefix_tokens")
+    if not _is_positive_int(cache_prefix_tokens) or cached_tokens != {
+        cache_prefix_tokens
+    }:
+        raise ValueError(
+            "representative SGLang handoff cache_prefix_tokens must match every "
+            "cache-hit validation"
+        )
+    if validation_prompt_tokens != {runtime_prompt_tokens}:
+        raise ValueError(
+            "representative SGLang cache-hit prompt tokens must match handoff "
+            "runtime_prompt_tokens"
+        )
+    if validation_identities != identities:
+        raise ValueError(
+            "representative SGLang cache-hit identities must match benchmark "
+            "measurement identities"
+        )
+
+
+def _validate_sanitized_sglang_handoff_generation_provenance(
+    provenance: Mapping[str, Any],
+    issues: list[str],
+) -> None:
+    label = "representative SGLang handoff_generation_provenance"
+    _reject_unknown_fields(provenance, _SGLANG_HANDOFF_PROVENANCE_FIELDS, label, issues)
+    expected_scalars = {
+        "method_id": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_ID,
+        "method_version": _REPRESENTATIVE_SGLANG_HANDOFF_METHOD_VERSION,
+        "generator_factory": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_FACTORY,
+        "generator_version": _REPRESENTATIVE_SGLANG_HANDOFF_GENERATOR_VERSION,
+    }
+    for field_name, expected in expected_scalars.items():
+        if provenance.get(field_name) != expected:
+            issues.append(f"{label} {field_name} must be {expected!r}")
+    raw_digest = provenance.get("raw_sidecar_sha256")
+    if not _is_sha256_hex_digest(raw_digest):
+        issues.append(f"{label} raw_sidecar_sha256 must be SHA-256")
+
+    topology = _mapping_or_issue(provenance, "topology", issues)
+    if topology is not None:
+        topology_label = f"{label} topology"
+        _reject_unknown_fields(topology, _SGLANG_HANDOFF_TOPOLOGY_FIELDS, topology_label, issues)
+        expected_topology = {
+            "topology_id": _REPRESENTATIVE_SGLANG_HANDOFF_TOPOLOGY_ID,
+            "record_type": HANDOFF_TOPOLOGY_ATTESTATION_RECORD_TYPE,
+            "schema_version": HANDOFF_TOPOLOGY_ATTESTATION_SCHEMA_VERSION,
+            "example_count": _REPRESENTATIVE_SGLANG_EXAMPLES,
+        }
+        for field_name, topology_expected in expected_topology.items():
+            if topology.get(field_name) != topology_expected:
+                issues.append(
+                    f"{topology_label} {field_name} must be {topology_expected!r}"
+                )
+        for field_name in ("document_count", "segment_count"):
+            if not _is_positive_int(topology.get(field_name)):
+                issues.append(f"{topology_label} {field_name} must be positive")
+        if (
+            _is_positive_int(topology.get("document_count"))
+            and _is_positive_int(topology.get("segment_count"))
+            and topology["segment_count"] != topology["document_count"]
+        ):
+            issues.append(f"{topology_label} must retain one segment per document")
+        for field_name in ("attestation_sha256", "examples_sha256"):
+            if not _is_sha256_hex_digest(topology.get(field_name)):
+                issues.append(f"{topology_label} {field_name} must be SHA-256")
+
+    content = _sequence_or_issue(provenance, "content_digests", issues)
+    if content is None:
+        return
+    if len(content) != _REPRESENTATIVE_SGLANG_EXAMPLES:
+        issues.append(f"{label} content_digests must contain exactly one row")
+    for index, row in enumerate(content):
+        row_label = f"{label} content_digests[{index}]"
+        if not isinstance(row, Mapping):
+            issues.append(f"{row_label} must be a mapping")
+            continue
+        _reject_unknown_fields(row, _SGLANG_HANDOFF_CONTENT_DIGEST_FIELDS, row_label, issues)
+        for field_name in _SGLANG_HANDOFF_CONTENT_DIGEST_FIELDS:
+            if not _is_sha256_hex_digest(row.get(field_name)):
+                issues.append(f"{row_label} {field_name} must be SHA-256")
 
 
 def sglang_representative_canary_evidence_issues(
     evidence: Mapping[str, Any],
     *,
     expected_cachet_wheel_sha256: str,
+    expected_handoff_generation_provenance: Mapping[str, Any],
 ) -> tuple[str, ...]:
     """Return closed-schema and recomputed-aggregate issues for safe canary evidence."""
 
     if not _is_sha256_hex_digest(expected_cachet_wheel_sha256):
         raise ValueError(
             "expected_cachet_wheel_sha256 must be a lowercase SHA-256 digest"
+        )
+    if not isinstance(expected_handoff_generation_provenance, Mapping):
+        raise TypeError(
+            "expected_handoff_generation_provenance must be an independently "
+            "verified mapping"
         )
     if not isinstance(evidence, Mapping):
         return ("representative SGLang canary evidence must be a mapping",)
@@ -1554,6 +1866,7 @@ def sglang_representative_canary_evidence_issues(
             "hardware_target",
             "workload_profile",
             "model_provenance",
+            "handoff_generation_provenance",
             "suite",
             "measurements",
             "report_rows",
@@ -1591,6 +1904,31 @@ def sglang_representative_canary_evidence_issues(
             issues,
             expected_cachet_wheel_sha256=expected_cachet_wheel_sha256,
         )
+
+    handoff_provenance = _mapping_or_issue(
+        evidence, "handoff_generation_provenance", issues
+    )
+    expected_handoff_issues: list[str] = []
+    _validate_sanitized_sglang_handoff_generation_provenance(
+        expected_handoff_generation_provenance,
+        expected_handoff_issues,
+    )
+    issues.extend(
+        f"invalid expected handoff-generation context: {issue}"
+        for issue in expected_handoff_issues
+    )
+    if handoff_provenance is not None:
+        _validate_sanitized_sglang_handoff_generation_provenance(
+            handoff_provenance,
+            issues,
+        )
+        if dict(handoff_provenance) != dict(
+            expected_handoff_generation_provenance
+        ):
+            issues.append(
+                "representative SGLang handoff_generation_provenance does not "
+                "match the independently verified safe projection"
+            )
 
     suite = _mapping_or_issue(evidence, "suite", issues)
     if suite is not None:

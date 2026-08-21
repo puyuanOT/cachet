@@ -19,17 +19,17 @@ mean:
 | --- | --- | --- | --- |
 | Integrate with established serving platforms instead of custom solvers | Implemented | `engine_adapters.py`, `engine_probe.py`, `native_probe_factories.py`, `openai_compatible.py`, and `CONTRIBUTING.md` keep engine-specific work at the vLLM/SGLang handoff boundary. QA run `934698284395881` completed vLLM and SGLang provider-backed native probes plus connector action descriptors against real vLLM and SGLang native block managers on `g6.8xlarge`. | Run connector action descriptor validation whenever connector contracts change, then keep the refreshed native probe/action records in the strict release bundle. |
 | Use Poetry with pinned dependencies | Implemented | `pyproject.toml` pins package, test, and Databricks dependencies with exact `==` requirements; `poetry.lock` records the resolver output; CI runs `poetry check --lock`. `dependency_freshness.py` and `docs/release-ops/evidence/dependency-freshness/current/dependency-freshness-evidence.json` record the current freshness policy: direct pins for `poetry-core`, `packaging`, `pyspark`, `databricks-sdk`, and `pytest` match the supplied latest stable versions; isolated vLLM/SGLang serving-profile pins are exact; fresh vLLM Q4-materializer runtime pins include `bitsandbytes` and `accelerate`; non-latest runtime holds for `sglang`, `tokenizers`, `numpy`, `fastapi`, and `prometheus-fastapi-instrumentator` carry Databricks-validation upgrade reasons; and the resolver-held `protobuf==6.33.6` drift is explained by the current `databricks-sdk==0.118.0` protobuf constraint. Strict release bundles require the matching dependency freshness sidecar. | Keep direct package pins current, refresh the dependency-freshness evidence before each release, include the dependency freshness sidecar in the strict release bundle, and rerun the relevant g6/L4 Databricks smoke or benchmark before upgrading non-latest serving-profile runtime pins. |
-| Load KV ranges from Memory, Disk, and Unity Catalog | Implemented | `storage.py`, `materializer.py`, `service.py`, and `storage_benchmark.py` cover Memory, Disk, UC Volume, and routed readers. QA run `948365719597221` produced Memory, Disk, and real Unity Catalog storage-reader evidence; its run-status sidecar has been regenerated with current strict bundle schema and included in the complete strict release bundle. | Re-run storage evidence whenever storage readers, UC access patterns, or bundle schema gates change. |
+| Load KV ranges from Memory, Disk, and Unity Catalog | Implemented | `storage.py`, `materializer.py`, `service.py`, and `storage_benchmark.py` cover Memory, Disk, UC Volume, and routed readers. QA run `948365719597221` produced Memory, Disk, and real Unity Catalog storage-reader evidence; its run-status sidecar was regenerated with the current strict-bundle schema and included in the historical complete strict release bundle snapshot. | Re-run storage evidence whenever storage readers, UC access patterns, or bundle schema gates change, and revalidate it in the refreshed final-wheel bundle. |
 | Keep the repository clean | Implemented | `.gitignore`, `repository_hygiene.py`, directory README/docstring tests, credential scanning tests, and PR evidence validation guard generated files and secrets. | Include repository hygiene sidecar in the strict release bundle. |
 
 ## V1 Scope And Benchmarking
 
 | Requirement | Status | Current Evidence | Remaining Gate |
 | --- | --- | --- | --- |
-| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. `benchmarks/README.md` is the research-style human-facing benchmark index for the current Qwen3-4B 4-bit-weight + Q8-document-KV protocol; the current g6/L4 request-parallelism-4 N x 2k-document cold-hydrate tables live there, and historical A10G warm-prefix canary evidence is retained under `benchmarks/appendix/` for provenance only. Sanitized BF16 representative canaries under `benchmarks/appendix/representative-bf16-qwen3-4b-canaries/` cover the exact g6/L4 and g5/A10G node shapes, but remain separate-setting, non-publication evidence: the nodes have different local-disk topologies (two 450 GB disks versus one 900 GB disk), and the BF16 setting does not match the main Q4/Q8 protocol. The latest validated strict-bundle snapshot still carries release-gated historical sidecars for audit, but those records are no longer duplicated in `benchmarks/`. | Keep g6/L4 and g5/A10G evidence refreshed when benchmark, model, native connector contracts, package wheel identity, PR evidence, dependency freshness, or the current appendix benchmark folder changes. |
+| Target AWS g6/L4 cluster instances | Release-gated | `databricks_job.py`, `benchmarks.py`, storage/engine/vLLM smoke job helpers, Databricks templates, and release-bundle validators consume `_hardware_targets.py`, which single-sources the default `aws-g6-l4` benchmark id, default `g6.8xlarge` node, and `g6.` Databricks node-family policy while also allowing the explicit non-default `aws-g5-a10g`/`g5.` compatibility target. `benchmarks/README.md` is the research-style human-facing benchmark index for the current Qwen3-4B 4-bit-weight + Q8-document-KV protocol; its g6/L4 request-parallelism-4 N x 2k-document cold-hydrate tables are defined but numerically blank, and historical A10G warm-prefix canary evidence is retained under `benchmarks/appendix/` for provenance only. Sanitized BF16 representative canaries under `benchmarks/appendix/representative-bf16-qwen3-4b-canaries/` cover the exact g6/L4 and g5/A10G node shapes, but remain separate-setting, non-publication evidence: the nodes have different local-disk topologies (two 450 GB disks versus one 900 GB disk), and the BF16 setting does not match the main Q4/Q8 protocol. The historical validated strict-bundle snapshot carries release-gated sidecars for audit, but those records are no longer duplicated in `benchmarks/` and do not satisfy the current main protocol. | Refresh g6/L4 and g5/A10G evidence when benchmark, model, native connector contracts, package wheel identity, PR evidence, dependency freshness, or the current appendix benchmark folder changes. |
 | Restrict V1 to Qwen3 4B Instruct | Implemented | `model_profiles.py`, `vllm_smoke.py`, benchmark plans, and release evidence validate the `qwen3:4b-instruct`/`qwen3-v1` layout contract. | Re-run target evidence whenever model pins change. |
-| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. The public benchmark folder now defines the current Qwen3-4B 4-bit-weight + Q8-document-KV protocol as cold disk-to-GPU document-KV hydrate for Cachet latency rows. The main cold-hydrate latency table (`benchmarks/README.md`) is populated on g6/L4 at request parallelism 4 with N x 2k distinct documents per request (256 successful request-level measurements per cell, zero errors), but remains explicitly provisional because its detailed measurements are referenced only by private DBFS paths. The dataset score table retains answer-found diagnostics for Baseline and vanilla KV over Biography/HotpotQA/MusiQue/NIAH, but its unequal 200-versus-50 sample counts make it non-publication-qualified; LongBench v2 and RULER remain reserved until those dataset runners land. Historical A10G warm-prefix canary evidence is retained under `benchmarks/appendix/` for provenance only. The representative BF16 appendix adds sanitized, isolated baseline/full-prefix/vanilla HotpotQA canaries with two examples times three repeats and 12/12 cold-attestation joins per completed trio; it preserves the failed vanilla paired-F1 canary gate instead of promoting a performance or quality claim. Its SGLang record is a native-handoff smoke whose measured requests were 205 prompt tokens to 7 completion tokens, not a 4k-to-32 latency row. Planned methods (KV Packet, CacheBlend, InfoFlow KV) appear as placeholder rows with their KV pre-computation documented in the "Methods and pre-computation" section. | Re-run paired method arms over identical logical samples and settings, commit sanitized evidence, pass the publication gate, and refresh the current appendix benchmark folder whenever benchmark code, runtime pins, connector behavior, package wheel identity, serving platform, or document-KV precision changes. Cold-hydrate latency rows use per-request `cache_salt` isolation plus OS page-cache eviction at the fixed request parallelism (currently 64 repeats per prepared input). |
-| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. Current QA benchmark run `872615985402004` completed Biography, HotpotQA, MusiQue, and NIAH with bundled release evidence `ok=true`. | Keep all four datasets in every strict V1 release bundle and re-run when benchmark code, model pins, native connector behavior, or package wheel identity changes. |
+| Document quality and latency metrics | Release-gated | `benchmarks.py`, `benchmark_runner.py`, `openai_compatible.py`, and `release_evidence.py` validate TTFT, time-to-completion, throughput, answer quality, and cache-vs-baseline comparisons. The public benchmark folder defines the current Qwen3-4B 4-bit-weight + Q8-document-KV protocol as cold disk-to-GPU document-KV hydrate for Cachet latency rows. Every numeric cell in its main latency/resource and dataset-score tables is pending: the previous populated rows used a superseded post-RoPE method and evidence that cannot be reconstructed publicly, so they were cleared rather than relabeled as Vanilla v2. Historical A10G warm-prefix canary evidence is retained under `benchmarks/appendix/` for provenance only. The representative BF16 appendix adds sanitized, isolated baseline/full-prefix/Vanilla-v2 HotpotQA canaries with two examples times three repeats and 36 total one-to-one cold-attestation joins across its three vLLM trios. Its 16k quality gate passes, both 8k gates fail, and none is promoted to a publication performance or quality claim. Its SGLang record is a native-handoff smoke whose measured requests were 205 prompt tokens to 7 completion tokens, not a 4k-to-32 latency row. Planned methods (KV Packet, CacheBlend, InfoFlow KV) appear as placeholder rows with their KV pre-computation documented in the "Methods and pre-computation" section. LongBench v2 and RULER remain reserved until their dataset runners land. | Run the blank main-protocol cells over paired identical logical samples and settings, commit sanitized evidence, pass the publication gate, and refresh the current appendix benchmark folder whenever benchmark code, runtime pins, connector behavior, package wheel identity, serving platform, or document-KV precision changes. Cold-hydrate latency rows use per-request `cache_salt` isolation plus OS page-cache eviction at the fixed request parallelism and 64 repeats per prepared input. |
+| Benchmark Biography, HotpotQA, MusiQue, and NIAH | Release-gated | `benchmarks.py`, `dataset_prep.py`, `benchmark_plan.py`, and `vllm_smoke.py` define and smoke all four datasets. Historical QA benchmark run `872615985402004` completed those datasets with a then-valid release bundle, but its post-RoPE benchmark record is superseded and does not satisfy the current Vanilla-v2 protocol. | Keep all four datasets in every strict V1 release bundle and complete a refreshed final-wheel main-protocol run when benchmark code, model pins, native connector behavior, or package wheel identity changes. |
 | Compare against standard no-cache prefill | Implemented | Benchmark summaries require a `baseline_prefill` arm and cache-arm comparisons with logical/runtime prompt accounting. | Target release evidence must include finite baseline and cache measurements. |
 
 ## Architecture And Extensibility
@@ -62,24 +62,29 @@ mean:
 
 ## Remaining V1 Release Gates
 
-- Target g6/L4 benchmark evidence exists for
+- Current Vanilla-v2 evidence is limited to the non-publication-qualified BF16
+  engineering appendix: the 16k two-example canary quality gate passes, both 8k
+  gates fail, and the matched direct-versus-legacy cold-load ablation reduces
+  P50 TTFT by 60.22% at 8k and 61.70% at 16k. These runs use BF16 weights/KV,
+  request parallelism 1, and two examples, so the Q4-weight/Q8-document-KV main
+  protocol remains unmeasured and its table cells remain blank.
+- Historical, superseded post-RoPE g6/L4 benchmark evidence exists for
   `cachet_vllm_hot_payload_longcmp_388ea0a_20260623_160711_repeat3_cache8g_cachet_kv_current_main`
   from QA Databricks run `872615985402004` on a single-node `g6.8xlarge`: all
-  four datasets completed with no benchmark errors, 24 measurements, 4
-  cache-vs-baseline comparisons, `answer_found_rate` and `exact_match_rate`
-  deltas of zero,
-  TTFT speedups of 5.27x-6.97x, and time-to-completion speedups of 1.74x-2.25x.
+  four datasets completed with no benchmark errors and 24 measurements.
   The installed package was `cachet_kv-0.2.0-py3-none-any.whl`, the vLLM import
   probe reported `DocumentKVNativeProvider`, and the vLLM server log recorded
   external prefix-cache hits plus successful Cachet layer loads
-  (`document_kv_layers_loaded=36`, `document_kv_load_error_blocks=0`).
-- Current g5/A10G compatibility benchmark evidence exists for
+  (`document_kv_layers_loaded=36`, `document_kv_load_error_blocks=0`). This
+  record remains useful for release-ops provenance, but its post-RoPE method and
+  unreconstructable inputs cannot support a current Vanilla-v2 latency or
+  quality claim.
+- Historical, superseded post-RoPE g5/A10G compatibility benchmark evidence
+  exists for
   `cachet_vllm_hot_payload_g5_longcmp_388ea0a_20260623_162302_repeat3_cache8g_cachet_kv_current_main`
   from QA Databricks run `566743786103032` on a single-node `g5.8xlarge`: all
-  four datasets completed with no benchmark errors, 24 measurements, 4
-  cache-vs-baseline comparisons, `v1_evidence.ok=true`, TTFT speedups of
-  4.66x-6.04x, and time-to-completion speedups of 2.04x-2.67x. Release
-  evidence over that g5 benchmark plus the current storage and native
+  four datasets completed with no benchmark errors and 24 measurements. Release
+  evidence over that historical g5 benchmark plus the then-current storage and native
   vLLM/SGLang probe/action artifacts is `ok=true` with no issues. The installed
   package was `cachet_kv-0.2.0-py3-none-any.whl`, and the vLLM server log
   recorded native `DocumentKVConnector` startup, payload-cache hits, successful
@@ -87,7 +92,8 @@ mean:
   blocks (`document_kv_load_error_blocks=0`). This compatibility evidence can
   be bundled through the optional `compatibility_benchmark` artifact role and
   does not replace the strict V1 publication target, which remains the default
-  AWS g6/L4 release bundle.
+  AWS g6/L4 release bundle. It also does not support a current Vanilla-v2
+  performance or quality claim.
 - Target g6/L4 UC storage-reader evidence exists for
   `cachet_readiness_20260621_095026` from QA Databricks run
   `948365719597221`: Memory, Disk, and Unity Catalog readers all completed with
@@ -101,20 +107,23 @@ mean:
   native probe factory diagnostics from inside the installed runtime
   environments. Run connector action descriptor validation remains the required
   regression step whenever connector contracts change.
-- Release-evidence validation over the current target benchmark, storage, and
-  vLLM/SGLang native probe/action artifacts is `ok=true` with no issues, and
-  the same validation is green for the current `aws-g5-a10g` compatibility
-  benchmark via the `compatibility_benchmark` role. The latest validated
-  strict-bundle snapshot was built after PR #513 with the current wheel and
-  validates with 37 artifacts after replacing its benchmark/status sidecars with
-  the current `872615985402004`/`566743786103032` evidence, adding the
-  successful raw SGLang live V1 sidecar from run `48413356233422`, including
+- Historical release-evidence validation over the then-current target benchmark,
+  storage, and vLLM/SGLang native probe/action artifacts was `ok=true` with no
+  issues; the same was true for the historical `aws-g5-a10g` compatibility
+  benchmark through the `compatibility_benchmark` role. That superseded
+  strict-bundle snapshot was built after PR #513 with its then-current wheel
+  and validated 37 artifacts, including the historical
+  `872615985402004`/`566743786103032` benchmark/status evidence, the SGLang live
+  V1 sidecar from run `48413356233422`,
   PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence,
   carrying `legacy_migration_evidence` for the removed restaurant facade, and
   carrying `dependency_freshness` evidence for the current package/runtime
   dependency policy.
-  Traceability-only PR evidence added after that snapshot must be included in
-  the next publication bundle refresh. The bundled artifacts include the release evidence
+  It remains an audit snapshot, not evidence for the current source, wheel, or
+  Vanilla-v2 main protocol. A refreshed final-wheel strict bundle and complete
+  main-protocol measurements remain pending. Traceability-only PR evidence
+  added after that snapshot must be included in that refresh. The historical
+  bundled artifacts include the release evidence
   sidecar, preflight sidecar, vLLM/SGLang native engine probe sidecars,
   vLLM/SGLang connector action sidecars, vLLM/SGLang engine launch config
   sidecars, SGLang live V1 benchmark sidecar, benchmark plan execution sidecar,

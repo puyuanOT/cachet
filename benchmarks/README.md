@@ -15,12 +15,13 @@ audit work.
 Blank numeric cells mean the row has not been measured, or the run has not
 completed, under the current protocol yet. A blank cell is not a zero.
 
-> **Evidence status: pending Vanilla-v2 remeasurement.** The previous populated
-> rows measured a superseded post-RoPE implementation against inputs that cannot
-> be reconstructed from the repository. They have therefore been cleared rather
-> than relabeled. Fresh numbers are added only from content-addressed inputs and
-> the registered Vanilla-v2 pre-RoPE artifact contract. See the [evidence
-> policy](../docs/evidence-policy.md).
+> **Evidence status: main-protocol Vanilla-v2 measurements pending.** Sanitized
+> BF16 Vanilla-v2 canaries and a matched cold-load optimization ablation are
+> available in the [engineering appendix](appendix/representative-bf16-qwen3-4b-canaries/),
+> but they use two examples, BF16 weights/KV, and request parallelism 1. The
+> previous main-table rows measured a superseded post-RoPE implementation against
+> unreconstructable inputs, so they remain blank rather than being relabeled.
+> See the [evidence policy](../docs/evidence-policy.md).
 
 ## Comparison And Measurement Rules
 
@@ -193,8 +194,9 @@ upstream reproduction.
 ## Benchmark Dataset Score Table
 
 The previous score rows used unmatched sample counts and the superseded
-post-RoPE Vanilla implementation. They are cleared pending a paired Vanilla-v2
-rerun over content-addressed inputs.
+post-RoPE Vanilla implementation. They are cleared pending a full-dataset,
+paired Vanilla-v2 rerun over content-addressed inputs; the two-example BF16
+canary in the appendix is not substituted for those scores.
 
 | Method | Biography score | HotpotQA score | MusiQue score | NIAH score | LongBench v2 score | RULER score |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -261,8 +263,8 @@ Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV, vLLM
 
 | Hardware | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  | 14.50x |  |  | Current target; Vanilla-v2 latency pending |
-| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |  | Historical (old warm-prefix protocol; see the historical appendix); not re-measured |
+| AWS g6/L4, `g6.8xlarge` |  |  |  |  |  |  | 14.50x |  |  | Current target; main-protocol Vanilla-v2 latency pending |
+| AWS g5/A10G, `g5.8xlarge` |  |  |  |  |  |  |  |  |  | Main protocol not measured; a non-comparable BF16 Vanilla-v2 compatibility canary is in the appendix |
 
 ## Serving Platform Ablation
 
@@ -272,14 +274,14 @@ Configuration: Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV,
 
 | Serving platform | P50 TTFT | P95 TTFT | P50 TTC (256 toks) | P95 TTC (256 toks) | P50 tok/s | Cache footprint | Max Serving Concurrency | Peak GPU memory | CPU RSS / host RAM | Notes |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| vLLM |  |  |  |  |  |  | 14.50x |  |  | Current target; Vanilla-v2 latency pending |
+| vLLM |  |  |  |  |  |  | 14.50x |  |  | Current target; main-protocol Vanilla-v2 latency pending |
 | SGLang |  |  |  |  |  |  |  |  |  | Not measured under the current protocol |
 
 ## Directory Layout
 
 | Folder | Purpose |
 | --- | --- |
-| [`appendix/representative-bf16-qwen3-4b-canaries/`](appendix/representative-bf16-qwen3-4b-canaries/) | Historical Vanilla-v1 post-RoPE canaries awaiting the Vanilla-v2 refresh; non-publication-qualified |
+| [`appendix/representative-bf16-qwen3-4b-canaries/`](appendix/representative-bf16-qwen3-4b-canaries/) | Current sanitized Vanilla-v2 BF16 canaries and matched direct-versus-legacy cold-load ablation; non-publication-qualified and not copied into the main tables |
 | [`appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/`](appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/) | Historical A10G warm-prefix canary evidence and Databricks provenance (predates the current g6/L4 protocol; folder name retained because it is referenced by committed release-evidence records) |
 | [`databricks/`](databricks/) | Notes for Databricks provenance; historical committed mirrors have been removed |
 | [`_template/`](_template/) | Required table shape for future public benchmark result folders |

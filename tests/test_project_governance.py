@@ -1045,15 +1045,17 @@ def test_v1_requirements_matrix_tracks_goal_evidence_and_remaining_gates():
 
     assert "Release-gated | `databricks_job.py`" in compact_matrix
     assert "Run connector action descriptor validation" in matrix_text
-    assert "Release-evidence validation over the current target benchmark" in compact_matrix
-    assert "vLLM/SGLang native probe/action artifacts is `ok=true` with no issues" in compact_matrix
+    assert "Historical release-evidence validation over the then-current target benchmark" in compact_matrix
+    assert "vLLM/SGLang native probe/action artifacts was `ok=true` with no issues" in compact_matrix
     assert "does not replace the strict V1 publication target" in compact_matrix
     assert "`compatibility_benchmark` artifact role" in matrix_text
-    assert "latest validated strict-bundle snapshot was built after PR #513 with the current wheel" in compact_matrix
-    assert "validates with 37 artifacts" in compact_matrix
+    assert "superseded strict-bundle snapshot was built after PR #513" in compact_matrix
+    assert "validated 37 artifacts" in compact_matrix
     assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_matrix
     assert "`dependency_freshness` evidence" in compact_matrix
-    assert "Traceability-only PR evidence added after that snapshot must be included" in compact_matrix
+    assert "A refreshed final-wheel strict bundle" in compact_matrix
+    assert "complete main-protocol measurements remain pending" in compact_matrix
+    assert "Traceability-only PR evidence added after that snapshot" in compact_matrix
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_matrix
     assert "`compatibility_databricks_run_status` sidecar" in compact_matrix
     assert "GitHub governance is release-ready" in compact_matrix
@@ -1207,6 +1209,7 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     matrix_text = (REPO_ROOT / "docs" / "v1-requirements-matrix.md").read_text(encoding="utf-8")
 
     compact_root_readme = " ".join(root_readme.split())
+    compact_appendix_readme = " ".join(appendix_readme.split())
     compact_current_readme = " ".join(current_readme.split())
     compact_databricks_readme = " ".join(databricks_readme.split())
     compact_archive_readme = " ".join(archive_readme.split())
@@ -1280,8 +1283,9 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "packed Q4" in benchmark_template_readme
     assert "Do not infer or estimate missing values" in benchmark_template_readme
 
-    assert "historical benchmark evidence" in appendix_readme
-    assert "Historical A10G warm-prefix" in appendix_readme
+    assert "historical benchmark evidence" in compact_appendix_readme
+    assert "Vanilla-v2 pre-RoPE canaries" in appendix_readme
+    assert "A10G warm-prefix folder is historical evidence" in compact_appendix_readme
     assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in appendix_readme
     assert "current-q4-q8-vllm-qwen3-4b-g5-a10g" in vllm_readme
     assert "Qwen3-4B-Instruct, 4-bit model weights, Q8 document KV" in vllm_readme
@@ -1304,6 +1308,70 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
     assert "[`benchmarks/README.md`](../../benchmarks/)" in maintainer_reference
     assert "`../benchmarks/README.md`" in docs_readme
     assert "current Qwen3-4B 4-bit-weight + Q8-document-KV protocol" in compact_matrix_text
+    assert (
+        "Main-protocol Vanilla-v2 performance and quality measurements are pending"
+        in compact_maintainer_reference
+    )
+    assert "both 8k gates fail" in compact_maintainer_reference
+    assert (
+        "Those results do not populate the Q4-weight/Q8-document-KV main tables"
+        in compact_maintainer_reference
+    )
+    assert (
+        "Earlier post-RoPE V1 benchmark records are superseded"
+        in compact_maintainer_reference
+    )
+    assert (
+        "Current Vanilla-v2 evidence is limited to the non-publication-qualified "
+        "BF16 engineering appendix"
+        in compact_matrix_text
+    )
+    assert (
+        "the Q4-weight/Q8-document-KV main protocol remains unmeasured"
+        in compact_matrix_text
+    )
+    assert (
+        "Every numeric cell in its main latency/resource and dataset-score "
+        "tables is pending"
+        in compact_matrix_text
+    )
+    assert (
+        "Historical QA benchmark run `872615985402004`"
+        in compact_matrix_text
+    )
+    assert (
+        "A refreshed final-wheel strict bundle and complete main-protocol "
+        "measurements remain pending"
+        in compact_matrix_text
+    )
+    assert (
+        "Historical, superseded post-RoPE g6/L4 benchmark evidence"
+        in compact_matrix_text
+    )
+    assert (
+        "Historical, superseded post-RoPE g5/A10G compatibility benchmark evidence"
+        in compact_matrix_text
+    )
+    assert (
+        "historical AWS g5/A10G compatibility benchmark evidence"
+        in compact_maintainer_reference
+    )
+    assert (
+        "The last validated strict-bundle snapshot is historical"
+        in compact_maintainer_reference
+    )
+    assert (
+        "does not bind the current source, wheel, or Vanilla-v2 main protocol"
+        in compact_maintainer_reference
+    )
+    assert "main cold-hydrate latency table (`benchmarks/README.md`) is populated" not in matrix_text
+    assert "Current QA benchmark run `872615985402004`" not in matrix_text
+    assert "strict-bundle snapshot, built after PR #513 with the current wheel" not in maintainer_reference
+    assert "strict-bundle snapshot was built after PR #513 with the current wheel" not in matrix_text
+    assert "5.27x-6.97x" not in maintainer_reference
+    assert "5.27x-6.97x" not in matrix_text
+    assert "4.66x-6.04x" not in maintainer_reference
+    assert "4.66x-6.04x" not in matrix_text
     assert "`docs/release-ops/pr-evidence/`" in compact_maintainer_reference
 
     assert current_summary["configuration"]["model_quantization"] == "bitsandbytes"
@@ -1433,10 +1501,11 @@ def test_standalone_benchmark_evidence_folders_track_current_databricks_runs():
         "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/README.md",
         "appendix/current-q4-q8-vllm-qwen3-4b-g5-a10g/summary.json",
         "appendix/representative-bf16-qwen3-4b-canaries/README.md",
-        "appendix/representative-bf16-qwen3-4b-canaries/g5-vllm-8k-64-three-arm-canary.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/g6-sglang-4k-32-paired-smoke-evidence.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-16k-256-three-arm-canary.json",
-        "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-8k-64-three-arm-canary.json",
+        "appendix/representative-bf16-qwen3-4b-canaries/g5-vllm-8k-64-three-arm-canary-v2.json",
+        "appendix/representative-bf16-qwen3-4b-canaries/g6-sglang-4k-32-paired-smoke-evidence-v2.json",
+        "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-16k-256-three-arm-canary-v2.json",
+        "appendix/representative-bf16-qwen3-4b-canaries/g6-vllm-8k-64-three-arm-canary-v2.json",
+        "appendix/representative-bf16-qwen3-4b-canaries/vanilla-v2-cold-optimization.json",
         "databricks/README.md",
         "native-engine/README.md",
         "README.md",
@@ -1524,11 +1593,15 @@ def test_maintainer_reference_release_bundle_documents_artifact_validation_contr
     assert "delete head branches after merge" in compact_text
     assert "AWS g5/A10G compatibility benchmark evidence" in compact_remaining_v1_work
     assert "--compatibility-benchmark-json" in compact_remaining_v1_work
-    assert "latest validated strict-bundle snapshot, built after PR #513 with the current wheel" in compact_remaining_v1_work
-    assert "validates with 37 artifacts" in compact_remaining_v1_work
+    assert "The last validated strict-bundle snapshot is historical" in compact_remaining_v1_work
+    assert "its then-current wheel and validated 37 artifacts" in compact_remaining_v1_work
     assert "PR #442/#503/#504/#505/#506/#507/#508/#509/#510/#511/#512/#513 evidence" in compact_remaining_v1_work
     assert "`dependency_freshness` evidence" in compact_remaining_v1_work
-    assert "Traceability-only PR evidence added after that snapshot must be included" in compact_remaining_v1_work
+    assert "Traceability-only PR evidence added after it must be included" in compact_remaining_v1_work
+    assert (
+        "does not bind the current source, wheel, or Vanilla-v2 main protocol"
+        in compact_remaining_v1_work
+    )
     assert "`legacy_migration_evidence` for the removed restaurant facade" in compact_remaining_v1_work
     assert "compatibility_databricks_run_status" in compact_remaining_v1_work
     assert "GitHub governance sidecar" in compact_remaining_v1_work

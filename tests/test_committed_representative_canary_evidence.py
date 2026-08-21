@@ -1,7 +1,7 @@
 import json
 from collections import Counter
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -41,29 +41,49 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 APPENDIX_ROOT = (
     REPO_ROOT / "benchmarks" / "appendix" / "representative-bf16-qwen3-4b-canaries"
 )
-FINAL_SOURCE_COMMIT = "6e0f501a52c6b19f66d36e53a3fe6035b4b36ea2"
-FINAL_WHEEL_SHA256 = "d820c01c5bee4d3bcb1e4338e4081c1ea9b4b59c8cb725588d7b973c07fe6f47"
-_CURRENT_METHOD_REGISTRY = default_method_registry()
-_LEGACY_POST_ROPE_VANILLA = replace(
-    _CURRENT_METHOD_REGISTRY.get("vanilla_prefill"),
-    artifact_version="1",
-    pre_rope=False,
-    position_handling=PositionHandling.STORED_POST_ROPE,
-    generator_factory=(
+FINAL_SOURCE_COMMIT = "b4b142c79443fcca62b08044d0937298eab3f71d"
+FINAL_WHEEL_SHA256 = "5d91052aa5e92db64c3ba21924ae1805b7671c8c19bdc600fb477956dca78f90"
+FINAL_SGLANG_HANDOFF_GENERATION_SHA256 = (
+    "49cf15b2d53f55a9f48594c120dc1cafe9d905c407a51116c8b54d5606eb405a"
+)
+FINAL_SGLANG_RAW_BENCHMARK_SHA256 = (
+    "f032a85e1ed65c4082238092491175c7d7bf38acc9d00a449e4ab3d62f15f958"
+)
+FINAL_SGLANG_HANDOFF_GENERATION_PROVENANCE = {
+    "content_digests": [
+        {
+            "artifact_sha256": "4af461e0122c38ec0ca730af74ae0ce873064bd3ef33e32ac74bc8e852b5a72f",
+            "logical_prompt_sha256": "2b2270897173ac96dfdbdaaadf3161edbb8966399a6958eca90578646140df5e",
+            "method_config_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        }
+    ],
+    "generator_factory": (
         "document_kv_cache.transformers_generator:"
-        "build_post_rope_transformers_kv_chunk_generator"
+        "build_pre_rope_transformers_kv_chunk_generator"
     ),
-)
-LEGACY_POST_ROPE_METHOD_REGISTRY = _CURRENT_METHOD_REGISTRY.with_spec(
-    _LEGACY_POST_ROPE_VANILLA,
-    replace=True,
-)
+    "generator_version": "5.3.0",
+    "method_id": "vanilla_prefill",
+    "method_version": "2",
+    "raw_sidecar_sha256": FINAL_SGLANG_HANDOFF_GENERATION_SHA256,
+    "topology": {
+        "attestation_sha256": "1dbb3f25d2997008d05a5023863ca1503e199b9412e1e5ffd63a03ca973d6814",
+        "document_count": 1,
+        "example_count": 1,
+        "examples_sha256": "5fdbba056662c2dd584c22b0a37149393fd8eaba8243ca65b6585535ce4f21c5",
+        "record_type": "document_kv.handoff_topology_attestation.v1",
+        "schema_version": 1,
+        "segment_count": 1,
+        "topology_id": "per_document",
+    },
+}
+CURRENT_METHOD_REGISTRY = default_method_registry()
 EXPECTED_APPENDIX_FILES = {
     "README.md",
-    "g5-vllm-8k-64-three-arm-canary.json",
-    "g6-sglang-4k-32-paired-smoke-evidence.json",
-    "g6-vllm-16k-256-three-arm-canary.json",
-    "g6-vllm-8k-64-three-arm-canary.json",
+    "g5-vllm-8k-64-three-arm-canary-v2.json",
+    "g6-sglang-4k-32-paired-smoke-evidence-v2.json",
+    "g6-vllm-16k-256-three-arm-canary-v2.json",
+    "g6-vllm-8k-64-three-arm-canary-v2.json",
+    "vanilla-v2-cold-optimization.json",
 }
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SANITIZED_EXAMPLE_ID_RE = re.compile(r"^[0-9a-f]{24}$")
@@ -98,11 +118,12 @@ class VLLMEvidenceCase:
     input_tokens: int
     output_tokens: int
     loaded_tokens: int
+    canary_gate_ok: bool
 
 
 VLLM_EVIDENCE_CASES = (
     VLLMEvidenceCase(
-        filename="g6-vllm-8k-64-three-arm-canary.json",
+        filename="g6-vllm-8k-64-three-arm-canary-v2.json",
         suite_id="g6-vllm-8k-64",
         hardware_target="aws-g6-l4",
         hardware_fingerprint=(
@@ -112,9 +133,10 @@ VLLM_EVIDENCE_CASES = (
         input_tokens=8_192,
         output_tokens=64,
         loaded_tokens=8_144,
+        canary_gate_ok=False,
     ),
     VLLMEvidenceCase(
-        filename="g6-vllm-16k-256-three-arm-canary.json",
+        filename="g6-vllm-16k-256-three-arm-canary-v2.json",
         suite_id="g6-vllm-16k-256",
         hardware_target="aws-g6-l4",
         hardware_fingerprint=(
@@ -124,9 +146,10 @@ VLLM_EVIDENCE_CASES = (
         input_tokens=16_384,
         output_tokens=256,
         loaded_tokens=16_336,
+        canary_gate_ok=True,
     ),
     VLLMEvidenceCase(
-        filename="g5-vllm-8k-64-three-arm-canary.json",
+        filename="g5-vllm-8k-64-three-arm-canary-v2.json",
         suite_id="g5-vllm-8k-64",
         hardware_target="aws-g5-a10g",
         hardware_fingerprint=(
@@ -136,6 +159,7 @@ VLLM_EVIDENCE_CASES = (
         input_tokens=8_192,
         output_tokens=64,
         loaded_tokens=8_144,
+        canary_gate_ok=False,
     ),
 )
 
@@ -239,13 +263,17 @@ def test_representative_canary_appendix_has_only_reviewed_files_and_provenance()
 
 
 @pytest.mark.parametrize("case", VLLM_EVIDENCE_CASES, ids=lambda case: case.suite_id)
-def test_historical_post_rope_vllm_canary_is_canonical_and_replays_cold_joins(
+def test_vanilla_v2_vllm_canary_is_canonical_and_replays_cold_joins(
     case: VLLMEvidenceCase,
 ) -> None:
     record = _load_canonical_json(APPENDIX_ROOT / case.filename)
     assert record.get("record_type") == BENCHMARK_RUN_RECORD_TYPE
     assert record.get("evidence_sanitized") is True
     assert benchmark_record_aggregate_issues(record) == ()
+    assert all(
+        arm.get("source_revision") is None
+        for arm in record["experiment_manifest"]["arms"]
+    )
     v1_evidence = record.get("v1_evidence")
     assert isinstance(v1_evidence, Mapping)
     assert v1_evidence.get("ok") is False
@@ -253,15 +281,19 @@ def test_historical_post_rope_vllm_canary_is_canonical_and_replays_cold_joins(
     result = benchmark_run_result_from_record(record)
     manifest = result.experiment_manifest
     assert manifest is not None
-    vanilla_arm = next(
-        arm for arm in manifest.arms if arm.arm_id == VANILLA_CANARY_ARM
+    vanilla_arm = next(arm for arm in manifest.arms if arm.arm_id == VANILLA_CANARY_ARM)
+    assert vanilla_arm.method_version == "2"
+    assert vanilla_arm.runtime_environment.key_position_encoding == "pre_rope"
+    assert vanilla_arm.runtime_environment.rope_theta == 5_000_000.0
+    assert vanilla_arm.runtime_environment.rope_rotary_dim == 128
+    vanilla_spec = CURRENT_METHOD_REGISTRY.get("vanilla_prefill")
+    assert vanilla_spec.artifact_version == vanilla_arm.method_version
+    assert vanilla_spec.pre_rope is True
+    assert vanilla_spec.position_handling == PositionHandling.REROPE_AT_INJECTION
+    assert vanilla_spec.generator_factory == (
+        "document_kv_cache.transformers_generator:"
+        "build_pre_rope_transformers_kv_chunk_generator"
     )
-    assert vanilla_arm.method_version == "1"
-    assert vanilla_arm.runtime_environment.key_position_encoding == (
-        "stored_post_rope"
-    )
-    assert vanilla_arm.runtime_environment.rope_theta is None
-    assert vanilla_arm.runtime_environment.rope_rotary_dim is None
     assert result.suite.suite_id == case.suite_id
     assert result.suite.hardware_target == case.hardware_target
     assert result.suite.datasets == ("hotpotqa",)
@@ -359,15 +391,23 @@ def test_historical_post_rope_vllm_canary_is_canonical_and_replays_cold_joins(
         result,
         policy="canary",
         cache_state_attestations=attestations,
-        method_registry=LEGACY_POST_ROPE_METHOD_REGISTRY,
+        method_registry=CURRENT_METHOD_REGISTRY,
         benchmark_payload_digest=payload_digest,
     )
     assert benchmark_evidence_gate_to_record(canary_gate) == stored_gate
+    assert canary_gate.ok is case.canary_gate_ok
+    if case.canary_gate_ok:
+        assert canary_gate.issues == ()
+    else:
+        assert canary_gate.issues == (
+            "hotpotqa:document_kv_cache:vanilla_prefill paired 'f1' lower "
+            "bound -0.0625 exceeds allowed regression 0.02",
+        )
 
     publication_gate = evaluate_benchmark_publication_gate(
         result,
         cache_state_attestations=attestations,
-        method_registry=LEGACY_POST_ROPE_METHOD_REGISTRY,
+        method_registry=CURRENT_METHOD_REGISTRY,
         benchmark_payload_digest=payload_digest,
     )
     assert publication_gate.checked_cache_requests == 12
@@ -380,31 +420,29 @@ def test_historical_post_rope_vllm_canary_is_canonical_and_replays_cold_joins(
     _assert_no_secret_path_or_raw_text_leaks(record)
 
 
-def test_historical_post_rope_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
+def test_vanilla_v2_sglang_smoke_uses_safe_nonpublication_actuals() -> None:
     record = _load_canonical_json(
-        APPENDIX_ROOT / "g6-sglang-4k-32-paired-smoke-evidence.json"
+        APPENDIX_ROOT / "g6-sglang-4k-32-paired-smoke-evidence-v2.json"
     )
     assert (
         record.get("record_type") == SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE
     )
-    # This record predates Vanilla-v2. The current validator must reject its
-    # post-RoPE provenance rather than silently treating it as fresh evidence.
-    assert sglang_representative_canary_evidence_issues(
-        record,
-        expected_cachet_wheel_sha256=FINAL_WHEEL_SHA256,
-    ) == (
-        "representative SGLang benchmark_manifest_provenance."
-        "key_position_encoding must be 'pre_rope'",
-        "representative SGLang benchmark_manifest_provenance."
-        "rope_theta must be 5000000.0",
-        "representative SGLang benchmark_manifest_provenance."
-        "rope_rotary_dim must be 128",
+    assert (
+        sglang_representative_canary_evidence_issues(
+            record,
+            expected_cachet_wheel_sha256=FINAL_WHEEL_SHA256,
+            expected_handoff_generation_provenance=(
+                FINAL_SGLANG_HANDOFF_GENERATION_PROVENANCE
+            ),
+        )
+        == ()
     )
     assert record.get("evidence_sanitized") is True
     assert record.get("publication_qualified") is False
     assert record.get("engine") == "sglang"
     assert record.get("hardware_target") == "aws-g6-l4"
     assert record.get("workload_profile") == "sglang-4k-32-v1"
+    assert record.get("raw_record_sha256") == FINAL_SGLANG_RAW_BENCHMARK_SHA256
     assert record.get("suite") == {
         "datasets": ["niah"],
         "examples": 1,
@@ -422,12 +460,17 @@ def test_historical_post_rope_sglang_smoke_uses_safe_nonpublication_actuals() ->
     assert provenance["model_dtype"] == "bfloat16"
     assert provenance["runtime_kv_dtype"] == "bfloat16"
     assert provenance["model_quantization"] == "none"
-    assert provenance["key_position_encoding"] == "stored_post_rope"
-    assert provenance.get("rope_theta") is None
-    assert provenance.get("rope_rotary_dim") is None
+    assert provenance["key_position_encoding"] == "pre_rope"
+    assert provenance["rope_theta"] == 5_000_000.0
+    assert provenance["rope_rotary_dim"] == 128
     assert (
         provenance["package_revisions"]["cachet-kv"]
         == f"wheel-sha256:{FINAL_WHEEL_SHA256}"
+    )
+
+    assert (
+        record["handoff_generation_provenance"]
+        == FINAL_SGLANG_HANDOFF_GENERATION_PROVENANCE
     )
 
     measurements = record["measurements"]
@@ -460,4 +503,282 @@ def test_historical_post_rope_sglang_smoke_uses_safe_nonpublication_actuals() ->
         and row["cache_request_cached_tokens"] == 176
         for row in cache_hits
     )
+    comparison = record["comparisons"]
+    assert len(comparison) == 1
+    assert comparison[0]["ttft_speedup"] == pytest.approx(0.6370049784976665)
+    assert comparison[0]["time_to_completion_speedup"] == pytest.approx(
+        0.6561250595570515
+    )
+    assert comparison[0]["ttft_speedup"] < 1.0
+    assert comparison[0]["time_to_completion_speedup"] < 1.0
+    _assert_no_secret_path_or_raw_text_leaks(record)
+
+
+def test_vanilla_v2_cold_optimization_is_a_six_job_matched_ablation() -> None:
+    record = _load_canonical_json(APPENDIX_ROOT / "vanilla-v2-cold-optimization.json")
+    assert record["record_type"] == "cachet.vanilla_v2_cold_optimization_evidence.v2"
+    assert record["evidence_level"] == "canary"
+    assert record["evidence_sanitized"] is True
+    assert record["publication_qualified"] is False
+    assert record["source_revision"] == FINAL_SOURCE_COMMIT
+    assert record["wheel_sha256"] == FINAL_WHEEL_SHA256
+    assert record["model_id"] == REPRESENTATIVE_CANARY_MODEL_ID
+    assert record["model_revision"] == REPRESENTATIVE_CANARY_MODEL_REVISION
+    assert record["position_contract"] == {
+        "key_position_encoding": "pre_rope",
+        "method_id": "vanilla_prefill",
+        "method_version": "2",
+        "position_handling": "rerope_at_injection",
+        "rope_rotary_dim": 128,
+        "rope_theta": 5_000_000.0,
+    }
+    assert record["submission_validation_flag_attestation"] == {
+        "affected_direct_benchmark_ids": [
+            "g6-vllm-8k-64-vanilla",
+            "g6-vllm-16k-256-vanilla",
+        ],
+        "classification": "validation_only",
+        "complete_effective_suite_and_manifest_settings_identical": True,
+        "effective_benchmark_manifest_impact": "none",
+        "matched_legacy_benchmark_ids": [
+            "g6-vllm-8k-64-vanilla-legacy",
+            "g6-vllm-16k-256-vanilla-legacy",
+        ],
+        "note": (
+            "The representative-canary and workload-profile submission flags "
+            "select validation policy only. They are absent from the matched "
+            "generic legacy submissions and do not alter the emitted effective "
+            "benchmark suite or manifest settings."
+        ),
+        "submission_flags": [
+            "--representative-canary",
+            "--representative-workload-profile",
+        ],
+    }
+
+    expected_jobs = {
+        "g6-vllm-8k-64-vanilla": (
+            "auto",
+            "direct_global_snapshot",
+            False,
+            8_192,
+            64,
+            2.9097911000000067,
+        ),
+        "g6-vllm-8k-64-vanilla-legacy": (
+            "legacy",
+            "legacy_segment_remerge",
+            False,
+            8_192,
+            64,
+            7.315308377999941,
+        ),
+        "g6-vllm-16k-256-vanilla": (
+            "auto",
+            "direct_global_snapshot",
+            False,
+            16_384,
+            256,
+            5.846155845999874,
+        ),
+        "g6-vllm-16k-256-vanilla-legacy": (
+            "legacy",
+            "legacy_segment_remerge",
+            False,
+            16_384,
+            256,
+            15.264030808500138,
+        ),
+        "g6-vllm-8k-64-vanilla-direct-profiled": (
+            "direct",
+            "direct_global_snapshot",
+            True,
+            8_192,
+            64,
+            2.901357098999938,
+        ),
+        "g6-vllm-8k-64-vanilla-legacy-profiled": (
+            "legacy",
+            "legacy_segment_remerge",
+            True,
+            8_192,
+            64,
+            7.581663182999932,
+        ),
+    }
+    jobs = {job["benchmark_id"]: job for job in record["jobs"]}
+    assert set(jobs) == set(expected_jobs)
+    assert len(jobs) == 6
+
+    for benchmark_id, expected in expected_jobs.items():
+        configured, selected, profiled, input_tokens, output_tokens, ttft = expected
+        job = jobs[benchmark_id]
+        assert job["configured_strategy"] == configured
+        assert job["selected_strategy"] == selected
+        assert job["profiled"] is profiled
+        assert job["input_tokens"] == input_tokens
+        assert job["output_tokens"] == output_tokens
+        assert job["metrics"]["requests"] == 6
+        assert job["metrics"]["unique_examples"] == 2
+        assert job["metrics"]["prompt_tokens"] == [input_tokens]
+        assert job["metrics"]["completion_tokens"] == [output_tokens]
+        assert job["metrics"]["ttft_seconds"]["p50"] == pytest.approx(ttft)
+        assert SHA256_RE.fullmatch(job["raw_record_sha256"])
+        assert SHA256_RE.fullmatch(job["raw_telemetry_sha256"])
+
+        contract = job["load_contract"]
+        assert contract["cold_load_joins"] == 6
+        assert contract["successful_loads"] == 6
+        assert contract["copy_byte_relation_verified_requests"] == 6
+        assert contract["page_cache_eviction_succeeded_for_all"] is True
+        assert contract["payload_cache_disabled_for_all"] is True
+        assert contract["payload_mode"] == "segmented"
+        assert contract["canonical_segmented_global_view"] is True
+        assert contract["copy_metadata_retained"] is True
+        assert contract["copy_count"] == 11
+        assert contract["prefetch_event_count"] == 0
+
+        load_metrics = job["load_metrics"]
+        assert (
+            load_metrics["checksum_validations_per_request"]
+            == (contract["checksum_validations_per_request"])
+        )
+        payload_total = load_metrics["payload_bytes_per_request"]["total"]
+        snapshot_total = load_metrics["snapshot_copy_bytes_per_request"]["total"]
+        reassembly_total = load_metrics["reassembly_copy_bytes_per_request"]["total"]
+        if selected == "direct_global_snapshot":
+            assert contract["checksum_validations_per_request"] == 1
+            assert contract["copy_byte_relation"] == (
+                "snapshot_equals_payload_and_reassembly_is_zero"
+            )
+            assert snapshot_total == payload_total
+            assert reassembly_total == 0
+        else:
+            assert contract["checksum_validations_per_request"] == 2
+            assert contract["copy_byte_relation"] == (
+                "snapshot_is_zero_and_reassembly_equals_twice_payload"
+            )
+            assert snapshot_total == 0
+            assert reassembly_total == 2 * payload_total
+
+    comparisons = record["comparisons"]
+    assert len(comparisons) == 3
+    comparison_pairs = {
+        (row["direct_benchmark_id"], row["legacy_benchmark_id"]): row
+        for row in comparisons
+    }
+    assert set(comparison_pairs) == {
+        (
+            "g6-vllm-8k-64-vanilla",
+            "g6-vllm-8k-64-vanilla-legacy",
+        ),
+        (
+            "g6-vllm-16k-256-vanilla",
+            "g6-vllm-16k-256-vanilla-legacy",
+        ),
+        (
+            "g6-vllm-8k-64-vanilla-direct-profiled",
+            "g6-vllm-8k-64-vanilla-legacy-profiled",
+        ),
+    }
+    assert comparison_pairs[("g6-vllm-8k-64-vanilla", "g6-vllm-8k-64-vanilla-legacy")][
+        "ttft_direct_reduction_percent"
+    ] == pytest.approx(60.22326128108402)
+    assert comparison_pairs[
+        ("g6-vllm-16k-256-vanilla", "g6-vllm-16k-256-vanilla-legacy")
+    ]["ttft_direct_reduction_percent"] == pytest.approx(61.69979005319942)
+
+    proofs = record["matched_setting_proofs"]
+    assert len(proofs) == 3
+    assert {
+        (proof["direct_benchmark_id"], proof["legacy_benchmark_id"]) for proof in proofs
+    } == set(comparison_pairs)
+    expected_suite_ids = {
+        "g6-vllm-8k-64-vanilla": "g6-vllm-8k-64",
+        "g6-vllm-16k-256-vanilla": "g6-vllm-16k-256",
+        "g6-vllm-8k-64-vanilla-direct-profiled": ("g6-vllm-8k-64-cold-load-profiled"),
+    }
+    expected_decoding_digests = {
+        64: "f6150c4cea70a82be4ef0844e6347db74bbc9e1fd88165245e6c9d7f965b278c",
+        256: "be26151b2b12d0b2521c3caaf89d957658dbda158106d1c2ac86ea917be915d9",
+    }
+    for proof in proofs:
+        assert proof["all_other_comparison_inputs_identical"] is True
+        assert proof["complete_effective_suite_settings_identical"] is True
+        assert proof["complete_effective_manifest_settings_identical"] is True
+        assert proof["private_quality_inputs_identical"] is True
+        assert proof["topology_retained_in_matched_setting"] is True
+        assert proof["artifact_identity_and_geometry_matched"] is True
+        assert proof["artifact_identity_scope"] == (
+            "generation_identity_and_contract_only"
+        )
+        assert proof["payload_content_equality_verified"] is False
+        assert proof["payload_content_equality_limitation"] == (
+            "The jobs separately regenerated equal-sized payloads. Their artifact "
+            "IDs retain generation identity and contract, but no cross-job payload-"
+            "content checksum was retained; byte-for-byte payload equality is not "
+            "independently verified."
+        )
+        assert proof["varied_factor"] == "segmented_load_strategy"
+        assert proof["ignored_derived_identity_field"] == (
+            "physical_transform.config_digest"
+        )
+        assert SHA256_RE.fullmatch(proof["matched_setting_sha256"])
+        assert all(
+            SHA256_RE.fullmatch(digest)
+            for digest in proof["synthesized_variant_config_digests"].values()
+        )
+        setting = proof["matched_setting"]
+        recomputed_digest = sha256(
+            json.dumps(setting, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest()
+        assert proof["matched_setting_sha256"] == recomputed_digest
+        assert setting["method_id"] == "vanilla_prefill"
+        assert setting["method_version"] == "2"
+        assert setting["model_runtime"]["key_position_encoding"] == "pre_rope"
+        assert setting["model_runtime"]["rope_theta"] == 5_000_000.0
+        assert setting["model_runtime"]["rope_rotary_dim"] == 128
+        assert len(setting["measurement_inputs"]) == 6
+        direct_job = jobs[proof["direct_benchmark_id"]]
+        output_tokens = direct_job["output_tokens"]
+        assert setting["effective_suite"] == {
+            "datasets": ["hotpotqa"],
+            "examples": 2,
+            "hardware_target": "aws-g6-l4",
+            "interleave_examples": False,
+            "isolate_arms": True,
+            "model_id": "qwen3:4b-instruct",
+            "prefix_cache_salt_mode": "per_request",
+            "repeats": 3,
+            "request_parallelism": 1,
+            "seed": None,
+            "shuffle": False,
+            "suite_id": expected_suite_ids[proof["direct_benchmark_id"]],
+        }
+        assert setting["manifest_decoding"] == {
+            "config_digest": expected_decoding_digests[output_tokens],
+            "generation_seed": None,
+            "max_output_tokens": output_tokens,
+            "settings": {"ignore_eos": True},
+            "stream": True,
+            "temperature": 0.0,
+        }
+        assert setting["manifest_execution"] == {
+            "benchmark_seed": None,
+            "isolate_arms": True,
+            "isolation_mode": "shared_process_sequential",
+            "order_mode": "arm_isolated",
+            "repeats": 3,
+            "request_parallelism": 1,
+            "shuffle": False,
+            "source_execution_ids": [],
+            "warmups": 0,
+        }
+        topology = setting["handoff_topology_attestation"]
+        assert topology["example_count"] == 2
+        assert all(
+            example["document_count"] == 11 and example["segment_count"] == 11
+            for example in topology["examples"]
+        )
+
     _assert_no_secret_path_or_raw_text_leaks(record)

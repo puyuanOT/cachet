@@ -19,9 +19,10 @@ if repo_src.is_dir():
 
 from document_kv_cache.artifact_identity import method_config_digest  # noqa: E402
 from document_kv_cache.cache import ChunkCache  # noqa: E402
+from document_kv_cache.engine_protocol import KVLayout, KVStorageLayout  # noqa: E402
 from document_kv_cache.manifest import InMemoryManifestStore  # noqa: E402
 from document_kv_cache.materializer import KVMaterializer  # noqa: E402
-from document_kv_cache.methods import method_spec  # noqa: E402
+from document_kv_cache.methods import MethodSpec, method_spec  # noqa: E402
 from document_kv_cache.model_profiles import layout_for_model  # noqa: E402
 from document_kv_cache.models import CacheGenerationMethod  # noqa: E402
 from document_kv_cache.storage import DiskRangeReader  # noqa: E402
@@ -36,6 +37,33 @@ from document_kv_cache.workflow import (  # noqa: E402
 )
 
 
+def _build_vanilla_v2_generator_and_layout(
+    config: TransformersKVGeneratorConfig,
+    *,
+    model_id: str,
+    dtype: str,
+) -> tuple[MethodSpec, TransformersKVChunkGenerator, KVLayout]:
+    """Build the registered Vanilla-v2 pre-RoPE generator and matching layout."""
+
+    method = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
+    generator = TransformersKVChunkGenerator.from_pretrained(
+        config,
+        pre_rope=True,
+    )
+    layout = layout_for_model(
+        model_id,
+        dtype=dtype,
+        pre_rope=True,
+        rope_theta=generator.rope_theta,
+        rope_rotary_dim=generator.rope_rotary_dim,
+        shares_kv_storage=False,
+        storage_layout=KVStorageLayout.SEPARATE_KEY_VALUE,
+    )
+    generator.bind_layout(layout)
+    method.validate_generator(generator)
+    return method, generator, layout
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-id", default="Qwen/Qwen3-4B-Instruct-2507")
@@ -47,9 +75,7 @@ def main() -> int:
     parser.add_argument("--output", default="databricks-runs/transformers-example.kvpack")
     args = parser.parse_args()
 
-    method = method_spec(CacheGenerationMethod.VANILLA_PREFILL)
-    layout = layout_for_model(args.model_id, dtype=args.torch_dtype)
-    generator = TransformersKVChunkGenerator.from_pretrained(
+    method, generator, layout = _build_vanilla_v2_generator_and_layout(
         TransformersKVGeneratorConfig(
             model_id=args.model_id,
             tokenizer_id=args.model_id,
@@ -58,7 +84,8 @@ def main() -> int:
             model_kwargs={"revision": args.model_revision},
             tokenizer_kwargs={"revision": args.tokenizer_revision},
         ),
-        layout=layout,
+        model_id=args.model_id,
+        dtype=args.torch_dtype,
     )
     config = CacheBuildConfig(
         model_id=layout.model_id,

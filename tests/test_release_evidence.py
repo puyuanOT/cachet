@@ -10,7 +10,9 @@ import pytest
 
 import document_kv_cache.sglang_smoke as public_sglang_smoke
 from document_kv_cache.canary_orchestration import (
+    REPRESENTATIVE_CANARY_MODEL_ID,
     REPRESENTATIVE_CANARY_MODEL_REVISION,
+    build_handoff_topology_attestation_record,
 )
 from document_kv_cache.engine_adapters import (
     EngineKVBindAction,
@@ -74,6 +76,10 @@ from document_kv_cache.workflow import SourceDocument
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPRESENTATIVE_SGLANG_WHEEL_SHA256 = "f" * 64
+REPRESENTATIVE_SGLANG_PRE_ROPE_FACTORY = (
+    "document_kv_cache.transformers_generator:"
+    "build_pre_rope_transformers_kv_chunk_generator"
+)
 
 
 def test_evaluate_release_evidence_accepts_complete_v1_storage_and_engine_probe_records():
@@ -507,16 +513,22 @@ def test_sanitize_sglang_representative_canary_evidence_is_closed_and_valid(
     monkeypatch,
 ):
     raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
 
     evidence = sanitize_sglang_representative_canary_evidence(
         raw,
         expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
     )
 
     assert evidence["record_type"] == SGLANG_REPRESENTATIVE_CANARY_EVIDENCE_RECORD_TYPE
     assert evidence["evidence_sanitized"] is True
     assert evidence["publication_qualified"] is False
     assert evidence["raw_record_sha256"] == _canonical_record_sha256(raw)
+    expected_handoff = _expected_representative_sglang_handoff_provenance(
+        generation
+    )
+    assert evidence["handoff_generation_provenance"] == expected_handoff
     assert {row["example_identity_sha256"] for row in evidence["measurements"]} == {
         _canonical_record_sha256(
             {
@@ -532,6 +544,7 @@ def test_sanitize_sglang_representative_canary_evidence_is_closed_and_valid(
         sglang_representative_canary_evidence_issues(
             evidence,
             expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            expected_handoff_generation_provenance=expected_handoff,
         )
         == ()
     )
@@ -542,6 +555,7 @@ def test_sanitize_sglang_representative_canary_evidence_omits_raw_leak_surfaces(
     monkeypatch,
 ):
     raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
     sentinels = {
         "answer": "RAW_ANSWER_OUTPUT_SENTINEL",
         "prompt": "RAW_PROMPT_SENTINEL",
@@ -567,6 +581,16 @@ def test_sanitize_sglang_representative_canary_evidence_omits_raw_leak_surfaces(
             "page_keys": [sentinels["page_key"]],
         }
     )
+    generation.update(
+        {
+            "raw_prompt": sentinels["prompt"],
+            "debug_error": sentinels["error"],
+            "generator_python": sentinels["local_path"],
+            "handoff_json": sentinels["local_path"],
+            "payload_uri": sentinels["dbfs_path"],
+            "request_id": sentinels["request_id"],
+        }
+    )
     for measurement in raw["measurements"]:
         measurement["example_id"] = sentinels["example_id"]
         measurement["output_text"] = sentinels["answer"]
@@ -584,6 +608,15 @@ def test_sanitize_sglang_representative_canary_evidence_omits_raw_leak_surfaces(
         validation["example_id"] = sentinels["example_id"]
         validation["request_id"] = sentinels["request_id"]
         validation["error_detail"] = sentinels["error"]
+    topology_row = dict(
+        generation["handoff_topology_attestation"]["examples"][0]
+    )
+    topology_row["example_key_sha256"] = _canonical_record_sha256(
+        {"dataset": "niah", "example_id": sentinels["example_id"]}
+    )
+    generation["handoff_topology_attestation"] = (
+        build_handoff_topology_attestation_record((topology_row,))
+    )
 
     assert (
         sglang_live_v1_benchmark_issues(
@@ -595,6 +628,7 @@ def test_sanitize_sglang_representative_canary_evidence_omits_raw_leak_surfaces(
     evidence = sanitize_sglang_representative_canary_evidence(
         raw,
         expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
     )
 
     serialized = json.dumps(evidence, sort_keys=True)
@@ -627,6 +661,7 @@ def test_sanitize_sglang_representative_canary_evidence_rejects_invalid_raw(
         sanitize_sglang_representative_canary_evidence(
             raw,
             expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=_representative_sglang_handoff_generation_record(),
         )
 
 
@@ -640,6 +675,162 @@ def test_sanitize_sglang_representative_canary_evidence_rejects_wheel_mismatch(
         sanitize_sglang_representative_canary_evidence(
             raw,
             expected_cachet_wheel_sha256="e" * 64,
+            handoff_generation_record=_representative_sglang_handoff_generation_record(),
+        )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "backend",
+        "benchmark_id",
+        "cache_method",
+        "artifact_model_id",
+        "artifact_model_revision",
+        "artifact_tokenizer_id",
+        "artifact_tokenizer_revision",
+        "dtype",
+    ),
+)
+def test_sanitize_sglang_representative_canary_rejects_cross_binding_mismatch(
+    field_name,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    generation[field_name] = "forged"
+
+    with pytest.raises(ValueError, match=field_name):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
+        )
+
+
+def test_sanitize_sglang_representative_canary_cross_binds_raw_benchmark_id(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    raw["benchmark_id"] = "forged-benchmark"
+
+    with pytest.raises(ValueError, match="benchmark_id must both be"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=(
+                _representative_sglang_handoff_generation_record()
+            ),
+        )
+
+
+def test_sanitize_sglang_representative_canary_cross_binds_example_identity(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    for measurement in raw["measurements"]:
+        measurement["example_id"] = "forged-example"
+    for validation in raw["cache_hit_validations"]:
+        validation["example_id"] = "forged-example"
+
+    with pytest.raises(ValueError, match="topology example keys"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=(
+                _representative_sglang_handoff_generation_record()
+            ),
+        )
+
+
+def test_sanitize_sglang_representative_canary_cross_binds_topology_example_key(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    row = dict(generation["handoff_topology_attestation"]["examples"][0])
+    row["example_key_sha256"] = "e" * 64
+    generation["handoff_topology_attestation"] = (
+        build_handoff_topology_attestation_record((row,))
+    )
+
+    with pytest.raises(ValueError, match="topology example keys"):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_error"),
+    (
+        ("cache_prefix_tokens", "cache_prefix_tokens"),
+        ("runtime_prompt_tokens", "runtime_prompt_tokens"),
+    ),
+)
+def test_sanitize_sglang_representative_canary_cross_binds_token_counts(
+    field_name,
+    expected_error,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    generation[field_name] += 1
+
+    with pytest.raises(ValueError, match=expected_error):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda generation: generation.pop("handoff_topology_attestation"),
+            "topology is invalid",
+        ),
+        (
+            lambda generation: generation.__setitem__(
+                "generator_factory", "forged:post_rope_factory"
+            ),
+            "generator_factory",
+        ),
+        (
+            lambda generation: generation.__setitem__("generator_version", "0.0.0"),
+            "generator_version",
+        ),
+        (
+            lambda generation: generation["handoff_topology_attestation"]["examples"][
+                0
+            ].__setitem__("method_version", "1"),
+            "topology is invalid",
+        ),
+    ],
+)
+def test_sanitize_sglang_representative_canary_rejects_tampered_handoff(
+    mutate,
+    expected_error,
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    mutate(generation)
+
+    with pytest.raises(ValueError, match=expected_error):
+        sanitize_sglang_representative_canary_evidence(
+            raw,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+            handoff_generation_record=generation,
         )
 
 
@@ -691,6 +882,70 @@ def test_sanitize_sglang_representative_canary_evidence_rejects_wheel_mismatch(
             ].__setitem__("cachet-kv", f"wheel-sha256:{'e' * 64}"),
             "does not match the verified submit payload",
         ),
+        (
+            lambda evidence: evidence.pop("handoff_generation_provenance"),
+            "handoff_generation_provenance must be a mapping",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"].__setitem__(
+                "generator_factory", "forged:post_rope_factory"
+            ),
+            "generator_factory must be",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "topology"
+            ].__setitem__("segment_count", 1),
+            "one segment per document",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "content_digests"
+            ][0].__setitem__("raw_path", "/forged/raw/path"),
+            "unknown fields",
+        ),
+        (
+            lambda evidence: (
+                evidence["handoff_generation_provenance"]["topology"].__setitem__(
+                    "document_count", 3
+                ),
+                evidence["handoff_generation_provenance"]["topology"].__setitem__(
+                    "segment_count", 3
+                ),
+            ),
+            "does not match the independently verified safe projection",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "topology"
+            ].__setitem__("attestation_sha256", "e" * 64),
+            "does not match the independently verified safe projection",
+        ),
+        (
+            lambda evidence: evidence["handoff_generation_provenance"][
+                "topology"
+            ].__setitem__("examples_sha256", "e" * 64),
+            "does not match the independently verified safe projection",
+        ),
+        *[
+            (
+                lambda evidence, field_name=field_name: evidence[
+                    "handoff_generation_provenance"
+                ]["content_digests"][0].__setitem__(field_name, "e" * 64),
+                "does not match the independently verified safe projection",
+            )
+            for field_name in (
+                "artifact_sha256",
+                "logical_prompt_sha256",
+                "method_config_sha256",
+            )
+        ],
+        (
+            lambda evidence: evidence["handoff_generation_provenance"].__setitem__(
+                "raw_sidecar_sha256", "e" * 64
+            ),
+            "does not match the independently verified",
+        ),
     ],
 )
 def test_sglang_representative_canary_evidence_detects_closed_schema_tampering(
@@ -700,15 +955,20 @@ def test_sglang_representative_canary_evidence_detects_closed_schema_tampering(
     monkeypatch,
 ):
     raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
     evidence = sanitize_sglang_representative_canary_evidence(
         raw,
         expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
     )
     mutate(evidence)
 
     issues = sglang_representative_canary_evidence_issues(
         evidence,
         expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        expected_handoff_generation_provenance=(
+            _expected_representative_sglang_handoff_provenance(generation)
+        ),
     )
 
     assert any(expected_issue in issue for issue in issues)
@@ -719,18 +979,50 @@ def test_sglang_representative_canary_evidence_rejects_invalid_raw_digest(
     monkeypatch,
 ):
     raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
     evidence = sanitize_sglang_representative_canary_evidence(
         raw,
         expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
     )
     evidence["raw_record_sha256"] = "not-a-digest"
 
     issues = sglang_representative_canary_evidence_issues(
         evidence,
         expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        expected_handoff_generation_provenance=(
+            _expected_representative_sglang_handoff_provenance(generation)
+        ),
     )
 
     assert any("raw_record_sha256 must be SHA-256" in issue for issue in issues)
+
+
+def test_sglang_representative_canary_requires_independent_handoff_digest(
+    tmp_path,
+    monkeypatch,
+):
+    raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
+    evidence = sanitize_sglang_representative_canary_evidence(
+        raw,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
+    )
+
+    with pytest.raises(TypeError, match="expected_handoff_generation_provenance"):
+        sglang_representative_canary_evidence_issues(  # type: ignore[call-arg]
+            evidence,
+            expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        )
+    wrong_expected = _expected_representative_sglang_handoff_provenance(generation)
+    wrong_expected["raw_sidecar_sha256"] = "e" * 64
+    issues = sglang_representative_canary_evidence_issues(
+        evidence,
+        expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        expected_handoff_generation_provenance=wrong_expected,
+    )
+    assert any("does not match the independently verified" in issue for issue in issues)
 
 
 def test_sglang_representative_canary_evidence_binds_exact_expected_wheel(
@@ -738,14 +1030,19 @@ def test_sglang_representative_canary_evidence_binds_exact_expected_wheel(
     monkeypatch,
 ):
     raw = _representative_sglang_live_v1_benchmark_record(tmp_path, monkeypatch)
+    generation = _representative_sglang_handoff_generation_record()
     evidence = sanitize_sglang_representative_canary_evidence(
         raw,
         expected_cachet_wheel_sha256=REPRESENTATIVE_SGLANG_WHEEL_SHA256,
+        handoff_generation_record=generation,
     )
 
     issues = sglang_representative_canary_evidence_issues(
         evidence,
         expected_cachet_wheel_sha256="e" * 64,
+        expected_handoff_generation_provenance=(
+            _expected_representative_sglang_handoff_provenance(generation)
+        ),
     )
 
     assert any(
@@ -3545,6 +3842,75 @@ def _canonical_record_sha256(value):
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _representative_sglang_handoff_generation_record():
+    topology = build_handoff_topology_attestation_record(
+        (
+            {
+                "example_key_sha256": _canonical_record_sha256(
+                    {"dataset": "niah", "example_id": "niah-1"}
+                ),
+                "method_id": "vanilla_prefill",
+                "method_version": "2",
+                "method_config_digest": "d" * 64,
+                "artifact_id": "a" * 64,
+                "document_count": 2,
+                "segment_count": 2,
+                "logical_token_count": 174,
+                "logical_prompt_sha256": "b" * 64,
+            },
+        )
+    )
+    return {
+        "ok": True,
+        "backend": "sglang",
+        "benchmark_id": "g6-sglang-4k-32-paired-smoke",
+        "cache_method": "vanilla_prefill",
+        "artifact_model_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_model_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "artifact_tokenizer_id": REPRESENTATIVE_CANARY_MODEL_ID,
+        "artifact_tokenizer_revision": REPRESENTATIVE_CANARY_MODEL_REVISION,
+        "dtype": "bfloat16",
+        "cache_prefix_tokens": 128,
+        "runtime_prompt_tokens": 1024,
+        "generator_factory": REPRESENTATIVE_SGLANG_PRE_ROPE_FACTORY,
+        "generator_version": "5.3.0",
+        "handoff_topology_attestation": topology,
+        "generator_python": "/local/raw/python",
+        "handoff_json": "/local/raw/handoff.json",
+        "payload_uri": "disk:/local/raw/payload.kv",
+        "request_id": "raw-request-id",
+    }
+
+
+def _expected_representative_sglang_handoff_provenance(generation):
+    topology = generation["handoff_topology_attestation"]
+    row = topology["examples"][0]
+    return {
+        "raw_sidecar_sha256": _canonical_record_sha256(generation),
+        "method_id": "vanilla_prefill",
+        "method_version": "2",
+        "generator_factory": REPRESENTATIVE_SGLANG_PRE_ROPE_FACTORY,
+        "generator_version": "5.3.0",
+        "topology": {
+            "topology_id": "per_document",
+            "record_type": "document_kv.handoff_topology_attestation.v1",
+            "schema_version": 1,
+            "example_count": 1,
+            "document_count": row["document_count"],
+            "segment_count": row["segment_count"],
+            "attestation_sha256": _canonical_record_sha256(topology),
+            "examples_sha256": topology["examples_sha256"],
+        },
+        "content_digests": [
+            {
+                "artifact_sha256": row["artifact_id"],
+                "logical_prompt_sha256": row["logical_prompt_sha256"],
+                "method_config_sha256": row["method_config_digest"],
+            }
+        ],
+    }
+
+
 def _representative_sglang_live_v1_benchmark_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3626,6 +3992,7 @@ def _representative_sglang_live_v1_benchmark_record(
             ],
         }
     )
+    _use_logical_cache_prompt_mode(record)
     return record
 
 
