@@ -2487,10 +2487,196 @@ def test_v2_failed_capture_is_read_only_and_reviewed_reconciliation_is_ordered(
     )
 
 
+def test_v2_failed_capture_accepts_reversed_per_job_expected_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan,
+        payloads,
+        ledger_path,
+        submit_root,
+        preflight_path,
+        runs,
+        outputs,
+    ) = _failed_v2_capture_fixture(tmp_path, monkeypatch)
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    expected_errors: dict[str, str] = {}
+    for index, contract in enumerate(contracts):
+        job_id = str(contract["job_id"])
+        error = f"RuntimeError: job-specific bootstrap failure {index:02d}"
+        child_run_id = str(80_000 + index)
+        outputs[child_run_id]["error"] = error
+        outputs[child_run_id]["error_trace"] = f"Traceback:\n{error}\n"
+        outputs[child_run_id]["logs"] = f"driver log prefix\n{error}\n"
+        expected_errors[job_id] = error
+    reversed_expected_errors = dict(reversed(tuple(expected_errors.items())))
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run",
+        lambda _config, run_id: runs[run_id],
+    )
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run_output",
+        lambda _config, run_id: outputs[run_id],
+    )
+    evidence_root = tmp_path / "failed-attempt-v2-by-job"
+    ledger_before_capture = ledger_path.read_bytes()
+
+    manifest = (
+        qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
+            DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+            plan_record=plan,
+            submit_payloads=payloads,
+            ledger_path=ledger_path,
+            submit_receipt_root=submit_root,
+            local_preflight_evidence_path=preflight_path,
+            evidence_root=evidence_root,
+            failure_reason="each job reported its own exact bootstrap failure",
+            expected_errors_by_job=reversed_expected_errors,
+        )
+    )
+
+    assert ledger_path.read_bytes() == ledger_before_capture
+    assert len(list(evidence_root.iterdir())) == 29
+    assert not list(tmp_path.glob(".failed-attempt-v2-by-job.staging-*"))
+    assert tuple(reversed_expected_errors) == tuple(reversed(tuple(expected_errors)))
+    assert {
+        str(entry["job_id"]): str(entry["run_output_error"])
+        for entry in manifest["entries"]
+    } == expected_errors
+
+
+def test_v2_failed_capture_rejects_invalid_per_job_errors_before_get_or_publish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan,
+        payloads,
+        ledger_path,
+        submit_root,
+        preflight_path,
+        _runs,
+        _outputs,
+    ) = _failed_v2_capture_fixture(tmp_path, monkeypatch)
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    job_ids = tuple(str(contract["job_id"]) for contract in contracts)
+    error = "NameError: name '__file__' is not defined"
+    exact: dict[str, str] = {job_id: error for job_id in job_ids}
+    missing: dict[Any, Any] = dict(exact)
+    missing.pop(job_ids[-1])
+    extra: dict[Any, Any] = dict(exact)
+    extra["unexpected-job"] = error
+    bool_key: dict[Any, Any] = dict(exact)
+    bool_key[True] = error
+    bool_value: dict[Any, Any] = dict(exact)
+    bool_value[job_ids[0]] = True
+    cases: tuple[tuple[Any, type[Exception], str], ...] = (
+        (missing, ValueError, "exact planned job IDs"),
+        (extra, ValueError, "exact planned job IDs"),
+        (bool_key, ValueError, "job ID must be a non-empty, trimmed string"),
+        (bool_value, ValueError, "must be a non-empty, trimmed string"),
+        ([], TypeError, "must be a mapping"),
+    )
+    get_calls: list[str] = []
+
+    def unexpected_get(_config: DatabricksWorkspaceConfig, run_id: str) -> Any:
+        get_calls.append(run_id)
+        raise AssertionError("invalid expected errors reached a package-owned GET")
+
+    monkeypatch.setattr(qualification_job, "get_databricks_run", unexpected_get)
+    monkeypatch.setattr(
+        qualification_job,
+        "get_databricks_run_output",
+        unexpected_get,
+    )
+    ledger_before_capture = ledger_path.read_bytes()
+
+    for index, (candidate, error_type, message) in enumerate(cases):
+        evidence_root = tmp_path / f"invalid-failed-capture-{index}"
+        with pytest.raises(error_type, match=message):
+            qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
+                DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+                plan_record=plan,
+                submit_payloads=payloads,
+                ledger_path=ledger_path,
+                submit_receipt_root=submit_root,
+                local_preflight_evidence_path=preflight_path,
+                evidence_root=evidence_root,
+                failure_reason="reviewed exact per-job bootstrap failures",
+                expected_errors_by_job=candidate,
+            )
+        assert not evidence_root.exists()
+        assert not list(tmp_path.glob(f".{evidence_root.name}.staging-*"))
+
+    assert get_calls == []
+    assert ledger_path.read_bytes() == ledger_before_capture
+
+
 def test_v2_failure_capture_boundary_has_no_caller_supplied_transport():
-    assert "opener" not in inspect.signature(
+    legacy_parameters = inspect.signature(
         qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2
     ).parameters
+    per_job_parameters = inspect.signature(
+        qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2_by_job
+    ).parameters
+
+    assert "opener" not in legacy_parameters
+    assert "expected_error" in legacy_parameters
+    assert "expected_errors_by_job" not in legacy_parameters
+    assert "opener" not in per_job_parameters
+    assert "expected_errors_by_job" in per_job_parameters
+    assert "expected_error" not in per_job_parameters
+
+
+def test_v2_legacy_capture_delegates_one_error_to_every_planned_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    (
+        plan,
+        payloads,
+        ledger_path,
+        submit_root,
+        preflight_path,
+        _runs,
+        _outputs,
+    ) = _failed_v2_capture_fixture(tmp_path, monkeypatch)
+    captured: dict[str, Any] = {}
+
+    def capture_by_job(
+        _config: DatabricksWorkspaceConfig,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"delegated": True}
+
+    monkeypatch.setattr(
+        qualification_job,
+        "capture_gpu_qualification_failed_attempt_evidence_v2_by_job",
+        capture_by_job,
+    )
+    expected_error = "NameError: name '__file__' is not defined"
+
+    result = qualification_job.capture_gpu_qualification_failed_attempt_evidence_v2(
+        DatabricksWorkspaceConfig("https://dbc.example", "secret-token"),
+        plan_record=plan,
+        submit_payloads=payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_root,
+        local_preflight_evidence_path=preflight_path,
+        evidence_root=tmp_path / "delegated-capture",
+        failure_reason="legacy reviewed failure",
+        expected_error=expected_error,
+    )
+
+    contracts = qualification_job._validated_qualification_payloads(plan, payloads)
+    assert result == {"delegated": True}
+    assert captured["expected_errors_by_job"] == {
+        str(contract["job_id"]): expected_error for contract in contracts
+    }
 
 
 def test_reviewed_bootstrap_file_global_wrapper_reconciles_retained_v2_closure(

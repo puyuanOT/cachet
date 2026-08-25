@@ -1562,6 +1562,30 @@ def _validated_qualification_payloads(
     return tuple(contracts)
 
 
+def _validated_failed_capture_expected_errors_by_job(
+    expected_errors_by_job: Mapping[str, str],
+    *,
+    contracts: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    if not isinstance(expected_errors_by_job, Mapping):
+        raise TypeError("expected_errors_by_job must be a mapping")
+    observed: dict[str, str] = {}
+    for raw_job_id, raw_expected_error in expected_errors_by_job.items():
+        job_id = _safe_id(raw_job_id, "expected_errors_by_job job ID")
+        observed[job_id] = _non_empty_string(
+            raw_expected_error,
+            f"expected_errors_by_job[{job_id!r}]",
+        )
+    planned_job_ids = tuple(str(contract["job_id"]) for contract in contracts)
+    if len(observed) != len(planned_job_ids) or set(observed) != set(
+        planned_job_ids
+    ):
+        raise ValueError(
+            "expected_errors_by_job must cover the exact planned job IDs"
+        )
+    return {job_id: observed[job_id] for job_id in planned_job_ids}
+
+
 def capture_gpu_qualification_failed_attempt_evidence_v2(
     config: DatabricksWorkspaceConfig,
     *,
@@ -1585,9 +1609,50 @@ def capture_gpu_qualification_failed_attempt_evidence_v2(
 
     reason = _non_empty_string(failure_reason, "failure_reason")
     error = _non_empty_string(expected_error, "expected_error")
-    output_root = _validated_fresh_controller_evidence_root(evidence_root)
     plan, _pins = _validated_historical_qualification_plan_and_pins(plan_record)
     contracts = _validated_qualification_payloads(plan, submit_payloads)
+    return capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
+        config,
+        plan_record=plan_record,
+        submit_payloads=submit_payloads,
+        ledger_path=ledger_path,
+        submit_receipt_root=submit_receipt_root,
+        local_preflight_evidence_path=local_preflight_evidence_path,
+        evidence_root=evidence_root,
+        failure_reason=reason,
+        expected_errors_by_job={
+            str(contract["job_id"]): error for contract in contracts
+        },
+    )
+
+
+def capture_gpu_qualification_failed_attempt_evidence_v2_by_job(
+    config: DatabricksWorkspaceConfig,
+    *,
+    plan_record: Mapping[str, Any],
+    submit_payloads: Sequence[Mapping[str, Any]],
+    ledger_path: str | Path,
+    submit_receipt_root: str | Path,
+    local_preflight_evidence_path: str | Path,
+    evidence_root: str | Path,
+    failure_reason: str,
+    expected_errors_by_job: Mapping[str, str],
+) -> dict[str, Any]:
+    """Capture one failed qualification batch with one exact error per job.
+
+    The transport is intentionally package-owned and non-injectable.  Expected
+    errors must cover the exact planned job IDs before any read-only API call or
+    evidence-directory publication can occur.
+    """
+
+    reason = _non_empty_string(failure_reason, "failure_reason")
+    plan, _pins = _validated_historical_qualification_plan_and_pins(plan_record)
+    contracts = _validated_qualification_payloads(plan, submit_payloads)
+    expected_errors = _validated_failed_capture_expected_errors_by_job(
+        expected_errors_by_job,
+        contracts=contracts,
+    )
+    output_root = _validated_fresh_controller_evidence_root(evidence_root)
     local_preflight_binding = _non_authorizing_local_preflight_binding(
         local_preflight_evidence_path,
         plan=plan,
@@ -1638,7 +1703,7 @@ def capture_gpu_qualification_failed_attempt_evidence_v2(
             run=run,
             base_entry=base_entry,
             contract=contract,
-            expected_error=error,
+            expected_error=expected_errors[str(contract["job_id"])],
             evidence_file_sha256=_canonical_record_file_sha256(run_output),
         )
         parent_runs.append(run)
@@ -5163,6 +5228,7 @@ __all__ = [
     "GPUQualificationLaunchAuthorization",
     "GPUQualificationSentinelRunner",
     "capture_gpu_qualification_failed_attempt_evidence_v2",
+    "capture_gpu_qualification_failed_attempt_evidence_v2_by_job",
     "collect_gpu_qualification_evidence",
     "execute_gpu_qualification_job",
     "gpu_qualification_reservation_attempt_id",
