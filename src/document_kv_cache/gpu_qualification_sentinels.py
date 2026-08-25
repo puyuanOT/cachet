@@ -8,9 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+import selectors
+import signal
 import stat
 import subprocess
+import threading
+import time
 from collections.abc import Mapping
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +27,7 @@ from document_kv_cache.serving_env import (
     vllm_runtime_lock_path,
 )
 from document_kv_cache.vllm_smoke import (
+    _attest_isolated_python,
     _pip_subprocess_environment,
     create_venv,
     install_document_kv_package,
@@ -30,6 +37,12 @@ from document_kv_cache.vllm_smoke import (
 
 
 _RUNTIME_LOCK_ATTESTATION_ENV = "CACHET_GPU_QUALIFICATION_RUNTIME_LOCK_ATTESTATION"
+_WORKER_STDOUT_TAIL_MAX_BYTES = 2_000
+_WORKER_STDERR_TAIL_MAX_BYTES = 4_000
+_WORKER_STREAM_READ_BYTES = 64 * 1024
+_WORKER_CONTROLLER_POLL_SECONDS = 0.05
+_WORKER_DRAIN_TIMEOUT_SECONDS = 2.0
+_WORKER_TERMINATION_GRACE_SECONDS = 2.0
 _SITE_PACKAGES_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 _ALLOWED_SITE_PACKAGES_RELATIVE_PARTS = frozenset(
     {
@@ -39,6 +52,445 @@ _ALLOWED_SITE_PACKAGES_RELATIVE_PARTS = frozenset(
         ("local", "lib", "python3.11", "dist-packages"),
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundedWorkerStream:
+    byte_count: int
+    sha256: str
+    truncated: bool
+    tail: bytes
+
+    @property
+    def tail_text(self) -> str:
+        return self.tail.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundedWorkerResult:
+    returncode: int
+    stdout: _BoundedWorkerStream
+    stderr: _BoundedWorkerStream
+
+
+class _WorkerStreamAccumulator:
+    def __init__(self, tail_limit: int) -> None:
+        if type(tail_limit) is not int or tail_limit <= 0:
+            raise ValueError("worker stream tail limit must be a positive integer")
+        self._tail_limit = tail_limit
+        self._tail = bytearray()
+        self._byte_count = 0
+        self._digest = sha256()
+
+    def update(self, chunk: bytes) -> None:
+        self._byte_count += len(chunk)
+        self._digest.update(chunk)
+        if len(chunk) >= self._tail_limit:
+            self._tail[:] = chunk[-self._tail_limit :]
+            return
+        self._tail.extend(chunk)
+        overflow = len(self._tail) - self._tail_limit
+        if overflow > 0:
+            del self._tail[:overflow]
+
+    def finish(self) -> _BoundedWorkerStream:
+        return _BoundedWorkerStream(
+            byte_count=self._byte_count,
+            sha256=self._digest.hexdigest(),
+            truncated=self._byte_count > self._tail_limit,
+            tail=bytes(self._tail),
+        )
+
+
+def _drain_worker_stream(
+    stream: Any,
+    accumulator: _WorkerStreamAccumulator,
+    errors: list[BaseException],
+    error_lock: threading.Lock,
+    stop_event: threading.Event,
+) -> None:
+    """Drain one nonblocking raw pipe and close it in its owning thread."""
+
+    selector = selectors.DefaultSelector()
+    try:
+        descriptor = stream.fileno()
+        selector.register(descriptor, selectors.EVENT_READ)
+        while not stop_event.is_set():
+            if not selector.select(timeout=_WORKER_CONTROLLER_POLL_SECONDS):
+                continue
+            try:
+                chunk = os.read(descriptor, _WORKER_STREAM_READ_BYTES)
+            except BlockingIOError:
+                continue
+            if chunk == b"":
+                break
+            if type(chunk) is not bytes:
+                raise TypeError("worker stream must remain binary")
+            accumulator.update(chunk)
+    except BaseException as exc:
+        with error_lock:
+            errors.append(exc)
+    finally:
+        selector.close()
+        try:
+            stream.close()
+        except BaseException as exc:
+            with error_lock:
+                errors.append(exc)
+
+
+def _signal_worker_process_group(
+    process: subprocess.Popen[bytes],
+    signal_number: int,
+) -> None:
+    try:
+        os.killpg(process.pid, signal_number)
+    except (PermissionError, ProcessLookupError):
+        # Darwin can report EPERM while the last killed, reparented member is
+        # disappearing. A live member of this same-UID owned group is
+        # signalable; either error therefore means there is no addressable
+        # process left inside the controller's authority boundary.
+        return
+
+
+def _worker_process_group_exists(process: subprocess.Popen[bytes]) -> bool:
+    try:
+        os.killpg(process.pid, 0)
+    except (PermissionError, ProcessLookupError):
+        return False
+    return True
+
+
+def _wait_worker_process_group_exit(
+    process: subprocess.Popen[bytes],
+    *,
+    timeout_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while _worker_process_group_exists(process):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_WORKER_CONTROLLER_POLL_SECONDS, remaining))
+    return True
+
+
+def _settle_worker_process_group(
+    process: subprocess.Popen[bytes],
+    *,
+    termination_grace_seconds: float,
+) -> None:
+    """Terminate every process that remains in the worker's owned session."""
+
+    _signal_worker_process_group(process, signal.SIGTERM)
+    if _wait_worker_process_group_exit(
+        process,
+        timeout_seconds=termination_grace_seconds,
+    ):
+        return
+    _signal_worker_process_group(process, signal.SIGKILL)
+    if not _wait_worker_process_group_exit(
+        process,
+        timeout_seconds=termination_grace_seconds,
+    ):
+        raise RuntimeError("GPU sentinel worker process group did not terminate")
+
+
+def _join_worker_drainers(
+    threads: tuple[threading.Thread, threading.Thread],
+    *,
+    timeout_seconds: float,
+) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    for thread in threads:
+        if thread.ident is not None:
+            thread.join(max(0.0, deadline - time.monotonic()))
+    return all(not thread.is_alive() for thread in threads)
+
+
+def _stop_worker_drainers(
+    threads: tuple[threading.Thread, threading.Thread],
+    streams: tuple[Any, Any],
+    *,
+    stop_event: threading.Event,
+    timeout_seconds: float,
+) -> bool:
+    stop_event.set()
+    for thread, stream in zip(threads, streams, strict=True):
+        if thread.ident is None and not stream.closed:
+            # No other thread ever owned this raw descriptor.
+            stream.close()
+    return _join_worker_drainers(threads, timeout_seconds=timeout_seconds)
+
+
+def _finish_worker_process_group(
+    process: subprocess.Popen[bytes],
+    threads: tuple[threading.Thread, threading.Thread],
+    streams: tuple[Any, Any],
+    *,
+    stop_event: threading.Event,
+    request_termination: bool,
+    drain_timeout_seconds: float,
+    termination_grace_seconds: float,
+) -> None:
+    if request_termination:
+        _signal_worker_process_group(process, signal.SIGTERM)
+        if process.poll() is None:
+            try:
+                process.wait(timeout=termination_grace_seconds)
+            except subprocess.TimeoutExpired:
+                _signal_worker_process_group(process, signal.SIGKILL)
+                process.wait(timeout=termination_grace_seconds)
+    if process.poll() is None:
+        raise RuntimeError("GPU sentinel worker leader did not terminate")
+
+    # Always settle the original PGID after the leader exits. A child may have
+    # closed both inherited pipes yet still be alive in the owned session.
+    _settle_worker_process_group(
+        process,
+        termination_grace_seconds=termination_grace_seconds,
+    )
+    if _join_worker_drainers(threads, timeout_seconds=drain_timeout_seconds):
+        return
+
+    # A hostile descendant can call setsid(2) and leave the owned session. It
+    # is outside this controller's portable signalling authority, but an
+    # inherited pipe must not let it hold the controller. Nonblocking owner
+    # threads observe this stop request and close their own raw descriptors.
+    if not _stop_worker_drainers(
+        threads,
+        streams,
+        stop_event=stop_event,
+        timeout_seconds=drain_timeout_seconds,
+    ):
+        if _worker_process_group_exists(process):
+            _signal_worker_process_group(process, signal.SIGKILL)
+        raise RuntimeError("GPU sentinel worker pipe drain did not terminate")
+
+
+def _worker_stream_diagnostic(
+    label: str,
+    captured: _BoundedWorkerStream,
+) -> str:
+    truncated = "true" if captured.truncated else "false"
+    return (
+        f"{label}(bytes={captured.byte_count},sha256={captured.sha256},"
+        f"truncated={truncated},tail={captured.tail_text!r})"
+    )
+
+
+def _worker_process_failure(
+    job_id: str,
+    *,
+    result: _BoundedWorkerResult,
+    timed_out: bool,
+    timeout_seconds: float,
+) -> RuntimeError:
+    streams = (
+        f"{_worker_stream_diagnostic('stdout', result.stdout)}; "
+        f"{_worker_stream_diagnostic('stderr', result.stderr)}"
+    )
+    if timed_out:
+        return RuntimeError(
+            f"GPU sentinel {job_id!r} worker timed out after "
+            f"{timeout_seconds:g} seconds; {streams}"
+        )
+    if result.returncode < 0:
+        signal_number = -result.returncode
+        try:
+            signal_name = signal.Signals(signal_number).name
+        except ValueError:
+            signal_name = "UNKNOWN"
+        return RuntimeError(
+            f"GPU sentinel {job_id!r} worker terminated by signal "
+            f"{signal_number} ({signal_name}); {streams}"
+        )
+    return RuntimeError(
+        f"GPU sentinel {job_id!r} worker exited with status "
+        f"{result.returncode}; {streams}"
+    )
+
+
+def _first_worker_drain_error(
+    errors: list[BaseException],
+    error_lock: threading.Lock,
+) -> BaseException | None:
+    with error_lock:
+        return errors[0] if errors else None
+
+
+def _abort_worker_process(
+    process: subprocess.Popen[bytes],
+    threads: tuple[threading.Thread, threading.Thread],
+    streams: tuple[Any, Any],
+    *,
+    stop_event: threading.Event,
+    drain_timeout_seconds: float,
+    termination_grace_seconds: float,
+) -> None:
+    _signal_worker_process_group(process, signal.SIGKILL)
+    if process.poll() is None:
+        try:
+            process.wait(timeout=termination_grace_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+    _signal_worker_process_group(process, signal.SIGKILL)
+    _wait_worker_process_group_exit(
+        process,
+        timeout_seconds=termination_grace_seconds,
+    )
+    _stop_worker_drainers(
+        threads,
+        streams,
+        stop_event=stop_event,
+        timeout_seconds=drain_timeout_seconds,
+    )
+
+
+def _run_bounded_worker_process(
+    argv: list[str],
+    *,
+    job_id: str,
+    timeout_seconds: float,
+    environment: Mapping[str, str],
+    cwd: Path,
+    stdout_tail_max_bytes: int = _WORKER_STDOUT_TAIL_MAX_BYTES,
+    stderr_tail_max_bytes: int = _WORKER_STDERR_TAIL_MAX_BYTES,
+    drain_timeout_seconds: float = _WORKER_DRAIN_TIMEOUT_SECONDS,
+    termination_grace_seconds: float = _WORKER_TERMINATION_GRACE_SECONDS,
+) -> _BoundedWorkerResult:
+    """Run one package-owned process group with bounded binary pipe retention.
+
+    Cleanup authority covers the new session created for the reviewed worker.
+    A hostile descendant can deliberately escape it with ``setsid(2)``; raw
+    nonblocking owner-thread drains ensure even that process cannot hold this
+    controller by retaining an inherited pipe.
+    """
+
+    for value, label in (
+        (timeout_seconds, "timeout_seconds"),
+        (drain_timeout_seconds, "drain_timeout_seconds"),
+        (termination_grace_seconds, "termination_grace_seconds"),
+    ):
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or value <= 0
+        ):
+            raise ValueError(f"{label} must be positive")
+    stdout_accumulator = _WorkerStreamAccumulator(stdout_tail_max_bytes)
+    stderr_accumulator = _WorkerStreamAccumulator(stderr_tail_max_bytes)
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(environment),
+        cwd=cwd,
+        start_new_session=True,
+        bufsize=0,
+    )
+    if process.stdout is None or process.stderr is None:
+        _signal_worker_process_group(process, signal.SIGKILL)
+        process.wait(timeout=termination_grace_seconds)
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
+        raise RuntimeError("GPU sentinel worker pipes were not created")
+    streams = (process.stdout, process.stderr)
+    drain_errors: list[BaseException] = []
+    drain_error_lock = threading.Lock()
+    stop_event = threading.Event()
+    threads = (
+        threading.Thread(
+            target=_drain_worker_stream,
+            args=(
+                process.stdout,
+                stdout_accumulator,
+                drain_errors,
+                drain_error_lock,
+                stop_event,
+            ),
+            name="gpu-sentinel-stdout-drain",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_drain_worker_stream,
+            args=(
+                process.stderr,
+                stderr_accumulator,
+                drain_errors,
+                drain_error_lock,
+                stop_event,
+            ),
+            name="gpu-sentinel-stderr-drain",
+            daemon=True,
+        ),
+    )
+    timed_out = False
+    try:
+        for stream in streams:
+            os.set_blocking(stream.fileno(), False)
+        for thread in threads:
+            thread.start()
+        deadline = time.monotonic() + timeout_seconds
+        while process.poll() is None:
+            drain_error = _first_worker_drain_error(
+                drain_errors,
+                drain_error_lock,
+            )
+            if drain_error is not None:
+                raise RuntimeError("GPU sentinel worker pipe drain failed") from (
+                    drain_error
+                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                process.wait(
+                    timeout=min(_WORKER_CONTROLLER_POLL_SECONDS, remaining)
+                )
+            except subprocess.TimeoutExpired:
+                continue
+        _finish_worker_process_group(
+            process,
+            threads,
+            streams,
+            stop_event=stop_event,
+            request_termination=timed_out,
+            drain_timeout_seconds=drain_timeout_seconds,
+            termination_grace_seconds=termination_grace_seconds,
+        )
+    except BaseException:
+        _abort_worker_process(
+            process,
+            threads,
+            streams,
+            stop_event=stop_event,
+            drain_timeout_seconds=drain_timeout_seconds,
+            termination_grace_seconds=termination_grace_seconds,
+        )
+        raise
+    drain_error = _first_worker_drain_error(drain_errors, drain_error_lock)
+    if drain_error is not None:
+        raise RuntimeError("GPU sentinel worker pipe drain failed") from drain_error
+    returncode = process.returncode
+    if type(returncode) is not int:
+        raise RuntimeError("GPU sentinel worker did not reach a terminal status")
+    result = _BoundedWorkerResult(
+        returncode=returncode,
+        stdout=stdout_accumulator.finish(),
+        stderr=stderr_accumulator.finish(),
+    )
+    if timed_out or returncode != 0:
+        raise _worker_process_failure(
+            job_id,
+            result=result,
+            timed_out=timed_out,
+            timeout_seconds=float(timeout_seconds),
+        )
+    return result
 
 
 def run_gpu_qualification_sentinel(
@@ -61,6 +513,7 @@ def run_gpu_qualification_sentinel(
     expected_runtime_lock_sha256 = _artifact_pin(
         plan_record, "runtime_lock_sha256"
     )
+    expected_python_version = _runtime_python_version(plan_record)
     supplied_runtime_lock = artifact_paths["runtime_lock_sha256"]
     packaged_runtime_lock = vllm_runtime_lock_path()
     for label, path in (
@@ -74,7 +527,11 @@ def run_gpu_qualification_sentinel(
     os.environ[VLLM_PATCHED_WHEEL_URI_ENV] = str(patched_wheel)
     os.environ[VLLM_PATCHED_WHEEL_SHA256_ENV] = expected_patched_sha256
 
-    create_venv(runtime_dir)
+    create_venv(runtime_dir, copies=True)
+    created_python_identity = _attest_isolated_python(
+        runtime_dir,
+        expected_python_version=expected_python_version,
+    )
     install_vllm(runtime_python)
     install_document_kv_package(runtime_python, str(package_wheel))
     subprocess.run(
@@ -83,6 +540,13 @@ def run_gpu_qualification_sentinel(
         timeout=300,
         env=_pip_subprocess_environment(),
     )
+    installed_python_identity = _attest_isolated_python(
+        runtime_dir,
+        expected_python_version=expected_python_version,
+        expected_file_binding=created_python_identity.file_binding,
+    )
+    if installed_python_identity != created_python_identity:
+        raise RuntimeError("isolated runtime Python identity changed during installation")
 
     environment = _pip_subprocess_environment()
     environment.update(
@@ -124,7 +588,7 @@ def run_gpu_qualification_sentinel(
     _make_site_packages_read_only(runtime_python)
 
     worker_output = worker_dir / "measurements.json"
-    completed = subprocess.run(
+    completed = _run_bounded_worker_process(
         [
             str(runtime_python),
             "-m",
@@ -140,17 +604,16 @@ def run_gpu_qualification_sentinel(
             "--output-json",
             str(worker_output),
         ],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=14_000,
-        env=environment,
+        job_id=job_id,
+        timeout_seconds=14_000,
+        environment=environment,
         cwd=worker_dir,
     )
     if not worker_output.is_file() or worker_output.is_symlink():
         raise RuntimeError(
             f"GPU sentinel {job_id!r} did not write its measurement record; "
-            f"stdout={completed.stdout[-2000:]!r}, stderr={completed.stderr[-4000:]!r}"
+            f"{_worker_stream_diagnostic('stdout', completed.stdout)}; "
+            f"{_worker_stream_diagnostic('stderr', completed.stderr)}"
         )
     measurements = json.loads(worker_output.read_text(encoding="utf-8"))
     if not isinstance(measurements, dict):
@@ -200,7 +663,7 @@ print(verified.bundle_sha256)
 def _directory_open_flags() -> int:
     no_follow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
-    if no_follow is None or directory is None:
+    if not isinstance(no_follow, int) or not isinstance(directory, int):
         raise RuntimeError(
             "isolated site-packages authority requires O_NOFOLLOW and O_DIRECTORY"
         )
@@ -572,6 +1035,19 @@ def _artifact_pin(plan_record: Mapping[str, Any], key: str) -> str:
     value = pins.get(key)
     if not isinstance(value, str) or len(value) != 64:
         raise ValueError(f"plan artifact pin {key!r} is invalid")
+    return value
+
+
+def _runtime_python_version(plan_record: Mapping[str, Any]) -> str:
+    runtime = plan_record.get("runtime_contract")
+    if not isinstance(runtime, Mapping):
+        raise ValueError("plan.runtime_contract must be an object")
+    platform = runtime.get("platform")
+    if not isinstance(platform, Mapping):
+        raise ValueError("plan runtime platform must be an object")
+    value = platform.get("python_version")
+    if not isinstance(value, str) or not value:
+        raise ValueError("plan runtime Python version is invalid")
     return value
 
 

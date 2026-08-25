@@ -4782,7 +4782,10 @@ def execute_gpu_qualification_job(
         if finished_at <= started_at:
             raise RuntimeError("GPU sentinel timestamps did not advance")
 
-        runtime = _observe_gpu_runtime(local_work_dir)
+        runtime = _observe_gpu_runtime(
+            local_work_dir,
+            expected_python_version=_plan_runtime_python_version(plan),
+        )
         record = build_gpu_job_result(
             plan_record=plan,
             job_id=normalized_job_id,
@@ -5263,21 +5266,50 @@ def _planned_job(plan: Mapping[str, Any], job_id: str) -> Mapping[str, Any]:
     return matches[0]
 
 
-def _observe_gpu_runtime(work_dir: Path) -> dict[str, str]:
-    """Read runtime identity from the sentinel's isolated Python executable."""
+def _plan_runtime_python_version(plan: Mapping[str, Any]) -> str:
+    runtime = _required_mapping(plan.get("runtime_contract"), "runtime_contract")
+    platform = _required_mapping(runtime.get("platform"), "runtime platform")
+    return _non_empty_string(
+        platform.get("python_version"),
+        "runtime platform Python version",
+    )
 
+
+def _observe_gpu_runtime(
+    work_dir: Path,
+    *,
+    expected_python_version: str,
+) -> dict[str, str]:
+    """Read GPU identity without weakening the copied-runtime authority.
+
+    The work tree remains under this launcher's exclusive ownership. Pre/post
+    no-follow file bindings detect replacement or mutation during observation;
+    they do not claim isolation from a hostile process sharing the same UID.
+    """
+
+    from document_kv_cache.vllm_smoke import (
+        _attest_isolated_python,
+        _isolated_python_environment,
+    )
+
+    runtime_root = work_dir / "runtime"
     runtime_python = work_dir / "runtime" / "bin" / "python"
-    if not runtime_python.is_file() or runtime_python.is_symlink():
-        raise RuntimeError(
-            "sentinel did not materialize the required isolated runtime Python at "
-            f"{runtime_python}"
-        )
+    environment = _isolated_python_environment()
+    before = _attest_isolated_python(
+        runtime_root,
+        expected_python_version=expected_python_version,
+        environment=environment,
+    )
     probe = (
-        "import json, torch, vllm; "
+        "import json,sys,torch,vllm; "
         "p=torch.cuda.get_device_properties(0); "
         "print(json.dumps({'gpu':p.name,'gpu_compute_capability':"
         "f'{p.major}.{p.minor}','torch_cuda_version':torch.version.cuda,"
-        "'vllm_version':vllm.__version__},sort_keys=True))"
+        "'vllm_version':vllm.__version__,'python_executable':sys.executable,"
+        "'python_prefix':sys.prefix,'python_base_prefix':sys.base_prefix,"
+        "'python_implementation':sys.implementation.name,"
+        "'python_version':'.'.join(map(str,sys.version_info[:3]))},"
+        "sort_keys=True))"
     )
     completed = subprocess.run(
         [str(runtime_python), "-c", probe],
@@ -5285,10 +5317,9 @@ def _observe_gpu_runtime(work_dir: Path) -> dict[str, str]:
         capture_output=True,
         text=True,
         timeout=120,
+        env=environment,
+        cwd=runtime_root,
     )
-    observed = json.loads(completed.stdout)
-    if not isinstance(observed, dict):
-        raise RuntimeError("GPU runtime identity probe did not return an object")
     driver = subprocess.run(
         [
             "nvidia-smi",
@@ -5299,7 +5330,41 @@ def _observe_gpu_runtime(work_dir: Path) -> dict[str, str]:
         capture_output=True,
         text=True,
         timeout=30,
+        env=environment,
+        cwd=runtime_root,
     ).stdout.splitlines()
+    after = _attest_isolated_python(
+        runtime_root,
+        expected_python_version=expected_python_version,
+        environment=environment,
+        expected_file_binding=before.file_binding,
+    )
+    if after != before:
+        raise RuntimeError("isolated runtime Python identity changed during observation")
+    observed = json.loads(completed.stdout)
+    if not isinstance(observed, dict) or set(observed) != {
+        "gpu",
+        "gpu_compute_capability",
+        "python_base_prefix",
+        "python_executable",
+        "python_implementation",
+        "python_prefix",
+        "python_version",
+        "torch_cuda_version",
+        "vllm_version",
+    }:
+        raise RuntimeError("GPU runtime identity probe did not return its closed object")
+    for field_name, expected_value in (
+        ("python_executable", before.executable),
+        ("python_prefix", before.prefix),
+        ("python_base_prefix", before.base_prefix),
+        ("python_implementation", before.python_implementation),
+        ("python_version", before.python_version),
+    ):
+        if observed.get(field_name) != expected_value:
+            raise RuntimeError(
+                f"GPU runtime identity probe reported the wrong {field_name}"
+            )
     driver_versions = {item.strip() for item in driver if item.strip()}
     if len(driver_versions) != 1:
         raise RuntimeError("GPU job must observe one NVIDIA driver version")

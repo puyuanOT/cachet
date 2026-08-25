@@ -2,8 +2,11 @@ import hashlib
 import json
 import os
 import site
+import signal
 import stat
 import subprocess
+import sys
+import time
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -602,6 +605,392 @@ def _reseal_evidence(evidence: dict[str, Any]) -> None:
             _seal(receipt)
     _seal(cloud)
     _seal(evidence)
+
+
+@pytest.mark.parametrize(
+    ("extra_bytes", "truncated"),
+    [(0, False), (1, True)],
+)
+def test_worker_binary_capture_enforces_exact_tail_boundaries(
+    tmp_path: Path,
+    extra_bytes: int,
+    truncated: bool,
+):
+    stdout = b"A" * (8 + extra_bytes)
+    stderr = b"B" * (4 + extra_bytes)
+    code = (
+        "import os; "
+        f"os.write(1,{stdout!r}); "
+        f"os.write(2,{stderr!r})"
+    )
+
+    result = qualification_sentinels._run_bounded_worker_process(
+        [sys.executable, "-c", code],
+        job_id="tail-boundary",
+        timeout_seconds=5,
+        environment=os.environ,
+        cwd=tmp_path,
+        stdout_tail_max_bytes=8,
+        stderr_tail_max_bytes=4,
+        drain_timeout_seconds=0.5,
+        termination_grace_seconds=0.5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.byte_count == len(stdout)
+    assert result.stdout.sha256 == hashlib.sha256(stdout).hexdigest()
+    assert result.stdout.truncated is truncated
+    assert result.stdout.tail == stdout[-8:]
+    assert result.stderr.byte_count == len(stderr)
+    assert result.stderr.sha256 == hashlib.sha256(stderr).hexdigest()
+    assert result.stderr.truncated is truncated
+    assert result.stderr.tail == stderr[-4:]
+
+
+def test_worker_nonzero_diagnostic_is_exact_and_utf8_safe(tmp_path: Path):
+    stdout = b"\xffA"
+    stderr = b"X\xe2\x82\xac"
+    stderr_tail = stderr[-2:]
+    code = (
+        "import os,sys; "
+        f"os.write(1,{stdout!r}); "
+        f"os.write(2,{stderr!r}); "
+        "sys.exit(7)"
+    )
+    expected = (
+        "GPU sentinel 'invalid-utf8' worker exited with status 7; "
+        f"stdout(bytes=2,sha256={hashlib.sha256(stdout).hexdigest()},"
+        "truncated=false,tail='�A'); "
+        f"stderr(bytes=4,sha256={hashlib.sha256(stderr).hexdigest()},"
+        f"truncated=true,tail={stderr_tail.decode('utf-8', errors='replace')!r})"
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", code],
+            job_id="invalid-utf8",
+            timeout_seconds=5,
+            environment=os.environ,
+            cwd=tmp_path,
+            stdout_tail_max_bytes=8,
+            stderr_tail_max_bytes=2,
+            drain_timeout_seconds=0.5,
+            termination_grace_seconds=0.5,
+        )
+
+    assert str(captured.value) == expected
+
+
+def test_worker_simultaneous_noisy_streams_are_drained_without_deadlock(
+    tmp_path: Path,
+):
+    byte_count = 2 * 1024 * 1024
+    stdout = b"O" * byte_count
+    stderr = b"E" * byte_count
+    code = f"""
+import os
+import sys
+import threading
+
+def emit(descriptor, value):
+    chunk = value * 65536
+    for _ in range({byte_count} // len(chunk)):
+        os.write(descriptor, chunk)
+
+threads = [
+    threading.Thread(target=emit, args=(1, b'O')),
+    threading.Thread(target=emit, args=(2, b'E')),
+]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+sys.exit(9)
+"""
+
+    with pytest.raises(RuntimeError) as captured:
+        qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", code],
+            job_id="noisy",
+            timeout_seconds=10,
+            environment=os.environ,
+            cwd=tmp_path,
+            stdout_tail_max_bytes=64,
+            stderr_tail_max_bytes=96,
+            drain_timeout_seconds=1,
+            termination_grace_seconds=0.5,
+        )
+
+    message = str(captured.value)
+    assert f"stdout(bytes={byte_count},sha256={hashlib.sha256(stdout).hexdigest()}" in message
+    assert f"stderr(bytes={byte_count},sha256={hashlib.sha256(stderr).hexdigest()}" in message
+    assert "truncated=true" in message
+
+
+def test_worker_timeout_preserves_partial_stream_diagnostics(tmp_path: Path):
+    stdout = b"partial-out"
+    stderr = b"partial-err"
+    code = (
+        "import os,time; "
+        f"os.write(1,{stdout!r}); "
+        f"os.write(2,{stderr!r}); "
+        "time.sleep(60)"
+    )
+
+    with pytest.raises(RuntimeError) as captured:
+        qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", code],
+            job_id="timeout",
+            timeout_seconds=0.1,
+            environment=os.environ,
+            cwd=tmp_path,
+            stdout_tail_max_bytes=32,
+            stderr_tail_max_bytes=32,
+            drain_timeout_seconds=0.2,
+            termination_grace_seconds=0.2,
+        )
+
+    message = str(captured.value)
+    assert message.startswith("GPU sentinel 'timeout' worker timed out after 0.1 seconds")
+    assert f"bytes={len(stdout)},sha256={hashlib.sha256(stdout).hexdigest()}" in message
+    assert f"bytes={len(stderr)},sha256={hashlib.sha256(stderr).hexdigest()}" in message
+
+
+def test_worker_negative_returncode_reports_signal(tmp_path: Path):
+    with pytest.raises(RuntimeError) as captured:
+        qualification_sentinels._run_bounded_worker_process(
+            [
+                sys.executable,
+                "-c",
+                "import os,signal; os.kill(os.getpid(), signal.SIGTERM)",
+            ],
+            job_id="signal",
+            timeout_seconds=5,
+            environment=os.environ,
+            cwd=tmp_path,
+            drain_timeout_seconds=0.5,
+            termination_grace_seconds=0.5,
+        )
+
+    assert str(captured.value).startswith(
+        "GPU sentinel 'signal' worker terminated by signal "
+        f"{signal.SIGTERM} (SIGTERM);"
+    )
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX process groups")
+def test_worker_normal_exit_cleans_descendant_held_pipes(tmp_path: Path):
+    child_pid_path = tmp_path / "held-pipe-child.pid"
+    code = f"""
+import os
+from pathlib import Path
+import time
+
+if os.fork() == 0:
+    Path({str(child_pid_path)!r}).write_text(str(os.getpid()))
+    time.sleep(60)
+    os._exit(0)
+while not Path({str(child_pid_path)!r}).exists():
+    time.sleep(0.001)
+os.write(1, b'parent-finished')
+"""
+    started = time.monotonic()
+    try:
+        result = qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", code],
+            job_id="descendant-pipes",
+            timeout_seconds=5,
+            environment=os.environ,
+            cwd=tmp_path,
+            drain_timeout_seconds=0.1,
+            termination_grace_seconds=0.1,
+        )
+
+        child_pid = int(child_pid_path.read_text())
+        assert result.returncode == 0
+        assert result.stdout.tail == b"parent-finished"
+        assert time.monotonic() - started < 2
+        assert _wait_for_process_exit(child_pid, timeout_seconds=1)
+    finally:
+        if child_pid_path.exists():
+            _kill_test_process(int(child_pid_path.read_text()))
+
+
+def _process_is_alive(process_id: int) -> bool:
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wait_for_process_exit(process_id: int, *, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while _process_is_alive(process_id):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def _kill_test_process(process_id: int) -> None:
+    if _process_is_alive(process_id):
+        os.kill(process_id, signal.SIGKILL)
+        _wait_for_process_exit(process_id, timeout_seconds=1)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX process groups")
+def test_worker_normal_exit_settles_owned_child_after_it_closes_pipes(
+    tmp_path: Path,
+):
+    child_pid_path = tmp_path / "closed-pipe-child.pid"
+    code = f"""
+import os
+from pathlib import Path
+import time
+
+if os.fork() == 0:
+    null = os.open(os.devnull, os.O_RDWR)
+    os.dup2(null, 1)
+    os.dup2(null, 2)
+    if null > 2:
+        os.close(null)
+    Path({str(child_pid_path)!r}).write_text(str(os.getpid()))
+    time.sleep(60)
+    os._exit(0)
+while not Path({str(child_pid_path)!r}).exists():
+    time.sleep(0.001)
+"""
+    started = time.monotonic()
+    try:
+        result = qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", code],
+            job_id="closed-pipe-descendant",
+            timeout_seconds=5,
+            environment=os.environ,
+            cwd=tmp_path,
+            drain_timeout_seconds=0.1,
+            termination_grace_seconds=0.1,
+        )
+
+        child_pid = int(child_pid_path.read_text())
+        assert result.returncode == 0
+        assert time.monotonic() - started < 2
+        assert _wait_for_process_exit(child_pid, timeout_seconds=1)
+    finally:
+        if child_pid_path.exists():
+            _kill_test_process(int(child_pid_path.read_text()))
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX process groups")
+def test_worker_escaped_child_retaining_pipes_cannot_hold_controller(
+    tmp_path: Path,
+):
+    child_pid_path = tmp_path / "escaped-pipe-child.pid"
+    code = f"""
+import os
+from pathlib import Path
+import time
+
+if os.fork() == 0:
+    os.setsid()
+    Path({str(child_pid_path)!r}).write_text(str(os.getpid()))
+    time.sleep(60)
+    os._exit(0)
+while not Path({str(child_pid_path)!r}).exists():
+    time.sleep(0.001)
+os.write(1, b'leader-finished')
+"""
+    started = time.monotonic()
+    try:
+        result = qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", code],
+            job_id="escaped-pipe-descendant",
+            timeout_seconds=5,
+            environment=os.environ,
+            cwd=tmp_path,
+            drain_timeout_seconds=0.1,
+            termination_grace_seconds=0.1,
+        )
+
+        child_pid = int(child_pid_path.read_text())
+        assert result.returncode == 0
+        assert result.stdout.tail == b"leader-finished"
+        assert time.monotonic() - started < 2
+        assert _process_is_alive(child_pid)
+    finally:
+        if child_pid_path.exists():
+            _kill_test_process(int(child_pid_path.read_text()))
+
+
+def test_worker_drainer_failure_is_not_silenced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def reject_stream(stream, accumulator, errors, error_lock, stop_event):
+        with error_lock:
+            errors.append(OSError("reviewed drain failure"))
+        stream.close()
+
+    monkeypatch.setattr(
+        qualification_sentinels,
+        "_drain_worker_stream",
+        reject_stream,
+    )
+    with pytest.raises(RuntimeError, match="pipe drain failed") as captured:
+        qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", "pass"],
+            job_id="drain-failure",
+            timeout_seconds=5,
+            environment=os.environ,
+            cwd=tmp_path,
+            drain_timeout_seconds=0.2,
+            termination_grace_seconds=0.2,
+        )
+    assert isinstance(captured.value.__cause__, OSError)
+
+
+def test_worker_base_exception_cleans_owned_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    real_popen = subprocess.Popen
+    launched = []
+
+    def interrupting_popen(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        launched.append(process)
+        real_wait = process.wait
+        wait_calls = 0
+
+        def interrupt_once(timeout=None):
+            nonlocal wait_calls
+            wait_calls += 1
+            if wait_calls == 1:
+                raise KeyboardInterrupt
+            return real_wait(timeout=timeout)
+
+        process.wait = interrupt_once
+        return process
+
+    monkeypatch.setattr(
+        qualification_sentinels.subprocess,
+        "Popen",
+        interrupting_popen,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        qualification_sentinels._run_bounded_worker_process(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            job_id="interrupt",
+            timeout_seconds=5,
+            environment=os.environ,
+            cwd=tmp_path,
+            drain_timeout_seconds=0.2,
+            termination_grace_seconds=0.2,
+        )
+
+    assert len(launched) == 1
+    assert launched[0].poll() is not None
 
 
 def test_debian_site_package_candidates_lock_down_and_attest(

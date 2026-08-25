@@ -4060,9 +4060,29 @@ def _runtime_observation_and_worker_subprocess_failure_replay_fixture(
         len(retained.reservations),
         len(retained.submission_receipts),
         len(retained.terminal_actuals),
+    ) == (222, 84, 222)
+    historical = replace(
+        retained,
+        terminal_actuals=retained.terminal_actuals[:208],
+    )
+    assert (
+        len(historical.reservations),
+        len(historical.submission_receipts),
+        len(historical.terminal_actuals),
     ) == (222, 84, 208)
+    assert historical.active_reserved_task_count == 14
+    assert historical.active_reserved_cluster_hours == 56.0
+    assert historical.terminal_actual_cluster_hours == pytest.approx(
+        64.48303638888892
+    )
+    assert databricks_ledger_prefix(historical).prefix_sha256 == (
+        "835c73c5ee8db08cfbdad857f41350b0168eed1c4605493bc7ed9093e17df99d"
+    )
     ledger_path = tmp_path / "cluster-hours.json"
-    ledger_path.write_bytes(_RETAINED_LEDGER_PATH.read_bytes())
+    resource_ledger._atomic_write_ledger(ledger_path, historical)
+    assert hashlib.sha256(ledger_path.read_bytes()).hexdigest() == (
+        "4d4db848de2e4c45d85341f517e093e205670877905e6f5299315c9c39d18bbe"
+    )
     monkeypatch.setattr(
         qualification_job,
         "databricks_ledger_path_sha256",
@@ -5368,6 +5388,135 @@ def _runtime_for(job: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _observer_runtime_fixture(tmp_path: Path) -> tuple[Path, Path, str]:
+    work_dir = (tmp_path / "observer-work").resolve()
+    runtime = work_dir / "runtime"
+    python = runtime / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    shutil.copy2(sys.executable, python)
+    python.chmod(0o755)
+    version = ".".join(str(value) for value in sys.version_info[:3])
+    return work_dir, python, version
+
+
+def test_observe_gpu_runtime_attests_copied_python_before_and_after_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    work_dir, python, version = _observer_runtime_fixture(tmp_path)
+    runtime = work_dir / "runtime"
+    base_prefix = "/reviewed/base-python"
+    calls = []
+
+    def probe(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if argv[0] == "nvidia-smi":
+            return subprocess.CompletedProcess(argv, 0, stdout="570.172.08\n", stderr="")
+        assert argv[0] == str(python)
+        assert kwargs["cwd"] == runtime
+        assert "PYTHONHOME" not in kwargs["env"]
+        assert "PYTHONPATH" not in kwargs["env"]
+        if "torch.cuda.get_device_properties" in argv[2]:
+            record = {
+                "gpu": "NVIDIA L4",
+                "gpu_compute_capability": "8.9",
+                "python_base_prefix": base_prefix,
+                "python_executable": str(python),
+                "python_implementation": "cpython",
+                "python_prefix": str(runtime),
+                "python_version": version,
+                "torch_cuda_version": "12.9",
+                "vllm_version": GPU_QUALIFICATION_VLLM_VERSION,
+            }
+        else:
+            record = {
+                "base_prefix": base_prefix,
+                "executable": str(python),
+                "prefix": str(runtime),
+                "python_implementation": "cpython",
+                "python_version": version,
+            }
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(record) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(qualification_job.subprocess, "run", probe)
+
+    observed = qualification_job._observe_gpu_runtime(
+        work_dir,
+        expected_python_version=version,
+    )
+
+    assert observed == {
+        "gpu": "NVIDIA L4",
+        "gpu_compute_capability": "8.9",
+        "nvidia_driver_version": "570.172.08",
+        "torch_cuda_version": "12.9",
+        "vllm_version": GPU_QUALIFICATION_VLLM_VERSION,
+    }
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize("mutation", ["replace", "rewrite"])
+def test_observe_gpu_runtime_detects_python_mutation_across_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+):
+    work_dir, python, version = _observer_runtime_fixture(tmp_path)
+    runtime = work_dir / "runtime"
+    base_prefix = "/reviewed/base-python"
+
+    def probe(argv, **kwargs):
+        if argv[0] == "nvidia-smi":
+            return subprocess.CompletedProcess(argv, 0, stdout="570.172.08\n", stderr="")
+        if "torch.cuda.get_device_properties" in argv[2]:
+            if mutation == "replace":
+                replacement = python.with_name("replacement")
+                replacement.write_bytes(b"replacement")
+                replacement.chmod(0o755)
+                os.replace(replacement, python)
+            else:
+                python.write_bytes(b"rewritten")
+                python.chmod(0o755)
+            record = {
+                "gpu": "NVIDIA L4",
+                "gpu_compute_capability": "8.9",
+                "python_base_prefix": base_prefix,
+                "python_executable": str(python),
+                "python_implementation": "cpython",
+                "python_prefix": str(runtime),
+                "python_version": version,
+                "torch_cuda_version": "12.9",
+                "vllm_version": GPU_QUALIFICATION_VLLM_VERSION,
+            }
+        else:
+            record = {
+                "base_prefix": base_prefix,
+                "executable": str(python),
+                "prefix": str(runtime),
+                "python_implementation": "cpython",
+                "python_version": version,
+            }
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(record) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(qualification_job.subprocess, "run", probe)
+
+    with pytest.raises(RuntimeError, match="bound identity"):
+        qualification_job._observe_gpu_runtime(
+            work_dir,
+            expected_python_version=version,
+        )
+
+
 def _execute(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5402,9 +5551,11 @@ def _execute(
     monkeypatch.setattr(
         qualification_job, "_verify_artifact_files", lambda *a, **k: None
     )
-    monkeypatch.setattr(
-        qualification_job, "_observe_gpu_runtime", lambda work_dir: _runtime_for(job)
-    )
+    def observe_runtime(work_dir, *, expected_python_version):
+        assert expected_python_version == "3.11.11"
+        return _runtime_for(job)
+
+    monkeypatch.setattr(qualification_job, "_observe_gpu_runtime", observe_runtime)
     timestamps = iter(
         (
             datetime(2026, 8, 24, 1, 0, tzinfo=UTC),

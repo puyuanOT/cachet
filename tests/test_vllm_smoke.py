@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
@@ -687,6 +689,254 @@ def test_create_venv_fallback_is_hash_pinned_and_dependency_free(monkeypatch, tm
         variable not in environment
         for variable in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV")
     )
+
+
+def test_create_venv_copies_both_stdlib_and_verified_fallback(monkeypatch, tmp_path):
+    calls = []
+    venv_dir = (tmp_path / "venv").resolve()
+    bootstrap = tmp_path / "reviewed-virtualenv.pyz"
+
+    def fake_run(argv, *, env=None):
+        calls.append((argv, env))
+        if len(calls) == 1:
+            raise subprocess.CalledProcessError(1, argv)
+        python = venv_dir / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        shutil.copy2(sys.executable, python)
+        python.chmod(python.stat().st_mode | stat.S_IXUSR)
+
+    monkeypatch.setattr(public_vllm_smoke, "run", fake_run)
+    monkeypatch.setattr(
+        public_vllm_smoke,
+        "materialize_virtualenv_bootstrap",
+        lambda output_dir: bootstrap,
+    )
+
+    public_vllm_smoke.create_venv(venv_dir, copies=True)
+
+    assert [argv for argv, _environment in calls] == [
+        [sys.executable, "-m", "venv", "--copies", str(venv_dir)],
+        [sys.executable, str(bootstrap), "--copies", str(venv_dir)],
+    ]
+    binding = public_vllm_smoke._copied_venv_python_binding(venv_dir)
+    assert binding.path == str(venv_dir / "bin" / "python")
+    assert binding.link_count == 1
+
+
+def test_create_venv_copies_real_cpython_with_exact_isolated_identity(tmp_path):
+    runtime = (tmp_path / "real-copied-runtime").resolve()
+
+    public_vllm_smoke.create_venv(runtime, copies=True)
+    identity = public_vllm_smoke._attest_isolated_python(
+        runtime,
+        expected_python_version=".".join(
+            str(component) for component in sys.version_info[:3]
+        ),
+    )
+
+    assert identity.python_implementation == "cpython"
+    assert identity.executable == str(runtime / "bin" / "python")
+    assert identity.prefix == str(runtime)
+    assert identity.base_prefix != identity.prefix
+    assert identity.file_binding.link_count == 1
+
+
+def _copied_runtime_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    runtime = (tmp_path / "runtime").resolve()
+    python = runtime / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    shutil.copy2(sys.executable, python)
+    python.chmod(0o755)
+    return runtime, python
+
+
+def test_copied_runtime_python_detects_mutation_while_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runtime, python = _copied_runtime_fixture(tmp_path)
+    real_read = os.read
+    mutated = False
+
+    def mutate_after_first_read(descriptor: int, byte_count: int) -> bytes:
+        nonlocal mutated
+        chunk = real_read(descriptor, byte_count)
+        if chunk and not mutated:
+            mutated = True
+            python.write_bytes(b"mutated during binding")
+            python.chmod(0o755)
+        return chunk
+
+    monkeypatch.setattr(public_vllm_smoke.os, "read", mutate_after_first_read)
+
+    with pytest.raises(RuntimeError, match="changed while it was hashed"):
+        public_vllm_smoke._copied_venv_python_binding(runtime)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "relative-root",
+        "relative-link",
+        "absolute-link",
+        "dangling-link",
+        "link-loop",
+        "directory",
+        "fifo",
+        "symlink-ancestor",
+        "hardlink",
+        "non-executable",
+        "wrong-root",
+    ],
+)
+def test_copied_runtime_python_rejects_non_regular_authority(
+    tmp_path: Path,
+    mutation: str,
+):
+    runtime = (tmp_path / "runtime").resolve()
+    python = runtime / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    outside = tmp_path / "outside-python"
+    shutil.copy2(sys.executable, outside)
+    outside.chmod(0o755)
+
+    if mutation == "relative-root":
+        with pytest.raises(RuntimeError, match="canonical absolute"):
+            public_vllm_smoke._copied_venv_python_binding(Path("runtime"))
+        return
+    if mutation == "relative-link":
+        target = python.parent / "python3.11"
+        shutil.copy2(sys.executable, target)
+        python.symlink_to(target.name)
+    elif mutation == "absolute-link":
+        python.symlink_to(outside)
+    elif mutation == "dangling-link":
+        python.symlink_to("missing-python")
+    elif mutation == "link-loop":
+        python.symlink_to("python")
+    elif mutation == "directory":
+        python.mkdir()
+    elif mutation == "fifo":
+        os.mkfifo(python)
+    elif mutation == "symlink-ancestor":
+        real_runtime = (tmp_path / "real-runtime").resolve()
+        real_python = real_runtime / "bin" / "python"
+        real_python.parent.mkdir(parents=True)
+        shutil.copy2(sys.executable, real_python)
+        real_python.chmod(0o755)
+        shutil.rmtree(runtime)
+        runtime.symlink_to(real_runtime, target_is_directory=True)
+    elif mutation == "hardlink":
+        os.link(outside, python)
+    elif mutation == "non-executable":
+        shutil.copy2(sys.executable, python)
+        python.chmod(0o644)
+    else:
+        shutil.copy2(sys.executable, python)
+        python.chmod(0o755)
+        with pytest.raises(RuntimeError, match="outside its exact runtime root"):
+            public_vllm_smoke._copied_venv_python_binding(runtime, outside)
+        return
+
+    with pytest.raises(RuntimeError):
+        public_vllm_smoke._copied_venv_python_binding(runtime)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("version", "version differs"),
+        ("executable", "wrong sys.executable"),
+        ("prefix", "wrong sys.prefix"),
+        ("base-prefix", "did not separate sys.base_prefix"),
+        ("implementation", "is not CPython"),
+    ],
+)
+def test_isolated_python_attestation_rejects_wrong_runtime_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    message: str,
+):
+    runtime, python = _copied_runtime_fixture(tmp_path)
+    record = {
+        "base_prefix": "/usr/local/python-base",
+        "executable": str(python),
+        "prefix": str(runtime),
+        "python_implementation": "cpython",
+        "python_version": "3.11.11",
+    }
+    if mutation == "version":
+        record["python_version"] = "3.11.10"
+    elif mutation == "executable":
+        record["executable"] = str(runtime / "bin" / "python3")
+    elif mutation == "prefix":
+        record["prefix"] = str(tmp_path / "foreign-runtime")
+    elif mutation == "base-prefix":
+        record["base_prefix"] = str(runtime)
+    else:
+        record["python_implementation"] = "pypy"
+
+    def probe(argv, **kwargs):
+        assert argv[0] == str(python)
+        assert "PYTHONHOME" not in kwargs["env"]
+        assert "PYTHONPATH" not in kwargs["env"]
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(record) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", probe)
+    with pytest.raises(RuntimeError, match=message):
+        public_vllm_smoke._attest_isolated_python(
+            runtime,
+            expected_python_version="3.11.11",
+            environment={
+                "PYTHONHOME": "/attacker",
+                "PYTHONPATH": "/attacker",
+            },
+        )
+
+
+@pytest.mark.parametrize("mutation", ["replace", "rewrite"])
+def test_isolated_python_attestation_detects_probe_time_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+):
+    runtime, python = _copied_runtime_fixture(tmp_path)
+    record = {
+        "base_prefix": "/usr/local/python-base",
+        "executable": str(python),
+        "prefix": str(runtime),
+        "python_implementation": "cpython",
+        "python_version": "3.11.11",
+    }
+
+    def probe(argv, **kwargs):
+        if mutation == "replace":
+            replacement = python.with_name("replacement")
+            replacement.write_bytes(b"replacement executable")
+            replacement.chmod(0o755)
+            os.replace(replacement, python)
+        else:
+            python.write_bytes(b"mutated executable")
+            python.chmod(0o755)
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=json.dumps(record) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(public_vllm_smoke.subprocess, "run", probe)
+    with pytest.raises(RuntimeError, match="changed during identity probe"):
+        public_vllm_smoke._attest_isolated_python(
+            runtime,
+            expected_python_version="3.11.11",
+        )
 
 
 def test_materialize_virtualenv_bootstrap_hash_gates_zipapp(monkeypatch, tmp_path):

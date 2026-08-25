@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -4276,21 +4277,313 @@ def _benchmark_error_summary(
     return f"{dataset}/{arm_id}: {error}"
 
 
-def create_venv(venv_dir: Path) -> None:
-    if venv_python(venv_dir).exists():
+@dataclass(frozen=True, slots=True)
+class _CopiedVenvPythonBinding:
+    """Stable no-follow identity for one launch-owned copied interpreter."""
+
+    path: str
+    device: int
+    inode: int
+    mode: int
+    link_count: int
+    size: int
+    modified_time_ns: int
+    changed_time_ns: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _IsolatedPythonIdentity:
+    """Interpreter and file identity observed inside one copied virtualenv."""
+
+    file_binding: _CopiedVenvPythonBinding
+    python_implementation: str
+    python_version: str
+    executable: str
+    prefix: str
+    base_prefix: str
+
+
+def _no_follow_directory_flags() -> int:
+    no_follow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if not isinstance(no_follow, int) or not isinstance(directory, int):
+        raise RuntimeError(
+            "copied virtualenv validation requires O_NOFOLLOW and O_DIRECTORY"
+        )
+    return os.O_RDONLY | no_follow | directory | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_absolute_directory_no_follow(path: Path) -> int:
+    if not path.is_absolute() or ".." in path.parts:
+        raise RuntimeError("copied virtualenv root must be one canonical absolute path")
+    flags = _no_follow_directory_flags()
+    descriptor = os.open("/", flags)
+    try:
+        for component in path.parts[1:]:
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _copied_venv_python_binding(
+    runtime_root: Path,
+    runtime_python: Path | None = None,
+) -> _CopiedVenvPythonBinding:
+    """Open and hash the exact regular ``bin/python`` without following links."""
+
+    expected_python = runtime_root / "bin" / "python"
+    candidate = expected_python if runtime_python is None else runtime_python
+    if candidate != expected_python:
+        raise RuntimeError("isolated runtime Python is outside its exact runtime root")
+    if not runtime_root.is_absolute() or ".." in runtime_root.parts:
+        raise RuntimeError("copied virtualenv root must be one canonical absolute path")
+    try:
+        if runtime_root.resolve(strict=True) != runtime_root:
+            raise RuntimeError(
+                "copied virtualenv root must not contain symlink ancestors"
+            )
+        root_descriptor = _open_absolute_directory_no_follow(runtime_root)
+    except (OSError, RuntimeError) as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError("copied virtualenv root is not a real directory") from exc
+
+    bin_descriptor = -1
+    python_descriptor = -1
+    try:
+        bin_descriptor = os.open(
+            "bin",
+            _no_follow_directory_flags(),
+            dir_fd=root_descriptor,
+        )
+        pre_open = os.stat(
+            "python",
+            dir_fd=bin_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(pre_open.st_mode):
+            raise RuntimeError("isolated runtime Python must be one regular file")
+        if pre_open.st_nlink != 1:
+            raise RuntimeError("isolated runtime Python must have exactly one link")
+        if not pre_open.st_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            raise RuntimeError("isolated runtime Python must be executable")
+        file_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_NOFOLLOW")
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        python_descriptor = os.open(
+            "python",
+            file_flags,
+            dir_fd=bin_descriptor,
+        )
+        opened_before = os.fstat(python_descriptor)
+        if not stat.S_ISREG(opened_before.st_mode):
+            raise RuntimeError("isolated runtime Python must be one regular file")
+        if opened_before.st_nlink != 1:
+            raise RuntimeError("isolated runtime Python must have exactly one link")
+        if not opened_before.st_mode & (
+            stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        ):
+            raise RuntimeError("isolated runtime Python must be executable")
+        digest = sha256()
+        while True:
+            chunk = os.read(python_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+        opened_after = os.fstat(python_descriptor)
+        post_read = os.stat(
+            "python",
+            dir_fd=bin_descriptor,
+            follow_symlinks=False,
+        )
+
+        def stable_identity(item: os.stat_result) -> tuple[int, ...]:
+            return (
+                item.st_dev,
+                item.st_ino,
+                item.st_mode,
+                item.st_nlink,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+
+        if len(
+            {
+                stable_identity(item)
+                for item in (pre_open, opened_before, opened_after, post_read)
+            }
+        ) != 1:
+            raise RuntimeError("isolated runtime Python changed while it was hashed")
+        return _CopiedVenvPythonBinding(
+            path=str(candidate),
+            device=opened_after.st_dev,
+            inode=opened_after.st_ino,
+            mode=stat.S_IMODE(opened_after.st_mode),
+            link_count=opened_after.st_nlink,
+            size=opened_after.st_size,
+            modified_time_ns=opened_after.st_mtime_ns,
+            changed_time_ns=opened_after.st_ctime_ns,
+            sha256=digest.hexdigest(),
+        )
+    except OSError as exc:
+        raise RuntimeError(
+            "isolated runtime Python must be a no-follow regular executable"
+        ) from exc
+    finally:
+        if python_descriptor >= 0:
+            os.close(python_descriptor)
+        if bin_descriptor >= 0:
+            os.close(bin_descriptor)
+        os.close(root_descriptor)
+
+
+def _isolated_python_environment(
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    environment = _pip_subprocess_environment(environ)
+    for variable_name in tuple(environment):
+        if variable_name.startswith("PYTHON"):
+            environment.pop(variable_name)
+    environment.update(
+        {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONSAFEPATH": "1",
+        }
+    )
+    return environment
+
+
+def _attest_isolated_python(
+    runtime_root: Path,
+    *,
+    expected_python_version: str,
+    environment: Mapping[str, str] | None = None,
+    expected_file_binding: _CopiedVenvPythonBinding | None = None,
+) -> _IsolatedPythonIdentity:
+    """Attest a copied interpreter under the caller's exclusive ownership.
+
+    The pre/post no-follow snapshots detect replacement or mutation during the
+    probe.  Like the site-packages freezer, this boundary assumes no hostile
+    process sharing the same UID concurrently modifies the launch-owned tree.
+    """
+
+    runtime_python = runtime_root / "bin" / "python"
+    before = _copied_venv_python_binding(runtime_root, runtime_python)
+    if expected_file_binding is not None and before != expected_file_binding:
+        raise RuntimeError("isolated runtime Python differs from its bound identity")
+    probe = (
+        "import json,sys; "
+        "print(json.dumps({'base_prefix':sys.base_prefix,"
+        "'executable':sys.executable,'prefix':sys.prefix,"
+        "'python_implementation':sys.implementation.name,"
+        "'python_version':'.'.join(map(str,sys.version_info[:3]))},"
+        "sort_keys=True))"
+    )
+    completed = subprocess.run(
+        [str(runtime_python), "-c", probe],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=_isolated_python_environment(environment),
+        cwd=runtime_root,
+    )
+    after = _copied_venv_python_binding(runtime_root, runtime_python)
+    if after != before:
+        raise RuntimeError("isolated runtime Python changed during identity probe")
+    try:
+        observed = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("isolated runtime Python identity was not JSON") from exc
+    if not isinstance(observed, dict) or set(observed) != {
+        "base_prefix",
+        "executable",
+        "prefix",
+        "python_implementation",
+        "python_version",
+    }:
+        raise RuntimeError("isolated runtime Python identity has an open schema")
+    if any(type(observed.get(key)) is not str for key in observed):
+        raise RuntimeError("isolated runtime Python identity fields must be strings")
+    executable = str(observed["executable"])
+    prefix = str(observed["prefix"])
+    base_prefix = str(observed["base_prefix"])
+    python_implementation = str(observed["python_implementation"])
+    python_version = str(observed["python_version"])
+    if executable != str(runtime_python):
+        raise RuntimeError("isolated runtime Python reported the wrong sys.executable")
+    if prefix != str(runtime_root):
+        raise RuntimeError("isolated runtime Python reported the wrong sys.prefix")
+    if base_prefix == prefix:
+        raise RuntimeError("isolated runtime Python did not separate sys.base_prefix")
+    if python_implementation != "cpython":
+        raise RuntimeError("isolated runtime Python is not CPython")
+    if python_version != expected_python_version:
+        raise RuntimeError(
+            "isolated runtime Python version differs from the qualification plan: "
+            f"{python_version!r} != {expected_python_version!r}"
+        )
+    return _IsolatedPythonIdentity(
+        file_binding=before,
+        python_implementation=python_implementation,
+        python_version=python_version,
+        executable=executable,
+        prefix=prefix,
+        base_prefix=base_prefix,
+    )
+
+
+def create_venv(venv_dir: Path, *, copies: bool = False) -> None:
+    if type(copies) is not bool:
+        raise TypeError("copies must be an exact bool")
+    if copies:
+        if not venv_dir.is_absolute() or ".." in venv_dir.parts:
+            raise RuntimeError("copied virtualenv root must be one canonical absolute path")
+        try:
+            if venv_dir.parent.resolve(strict=True) != venv_dir.parent:
+                raise RuntimeError(
+                    "copied virtualenv root must not contain symlink ancestors"
+                )
+            if venv_dir.exists() or venv_dir.is_symlink():
+                root_status = venv_dir.stat(follow_symlinks=False)
+                if not stat.S_ISDIR(root_status.st_mode):
+                    raise RuntimeError("copied virtualenv root must be a real directory")
+                if venv_dir.resolve(strict=True) != venv_dir:
+                    raise RuntimeError(
+                        "copied virtualenv root must not contain symlink ancestors"
+                    )
+        except OSError as exc:
+            raise RuntimeError("copied virtualenv parent must be a real directory") from exc
+    python = venv_python(venv_dir)
+    if python.exists() or python.is_symlink():
+        if copies:
+            _copied_venv_python_binding(venv_dir, python)
         return
     pip_environment = _pip_subprocess_environment()
+    copy_argument = ["--copies"] if copies else []
     try:
         run(
-            [sys.executable, "-m", "venv", str(venv_dir)],
+            [sys.executable, "-m", "venv", *copy_argument, str(venv_dir)],
             env=pip_environment,
         )
     except subprocess.CalledProcessError:
         bootstrap = materialize_virtualenv_bootstrap(venv_dir.parent)
         run(
-            [sys.executable, str(bootstrap), str(venv_dir)],
+            [sys.executable, str(bootstrap), *copy_argument, str(venv_dir)],
             env=pip_environment,
         )
+    if copies:
+        _copied_venv_python_binding(venv_dir, python)
 
 
 def materialize_virtualenv_bootstrap(output_dir: Path) -> Path:
